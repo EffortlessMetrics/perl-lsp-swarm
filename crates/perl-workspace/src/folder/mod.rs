@@ -102,10 +102,11 @@ fn parse_file_uri_fallback(workspace_folder: &str) -> Option<PathBuf> {
         return None;
     }
 
-    match parsed.host_str() {
-        None => Some(PathBuf::from(path)),
-        Some(host) if is_local_file_host(host) => Some(PathBuf::from(path)),
-        Some(_) => None,
+    let host = parsed.host_str();
+    if host.is_none_or(is_local_file_host) {
+        Some(PathBuf::from(path))
+    } else {
+        None
     }
 }
 
@@ -224,6 +225,12 @@ mod tests {
         assert!(path.contains("tmp"));
         assert!(path.contains("project"));
         assert!(!path.contains("localhost/tmp"));
+    }
+
+    #[test]
+    fn parses_percent_encoded_file_uri_path_segment() {
+        let parsed = workspace_folder_to_path("file:///tmp/my%20project");
+        assert_eq!(parsed, PathBuf::from("/tmp/my project"));
     }
 
     #[test]
