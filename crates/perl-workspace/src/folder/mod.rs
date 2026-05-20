@@ -55,10 +55,6 @@ fn has_file_uri_scheme(value: &str) -> bool {
     value.get(..5).is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
 }
 
-fn has_file_uri_prefix(value: &str) -> bool {
-    value.get(..7).is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
-}
-
 fn trim_file_uri_prefix(value: &str) -> &str {
     let suffix = &value[5..];
     suffix.strip_prefix("//").unwrap_or(suffix)
@@ -151,7 +147,7 @@ pub fn extract_workspace_folder_change(event: &Value) -> WorkspaceFolderChange {
 /// This keeps behavior deterministic across absolute POSIX and Windows-style paths.
 #[must_use]
 pub fn root_path_to_file_uri(root_path: &str) -> String {
-    if has_file_uri_prefix(root_path) {
+    if has_file_uri_scheme(root_path) {
         return root_path.to_string();
     }
 
@@ -285,6 +281,12 @@ mod tests {
     fn preserves_file_uri_root_path_input() {
         let uri = root_path_to_file_uri("file:///already/uri");
         assert_eq!(uri, "file:///already/uri");
+    }
+
+    #[test]
+    fn preserves_single_slash_file_uri_root_path_input() {
+        let uri = root_path_to_file_uri("file:/already/uri");
+        assert_eq!(uri, "file:/already/uri");
     }
 
     #[test]
