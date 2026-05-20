@@ -151,3 +151,46 @@ my $line = "private";
     fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+#[test]
+fn bdd_given_hidden_and_private_directories_when_parse_dir_then_nested_files_are_ignored()
+-> Result<(), Box<dyn Error>> {
+    // Given: visible, hidden, and private subdirectories each with corpus files.
+    let dir = scenario_temp_dir("perl_corpus_bdd_nested_visibility");
+    let visible = r#"==========================================
+Visible nested section
+==========================================
+# @id: nested.visible
+# @tags: regex
+my $line = "visible";
+"#;
+    let hidden_nested = r#"==========================================
+Hidden nested section
+==========================================
+# @id: nested.hidden
+# @tags: regex
+my $line = "hidden";
+"#;
+    let private_nested = r#"==========================================
+Private nested section
+==========================================
+# @id: nested.private
+# @tags: regex
+my $line = "private";
+"#;
+
+    must(write_corpus_file(&dir.join("visible"), "ok.txt", visible));
+    must(write_corpus_file(&dir.join(".hidden"), "skip.txt", hidden_nested));
+    must(write_corpus_file(&dir.join("_private"), "skip.txt", private_nested));
+
+    // When: parsing recursively.
+    let sections = must(parse_dir(&dir));
+
+    // Then: only visible nested files contribute sections.
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0].id, "nested.visible");
+    assert!(sections[0].file.ends_with("ok.txt"));
+
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}

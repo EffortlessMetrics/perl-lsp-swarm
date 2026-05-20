@@ -3,14 +3,24 @@ use crate::metadata::Section;
 use anyhow::Result;
 use std::path::Path;
 
+fn has_hidden_or_private_component(dir: &Path, path: &Path) -> bool {
+    path.strip_prefix(dir).ok().is_some_and(|relative| {
+        relative.components().any(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .is_some_and(|part| part.starts_with('.') || part.starts_with('_'))
+        })
+    })
+}
+
 pub fn parse_dir(dir: &Path) -> Result<Vec<Section>> {
     let mut all = Vec::new();
     let pattern = format!("{}/**/*.txt", dir.display());
 
     for entry in glob::glob(&pattern)? {
         let path = entry?;
-        let filename = path.file_name().unwrap_or_default().to_string_lossy();
-        if filename.starts_with('_') || filename.starts_with('.') {
+        if has_hidden_or_private_component(dir, &path) {
             continue;
         }
         all.extend(parse_file(&path)?);
