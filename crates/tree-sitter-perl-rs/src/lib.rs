@@ -684,11 +684,25 @@ fn resolve_path<'tree>(root: &'tree AstNode, path: &[usize]) -> &'tree AstNode {
 /// when the S-expression does not have a simple `(kind_name ...)` prefix.
 fn pascal_to_snake(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
+    let mut prev_is_lower_or_digit = false;
+    let mut prev_is_upper = false;
+
     for (i, c) in s.char_indices() {
-        if c.is_uppercase() && i > 0 {
+        let is_upper = c.is_uppercase();
+        let is_lower = c.is_lowercase();
+        let next_is_lower = s[i + c.len_utf8()..].chars().next().is_some_and(char::is_lowercase);
+
+        let boundary = i > 0
+            && is_upper
+            && (prev_is_lower_or_digit || (prev_is_upper && next_is_lower));
+
+        if boundary {
             out.push('_');
         }
+
         out.extend(c.to_lowercase());
+        prev_is_lower_or_digit = is_lower || c.is_ascii_digit();
+        prev_is_upper = is_upper;
     }
     out
 }
@@ -938,6 +952,8 @@ mod tests {
         assert_eq!(pascal_to_snake("Program"), "program");
         assert_eq!(pascal_to_snake("FunctionCall"), "function_call");
         assert_eq!(pascal_to_snake("If"), "if");
+        assert_eq!(pascal_to_snake("HTTPRequest"), "http_request");
+        assert_eq!(pascal_to_snake("XML2JSON"), "xml2_json");
     }
 
     #[test]
