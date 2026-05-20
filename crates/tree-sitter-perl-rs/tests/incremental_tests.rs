@@ -11,6 +11,29 @@ fn parse(source: &str) -> tree_sitter_perl_rs::Tree {
 }
 
 #[test]
+fn when_tree_is_fresh_then_no_pending_edits_are_reported() {
+    let tree = parse("my $x = 1;");
+    assert!(!tree.has_pending_edits());
+}
+
+#[test]
+fn when_edit_is_recorded_then_pending_edits_are_reported() {
+    let mut tree = parse("my $x = 1;");
+    let edit = Edit::new(
+        8,
+        9,
+        10,
+        Position::new(8, 0, 8),
+        Position::new(9, 0, 9),
+        Position::new(10, 0, 10),
+    );
+
+    tree.edit(&edit);
+
+    assert!(tree.has_pending_edits());
+}
+
+#[test]
 fn when_edit_is_recorded_then_tree_accepts_it_without_panicking() {
     let mut tree = parse("my $x = 1;");
     // Simulate replacing "1" with "42" at byte 8..9

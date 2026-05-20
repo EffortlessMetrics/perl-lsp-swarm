@@ -134,7 +134,7 @@ impl Parser {
     pub fn parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree> {
         // Fast path: if source is unchanged and no edits were recorded, reuse the old tree
         // instead of re-parsing. This mirrors tree-sitter's incremental no-op behavior.
-        if source == old_tree.source() && old_tree.pending_edits.is_empty() {
+        if source == old_tree.source() && !old_tree.has_pending_edits() {
             return Some(old_tree.clone());
         }
 
@@ -271,6 +271,14 @@ impl Tree {
     /// optimization.
     pub fn edit(&mut self, edit: &InputEdit) {
         self.pending_edits.push(edit.clone());
+    }
+
+    /// Returns `true` when one or more edits have been recorded on this tree.
+    ///
+    /// A tree with pending edits should be treated as stale and reparsed with
+    /// [`Parser::parse_with_old_tree`] using updated source text.
+    pub fn has_pending_edits(&self) -> bool {
+        !self.pending_edits.is_empty()
     }
 
     /// Returns a cursor positioned at the root node for stateful tree traversal.
