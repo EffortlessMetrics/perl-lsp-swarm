@@ -316,6 +316,8 @@ pub(crate) fn has_unlinked_todo_in_perl_line(line: &str, token_re: &Regex) -> bo
 #[derive(Clone, Copy)]
 struct PerlQuoteLikeState {
     close_delimiter: char,
+    nested_delimiter: Option<char>,
+    nested_depth: u16,
     remaining_closures: u8,
     escaped: bool,
 }
@@ -340,6 +342,18 @@ fn find_hash_comment_start(line: &str, perl_mode: bool) -> Option<usize> {
                 quote_like.escaped = true;
                 perl_quote_like = Some(quote_like);
                 continue;
+            }
+            if let Some(open_delimiter) = quote_like.nested_delimiter {
+                if ch == open_delimiter {
+                    quote_like.nested_depth = quote_like.nested_depth.saturating_add(1);
+                    perl_quote_like = Some(quote_like);
+                    continue;
+                }
+                if ch == quote_like.close_delimiter && quote_like.nested_depth > 0 {
+                    quote_like.nested_depth = quote_like.nested_depth.saturating_sub(1);
+                    perl_quote_like = Some(quote_like);
+                    continue;
+                }
             }
             if ch == quote_like.close_delimiter {
                 quote_like.remaining_closures = quote_like.remaining_closures.saturating_sub(1);
@@ -491,8 +505,18 @@ fn perl_quote_like_state_at_delimiter(
         '<' => '>',
         other => other,
     };
+    let nested_delimiter = match delimiter {
+        '(' | '{' | '[' | '<' => Some(delimiter),
+        _ => None,
+    };
     if matches!(op, "m" | "q" | "qq" | "qw" | "qx" | "qr" | "s" | "tr" | "y") {
-        Some(PerlQuoteLikeState { close_delimiter, remaining_closures, escaped: false })
+        Some(PerlQuoteLikeState {
+            close_delimiter,
+            nested_delimiter,
+            nested_depth: 0,
+            remaining_closures,
+            escaped: false,
+        })
     } else {
         None
     }

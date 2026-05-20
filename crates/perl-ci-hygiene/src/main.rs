@@ -3389,6 +3389,10 @@ mod tests {
         assert!(!has_unlinked_todo_in_perl_line("my $s = q#TODO#;", &todo_re));
         assert!(!has_unlinked_todo_in_perl_line("my $s = qq #TODO#;", &todo_re));
         assert!(!has_unlinked_todo_in_perl_line("my $s = s#foo#TODO#;", &todo_re));
+        assert!(!has_unlinked_todo_in_perl_line(
+            "my $s = q{{nested} # TODO still string};",
+            &todo_re
+        ));
         assert!(has_unlinked_todo_in_perl_line(
             "my $s = s#foo#bar#; # TODO: add edge-cases",
             &todo_re
