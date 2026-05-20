@@ -208,22 +208,34 @@ impl TddWorkflow {
         )
     }
 
-    fn generate_edge_case_test(&self, name: &str, _params: &[String]) -> String {
+    fn generate_edge_case_test(&self, name: &str, params: &[String]) -> String {
+        let repeated = |value: &str| {
+            if params.is_empty() {
+                value.to_string()
+            } else {
+                std::iter::repeat_n(value, params.len()).collect::<Vec<_>>().join(", ")
+            }
+        };
+
+        let undef_args = repeated("undef");
+        let empty_args = repeated("''");
+        let special_args = repeated("\"\\n\\t\\0\"");
+
         format!(
             "use Test::More;\n\n\
              subtest '{} edge cases' => sub {{\n    \
              # Test with undef\n    \
-             eval {{ {}(undef) }};\n    \
+             eval {{ {}({}) }};\n    \
              ok(!$@, 'Handles undef');\n    \n    \
              # Test with empty values\n    \
-             eval {{ {}('') }};\n    \
+             eval {{ {}({}) }};\n    \
              ok(!$@, 'Handles empty string');\n    \n    \
              # Test with special characters\n    \
-             eval {{ {}(\"\\n\\t\\0\") }};\n    \
+             eval {{ {}({}) }};\n    \
              ok(!$@, 'Handles special characters');\n\
              }};\n\n\
              done_testing();\n",
-            name, name, name, name
+            name, name, undef_args, name, empty_args, name, special_args
         )
     }
 
@@ -739,5 +751,22 @@ mod tests {
         assert!(test.code.contains("edge cases"));
         assert!(test.code.contains("undef"));
         assert!(test.code.contains("empty"));
+        assert_eq!(test.code.matches("ok(!$@, 'Handles empty string');").count(), 1);
+    }
+
+    #[test]
+    fn test_edge_case_generation_uses_all_params() {
+        let config = TddConfig::default();
+        let workflow = TddWorkflow::new(config);
+
+        let test = workflow.generate_test_for_function(
+            "combine",
+            &["$left".to_string(), "$right".to_string()],
+            TestType::EdgeCase,
+        );
+
+        assert!(test.code.contains("combine(undef, undef)"));
+        assert!(test.code.contains("combine('', '')"));
+        assert!(test.code.contains("combine(\"\\n\\t\\0\", \"\\n\\t\\0\")"));
     }
 }
