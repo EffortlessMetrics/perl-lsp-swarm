@@ -312,8 +312,9 @@ pub fn scan_wiring_comments(src_dir: &Path, workspace_root: &Path) -> Vec<Wiring
             && let Ok(content) = fs::read_to_string(&path)
         {
             for line in content.lines() {
+                let line_lower = line.to_ascii_lowercase();
                 for kw in WIRING_KEYWORDS {
-                    if line.contains(kw) {
+                    if line_lower.contains(&kw.to_ascii_lowercase()) {
                         let rel = path
                             .strip_prefix(workspace_root)
                             .map(|p| p.display().to_string())
@@ -461,6 +462,17 @@ mod tests {
         let src = dir.path().join("src");
         fs::create_dir_all(&src).unwrap();
         fs::write(src.join("lib.rs"), "// FIXME: not called from anywhere\npub fn g() {}\n")
+            .unwrap();
+        let hits = scan_wiring_comments(&src, dir.path());
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn test_scan_wiring_comments_lowercase_todo_wire() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), "// todo: wire this into diagnostics\npub fn f() {}\n")
             .unwrap();
         let hits = scan_wiring_comments(&src, dir.path());
         assert_eq!(hits.len(), 1);
