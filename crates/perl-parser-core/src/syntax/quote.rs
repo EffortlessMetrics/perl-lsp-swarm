@@ -320,17 +320,20 @@ pub fn extract_substitution_parts(text: &str) -> (String, String, String) {
     (pattern, replacement, modifiers)
 }
 
-/// Extract search, replace, and modifiers from a transliteration token
-pub fn extract_transliteration_parts(text: &str) -> (String, String, String) {
-    // Skip 'tr' or 'y' prefix
-    let after_op = if let Some(stripped) = text.strip_prefix("tr") {
+fn strip_transliteration_operator_prefix(text: &str) -> &str {
+    if let Some(stripped) = text.strip_prefix("tr") {
         stripped
     } else if let Some(stripped) = text.strip_prefix('y') {
         stripped
     } else {
         text
-    };
-    let content = after_op.trim_start();
+    }
+}
+
+/// Extract search, replace, and modifiers from a transliteration token
+pub fn extract_transliteration_parts(text: &str) -> (String, String, String) {
+    // Skip 'tr' or 'y' prefix
+    let content = strip_transliteration_operator_prefix(text).trim_start();
 
     // Get delimiter - content must be non-empty to have a delimiter
     let delimiter = match content.chars().next() {
@@ -426,14 +429,7 @@ pub fn extract_transliteration_parts_strict(
     text: &str,
 ) -> Result<(String, String, String), TransliterationError> {
     // Skip `tr` or `y` prefix, then allow optional whitespace before delimiter.
-    let after_op = if let Some(stripped) = text.strip_prefix("tr") {
-        stripped
-    } else if let Some(stripped) = text.strip_prefix('y') {
-        stripped
-    } else {
-        text
-    };
-    let content = after_op.trim_start();
+    let content = strip_transliteration_operator_prefix(text).trim_start();
 
     // Get delimiter.
     let delimiter = match content.chars().next() {

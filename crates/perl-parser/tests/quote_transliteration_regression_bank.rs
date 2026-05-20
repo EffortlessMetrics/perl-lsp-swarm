@@ -12,6 +12,7 @@ fn transliteration_regression_bank_valid_cases() {
         ("y  {αβ}{γδ}r", ("αβ", "γδ", "r")),
         // '#' is a valid non-paired, non-alphanumeric delimiter
         ("tr#abc#xyz#", ("abc", "xyz", "")),
+        ("y/abc/xyz/", ("abc", "xyz", "")),
         // nested brackets in search list (Perl allows depth-tracking)
         ("tr{a{b}c}{xyz}", ("a{b}c", "xyz", "")),
         // delete mode: no replacement characters
@@ -36,6 +37,7 @@ fn transliteration_regression_bank_strict_errors() {
         ("tr/abc/xyz", TransliterationError::MissingClosingDelimiter),
         ("tr{abc}{xyz", TransliterationError::MissingClosingDelimiter),
         ("tr{abc}xyz", TransliterationError::InvalidDelimiter('x')),
+        ("y {abc}xyz", TransliterationError::InvalidDelimiter('x')),
     ];
 
     for (input, expected) in cases {
