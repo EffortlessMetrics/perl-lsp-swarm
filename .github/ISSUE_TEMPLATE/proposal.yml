@@ -1,0 +1,15 @@
+name: Proposal
+about: Create or revise a proposal artifact
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+  - type: input
+    id: target_milestone
+    attributes:
+      label: Target milestone
+  - type: textarea
+    id: success_criteria
+    attributes:
+      label: Success criteria
