@@ -133,6 +133,13 @@ mod tests {
     }
 
     #[test]
+    fn test_find_data_marker_with_cr_only_line_endings() {
+        let src = "print 'hello';\r__DATA__\rpayload";
+        assert_eq!(find_data_marker_byte_lexed(src), Some(15));
+        assert_eq!(split_code_and_data(src), ("print 'hello';\r", Some("__DATA__\rpayload")));
+    }
+
+    #[test]
     // Allow deprecated call to verify compatibility wrapper behavior.
     #[allow(deprecated)]
     fn test_find_data_marker_deprecated_matches_lexed_helper() {
