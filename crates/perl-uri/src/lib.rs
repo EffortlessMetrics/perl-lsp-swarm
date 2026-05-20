@@ -197,6 +197,15 @@ mod tests {
             assert!(path.ends_with("localhost.pl"));
         }
 
+        #[test]
+        fn test_source_path_from_uri_or_path_trims_wrapping_whitespace() {
+            let path = must_some(source_path_from_uri_or_path(
+                "  file:///tmp/whitespace.pl
+",
+            ));
+            assert!(path.ends_with("whitespace.pl"));
+        }
+
         #[cfg(windows)]
         #[test]
         fn test_source_path_from_uri_or_path_accepts_windows_drive_path() {
