@@ -363,6 +363,46 @@ include_paths = ["other_lib"]
     }
 
     #[test]
+    fn handle_client_response_accepts_numeric_string_id() {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("failed to create folder");
+        let uri = url::Url::from_directory_path(&folder).expect("failed to create uri").to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder.clone()),
+        );
+        server.pending_workspace_configuration_requests.lock().insert(
+            77,
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec![uri.clone()],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": "77",
+            "result": [
+                {"workspace": {"useSystemInc": true}},
+                {"workspace": {"includePaths": ["string_id_lib"]}}
+            ]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder_state = folders.iter().find(|f| f.uri == uri).expect("missing folder");
+        assert!(
+            folder_state
+                .effective_workspace_config
+                .include_paths
+                .contains(&"string_id_lib".to_string())
+        );
+        assert!(folder_state.effective_workspace_config.use_system_inc);
+    }
+
+    #[test]
     fn handle_client_response_ignores_non_array_result() {
         let server = LspServer::new();
         let temp = tempfile::tempdir().expect("failed to create temp dir");
