@@ -65,16 +65,14 @@ pub(crate) fn is_in_regex_flags(source: &str, position: usize) -> bool {
     let before = &source[..position];
     let flag_chars: &[char] = &['g', 'i', 'm', 's', 'x', 'e', 'r', 'a', 'd', 'u', 'p', 'l', 'c'];
     let without_flags = before.trim_end_matches(|c: char| flag_chars.contains(&c));
-    if !without_flags.ends_with('/') {
-        return false;
-    }
-    let close_pos = without_flags.len();
-    if close_pos < 2 {
-        return false;
-    }
-
-    if is_in_regex(source, close_pos - 1) {
-        return true;
+    if without_flags.ends_with('/') {
+        let close_pos = without_flags.len();
+        if close_pos < 2 {
+            return false;
+        }
+        if is_in_regex(source, close_pos - 1) {
+            return true;
+        }
     }
 
     let body = without_flags.trim();
@@ -82,6 +80,13 @@ pub(crate) fn is_in_regex_flags(source: &str, position: usize) -> bool {
 }
 
 fn is_multi_delim_regex_at_close(text: &str) -> bool {
+    if let Some(rest) = text.strip_prefix("m") {
+        return has_closed_single_delim_body(rest);
+    }
+    if let Some(rest) = text.strip_prefix("qr") {
+        return has_closed_single_delim_body(rest);
+    }
+
     let (op_len, required_slashes) = if text.starts_with("tr/") || text.starts_with("y/") {
         let op = if text.starts_with("tr/") { 2 } else { 1 };
         (op, 3usize)
@@ -115,6 +120,36 @@ fn count_unescaped_slashes(s: &str) -> usize {
         }
     }
     count
+}
+
+fn has_closed_single_delim_body(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(open) = chars.next() else {
+        return false;
+    };
+    let close = match open {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        '<' => '>',
+        _ => open,
+    };
+
+    let mut escaped = false;
+    for ch in chars {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == close {
+            return true;
+        }
+    }
+    false
 }
 
 /// Simple heuristic to check if position is in a comment.
