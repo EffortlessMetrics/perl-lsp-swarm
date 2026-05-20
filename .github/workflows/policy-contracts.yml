@@ -1,0 +1,19 @@
+name: Policy Contracts
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  policy-contracts:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check doc artifacts
+        run: cargo xtask check-doc-artifacts
+      - name: Check active goals
+        run: cargo xtask check-goals
+      - name: Check package boundary
+        run: cargo xtask check-package-boundary

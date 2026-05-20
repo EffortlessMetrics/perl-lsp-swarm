@@ -1,0 +1,11 @@
+schema_version = "1.0"
+
+[[lane]]
+name = "policy-contracts"
+owner = "repo-infra"
+intent = "validate policy and source-of-truth contracts"
+proof_obligation = "run contract check commands"
+cost_estimate = "low"
+trigger_policy = "pull_request,push:main"
+status = "advisory"
+review_after = "2026-06-30"

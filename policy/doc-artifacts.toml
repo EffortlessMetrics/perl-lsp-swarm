@@ -1,0 +1,25 @@
+schema_version = "1.0"
+
+[[artifact]]
+id = "PERL-LSP-SWARM-PROP-0001"
+kind = "proposal"
+path = "docs/proposals/PERL-LSP-SWARM-PROP-0001-source-of-truth-stack.md"
+status = "proposed"
+owner = "repo-infra"
+milestone = "0.1.0"
+
+[[artifact]]
+id = "PERL-LSP-SWARM-SPEC-0001"
+kind = "spec"
+path = "docs/specs/PERL-LSP-SWARM-SPEC-0001-source-of-truth-contract.md"
+status = "accepted"
+owner = "repo-infra"
+linked_proposal = "PERL-LSP-SWARM-PROP-0001"
+
+[[artifact]]
+id = "PERL-LSP-SWARM-PLAN-0001"
+kind = "plan"
+path = "plans/0.1.0/implementation-plan.md"
+status = "active"
+owner = "codex"
+linked_proposal = "PERL-LSP-SWARM-PROP-0001"

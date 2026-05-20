@@ -1,0 +1,15 @@
+name: Spec
+about: Create or revise a behavior contract
+body:
+  - type: input
+    id: linked_proposal
+    attributes:
+      label: Linked proposal ID
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Required behavior
+  - type: textarea
+    id: proof
+    attributes:
+      label: Proof requirements
