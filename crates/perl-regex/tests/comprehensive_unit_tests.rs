@@ -4,7 +4,7 @@
 //! detect_nested_quantifiers), Default impl, and edge cases.
 
 use perl_regex::validator::RegexValidationConfig;
-use perl_regex::{RegexAnalyzer, RegexError, RegexValidator, validator::RegexFinding};
+use perl_regex::{validator::RegexFinding, RegexAnalyzer, RegexError, RegexValidator};
 
 fn require_error(
     result: Result<(), RegexError>,
@@ -399,8 +399,8 @@ fn nested_quantifiers_true_classic_cases() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
-fn nested_quantifiers_ignore_quantifier_chars_inside_char_class()
--> Result<(), Box<dyn std::error::Error>> {
+fn nested_quantifiers_ignore_quantifier_chars_inside_char_class(
+) -> Result<(), Box<dyn std::error::Error>> {
     let v = RegexValidator::new();
     assert!(!v.detect_nested_quantifiers("([a+])+"));
     assert!(!v.detect_nested_quantifiers(r"([\+\*\?]){2}"));
@@ -410,8 +410,8 @@ fn nested_quantifiers_ignore_quantifier_chars_inside_char_class()
 }
 
 #[test]
-fn nested_quantifiers_still_flag_quantified_char_class_inside_quantified_group()
--> Result<(), Box<dyn std::error::Error>> {
+fn nested_quantifiers_still_flag_quantified_char_class_inside_quantified_group(
+) -> Result<(), Box<dyn std::error::Error>> {
     let v = RegexValidator::new();
     assert!(v.detect_nested_quantifiers("([a]+)+"));
     assert!(v.validate("([a]+)+", 0).is_err());
@@ -436,8 +436,8 @@ fn nested_quantifiers_reject_nested_group_wrappers() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn nested_quantifiers_accept_atomic_and_possessive_backtracking_guards()
--> Result<(), Box<dyn std::error::Error>> {
+fn nested_quantifiers_accept_atomic_and_possessive_backtracking_guards(
+) -> Result<(), Box<dyn std::error::Error>> {
     let v = RegexValidator::new();
     assert!(!v.detect_nested_quantifiers("(?>a+)+"));
     assert!(!v.detect_nested_quantifiers("(a++)+"));
@@ -472,8 +472,8 @@ fn nested_quantifiers_group_without_outer_quantifier() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn nested_quantifiers_literal_brace_after_group_is_not_detected()
--> Result<(), Box<dyn std::error::Error>> {
+fn nested_quantifiers_literal_brace_after_group_is_not_detected(
+) -> Result<(), Box<dyn std::error::Error>> {
     let v = RegexValidator::new();
     // Literal brace after a grouped quantified expression should not be treated as {n}
     assert!(!v.detect_nested_quantifiers("(a+){foo}"));
@@ -481,8 +481,8 @@ fn nested_quantifiers_literal_brace_after_group_is_not_detected()
 }
 
 #[test]
-fn nested_quantifiers_invalid_brace_quantifier_is_not_detected()
--> Result<(), Box<dyn std::error::Error>> {
+fn nested_quantifiers_invalid_brace_quantifier_is_not_detected(
+) -> Result<(), Box<dyn std::error::Error>> {
     let v = RegexValidator::new();
     // Missing closing brace is not a valid quantifier marker.
     assert!(!v.detect_nested_quantifiers("(a+){2,5"));
@@ -887,8 +887,8 @@ fn validate_negative_lookbehind_with_outer_quantifier_ok() -> Result<(), Box<dyn
 // ── True positive: non-capturing group WITH inner quantifier still detected ──
 
 #[test]
-fn nested_quantifiers_non_capturing_with_inner_quantifier_detected()
--> Result<(), Box<dyn std::error::Error>> {
+fn nested_quantifiers_non_capturing_with_inner_quantifier_detected(
+) -> Result<(), Box<dyn std::error::Error>> {
     let v = RegexValidator::new();
     // (?:a+)+ — inner quantifier a+, outer quantifier on group → nested
     assert!(v.detect_nested_quantifiers("(?:a+)+"));
@@ -896,8 +896,8 @@ fn nested_quantifiers_non_capturing_with_inner_quantifier_detected()
 }
 
 #[test]
-fn nested_quantifiers_capturing_with_inner_quantifier_detected()
--> Result<(), Box<dyn std::error::Error>> {
+fn nested_quantifiers_capturing_with_inner_quantifier_detected(
+) -> Result<(), Box<dyn std::error::Error>> {
     let v = RegexValidator::new();
     // (a+)+ — classic nested quantifier case
     assert!(v.detect_nested_quantifiers("(a+)+"));
@@ -905,8 +905,8 @@ fn nested_quantifiers_capturing_with_inner_quantifier_detected()
 }
 
 #[test]
-fn no_false_positive_non_capturing_without_inner_quantifier()
--> Result<(), Box<dyn std::error::Error>> {
+fn no_false_positive_non_capturing_without_inner_quantifier(
+) -> Result<(), Box<dyn std::error::Error>> {
     let v = RegexValidator::new();
     // (?:abc)+ — no inner quantifier, should NOT be flagged
     assert!(!v.detect_nested_quantifiers("(?:abc)+"));
@@ -962,8 +962,8 @@ fn validate_accepts_non_capturing_with_star() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-fn validate_accepts_non_capturing_alternation_with_quantifier()
--> Result<(), Box<dyn std::error::Error>> {
+fn validate_accepts_non_capturing_alternation_with_quantifier(
+) -> Result<(), Box<dyn std::error::Error>> {
     let v = RegexValidator::new();
     // (?:foo|bar)+ is a common Perl regex idiom
     v.validate("(?:foo|bar)+", 0)?;
@@ -1043,8 +1043,8 @@ fn validator_config_returns_default_after_new() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn validator_config_returns_supplied_config_after_with_config()
--> Result<(), Box<dyn std::error::Error>> {
+fn validator_config_returns_supplied_config_after_with_config(
+) -> Result<(), Box<dyn std::error::Error>> {
     let supplied = RegexValidationConfig {
         max_nesting: 4,
         max_unicode_properties: 5,
@@ -1166,6 +1166,18 @@ fn hover_text_unknown_modifier_deduplicates_unknown_chars() -> Result<(), Box<dy
     // collapse to a single 'z'.
     assert!(text.contains("Unknown modifiers: `z`"), "got: {text}");
     assert!(!text.contains("Unknown modifiers: `zzz`"), "should not list 'zzz': {text}");
+    Ok(())
+}
+
+#[test]
+fn hover_text_ignores_whitespace_between_modifiers() -> Result<(), Box<dyn std::error::Error>> {
+    let text = RegexAnalyzer::hover_text_for_regex("x", "i x\n");
+    assert!(text.contains("case-insensitive"));
+    assert!(text.contains("extended mode"));
+    assert!(
+        !text.contains("Unknown modifiers"),
+        "whitespace should not become unknown modifiers: {text}"
+    );
     Ok(())
 }
 
