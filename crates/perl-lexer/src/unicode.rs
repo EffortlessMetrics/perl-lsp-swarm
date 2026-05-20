@@ -69,8 +69,7 @@ pub fn is_perl_identifier_continue(ch: char) -> bool {
     // For continuation, we accept identifier start chars, XID_Continue chars,
     // the single quote (for old-style package separators like Foo'Bar),
     // and emoji continuation code points used by ZWJ grapheme sequences.
-    is_perl_identifier_start(ch)
-        || is_xid_continue(ch)
+    is_xid_continue(ch)
         || ch == '\''
         || matches!(
             ch as u32,
@@ -85,6 +84,7 @@ pub fn is_perl_identifier_continue(ch: char) -> bool {
             // Emoji tag sequence characters used by some flag-like emoji sequences.
             0xE0020..=0xE007F
         )
+        || is_perl_identifier_start(ch)
 }
 
 /// Validate Unicode string complexity for performance monitoring
@@ -152,6 +152,17 @@ mod tests {
         assert!(is_perl_identifier_continue('\u{E0067}'));
         assert!(!is_perl_identifier_continue(' '));
         assert!(!is_perl_identifier_continue('-'));
+    }
+
+    #[test]
+    fn identifier_continue_xid_only_does_not_touch_start_counters() {
+        reset_unicode_stats();
+
+        assert!(is_perl_identifier_continue('\u{0301}'));
+
+        let (checks, emoji_hits) = get_unicode_stats();
+        assert_eq!(checks, 0);
+        assert_eq!(emoji_hits, 0);
     }
 
     #[test]
