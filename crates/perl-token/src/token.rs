@@ -122,7 +122,7 @@ impl<'src> TokenRef<'src> {
 
     /// Return the token span length in bytes.
     pub fn len(self) -> usize {
-        self.end.saturating_sub(self.start)
+        TokenSpan::new(self.start, self.end).len()
     }
 
     /// Return whether the token span is empty.
@@ -255,7 +255,7 @@ impl Token {
     /// assert_eq!(tok.len(), 3);
     /// ```
     pub fn len(&self) -> usize {
-        self.end.saturating_sub(self.start)
+        self.span().len()
     }
 
     /// Return whether the token span is empty.
