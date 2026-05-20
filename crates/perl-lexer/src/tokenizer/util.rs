@@ -103,6 +103,12 @@ mod tests {
     }
 
     #[test]
+    fn test_find_data_marker_ignores_marker_inside_regex_literal() {
+        let regex = "my $re = qr/__DATA__/;\nprint 'ok';\n";
+        assert_eq!(find_data_marker_byte_lexed(regex), None);
+    }
+
+    #[test]
     fn test_split_code_and_data() {
         let no_marker = "print 'hello';\n";
         assert_eq!(split_code_and_data(no_marker), (no_marker, None));
