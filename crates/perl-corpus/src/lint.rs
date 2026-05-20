@@ -2,6 +2,7 @@ use crate::meta::{IdSource, Section};
 use anyhow::{Result, bail};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::LazyLock;
 
 /// Known valid tags (for warnings)
 pub const KNOWN_TAGS: &[&str] = &[
@@ -281,8 +282,10 @@ pub fn check_sections(sections: &[Section], config: &LintConfig) -> LintResult {
     let mut result = LintResult { errors: Vec::new(), warnings: Vec::new() };
 
     // Regex for valid ID format - pattern is a compile-time constant, so parsing cannot fail
-    static ID_RE: once_cell::sync::Lazy<Option<Regex>> =
-        once_cell::sync::Lazy::new(|| Regex::new(r"^[a-z0-9._-]+$").ok());
+    static ID_RE: LazyLock<Regex> = LazyLock::new(|| match Regex::new(r"^[a-z0-9._-]+$") {
+        Ok(re) => re,
+        Err(_) => unreachable!("hardcoded ID regex must compile"),
+    });
 
     // Track seen IDs for duplicate detection
     let mut seen_ids = BTreeSet::new();
@@ -304,7 +307,7 @@ pub fn check_sections(sections: &[Section], config: &LintConfig) -> LintResult {
             result
                 .errors
                 .push(format!("Missing explicit @id in {}: {}", section.file, section.title));
-        } else if !ID_RE.as_ref().is_some_and(|re| re.is_match(&section.id)) {
+        } else if !ID_RE.is_match(&section.id) {
             result.errors.push(format!(
                 "Invalid @id format '{}' in {}: {} (must match [a-z0-9._-]+)",
                 section.id, section.file, section.title
@@ -366,4 +369,35 @@ pub fn check_sections(sections: &[Section], config: &LintConfig) -> LintResult {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::{IdSource, Section};
+
+    fn section_with_id(id: &str) -> Section {
+        Section {
+            id: id.to_string(),
+            title: "title".to_string(),
+            file: "test.txt".to_string(),
+            body: "body".to_string(),
+            tags: vec![],
+            flags: vec![],
+            perl: None,
+            id_source: IdSource::Explicit,
+            start_line: 1,
+        }
+    }
+
+    #[test]
+    fn rejects_uppercase_ids() {
+        let config = LintConfig::default();
+        let sections = vec![section_with_id("Regex.Case")];
+
+        let result = check_sections(&sections, &config);
+
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("Invalid @id format"));
+    }
 }
