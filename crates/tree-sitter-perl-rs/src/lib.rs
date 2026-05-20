@@ -428,6 +428,33 @@ impl<'tree> Node<'tree> {
         kids.into_iter().map(move |child| Node { inner: child, tree_source: self.tree_source })
     }
 
+
+    /// Returns the first direct child mapped to a tree-sitter-style field name.
+    ///
+    /// Field mappings are currently best-effort and cover high-value Perl constructs.
+    /// Unknown fields return `None`.
+    pub fn child_by_field_name(&self, name: &str) -> Option<Node<'tree>> {
+        self.children_by_field_name(name).next()
+    }
+
+    /// Returns an iterator of direct children mapped to a tree-sitter-style field name.
+    ///
+    /// This is currently a lightweight compatibility layer backed by deterministic
+    /// positional mappings for selected grammar kinds.
+    pub fn children_by_field_name(&self, name: &str) -> impl Iterator<Item = Node<'tree>> + '_ {
+        let kind = self.grammar_kind();
+        let field = name.to_string();
+        self.children().enumerate().filter_map(move |(idx, child)| {
+            let matches = match (kind.as_str(), field.as_str(), idx) {
+                ("package", "body", 0) | ("class", "body", 0) => true,
+                ("if", "condition", 0) | ("if", "consequence", 1) | ("if", "alternative", 2) => true,
+                ("for", "iterator", 0) | ("for", "list", 1) | ("for", "body", 2) => true,
+                _ => false,
+            };
+            if matches { Some(child) } else { None }
+        })
+    }
+
     /// Returns the start byte offset in the source text (inclusive).
     pub fn start_byte(&self) -> usize {
         self.inner.location.start

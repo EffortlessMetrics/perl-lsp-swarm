@@ -228,3 +228,23 @@ fn when_querying_visible_imports_then_no_module_is_excluded() {
     assert!(!modules.contains(&"strict"), "no strict must not appear as a visible import");
     assert!(modules.contains(&"warnings"), "use warnings must appear as a visible import");
 }
+
+#[test]
+fn when_querying_package_body_by_field_name_then_block_child_is_returned() {
+    let tree = parse("package Demo { my $x = 1; }");
+    let root = tree.root_node();
+    let package = must_some(root.children().find(|n| n.grammar_kind() == "package"));
+
+    let body = must_some(package.child_by_field_name("body"));
+
+    assert_eq!(body.grammar_kind(), "block");
+}
+
+#[test]
+fn when_querying_unknown_field_name_then_none_is_returned() {
+    let tree = parse("package Demo { my $x = 1; }");
+    let root = tree.root_node();
+    let package = must_some(root.children().find(|n| n.grammar_kind() == "package"));
+
+    assert!(package.child_by_field_name("does_not_exist").is_none());
+}
