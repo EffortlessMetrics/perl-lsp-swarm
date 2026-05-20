@@ -1364,12 +1364,18 @@ fn select_by_seed<T>(items: &[T], seed: u64) -> Option<&T> {
     items.get(idx)
 }
 
+fn tag_matches_query(tag: &str, query: &str) -> bool {
+    tag.eq_ignore_ascii_case(query.trim())
+}
+
 fn case_has_any_tag(case: &EdgeCase, tags: &[&str]) -> bool {
-    case.tags.iter().any(|tag| tags.contains(tag))
+    case.tags
+        .iter()
+        .any(|candidate| tags.iter().any(|query| tag_matches_query(candidate, query)))
 }
 
 fn case_has_all_tags(case: &EdgeCase, tags: &[&str]) -> bool {
-    tags.iter().all(|tag| case.tags.iter().any(|candidate| candidate == tag))
+    tags.iter().all(|query| case.tags.iter().any(|candidate| tag_matches_query(candidate, query)))
 }
 
 /// Convenience helper for working with static edge cases.
@@ -1383,7 +1389,10 @@ impl EdgeCaseGenerator {
 
     /// Return edge cases with a matching tag.
     pub fn by_tag(tag: &str) -> Vec<&'static EdgeCase> {
-        edge_cases().iter().filter(|case| case.tags.contains(&tag)).collect()
+        edge_cases()
+            .iter()
+            .filter(|case| case.tags.iter().any(|candidate| tag_matches_query(candidate, tag)))
+            .collect()
     }
 
     /// Return edge cases that match any of the provided tags.
@@ -1479,6 +1488,16 @@ mod tests {
     fn edge_cases_can_filter_by_tag() {
         let heredocs = EdgeCaseGenerator::by_tag("heredoc");
         assert!(!heredocs.is_empty());
+    }
+
+
+    #[test]
+    fn edge_cases_filter_is_case_insensitive_and_trims_query() {
+        let uppercase = EdgeCaseGenerator::by_tag("REGEX");
+        let whitespace = EdgeCaseGenerator::by_tag("  regex\n");
+
+        assert!(!uppercase.is_empty());
+        assert_eq!(uppercase.len(), whitespace.len());
     }
 
     #[test]
