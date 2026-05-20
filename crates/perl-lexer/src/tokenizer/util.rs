@@ -8,10 +8,24 @@
 /// Find the byte offset of a __DATA__ or __END__ marker in the source text.
 /// Uses the lexer to avoid false positives in heredocs/POD.
 /// Returns the byte offset of the start of the marker, or None if not found.
+const DATA_SECTION_MARKERS: [&str; 2] = ["__DATA__", "__END__"];
+
+fn may_contain_data_section_marker(text: &str) -> bool {
+    DATA_SECTION_MARKERS
+        .iter()
+        .any(|marker| text.contains(marker))
+}
+
+fn marker_is_unindented_line_start(source: &str, marker_start: usize) -> bool {
+    let line_start = source[..marker_start].rfind('\n').map_or(0, |idx| idx + 1);
+    source[line_start..marker_start]
+        .trim_end_matches('\r')
+        .is_empty()
+}
+
 pub fn find_data_marker_byte_lexed(s: &str) -> Option<usize> {
     // Cheap prefilter: avoid constructing the lexer when marker substrings are absent.
-    const MARKERS: [&str; 2] = ["__DATA__", "__END__"];
-    if !MARKERS.iter().any(|marker| s.contains(marker)) {
+    if !may_contain_data_section_marker(s) {
         return None;
     }
 
@@ -19,7 +33,9 @@ pub fn find_data_marker_byte_lexed(s: &str) -> Option<usize> {
     let mut lx = PerlLexer::new(s);
     while let Some(tok) = lx.next_token() {
         match tok.token_type {
-            TokenType::DataMarker(_) => return Some(tok.start),
+            TokenType::DataMarker(_) if marker_is_unindented_line_start(s, tok.start) => {
+                return Some(tok.start);
+            }
             TokenType::EOF => break,
             _ => {}
         }
@@ -37,6 +53,10 @@ pub fn code_slice(text: &str) -> &str {
 /// The data section starts at a lexed `__DATA__` or `__END__` marker and includes
 /// the marker line itself.
 pub fn split_code_and_data(text: &str) -> (&str, Option<&str>) {
+    if !may_contain_data_section_marker(text) {
+        return (text, None);
+    }
+
     if let Some(marker_start) = find_data_marker_byte_lexed(text) {
         (&text[..marker_start], Some(&text[marker_start..]))
     } else {
@@ -73,6 +93,15 @@ mod tests {
         assert_eq!(find_data_marker_byte_lexed(src3), None);
     }
 
+
+    #[test]
+    fn test_find_data_marker_handles_crlf_and_leading_whitespace() {
+        let crlf_src = "print 'hello';\r\n__DATA__\r\nvalue";
+        assert_eq!(find_data_marker_byte_lexed(crlf_src), Some(16));
+
+        let indented_marker = "print 'hello';\n  __DATA__\nvalue";
+        assert_eq!(find_data_marker_byte_lexed(indented_marker), None);
+    }
     #[test]
     fn test_code_slice() {
         // No marker - returns full text
