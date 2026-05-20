@@ -102,7 +102,12 @@ pub fn get_corpus_files_from(paths: &CorpusPaths) -> Vec<CorpusFile> {
 
 /// Return all available Perl sources across corpus layers.
 pub fn get_all_test_files() -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = get_corpus_files().into_iter().map(|file| file.path).collect();
+    get_all_test_files_from(&CorpusPaths::discover())
+}
+
+/// Return all available Perl sources across corpus layers from an explicit root.
+pub fn get_all_test_files_from(paths: &CorpusPaths) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = get_corpus_files_from(paths).into_iter().map(|file| file.path).collect();
     files.sort();
     files.dedup();
     files
@@ -377,6 +382,28 @@ mod tests {
             from_api.last().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
             Some("zzz.pm")
         );
+
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn get_all_test_files_from_uses_explicit_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_root("perl_corpus_all_files_from")?;
+        let test_dir = root.join("test_corpus");
+        let fuzz_dir = root.join("crates/perl-corpus/fuzz");
+        fs::create_dir_all(&test_dir)?;
+        fs::create_dir_all(&fuzz_dir)?;
+
+        let test_file = test_dir.join("case.pm");
+        let fuzz_file = fuzz_dir.join("case.pl");
+        fs::write(&test_file, "1;\n")?;
+        fs::write(&fuzz_file, "print 1;\n")?;
+
+        let paths = CorpusPaths::from_root(root.clone());
+        let files = get_all_test_files_from(&paths);
+
+        assert_eq!(files, vec![fuzz_file, test_file]);
 
         fs::remove_dir_all(&root)?;
         Ok(())
