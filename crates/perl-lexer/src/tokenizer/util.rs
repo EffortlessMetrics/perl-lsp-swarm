@@ -18,10 +18,11 @@ pub fn find_data_marker_byte_lexed(s: &str) -> Option<usize> {
     use crate::{PerlLexer, TokenType};
     let mut lx = PerlLexer::new(s);
     while let Some(tok) = lx.next_token() {
-        match tok.token_type {
-            TokenType::DataMarker(_) => return Some(tok.start),
-            TokenType::EOF => break,
-            _ => {}
+        if matches!(tok.token_type, TokenType::DataMarker(_)) {
+            return Some(tok.start);
+        }
+        if tok.token_type == TokenType::EOF {
+            break;
         }
     }
     None
@@ -132,6 +133,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_find_data_marker_uses_byte_offsets_with_unicode_prefix() {
+        let src = "say '😀';\n__DATA__\npayload";
+        assert_eq!(find_data_marker_byte_lexed(src), Some(12));
+        assert_eq!(split_code_and_data(src), ("say '😀';\n", Some("__DATA__\npayload")));
+    }
     #[test]
     // Allow deprecated call to verify compatibility wrapper behavior.
     #[allow(deprecated)]
