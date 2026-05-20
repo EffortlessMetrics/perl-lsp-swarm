@@ -349,6 +349,67 @@ mod tests {
     }
 
     #[test]
+    fn test_tie_with_fat_arrow_separator() {
+        let source = "tie %hash => 'Tie::Hash' => 'k' => 'v';";
+        let ast = parse_without_error(source);
+        let NodeKind::Program { statements } = &ast.kind else {
+            unreachable!("Expected Program root, got {:?}", ast.kind);
+        };
+        let NodeKind::ExpressionStatement { expression } = &statements[0].kind else {
+            unreachable!("Expected ExpressionStatement, got {:?}", statements[0].kind);
+        };
+        let NodeKind::Tie { variable, package, args } = &expression.kind else {
+            unreachable!("Expected Tie node, got {:?}", expression.kind);
+        };
+        let NodeKind::Variable { sigil, name } = &variable.kind else {
+            unreachable!("Expected Variable node, got {:?}", variable.kind);
+        };
+        assert_eq!(sigil, "%");
+        assert_eq!(name, "hash");
+        let NodeKind::String { value, .. } = &package.kind else {
+            unreachable!("Expected String package, got {:?}", package.kind);
+        };
+        assert!(value.contains("Tie::Hash"));
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn test_tie_with_parens_and_trailing_comma() {
+        let source = "tie(@arr, 'Tie::Array',);";
+        let ast = parse_without_error(source);
+        let NodeKind::Program { statements } = &ast.kind else {
+            unreachable!("Expected Program root, got {:?}", ast.kind);
+        };
+        let NodeKind::ExpressionStatement { expression } = &statements[0].kind else {
+            unreachable!("Expected ExpressionStatement, got {:?}", statements[0].kind);
+        };
+        let NodeKind::Tie { args, .. } = &expression.kind else {
+            unreachable!("Expected Tie node, got {:?}", expression.kind);
+        };
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_untie_with_parens() {
+        let source = "untie(%hash);";
+        let ast = parse_without_error(source);
+        let NodeKind::Program { statements } = &ast.kind else {
+            unreachable!("Expected Program root, got {:?}", ast.kind);
+        };
+        let NodeKind::ExpressionStatement { expression } = &statements[0].kind else {
+            unreachable!("Expected ExpressionStatement, got {:?}", statements[0].kind);
+        };
+        let NodeKind::Untie { variable } = &expression.kind else {
+            unreachable!("Expected Untie node, got {:?}", expression.kind);
+        };
+        let NodeKind::Variable { sigil, name } = &variable.kind else {
+            unreachable!("Expected Variable node, got {:?}", variable.kind);
+        };
+        assert_eq!(sigil, "%");
+        assert_eq!(name, "hash");
+    }
+
+    #[test]
     fn test_tie_without_parens_regression() {
         parse_without_error("tie @arr, 'Tie::Array';");
     }
