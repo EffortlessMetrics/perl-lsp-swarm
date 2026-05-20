@@ -29,9 +29,11 @@ fn fallback_uri() -> Uri {
 /// Falls back to a guaranteed-valid URI if parsing fails.
 #[must_use]
 pub fn parse_uri(s: &str) -> Uri {
-    match s.parse::<Uri>() {
+    let sanitized = s.trim().trim_start_matches("\u{feff}");
+
+    match sanitized.parse::<Uri>() {
         Ok(uri) => uri,
-        Err(_) => Url::parse(s)
+        Err(_) => Url::parse(sanitized)
             .ok()
             .and_then(|url| url.as_str().parse::<Uri>().ok())
             .unwrap_or_else(fallback_uri),
