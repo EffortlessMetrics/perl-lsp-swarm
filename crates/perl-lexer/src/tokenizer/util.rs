@@ -8,10 +8,17 @@
 /// Find the byte offset of a __DATA__ or __END__ marker in the source text.
 /// Uses the lexer to avoid false positives in heredocs/POD.
 /// Returns the byte offset of the start of the marker, or None if not found.
+fn contains_potential_data_marker(text: &str) -> bool {
+    const MARKERS: [&str; 2] = ["__DATA__", "__END__"];
+    MARKERS.iter().any(|marker| text.contains(marker))
+}
+
+/// Find the byte offset of a __DATA__ or __END__ marker in the source text.
+/// Uses the lexer to avoid false positives in heredocs/POD.
+/// Returns the byte offset of the start of the marker, or None if not found.
 pub fn find_data_marker_byte_lexed(s: &str) -> Option<usize> {
     // Cheap prefilter: avoid constructing the lexer when marker substrings are absent.
-    const MARKERS: [&str; 2] = ["__DATA__", "__END__"];
-    if !MARKERS.iter().any(|marker| s.contains(marker)) {
+    if !contains_potential_data_marker(s) {
         return None;
     }
 
@@ -54,6 +61,14 @@ pub fn find_data_marker_byte(s: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn test_contains_potential_data_marker_prefilter() {
+        assert!(!contains_potential_data_marker("say 1;\n"));
+        assert!(contains_potential_data_marker("say q{__DATA__};\n"));
+        assert!(contains_potential_data_marker("__END__\n"));
+    }
 
     #[test]
     fn test_find_data_marker_lexed() {
