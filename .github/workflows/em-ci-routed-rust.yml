@@ -149,14 +149,15 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]
     timeout-minutes: 60
-    container:
-      image: em-ci-rust:1.95
-      options: --cpus=14 --memory=28g
     env:
+      CARGO_HOME: /mnt/ci-cache/cargo-home
+      SCCACHE_DIR: /mnt/ci-cache/sccache
+      SCCACHE_CACHE_SIZE: 60G
       CARGO_BUILD_JOBS: "12"
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/${{ github.run_id }}-${{ github.run_attempt }}
       RUST_TEST_THREADS: "2"
+      TMPDIR: /mnt/ci-scratch/tmp/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -171,24 +172,55 @@ jobs:
           ci-disk-guard /mnt/docker 20
           ci-disk-guard /mnt/ci-cache 20
           df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
-          rustc --version
-          cargo --version
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
 
       - name: Run Rust small lane
         shell: bash
         run: |
           set -euo pipefail
-          cargo fetch --locked
-          cargo check --workspace --locked
-          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+          docker run --rm \
+            --cpus="14" \
+            --memory="28g" \
+            -e CARGO_HOME=/cargo-home \
+            -e SCCACHE_DIR=/sccache \
+            -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
+            -e RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+            -e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
+            -e CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
+            -e CARGO_TARGET_DIR=/target \
+            -e RUST_TEST_THREADS="$RUST_TEST_THREADS" \
+            -e RUST_BACKTRACE=1 \
+            -e CARGO_TERM_COLOR=always \
+            -e TMPDIR=/tmp/jobtmp \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$CARGO_HOME:/cargo-home" \
+            -v "$SCCACHE_DIR:/sccache" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            -v "$TMPDIR:/tmp/jobtmp" \
+            -w /workspace \
+            em-ci-rust:1.95 \
+            bash -eu -o pipefail -c '
+              rustc --version
+              cargo --version
+              sccache --version || true
+              cargo fetch --locked
+              cargo check --workspace --locked
+              cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+              cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+              sccache --show-stats || true
+            '
 
       - name: Cleanup and final stats
         if: always()
         shell: bash
         run: |
           set +e
-          rm -rf "$CARGO_TARGET_DIR"
+          docker run --rm \
+            -v "$TMPDIR:/tmpdir" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            em-ci-rust:1.95 \
+            bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
+          rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
           df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
 
   rust-small-cx43:
@@ -201,14 +233,15 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
     timeout-minutes: 75
-    container:
-      image: em-ci-rust:1.95
-      options: --cpus=8 --memory=16g
     env:
+      CARGO_HOME: /mnt/ci-cache/cargo-home
+      SCCACHE_DIR: /mnt/ci-cache/sccache
+      SCCACHE_CACHE_SIZE: 30G
       CARGO_BUILD_JOBS: "8"
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/${{ github.run_id }}-${{ github.run_attempt }}
       RUST_TEST_THREADS: "2"
+      TMPDIR: /mnt/ci-scratch/tmp/${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -223,24 +256,55 @@ jobs:
           ci-disk-guard /mnt/docker 15
           ci-disk-guard /mnt/ci-cache 15
           df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
-          rustc --version
-          cargo --version
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
 
       - name: Run Rust small lane
         shell: bash
         run: |
           set -euo pipefail
-          cargo fetch --locked
-          cargo check --workspace --locked
-          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
-          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+          docker run --rm \
+            --cpus="8" \
+            --memory="16g" \
+            -e CARGO_HOME=/cargo-home \
+            -e SCCACHE_DIR=/sccache \
+            -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
+            -e RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+            -e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
+            -e CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
+            -e CARGO_TARGET_DIR=/target \
+            -e RUST_TEST_THREADS="$RUST_TEST_THREADS" \
+            -e RUST_BACKTRACE=1 \
+            -e CARGO_TERM_COLOR=always \
+            -e TMPDIR=/tmp/jobtmp \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$CARGO_HOME:/cargo-home" \
+            -v "$SCCACHE_DIR:/sccache" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            -v "$TMPDIR:/tmp/jobtmp" \
+            -w /workspace \
+            em-ci-rust:1.95 \
+            bash -eu -o pipefail -c '
+              rustc --version
+              cargo --version
+              sccache --version || true
+              cargo fetch --locked
+              cargo check --workspace --locked
+              cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+              cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+              sccache --show-stats || true
+            '
 
       - name: Cleanup and final stats
         if: always()
         shell: bash
         run: |
           set +e
-          rm -rf "$CARGO_TARGET_DIR"
+          docker run --rm \
+            -v "$TMPDIR:/tmpdir" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            em-ci-rust:1.95 \
+            bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
+          rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
           df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
 
   rust-small-github:
