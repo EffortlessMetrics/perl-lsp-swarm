@@ -16,8 +16,14 @@ use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 
 mod native_contract;
+mod native_names;
 mod native_registry;
 mod native_suppressions;
+
+use native_names::{
+    bareword_filehandle_lexical_name, numbered_duplicate_name, parameter_shadow_name,
+    prefixed_unused_name, shadowed_lexical_name,
+};
 
 pub use native_contract::{
     CriticCategory, CriticContext, CriticFinding, CriticFix, CriticRelatedInformation, CriticRule,
@@ -2289,42 +2295,6 @@ fn duplicate_my_span(source: &str, variable_start: usize) -> Option<(usize, usiz
     } else {
         None
     }
-}
-
-fn shadowed_lexical_name(name: &str) -> String {
-    let (sigil, base_name) = split_sigil(name);
-    format!("{sigil}inner_{base_name}")
-}
-
-fn numbered_duplicate_name(name: &str) -> String {
-    let (sigil, base_name) = split_sigil(name);
-    format!("{sigil}{base_name}_2")
-}
-
-fn parameter_shadow_name(name: &str) -> String {
-    let (sigil, base_name) = split_sigil(name);
-    format!("{sigil}p_{base_name}")
-}
-
-fn prefixed_unused_name(name: &str) -> String {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(sigil @ ('$' | '@' | '%' | '&' | '*')) => {
-            let rest = chars.as_str();
-            format!("{sigil}_{rest}")
-        }
-        _ => format!("_{name}"),
-    }
-}
-
-fn bareword_filehandle_lexical_name(name: &str) -> String {
-    format!("${}_fh", name.to_lowercase())
-}
-
-fn split_sigil(name: &str) -> (&str, &str) {
-    let bare = name.trim_start_matches(['$', '@', '%', '&', '*']);
-    let sigil_len = name.len() - bare.len();
-    (&name[..sigil_len], bare)
 }
 
 fn has_use_statement(content: &str, feature: &str) -> bool {
