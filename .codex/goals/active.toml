@@ -1,0 +1,35 @@
+schema_version = "1.0"
+
+id = "perl-lsp-swarm-source-of-truth-stack"
+title = "Source-of-truth stack rollout"
+status = "active"
+owner = "codex"
+created = "2026-05-20"
+
+objective = """
+Stand up a linked, enforceable proposal/spec/ADR/plan/goal/support-tier/policy stack
+so humans and agents can discover why, what, how, proof, and next PR sequence.
+"""
+
+end_state = [
+  "Proposals, specs, ADRs, and plans exist with stable IDs and templates.",
+  "Active goal manifest is present and linked to plan/spec/proposal.",
+  "Support tiers map claims to proof commands.",
+  "Policy ledgers exist for doc artifacts and governance domains.",
+]
+
+[[work_item]]
+id = "scaffold/source-of-truth-stack"
+status = "active"
+proposal = "PERL-LSP-SWARM-PROP-0001"
+spec = "PERL-LSP-SWARM-SPEC-0001"
+plan = "plans/0.1.0/implementation-plan.md"
+commands = ["git diff --check"]
+
+[[work_item]]
+id = "validators/xtask-contract-checkers"
+status = "ready"
+proposal = "PERL-LSP-SWARM-PROP-0001"
+spec = "PERL-LSP-SWARM-SPEC-0001"
+plan = "plans/0.1.0/implementation-plan.md"
+commands = ["cargo xtask check-doc-artifacts", "cargo xtask check-goals"]
