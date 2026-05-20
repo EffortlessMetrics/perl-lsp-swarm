@@ -151,3 +151,42 @@ my $line = "private";
     fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+#[test]
+fn bdd_given_hidden_subdirectory_when_parse_dir_then_nested_sections_are_ignored()
+-> Result<(), Box<dyn Error>> {
+    // Given: visible and hidden nested corpus directories.
+    let dir = scenario_temp_dir("perl_corpus_bdd_nested_visibility");
+    let visible_nested = dir.join("nested");
+    let hidden_nested = dir.join(".hidden_nested");
+
+    let visible = r#"==========================================
+Visible nested section
+==========================================
+# @id: nested.visible
+# @tags: regex
+my $line = "visible nested";
+"#;
+
+    let hidden = r#"==========================================
+Hidden nested section
+==========================================
+# @id: nested.hidden
+# @tags: regex
+my $line = "hidden nested";
+"#;
+
+    must(write_corpus_file(&visible_nested, "visible.txt", visible));
+    must(write_corpus_file(&hidden_nested, "hidden.txt", hidden));
+
+    // When: parsing the directory.
+    let sections = must(parse_dir(&dir));
+
+    // Then: hidden nested directory content is excluded.
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0].id, "nested.visible");
+    assert!(sections[0].file.ends_with("visible.txt"));
+
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}

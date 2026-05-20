@@ -1,7 +1,17 @@
 use crate::loading::parse_file;
 use crate::metadata::Section;
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Component, Path};
+
+fn is_hidden_or_private(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        Component::Normal(name) => {
+            let value = name.to_string_lossy();
+            value.starts_with('.') || value.starts_with('_')
+        }
+        _ => false,
+    })
+}
 
 pub fn parse_dir(dir: &Path) -> Result<Vec<Section>> {
     let mut all = Vec::new();
@@ -9,8 +19,7 @@ pub fn parse_dir(dir: &Path) -> Result<Vec<Section>> {
 
     for entry in glob::glob(&pattern)? {
         let path = entry?;
-        let filename = path.file_name().unwrap_or_default().to_string_lossy();
-        if filename.starts_with('_') || filename.starts_with('.') {
+        if is_hidden_or_private(&path) {
             continue;
         }
         all.extend(parse_file(&path)?);
