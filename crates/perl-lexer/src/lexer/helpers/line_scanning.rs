@@ -34,11 +34,11 @@ impl PerlLexer<'_> {
     }
 
     #[inline]
-    pub(crate) fn find_line_end(bytes: &[u8], start: usize) -> (usize, usize) {
+    pub(crate) fn find_line_end(bytes: &[u8], start: usize) -> usize {
         let mut end = start;
         while end < bytes.len() && bytes[end] != b'\n' && bytes[end] != b'\r' {
             end += 1;
         }
-        (end, end)
+        end
     }
 }
