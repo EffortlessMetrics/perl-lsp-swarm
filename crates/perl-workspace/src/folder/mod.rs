@@ -28,6 +28,8 @@ pub struct WorkspaceFolderChange {
 /// are preserved as raw input instead of being converted into filesystem paths.
 #[must_use]
 pub fn workspace_folder_to_path(workspace_folder: &str) -> PathBuf {
+    let workspace_folder = workspace_folder.trim();
+
     if has_file_uri_scheme(workspace_folder) {
         // A URI with a non-local host (e.g. `file://evil.example.com/path`)
         // must not be passed to platform URI conversion first: on Windows that
@@ -187,6 +189,14 @@ mod tests {
         assert_eq!(workspace_folder_to_path("/tmp/project"), PathBuf::from("/tmp/project"));
     }
 
+    #[test]
+    fn trims_surrounding_whitespace_for_plain_paths() {
+        assert_eq!(
+            workspace_folder_to_path("  /tmp/project  "),
+            PathBuf::from("/tmp/project")
+        );
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn parses_file_uri_when_possible() {
@@ -224,6 +234,12 @@ mod tests {
         assert!(path.contains("tmp"));
         assert!(path.contains("project"));
         assert!(!path.contains("localhost/tmp"));
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace_for_file_uri_inputs() {
+        let parsed = workspace_folder_to_path("  file:///tmp/project  ");
+        assert_eq!(parsed, PathBuf::from("/tmp/project"));
     }
 
     #[test]
