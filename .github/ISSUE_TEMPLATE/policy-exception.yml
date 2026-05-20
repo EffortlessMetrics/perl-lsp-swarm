@@ -1,0 +1,19 @@
+name: Policy exception
+about: Request ledger exception with owner and expiry
+body:
+  - type: input
+    id: policy_file
+    attributes:
+      label: Policy ledger file
+  - type: input
+    id: owner
+    attributes:
+      label: Owner
+  - type: input
+    id: review_after
+    attributes:
+      label: Review after (YYYY-MM-DD)
+  - type: textarea
+    id: reason
+    attributes:
+      label: Reason
