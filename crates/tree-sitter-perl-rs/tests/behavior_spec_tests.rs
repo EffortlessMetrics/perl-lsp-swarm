@@ -213,6 +213,26 @@ fn when_source_starts_with_use_then_visible_imports_byte_range_is_exact_statemen
     assert_eq!(strict_import.statement_start_byte, 0);
 }
 
+
+#[test]
+fn when_querying_visible_imports_then_results_follow_source_order() {
+    let source = "use warnings;
+use strict;
+use warnings;
+my $x = 1;
+";
+    let tree = parse(source);
+    let overlay = tree.semantic_overlay();
+    let offset = must_some(source.find("my $x"));
+
+    let imports = overlay.visible_imports_at_offset(offset);
+    let import_modules: Vec<_> = imports.iter().map(|import| import.module.as_str()).collect();
+
+    assert_eq!(import_modules, vec!["warnings", "strict"]);
+    assert_eq!(imports[0].statement_start_byte, 0);
+    assert!(imports[0].statement_start_byte < imports[1].statement_start_byte);
+}
+
 #[test]
 fn when_querying_visible_imports_then_no_module_is_excluded() {
     // `no` statements are NOT module imports — they disable pragmas.

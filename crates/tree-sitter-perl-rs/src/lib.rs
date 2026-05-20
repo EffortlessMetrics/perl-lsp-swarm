@@ -314,6 +314,8 @@ impl<'tree> SemanticOverlay<'tree> {
     pub fn visible_imports_at_offset(&self, offset: usize) -> Vec<VisibleImport> {
         let mut imports = Vec::new();
         collect_visible_use_imports(&self.tree.root, self.tree.source(), offset, &mut imports);
+        imports.sort_by_key(|import| import.statement_start_byte);
+
         let mut deduped = Vec::new();
         for import in imports {
             if !deduped.iter().any(|existing: &VisibleImport| existing.module == import.module) {
