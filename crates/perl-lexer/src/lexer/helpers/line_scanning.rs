@@ -2,9 +2,14 @@ use crate::PerlLexer;
 
 impl PerlLexer<'_> {
     #[inline]
+    const fn is_newline_byte(byte: u8) -> bool {
+        matches!(byte, b'\n' | b'\r')
+    }
+
+    #[inline]
     pub(crate) fn trailing_ws_only(bytes: &[u8], mut p: usize) -> bool {
         while let Some(&byte) = bytes.get(p) {
-            if byte == b'\n' || byte == b'\r' {
+            if Self::is_newline_byte(byte) {
                 return true;
             }
 
@@ -45,7 +50,7 @@ impl PerlLexer<'_> {
 
         let end = bytes[start..]
             .iter()
-            .position(|&byte| byte == b'\n' || byte == b'\r')
+            .position(|&byte| Self::is_newline_byte(byte))
             .map_or(bytes.len(), |offset| start + offset);
         (end, end)
     }
@@ -65,6 +70,13 @@ mod tests {
     fn trailing_ws_only_rejects_non_whitespace_before_newline() {
         let bytes = b"\t x\n";
         assert!(!PerlLexer::trailing_ws_only(bytes, 0));
+    }
+
+    #[test]
+    fn newline_helper_covers_cr_and_lf_only() {
+        assert!(PerlLexer::is_newline_byte(b'\n'));
+        assert!(PerlLexer::is_newline_byte(b'\r'));
+        assert!(!PerlLexer::is_newline_byte(b'x'));
     }
 
     #[test]
