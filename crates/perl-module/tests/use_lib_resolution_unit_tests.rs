@@ -878,3 +878,27 @@ fn no_lib_cancelled_paths_excludes_readded_paths() {
         cancelled
     );
 }
+
+#[test]
+fn use_lib_offset_resolution_uses_full_source_when_offset_is_past_end() {
+    let source = "use lib 'first';\nuse lib 'second';\n";
+
+    let include_paths = resolve_use_lib_paths_from_source_at_offset(
+        source,
+        source.len() + 10,
+        Path::new("/workspace"),
+        None,
+    );
+
+    assert_eq!(include_paths, vec!["second".to_string(), "first".to_string()]);
+}
+
+#[test]
+fn no_lib_cancelled_paths_uses_full_source_when_offset_is_past_end() {
+    let source = "use lib 'first';\nno lib 'first';\n";
+
+    let cancelled =
+        no_lib_cancelled_paths_at_offset(source, source.len() + 4, Path::new("/workspace"), None);
+
+    assert_eq!(cancelled, vec!["first".to_string()]);
+}

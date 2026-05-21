@@ -13,6 +13,43 @@ use extract::extract_paths_from_args;
 pub use resolve::resolve_use_lib_paths;
 use statements::{split_perl_statements, strip_no_lib_prefix, strip_use_lib_prefix};
 
+fn source_prefix_up_to_offset(source: &str, offset: usize) -> &str {
+    source.get(..offset).unwrap_or(source)
+}
+
+fn apply_use_lib_operation(
+    op: UseLibAction,
+    resolved: &mut Vec<String>,
+    mut cancelled: Option<&mut Vec<String>>,
+    workspace_root: &Path,
+    file_dir: Option<&Path>,
+) {
+    match op {
+        UseLibAction::Add(paths) => {
+            let added = resolve_use_lib_paths(&paths, workspace_root, file_dir);
+            if let Some(cancelled_paths) = cancelled {
+                for path in &added {
+                    cancelled_paths.retain(|cancelled_path| cancelled_path != path);
+                }
+            }
+            for path in added.into_iter().rev() {
+                resolved.retain(|existing| existing != &path);
+                resolved.insert(0, path);
+            }
+        }
+        UseLibAction::Remove(paths) => {
+            for path in resolve_use_lib_paths(&paths, workspace_root, file_dir) {
+                resolved.retain(|existing| existing != &path);
+                if let Some(cancelled_paths) = cancelled.as_deref_mut()
+                    && !cancelled_paths.contains(&path)
+                {
+                    cancelled_paths.push(path);
+                }
+            }
+        }
+    }
+}
+
 /// A discovered include path from a `use lib` statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseLibPath {
@@ -104,22 +141,9 @@ pub fn resolve_use_lib_paths_from_source_at_offset(
     file_dir: Option<&Path>,
 ) -> Vec<String> {
     let mut resolved = Vec::new();
-    let source_prefix = source.get(..offset).unwrap_or(source);
+    let source_prefix = source_prefix_up_to_offset(source, offset);
     for op in extract_use_lib_operations(source_prefix) {
-        match op {
-            UseLibAction::Add(paths) => {
-                let added = resolve_use_lib_paths(&paths, workspace_root, file_dir);
-                for path in added.into_iter().rev() {
-                    resolved.retain(|existing| existing != &path);
-                    resolved.insert(0, path);
-                }
-            }
-            UseLibAction::Remove(paths) => {
-                for path in resolve_use_lib_paths(&paths, workspace_root, file_dir) {
-                    resolved.retain(|existing| existing != &path);
-                }
-            }
-        }
+        apply_use_lib_operation(op, &mut resolved, None, workspace_root, file_dir);
     }
     resolved
 }
@@ -147,30 +171,9 @@ pub fn no_lib_cancelled_paths_at_offset(
 ) -> Vec<String> {
     let mut effective = Vec::<String>::new();
     let mut cancelled = Vec::<String>::new();
-    let source_prefix = source.get(..offset).unwrap_or(source);
+    let source_prefix = source_prefix_up_to_offset(source, offset);
     for op in extract_use_lib_operations(source_prefix) {
-        match op {
-            UseLibAction::Add(paths) => {
-                let added = resolve_use_lib_paths(&paths, workspace_root, file_dir);
-                for path in &added {
-                    // If it was cancelled, re-adding it removes the cancellation.
-                    cancelled.retain(|c| c != path);
-                }
-                for path in added.into_iter().rev() {
-                    effective.retain(|e| e != &path);
-                    effective.insert(0, path);
-                }
-            }
-            UseLibAction::Remove(paths) => {
-                let removed = resolve_use_lib_paths(&paths, workspace_root, file_dir);
-                for path in removed {
-                    effective.retain(|e| e != &path);
-                    if !cancelled.contains(&path) {
-                        cancelled.push(path);
-                    }
-                }
-            }
-        }
+        apply_use_lib_operation(op, &mut effective, Some(&mut cancelled), workspace_root, file_dir);
     }
     cancelled
 }
