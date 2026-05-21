@@ -349,8 +349,11 @@ fn given_export_set_when_plain_use_then_only_default_exports_visible() {
     // Optional exports are NOT visible without explicit import list.
     assert!(!export_set.default_exports.contains(&"to_json".to_string()));
     // :all tag expands to include everything.
-    let all_tag = export_set.tags.iter().find(|t| t.name == "all").expect("all tag present");
-    assert_eq!(all_tag.members.len(), 4);
+    let all_tag_members = export_set
+        .tags
+        .iter()
+        .find_map(|t| (t.name == "all").then_some(t.members.len()));
+    assert_eq!(all_tag_members, Some(4));
 }
 
 /// Given an ExportSet with no module name (inferred from context),
@@ -393,10 +396,27 @@ fn given_explicit_import_visible_symbol_when_hovering_then_source_module_and_anc
     };
 
     assert_eq!(symbol.source, VisibleSymbolSource::ExplicitImport);
-    let ctx = symbol.context.as_ref().expect("context present");
-    assert_eq!(ctx.source_module.as_deref(), Some("Scalar::Util"));
-    assert!(ctx.source_import_anchor_id.is_some());
-    assert!(ctx.source_export_anchor_id.is_some());
+    assert_eq!(
+        symbol
+            .context
+            .as_ref()
+            .and_then(|ctx| ctx.source_module.as_deref()),
+        Some("Scalar::Util")
+    );
+    assert!(
+        symbol
+            .context
+            .as_ref()
+            .and_then(|ctx| ctx.source_import_anchor_id)
+            .is_some()
+    );
+    assert!(
+        symbol
+            .context
+            .as_ref()
+            .and_then(|ctx| ctx.source_export_anchor_id)
+            .is_some()
+    );
 }
 
 /// Given a locally-defined lexical symbol,
@@ -617,13 +637,17 @@ fn given_attribute_accessors_when_collecting_then_predicate_and_clearer_distingu
         ),
     ];
 
-    let accessor = members.iter().find(|m| m.kind == GeneratedMemberKind::Accessor).unwrap();
-    let predicate = members.iter().find(|m| m.kind == GeneratedMemberKind::Predicate).unwrap();
-    let clearer = members.iter().find(|m| m.kind == GeneratedMemberKind::Clearer).unwrap();
+    let names_by_kind: std::collections::BTreeMap<_, _> = members
+        .iter()
+        .map(|member| (member.kind, member.name.as_str()))
+        .collect();
 
-    assert_eq!(accessor.name, "name");
-    assert_eq!(predicate.name, "has_name");
-    assert_eq!(clearer.name, "clear_name");
+    assert_eq!(names_by_kind.get(&GeneratedMemberKind::Accessor), Some(&"name"));
+    assert_eq!(
+        names_by_kind.get(&GeneratedMemberKind::Predicate),
+        Some(&"has_name")
+    );
+    assert_eq!(names_by_kind.get(&GeneratedMemberKind::Clearer), Some(&"clear_name"));
 }
 
 // ── Scenario 10: Confidence — Diagnostic Filtering ────────────────────────
@@ -988,14 +1012,21 @@ fn given_export_tags_when_resolving_tag_import_then_correct_members_returned() {
         anchor_id: None,
     };
 
-    let codec_tag = export_set.tags.iter().find(|t| t.name == "codec").expect("codec tag exists");
-    assert_eq!(codec_tag.members.len(), 2);
-    assert!(codec_tag.members.contains(&"encode".to_string()));
-    assert!(codec_tag.members.contains(&"decode".to_string()));
-    assert!(!codec_tag.members.contains(&"log_error".to_string()));
+    let codec_tag_members = export_set
+        .tags
+        .iter()
+        .find(|t| t.name == "codec")
+        .map(|t| t.members.as_slice());
+    assert_eq!(codec_tag_members.map(<[_]>::len), Some(2));
+    assert!(codec_tag_members.is_some_and(|members| members.contains(&"encode".to_string())));
+    assert!(codec_tag_members.is_some_and(|members| members.contains(&"decode".to_string())));
+    assert!(!codec_tag_members.is_some_and(|members| members.contains(&"log_error".to_string())));
 
-    let all_tag = export_set.tags.iter().find(|t| t.name == "all").expect("all tag exists");
-    assert_eq!(all_tag.members.len(), 4);
+    let all_tag_members = export_set
+        .tags
+        .iter()
+        .find_map(|t| (t.name == "all").then_some(t.members.len()));
+    assert_eq!(all_tag_members, Some(4));
 }
 
 // ── Scenario 18: Provenance — Source Attribution Chain ────────────────────
