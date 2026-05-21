@@ -329,6 +329,25 @@ pub fn setup_environment(include_paths: &[PathBuf]) -> HashMap<String, String> {
 mod tests {
     use super::*;
     use perl_tdd_support::{must, must_err};
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_executable_file(tempdir: &TempDir, file_name: &str) -> PathBuf {
+        let path = tempdir.path().join(file_name);
+        must(fs::write(&path, ""));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = must(fs::metadata(&path)).permissions();
+            perms.set_mode(0o755);
+            must(fs::set_permissions(&path, perms));
+        }
+        path
+    }
+
+    fn write_fake_perl_binary(tempdir: &TempDir) -> PathBuf {
+        write_executable_file(tempdir, PERL_EXECUTABLE)
+    }
 
     #[test]
     fn test_resolve_perl_path() {
@@ -359,17 +378,8 @@ mod tests {
 
     #[test]
     fn resolve_from_path_env_finds_perl_in_first_dir() {
-        use std::fs;
         let tempdir = must(tempfile::tempdir());
-        let bin = tempdir.path().join(PERL_EXECUTABLE);
-        must(fs::write(&bin, ""));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = must(fs::metadata(&bin)).permissions();
-            perms.set_mode(0o755);
-            must(fs::set_permissions(&bin, perms));
-        }
+        let bin = write_fake_perl_binary(&tempdir);
         let path_str = tempdir.path().to_string_lossy().to_string();
         let result = resolve_perl_path_from_path_env(&path_str);
         assert_eq!(must(result), bin);
@@ -397,19 +407,20 @@ mod tests {
 
     #[test]
     fn resolve_from_path_env_handles_quoted_path_segment() {
-        use std::fs;
         let tempdir = must(tempfile::tempdir());
-        let bin = tempdir.path().join(PERL_EXECUTABLE);
-        must(fs::write(&bin, ""));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = must(fs::metadata(&bin)).permissions();
-            perms.set_mode(0o755);
-            must(fs::set_permissions(&bin, perms));
-        }
+        let bin = write_fake_perl_binary(&tempdir);
         let quoted_path = format!("\"{}\"", tempdir.path().to_string_lossy());
         let result = resolve_perl_path_from_path_env(&quoted_path);
+        assert_eq!(must(result), bin);
+    }
+
+    #[test]
+    fn resolve_from_path_env_skips_empty_segments_before_valid_path() {
+        let tempdir = must(tempfile::tempdir());
+        let bin = write_fake_perl_binary(&tempdir);
+        let path_env =
+            format!("\"\"{PATH_SEPARATOR}   {PATH_SEPARATOR}\"{}\"", tempdir.path().display());
+        let result = resolve_perl_path_from_path_env(&path_env);
         assert_eq!(must(result), bin);
     }
 
@@ -454,17 +465,8 @@ mod tests {
 
     #[test]
     fn find_perl_interpreter_configured_path_valid_returns_configured() {
-        use std::fs;
         let tempdir = must(tempfile::tempdir());
-        let fake_perl = tempdir.path().join(PERL_EXECUTABLE);
-        must(fs::write(&fake_perl, ""));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = must(fs::metadata(&fake_perl)).permissions();
-            perms.set_mode(0o755);
-            must(fs::set_permissions(&fake_perl, perms));
-        }
+        let fake_perl = write_fake_perl_binary(&tempdir);
         let path_str = fake_perl.to_string_lossy().to_string();
         let result = find_perl_interpreter(Some(&path_str));
         assert!(
