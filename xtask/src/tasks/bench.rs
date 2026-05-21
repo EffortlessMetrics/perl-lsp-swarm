@@ -155,7 +155,7 @@ pub fn run(name: Option<String>, save: bool, output: Option<PathBuf>) -> Result<
     {
         let c_result = run_c_benchmarks()?;
         let rust_mean = extract_rust_mean(name.as_deref())?;
-        let comparison = compare_implementations(rust_mean, c_result.average);
+        let comparison = compare_implementations(rust_mean, c_result.average)?;
         detect_regressions(&comparison)?;
         let report = generate_report(&comparison);
         println!("{}", report);
@@ -238,9 +238,21 @@ struct BenchmarkComparison {
 }
 
 /// Compare benchmark results and calculate relative performance
-fn compare_implementations(rust_avg: f64, c_avg: f64) -> BenchmarkComparison {
+fn compare_implementations(rust_avg: f64, c_avg: f64) -> Result<BenchmarkComparison> {
+    if !rust_avg.is_finite() || !c_avg.is_finite() {
+        return Err(color_eyre::eyre::eyre!(
+            "Benchmark averages must be finite values (rust_avg={rust_avg}, c_avg={c_avg})"
+        ));
+    }
+
+    if rust_avg <= 0.0 || c_avg <= 0.0 {
+        return Err(color_eyre::eyre::eyre!(
+            "Benchmark averages must be greater than zero (rust_avg={rust_avg}, c_avg={c_avg})"
+        ));
+    }
+
     let speedup = c_avg / rust_avg;
-    BenchmarkComparison { rust_avg, c_avg, speedup }
+    Ok(BenchmarkComparison { rust_avg, c_avg, speedup })
 }
 
 /// Detect simple regressions based on a 10% slowdown threshold
@@ -417,5 +429,27 @@ mod tests {
 
         assert!(result.is_err());
         Ok(())
+    }
+
+    #[test]
+    fn test_compare_implementations_accepts_positive_finite_values() -> Result<()> {
+        let comparison = compare_implementations(100.0, 250.0)?;
+
+        assert_eq!(comparison.rust_avg, 100.0);
+        assert_eq!(comparison.c_avg, 250.0);
+        assert_eq!(comparison.speedup, 2.5);
+        Ok(())
+    }
+
+    #[test]
+    fn test_compare_implementations_rejects_non_positive_values() {
+        assert!(compare_implementations(0.0, 250.0).is_err());
+        assert!(compare_implementations(100.0, -1.0).is_err());
+    }
+
+    #[test]
+    fn test_compare_implementations_rejects_non_finite_values() {
+        assert!(compare_implementations(f64::NAN, 250.0).is_err());
+        assert!(compare_implementations(100.0, f64::INFINITY).is_err());
     }
 }
