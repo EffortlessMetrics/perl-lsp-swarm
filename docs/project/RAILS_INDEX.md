@@ -30,6 +30,7 @@ phase marked `builder-ready: yes`**.
 | File policy rollout | (umbrella only) | #8174 | factory-droid | 1+ | next PR in the 3–11 ladder (xtask / companion ledgers / gate wiring) |
 | CI contributor UX | (umbrella only) | #4825 (sticky summary), #4826 (`just ci-doctor`) | builder | 2 | #4825 PR sticky comment |
 | Freshness / issue-spec | (umbrella only) | #8546 | builder | 2 | #8619 (`cargo xtask freshness-check` implementation) |
+| LSP4IJ compatibility/support | [`development/LSP4IJ_COMPATIBILITY_AND_SUPPORT_ROLLOUT.md`](../development/LSP4IJ_COMPATIBILITY_AND_SUPPORT_ROLLOUT.md) | file after doc PR | codex | 12 | Phase 1 compatibility rail + receipt matrix |
 
 ## How rails are added or closed
 
