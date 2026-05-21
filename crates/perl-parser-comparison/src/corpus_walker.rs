@@ -120,31 +120,18 @@ pub fn walk_corpora(corpus_roots: &[PathBuf]) -> Vec<FileRecord> {
         if !root.exists() {
             continue;
         }
-        let walker =
-            walkdir::WalkDir::new(root).follow_links(false).into_iter().filter_entry(|e| {
-                // Skip hidden dirs and build artifacts
-                let name = e.file_name().to_string_lossy();
-                !name.starts_with('.') && name != "target"
-            });
+        let walker = walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(corpus_scan::include_entry);
 
         for entry in walker.flatten() {
             let path = entry.path().to_owned();
-            if !path.is_file() {
+            if !corpus_scan::is_candidate_source_file(&path) {
                 continue;
             }
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !matches!(ext, "pl" | "pm" | "t") {
+            let Some(source) = corpus_scan::read_source_if_allowed(&path) else {
                 continue;
-            }
-            // Skip large files
-            if let Ok(meta) = path.metadata() {
-                if meta.len() > MAX_FILE_BYTES {
-                    continue;
-                }
-            }
-            let source = match std::fs::read_to_string(&path) {
-                Ok(s) => s,
-                Err(_) => continue, // Skip unreadable files (binary, encoding issues)
             };
 
             let r1 = parse_v1(&source);
@@ -164,6 +151,31 @@ pub fn walk_corpora(corpus_roots: &[PathBuf]) -> Vec<FileRecord> {
     }
 
     records
+}
+
+mod corpus_scan {
+    use std::path::Path;
+
+    use walkdir::DirEntry;
+
+    use super::MAX_FILE_BYTES;
+
+    pub(super) fn include_entry(entry: &DirEntry) -> bool {
+        let name = entry.file_name().to_string_lossy();
+        !name.starts_with('.') && name != "target"
+    }
+
+    pub(super) fn is_candidate_source_file(path: &Path) -> bool {
+        path.is_file() && matches!(path.extension().and_then(|e| e.to_str()), Some("pl" | "pm" | "t"))
+    }
+
+    pub(super) fn read_source_if_allowed(path: &Path) -> Option<String> {
+        match path.metadata() {
+            Ok(meta) if meta.len() > MAX_FILE_BYTES => None,
+            Ok(_) => std::fs::read_to_string(path).ok(),
+            Err(_) => None,
+        }
+    }
 }
 
 /// Aggregate statistics over a set of [`FileRecord`]s.
