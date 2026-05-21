@@ -692,14 +692,18 @@ Recent routing
   provider-promotion ledger, and machine ledger now agree on the scoped
   lexical-variable declaration/use rows, while semantic tokens remain
   output-neutral and `partial-live-with-fallback`.
+- `prototype-table` is completed. The substrate proof records source-backed
+  named subroutine prototype content/ranges as HIR facts and routes
+  `RegisterPrototype` compile effects through that table without provider,
+  diagnostic, parser-bucket, support-tier, PIR, or determinism movement.
 
 Current executable slice
 
-- `prototype-table` is active in the substrate lane.
+- `bareword-classifier` is active in the substrate lane.
 
 Claim boundary
 
-- Prototype-table work is substrate proof only.
+- Bareword-classifier work is substrate proof only.
 - Do not change provider behavior, diagnostic suppression, parser bucket claims,
   support tiers, PIR implementation state, or determinism claims from this
   substrate slice.
@@ -707,7 +711,7 @@ Claim boundary
 Proof commands
 
 ```bash
-rtk cargo test -p perl-parser-core --test hir_tests hir_compile_effect_log_links_source_mutations_facts_and_boundaries --profile agent --locked -- --nocapture
+rtk cargo test -p perl-parser-core --test hir_tests hir_lowers_expression_shells_without_provider_cutover --profile agent --locked -- --nocapture
 rtk cargo xtask check-active-goal-manifest
 rtk cargo xtask check-support-claims
 rtk cargo xtask check-provider-confidence-matrix
@@ -716,6 +720,6 @@ rtk git diff --check
 
 Rollback
 
-Revert the manifest/plan routing PR. If prototype-table work is not ready, mark
-`prototype-table` planned or deferred in the active manifest and select the next
-ready item without changing provider behavior.
+Revert the manifest/plan routing PR. If bareword-classifier work is not ready,
+mark `bareword-classifier` planned or deferred in the active manifest and select
+the next ready item without changing provider behavior.
