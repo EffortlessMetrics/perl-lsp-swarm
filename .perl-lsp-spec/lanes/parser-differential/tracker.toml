@@ -1,0 +1,18 @@
+schema_version = 1
+lane = "parser-differential"
+owner = "parser-comparison"
+status = "active"
+
+[scope]
+track = "Track A"
+behavior_change = false
+parser_status_change = false
+
+[baseline]
+historical_targets = ["ts-vendored-c", "pest-legacy", "v3-native"]
+
+[required_future_targets]
+registry = ["ts-upstream-crate", "ts-upstream-c"]
+
+[claim_boundary]
+text = "No claim about current upstream parser behavior without current parser-target receipts."
