@@ -12,6 +12,10 @@ use ropey::Rope;
 use serde_json::Value;
 use std::sync::Arc;
 
+mod position_conversion;
+
+use position_conversion::lsp_pos_to_byte;
+
 /// Configuration for incremental parsing
 pub struct IncrementalConfig {
     /// Enable incremental parsing
@@ -69,53 +73,6 @@ pub fn lsp_change_to_edit(change: &Value, rope: &Rope) -> Option<IncrementalEdit
         // Full document change - return None to trigger full reparse
         None
     }
-}
-
-/// Convert LSP position to byte offset using rope
-pub fn lsp_pos_to_byte(rope: &Rope, line: usize, character: usize) -> usize {
-    if line >= rope.len_lines() {
-        return rope.len_bytes();
-    }
-
-    let line_start = rope.line_to_byte(line);
-    let line = rope.line(line);
-
-    // Handle UTF-16 code units (LSP uses UTF-16)
-    let mut utf16_pos = 0;
-    let mut byte_pos = 0;
-
-    for ch in line.chars() {
-        if utf16_pos >= character {
-            break;
-        }
-        utf16_pos += ch.len_utf16();
-        byte_pos += ch.len_utf8();
-    }
-
-    line_start + byte_pos
-}
-
-/// Convert byte offset to LSP position using rope
-pub fn byte_to_lsp_pos(rope: &Rope, byte_offset: usize) -> (usize, usize) {
-    let byte_offset = byte_offset.min(rope.len_bytes());
-    let line = rope.byte_to_line(byte_offset);
-    let line_start = rope.line_to_byte(line);
-    let column_bytes = byte_offset - line_start;
-
-    // Convert byte offset to UTF-16 code units
-    let line_str = rope.line(line);
-    let mut utf16_pos = 0;
-    let mut current_bytes = 0;
-
-    for ch in line_str.chars() {
-        if current_bytes >= column_bytes {
-            break;
-        }
-        current_bytes += ch.len_utf8();
-        utf16_pos += ch.len_utf16();
-    }
-
-    (line, utf16_pos)
 }
 
 /// Wrapper for document state with incremental parsing support
@@ -217,59 +174,3 @@ impl DocumentParser {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_lsp_pos_to_byte() {
-        let text = "Hello\nWorld\n";
-        let rope = Rope::from_str(text);
-
-        // Start of document
-        assert_eq!(lsp_pos_to_byte(&rope, 0, 0), 0);
-
-        // Start of second line
-        assert_eq!(lsp_pos_to_byte(&rope, 1, 0), 6);
-
-        // Middle of second line
-        assert_eq!(lsp_pos_to_byte(&rope, 1, 3), 9);
-    }
-
-    #[test]
-    fn test_byte_to_lsp_pos() {
-        let text = "Hello\nWorld\n";
-        let rope = Rope::from_str(text);
-
-        // Start of document
-        assert_eq!(byte_to_lsp_pos(&rope, 0), (0, 0));
-
-        // Start of second line
-        assert_eq!(byte_to_lsp_pos(&rope, 6), (1, 0));
-
-        // Middle of second line
-        assert_eq!(byte_to_lsp_pos(&rope, 9), (1, 3));
-    }
-
-    #[test]
-    fn test_crlf_handling() {
-        let text = "Hello\r\nWorld\r\n";
-        let rope = Rope::from_str(text);
-
-        // Start of second line (after CRLF)
-        assert_eq!(lsp_pos_to_byte(&rope, 1, 0), 7);
-        assert_eq!(byte_to_lsp_pos(&rope, 7), (1, 0));
-    }
-
-    #[test]
-    fn test_utf16_handling() {
-        let text = "Hello 😀 World"; // Emoji is 2 UTF-16 code units
-        let rope = Rope::from_str(text);
-
-        // Position after emoji
-        let byte_after_emoji = "Hello 😀".len();
-        let (line, char) = byte_to_lsp_pos(&rope, byte_after_emoji);
-        assert_eq!(line, 0);
-        assert_eq!(char, 8); // "Hello " = 6 + emoji = 2 = 8 UTF-16 units
-    }
-}
