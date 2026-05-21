@@ -1,0 +1,29 @@
+lane = "semantic-receiver-intelligence"
+track = "C"
+status = "active"
+
+[ownership]
+track_a = "parser target fairness"
+track_b = "production parser edge-gap closure"
+track_c = "type facts, receiver facts, and method completion cutover"
+
+[principles]
+receipts_required_for_promotion = true
+no_exact_for_dynamic_or_stale = true
+no_exact_for_ambiguous_low_confidence_or_generated_no_source = true
+no_behavior_changes_in_c1 = true
+
+[[milestones]]
+id = "C1"
+title = "Add Track C rail"
+state = "planned"
+
+[[milestones]]
+id = "C2"
+title = "Add promotion ledger and receipt schema"
+state = "planned"
+
+[[milestones]]
+id = "C3"
+title = "Promote exact hashref slot completion"
+state = "planned"
