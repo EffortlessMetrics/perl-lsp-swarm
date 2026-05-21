@@ -37,6 +37,11 @@
 use perl_parser_core::ast::{Node, NodeKind};
 use perl_parser_core::qualified_name::split_qualified_name;
 
+fn callable_identity(name: &str) -> (&str, &str) {
+    let (pkg, bare) = split_qualified_name(name);
+    (pkg.unwrap_or("main"), bare)
+}
+
 /// Return (start_offset, end_offset) for same-file references
 pub fn find_references_single_file(ast: &Node, offset: usize) -> Option<Vec<(usize, usize)>> {
     let needle = find_node_at_offset(ast, offset)?;
@@ -47,17 +52,9 @@ pub fn find_references_single_file(ast: &Node, offset: usize) -> Option<Vec<(usi
             let sigil_char = sigil.chars().next();
             ("var", "main".to_string(), name.clone(), sigil_char)
         }
-        NodeKind::FunctionCall { name, .. } => {
-            let (pkg, bare) = split_qualified_name(name);
-            let pkg = pkg.unwrap_or("main").to_string();
-            let bare = bare.to_string();
-            ("sub", pkg, bare, None)
-        }
-        NodeKind::Subroutine { name: Some(name), .. } => {
-            let (pkg, bare) = split_qualified_name(name);
-            let pkg = pkg.unwrap_or("main").to_string();
-            let bare = bare.to_string();
-            ("sub", pkg, bare, None)
+        NodeKind::FunctionCall { name, .. } | NodeKind::Subroutine { name: Some(name), .. } => {
+            let (pkg, bare) = callable_identity(name);
+            ("sub", pkg.to_string(), bare.to_string(), None)
         }
         _ => return None,
     };
@@ -81,15 +78,13 @@ pub fn find_references_single_file(ast: &Node, offset: usize) -> Option<Vec<(usi
                 }
             }
             NodeKind::FunctionCall { name, .. } if want_kind == "sub" => {
-                let (pkg, bare) = split_qualified_name(name);
-                let pkg = pkg.unwrap_or("main");
+                let (pkg, bare) = callable_identity(name);
                 if bare == want_name && pkg == want_pkg {
                     out.push((location.start, location.end));
                 }
             }
             NodeKind::Subroutine { name: Some(name), .. } if want_kind == "sub" => {
-                let (pkg, bare) = split_qualified_name(name);
-                let pkg = pkg.unwrap_or("main");
+                let (pkg, bare) = callable_identity(name);
                 if bare == want_name && pkg == want_pkg {
                     out.push((location.start, location.end));
                 }
@@ -133,47 +128,47 @@ mod tests {
     use super::*;
     use perl_parser_core::Parser;
 
-    fn parse(source: &str) -> Node {
+    fn parse(source: &str) -> anyhow::Result<Node> {
         let mut parser = Parser::new(source);
-        parser.parse().expect("parse failed")
+        parser.parse().map_err(Into::into)
     }
 
     #[test]
-    fn qualified_sub_declaration_found_in_references() {
+    fn qualified_sub_declaration_found_in_references() -> anyhow::Result<()> {
         // `sub Foo::bar` stores name as "Foo::bar"; the walk must split it to
         // match against the bare "bar" and package "Foo" extracted at lookup
         // time.  Before the fix, name == want_name compared "Foo::bar" to "bar"
         // and the subroutine declaration was silently dropped from results.
         let source = "sub Foo::bar { 1 } Foo::bar();";
-        let ast = parse(source);
+        let ast = parse(source)?;
         // Cursor at position 4 sits on the 'F' in `sub Foo::bar { ... }`,
         // which resolves to the Subroutine node whose name is "Foo::bar".
         let refs = find_references_single_file(&ast, 4);
-        assert!(refs.is_some(), "should return Some for a known sub name");
-        let refs = refs.unwrap();
+        let refs =
+            refs.ok_or_else(|| anyhow::anyhow!("should return Some for a known sub name"))?;
         // Must include both the declaration and the call site
         assert!(refs.len() >= 2, "expected at least 2 references, got {}", refs.len());
+        Ok(())
     }
 
     #[test]
-    fn bare_sub_declaration_still_found() {
+    fn bare_sub_declaration_still_found() -> anyhow::Result<()> {
         let source = "sub greet { } greet();";
-        let ast = parse(source);
+        let ast = parse(source)?;
         let refs = find_references_single_file(&ast, 4);
-        assert!(refs.is_some());
-        let refs = refs.unwrap();
+        let refs = refs.ok_or_else(|| anyhow::anyhow!("expected subroutine references"))?;
         assert!(refs.len() >= 2, "expected declaration + call, got {}", refs.len());
+        Ok(())
     }
 
     #[test]
-    fn sub_in_different_package_not_confused() {
+    fn sub_in_different_package_not_confused() -> anyhow::Result<()> {
         // A subroutine named `bar` in package `Other` must NOT appear when
         // searching for `Foo::bar`.
         let source = "sub Foo::bar { 1 } sub Other::bar { 2 } Foo::bar();";
-        let ast = parse(source);
+        let ast = parse(source)?;
         let refs = find_references_single_file(&ast, 4);
-        assert!(refs.is_some());
-        let refs = refs.unwrap();
+        let refs = refs.ok_or_else(|| anyhow::anyhow!("expected references for Foo::bar"))?;
         // Should find `sub Foo::bar` and the call `Foo::bar()`, but NOT `sub Other::bar`
         for &(start, end) in &refs {
             let slice = &source[start..end];
@@ -182,5 +177,17 @@ mod tests {
                 "Other::bar must not appear in results for Foo::bar, but got: {slice:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn default_main_package_applies_to_bare_and_qualified_main_calls() -> anyhow::Result<()> {
+        let source = "sub greet { } main::greet(); greet();";
+        let ast = parse(source)?;
+        let refs = find_references_single_file(&ast, 4);
+        let refs = refs.ok_or_else(|| anyhow::anyhow!("expected references for greet"))?;
+
+        assert_eq!(refs.len(), 3, "expected declaration and both call forms");
+        Ok(())
     }
 }
