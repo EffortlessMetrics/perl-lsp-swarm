@@ -14,7 +14,7 @@ use crate::completion::{
     CompletionItemKind, CompletionProvider, add_xs_api_completions_for_prefix,
 };
 use crate::{
-    protocol::{JsonRpcError, REQUEST_CANCELLED, req_position, req_uri},
+    protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri},
     runtime::routing::{IndexAccessMode, route_index_access},
     state::{completion_cap, completion_deadline},
 };
@@ -872,23 +872,26 @@ impl LspServer {
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Convert raw Value ID to typed ID at the boundary.
+        let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         // RAII guard ensures cleanup on all exit paths (early returns, errors, panics)
-        let _cleanup_guard = RequestCleanupGuard::from_ref(request_id);
+        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
 
         if let Some(params) = params {
             // Create or get cancellation token for this request
-            let token = if let Some(req_id) = request_id {
-                GLOBAL_CANCELLATION_REGISTRY.get_token(req_id).unwrap_or_else(|| {
+            let token = if let Some(ref tid) = typed_id {
+                GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
                     let token = PerlLspCancellationToken::new(
-                        req_id.clone(),
+                        tid.clone(),
                         "textDocument/completion".to_string(),
                     );
                     let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
                     token
                 })
             } else {
+                // No typed request ID — create an uncancellable local token.
                 PerlLspCancellationToken::new(
-                    serde_json::Value::Null,
+                    JsonRpcId::Integer(-1),
                     "textDocument/completion".to_string(),
                 )
             };
