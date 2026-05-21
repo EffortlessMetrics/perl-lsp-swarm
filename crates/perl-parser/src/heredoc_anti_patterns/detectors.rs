@@ -416,6 +416,22 @@ impl PatternDetector for EvalHeredocDetector {
 // Tied handle detector
 struct TiedHandleDetector;
 
+fn normalize_handle_name(raw_handle: &str) -> &str {
+    raw_handle.strip_prefix('*').unwrap_or(raw_handle)
+}
+
+fn collect_tied_handles(scan_code: &str) -> HashSet<String> {
+    let mut tied_handles = HashSet::new();
+
+    for cap in TIE_PATTERN.captures_iter(scan_code) {
+        if let Some(handle_match) = cap.get(1) {
+            tied_handles.insert(normalize_handle_name(handle_match.as_str()).to_string());
+        }
+    }
+
+    tied_handles
+}
+
 /// Pattern for identifying tie statements
 static TIE_PATTERN: LazyLock<Regex> = LazyLock::new(|| match Regex::new(r"tie\s+([*$]\w+)") {
     Ok(re) => re,
@@ -438,17 +454,7 @@ impl PatternDetector for TiedHandleDetector {
     ) -> Vec<(AntiPattern, Location)> {
         let mut results = Vec::new();
         let scan_code = mask_non_code_regions(code);
-
-        // First collect tied handles in normalized form:
-        // *FH -> FH, $fh -> $fh.
-        let mut tied_handles = HashSet::new();
-        for cap in TIE_PATTERN.captures_iter(&scan_code) {
-            if let Some(handle_match) = cap.get(1) {
-                let raw_handle = handle_match.as_str();
-                let normalized = raw_handle.strip_prefix('*').unwrap_or(raw_handle);
-                tied_handles.insert(normalized.to_string());
-            }
-        }
+        let tied_handles = collect_tied_handles(&scan_code);
 
         // Use a single static regex for all print-heredoc matches, then filter
         // by whether the handle is in the tied set. This avoids O(n) Regex
@@ -458,9 +464,7 @@ impl PatternDetector for TiedHandleDetector {
                 continue;
             };
 
-            let raw_print_handle = handle_match.as_str();
-            let normalized_print_handle =
-                raw_print_handle.strip_prefix('*').unwrap_or(raw_print_handle);
+            let normalized_print_handle = normalize_handle_name(handle_match.as_str());
 
             if tied_handles.contains(normalized_print_handle) {
                 let location = location_from_start(line_starts, offset, match_pos.start());
