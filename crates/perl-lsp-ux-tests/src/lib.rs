@@ -53,6 +53,8 @@ pub mod scorecard;
 pub mod taxonomy;
 pub mod workspace;
 
+mod harness_init;
+
 pub use client::{LspEvent, UxClient};
 pub use diagnostics::DiagnosticsTracker;
 pub use env::{PathGuard, RestrictedPath};
@@ -198,21 +200,8 @@ pub struct UxHarness {
 impl UxHarness {
     /// Spawn a fresh LSP server and set up a clean workspace.
     pub fn new(config: ScenarioConfig) -> Result<Self> {
-        let workspace = FakeWorkspace::new()?;
-
-        // Write any pre-seeded workspace files.
-        for (path, content) in &config.workspace_files {
-            workspace.write(path, content)?;
-        }
-
-        for (path, _) in &config.workspace_folders {
-            workspace.ensure_dir(path)?;
-        }
-
-        let binary_path = resolve_binary()?;
-
-        let client = UxClient::spawn(&binary_path, &workspace, &config)
-            .context("Failed to spawn LSP server")?;
+        let workspace = harness_init::prepare_workspace(&config)?;
+        let client = harness_init::spawn_client(&workspace, &config)?;
 
         Ok(Self { client, workspace, config, document_versions: Mutex::new(HashMap::new()) })
     }
