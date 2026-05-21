@@ -64,11 +64,13 @@ fn find_forward(
 ) -> Option<i64> {
     for offset in 1..=max_distance {
         let line = start_line + offset as i64;
-        if validator.is_executable_line(line) {
+        let result = validator.validate(line);
+
+        if result.verified {
             return Some(line);
         }
-        // Stop if we've gone past end of file
-        let result = validator.validate(line);
+
+        // Stop once we've gone past end-of-file bounds.
         if result.reason == Some(super::validator::ValidationReason::LineOutOfRange) {
             break;
         }
@@ -86,7 +88,8 @@ fn find_backward(
         if line < 1 {
             break;
         }
-        if validator.is_executable_line(line) {
+
+        if validator.validate(line).verified {
             return Some(line);
         }
     }
@@ -151,5 +154,13 @@ mod tests {
 
         let result = find_nearest_valid_line(&validator, 1, SearchDirection::Both, None);
         assert_eq!(result, None);
+    }
+    #[test]
+    fn test_find_nearest_both_from_beyond_eof_prefers_backward_match() {
+        let source = "my $x = 1;\n";
+        let validator = must(AstBreakpointValidator::new(source));
+
+        let result = find_nearest_valid_line(&validator, 10, SearchDirection::Both, Some(20));
+        assert_eq!(result, Some(1));
     }
 }
