@@ -184,7 +184,6 @@ fn uri_key_uppercase_windows_drive_lowercased() {
     assert!(key.starts_with("file:///c:"), "Windows drive letter must be lowercased, got: {key}");
 }
 
-
 #[test]
 fn uri_key_normalizes_legacy_file_localhost_unc_path() {
     let key = uri_key(r"file://localhost\server\share\dir\file.pl");
