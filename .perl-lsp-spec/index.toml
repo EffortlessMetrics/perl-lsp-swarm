@@ -1,0 +1,12 @@
+schema_version = 1
+repo = "perl-lsp"
+
+[rails]
+root = ".perl-lsp-spec"
+
+[lanes]
+items = [
+  "parser-differential",
+  "receiver-facts-completion",
+  "tree-sitter-wording",
+]

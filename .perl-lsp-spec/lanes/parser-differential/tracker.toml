@@ -1,0 +1,10 @@
+schema_version = 1
+lane = "parser-differential"
+status = "active"
+
+milestones = [
+  "spec-rails-established",
+  "target-registry-wired",
+  "upstream-target-added",
+  "json-receipts-live",
+]

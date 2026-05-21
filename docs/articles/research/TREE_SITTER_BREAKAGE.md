@@ -1,6 +1,6 @@
-# Why Tree-Sitter Failed for Perl
+# Why Our Old Tree-Sitter Perl Snapshot Was Insufficient for perl-lsp
 
-*Seven concrete patterns that defeated tree-sitter's GLR parser generator, and why a stateless grammar formalism cannot express Perl's context-sensitive syntax.*
+*Seven concrete patterns where our historical Tree-sitter snapshot underperformed perl-lsp requirements, and why Perl's context sensitivity remains difficult without richer coordination between lexer, parser, and semantic/runtime facts.*
 
 *Updated 2026-05-16: empirical findings from PR #9170 are summarized in the "Measured Behavior" section below.*
 
@@ -10,11 +10,11 @@
 
 The perl-lsp project began as a tree-sitter grammar for Perl. Tree-sitter is the dominant parser generator for IDE use cases — it powers syntax highlighting, code folding, and structural navigation in Neovim, Helix, Zed, and GitHub's code view. It works brilliantly for Python, JavaScript, TypeScript, Rust, Go, C, and dozens of other languages.
 
-It does not work for Perl.
+Our historical snapshot did not meet perl-lsp accuracy, recovery, and latency requirements for Perl.
 
 The v1 tree-sitter parser lives in `tree-sitter-perl/` and is kept only for benchmark comparison. The grammar file (`grammar.js`) and the scanner (`scanner.c`) together tell the story of why Perl defeated the formalism.
 
-This document catalogs the seven specific patterns that caused failure, explains why tree-sitter's architecture cannot handle them, and describes the key insight that made the v3 recursive descent parser succeed.
+This document catalogs seven specific stress patterns from our historical results, explains where Tree-sitter external scanners and grammar machinery can help (including `valid_symbols`-guided tokenization plus serialized scanner state), and describes why perl-lsp still benefits from native parser architecture for hard Perl cases (deferred constructs, semantic/runtime facts, and compile-time effects).
 
 ---
 
@@ -36,7 +36,7 @@ Tree-sitter grammars are context-free. The lexer (external scanner in `scanner.c
 - After a term (`$variable`, number, `)`, `]`, `}`): `/` is division
 - After an operator, keyword, `(`, `[`, `{`, `=~`: `/` starts a regex
 
-This is **lexer-parser coupling** — the lexer needs parser state to produce correct tokens. Tree-sitter's architecture explicitly prohibits this. The external scanner can maintain internal state, but it cannot query the parse stack.
+This is **lexer-parser coupling** — the lexer needs parser state to produce correct tokens. Tree-sitter external scanners can maintain compact serialized state and receive `valid_symbols` from the parser, but they still cannot directly inspect the parse stack. For Perl, this can make nuanced lexer/parser coordination expensive and fragile.
 
 ### Attempted Workarounds in scanner.c
 
@@ -81,7 +81,7 @@ This means the parser must:
 3. At the next newline, switch to consuming the heredoc body
 4. After finding the terminator, resume normal parsing
 
-This requires **deferred token production** — the scanner must queue tokens for later delivery. Tree-sitter's scanner API is synchronous: `scan()` returns one token at the call site. It cannot say "I'll produce this token later."
+This requires **deferred token production** — the scanner must queue tokens for later delivery. Tree-sitter's scanner API is synchronous at each call boundary, so deferred behavior must be encoded indirectly via scanner-managed state and later invocations.
 
 ### Attempted Workarounds
 
@@ -310,7 +310,7 @@ This state had to be serialized and deserialized for tree-sitter's incremental p
 
 ## The Key Insight: Mode-Based Lexer
 
-The fundamental problem with tree-sitter for Perl is the **separation of lexer and parser**. Tree-sitter's architecture requires the lexer (external scanner) to produce tokens independently of the parser's state. Perl requires the lexer to know what the parser is doing.
+The core tension for Perl in our measurements is the **cost of coordinating lexer, parser, and semantic/runtime context** under Tree-sitter's external scanner model. Tree-sitter can encode substantial syntactic context (GLR conflicts, precedence, external tokens, `valid_symbols`, and serialized scanner state), but many Perl decisions still rely on deferred constructs, runtime prototypes, `BEGIN`-time effects, source filters, or compile-time symbol-table changes that are awkward or unsafe to model as a small scanner state machine.
 
 The v3 parser's key insight is the `LexerMode` state machine:
 
@@ -377,3 +377,8 @@ Beyond what the theory predicted, the measurements revealed a qualitative distin
 | Format statements | Another scanner modal state | `InFormatBody` lexer mode |
 
 The lesson: **tree-sitter works when the lexer can be context-free. Perl's lexer is context-sensitive by design.** A hand-written recursive descent parser with a mode-based lexer is the only architecture that correctly handles Perl's grammar.
+
+
+## Claim Boundary
+
+Results from this document refer to our historical vendored snapshot (`tree-sitter-perl-c`) and must not be treated as a pass/fail verdict for any current upstream parser implementation. Upstream claims require current differential harness receipts against the same fixture set and run settings.
