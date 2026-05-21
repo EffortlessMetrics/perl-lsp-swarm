@@ -38,6 +38,18 @@ static FORMAT_PATTERN: LazyLock<Regex> =
         Err(_) => unreachable!("FORMAT_PATTERN regex failed to compile"),
     });
 
+
+fn match_and_location(
+    captures: &regex::Captures<'_>,
+    line_starts: &[usize],
+    offset: usize,
+) -> Option<(usize, Location)> {
+    let match_pos = captures.get(0)?;
+    let match_start = match_pos.start();
+    let location = location_from_start(line_starts, offset, match_start);
+    Some((match_start, location))
+}
+
 impl PatternDetector for FormatHeredocDetector {
     fn detect(
         &self,
@@ -49,12 +61,13 @@ impl PatternDetector for FormatHeredocDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in FORMAT_PATTERN.captures_iter(&scan_code) {
-            if let (Some(match_pos), Some(name_match)) = (cap.get(0), cap.get(1)) {
+            if let (Some((match_start, location)), Some(name_match)) =
+                (match_and_location(&cap, line_starts, offset), cap.get(1))
+            {
                 let format_name = name_match.as_str().to_string();
-                let location = location_from_start(line_starts, offset, match_pos.start());
 
                 // Look for heredoc marker inside format body (simplified)
-                let body_start = match_pos.end();
+                let body_start = cap.get(0).map(|m| m.end()).unwrap_or(match_start);
                 let body_end = code[body_start..].find("\n.").unwrap_or(code.len() - body_start);
                 let body = &scan_code[body_start..body_start + body_end];
 
@@ -229,9 +242,11 @@ impl PatternDetector for DynamicDelimiterDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in DYNAMIC_DELIMITER_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
-                let expression = match_pos.as_str().to_string();
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            if let Some((_match_start, location)) = match_and_location(&cap, line_starts, offset) {
+                let expression = cap
+                    .get(0)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
 
                 results.push((
                     AntiPattern::DynamicHeredocDelimiter { location: location.clone(), expression },
@@ -281,9 +296,10 @@ impl PatternDetector for SourceFilterDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in SOURCE_FILTER_PATTERN.captures_iter(&scan_code) {
-            if let (Some(match_pos), Some(module_match)) = (cap.get(0), cap.get(1)) {
+            if let (Some((_, location)), Some(module_match)) =
+                (match_and_location(&cap, line_starts, offset), cap.get(1))
+            {
                 let filter_module = module_match.as_str().to_string();
-                let location = location_from_start(line_starts, offset, match_pos.start());
 
                 results.push((
                     AntiPattern::SourceFilterHeredoc {
@@ -335,8 +351,7 @@ impl PatternDetector for RegexHeredocDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in REGEX_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            if let Some((_, location)) = match_and_location(&cap, line_starts, offset) {
 
                 results.push((
                     AntiPattern::RegexCodeBlockHeredoc { location: location.clone() },
@@ -384,8 +399,7 @@ impl PatternDetector for EvalHeredocDetector {
         let mut results = Vec::new();
 
         for cap in EVAL_HEREDOC_PATTERN.captures_iter(code) {
-            if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            if let Some((_, location)) = match_and_location(&cap, line_starts, offset) {
 
                 results.push((
                     AntiPattern::EvalStringHeredoc { location: location.clone() },
@@ -454,7 +468,9 @@ impl PatternDetector for TiedHandleDetector {
         // by whether the handle is in the tied set. This avoids O(n) Regex
         // compilations (one per tied handle) and is faster for large files.
         for cap in PRINT_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            let (Some(match_pos), Some(handle_match)) = (cap.get(0), cap.get(1)) else {
+            let (Some((match_start, _)), Some(handle_match)) =
+                (match_and_location(&cap, line_starts, offset), cap.get(1))
+            else {
                 continue;
             };
 
@@ -463,7 +479,7 @@ impl PatternDetector for TiedHandleDetector {
                 raw_print_handle.strip_prefix('*').unwrap_or(raw_print_handle);
 
             if tied_handles.contains(normalized_print_handle) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+                let location = location_from_start(line_starts, offset, match_start);
                 results.push((
                     AntiPattern::TiedHandleHeredoc {
                         location: location.clone(),
