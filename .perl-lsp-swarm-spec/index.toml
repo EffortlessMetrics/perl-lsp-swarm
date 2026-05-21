@@ -1,0 +1,22 @@
+version = 1
+namespace = ".perl-lsp-swarm-spec"
+
+[ownership]
+summary = "Durable repo-native spec method artifacts"
+owned_roots = [
+  ".perl-lsp-swarm-spec",
+  "docs/spec-style.md",
+  "docs/contributing/spec-rails.md",
+]
+
+[artifacts]
+proposals = ".perl-lsp-swarm-spec/proposals"
+specs = ".perl-lsp-swarm-spec/specs"
+adr = ".perl-lsp-swarm-spec/adr"
+lanes = ".perl-lsp-swarm-spec/lanes"
+templates = ".perl-lsp-swarm-spec/templates"
+closeouts = ".perl-lsp-swarm-spec/closeouts"
+
+[external_namespaces]
+awareness_only = [".spec", ".codex", ".claude", ".jules"]
+rule = "Do not create, rewrite, migrate, or validate these directories from this lane."
