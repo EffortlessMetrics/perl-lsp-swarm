@@ -28,6 +28,17 @@ trait PatternDetector: Send + Sync {
     fn diagnose(&self, pattern: &AntiPattern) -> Option<Diagnostic>;
 }
 
+fn capture_match_start(captures: &regex::Captures<'_>) -> Option<regex::Match<'_>> {
+    captures.get(0)
+}
+
+fn capture_match_pair(
+    captures: &regex::Captures<'_>,
+    first_group: usize,
+) -> Option<(regex::Match<'_>, regex::Match<'_>)> {
+    Some((captures.get(0)?, captures.get(first_group)?))
+}
+
 // Format heredoc detector
 struct FormatHeredocDetector;
 
@@ -49,7 +60,7 @@ impl PatternDetector for FormatHeredocDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in FORMAT_PATTERN.captures_iter(&scan_code) {
-            if let (Some(match_pos), Some(name_match)) = (cap.get(0), cap.get(1)) {
+            if let Some((match_pos, name_match)) = capture_match_pair(&cap, 1) {
                 let format_name = name_match.as_str().to_string();
                 let location = location_from_start(line_starts, offset, match_pos.start());
 
@@ -229,7 +240,7 @@ impl PatternDetector for DynamicDelimiterDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in DYNAMIC_DELIMITER_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
+            if let Some(match_pos) = capture_match_start(&cap) {
                 let expression = match_pos.as_str().to_string();
                 let location = location_from_start(line_starts, offset, match_pos.start());
 
@@ -281,7 +292,7 @@ impl PatternDetector for SourceFilterDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in SOURCE_FILTER_PATTERN.captures_iter(&scan_code) {
-            if let (Some(match_pos), Some(module_match)) = (cap.get(0), cap.get(1)) {
+            if let Some((match_pos, module_match)) = capture_match_pair(&cap, 1) {
                 let filter_module = module_match.as_str().to_string();
                 let location = location_from_start(line_starts, offset, match_pos.start());
 
@@ -335,7 +346,7 @@ impl PatternDetector for RegexHeredocDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in REGEX_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
+            if let Some(match_pos) = capture_match_start(&cap) {
                 let location = location_from_start(line_starts, offset, match_pos.start());
 
                 results.push((
@@ -384,7 +395,7 @@ impl PatternDetector for EvalHeredocDetector {
         let mut results = Vec::new();
 
         for cap in EVAL_HEREDOC_PATTERN.captures_iter(code) {
-            if let Some(match_pos) = cap.get(0) {
+            if let Some(match_pos) = capture_match_start(&cap) {
                 let location = location_from_start(line_starts, offset, match_pos.start());
 
                 results.push((
@@ -454,7 +465,7 @@ impl PatternDetector for TiedHandleDetector {
         // by whether the handle is in the tied set. This avoids O(n) Regex
         // compilations (one per tied handle) and is faster for large files.
         for cap in PRINT_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            let (Some(match_pos), Some(handle_match)) = (cap.get(0), cap.get(1)) else {
+            let Some((match_pos, handle_match)) = capture_match_pair(&cap, 1) else {
                 continue;
             };
 
