@@ -117,24 +117,43 @@ impl<'a> DocRenderer<'a> {
             FormatDoc::Line | FormatDoc::HardLine => self.push_line(indent_level),
             FormatDoc::SoftLine if flat => self.push_text(" "),
             FormatDoc::SoftLine => self.push_line(indent_level),
-            FormatDoc::Group(parts) => {
-                let fits = doc
-                    .flat_width()
-                    .is_some_and(|width| self.column + width <= self.config.line_width as usize);
-                for part in parts {
-                    self.render_doc(part, indent_level, fits, !fits);
-                }
-            }
-            FormatDoc::Indent(parts) => {
-                for part in parts {
-                    self.render_doc(part, indent_level + 1, flat, broken);
-                }
-            }
+            FormatDoc::Group(parts) => self.render_group(doc, parts, indent_level),
+            FormatDoc::Indent(parts) => self.render_indent(parts, indent_level, flat, broken),
             FormatDoc::IfBreak { broken: broken_doc, flat: flat_doc } => {
-                let selected = if broken { broken_doc } else { flat_doc };
-                self.render_doc(selected, indent_level, flat, broken);
+                self.render_if_break(broken_doc, flat_doc, indent_level, flat, broken)
             }
         }
+    }
+
+    fn render_group(&mut self, group_doc: &FormatDoc, parts: &[FormatDoc], indent_level: usize) {
+        let fits = self.group_fits(group_doc);
+        for part in parts {
+            self.render_doc(part, indent_level, fits, !fits);
+        }
+    }
+
+    fn group_fits(&self, group_doc: &FormatDoc) -> bool {
+        group_doc
+            .flat_width()
+            .is_some_and(|width| self.column + width <= self.config.line_width as usize)
+    }
+
+    fn render_indent(&mut self, parts: &[FormatDoc], indent_level: usize, flat: bool, broken: bool) {
+        for part in parts {
+            self.render_doc(part, indent_level + 1, flat, broken);
+        }
+    }
+
+    fn render_if_break(
+        &mut self,
+        broken_doc: &FormatDoc,
+        flat_doc: &FormatDoc,
+        indent_level: usize,
+        flat: bool,
+        broken: bool,
+    ) {
+        let selected = if broken { broken_doc } else { flat_doc };
+        self.render_doc(selected, indent_level, flat, broken);
     }
 
     fn push_text(&mut self, text: &str) {
