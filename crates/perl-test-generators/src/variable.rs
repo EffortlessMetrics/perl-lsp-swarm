@@ -11,26 +11,72 @@ static IDENT_START: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX
 /// Valid ASCII identifier characters for subsequent positions.
 static IDENT_CONT: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789";
 
+mod identifier_strategy {
+    use super::{IDENT_CONT, IDENT_START};
+    use proptest::prelude::*;
+
+    pub(super) fn strategy() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("self".to_string()),
+            Just("class".to_string()),
+            (
+                prop::sample::select(IDENT_START),
+                prop::collection::vec(prop::sample::select(IDENT_CONT), 0..=11_usize),
+            )
+                .prop_map(format_identifier),
+        ]
+    }
+
+    fn format_identifier((first, rest): (u8, Vec<u8>)) -> String {
+        let mut text = String::new();
+        text.push(first as char);
+        for ch in rest {
+            text.push(ch as char);
+        }
+        text
+    }
+}
+
+mod variable_strategy {
+    use super::{identifier, package_path};
+    use proptest::prelude::*;
+
+    pub(super) fn strategy() -> impl Strategy<Value = String> {
+        prop_oneof![
+            special_variable_strategy(),
+            simple_variable_strategy(),
+            qualified_variable_strategy(),
+        ]
+    }
+
+    fn special_variable_strategy() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just("$_".to_string()),
+            Just("@_".to_string()),
+            Just("%ENV".to_string()),
+            Just("@ARGV".to_string()),
+            Just("$0".to_string()),
+            (1u32..=9).prop_map(|n| format!("${}", n)),
+        ]
+    }
+
+    fn simple_variable_strategy() -> impl Strategy<Value = String> {
+        (sigil_strategy(), identifier()).prop_map(|(sigil, name)| format!("{}{}", sigil, name))
+    }
+
+    fn qualified_variable_strategy() -> impl Strategy<Value = String> {
+        (sigil_strategy(), package_path(), identifier())
+            .prop_map(|(sigil, pkg, name)| format!("{}{}::{}", sigil, pkg, name))
+    }
+
+    fn sigil_strategy() -> impl Strategy<Value = char> {
+        prop_oneof![Just('$'), Just('@'), Just('%')]
+    }
+}
+
 /// Generate a single Perl identifier (without sigil).
 fn identifier() -> impl Strategy<Value = String> {
-    prop_oneof![
-        // Common short names
-        Just("self".to_string()),
-        Just("class".to_string()),
-        // Random identifier 1–12 chars
-        (
-            prop::sample::select(IDENT_START),
-            prop::collection::vec(prop::sample::select(IDENT_CONT), 0..=11_usize),
-        )
-            .prop_map(|(first, rest)| {
-                let mut s = String::new();
-                s.push(first as char);
-                for b in rest {
-                    s.push(b as char);
-                }
-                s
-            }),
-    ]
+    identifier_strategy::strategy()
 }
 
 /// Generate a Perl package path (`Foo`, `Foo::Bar`, ...).
@@ -44,21 +90,7 @@ fn package_path() -> impl Strategy<Value = String> {
 /// (`$_`, `@_`, `$1`–`$9`), and optionally package-qualified names
 /// (`$Foo::Bar::baz`).
 pub fn variable() -> impl Strategy<Value = String> {
-    prop_oneof![
-        // Special variables
-        Just("$_".to_string()),
-        Just("@_".to_string()),
-        Just("%ENV".to_string()),
-        Just("@ARGV".to_string()),
-        Just("$0".to_string()),
-        (1u32..=9).prop_map(|n| format!("${}", n)),
-        // Simple sigiled variable
-        (prop_oneof![Just('$'), Just('@'), Just('%')], identifier())
-            .prop_map(|(sigil, name)| format!("{}{}", sigil, name)),
-        // Package-qualified
-        (prop_oneof![Just('$'), Just('@'), Just('%')], package_path(), identifier())
-            .prop_map(|(sigil, pkg, name)| format!("{}{}::{}", sigil, pkg, name)),
-    ]
+    variable_strategy::strategy()
 }
 
 #[cfg(test)]
