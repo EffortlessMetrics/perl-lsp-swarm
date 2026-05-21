@@ -2,14 +2,9 @@
 //!
 //! # What this file covers
 //!
-//! Before this file the baseline was:
-//!   - Region coverage: 83.60% (321 missed)
-//!   - Line coverage:   84.88% (177 missed)
-//!   - Branch coverage: 65.24% (57 missed)
-//!
 //! This file targets the highest-value uncovered paths in ast.rs:
 //!
-//! ## `for_each_child_mut` (mutable traversal) — the biggest gap
+//! ## `for_each_child_mut` (mutable traversal) - the biggest gap
 //! The entire function was barely exercised. Tests here call `for_each_child_mut`
 //! directly via a counter closure so every variant arm runs.  Specifically:
 //!   - `Tie`, `VariableDeclaration`, `Unary`, `Block`, `For`, `Foreach`
@@ -32,7 +27,7 @@
 //!
 //! # What stays uncovered and why
 //!
-//! **`format_binary_operator` / `format_unary_operator` remaining arms** — the
+//! **`format_binary_operator` / `format_unary_operator` remaining arms** - the
 //! match arms for individual known operators ("+", "-", "==", etc.) are all
 //! exercised by existing tests.  Only the catch-all `_` arms and the four
 //! hash/array-deref forms were missing and are now covered here.
@@ -77,7 +72,7 @@ fn count_visits_mut(node: &mut Node) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// 1. `for_each_child_mut` — mutable traversal coverage
+// 1. `for_each_child_mut` - mutable traversal coverage
 // ---------------------------------------------------------------------------
 
 mod for_each_child_mut {
@@ -355,7 +350,7 @@ mod for_each_child_mut {
             NodeKind::HashLiteral { pairs: vec![(leaf("k1"), num("1")), (leaf("k2"), num("2"))] },
             loc(),
         );
-        // 2 pairs × 2 nodes each = 4
+        // 2 pairs * 2 nodes each = 4
         assert_eq!(count_visits_mut(&mut node), 4);
         Ok(())
     }
@@ -452,7 +447,7 @@ mod to_sexp_edges {
     fn named_subroutine_with_signature_but_no_prototype() -> Result<(), Box<dyn std::error::Error>>
     {
         // This exercises the `else if signature.is_some()` branch (lines 511-512)
-        // where a named sub has a signature but no prototype — the sexp still emits "()"
+        // where a named sub has a signature but no prototype - the sexp still emits "()"
         let sig = Node::new(
             NodeKind::Signature {
                 parameters: vec![Node::new(
@@ -560,8 +555,8 @@ mod to_sexp_edges {
 
     #[test]
     fn method_without_attributes_emits_no_attrlist() -> Result<(), Box<dyn std::error::Error>> {
-        // Exercises the `!attributes.is_empty()` guard (line 599) — the False branch
-        // (empty attributes → no attrlist emitted).
+        // Exercises the `!attributes.is_empty()` guard (line 599) - the False branch
+        // (empty attributes -> no attrlist emitted).
         let node = Node::new(
             NodeKind::Method {
                 name: "bare".to_string(),
@@ -597,7 +592,7 @@ mod to_sexp_edges {
 
     #[test]
     fn binary_operator_brace_subscript() -> Result<(), Box<dyn std::error::Error>> {
-        // `{}` → "binary_{}" (line 2475)
+        // `{}` -> "binary_{}" (line 2475)
         let node = Node::new(
             NodeKind::Binary {
                 op: "{}".to_string(),
@@ -613,7 +608,7 @@ mod to_sexp_edges {
 
     #[test]
     fn binary_operator_bracket_subscript() -> Result<(), Box<dyn std::error::Error>> {
-        // `[]` → "binary_[]" (line 2476)
+        // `[]` -> "binary_[]" (line 2476)
         let node = Node::new(
             NodeKind::Binary {
                 op: "[]".to_string(),
@@ -629,7 +624,7 @@ mod to_sexp_edges {
 
     #[test]
     fn binary_operator_arrow_hash_deref() -> Result<(), Box<dyn std::error::Error>> {
-        // `->{}`  → "arrow_hash_deref" (line 2479)
+        // `->{}`  -> "arrow_hash_deref" (line 2479)
         let node = Node::new(
             NodeKind::Binary {
                 op: "->{}".to_string(),
@@ -645,7 +640,7 @@ mod to_sexp_edges {
 
     #[test]
     fn binary_operator_arrow_array_deref() -> Result<(), Box<dyn std::error::Error>> {
-        // `->[]` → "arrow_array_deref" (line 2480)
+        // `->[]` -> "arrow_array_deref" (line 2480)
         let node = Node::new(
             NodeKind::Binary {
                 op: "->[]".to_string(),
@@ -691,13 +686,13 @@ mod to_sexp_edges {
     #[test]
     fn unary_operator_with_spaces_replaces_space_with_underscore()
     -> Result<(), Box<dyn std::error::Error>> {
-        // The default arm uses `op.replace(' ', "_")` — verify spaces become underscores
+        // The default arm uses `op.replace(' ', "_")` - verify spaces become underscores
         let node = Node::new(
             NodeKind::Unary { op: "my op".to_string(), operand: Box::new(num("1")) },
             loc(),
         );
         let s = node.to_sexp();
-        assert!(s.contains("unary_my_op"), "expected space→underscore, got: {s}");
+        assert!(s.contains("unary_my_op"), "expected space->underscore, got: {s}");
         Ok(())
     }
 }
@@ -713,7 +708,7 @@ mod to_sexp_inner_edges {
     fn expression_statement_wrapping_named_subroutine_is_unwrapped()
     -> Result<(), Box<dyn std::error::Error>> {
         // ExpressionStatement containing a NAMED subroutine.
-        // The inner match at line 811 checks `name.is_none()` — the False branch
+        // The inner match at line 811 checks `name.is_none()` - the False branch
         // means a named sub should be unwrapped (expression.to_sexp() is returned).
         let sub_node = Node::new(
             NodeKind::Subroutine {
@@ -768,7 +763,7 @@ mod to_sexp_inner_edges {
 }
 
 // ---------------------------------------------------------------------------
-// 4. `for_each_child` (immutable) — missing arms
+// 4. `for_each_child` (immutable) - missing arms
 // ---------------------------------------------------------------------------
 
 mod for_each_child_immutable {
@@ -895,7 +890,7 @@ mod for_each_child_immutable {
 }
 
 // ---------------------------------------------------------------------------
-// 5. False-branch coverage — Option<> guards that were True-only
+// 5. False-branch coverage - Option<> guards that were True-only
 // ---------------------------------------------------------------------------
 
 mod false_branch_coverage {
@@ -936,7 +931,7 @@ mod false_branch_coverage {
     #[test]
     fn named_subroutine_with_prototype_and_attrs_triggers_else_branch()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Named subroutine with prototype and attributes — the parts array has:
+        // Named subroutine with prototype and attributes - the parts array has:
         // [name, :attr, "(prototype_sexp)", body_sexp]
         // so `parts[parts.len()-2]` is the prototype node sexp, NOT `"()"`,
         // which triggers the `else` branch at line 526.
