@@ -2,8 +2,46 @@
 //!
 //! Core request, response, and error types for JSON-RPC communication.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+
+/// JSON-RPC request/response id.
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(untagged)]
+pub enum JsonRpcId {
+    Integer(i64),
+    String(String),
+}
+
+impl JsonRpcId {
+    pub fn from_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::Number(number) => number.as_i64().map(Self::Integer),
+            Value::String(value) => Some(Self::String(value.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for JsonRpcId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        match value {
+            Value::Number(number) => number
+                .as_i64()
+                .map(JsonRpcId::Integer)
+                .ok_or_else(|| serde::de::Error::custom("JSON-RPC id must be an integer")),
+            Value::String(value) => Ok(JsonRpcId::String(value)),
+            _ => Err(serde::de::Error::custom(
+                "JSON-RPC id must be an integer or string",
+            )),
+        }
+    }
+}
 
 /// JSON-RPC 2.0 request message
 ///
@@ -16,7 +54,7 @@ pub struct JsonRpcRequest {
     pub _jsonrpc: String,
 
     /// Request identifier (None for notifications)
-    pub id: Option<Value>,
+    pub id: Option<JsonRpcId>,
 
     /// Method name to invoke
     pub method: String,
@@ -35,7 +73,7 @@ pub struct JsonRpcResponse {
     pub jsonrpc: String,
 
     /// Request identifier (matches the request's id)
-    pub id: Option<Value>,
+    pub id: Option<JsonRpcId>,
 
     /// Success result (mutually exclusive with error)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,17 +86,17 @@ pub struct JsonRpcResponse {
 
 impl JsonRpcResponse {
     /// Create a success response
-    pub fn success(id: Option<Value>, result: Value) -> Self {
+    pub fn success(id: Option<JsonRpcId>, result: Value) -> Self {
         Self { jsonrpc: "2.0".to_string(), id, result: Some(result), error: None }
     }
 
     /// Create an error response
-    pub fn error(id: Option<Value>, error: JsonRpcError) -> Self {
+    pub fn error(id: Option<JsonRpcId>, error: JsonRpcError) -> Self {
         Self { jsonrpc: "2.0".to_string(), id, result: None, error: Some(error) }
     }
 
     /// Create a null result response (for methods that return nothing)
-    pub fn null(id: Option<Value>) -> Self {
+    pub fn null(id: Option<JsonRpcId>) -> Self {
         Self { jsonrpc: "2.0".to_string(), id, result: Some(Value::Null), error: None }
     }
 }
@@ -97,3 +135,40 @@ impl std::fmt::Display for JsonRpcError {
 }
 
 impl std::error::Error for JsonRpcError {}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_rpc_request_accepts_integer_id() {
+        let request: JsonRpcRequest = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"x"}"#).expect("request should deserialize");
+        assert_eq!(request.id, Some(JsonRpcId::Integer(1)));
+    }
+
+    #[test]
+    fn json_rpc_request_accepts_string_id() {
+        let request: JsonRpcRequest = serde_json::from_str(r#"{"jsonrpc":"2.0","id":"abc-123","method":"x"}"#).expect("request should deserialize");
+        assert_eq!(request.id, Some(JsonRpcId::String("abc-123".to_string())));
+    }
+
+    #[test]
+    fn json_rpc_response_echoes_string_id() {
+        let response = JsonRpcResponse::success(Some(JsonRpcId::String("abc-123".to_string())), Value::Null);
+        let serialized = serde_json::to_value(response).expect("response should serialize");
+        assert_eq!(serialized["id"], Value::String("abc-123".to_string()));
+    }
+
+    #[test]
+    fn json_rpc_rejects_null_id_for_request() {
+        let request = serde_json::from_str::<JsonRpcRequest>(r#"{"jsonrpc":"2.0","id":null,"method":"x"}"#);
+        assert!(request.is_err());
+    }
+
+    #[test]
+    fn json_rpc_rejects_fractional_id() {
+        let request = serde_json::from_str::<JsonRpcRequest>(r#"{"jsonrpc":"2.0","id":1.5,"method":"x"}"#);
+        assert!(request.is_err());
+    }
+}

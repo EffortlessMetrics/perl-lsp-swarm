@@ -2,6 +2,20 @@ use super::workspace_folder::WorkspaceFolderState;
 use std::path::PathBuf;
 use std::time::Instant;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ServerRequestId(i32);
+
+impl ServerRequestId {
+    pub(crate) fn new(value: i32) -> Option<Self> {
+        (value >= 1).then_some(Self(value))
+    }
+
+    pub(crate) fn as_i32(self) -> i32 {
+        self.0
+    }
+}
+
+
 pub(super) fn source_path_from_uri(uri: &str) -> Option<PathBuf> {
     perl_uri::source_path_from_uri_or_path(uri)
 }

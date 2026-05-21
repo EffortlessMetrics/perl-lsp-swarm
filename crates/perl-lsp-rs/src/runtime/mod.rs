@@ -5,7 +5,7 @@
 
 use crate::runtime::diagnostics::PullDiagnosticsOrchestrator;
 use crate::runtime::types::{
-    DocumentScanView, PendingWorkspaceConfigurationRequest, best_workspace_folder_for_doc,
+    DocumentScanView, PendingWorkspaceConfigurationRequest, ServerRequestId, best_workspace_folder_for_doc,
     source_path_from_uri, workspace_folder_path,
 };
 use crate::runtime::workspace_folder::WorkspaceFolderState;
@@ -112,7 +112,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
 };
 use url::Url;
 
@@ -180,10 +180,10 @@ pub struct LspServer {
     /// Workspace configuration for module resolution
     workspace_config: Arc<Mutex<WorkspaceConfig>>,
     /// Atomic counter for generating unique request IDs
-    next_request_id: Arc<AtomicI64>,
+    next_request_id: Arc<AtomicI32>,
     /// Pending workspace/configuration reverse requests keyed by request ID.
     pending_workspace_configuration_requests:
-        Arc<Mutex<HashMap<i64, PendingWorkspaceConfigurationRequest>>>,
+        Arc<Mutex<HashMap<ServerRequestId, PendingWorkspaceConfigurationRequest>>>,
     /// Active progress tokens for work done progress tracking
     progress_tokens: Arc<Mutex<HashSet<String>>>,
     /// Maps progress tokens to their originating request IDs for cancellation routing
