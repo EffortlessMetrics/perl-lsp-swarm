@@ -331,6 +331,7 @@ status = "active"
 lane = "substrate"
 claim_boundary = "Bareword-classifier substrate proof only; no provider behavior, diagnostic suppression, parser bucket movement, support-tier promotion, or PIR/determinism claim."
 files = [
+  "crates/perl-parser-core/src/hir/mod.rs",
   "crates/perl-parser-core/src/hir/model.rs",
   "crates/perl-parser-core/src/hir/lower.rs",
   "crates/perl-parser-core/tests/hir_tests.rs",

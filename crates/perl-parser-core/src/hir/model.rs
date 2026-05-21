@@ -142,6 +142,16 @@ impl HirFile {
         compile_effects_from_file(self, source_hash)
     }
 
+    /// Project bareword expression classifications from existing HIR facts.
+    ///
+    /// This is a compiler-substrate proof surface only. It classifies
+    /// source-backed bareword expression shells without changing diagnostics or
+    /// LSP provider behavior.
+    #[must_use]
+    pub fn bareword_classifications(&self) -> BarewordClassificationTable {
+        bareword_classifications_from_file(self)
+    }
+
     /// Project framework-adapter facts using the default registry.
     ///
     /// This is a compiler-substrate proof surface only. It does not change LSP
@@ -249,6 +259,60 @@ pub struct CompileEffect {
     pub confidence: CompileConfidence,
 }
 
+/// HIR-local table of bareword expression classifications.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct BarewordClassificationTable {
+    /// Bareword classification facts in stable source order.
+    pub facts: Vec<BarewordClassificationFact>,
+}
+
+/// One conservative classification for a bareword expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BarewordClassificationFact {
+    /// Bareword text as parsed.
+    pub name: String,
+    /// Best-effort package context used for source-backed lookup.
+    pub package_context: Option<String>,
+    /// Classification assigned by the compiler substrate.
+    pub classification: BarewordClassification,
+    /// Source range for the bareword expression.
+    pub range: SourceLocation,
+    /// HIR item that produced this fact.
+    pub source_item: HirId,
+    /// Scope containing this bareword, when known.
+    pub scope_id: Option<HirScopeId>,
+    /// Source anchor of the bareword token.
+    pub anchor_id: AnchorId,
+    /// Human-readable reason for the conservative classification.
+    pub reason: String,
+    /// How this fact was produced.
+    pub provenance: CompileProvenance,
+    /// Confidence in this fact.
+    pub confidence: CompileConfidence,
+}
+
+/// Conservative bareword classifications used by compiler-substrate proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BarewordClassification {
+    /// Bareword resolves to a source-backed constant-like code slot.
+    Constant,
+    /// Bareword resolves to a source-backed subroutine code slot.
+    Subroutine,
+    /// Bareword names a source-backed package/stash.
+    Package,
+    /// Bareword is a known Perl filehandle name.
+    Filehandle,
+    /// Bareword can be interpreted as a string-like bareword when no stronger fact exists.
+    StringLike,
+    /// A dynamic boundary prevents a stronger classification.
+    DynamicBoundary,
+    /// No source-backed or conservative classification is available.
+    Unknown,
+}
+
 /// Compiler state mutation represented by an effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -353,6 +417,182 @@ pub enum CompileEffectFactKind {
 struct CompileEffectEntry {
     source_order: u32,
     effect: CompileEffect,
+}
+
+fn bareword_classifications_from_file(file: &HirFile) -> BarewordClassificationTable {
+    let facts = file
+        .items
+        .iter()
+        .filter_map(|item| {
+            let HirKind::BarewordExpr(expr) = &item.kind else {
+                return None;
+            };
+            let classification = classify_bareword(
+                file,
+                expr.name.as_str(),
+                item.package_context.as_deref(),
+                item.range,
+            );
+            Some(BarewordClassificationFact {
+                name: expr.name.clone(),
+                package_context: item.package_context.clone(),
+                classification: classification.kind,
+                range: item.range,
+                source_item: item.id,
+                scope_id: item.scope_context,
+                anchor_id: AnchorId(item.range.start as u64),
+                reason: classification.reason,
+                provenance: classification.provenance,
+                confidence: classification.confidence,
+            })
+        })
+        .collect();
+
+    BarewordClassificationTable { facts }
+}
+
+struct BarewordClassificationSeed {
+    kind: BarewordClassification,
+    reason: String,
+    provenance: CompileProvenance,
+    confidence: CompileConfidence,
+}
+
+fn classify_bareword(
+    file: &HirFile,
+    name: &str,
+    package_context: Option<&str>,
+    range: SourceLocation,
+) -> BarewordClassificationSeed {
+    if is_known_filehandle(name) {
+        return bareword_seed(
+            BarewordClassification::Filehandle,
+            "known Perl filehandle",
+            CompileProvenance::DesugaredAst,
+            CompileConfidence::High,
+        );
+    }
+
+    if file
+        .stash_graph
+        .packages
+        .iter()
+        .any(|package| package.package == name && package.range.start <= range.start)
+    {
+        return bareword_seed(
+            BarewordClassification::Package,
+            "source-backed package declaration",
+            CompileProvenance::ExactAst,
+            CompileConfidence::High,
+        );
+    }
+
+    let (package_name, symbol_name) = bareword_package_and_symbol(name, package_context);
+    if has_dynamic_stash_boundary(file, &package_name, &symbol_name, range) {
+        return bareword_seed(
+            BarewordClassification::DynamicBoundary,
+            "matching dynamic stash boundary blocks exact classification",
+            CompileProvenance::DynamicBoundary,
+            CompileConfidence::Low,
+        );
+    }
+
+    if let Some(slot) = find_code_slot(file, &package_name, &symbol_name, range) {
+        return match slot.source {
+            GlobSlotSource::ConstantDeclaration => bareword_seed(
+                BarewordClassification::Constant,
+                "source-backed constant-like code slot",
+                stash_provenance_to_compile(slot.provenance),
+                stash_confidence_to_compile(slot.confidence),
+            ),
+            GlobSlotSource::SubDeclaration
+            | GlobSlotSource::MethodDeclaration
+            | GlobSlotSource::TypeglobAlias => bareword_seed(
+                BarewordClassification::Subroutine,
+                "source-backed callable code slot",
+                stash_provenance_to_compile(slot.provenance),
+                stash_confidence_to_compile(slot.confidence),
+            ),
+            _ => bareword_seed(
+                BarewordClassification::Unknown,
+                "code slot source is not a callable bareword proof",
+                stash_provenance_to_compile(slot.provenance),
+                CompileConfidence::Low,
+            ),
+        };
+    }
+
+    if is_string_like_bareword(name) {
+        return bareword_seed(
+            BarewordClassification::StringLike,
+            "unqualified lowercase bareword with no stronger source-backed fact",
+            CompileProvenance::DesugaredAst,
+            CompileConfidence::Medium,
+        );
+    }
+
+    bareword_seed(
+        BarewordClassification::Unknown,
+        "no source-backed symbol, package, filehandle, or string-like classification",
+        CompileProvenance::ExactAst,
+        CompileConfidence::Low,
+    )
+}
+
+fn bareword_seed(
+    kind: BarewordClassification,
+    reason: &str,
+    provenance: CompileProvenance,
+    confidence: CompileConfidence,
+) -> BarewordClassificationSeed {
+    BarewordClassificationSeed { kind, reason: reason.to_string(), provenance, confidence }
+}
+
+fn is_known_filehandle(name: &str) -> bool {
+    matches!(name, "ARGV" | "ARGVOUT" | "DATA" | "STDERR" | "STDIN" | "STDOUT")
+}
+
+fn is_string_like_bareword(name: &str) -> bool {
+    !name.contains("::")
+        && name.chars().next().is_some_and(|first| first == '_' || first.is_ascii_lowercase())
+}
+
+fn bareword_package_and_symbol(name: &str, package_context: Option<&str>) -> (String, String) {
+    if let Some((package, symbol)) = name.rsplit_once("::") {
+        (package.to_string(), symbol.to_string())
+    } else {
+        (package_context.unwrap_or("main").to_string(), name.to_string())
+    }
+}
+
+fn find_code_slot<'a>(
+    file: &'a HirFile,
+    package_name: &str,
+    symbol_name: &str,
+    range: SourceLocation,
+) -> Option<&'a GlobSlot> {
+    file.stash_graph.packages.iter().find(|package| package.package == package_name).and_then(
+        |package| {
+            package.slots.iter().find(|slot| {
+                slot.kind == GlobSlotKind::Code
+                    && slot.name == symbol_name
+                    && slot.range.start <= range.start
+            })
+        },
+    )
+}
+
+fn has_dynamic_stash_boundary(
+    file: &HirFile,
+    package_name: &str,
+    symbol_name: &str,
+    range: SourceLocation,
+) -> bool {
+    file.stash_graph.dynamic_boundaries.iter().any(|boundary| {
+        boundary.package.as_deref() == Some(package_name)
+            && boundary.range.start <= range.start
+            && boundary.symbol.as_deref().is_none_or(|symbol| symbol == symbol_name)
+    })
 }
 
 fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec<CompileEffect> {

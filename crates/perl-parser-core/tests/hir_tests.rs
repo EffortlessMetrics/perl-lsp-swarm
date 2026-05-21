@@ -1,7 +1,7 @@
 use perl_parser_core::hir::{
-    COMPILE_EFFECT_MODEL_VERSION, CompileConfidence, CompileEffectFactKind, CompileEffectKind,
-    CompileEffectSourceKind, CompileEnvironment, CompileEnvironmentBoundaryKind, CompileProvenance,
-    DynamicBoundaryKind, FrameworkAdapterKind, FrameworkAdapterRegistry,
+    BarewordClassification, COMPILE_EFFECT_MODEL_VERSION, CompileConfidence, CompileEffectFactKind,
+    CompileEffectKind, CompileEffectSourceKind, CompileEnvironment, CompileEnvironmentBoundaryKind,
+    CompileProvenance, DynamicBoundaryKind, FrameworkAdapterKind, FrameworkAdapterRegistry,
     FrameworkExportedSymbolKind, GlobSlotSource, HirFile, HirKind, IncRootKind,
     ModuleResolutionRoot, PragmaArgumentKind, RecoveryConfidence, ScopeGraph, StashConfidence,
     StashGraph, StashProvenance, lower_ast,
@@ -470,6 +470,32 @@ fn render_compile_effects(file: &HirFile) -> String {
         .join("\n")
 }
 
+fn render_bareword_classifications(file: &HirFile) -> String {
+    file.bareword_classifications()
+        .facts
+        .into_iter()
+        .map(|fact| {
+            let package = fact.package_context.as_deref().unwrap_or("<none>");
+            let scope = fact
+                .scope_id
+                .map(|id| id.index().to_string())
+                .unwrap_or_else(|| "<none>".to_string());
+            format!(
+                "{} {:?} pkg={} item={} scope={} {:?}/{:?} reason={}",
+                fact.name,
+                fact.classification,
+                package,
+                fact.source_item.index(),
+                scope,
+                fact.provenance,
+                fact.confidence,
+                fact.reason
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn find_import_spec<'a>(
     specs: &'a [ImportSpec],
     module: &str,
@@ -648,6 +674,63 @@ fn hir_lowers_expression_shells_without_provider_cutover() -> Result<(), Box<dyn
          @items scope=1 target=<unresolved>\n\
          $source scope=1 target=<unresolved>\n\
          $file scope=1 target=<unresolved>"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn hir_classifies_barewords_without_provider_cutover() -> Result<(), Box<dyn std::error::Error>> {
+    let file = lower_source(
+        "package Known::Pkg;\n\
+         package Bare::Demo;\n\
+         use constant 'ANSWER' => 42;\n\
+         sub helper { 1; }\n\
+         *dynamic = $target;\n\
+         my $constant = ANSWER;\n\
+         my $callable = helper;\n\
+         my $package = Known::Pkg;\n\
+         my $filehandle = STDOUT;\n\
+         my $string = bareword;\n\
+         my $dynamic = dynamic;\n\
+         my $unknown = UNKNOWN;\n",
+    );
+
+    let table = file.bareword_classifications();
+    let has_class = |name: &str, classification: BarewordClassification| {
+        table.facts.iter().any(|fact| fact.name == name && fact.classification == classification)
+    };
+
+    assert!(has_class("ANSWER", BarewordClassification::Constant));
+    assert!(has_class("helper", BarewordClassification::Subroutine));
+    assert!(has_class("Known::Pkg", BarewordClassification::Package));
+    assert!(has_class("STDOUT", BarewordClassification::Filehandle));
+    assert!(has_class("bareword", BarewordClassification::StringLike));
+    assert!(has_class("dynamic", BarewordClassification::DynamicBoundary));
+    assert!(has_class("UNKNOWN", BarewordClassification::Unknown));
+    assert!(
+        table.facts.iter().all(|fact| {
+            file.items.iter().any(|item| {
+                item.id == fact.source_item
+                    && matches!(&item.kind, HirKind::BarewordExpr(expr) if expr.name == fact.name)
+            })
+        }),
+        "bareword classifications should point back to source-backed HIR bareword expressions"
+    );
+
+    let rendered = render_bareword_classifications(&file);
+    assert!(rendered.contains("ANSWER Constant"));
+    assert!(rendered.contains("helper Subroutine"));
+    assert!(rendered.contains("Known::Pkg Package"));
+    assert!(rendered.contains("STDOUT Filehandle"));
+    assert!(rendered.contains("bareword StringLike"));
+    assert!(rendered.contains("dynamic DynamicBoundary"));
+    assert!(rendered.contains("UNKNOWN Unknown"));
+    assert!(
+        !file.items.iter().any(
+            |item| matches!(&item.kind, HirKind::CallExpr(expr) if expr.name == "provider_cutover")
+        ),
+        "bareword classifier facts must not imply provider cutover"
     );
 
     Ok(())
