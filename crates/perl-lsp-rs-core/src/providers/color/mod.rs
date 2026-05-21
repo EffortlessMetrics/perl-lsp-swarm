@@ -131,36 +131,50 @@ pub fn detect_colors(text: &str) -> Vec<ColorInformation> {
     colors
 }
 
-/// Detect hex color codes in format: #RGB, #RRGGBB, #RRGGBBAA
-fn detect_hex_colors(text: &str) -> Vec<ColorInformation> {
+fn detect_colors_from_captures<F>(
+    text: &str,
+    re: &Regex,
+    capture_idx: usize,
+    mut parse: F,
+) -> Vec<ColorInformation>
+where
+    F: FnMut(&str) -> Option<Color>,
+{
     let mut colors = Vec::new();
 
-    let Some(re) = HEX_COLOR_RE.as_ref() else {
-        return colors;
-    };
     for (line_num, line) in text.lines().enumerate() {
         for cap in re.captures_iter(line) {
-            let (Some(mat), Some(hex_match)) = (cap.get(0), cap.get(1)) else {
+            let (Some(full_match), Some(captured_value)) = (cap.get(0), cap.get(capture_idx))
+            else {
                 continue;
             };
-            let hex = hex_match.as_str();
-            if let Some(color) = parse_hex_color(hex) {
-                // Convert byte offsets to UTF-16 positions (LSP requirement)
-                let start_char = byte_to_utf16_col(line, mat.start());
-                let end_char = byte_to_utf16_col(line, mat.end());
+            let Some(color) = parse(captured_value.as_str()) else {
+                continue;
+            };
 
-                colors.push(ColorInformation {
-                    range: WireRange {
-                        start: WirePosition::new(line_num as u32, start_char),
-                        end: WirePosition::new(line_num as u32, end_char),
-                    },
-                    color,
-                });
-            }
+            let start_char = byte_to_utf16_col(line, full_match.start());
+            let end_char = byte_to_utf16_col(line, full_match.end());
+
+            colors.push(ColorInformation {
+                range: WireRange {
+                    start: WirePosition::new(line_num as u32, start_char),
+                    end: WirePosition::new(line_num as u32, end_char),
+                },
+                color,
+            });
         }
     }
 
     colors
+}
+
+/// Detect hex color codes in format: #RGB, #RRGGBB, #RRGGBBAA
+fn detect_hex_colors(text: &str) -> Vec<ColorInformation> {
+    let Some(re) = HEX_COLOR_RE.as_ref() else {
+        return Vec::new();
+    };
+
+    detect_colors_from_captures(text, re, 1, parse_hex_color)
 }
 
 /// Parse hex color string to RGBA, returning None for invalid input
@@ -209,34 +223,11 @@ fn parse_hex_color(hex: &str) -> Option<Color> {
 
 /// Detect ANSI color escape codes: \e[31m, \e[38;5;196m, \e[38;2;R;G;Bm, etc.
 fn detect_ansi_colors(text: &str) -> Vec<ColorInformation> {
-    let mut colors = Vec::new();
-
     let Some(re) = ANSI_COLOR_RE.as_ref() else {
-        return colors;
+        return Vec::new();
     };
-    for (line_num, line) in text.lines().enumerate() {
-        for cap in re.captures_iter(line) {
-            let (Some(mat), Some(code_match)) = (cap.get(0), cap.get(1)) else {
-                continue;
-            };
-            let code = code_match.as_str();
-            if let Some(color) = parse_ansi_color(code) {
-                // Convert byte offsets to UTF-16 positions (LSP requirement)
-                let start_char = byte_to_utf16_col(line, mat.start());
-                let end_char = byte_to_utf16_col(line, mat.end());
 
-                colors.push(ColorInformation {
-                    range: WireRange {
-                        start: WirePosition::new(line_num as u32, start_char),
-                        end: WirePosition::new(line_num as u32, end_char),
-                    },
-                    color,
-                });
-            }
-        }
-    }
-
-    colors
+    detect_colors_from_captures(text, re, 1, parse_ansi_color)
 }
 
 /// Parse ANSI color code to RGBA.
