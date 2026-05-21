@@ -11,6 +11,72 @@
 use crate::TokenType;
 use std::sync::Arc;
 
+mod modifier_tail {
+    use super::ModSpec;
+
+    pub(super) fn split_tail_for_spec(
+        tail: &str,
+        spec: &ModSpec,
+        canonicalize: impl FnOnce(&str, &ModSpec) -> String,
+    ) -> Option<(String, Option<&'static str>)> {
+        if !tail.chars().all(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+
+        if !spec.allow_charset {
+            return parse_run_only_tail(tail, spec, canonicalize);
+        }
+
+        let (run_part, charset) = split_charset_suffix(tail);
+        validate_and_canonicalize(run_part, charset, spec, canonicalize)
+    }
+
+    fn parse_run_only_tail(
+        tail: &str,
+        spec: &ModSpec,
+        canonicalize: impl FnOnce(&str, &ModSpec) -> String,
+    ) -> Option<(String, Option<&'static str>)> {
+        if !run_part_is_valid(tail, spec) {
+            return None;
+        }
+
+        Some((canonicalize(tail, spec), None))
+    }
+
+    fn validate_and_canonicalize(
+        run_part: &str,
+        charset: Option<&'static str>,
+        spec: &ModSpec,
+        canonicalize: impl FnOnce(&str, &ModSpec) -> String,
+    ) -> Option<(String, Option<&'static str>)> {
+        if !run_part_is_valid(run_part, spec) {
+            return None;
+        }
+
+        Some((canonicalize(run_part, spec), charset))
+    }
+
+    fn split_charset_suffix(tail: &str) -> (&str, Option<&'static str>) {
+        if let Some(stripped) = tail.strip_suffix("aa") {
+            (stripped, Some("aa"))
+        } else if let Some(stripped) = tail.strip_suffix('a') {
+            (stripped, Some("a"))
+        } else if let Some(stripped) = tail.strip_suffix('d') {
+            (stripped, Some("d"))
+        } else if let Some(stripped) = tail.strip_suffix('l') {
+            (stripped, Some("l"))
+        } else if let Some(stripped) = tail.strip_suffix('u') {
+            (stripped, Some("u"))
+        } else {
+            (tail, None)
+        }
+    }
+
+    fn run_part_is_valid(run_part: &str, spec: &ModSpec) -> bool {
+        run_part.chars().all(|c| spec.run.contains(&c))
+    }
+}
+
 /// Specification for which modifiers are allowed for each operator
 ///
 /// Note: These specs are currently defined for documentation and potential future use.
@@ -64,44 +130,7 @@ pub fn canon_run(run: &str, spec: &ModSpec) -> String {
 /// Retained for potential future use in advanced modifier analysis.
 #[allow(dead_code)]
 pub fn split_tail_for_spec(tail: &str, spec: &ModSpec) -> Option<(String, Option<&'static str>)> {
-    // Must be all alphabetic
-    if !tail.chars().all(|c| c.is_ascii_alphabetic()) {
-        return None;
-    }
-
-    // If charset not allowed, all chars must be valid run flags
-    if !spec.allow_charset {
-        return if tail.chars().all(|c| spec.run.contains(&c)) {
-            Some((canon_run(tail, spec), None))
-        } else {
-            None
-        };
-    }
-
-    // Check for charset suffix (at most one, at the very end)
-    let (run_part, charset): (&str, Option<&'static str>) =
-        if let Some(stripped) = tail.strip_suffix("aa") {
-            (stripped, Some("aa"))
-        } else if let Some(stripped) = tail.strip_suffix('a') {
-            (stripped, Some("a"))
-        } else if let Some(stripped) = tail.strip_suffix('d') {
-            (stripped, Some("d"))
-        } else if let Some(stripped) = tail.strip_suffix('l') {
-            (stripped, Some("l"))
-        } else if let Some(stripped) = tail.strip_suffix('u') {
-            (stripped, Some("u"))
-        } else {
-            (tail, None)
-        };
-
-    // Run-part must be in the allowed set
-    if !run_part.chars().all(|c| spec.run.contains(&c)) {
-        return None;
-    }
-
-    // All good: return canonicalized run + optional charset
-    let run = canon_run(run_part, spec);
-    Some((run, charset))
+    modifier_tail::split_tail_for_spec(tail, spec, canon_run)
 }
 
 /// Information about a quote operator being parsed
