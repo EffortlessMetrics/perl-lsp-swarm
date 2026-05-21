@@ -1,0 +1,29 @@
+schema_version = "1.0"
+
+id = "parser-edge-gap-closure"
+name = "Parser edge-gap closure"
+status = "active"
+owner = "parser"
+
+objective = """
+Close or explicitly bound the production parser's known edge gaps with a durable
+ledger, fixture bank, boundedness budgets, structural assertions, and closeouts.
+"""
+
+end_state = [
+  "Every current corpus gap has a parser-edge ledger row.",
+  "Every P0/P1 gap has a fixture or accepted-impossible boundary.",
+  "Every timeout/hang risk has a boundedness budget.",
+  "Every closed gap has proof commands and claim boundary.",
+  "Parser docs distinguish fixed, bounded-degradation, and impossible/runtime-only cases.",
+  "V3 parser regressions are caught by fixture or boundedness tests.",
+]
+
+[[work_item]]
+id = "track-b-rail"
+status = "done"
+proposal = "PERLLSP-PROP-0002"
+spec = "PERLLSP-SPEC-0005"
+blocks = ["edge-ledger", "boundedness-budgets", "fixture-bank"]
+blocked_by = []
+proof = ["git diff --check"]
