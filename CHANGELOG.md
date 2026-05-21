@@ -15,6 +15,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider-specific receipt is attached, avoiding false certainty while the
   live provider receipt wiring lands.
 
+## [0.15.0] - 2026-MM-DD
+
+Release notes: [v0.15.0](docs/releases/v0.15.0.md)
+
+Minor release focused on JSON-RPC type safety and fixing the LSP4IJ
+file-watcher registration crash. Breaking change in the public
+`perl-lsp-rs-core::protocol` API (request/response ID field type) lifts
+this to a minor version under 0.x semver.
+
+### Fixed
+
+- **LSP4IJ file-watcher registration crash** — Server no longer emits
+  wall-clock millisecond IDs for `client/registerCapability`
+  (~1.7e12 overflows i32 in strict clients including LSP4IJ). All
+  server→client requests now route through a bounded `AtomicI32`
+  allocator that emits values in `1..=i32::MAX` and wraps cleanly.
+  This unblocks JetBrains users on the LSP4IJ plugin. (#221, #224)
+
+### Added
+
+- **Typed JSON-RPC request IDs** — `JsonRpcId` (strict-shape enum:
+  integer | string; rejects null/fractional/object/array at the serde
+  boundary) and `ServerRequestId` (positive-i32 newtype with no
+  out-of-range constructor) added to `perl-lsp-rs-core::protocol`.
+  The type system now makes the file-watcher crash structurally
+  impossible to reintroduce. (#221, #224)
+- **Strict inbound ID validation** — Invalid request-ID shapes
+  (null, fractional, object, array) are rejected at the transport
+  boundary instead of producing undefined behavior deep in the
+  dispatcher. (#221)
+- **LSP4IJ regression test** — File-watcher registration request ID
+  asserted to be a bounded integer in `1..=i32::MAX`. Source-guard
+  tests pin the fix against `lifecycle/watchers.rs` re-introducing
+  wall-clock-derived IDs. (#221)
+
+### Changed
+
+- **BREAKING:** `JsonRpcRequest.id` and `JsonRpcResponse.id` are now
+  `Option<JsonRpcId>` instead of `Option<serde_json::Value>`.
+  Consumers of the published `perl-lsp-rs-core::protocol` crate must
+  use `JsonRpcId::Integer(N)` / `JsonRpcId::String(...)` in tests and
+  any external construction. `Value` round-trips via `to_value()` /
+  `from_value()`. (#221)
+- **BREAKING:** `outbound::OutboundSender::send_request` now takes
+  `ServerRequestId` instead of raw `i64`. (#221)
+- **Cancellation registry typed end-to-end** — `CancellationRegistry`
+  tokens, cleanup contexts, and cache are keyed by `JsonRpcId`
+  instead of `format!("{:?}", value)` strings.
+  `PerlLspCancellationToken.request_id`,
+  `RequestCleanupGuard.request_id`, `cancel_mark` / `is_cancelled` /
+  `register_progress_request`, and the runtime `cancelled` /
+  `progress_token_to_request` collections all move from `Value` to
+  `JsonRpcId`. Integer and string IDs with the same textual form
+  (e.g. `7` vs `"7"`) are now independently cancellable. (#223, #224)
+- **`pending_workspace_configuration_requests`** is now keyed by
+  `ServerRequestId` rather than raw `i64`. (#221)
+
+### Planned (latency rail — separate ladder, follows 0.15.0)
+
+- LSP interactive latency rollout rail documented at
+  [`docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md`](docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md).
+  Workload-profile and stale-work-cancellation work that benefits
+  Neovim and LSP4IJ equally; targets 0.15.1. Umbrella tracking: **#229**.
+
 ### Planned
 
 - Documented the Rust 1.95 / 0.14.0 rollout sequence before implementation: compatibility spike first, then MSRV/toolchain, lint, no-panic, file-policy, CI routing, and release-prep lanes.
