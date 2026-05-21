@@ -16,7 +16,7 @@
 // Import from the parent's common module (test files must declare `mod common;` before `mod test_utils;`)
 use super::LspServer;
 use perl_tdd_support::must;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 

@@ -4,14 +4,14 @@
 //! encapsulate the full LSP lifecycle for integration tests.
 
 use perl_tdd_support::must;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::time::Duration;
 
 use super::protocol_io::{
     map_send_error, read_notification_method, read_response_matching_i64, send_message_inner,
 };
 use super::{
-    LspServer, adaptive_timeout, max_concurrent_threads, next_id, send_notification, send_request,
+    adaptive_timeout, max_concurrent_threads, next_id, send_notification, send_request, LspServer,
 };
 
 fn initialize_lsp_with_params(server: &LspServer, params: Value) -> Value {

@@ -61,6 +61,7 @@ use perl_parser::{
 
 use crate::call_hierarchy_provider::CallHierarchyProvider;
 use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
+use crate::protocol::JsonRpcId;
 // Wave G3 (#4535): perl-lsp-feature-governance absorbed into perl-lsp-rs-core::governance
 use perl_lsp_rs_core::governance::FeatureProfile;
 
@@ -164,7 +165,7 @@ pub struct LspServer {
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
     /// Cancelled request IDs
-    cancelled: Arc<Mutex<HashSet<Value>>>,
+    cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Workspace folders with full state representation
     ///
     /// This replaces the previous `Vec<String>` approach to support multi-root
@@ -187,7 +188,7 @@ pub struct LspServer {
     /// Active progress tokens for work done progress tracking
     progress_tokens: Arc<Mutex<HashSet<String>>>,
     /// Maps progress tokens to their originating request IDs for cancellation routing
-    progress_token_to_request: Arc<Mutex<HashMap<String, Value>>>,
+    progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     /// Refresh controller for debounced client refresh requests
     refresh_controller: refresh::RefreshController,
     /// Diagnostic publication debouncer (installed after Arc wrapping in Scheduler::new)

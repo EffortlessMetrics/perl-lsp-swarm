@@ -5,6 +5,7 @@
 
 use super::super::*;
 use super::response::RoutedResponse;
+use crate::protocol::JsonRpcId;
 
 impl LspServer {
     pub(super) fn route_request(
@@ -218,11 +219,15 @@ impl LspServer {
     where
         F: FnOnce(Option<&Value>) -> Result<Option<Value>, JsonRpcError>,
     {
-        if let Some(request_id) = id.as_ref()
-            && self.is_cancelled(request_id)
-        {
-            self.cancel_clear(request_id);
-            return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
+        if let Some(request_id) = id.as_ref() {
+            if let Some(typed_id) = JsonRpcId::try_from_value(request_id) {
+                if self.is_cancelled(&typed_id) {
+                    self.cancel_clear(&typed_id);
+                    return RoutedResponse::Immediate(cancelled_response_with_method(
+                        request_id, &method,
+                    ));
+                }
+            }
         }
 
         let result = handler(id.as_ref());

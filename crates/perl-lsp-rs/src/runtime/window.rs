@@ -314,7 +314,7 @@ impl LspServer {
                     // and signal cancellation via the global registry
                     let request_id = self.progress_token_to_request.lock().remove(token);
                     if let Some(req_id) = request_id {
-                        tracing::debug!(request = ?req_id, token, "Signalling cancellation via progress token");
+                        tracing::debug!(request = %req_id, token, "Signalling cancellation via progress token");
                         if let Err(e) = GLOBAL_CANCELLATION_REGISTRY.cancel_request(&req_id) {
                             tracing::warn!(error = %e, "Failed to cancel request via registry");
                         }
@@ -340,6 +340,7 @@ impl LspServer {
 mod tests {
     use super::*;
     use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
+    use crate::protocol::JsonRpcId;
     use serde_json::json;
 
     #[test]
@@ -348,7 +349,7 @@ mod tests {
 
         // Set up: register a progress token and associate it with a request ID
         let token_str = "test-progress-token-1";
-        let request_id = json!(42);
+        let request_id = JsonRpcId::Integer(42);
 
         server.progress_tokens.lock().insert(token_str.to_string());
         server.register_progress_request(token_str, request_id.clone());

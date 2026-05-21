@@ -3,7 +3,7 @@
 //! Wraps experimental and test-only LSP requests.
 
 use super::super::*;
-use crate::protocol::{request_cancelled_error, server_cancelled_error};
+use crate::protocol::{request_cancelled_error, server_cancelled_error, JsonRpcId};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -35,7 +35,8 @@ impl LspServer {
         for i in 0..20 {
             std::thread::sleep(Duration::from_millis(50));
             if let Some(id) = id {
-                if self.is_cancelled(id) {
+                let typed_id = JsonRpcId::try_from_value(id);
+                if typed_id.as_ref().is_some_and(|tid| self.is_cancelled(tid)) {
                     tracing::debug!(iteration = i, "Operation cancelled");
                     return Ok(Some(json!({
                         "jsonrpc": "2.0",

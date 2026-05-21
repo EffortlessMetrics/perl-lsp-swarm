@@ -314,7 +314,11 @@ impl std::fmt::Display for TestError {
 
 /// Truncate string to fit in formatted output
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len { s.to_string() } else { format!("{}...", &s[..max_len - 3]) }
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
+    }
 }
 
 /// Graceful degradation helper
@@ -442,7 +446,11 @@ mod tests {
 
         let result = degradation.attempt(|| {
             attempt_count += 1;
-            if attempt_count < 2 { Err("simulated failure") } else { Ok(42) }
+            if attempt_count < 2 {
+                Err("simulated failure")
+            } else {
+                Ok(42)
+            }
         });
 
         assert_eq!(result, Ok(42));
