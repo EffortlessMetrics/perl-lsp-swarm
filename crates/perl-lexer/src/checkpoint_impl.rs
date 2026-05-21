@@ -1,25 +1,13 @@
 use crate::*;
 
+use self::checkpoint_context::build_checkpoint_context;
+use self::checkpoint_restore::restore_format_mode_context;
+
+mod checkpoint_context;
+mod checkpoint_restore;
+
 impl Checkpointable for PerlLexer<'_> {
     fn checkpoint(&self) -> LexerCheckpoint {
-        use checkpoint::CheckpointContext;
-
-        // Determine the checkpoint context based on current state
-        let context = if matches!(self.mode, LexerMode::InFormatBody) {
-            CheckpointContext::Format {
-                start_position: self.position.saturating_sub(100), // Approximate
-            }
-        } else if !self.delimiter_stack.is_empty() {
-            // We're in some kind of quote-like construct
-            CheckpointContext::QuoteLike {
-                operator: String::new(), // Would need to track this
-                delimiter: self.delimiter_stack.last().copied().unwrap_or('\0'),
-                is_paired: true,
-            }
-        } else {
-            CheckpointContext::Normal
-        };
-
         LexerCheckpoint {
             position: self.position,
             mode: self.mode,
@@ -33,7 +21,7 @@ impl Checkpointable for PerlLexer<'_> {
             paren_depth: self.paren_depth,
             current_pos: self.current_pos,
             eof_emitted: self.eof_emitted,
-            context,
+            context: build_checkpoint_context(self),
         }
     }
 
@@ -51,14 +39,7 @@ impl Checkpointable for PerlLexer<'_> {
         self.current_pos = checkpoint.current_pos;
         self.eof_emitted = checkpoint.eof_emitted;
 
-        // Handle special contexts
-        use checkpoint::CheckpointContext;
-        if let CheckpointContext::Format { .. } = &checkpoint.context {
-            // Ensure we're in format body mode
-            if !matches!(self.mode, LexerMode::InFormatBody) {
-                self.mode = LexerMode::InFormatBody;
-            }
-        }
+        restore_format_mode_context(self, checkpoint);
     }
 
     fn can_restore(&self, checkpoint: &LexerCheckpoint) -> bool {
