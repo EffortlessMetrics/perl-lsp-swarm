@@ -131,6 +131,27 @@ pub fn detect_colors(text: &str) -> Vec<ColorInformation> {
     colors
 }
 
+
+fn push_detected_color(
+    colors: &mut Vec<ColorInformation>,
+    line: &str,
+    line_num: usize,
+    start_byte: usize,
+    end_byte: usize,
+    color: Color,
+) {
+    let start_char = byte_to_utf16_col(line, start_byte);
+    let end_char = byte_to_utf16_col(line, end_byte);
+
+    colors.push(ColorInformation {
+        range: WireRange {
+            start: WirePosition::new(line_num as u32, start_char),
+            end: WirePosition::new(line_num as u32, end_char),
+        },
+        color,
+    });
+}
+
 /// Detect hex color codes in format: #RGB, #RRGGBB, #RRGGBBAA
 fn detect_hex_colors(text: &str) -> Vec<ColorInformation> {
     let mut colors = Vec::new();
@@ -145,17 +166,7 @@ fn detect_hex_colors(text: &str) -> Vec<ColorInformation> {
             };
             let hex = hex_match.as_str();
             if let Some(color) = parse_hex_color(hex) {
-                // Convert byte offsets to UTF-16 positions (LSP requirement)
-                let start_char = byte_to_utf16_col(line, mat.start());
-                let end_char = byte_to_utf16_col(line, mat.end());
-
-                colors.push(ColorInformation {
-                    range: WireRange {
-                        start: WirePosition::new(line_num as u32, start_char),
-                        end: WirePosition::new(line_num as u32, end_char),
-                    },
-                    color,
-                });
+                push_detected_color(&mut colors, line, line_num, mat.start(), mat.end(), color);
             }
         }
     }
@@ -221,17 +232,7 @@ fn detect_ansi_colors(text: &str) -> Vec<ColorInformation> {
             };
             let code = code_match.as_str();
             if let Some(color) = parse_ansi_color(code) {
-                // Convert byte offsets to UTF-16 positions (LSP requirement)
-                let start_char = byte_to_utf16_col(line, mat.start());
-                let end_char = byte_to_utf16_col(line, mat.end());
-
-                colors.push(ColorInformation {
-                    range: WireRange {
-                        start: WirePosition::new(line_num as u32, start_char),
-                        end: WirePosition::new(line_num as u32, end_char),
-                    },
-                    color,
-                });
+                push_detected_color(&mut colors, line, line_num, mat.start(), mat.end(), color);
             }
         }
     }
@@ -414,16 +415,7 @@ fn detect_named_colors(text: &str) -> Vec<ColorInformation> {
             }
 
             if let Some(color) = lookup_named_color(mat.as_str()) {
-                let start_char = byte_to_utf16_col(line, match_start);
-                let end_char = byte_to_utf16_col(line, match_end);
-
-                colors.push(ColorInformation {
-                    range: WireRange {
-                        start: WirePosition::new(line_num as u32, start_char),
-                        end: WirePosition::new(line_num as u32, end_char),
-                    },
-                    color,
-                });
+                push_detected_color(&mut colors, line, line_num, match_start, match_end, color);
             }
         }
     }
@@ -444,16 +436,14 @@ fn detect_term_ansicolor(text: &str) -> Vec<ColorInformation> {
             if let Some(name_match) = cap.get(1) {
                 if let Some(color) = lookup_named_color(name_match.as_str()) {
                     // Highlight only the color literal, not the full function call.
-                    let start_char = byte_to_utf16_col(line, name_match.start());
-                    let end_char = byte_to_utf16_col(line, name_match.end());
-
-                    colors.push(ColorInformation {
-                        range: WireRange {
-                            start: WirePosition::new(line_num as u32, start_char),
-                            end: WirePosition::new(line_num as u32, end_char),
-                        },
+                    push_detected_color(
+                        &mut colors,
+                        line,
+                        line_num,
+                        name_match.start(),
+                        name_match.end(),
                         color,
-                    });
+                    );
                 }
             }
         }
