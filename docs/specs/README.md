@@ -45,6 +45,7 @@ generated sections.
 - [PLSP-SPEC-0023: Ambient inputs](PLSP-SPEC-0023-ambient-inputs.md)
 - [PLSP-SPEC-0024: Framework fact adapter contract](PLSP-SPEC-0024-framework-fact-adapters.md)
 - [PLSP-SPEC-0025: PIR v0 contract](PLSP-SPEC-0025-pir-v0.md)
+- [PLSP-SPEC-0026: LSP stack extraction boundary](PLSP-SPEC-0026-lsp-stack-extraction-boundary.md)
 
 ## Acceptance and Proof
 
