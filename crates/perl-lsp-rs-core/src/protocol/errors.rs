@@ -340,7 +340,7 @@ mod tests {
     use std::error::Error;
 
     // =========================================================================
-    // ErrorCode enum — verify repr values match constants
+    // ErrorCode enum - verify repr values match constants
     // =========================================================================
 
     #[test]
@@ -428,7 +428,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Error builders — code, message, data shape
+    // Error builders - code, message, data shape
     // =========================================================================
 
     #[test]
@@ -577,7 +577,7 @@ mod tests {
     }
 
     // =========================================================================
-    // enhanced_error — data payload shape
+    // enhanced_error - data payload shape
     // =========================================================================
 
     #[test]
@@ -598,13 +598,13 @@ mod tests {
         assert_eq!(e.code, -100);
         let data = e.data.ok_or("expected data")?;
         assert_eq!(data["error_type"], json!("etype"));
-        // The `if let Some` branch is not taken — method key must be absent.
+        // The `if let Some` branch is not taken - method key must be absent.
         assert!(data.get("method").is_none(), "method should not be present");
         Ok(())
     }
 
     // =========================================================================
-    // req_uri — happy path and error cases
+    // req_uri - happy path and error cases
     // =========================================================================
 
     #[test]
@@ -636,7 +636,7 @@ mod tests {
     }
 
     // =========================================================================
-    // req_position — happy path, missing fields, u32 overflow
+    // req_position - happy path, missing fields, u32 overflow
     // =========================================================================
 
     #[test]
@@ -695,7 +695,7 @@ mod tests {
     }
 
     // =========================================================================
-    // req_range — happy path, missing leaves, u32 overflow on all four leaves
+    // req_range - happy path, missing leaves, u32 overflow on all four leaves
     // =========================================================================
 
     #[test]
