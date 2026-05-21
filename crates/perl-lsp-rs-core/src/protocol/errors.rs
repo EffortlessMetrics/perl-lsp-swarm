@@ -530,7 +530,7 @@ mod tests {
     fn cancelled_response_has_correct_id_and_error_code() -> Result<(), Box<dyn Error>> {
         let resp = cancelled_response(&json!(7));
         assert_eq!(resp.jsonrpc, "2.0");
-        assert_eq!(resp.id, Some(json!(7)));
+        assert_eq!(resp.id, Some(JsonRpcId::Integer(7)));
         assert!(resp.result.is_none());
         let error = resp.error.ok_or("expected error field")?;
         assert_eq!(error.code, REQUEST_CANCELLED);
@@ -543,7 +543,7 @@ mod tests {
     -> Result<(), Box<dyn Error>> {
         let resp = cancelled_response_with_method(&json!(42), "textDocument/hover");
         assert_eq!(resp.jsonrpc, "2.0");
-        assert_eq!(resp.id, Some(json!(42)));
+        assert_eq!(resp.id, Some(JsonRpcId::Integer(42)));
         assert!(resp.result.is_none());
         let error = resp.error.ok_or("expected error field")?;
         assert_eq!(error.code, REQUEST_CANCELLED);
