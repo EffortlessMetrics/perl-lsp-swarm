@@ -94,18 +94,8 @@ pub fn check(repo_root: &Path) -> Result<()> {
         );
     }
 
-    // Hard mismatches: all sites that are NOT channel-split (or channel-split sites
-    // during a stable release cycle where they must match exactly).
-    let hard_mismatches: Vec<&VersionSite> = sites
-        .iter()
-        .filter(|s| s.found != workspace_version && (!s.channel_split || !pre_release))
-        .collect();
-
-    // Soft mismatches: channel-split sites allowed to lag during pre-release.
-    let soft_mismatches: Vec<&VersionSite> = sites
-        .iter()
-        .filter(|s| s.found != workspace_version && s.channel_split && pre_release)
-        .collect();
+    let (hard_mismatches, soft_mismatches) =
+        classify_mismatches(&sites, &workspace_version, pre_release);
 
     for site in &soft_mismatches {
         println!(
@@ -152,6 +142,29 @@ pub fn check(repo_root: &Path) -> Result<()> {
          run `cargo xtask bump-version {workspace_version}` to resynchronize",
         hard_mismatches.len()
     );
+}
+
+fn classify_mismatches<'a>(
+    sites: &'a [VersionSite],
+    workspace_version: &str,
+    pre_release: bool,
+) -> (Vec<&'a VersionSite>, Vec<&'a VersionSite>) {
+    let mut hard_mismatches = Vec::new();
+    let mut soft_mismatches = Vec::new();
+
+    for site in sites {
+        if site.found == workspace_version {
+            continue;
+        }
+
+        if site.channel_split && pre_release {
+            soft_mismatches.push(site);
+        } else {
+            hard_mismatches.push(site);
+        }
+    }
+
+    (hard_mismatches, soft_mismatches)
 }
 
 /// Rewrite every discovered site to `new_version`. Idempotent — sites
@@ -805,10 +818,50 @@ fn collect_single_line_doc_site(
     }
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn classify_mismatches_splits_channel_sites_during_pre_release() {
+        let sites = vec![
+            VersionSite::new(
+                PathBuf::from("Cargo.toml"),
+                1,
+                "workspace version".to_string(),
+                "0.12.3".to_string(),
+            ),
+            VersionSite::channel(
+                PathBuf::from("vscode-extension/package.json"),
+                4,
+                "VS Code extension version".to_string(),
+                "0.12.2".to_string(),
+            ),
+        ];
+
+        let (hard, soft) = classify_mismatches(&sites, "0.12.3", true);
+        assert_eq!(hard.len(), 0);
+        assert_eq!(soft.len(), 1);
+        assert_eq!(soft[0].path, PathBuf::from("vscode-extension/package.json"));
+    }
+
+    #[test]
+    fn classify_mismatches_treats_channel_sites_as_hard_on_stable() {
+        let sites = vec![
+            VersionSite::channel(
+                PathBuf::from("vscode-extension/package.json"),
+                4,
+                "VS Code extension version".to_string(),
+                "0.12.2".to_string(),
+            ),
+        ];
+
+        let (hard, soft) = classify_mismatches(&sites, "0.12.3", false);
+        assert_eq!(hard.len(), 1);
+        assert_eq!(soft.len(), 0);
+    }
+
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_repo_dir(label: &str) -> Result<PathBuf> {
