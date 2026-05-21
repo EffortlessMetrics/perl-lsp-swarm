@@ -4,7 +4,7 @@
 > It does not generate metrics, broaden live provider behavior, or replace the
 > provider-specific proof surfaces.
 
-Last reviewed: 2026-05-19.
+Last reviewed: 2026-05-21.
 
 This page answers:
 
@@ -269,10 +269,15 @@ fallback and do not become exact receiver evidence. Completion remains
 `partial-live-with-fallback`; broader generated, dynamic, unknown,
 low-confidence, stale, and workspace-wide method completion still need separate
 proof.
+The product-level Real Perl Editor Trust smoke receipt now records one
+CPAN-style workspace pass across completion, definition, diagnostics, workspace
+trust report, safe-delete preview, and explain-provider-decision. It is a
+receipt-only smoke: it records acted, fallback, setup-report, and no-edit
+refusal surfaces without broadening provider behavior, promoting support tiers,
+or moving release lineage.
 
 1. `test(workspace-symbols): add additional generated/no-source project variant only if broader generated-symbol expansion is being considered`
-2. `test(rename): keep package/compiler-backed fallback and edit-freshness receipts current before broader promotion`
-3. `test(dap): add DAP includePaths cutover proof only if native DAP module-path behavior is being promoted`
+2. `test(dap): add DAP includePaths cutover proof only if native DAP module-path behavior is being promoted`
 
 Provider decision explanations are already partial-live through
 `perl.explainProviderDecision`; callers can attach a request-local
@@ -347,6 +352,9 @@ The Dancer2 edit-freshness receipt adds the same current-source freshness proof
 for `to_psgi`: the preview remains rollback-safe and no-edit, while the live
 path uses fresh workspace-index fallback after `didChange` adds a same-file
 reference.
+The copyable receipt refresh now proves the RealBaseline and Dancer2
+post-`didChange` rename explanations preserve the same fallback/edit-freshness
+request receipt inside `copyable_payload.request_receipt` for bug reports.
 This is a narrow
 `partial-live-with-fallback` pilot, not a broad compiler-backed rename
 authorization.
@@ -364,9 +372,13 @@ with zero returned edits; Catalyst `get_action` proves compiler-allowed
 source-backed definition evidence plus rollback proof still returns no edits
 when the workspace identity guard finds ambiguous project-shaped identity; the
 package-variable and package-declaration receipt proves the source guard blocks
-non-subroutine and package-wide requests with empty edits. These receipts do not
-justify broader symbol deletion, generated/dynamic deletion,
-fallback/no-source deletion, or server-applied edits.
+non-subroutine and package-wide requests with empty edits. The
+RealBaseline live UX receipt now records the same referenced-source blocker
+through `perl.safeDeleteSymbol`: referenced `helper` returns `blocked` with
+`references_exist`, zero returned edits, no server-applied edits, and a
+copyable explain-provider-decision payload. These receipts do not justify
+broader symbol deletion, generated/dynamic deletion, fallback/no-source
+deletion, or server-applied edits.
 
 Parser raw-bucket work, Linux corpus refresh, security alert classification,
 Rust 1.95 rollout, native formatter, native critic, PIR, and determinism remain

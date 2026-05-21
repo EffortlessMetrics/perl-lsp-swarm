@@ -1,5 +1,6 @@
 //! Task implementations for xtask automation
 
+pub mod active_goal_manifest;
 pub mod agent_lease;
 pub mod agent_receipt;
 pub mod aggregate_receipts;
@@ -103,6 +104,7 @@ pub mod semantic_scorecard;
 pub mod semantic_shadow_compare;
 pub mod semantic_token_classes;
 pub mod srp_microcrates;
+pub mod swarm_agent_roster;
 pub mod swarm_summary;
 pub mod sync_release_docs;
 pub mod targeted_checks;
