@@ -64,44 +64,58 @@ pub fn canon_run(run: &str, spec: &ModSpec) -> String {
 /// Retained for potential future use in advanced modifier analysis.
 #[allow(dead_code)]
 pub fn split_tail_for_spec(tail: &str, spec: &ModSpec) -> Option<(String, Option<&'static str>)> {
-    // Must be all alphabetic
-    if !tail.chars().all(|c| c.is_ascii_alphabetic()) {
-        return None;
+    split_tail::split_tail_for_spec(tail, spec)
+}
+
+mod split_tail {
+    use super::{canon_run, ModSpec};
+
+    pub(super) fn split_tail_for_spec(
+        tail: &str,
+        spec: &ModSpec,
+    ) -> Option<(String, Option<&'static str>)> {
+        if !tail.chars().all(|c| c.is_ascii_alphabetic()) {
+            return None;
+        }
+
+        if !spec.allow_charset {
+            return split_without_charset(tail, spec);
+        }
+
+        let (run_part, charset) = split_charset_suffix(tail);
+        if !run_part.chars().all(|c| spec.run.contains(&c)) {
+            return None;
+        }
+
+        Some((canon_run(run_part, spec), charset))
     }
 
-    // If charset not allowed, all chars must be valid run flags
-    if !spec.allow_charset {
-        return if tail.chars().all(|c| spec.run.contains(&c)) {
-            Some((canon_run(tail, spec), None))
-        } else {
-            None
-        };
+    fn split_without_charset(tail: &str, spec: &ModSpec) -> Option<(String, Option<&'static str>)> {
+        tail.chars().all(|c| spec.run.contains(&c)).then(|| (canon_run(tail, spec), None))
     }
 
-    // Check for charset suffix (at most one, at the very end)
-    let (run_part, charset): (&str, Option<&'static str>) =
+    fn split_charset_suffix(tail: &str) -> (&str, Option<&'static str>) {
         if let Some(stripped) = tail.strip_suffix("aa") {
-            (stripped, Some("aa"))
-        } else if let Some(stripped) = tail.strip_suffix('a') {
-            (stripped, Some("a"))
-        } else if let Some(stripped) = tail.strip_suffix('d') {
-            (stripped, Some("d"))
-        } else if let Some(stripped) = tail.strip_suffix('l') {
-            (stripped, Some("l"))
-        } else if let Some(stripped) = tail.strip_suffix('u') {
-            (stripped, Some("u"))
-        } else {
-            (tail, None)
-        };
+            return (stripped, Some("aa"));
+        }
 
-    // Run-part must be in the allowed set
-    if !run_part.chars().all(|c| spec.run.contains(&c)) {
-        return None;
+        ['a', 'd', 'l', 'u']
+            .into_iter()
+            .find_map(|suffix| {
+                tail.strip_suffix(suffix).map(|stripped| (stripped, charset_label(suffix)))
+            })
+            .unwrap_or((tail, None))
     }
 
-    // All good: return canonicalized run + optional charset
-    let run = canon_run(run_part, spec);
-    Some((run, charset))
+    fn charset_label(suffix: char) -> Option<&'static str> {
+        match suffix {
+            'a' => Some("a"),
+            'd' => Some("d"),
+            'l' => Some("l"),
+            'u' => Some("u"),
+            _ => None,
+        }
+    }
 }
 
 /// Information about a quote operator being parsed
