@@ -59,6 +59,7 @@ specs = [
   "docs/specs/PLSP-SPEC-0024-framework-fact-adapters.md",
   "docs/specs/PLSP-SPEC-0025-pir-v0.md",
   "docs/specs/PLSP-SPEC-0026-determinism-receipt-v1.md",
+  "docs/specs/PLSP-SPEC-0027-differential-oracle-contract.md",
 ]
 
 [current]
@@ -378,6 +379,7 @@ files = [
   "docs/specs/PLSP-SPEC-0022-module-path-authority.md",
   "docs/specs/PLSP-SPEC-0023-ambient-inputs.md",
   "docs/specs/PLSP-SPEC-0026-determinism-receipt-v1.md",
+  "docs/specs/PLSP-SPEC-0027-differential-oracle-contract.md",
   "docs/project/status/compiler_facts.md",
   "docs/project/status/real_perl_editor_trust_v1.md",
 ]

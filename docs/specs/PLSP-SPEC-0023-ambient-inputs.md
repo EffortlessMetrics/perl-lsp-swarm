@@ -9,6 +9,7 @@ Linked specs:
 - [PLSP-SPEC-0017](PLSP-SPEC-0017-fact-provenance-and-source-backing.md)
 - [PLSP-SPEC-0022](PLSP-SPEC-0022-module-path-authority.md)
 - [PLSP-SPEC-0026](PLSP-SPEC-0026-determinism-receipt-v1.md)
+- [PLSP-SPEC-0027](PLSP-SPEC-0027-differential-oracle-contract.md)
 Linked ADRs:
 - [PLSP-ADR-0002](../adr/PLSP-ADR-0002-confidence-before-cutover.md)
 Linked plan: [Real Perl Editor Trust implementation plan](../../plans/real-perl-editor-trust/implementation-plan.md)

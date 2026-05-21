@@ -710,6 +710,9 @@ Recent routing
 Current executable slice
 
 - `differential-oracle-contract` is active in the substrate lane.
+- The slice defines `PLSP-SPEC-0027` as the differential oracle contract and
+  links it from the existing fact-provenance, module-path, ambient-input,
+  determinism, compiler-fact, dashboard, and active-goal surfaces.
 
 Claim boundary
 
