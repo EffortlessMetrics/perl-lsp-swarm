@@ -144,7 +144,7 @@ mod gold {
     }
 
     // -------------------------------------------------------------------------
-    // load_gold_fixture — success
+    // load_gold_fixture - success
     // -------------------------------------------------------------------------
 
     #[test]
@@ -164,7 +164,7 @@ mod gold {
     }
 
     // -------------------------------------------------------------------------
-    // load_gold_fixture — error paths
+    // load_gold_fixture - error paths
     // -------------------------------------------------------------------------
 
     #[test]
@@ -280,7 +280,7 @@ mod gold {
         // Only fixture.pl, no expected.json
         fs::write(bad.join("fixture.pl"), "1;\n")?;
 
-        // A plain file (not a directory) — should be silently skipped
+        // A plain file (not a directory) - should be silently skipped
         fs::write(root.join("not-a-dir.txt"), "ignore\n")?;
 
         let fixtures = load_gold_fixtures(&root)?;
@@ -349,7 +349,7 @@ mod gold {
     fn load_hover_gold_fixtures_skips_non_directories() -> Result<(), Box<dyn std::error::Error>> {
         let root = temp_dir("hover_non_dir");
         fs::create_dir_all(&root)?;
-        // Only a plain file — not a directory
+        // Only a plain file - not a directory
         fs::write(root.join("plain.txt"), "ignore\n")?;
 
         let fixtures = load_hover_gold_fixtures(&root)?;
@@ -750,7 +750,7 @@ mod gold {
 
     // -------------------------------------------------------------------------
     // HoverGoldExpected / GotoGoldExpected / CompletionGoldExpected /
-    // DocumentSymbolGoldExpected — version and fixture fields
+    // DocumentSymbolGoldExpected - version and fixture fields
     // -------------------------------------------------------------------------
 
     #[test]

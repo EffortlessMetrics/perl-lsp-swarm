@@ -150,7 +150,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // lint_with_config — check_unknown_tags = false
+    // lint_with_config - check_unknown_tags = false
     // -------------------------------------------------------------------------
 
     #[test]
@@ -175,7 +175,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // lint_with_config — check_unknown_flags = false
+    // lint_with_config - check_unknown_flags = false
     // -------------------------------------------------------------------------
 
     #[test]
@@ -199,7 +199,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // lint_with_config — require_perl_version = true
+    // lint_with_config - require_perl_version = true
     // -------------------------------------------------------------------------
 
     #[test]
@@ -248,7 +248,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // check_sections — max_sections_per_file exceeded
+    // check_sections - max_sections_per_file exceeded
     // -------------------------------------------------------------------------
 
     #[test]
@@ -280,7 +280,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // check_sections — duplicate effective ID
+    // check_sections - duplicate effective ID
     // -------------------------------------------------------------------------
 
     #[test]
@@ -299,7 +299,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // check_sections — generated ID error
+    // check_sections - generated ID error
     // -------------------------------------------------------------------------
 
     #[test]
@@ -324,7 +324,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // check_sections — invalid ID format (contains uppercase)
+    // check_sections - invalid ID format (contains uppercase)
     // -------------------------------------------------------------------------
 
     #[test]
@@ -370,7 +370,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // check_sections — empty body
+    // check_sections - empty body
     // -------------------------------------------------------------------------
 
     #[test]
@@ -395,7 +395,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // check_sections — unknown tag warning
+    // check_sections - unknown tag warning
     // -------------------------------------------------------------------------
 
     #[test]
@@ -420,7 +420,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // check_sections — unknown flag warning
+    // check_sections - unknown flag warning
     // -------------------------------------------------------------------------
 
     #[test]
@@ -445,7 +445,7 @@ mod lint {
     }
 
     // -------------------------------------------------------------------------
-    // check_sections — multiple issues can accumulate
+    // check_sections - multiple issues can accumulate
     // -------------------------------------------------------------------------
 
     #[test]

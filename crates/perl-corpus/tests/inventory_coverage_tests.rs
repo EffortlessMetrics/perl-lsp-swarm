@@ -20,11 +20,11 @@
 //!   - `schema_version` is always 2.
 //!   - `generators` always matches `generator_families()`.
 //! - `build_inventory_from_paths`: non-existent root produces an empty inventory
-//!   (no corpus files → no sections; gold root absent → no fixture coverage).
+//!   (no corpus files -> no sections; gold root absent -> no fixture coverage).
 //! - `populate_fixture_coverage` indirectly via `build_inventory_from_paths`:
-//!   - Gold root does not exist → `expectations_available = false`.
-//!   - Gold root with a fixture that has `expected.json` → `expectations_available = true`.
-//!   - Gold root with a fixture that has a concept file → `concept_mapping_available = true`.
+//!   - Gold root does not exist -> `expectations_available = false`.
+//!   - Gold root with a fixture that has `expected.json` -> `expectations_available = true`.
+//!   - Gold root with a fixture that has a concept file -> `concept_mapping_available = true`.
 //!   - `fixtures_without_expectations` populated when some fixtures lack expected.json.
 //!   - `fixtures_without_concepts` populated when some fixtures lack concept files.
 //!
@@ -129,7 +129,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — empty input
+    // inventory_from_sections - empty input
     // -------------------------------------------------------------------------
 
     #[test]
@@ -156,7 +156,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — id source breakdown
+    // inventory_from_sections - id source breakdown
     // -------------------------------------------------------------------------
 
     #[test]
@@ -191,12 +191,12 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — explicit section with no explicit_id field
+    // inventory_from_sections - explicit section with no explicit_id field
     // -------------------------------------------------------------------------
 
     #[test]
     fn inventory_from_sections_explicit_source_without_id_field_counts_as_missing() {
-        // Explicit source but explicit_id = None — the unusual edge case
+        // Explicit source but explicit_id = None - the unusual edge case
         let section = make_section(
             "some.id",
             IdSource::Explicit,
@@ -206,11 +206,11 @@ mod inventory {
         );
         let inv = inventory_from_sections(1, &[section]);
         assert_eq!(inv.ids.explicit, 1);
-        assert_eq!(inv.ids.missing_explicit_ids, 1, "no explicit_id field → missing count");
+        assert_eq!(inv.ids.missing_explicit_ids, 1, "no explicit_id field -> missing count");
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — duplicate detection
+    // inventory_from_sections - duplicate detection
     // -------------------------------------------------------------------------
 
     #[test]
@@ -230,7 +230,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — tags
+    // inventory_from_sections - tags
     // -------------------------------------------------------------------------
 
     #[test]
@@ -273,7 +273,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — flags map
+    // inventory_from_sections - flags map
     // -------------------------------------------------------------------------
 
     #[test]
@@ -294,7 +294,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — markers
+    // inventory_from_sections - markers
     // -------------------------------------------------------------------------
 
     #[test]
@@ -331,7 +331,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — generators list matches generator_families()
+    // inventory_from_sections - generators list matches generator_families()
     // -------------------------------------------------------------------------
 
     #[test]
@@ -341,7 +341,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — schema_version is always 2
+    // inventory_from_sections - schema_version is always 2
     // -------------------------------------------------------------------------
 
     #[test]
@@ -351,7 +351,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // build_inventory_from_paths — nonexistent corpus root
+    // build_inventory_from_paths - nonexistent corpus root
     // -------------------------------------------------------------------------
 
     #[test]
@@ -362,14 +362,14 @@ mod inventory {
         let inv = build_inventory_from_paths(&paths)?;
         assert_eq!(inv.files, 0);
         assert_eq!(inv.sections, 0);
-        // gold root (root/test_corpus/gold) also doesn't exist → no fixture info
+        // gold root (root/test_corpus/gold) also doesn't exist -> no fixture info
         assert!(!inv.expectations_available);
         assert!(!inv.concept_mapping_available);
         Ok(())
     }
 
     // -------------------------------------------------------------------------
-    // build_inventory_from_paths — gold root absent
+    // build_inventory_from_paths - gold root absent
     // -------------------------------------------------------------------------
 
     #[test]
@@ -383,10 +383,10 @@ mod inventory {
 
         let paths = CorpusPaths::from_root(root.clone());
         let inv = build_inventory_from_paths(&paths)?;
-        assert!(!inv.expectations_available, "gold root absent → expectations_available=false");
+        assert!(!inv.expectations_available, "gold root absent -> expectations_available=false");
         assert!(
             !inv.concept_mapping_available,
-            "gold root absent → concept_mapping_available=false"
+            "gold root absent -> concept_mapping_available=false"
         );
 
         fs::remove_dir_all(&root)?;
@@ -394,7 +394,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // build_inventory_from_paths — gold root with expectation fixtures
+    // build_inventory_from_paths - gold root with expectation fixtures
     // -------------------------------------------------------------------------
 
     #[test]
@@ -411,7 +411,7 @@ mod inventory {
 
         let paths = CorpusPaths::from_root(root.clone());
         let inv = build_inventory_from_paths(&paths)?;
-        assert!(inv.expectations_available, "expected.json present → expectations_available=true");
+        assert!(inv.expectations_available, "expected.json present -> expectations_available=true");
         assert!(
             inv.fixtures_without_expectations.is_empty(),
             "all fixtures have expected.json so list should be empty"
@@ -451,7 +451,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // build_inventory_from_paths — gold root with concept fixtures
+    // build_inventory_from_paths - gold root with concept fixtures
     // -------------------------------------------------------------------------
 
     #[test]
@@ -470,7 +470,7 @@ mod inventory {
         let inv = build_inventory_from_paths(&paths)?;
         assert!(
             inv.concept_mapping_available,
-            "concepts.json present → concept_mapping_available=true"
+            "concepts.json present -> concept_mapping_available=true"
         );
 
         fs::remove_dir_all(&root)?;
@@ -524,7 +524,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // build_inventory_from_paths — non-directory entries in gold root are skipped
+    // build_inventory_from_paths - non-directory entries in gold root are skipped
     // -------------------------------------------------------------------------
 
     #[test]
@@ -538,7 +538,7 @@ mod inventory {
         fs::write(gold_dir.join("readme.txt"), "not a fixture\n")?;
         fs::write(gold_dir.join("config.json"), r#"{}"#)?;
 
-        // A directory without fixture.pl — should also be skipped
+        // A directory without fixture.pl - should also be skipped
         let empty_subdir = gold_dir.join("empty-fixture");
         fs::create_dir_all(&empty_subdir)?;
         // No fixture.pl inside
@@ -554,7 +554,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — file count is passed through
+    // inventory_from_sections - file count is passed through
     // -------------------------------------------------------------------------
 
     #[test]
@@ -564,7 +564,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — sections and cases counts match
+    // inventory_from_sections - sections and cases counts match
     // -------------------------------------------------------------------------
 
     #[test]
@@ -576,7 +576,7 @@ mod inventory {
     }
 
     // -------------------------------------------------------------------------
-    // inventory_from_sections — concept and expectation fields default to false/empty
+    // inventory_from_sections - concept and expectation fields default to false/empty
     // -------------------------------------------------------------------------
 
     #[test]
