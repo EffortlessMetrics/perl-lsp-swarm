@@ -204,6 +204,27 @@ fn shift_unshift() -> impl Strategy<Value = String> {
     )
 }
 
+mod splice_replace_srp {
+    pub(super) fn format_initial_values(init: &[i32]) -> String {
+        init.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")
+    }
+
+    pub(super) fn render_splice_replace(
+        items: &str,
+        removed: &str,
+        init_values: &str,
+        offset: i32,
+        length: i32,
+        replacement_left: i32,
+        replacement_right: i32,
+    ) -> String {
+        format!(
+            "my @{} = ({});\nmy @{} = splice @{}, {}, {}, ({}, {});\n",
+            items, init_values, removed, items, offset, length, replacement_left, replacement_right
+        )
+    }
+}
+
 fn splice_replace() -> impl Strategy<Value = String> {
     (
         identifier(),
@@ -215,10 +236,15 @@ fn splice_replace() -> impl Strategy<Value = String> {
         small_int(),
     )
         .prop_map(|(items, removed, init, offset, length, r1, r2)| {
-            let init_str = init.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
-            format!(
-                "my @{} = ({});\nmy @{} = splice @{}, {}, {}, ({}, {});\n",
-                items, init_str, removed, items, offset, length, r1, r2
+            let init_values = splice_replace_srp::format_initial_values(&init);
+            splice_replace_srp::render_splice_replace(
+                &items,
+                &removed,
+                &init_values,
+                offset,
+                length,
+                r1,
+                r2,
             )
         })
 }
