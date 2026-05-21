@@ -506,4 +506,28 @@ impl LspServer {
         let url = url::Url::parse(uri).map_err(|e| e.to_string())?;
         coordinator.index().index_file(url, text.to_string())
     }
+
+    /// Allocate the next server-to-client request ID (test-only public wrapper).
+    ///
+    /// Exposed for integration tests that verify the bounded-ID allocator behavior
+    /// (LSP4IJ regression: epoch-millis IDs overflow `i32::MAX`).
+    pub fn test_next_server_request_id(&self) -> crate::protocol::ServerRequestId {
+        self.next_server_request_id()
+    }
+
+    /// Trigger file-watcher registration directly (test-only public wrapper).
+    ///
+    /// Exposed so integration tests can check that the `client/registerCapability`
+    /// request emitted by this path uses a bounded `i32` ID.
+    pub fn test_register_file_watchers_async(&self) {
+        self.register_file_watchers_async()
+    }
+
+    /// Enable workspace symbol advertising (for testing file-watcher registration).
+    ///
+    /// `register_file_watchers_async` early-returns when `workspace_symbol` is `false`.
+    /// This setter lets tests enable it without going through the full initialize path.
+    pub fn test_enable_workspace_symbol_feature(&self) {
+        self.advertised_features.lock().workspace_symbol = true;
+    }
 }

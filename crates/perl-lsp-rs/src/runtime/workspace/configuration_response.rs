@@ -1,3 +1,4 @@
+use crate::protocol::ServerRequestId;
 use crate::runtime::workspace_folder::WorkspaceFolderState;
 use serde_json::Value;
 
@@ -6,7 +7,7 @@ pub(super) fn apply_workspace_configuration_results(
     folder_uris: &[String],
     includes_global_item: bool,
     results: &[Value],
-    request_id: i64,
+    request_id: ServerRequestId,
 ) {
     let global_settings = if includes_global_item { results.first() } else { None };
     let folder_results_start = usize::from(includes_global_item);
@@ -29,7 +30,7 @@ pub(super) fn apply_workspace_configuration_results(
             effective_config.update_from_value(perl_settings);
         } else {
             tracing::warn!(
-                request_id,
+                request_id = %request_id,
                 folder_uri = %folder_uri,
                 "workspace/configuration response missing folder item; using TOML/default config for folder"
             );
@@ -42,6 +43,7 @@ pub(super) fn apply_workspace_configuration_results(
 #[cfg(test)]
 mod tests {
     use super::apply_workspace_configuration_results;
+    use crate::protocol::ServerRequestId;
     use crate::runtime::workspace_folder::WorkspaceFolderState;
     use serde_json::json;
 
@@ -59,7 +61,13 @@ mod tests {
             json!({"workspace": {"resolutionTimeout": 250}}),
         ];
 
-        apply_workspace_configuration_results(&mut folders, &folder_uris, true, &results, 42);
+        apply_workspace_configuration_results(
+            &mut folders,
+            &folder_uris,
+            true,
+            &results,
+            ServerRequestId::new(42).expect("positive"),
+        );
 
         assert!(folders[0].effective_workspace_config.use_system_inc);
         assert_eq!(folders[0].effective_workspace_config.resolution_timeout_ms, 150);
@@ -76,7 +84,13 @@ mod tests {
         let folder_uris = vec!["file:///workspace-a".to_string()];
         let results = vec![json!({"workspace": {"resolutionTimeout": 200}})];
 
-        apply_workspace_configuration_results(&mut folders, &folder_uris, false, &results, 43);
+        apply_workspace_configuration_results(
+            &mut folders,
+            &folder_uris,
+            false,
+            &results,
+            ServerRequestId::new(43).expect("positive"),
+        );
 
         assert_eq!(folders[0].effective_workspace_config.resolution_timeout_ms, 200);
         assert_eq!(folders[1].effective_workspace_config.resolution_timeout_ms, 50);

@@ -108,12 +108,12 @@ impl Drop for IndexingGuard {
     }
 }
 
-fn parse_configuration_response_id(value: &Value) -> Option<i64> {
-    if let Some(id) = value.as_i64() {
+fn parse_configuration_response_id(value: &Value) -> Option<ServerRequestId> {
+    if let Some(id) = ServerRequestId::from_value(value) {
         return Some(id);
     }
-
-    value.as_str().and_then(|raw| raw.parse::<i64>().ok())
+    // Tolerate string-encoded integer ids (some clients stringify before sending back).
+    value.as_str().and_then(|raw| raw.parse::<i32>().ok()).and_then(ServerRequestId::new)
 }
 
 impl LspServer {
@@ -134,16 +134,15 @@ impl LspServer {
 
         let mut items: Vec<Value> = vec![json!({ "section": "perl" })];
         items.extend(folder_uris.iter().map(|uri| json!({ "scopeUri": uri, "section": "perl" })));
-        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
 
-        if let Err(error) = self.outbound.send_request(
-            request_id,
-            "workspace/configuration",
-            json!({ "items": items }),
-        ) {
-            tracing::warn!(%error, "Failed to send workspace/configuration request");
-            return;
-        }
+        let request_id =
+            match self.send_request("workspace/configuration", json!({ "items": items })) {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::warn!(%error, "Failed to send workspace/configuration request");
+                    return;
+                }
+            };
 
         let mut pending = self.pending_workspace_configuration_requests.lock();
 
@@ -156,7 +155,7 @@ impl LspServer {
             entries.sort_by_key(|(_, created_at)| *created_at);
             for (id, _) in entries.iter().take(to_remove) {
                 tracing::debug!(
-                    request_id = *id,
+                    request_id = %id,
                     "Dropping excess workspace/configuration request (count cap)"
                 );
                 pending.remove(id);
@@ -196,7 +195,7 @@ impl LspServer {
         let response_age = std::time::Instant::now().saturating_duration_since(pending.created_at);
         if response_age > WORKSPACE_CONFIGURATION_REQUEST_TIMEOUT {
             tracing::warn!(
-                request_id = id,
+                request_id = %id,
                 age_ms = response_age.as_millis(),
                 "Ignoring stale workspace/configuration response"
             );
@@ -205,7 +204,7 @@ impl LspServer {
 
         if params.get("error").is_some() {
             tracing::debug!(
-                request_id = id,
+                request_id = %id,
                 "workspace/configuration request failed; keeping TOML/default config"
             );
             return;
@@ -213,7 +212,7 @@ impl LspServer {
 
         let Some(results) = params.get("result").and_then(Value::as_array) else {
             tracing::warn!(
-                request_id = id,
+                request_id = %id,
                 "workspace/configuration response was not an array; keeping TOML/default config"
             );
             return;
@@ -1829,9 +1828,9 @@ impl LspServer {
         let limits = coordinator.limits().clone();
         let caps = coordinator.performance_caps().clone();
         let work_done_progress = self.client_capabilities.lock().work_done_progress_support;
-        // Generate a request ID for the workDoneProgress/create call. Atomically
-        // increment so it doesn't collide with IDs from other server-to-client requests.
-        let progress_create_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        // Generate a request ID for the workDoneProgress/create call. Use the
+        // canonical bounded allocator so the ID fits in i32 (LSP4IJ safety).
+        let progress_create_id = self.next_server_request_id();
         let permission_denied_shown = Arc::clone(&self.permission_denied_shown);
 
         std::thread::spawn(move || {
@@ -2501,6 +2500,7 @@ mod tests {
     #[cfg(feature = "workspace")]
     use super::read_text_with_encoding_fallback;
     use super::{LspServer, module_name_appears_in_text};
+    use crate::protocol::ServerRequestId;
     use serde_json::json;
     #[cfg(feature = "workspace")]
     use std::io::Write;
@@ -2561,7 +2561,7 @@ mod tests {
     fn did_change_workspace_folders_clears_pending_workspace_configuration_requests() {
         let server = LspServer::new();
         server.pending_workspace_configuration_requests.lock().insert(
-            7,
+            ServerRequestId::new(7).expect("positive"),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec!["file:///tmp/folder-a".to_string()],
                 includes_global_item: true,

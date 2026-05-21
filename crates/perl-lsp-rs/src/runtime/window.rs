@@ -90,7 +90,7 @@ impl LspServer {
             "actions": if action_items.is_empty() { Value::Null } else { json!(action_items) }
         });
 
-        self.send_request_internal("window/showMessageRequest", params)?;
+        self.send_request("window/showMessageRequest", params).map(|_| ())?;
 
         Ok(())
     }
@@ -131,7 +131,7 @@ impl LspServer {
             }
         }
 
-        self.send_request_internal("window/showDocument", params)?;
+        self.send_request("window/showDocument", params).map(|_| ())?;
 
         Ok(())
     }
@@ -171,7 +171,7 @@ impl LspServer {
         });
 
         // Send request
-        self.send_request_internal("window/workDoneProgress/create", params)?;
+        self.send_request("window/workDoneProgress/create", params).map(|_| ())?;
 
         // Register token on success
         self.progress_tokens.lock().insert(token.to_string());
@@ -324,15 +324,6 @@ impl LspServer {
                 }
             }
         }
-    }
-
-    /// Send a request to the client (internal helper)
-    ///
-    /// Internal helper to send JSON-RPC requests. Uses the existing send_request
-    /// infrastructure which auto-generates request IDs.
-    fn send_request_internal(&self, method: &str, params: Value) -> io::Result<()> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::SeqCst);
-        self.outbound.send_request(request_id, method, params)
     }
 }
 

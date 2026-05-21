@@ -331,7 +331,7 @@ include_paths = ["other_lib"]
         );
 
         server.pending_workspace_configuration_requests.lock().insert(
-            11,
+            crate::protocol::ServerRequestId::new(11).expect("positive"),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri1.clone(), uri2.clone()],
                 includes_global_item: true,
@@ -377,7 +377,7 @@ include_paths = ["other_lib"]
                 .with_path(folder.clone()),
         );
         server.pending_workspace_configuration_requests.lock().insert(
-            77,
+            crate::protocol::ServerRequestId::new(77).expect("positive"),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri.clone()],
                 includes_global_item: true,
@@ -421,7 +421,7 @@ include_paths = ["other_lib"]
                 .with_path(folder.clone()),
         );
         server.pending_workspace_configuration_requests.lock().insert(
-            99,
+            crate::protocol::ServerRequestId::new(99).expect("positive"),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri.clone()],
                 includes_global_item: true,
@@ -507,7 +507,7 @@ include_paths = ["other_lib"]
         let expected_uri = server.workspace_folders.lock()[0].uri.clone();
 
         server.pending_workspace_configuration_requests.lock().insert(
-            1,
+            crate::protocol::ServerRequestId::new(1).expect("positive"),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec!["file:///stale".to_string()],
                 includes_global_item: true,
@@ -536,7 +536,7 @@ include_paths = ["other_lib"]
             .to_string();
 
         server.pending_workspace_configuration_requests.lock().insert(
-            700,
+            crate::protocol::ServerRequestId::new(700).expect("positive"),
             crate::runtime::PendingWorkspaceConfigurationRequest {
                 folder_uris: vec![uri.clone()],
                 includes_global_item: true,

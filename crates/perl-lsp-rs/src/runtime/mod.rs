@@ -89,7 +89,7 @@ use crate::{
     // Note: JsonRpcError, JsonRpcRequest, JsonRpcResponse are pub use'd above
     protocol::{
         CONTENT_MODIFIED, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, REQUEST_CANCELLED,
-        cancelled_response_with_method, document_not_found_error, enhanced_error,
+        ServerRequestId, cancelled_response_with_method, document_not_found_error, enhanced_error,
     },
     state::{
         ClientCapabilities, DocumentState, ServerConfig, WorkspaceConfig,
@@ -112,7 +112,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
 };
 use url::Url;
 
@@ -180,10 +180,10 @@ pub struct LspServer {
     /// Workspace configuration for module resolution
     workspace_config: Arc<Mutex<WorkspaceConfig>>,
     /// Atomic counter for generating unique request IDs
-    next_request_id: Arc<AtomicI64>,
+    next_request_id: Arc<AtomicI32>,
     /// Pending workspace/configuration reverse requests keyed by request ID.
     pending_workspace_configuration_requests:
-        Arc<Mutex<HashMap<i64, PendingWorkspaceConfigurationRequest>>>,
+        Arc<Mutex<HashMap<ServerRequestId, PendingWorkspaceConfigurationRequest>>>,
     /// Active progress tokens for work done progress tracking
     progress_tokens: Arc<Mutex<HashSet<String>>>,
     /// Maps progress tokens to their originating request IDs for cancellation routing
@@ -1204,7 +1204,7 @@ mod tests {
             character: 0,
         });
         server.pending_workspace_configuration_requests.lock().insert(
-            1,
+            ServerRequestId::new(1).expect("positive id for test fixture"),
             PendingWorkspaceConfigurationRequest {
                 folder_uris: vec!["file:///".to_string()],
                 includes_global_item: true,
