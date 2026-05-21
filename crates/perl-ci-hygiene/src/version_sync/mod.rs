@@ -1029,12 +1029,20 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         Ok(())
     }
 
+
+    fn capture_group_1<'a>(caps: Option<regex::Captures<'a>>) -> &'a str {
+        match caps {
+            Some(captures) => captures.get(1).map_or("", |m| m.as_str()),
+            None => "",
+        }
+    }
+
     #[test]
     fn bare_version_re_matches_pre_release() {
         let line = r#"version = "0.13.0-rc1""#;
         let caps = BARE_VERSION_RE.captures(line);
         assert!(caps.is_some(), "BARE_VERSION_RE must match pre-release versions");
-        assert_eq!(&caps.unwrap()[1], "0.13.0-rc1");
+        assert_eq!(capture_group_1(caps), "0.13.0-rc1");
     }
 
     #[test]
@@ -1042,7 +1050,7 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         let line = r#"perl-foo = { path = "crates/perl-foo", version = "0.13.0-rc1" }"#;
         let caps = WORKSPACE_DEP_WITH_VERSION_RE.captures(line);
         assert!(caps.is_some(), "WORKSPACE_DEP_WITH_VERSION_RE must match pre-release versions");
-        assert_eq!(&caps.unwrap()[1], "0.13.0-rc1");
+        assert_eq!(capture_group_1(caps), "0.13.0-rc1");
     }
 
     #[test]
@@ -1050,7 +1058,7 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         let line = r#"perl-foo = { path = 'crates/perl-foo', version = "0.13.0-rc1" }"#;
         let caps = WORKSPACE_DEP_WITH_VERSION_RE.captures(line);
         assert!(caps.is_some(), "WORKSPACE_DEP_WITH_VERSION_RE must match single-quoted paths");
-        assert_eq!(&caps.unwrap()[1], "0.13.0-rc1");
+        assert_eq!(capture_group_1(caps), "0.13.0-rc1");
     }
 
     #[test]
@@ -1059,7 +1067,7 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         let caps = CLAUDE_RELEASE_RE.captures(line);
         assert!(caps.is_some(), "CLAUDE_RELEASE_RE must match pre-release versions");
         assert_eq!(
-            &caps.unwrap()[1],
+            capture_group_1(caps),
             "0.13.0-rc1",
             "CLAUDE_RELEASE_RE must capture the full version including pre-release suffix"
         );
@@ -1070,7 +1078,7 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         let line = "- Workspace version line: `v0.13.0-rc1`";
         let caps = ROADMAP_WORKSPACE_RE.captures(line);
         assert!(caps.is_some(), "ROADMAP_WORKSPACE_RE must match pre-release versions");
-        assert_eq!(&caps.unwrap()[1], "0.13.0-rc1");
+        assert_eq!(capture_group_1(caps), "0.13.0-rc1");
     }
 
     // -----------------------------------------------------------------------
@@ -1219,7 +1227,7 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
     }
 
     #[test]
-    fn today_iso_date_is_well_formed() {
+    fn today_iso_date_is_well_formed() -> Result<()> {
         let today = today_iso_date();
         assert_eq!(today.len(), 10);
         assert!(
@@ -1228,11 +1236,12 @@ perl-token = { path = "../perl-token", version = "0.42.0" }
         );
         let parts: Vec<&str> = today.split('-').collect();
         assert_eq!(parts.len(), 3);
-        let year: i32 = parts[0].parse().unwrap();
-        let month: u32 = parts[1].parse().unwrap();
-        let day: u32 = parts[2].parse().unwrap();
+        let year: i32 = parts[0].parse().map_err(|e| eyre!("parse year: {e}"))?;
+        let month: u32 = parts[1].parse().map_err(|e| eyre!("parse month: {e}"))?;
+        let day: u32 = parts[2].parse().map_err(|e| eyre!("parse day: {e}"))?;
         assert!((2025..=2100).contains(&year), "year {year} out of expected range");
         assert!((1..=12).contains(&month), "month {month} invalid");
         assert!((1..=31).contains(&day), "day {day} invalid");
+        Ok(())
     }
 }
