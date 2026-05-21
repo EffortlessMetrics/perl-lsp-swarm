@@ -9,7 +9,29 @@
 //! These tests must FAIL before implementation and PASS after.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+fn read_text(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(fs::read_to_string(path)?)
+}
+
+fn collect_existing_paths(base: &Path, names: &[&str]) -> Vec<String> {
+    names
+        .iter()
+        .filter_map(|name| {
+            let path = base.join(name);
+            path.exists().then(|| format!("crates/{name}/"))
+        })
+        .collect()
+}
+
+fn collect_present_markers(content: &str, markers: &[&str]) -> Vec<String> {
+    markers
+        .iter()
+        .filter(|marker| content.contains(**marker))
+        .map(|marker| (*marker).to_owned())
+        .collect()
+}
 
 fn project_root() -> PathBuf {
     // Walk up from the manifest directory to the workspace root.
@@ -41,7 +63,7 @@ fn test_all_15_old_provider_crates_directories_removed() -> Result<(), Box<dyn s
     let root = project_root();
     let crates_dir = root.join("crates");
 
-    let old_crates = vec![
+    let old_crates = [
         "perl-lsp-completion-item",
         "perl-lsp-file-completion",
         "perl-lsp-code-lens",
@@ -59,20 +81,14 @@ fn test_all_15_old_provider_crates_directories_removed() -> Result<(), Box<dyn s
         "perl-lsp-workspace-symbols",
     ];
 
-    let mut still_present = Vec::new();
-    for crate_name in old_crates {
-        let crate_path = crates_dir.join(crate_name);
-        if crate_path.exists() {
-            still_present.push(crate_name);
-        }
-    }
+    let still_present = collect_existing_paths(&crates_dir, &old_crates);
 
     assert!(
         still_present.is_empty(),
         "G1a collapse: the following 15 provider crates must be deleted but still exist:\n{}\n\n\
          Expected: all 15 crate directories removed from crates/\n\
          See .spec/4500-wave-g1a-providers/acceptance.md line 13",
-        still_present.iter().map(|s| format!("  - crates/{}/", s)).collect::<Vec<_>>().join("\n")
+        still_present.iter().map(|s| format!("  - {s}")).collect::<Vec<_>>().join("\n")
     );
     Ok(())
 }
@@ -85,7 +101,7 @@ fn test_published_crate_count_is_59_after_collapse() -> Result<(), Box<dyn std::
     let root = project_root();
     let baseline_path = root.join("xtask/published-crate-baseline.txt");
 
-    let content = fs::read_to_string(&baseline_path)?;
+    let content = read_text(&baseline_path)?;
     let count: u32 = content.trim().parse()?;
 
     assert_eq!(
@@ -109,7 +125,7 @@ fn test_providers_module_declared_in_perl_lsp_rs_core_lib() -> Result<(), Box<dy
     let root = project_root();
     let lib_path = root.join("crates/perl-lsp-rs-core/src/lib.rs");
 
-    let content = fs::read_to_string(&lib_path)?;
+    let content = read_text(&lib_path)?;
     assert!(
         content.contains("pub mod providers;"),
         "G1a collapse: `pub mod providers;` must be declared in crates/perl-lsp-rs-core/src/lib.rs.\n\
@@ -126,9 +142,9 @@ fn test_providers_mod_rs_file_exists_with_all_submodules() -> Result<(), Box<dyn
     let root = project_root();
     let mod_path = root.join("crates/perl-lsp-rs-core/src/providers/mod.rs");
 
-    let content = fs::read_to_string(&mod_path)?;
+    let content = read_text(&mod_path)?;
 
-    let required_modules = vec![
+    let required_modules = [
         "completion_item",
         "file_completion",
         "code_lens",
@@ -173,10 +189,10 @@ fn test_wired_crates_integration_uses_new_provider_imports()
     let root = project_root();
     let test_path = root.join("crates/perl-lsp-rs/tests/wired_crates_integration_test.rs");
 
-    let content = fs::read_to_string(&test_path)?;
+    let content = read_text(&test_path)?;
 
     // These old crate names should NOT appear in the file after collapse
-    let old_imports = vec![
+    let old_imports = [
         "perl_lsp_completion_item::",
         "perl_lsp_file_completion::",
         "perl_lsp_symbol_query::",
@@ -186,12 +202,7 @@ fn test_wired_crates_integration_uses_new_provider_imports()
         "perl_lsp_document_links::",
     ];
 
-    let mut still_present = Vec::new();
-    for old_import in old_imports {
-        if content.contains(old_import) {
-            still_present.push(old_import);
-        }
-    }
+    let still_present = collect_present_markers(&content, &old_imports);
 
     assert!(
         still_present.is_empty(),
@@ -211,7 +222,7 @@ fn test_wired_crates_integration_has_new_provider_imports() -> Result<(), Box<dy
     let root = project_root();
     let test_path = root.join("crates/perl-lsp-rs/tests/wired_crates_integration_test.rs");
 
-    let content = fs::read_to_string(&test_path)?;
+    let content = read_text(&test_path)?;
 
     let new_import_count = content.matches("perl_lsp_rs_core::providers::").count();
 
