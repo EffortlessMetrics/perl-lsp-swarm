@@ -1,15 +1,18 @@
 impl<'a> Parser<'a> {
-    /// Parse if statement
-    fn parse_if_statement(&mut self) -> ParseResult<Node> {
-        let start = self.current_position();
-        self.tokens.next()?; // consume 'if'
+    /// Parse a parenthesized control-flow condition, with optional declaration support.
+    ///
+    /// When `allow_empty` is true, an empty condition `()` is accepted and mapped to `1`,
+    /// matching Perl's `while () { ... }` infinite-loop idiom.
+    fn parse_control_flow_condition(&mut self, allow_empty: bool) -> ParseResult<Node> {
+        if allow_empty && self.peek_kind() == Some(TokenKind::RightParen) {
+            let loc = self.current_position();
+            return Ok(Node::new(
+                NodeKind::Number { value: "1".to_string() },
+                SourceLocation { start: loc, end: loc },
+            ));
+        }
 
-        self.expect(TokenKind::LeftParen)?;
-
-        // Check if this is a variable declaration in the condition.
-        // After the declaration, apply binary operators so that patterns like
-        // `if (our $CAN_HAZ_XS && $ok)` are handled correctly (issue #2750 Pattern D).
-        let condition = if matches!(
+        if matches!(
             self.peek_kind(),
             Some(TokenKind::My)
                 | Some(TokenKind::Our)
@@ -17,11 +20,23 @@ impl<'a> Parser<'a> {
                 | Some(TokenKind::State)
         ) {
             let decl = self.parse_variable_declaration()?;
-            self.parse_below_assignment_with(decl)?
+            self.parse_below_assignment_with(decl)
         } else {
             self.mark_not_stmt_start();
-            self.parse_expression()?
-        };
+            self.parse_expression()
+        }
+    }
+
+    /// Parse if statement
+    fn parse_if_statement(&mut self) -> ParseResult<Node> {
+        let start = self.current_position();
+        self.tokens.next()?; // consume 'if'
+
+        self.expect(TokenKind::LeftParen)?;
+
+        // Supports declaration conditions such as:
+        // `if (our $CAN_HAZ_XS && $ok)` (issue #2750 Pattern D).
+        let condition = self.parse_control_flow_condition(false)?;
 
         self.expect_closing_delimiter(TokenKind::RightParen)?;
 
@@ -37,19 +52,7 @@ impl<'a> Parser<'a> {
 
             // Check if this is a variable declaration in the condition.
             // After the declaration, apply binary operators (issue #2750 Pattern D).
-            let elsif_cond = if matches!(
-                self.peek_kind(),
-                Some(TokenKind::My)
-                    | Some(TokenKind::Our)
-                    | Some(TokenKind::Local)
-                    | Some(TokenKind::State)
-            ) {
-                let decl = self.parse_variable_declaration()?;
-                self.parse_below_assignment_with(decl)?
-            } else {
-                self.mark_not_stmt_start();
-                self.parse_expression()?
-            };
+            let elsif_cond = self.parse_control_flow_condition(false)?;
 
             self.expect_closing_delimiter(TokenKind::RightParen)?;
             let elsif_block = self.parse_block()?;
@@ -83,8 +86,7 @@ impl<'a> Parser<'a> {
         self.tokens.next()?; // consume 'unless'
 
         self.expect(TokenKind::LeftParen)?;
-        self.mark_not_stmt_start();
-        let condition = self.parse_expression()?;
+        let condition = self.parse_control_flow_condition(false)?;
         self.expect_closing_delimiter(TokenKind::RightParen)?;
 
         // Negate the condition
@@ -103,19 +105,7 @@ impl<'a> Parser<'a> {
             self.tokens.next()?; // consume 'elsif'
             self.expect(TokenKind::LeftParen)?;
 
-            let elsif_cond = if matches!(
-                self.peek_kind(),
-                Some(TokenKind::My)
-                    | Some(TokenKind::Our)
-                    | Some(TokenKind::Local)
-                    | Some(TokenKind::State)
-            ) {
-                let decl = self.parse_variable_declaration()?;
-                self.parse_below_assignment_with(decl)?
-            } else {
-                self.mark_not_stmt_start();
-                self.parse_expression()?
-            };
+            let elsif_cond = self.parse_control_flow_condition(false)?;
 
             self.expect_closing_delimiter(TokenKind::RightParen)?;
             let elsif_block = self.parse_block()?;
@@ -148,27 +138,7 @@ impl<'a> Parser<'a> {
 
         self.expect(TokenKind::LeftParen)?;
 
-        // Check if this is a variable declaration in the condition
-        let condition = if self.peek_kind() == Some(TokenKind::RightParen) {
-            // while () { } — empty condition is the infinite-loop idiom, equivalent to while (1)
-            let loc = self.current_position();
-            Node::new(
-                NodeKind::Number { value: "1".to_string() },
-                SourceLocation { start: loc, end: loc },
-            )
-        } else if matches!(
-            self.peek_kind(),
-            Some(TokenKind::My)
-                | Some(TokenKind::Our)
-                | Some(TokenKind::Local)
-                | Some(TokenKind::State)
-        ) {
-            let decl = self.parse_variable_declaration()?;
-            self.parse_below_assignment_with(decl)?
-        } else {
-            self.mark_not_stmt_start();
-            self.parse_expression()?
-        };
+        let condition = self.parse_control_flow_condition(true)?;
 
         self.expect_closing_delimiter(TokenKind::RightParen)?;
 
@@ -199,8 +169,7 @@ impl<'a> Parser<'a> {
         self.tokens.next()?; // consume 'until'
 
         self.expect(TokenKind::LeftParen)?;
-        self.mark_not_stmt_start();
-        let condition = self.parse_expression()?;
+        let condition = self.parse_control_flow_condition(false)?;
         self.expect_closing_delimiter(TokenKind::RightParen)?;
 
         // Negate the condition
