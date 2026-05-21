@@ -74,7 +74,7 @@ enum Commands {
     /// Validate Real Perl Editor Trust support claim map.
     CheckSupportClaims,
 
-    /// Validate the active goal manifest and linked plan/status/proof anchors.
+    /// Validate the active swarm goal manifest and linked docs.
     CheckActiveGoalManifest,
 
     /// Validate machine-readable Real Perl Editor Trust provider promotion ledger.
