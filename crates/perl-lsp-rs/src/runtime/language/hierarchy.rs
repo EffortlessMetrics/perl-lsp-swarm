@@ -28,6 +28,28 @@ fn get_package_regex() -> Option<&'static regex::Regex> {
         .ok()
 }
 
+fn find_symbol_at_offset(
+    regex: &regex::Regex,
+    source: &str,
+    offset: usize,
+) -> Option<(String, usize, usize)> {
+    regex.captures_iter(source).find_map(|cap| {
+        let (Some(full_match), Some(name_match)) = (cap.get(0), cap.get(1)) else {
+            return None;
+        };
+
+        if !(offset >= full_match.start() && offset <= full_match.end()) {
+            return None;
+        }
+
+        Some((
+            name_match.as_str().to_string(),
+            full_match.start(),
+            full_match.end(),
+        ))
+    })
+}
+
 #[cfg(feature = "workspace")]
 fn is_callable_symbol(symbol: &WorkspaceSymbol) -> bool {
     matches!(symbol.kind, SymbolKind::Subroutine | SymbolKind::Method)
@@ -283,19 +305,8 @@ impl LspServer {
                     return Ok(Some(json!([])));
                 };
 
-                // Find all subs and packages with their positions
-                let mut exact_sub: Option<(String, usize, usize)> = None;
-                for cap in sub_regex.captures_iter(&doc.text) {
-                    if let (Some(m), Some(name)) = (cap.get(0), cap.get(1)) {
-                        if offset >= m.start() && offset <= m.end() {
-                            // Exact match - cursor is on this sub
-                            exact_sub = Some((name.as_str().to_string(), m.start(), m.end()));
-                            break;
-                        }
-                    }
-                }
-
-                if let Some((name, start, end)) = exact_sub {
+                // Find exact symbol matches at the cursor offset.
+                if let Some((name, start, end)) = find_symbol_at_offset(sub_regex, &doc.text, offset) {
                     let start_pos = doc.line_starts.offset_to_position_rope(&doc.rope, start);
                     let end_pos = doc.line_starts.offset_to_position_rope(&doc.rope, end);
                     return Ok(Some(json!([{
@@ -315,19 +326,9 @@ impl LspServer {
                     }])));
                 }
 
-                // Check packages
-                let mut exact_pkg: Option<(String, usize, usize)> = None;
-                for cap in package_regex.captures_iter(&doc.text) {
-                    if let (Some(m), Some(name)) = (cap.get(0), cap.get(1)) {
-                        if offset >= m.start() && offset <= m.end() {
-                            // Exact match - cursor is on this package
-                            exact_pkg = Some((name.as_str().to_string(), m.start(), m.end()));
-                            break;
-                        }
-                    }
-                }
-
-                if let Some((name, start, end)) = exact_pkg {
+                if let Some((name, start, end)) =
+                    find_symbol_at_offset(package_regex, &doc.text, offset)
+                {
                     let start_pos = doc.line_starts.offset_to_position_rope(&doc.rope, start);
                     let end_pos = doc.line_starts.offset_to_position_rope(&doc.rope, end);
                     return Ok(Some(json!([{
