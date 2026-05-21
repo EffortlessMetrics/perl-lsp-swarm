@@ -112,6 +112,11 @@ impl DebugAdapter {
             .collect()
     }
 
+    fn child_reference_for_offset(variables_ref: i32, absolute_index: usize) -> i32 {
+        let absolute_index_i32 = i32::try_from(absolute_index).unwrap_or(i32::MAX);
+        variables_ref.saturating_mul(1000).saturating_add(absolute_index_i32)
+    }
+
     /// Parse variables from debugger output lines using microcrate parser/renderer.
     pub(super) fn parse_scope_variables_from_lines(
         lines: &[String],
@@ -151,10 +156,7 @@ impl DebugAdapter {
         let mut child_cache = HashMap::new();
         for (idx, (name, value)) in parsed.into_iter().skip(start).take(count).enumerate() {
             let absolute_index = start.saturating_add(idx).saturating_add(1);
-            let child_ref =
-                variables_ref.saturating_mul(1000).saturating_add(Self::i64_to_i32_saturating(
-                    i64::try_from(absolute_index).unwrap_or(i64::from(i32::MAX)),
-                ));
+            let child_ref = Self::child_reference_for_offset(variables_ref, absolute_index);
             let rendered = if value.is_expandable() {
                 renderer.render_with_reference(&name, &value, i64::from(child_ref))
             } else {
@@ -397,6 +399,12 @@ mod tests {
         let names = vars.iter().map(|v| v.name.as_str()).collect::<Vec<_>>();
         assert_eq!(names, vec!["$alpha", "$mid", "$zeta"]);
         Ok(())
+    }
+
+    #[test]
+    pub(super) fn test_child_reference_for_offset_saturates_on_large_indices() {
+        let child_ref = DebugAdapter::child_reference_for_offset(11, usize::MAX);
+        assert_eq!(child_ref, i32::MAX);
     }
 
     #[test]
