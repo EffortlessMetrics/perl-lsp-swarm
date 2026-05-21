@@ -140,6 +140,26 @@ impl HirFile {
         compile_effects_from_file(self, source_hash)
     }
 
+    /// Project prototype-bearing subroutine declarations into a source-backed table.
+    ///
+    /// This is a compiler-substrate proof surface only. It records prototype
+    /// presence and source anchors without claiming prototype text, generated
+    /// method bodies, or LSP provider behavior.
+    #[must_use]
+    pub fn prototype_table(&self) -> PrototypeTable {
+        self.prototype_table_with_source_hash(None)
+    }
+
+    /// Project prototype-bearing subroutine declarations and attach a source hash.
+    ///
+    /// Parser-core does not own a source database, so persisted workspace
+    /// callers can pass the source hash they use for freshness. Fixture-only
+    /// callers may use [`HirFile::prototype_table`].
+    #[must_use]
+    pub fn prototype_table_with_source_hash(&self, source_hash: Option<String>) -> PrototypeTable {
+        prototype_table_from_file(self, source_hash)
+    }
+
     /// Project framework-adapter facts using the default registry.
     ///
     /// This is a compiler-substrate proof surface only. It does not change LSP
@@ -210,6 +230,50 @@ pub struct CompileEffect {
     /// How this effect was produced.
     pub provenance: CompileProvenance,
     /// Confidence in this effect.
+    pub confidence: CompileConfidence,
+}
+
+/// Current prototype-table model version.
+pub const PROTOTYPE_TABLE_MODEL_VERSION: u32 = 1;
+
+/// HIR-local table of source-backed prototype-bearing declarations.
+///
+/// This table records declaration identity and source anchors only. The current
+/// HIR model tracks whether a prototype exists, not the prototype string.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct PrototypeTable {
+    /// Prototype-bearing declaration entries in stable source order.
+    pub entries: Vec<PrototypeFact>,
+}
+
+/// One source-backed prototype-bearing declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PrototypeFact {
+    /// Unqualified declaration name as lowered from HIR.
+    pub name: String,
+    /// Best-effort qualified name using the active package context.
+    pub qualified_name: String,
+    /// Package context active at the declaration, when known.
+    pub package_context: Option<String>,
+    /// Full declaration source range.
+    pub range: SourceLocation,
+    /// Precise declaration-name range when the parser anchor exposes one.
+    pub name_range: Option<SourceLocation>,
+    /// HIR item that produced this fact.
+    pub source_item: HirId,
+    /// Scope containing this declaration, when known.
+    pub scope_id: Option<HirScopeId>,
+    /// Source anchor of the declaration fact.
+    pub anchor_id: AnchorId,
+    /// Caller-supplied source hash used for freshness, when available.
+    pub source_hash: Option<String>,
+    /// Prototype-table model version.
+    pub model_version: u32,
+    /// How this fact was produced.
+    pub provenance: CompileProvenance,
+    /// Confidence in this fact.
     pub confidence: CompileConfidence,
 }
 
@@ -317,6 +381,46 @@ pub enum CompileEffectFactKind {
 struct CompileEffectEntry {
     source_order: u32,
     effect: CompileEffect,
+}
+
+fn prototype_table_from_file(file: &HirFile, source_hash: Option<String>) -> PrototypeTable {
+    let entries = file
+        .items
+        .iter()
+        .filter_map(|item| {
+            let HirKind::SubDecl(decl) = &item.kind else {
+                return None;
+            };
+            if !decl.has_prototype {
+                return None;
+            }
+            let name = decl.name.as_ref()?;
+            Some(PrototypeFact {
+                name: name.clone(),
+                qualified_name: qualify_prototype_name(item.package_context.as_deref(), name),
+                package_context: item.package_context.clone(),
+                range: item.range,
+                name_range: item.anchor.name_range,
+                source_item: item.id,
+                scope_id: item.scope_context,
+                anchor_id: AnchorId(item.range.start as u64),
+                source_hash: source_hash.clone(),
+                model_version: PROTOTYPE_TABLE_MODEL_VERSION,
+                provenance: CompileProvenance::ExactAst,
+                confidence: CompileConfidence::High,
+            })
+        })
+        .collect();
+
+    PrototypeTable { entries }
+}
+
+fn qualify_prototype_name(package_context: Option<&str>, name: &str) -> String {
+    if name.contains("::") {
+        name.to_string()
+    } else {
+        format!("{}::{name}", package_context.unwrap_or("main"))
+    }
 }
 
 fn compile_effects_from_file(file: &HirFile, source_hash: Option<String>) -> Vec<CompileEffect> {

@@ -115,6 +115,10 @@ New compiler facts are substrate only until a provider row promotes one fact
 class through the ledger. Receiver-expression facts now have one narrow
 source-backed completion pilot; every other receiver class remains substrate,
 fallback, or blocked until its own receipt promotes it.
+Prototype-table work is likewise substrate-only: HIR may expose source-backed
+prototype-bearing named subroutine declarations with freshness, provenance, and
+confidence metadata, but this does not claim prototype text, diagnostic
+suppression, provider behavior, PIR, or determinism support.
 
 ## Current Dashboard
 

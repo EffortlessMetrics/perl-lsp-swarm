@@ -3,8 +3,8 @@ use perl_parser_core::hir::{
     CompileEffectSourceKind, CompileEnvironment, CompileEnvironmentBoundaryKind, CompileProvenance,
     DynamicBoundaryKind, FrameworkAdapterKind, FrameworkAdapterRegistry,
     FrameworkExportedSymbolKind, GlobSlotSource, HirFile, HirKind, IncRootKind,
-    ModuleResolutionRoot, PragmaArgumentKind, RecoveryConfidence, ScopeGraph, StashConfidence,
-    StashGraph, StashProvenance, lower_ast,
+    ModuleResolutionRoot, PROTOTYPE_TABLE_MODEL_VERSION, PragmaArgumentKind, RecoveryConfidence,
+    ScopeGraph, StashConfidence, StashGraph, StashProvenance, lower_ast,
 };
 use perl_parser_core::{Node, NodeKind, Parser, SourceLocation};
 use perl_semantic_facts::{
@@ -464,6 +464,37 @@ fn render_compile_effects(file: &HirFile) -> String {
                 effect.provenance,
                 effect.confidence,
                 reason
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_prototype_table(file: &HirFile) -> String {
+    file.prototype_table_with_source_hash(Some("fixture-source-sha".to_string()))
+        .entries
+        .into_iter()
+        .map(|fact| {
+            let package = fact.package_context.as_deref().unwrap_or("<none>");
+            let scope = fact
+                .scope_id
+                .map(|id| id.index().to_string())
+                .unwrap_or_else(|| "<none>".to_string());
+            let name_anchor = if fact.name_range.is_some() { "name" } else { "node" };
+            let hash = fact.source_hash.as_deref().unwrap_or("<none>");
+            format!(
+                "{} name={} pkg={} item={} scope={} model={} hash={} {:?}/{:?} anchor={} via={}",
+                fact.qualified_name,
+                fact.name,
+                package,
+                fact.source_item.index(),
+                scope,
+                fact.model_version,
+                hash,
+                fact.provenance,
+                fact.confidence,
+                fact.anchor_id.0,
+                name_anchor
             )
         })
         .collect::<Vec<_>>()
@@ -1334,6 +1365,62 @@ fn hir_compile_effect_log_links_source_mutations_facts_and_boundaries()
     assert!(
         rendered.contains("EmitDynamicBoundary"),
         "rendered effect proof should expose dynamic-boundary rows"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn hir_prototype_table_records_source_backed_named_subs_without_provider_cutover()
+-> Result<(), Box<dyn std::error::Error>> {
+    let file = lower_source(
+        "package Proto::Demo;\n\
+         sub empty () { 1; }\n\
+         sub scalar ($) { 1; }\n\
+         sub no_proto { 1; }\n\
+         sub Proto::Other::explicit ($$) { 1; }\n\
+         my $anon = sub ($) { 1; };\n",
+    );
+
+    let table = file.prototype_table_with_source_hash(Some("fixture-source-sha".to_string()));
+    let qualified_names =
+        table.entries.iter().map(|fact| fact.qualified_name.as_str()).collect::<Vec<_>>();
+    assert_eq!(
+        qualified_names,
+        vec!["Proto::Demo::empty", "Proto::Demo::scalar", "Proto::Other::explicit"],
+        "prototype table should include named prototype-bearing declarations only"
+    );
+    assert!(
+        table.entries.iter().all(|fact| {
+            fact.model_version == PROTOTYPE_TABLE_MODEL_VERSION
+                && fact.source_hash.as_deref() == Some("fixture-source-sha")
+                && fact.provenance == CompileProvenance::ExactAst
+                && fact.confidence == CompileConfidence::High
+                && fact.name_range.is_some()
+        }),
+        "prototype facts should be fresh, source-backed, exact AST facts"
+    );
+    assert!(
+        table.entries.iter().all(|fact| {
+            file.items.iter().any(|item| {
+                item.id == fact.source_item
+                    && matches!(
+                        &item.kind,
+                        HirKind::SubDecl(decl) if decl.has_prototype && decl.name.as_ref() == Some(&fact.name)
+                    )
+            })
+        }),
+        "prototype facts should point back to prototype-bearing HIR sub declarations"
+    );
+
+    let rendered = render_prototype_table(&file);
+    assert!(
+        rendered.contains("Proto::Demo::empty name=empty")
+            && rendered.contains("Proto::Demo::scalar name=scalar")
+            && rendered.contains("Proto::Other::explicit name=Proto::Other::explicit")
+            && !rendered.contains("no_proto")
+            && !rendered.contains("provider_cutover"),
+        "rendered prototype-table proof should expose source-backed declarations only"
     );
 
     Ok(())
