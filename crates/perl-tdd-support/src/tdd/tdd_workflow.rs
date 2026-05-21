@@ -427,9 +427,7 @@ impl TddWorkflow {
 fn repeated_edge_case_args(params: &[String], edge_case: &str) -> String {
     match params.len() {
         0 => String::new(),
-        len => std::iter::repeat_n(edge_case, len)
-            .collect::<Vec<_>>()
-            .join(", "),
+        len => std::iter::repeat_n(edge_case, len).collect::<Vec<_>>().join(", "),
     }
 }
 
