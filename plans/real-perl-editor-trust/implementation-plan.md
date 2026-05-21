@@ -668,3 +668,61 @@ Rollback
 
 Reopen the lane by changing the manifest status back to active and adding a
 specific ready work item with proof commands and claim boundaries.
+
+## Swarm Execution Follow-Up Queue
+
+Status: active through [active.toml](../../.perl-lsp/goals/active.toml)
+
+This section records the current swarm handoff after the original closeout. The
+active goal manifest is the machine-readable source of truth; this plan only
+states the PR order and claim boundary.
+
+Recent routing
+
+- `semantic-token-scoped-class-proof` is completed. The phase-block declaration
+  proof added the scoped `token:phase_block_declaration:` class only when its
+  source-backed span matches an existing live `macro` token, refreshes after
+  `didChange`, and emits no new token output.
+- `constant-provider-proof` is completed. The substrate proof hardened static
+  `use constant` extraction for scalar, quoted scalar, hash, quoted-hash,
+  plus-hash, and nested-value hash forms and recorded a completion shadow trace
+  for constants as fresh `CompilerFact` / `SemanticAnalyzer` evidence without
+  changing live completion behavior.
+- `semantic-token-support-review` is completed. The class registry, human
+  provider-promotion ledger, and machine ledger now agree on the scoped
+  lexical-variable declaration/use rows, while semantic tokens remain
+  output-neutral and `partial-live-with-fallback`.
+- `prototype-table` is completed. HIR now records named subroutine prototype
+  content and precise source ranges in a prototype table, and
+  `RegisterPrototype` compile effects derive from that table without changing
+  provider behavior, diagnostics, parser bucket claims, support tiers, PIR
+  state, or determinism claims.
+- `bareword-classifier` is completed. HIR now records source-backed syntactic
+  roles for parsed identifier barewords without changing PL109 suppression,
+  provider behavior, parser bucket claims, support tiers, PIR state, or
+  determinism claims.
+
+Current executable slice
+
+- `determinism-receipt-v1-spec` is active in the substrate lane.
+
+Claim boundary
+
+- Determinism receipt v1 work is spec/planning proof only.
+- Do not add PIR implementation, runtime probing, provider behavior,
+  release-lineage sync, or determinism claims from this substrate slice.
+
+Proof commands
+
+```bash
+rtk cargo xtask check-active-goal-manifest
+rtk cargo xtask check-support-claims
+rtk cargo xtask check-provider-confidence-matrix
+rtk git diff --check
+```
+
+Rollback
+
+Revert the manifest/plan routing PR. If determinism receipt v1 spec work is not
+ready, mark `determinism-receipt-v1-spec` planned or deferred in the active
+manifest and select the next ready item without changing provider behavior.
