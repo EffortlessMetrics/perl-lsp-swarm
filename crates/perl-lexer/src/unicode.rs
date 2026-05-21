@@ -43,6 +43,22 @@ fn is_emoji_codepoint(ch_u32: u32) -> bool {
     )
 }
 
+fn is_identifier_continuation_modifier(ch_u32: u32) -> bool {
+    matches!(
+        ch_u32,
+        // Unicode join controls used in emoji and script shaping.
+        0x200C | 0x200D |
+        // Standard variation selectors (e.g. U+FE0F) used to keep emoji presentation.
+        0xFE00..=0xFE0F |
+        // Supplementary variation selectors.
+        0xE0100..=0xE01EF |
+        // Fitzpatrick skin-tone modifiers.
+        0x1F3FB..=0x1F3FF |
+        // Emoji tag sequence characters used by some flag-like emoji sequences.
+        0xE0020..=0xE007F
+    )
+}
+
 /// Check if a character can start a Perl identifier
 pub fn is_perl_identifier_start(ch: char) -> bool {
     UNICODE_CHAR_CHECKS.fetch_add(1, Ordering::Relaxed);
@@ -72,19 +88,7 @@ pub fn is_perl_identifier_continue(ch: char) -> bool {
     is_perl_identifier_start(ch)
         || is_xid_continue(ch)
         || ch == '\''
-        || matches!(
-            ch as u32,
-            // Unicode join controls used in emoji and script shaping.
-            0x200C | 0x200D |
-            // Standard variation selectors (e.g. U+FE0F) used to keep emoji presentation.
-            0xFE00..=0xFE0F |
-            // Supplementary variation selectors.
-            0xE0100..=0xE01EF |
-            // Fitzpatrick skin-tone modifiers.
-            0x1F3FB..=0x1F3FF |
-            // Emoji tag sequence characters used by some flag-like emoji sequences.
-            0xE0020..=0xE007F
-        )
+        || is_identifier_continuation_modifier(ch as u32)
 }
 
 /// Validate Unicode string complexity for performance monitoring
@@ -116,8 +120,8 @@ pub fn analyze_unicode_complexity(text: &str) -> (usize, usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        analyze_unicode_complexity, get_unicode_stats, is_perl_identifier_continue,
-        is_perl_identifier_start, reset_unicode_stats,
+        analyze_unicode_complexity, get_unicode_stats, is_identifier_continuation_modifier,
+        is_perl_identifier_continue, is_perl_identifier_start, reset_unicode_stats,
     };
 
     #[test]
@@ -152,6 +156,21 @@ mod tests {
         assert!(is_perl_identifier_continue('\u{E0067}'));
         assert!(!is_perl_identifier_continue(' '));
         assert!(!is_perl_identifier_continue('-'));
+    }
+
+    #[test]
+    fn continuation_modifier_helper_has_expected_boundaries() {
+        assert!(is_identifier_continuation_modifier(0x1F3FB));
+        assert!(is_identifier_continuation_modifier(0x1F3FF));
+        assert!(!is_identifier_continuation_modifier(0x1F3FA));
+        assert!(!is_identifier_continuation_modifier(0x1F400));
+    }
+
+    #[test]
+    fn identifier_continue_rejects_nearby_non_modifier_codepoints() {
+        assert!(!is_perl_identifier_continue('\u{FE10}'));
+        assert!(!is_perl_identifier_continue('\u{E01F0}'));
+        assert!(!is_perl_identifier_continue('\u{E0080}'));
     }
 
     #[test]
