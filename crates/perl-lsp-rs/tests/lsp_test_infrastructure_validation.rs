@@ -13,7 +13,7 @@ mod common;
 use common::test_reliability::{
     GracefulDegradation, HealthCheck, ResourceMonitor, TestEnvironment, TestError,
 };
-use common::timeout_scaler::{TimeoutProfile, get_adaptive_timeout, is_ci_environment};
+use common::timeout_scaler::{get_adaptive_timeout, is_ci_environment, TimeoutProfile};
 use common::{drain_until_quiet, initialize_lsp, shutdown_and_exit, start_lsp_server};
 
 /// Test that environment validation works correctly
@@ -70,8 +70,8 @@ fn test_health_check_server_responsiveness() -> Result<(), String> {
 
 /// Test that resource monitoring tracks operation timing
 #[test]
-fn test_resource_monitoring() {
-    let env = TestEnvironment::validate().unwrap();
+fn test_resource_monitoring() -> Result<(), String> {
+    let env = TestEnvironment::validate()?;
     let monitor = ResourceMonitor::start("resource_monitoring_test");
 
     // Simulate some work
@@ -79,6 +79,7 @@ fn test_resource_monitoring() {
 
     eprintln!("Test completed in environment: {}", env.summary());
     monitor.complete();
+    Ok(())
 }
 
 /// Test that graceful degradation handles transient failures
@@ -89,7 +90,11 @@ fn test_graceful_degradation_retry_logic() {
 
     let result: Result<i32, &str> = degradation.attempt(|| {
         attempt_count += 1;
-        if attempt_count < 2 { Err("simulated transient failure") } else { Ok(42) }
+        if attempt_count < 2 {
+            Err("simulated transient failure")
+        } else {
+            Ok(42)
+        }
     });
 
     assert_eq!(result, Ok(42), "Should succeed after retry");
@@ -151,22 +156,23 @@ fn test_timeout_profiles_are_appropriate() {
 
 /// Test that CI environment detection works
 #[test]
-fn test_ci_environment_detection() {
+fn test_ci_environment_detection() -> Result<(), String> {
     let is_ci = is_ci_environment();
-    let env = TestEnvironment::validate().unwrap();
+    let env = TestEnvironment::validate()?;
 
     eprintln!("CI detected: {}", is_ci);
     eprintln!("CI from environment: {}", env.is_ci);
 
     // Both methods should agree
     assert_eq!(is_ci, env.is_ci, "CI detection should be consistent");
+    Ok(())
 }
 
 /// Test that adaptive timeouts scale appropriately
 #[test]
-fn test_adaptive_timeout_scaling() {
+fn test_adaptive_timeout_scaling() -> Result<(), String> {
     let timeout = get_adaptive_timeout();
-    let env = TestEnvironment::validate().unwrap();
+    let env = TestEnvironment::validate()?;
 
     eprintln!("Adaptive timeout: {:?}", timeout);
     eprintln!("Environment: {}", env.summary());
@@ -179,6 +185,7 @@ fn test_adaptive_timeout_scaling() {
     if env.is_ci {
         assert!(timeout >= std::time::Duration::from_secs(5), "CI timeout should be at least 5s");
     }
+    Ok(())
 }
 
 /// Test error formatting with context
@@ -301,7 +308,11 @@ fn test_stability_helpers() {
     let result: Result<i32, &str> = retry_with_backoff(
         || {
             attempt += 1;
-            if attempt < 2 { Err("not ready") } else { Ok(42) }
+            if attempt < 2 {
+                Err("not ready")
+            } else {
+                Ok(42)
+            }
         },
         3,
         std::time::Duration::from_millis(10),
