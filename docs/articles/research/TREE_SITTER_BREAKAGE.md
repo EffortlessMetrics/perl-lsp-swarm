@@ -8,9 +8,9 @@
 
 ## Claim Boundary
 
-The v1 results in this document describe the vendored `tree-sitter-perl-c` target used by perl-lsp at the time of measurement. They do **not** assert that Veesh Goldman's current upstream parser has the same behavior.
+The v1 results in this document describe the vendored `tree-sitter-perl-c` target used by perl-lsp at the time of measurement. They do **not** assert that current upstream Tree-sitter Perl targets have the same behavior.
 
-Current upstream behavior claims must come from parser-target-registry receipts produced by `perl-parser-comparison`.
+Current upstream behavior claims require fresh `perl-parser-comparison` receipts for the target being discussed.
 
 ## Background
 
