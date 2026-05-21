@@ -166,8 +166,8 @@ use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
 
 use crate::heredoc::HeredocSpec;
 use crate::lexer::helpers::{
-    empty_arc, is_builtin_function, is_compound_operator, is_keyword_fast, is_quote_op_word_prefix,
-    truncate_preview,
+    RegexScanAction, consume_ascii_alnum_run, empty_arc, is_builtin_function, is_compound_operator,
+    is_keyword_fast, is_quote_op_word_prefix, regex_scan_action, truncate_preview,
 };
 use crate::limits::{
     HEREDOC_TIMEOUT_MS, MAX_DELIM_NEST, MAX_HEREDOC_BYTES, MAX_HEREDOC_DEPTH, MAX_REGEX_BYTES,
@@ -3150,15 +3150,9 @@ impl<'a> PerlLexer<'a> {
     /// modifiers with a clear error message, rather than leaving them as separate
     /// tokens that could be confusingly parsed.
     fn parse_regex_modifiers(&mut self, _spec: &quote_handler::ModSpec) {
-        // Consume all alphanumeric characters that could be intended as modifiers
-        // The parser will validate and reject invalid ones
-        while let Some(ch) = self.current_char() {
-            if ch.is_ascii_alphanumeric() {
-                self.advance();
-            } else {
-                break;
-            }
-        }
+        // Consume all alphanumeric characters that could be intended as modifiers.
+        // The parser will validate and reject invalid ones.
+        consume_ascii_alnum_run(self);
         // Note: We no longer validate here - the parser will validate and provide
         // clear error messages for invalid modifiers (MUT_005 fix)
     }
@@ -3209,17 +3203,11 @@ impl<'a> PerlLexer<'a> {
                 return Some(token);
             }
 
-            match ch {
-                '/' if !in_character_class => {
+            match regex_scan_action(ch, in_character_class) {
+                RegexScanAction::CloseLiteral => {
                     self.advance();
                     // Parse flags - include all alphanumeric for proper validation in parser (MUT_005 fix)
-                    while let Some(ch) = self.current_char() {
-                        if ch.is_ascii_alphanumeric() {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
+                    consume_ascii_alnum_run(self);
 
                     let text = &self.input[start..self.position];
                     self.mode = LexerMode::ExpectOperator;
@@ -3231,22 +3219,22 @@ impl<'a> PerlLexer<'a> {
                         end: self.position,
                     });
                 }
-                '\\' => {
+                RegexScanAction::Escape => {
                     // Handle escape sequences: consume backslash + next char
                     self.advance();
                     if self.current_char().is_some() {
                         self.advance();
                     }
                 }
-                '[' => {
+                RegexScanAction::StartCharacterClass => {
                     in_character_class = true;
                     self.advance();
                 }
-                ']' if in_character_class => {
+                RegexScanAction::EndCharacterClass => {
                     in_character_class = false;
                     self.advance();
                 }
-                _ => self.advance(),
+                RegexScanAction::Advance => self.advance(),
             }
         }
 
