@@ -20,8 +20,8 @@ provider confidence matrix, support tiers, future determinism receipts
 
 Differential oracle work is currently a planning contract. Existing status rows
 already treat real Perl and `perldoc` as helper/oracle seams, and
-[compiler_facts.md](../project/status/compiler_facts.md) keeps differential
-real-Perl oracle work planned until broader conformance receipts exist.
+[compiler_facts.md](../project/status/compiler_facts.md) records this
+contract-defined boundary while keeping broader conformance receipts planned.
 
 This spec defines how future oracle receipts may compare Rust-native compiler
 facts, parser output, module resolution, PIR lowering, or provider receipts
