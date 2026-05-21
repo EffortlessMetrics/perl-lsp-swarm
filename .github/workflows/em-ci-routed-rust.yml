@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - auto
+          - cpx42
           - cx53
           - cx43
           - github
@@ -78,7 +79,7 @@ jobs:
           fi
 
           case "${FORCE_TARGET:-auto}" in
-            cx53|cx43|github)
+            cpx42|cx53|cx43|github)
               emit "$FORCE_TARGET" "workflow_dispatch_force_target" "false"
               exit 0
               ;;
@@ -125,19 +126,89 @@ jobs:
             ' "$response"
           }
 
+          idle_cpx42="$(idle_runner_count "cpx42")"
           idle_cx53="$(idle_runner_count "cx53")"
           idle_cx43="$(idle_runner_count "cx43")"
 
+          echo "idle_cpx42=${idle_cpx42:-0}"
           echo "idle_cx53=${idle_cx53:-0}"
           echo "idle_cx43=${idle_cx43:-0}"
 
-          if [ "${idle_cx53:-0}" -gt 0 ]; then
+          if [ "${idle_cpx42:-0}" -gt 0 ]; then
+            emit "cpx42" "cpx42_idle" "false"
+          elif [ "${idle_cx53:-0}" -gt 0 ]; then
             emit "cx53" "cx53_idle" "false"
           elif [ "${idle_cx43:-0}" -gt 0 ]; then
             emit "cx43" "cx43_idle" "false"
           else
             emit "github" "no_idle_runner" "false"
           fi
+
+  rust-small-cpx42:
+    name: Perl LSP Rust Small on CPX42
+    needs: route-rust-small
+    if: >-
+      needs.route-rust-small.result == 'success' &&
+      needs.route-rust-small.outputs.target == 'cpx42'
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cpx42, rust-16gb, rust-medium, trusted-pr]
+    timeout-minutes: 50
+    env:
+      CARGO_HOME: /mnt/ci-cache/cargo-home
+      SCCACHE_DIR: /mnt/ci-cache/sccache
+      SCCACHE_CACHE_SIZE: 30G
+      CARGO_BUILD_JOBS: "7"
+      CARGO_INCREMENTAL: "0"
+      TMPDIR: /mnt/ci-scratch/tmp/${{ github.run_id }}-${{ github.run_attempt }}
+      CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/${{ github.run_id }}-${{ github.run_attempt }}
+      RUST_TEST_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Prepare CPX42 scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci-disk-guard /mnt/ci-scratch 45
+          ci-disk-guard /mnt/ci-cache 10
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Preflight disk and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /mnt/ci-scratch /mnt/ci-cache || true
+          rustc --version
+          cargo --version
+          if command -v python3 >/dev/null 2>&1; then python3 --version; fi
+          if command -v sccache >/dev/null 2>&1; then sccache --show-stats || true; fi
+
+      - name: Run Rust small lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked
+          cargo check --workspace --locked
+          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+
+      - name: Cleanup and final stats
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if command -v sccache >/dev/null 2>&1; then sccache --show-stats || true; fi
+          rm -rf "$TMPDIR" "$CARGO_TARGET_DIR"
+          df -h /mnt/ci-scratch /mnt/ci-cache || true
 
   rust-small-cx53:
     name: Perl LSP Rust Small on CX53
@@ -347,6 +418,7 @@ jobs:
     name: Perl LSP Rust Small Result
     needs:
       - route-rust-small
+      - rust-small-cpx42
       - rust-small-cx53
       - rust-small-cx43
       - rust-small-github
@@ -361,6 +433,7 @@ jobs:
           ROUTER_TARGET: ${{ needs.route-rust-small.outputs.target }}
           ROUTER_REASON: ${{ needs.route-rust-small.outputs.reason }}
           ROUTER_ERROR: ${{ needs.route-rust-small.outputs.error }}
+          CPX42_RESULT: ${{ needs.rust-small-cpx42.result }}
           CX53_RESULT: ${{ needs.rust-small-cx53.result }}
           CX43_RESULT: ${{ needs.rust-small-cx43.result }}
           GITHUB_RESULT: ${{ needs.rust-small-github.result }}
@@ -371,6 +444,7 @@ jobs:
           echo "router_target=${ROUTER_TARGET:-}"
           echo "router_reason=${ROUTER_REASON:-}"
           echo "router_error=${ROUTER_ERROR:-}"
+          echo "cpx42_result=${CPX42_RESULT:-}"
           echo "cx53_result=${CX53_RESULT:-}"
           echo "cx43_result=${CX43_RESULT:-}"
           echo "github_result=${GITHUB_RESULT:-}"
@@ -382,6 +456,7 @@ jobs:
             echo "- router_target: \`${ROUTER_TARGET:-}\`"
             echo "- router_reason: \`${ROUTER_REASON:-}\`"
             echo "- router_error: \`${ROUTER_ERROR:-}\`"
+            echo "- cpx42_result: \`${CPX42_RESULT:-}\`"
             echo "- cx53_result: \`${CX53_RESULT:-}\`"
             echo "- cx43_result: \`${CX43_RESULT:-}\`"
             echo "- github_result: \`${GITHUB_RESULT:-}\`"
@@ -393,18 +468,27 @@ jobs:
           fi
 
           case "${ROUTER_TARGET:-}" in
+            cpx42)
+              test "$CPX42_RESULT" = "success"
+              test "$CX53_RESULT" = "skipped"
+              test "$CX43_RESULT" = "skipped"
+              test "$GITHUB_RESULT" = "skipped"
+              ;;
             cx53)
               test "$CX53_RESULT" = "success"
+              test "$CPX42_RESULT" = "skipped"
               test "$CX43_RESULT" = "skipped"
               test "$GITHUB_RESULT" = "skipped"
               ;;
             cx43)
               test "$CX43_RESULT" = "success"
+              test "$CPX42_RESULT" = "skipped"
               test "$CX53_RESULT" = "skipped"
               test "$GITHUB_RESULT" = "skipped"
               ;;
             github)
               test "$GITHUB_RESULT" = "success"
+              test "$CPX42_RESULT" = "skipped"
               test "$CX53_RESULT" = "skipped"
               test "$CX43_RESULT" = "skipped"
               ;;
