@@ -1,0 +1,26 @@
+lane = "lsp4ij-template-submission"
+status = "active"
+owner = "implementation-agent"
+
+[boundaries]
+submission_prep = true
+compat_support = true
+dap_follow_up_only = true
+neovim_latency_non_blocking = true
+
+[milestones]
+rail_defined = true
+template_fixture = false
+validator = false
+release_contract = false
+raw_compat_receipt = false
+manual_validation_receipt = false
+upstream_payload_render = false
+upstream_pr_ready = false
+
+[blockers]
+release_asset_mismatch = false
+installer_check_hang = false
+settings_schema_mismatch = false
+missing_manual_receipt = false
+scope_drift = false
