@@ -28,6 +28,18 @@ trait PatternDetector: Send + Sync {
     fn diagnose(&self, pattern: &AntiPattern) -> Option<Diagnostic>;
 }
 
+fn anti_pattern_location(pattern: &AntiPattern) -> &Location {
+    match pattern {
+        AntiPattern::FormatHeredoc { location, .. }
+        | AntiPattern::BeginTimeHeredoc { location, .. }
+        | AntiPattern::DynamicHeredocDelimiter { location, .. }
+        | AntiPattern::SourceFilterHeredoc { location, .. }
+        | AntiPattern::RegexCodeBlockHeredoc { location, .. }
+        | AntiPattern::EvalStringHeredoc { location, .. }
+        | AntiPattern::TiedHandleHeredoc { location, .. } => location,
+    }
+}
+
 // Format heredoc detector
 struct FormatHeredocDetector;
 
@@ -529,15 +541,7 @@ impl AntiPatternDetector {
             }
         }
 
-        diagnostics.sort_by_key(|d| match &d.pattern {
-            AntiPattern::FormatHeredoc { location, .. }
-            | AntiPattern::BeginTimeHeredoc { location, .. }
-            | AntiPattern::DynamicHeredocDelimiter { location, .. }
-            | AntiPattern::SourceFilterHeredoc { location, .. }
-            | AntiPattern::RegexCodeBlockHeredoc { location, .. }
-            | AntiPattern::EvalStringHeredoc { location, .. }
-            | AntiPattern::TiedHandleHeredoc { location, .. } => location.offset,
-        });
+        diagnostics.sort_by_key(|d| anti_pattern_location(&d.pattern).offset);
 
         diagnostics
     }
@@ -569,18 +573,10 @@ impl AntiPatternDetector {
                 }
             ));
 
+            let location = anti_pattern_location(&diag.pattern);
             report.push_str(&format!(
-                "   Location: {}\n",
-                match &diag.pattern {
-                    AntiPattern::FormatHeredoc { location, .. }
-                    | AntiPattern::BeginTimeHeredoc { location, .. }
-                    | AntiPattern::DynamicHeredocDelimiter { location, .. }
-                    | AntiPattern::SourceFilterHeredoc { location, .. }
-                    | AntiPattern::RegexCodeBlockHeredoc { location, .. }
-                    | AntiPattern::EvalStringHeredoc { location, .. }
-                    | AntiPattern::TiedHandleHeredoc { location, .. } =>
-                        format!("line {}, column {}", location.line, location.column),
-                }
+                "   Location: line {}, column {}\n",
+                location.line, location.column
             ));
 
             report.push_str(&format!("   Explanation: {}\n", diag.explanation));
