@@ -44,8 +44,8 @@ Current next work is not stored here; see the routing dashboard and active goal.
 
 A differential oracle is an explicitly configured comparison surface. It can
 help maintainers understand whether Rust-native compiler/editor facts agree
-with an external Perl-facing observation, but it is not source truth and is not
-an editor-runtime dependency.
+with an external Perl-facing observation, but it is not a source of truth and
+is not an editor-runtime dependency.
 
 Differential oracle receipts must:
 
