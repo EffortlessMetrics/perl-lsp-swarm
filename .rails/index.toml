@@ -1,0 +1,18 @@
+schema_version = "1.0"
+
+[project]
+repo = "perl-lsp-swarm"
+framework = "rails"
+root = ".rails"
+
+[conventions]
+proposal_prefix = "PLSP-PROP"
+spec_prefix = "PLSP-SPEC"
+adr_prefix = "PLSP-ADR"
+lane_prefix = "PLSP-LANE"
+
+[external_namespaces]
+codex = ".codex"
+speckit = ".spec"
+claude = ".claude"
+jules = ".jules"
