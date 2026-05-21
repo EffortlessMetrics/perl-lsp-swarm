@@ -66,6 +66,8 @@ impl<'a> PositionTracker<'a> {
 
     /// Convert a byte offset to a Position
     pub fn byte_to_position(&self, byte: usize) -> Position {
+        let byte = self.clamp_to_char_boundary(byte);
+
         // Binary search for the line
         let line = match self.line_starts.binary_search(&byte) {
             Ok(line) => line,
@@ -80,7 +82,6 @@ impl<'a> PositionTracker<'a> {
 
     /// Calculate column number accounting for UTF-8
     fn calculate_column(&self, line_start: usize, byte: usize) -> u32 {
-        let byte = self.clamp_to_char_boundary(byte);
         let line_slice = &self.source[line_start..byte];
         (line_slice.chars().count() + 1) as u32
     }
@@ -138,6 +139,17 @@ mod tests {
         assert_eq!(wrapped.start_pos.line, 1);
         assert_eq!(wrapped.start_pos.column, 1);
         assert_eq!(wrapped.end_pos.column, 3);
+    }
+
+    #[test]
+    fn test_byte_to_position_clamps_offsets_beyond_source_end() {
+        let source = "abc\n";
+        let tracker = PositionTracker::new(source);
+
+        let pos = tracker.byte_to_position(source.len() + 10);
+        assert_eq!(pos.line, 2);
+        assert_eq!(pos.column, 1);
+        assert_eq!(pos.byte, source.len());
     }
 
     #[test]
