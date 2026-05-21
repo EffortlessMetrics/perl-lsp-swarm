@@ -8,18 +8,26 @@
 use perl_tdd_support::{must, must_some};
 use std::path::Path;
 
+fn workspace_root() -> std::path::PathBuf {
+    // Navigate to workspace root (two levels up from perl-lsp crate)
+    must_some(Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent())).to_path_buf()
+}
+
+fn workspace_cargo_toml() -> String {
+    let cargo_toml_path = workspace_root().join("Cargo.toml");
+    must(std::fs::read_to_string(&cargo_toml_path))
+}
+
 #[test]
 fn test_workspace_excludes_documented_crates() {
-    // Navigate to workspace root (two levels up from perl-lsp crate)
-    let workspace_root =
-        must_some(Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()));
+    let workspace_root = workspace_root();
 
     // Expected live exclusions as documented in Cargo.toml.
     // Optional exclusions like `archive/` or removed directories like
     // `crates/tree-sitter-perl-c` may remain listed without existing in every
     // checkout, so this existence check only covers the directories that are
     // intentionally present in the current repository layout.
-    let expected_live_exclusions = vec!["tree-sitter-perl", "fuzz"];
+    let expected_live_exclusions = ["tree-sitter-perl", "fuzz"];
 
     for excluded in expected_live_exclusions {
         let excluded_path = workspace_root.join(excluded);
@@ -34,11 +42,10 @@ fn test_workspace_excludes_documented_crates() {
 
 #[test]
 fn test_excluded_crates_have_cargo_toml() {
-    let workspace_root =
-        must_some(Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()));
+    let workspace_root = workspace_root();
 
     // Crates that should have their own Cargo.toml for independent building
-    let crates_with_manifest = vec!["fuzz/Cargo.toml"];
+    let crates_with_manifest = ["fuzz/Cargo.toml"];
 
     for manifest_path in crates_with_manifest {
         let full_path = workspace_root.join(manifest_path);
@@ -52,11 +59,7 @@ fn test_excluded_crates_have_cargo_toml() {
 
 #[test]
 fn test_workspace_toml_excludes_section() {
-    let workspace_root =
-        must_some(Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()));
-
-    let cargo_toml_path = workspace_root.join("Cargo.toml");
-    let cargo_toml_content = must(std::fs::read_to_string(&cargo_toml_path));
+    let cargo_toml_content = workspace_cargo_toml();
 
     // Verify the exclusions are present in Cargo.toml
     assert!(
@@ -76,11 +79,7 @@ fn test_workspace_toml_excludes_section() {
 
 #[test]
 fn test_workspace_dependencies_dont_reference_excluded() {
-    let workspace_root =
-        must_some(Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()));
-
-    let cargo_toml_path = workspace_root.join("Cargo.toml");
-    let cargo_toml_content = must(std::fs::read_to_string(&cargo_toml_path));
+    let cargo_toml_content = workspace_cargo_toml();
 
     // Parse workspace.dependencies section
     let lines: Vec<&str> = cargo_toml_content.lines().collect();
@@ -121,11 +120,7 @@ fn test_workspace_dependencies_dont_reference_excluded() {
 
 #[test]
 fn test_exclusion_strategy_is_documented() {
-    let workspace_root =
-        must_some(Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(|p| p.parent()));
-
-    let cargo_toml_path = workspace_root.join("Cargo.toml");
-    let cargo_toml_content = must(std::fs::read_to_string(&cargo_toml_path));
+    let cargo_toml_content = workspace_cargo_toml();
 
     // Verify the exclusion section has descriptive comments
     assert!(
