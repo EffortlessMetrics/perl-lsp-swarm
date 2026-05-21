@@ -38,6 +38,19 @@ static FORMAT_PATTERN: LazyLock<Regex> =
         Err(_) => unreachable!("FORMAT_PATTERN regex failed to compile"),
     });
 
+fn capture_location(
+    captures: &regex::Captures<'_>,
+    offset: usize,
+    line_starts: &[usize],
+) -> Option<Location> {
+    let full_match = captures.get(0)?;
+    Some(location_from_start(line_starts, offset, full_match.start()))
+}
+
+fn capture_group_text(captures: &regex::Captures<'_>, group_index: usize) -> Option<String> {
+    Some(captures.get(group_index)?.as_str().to_string())
+}
+
 impl PatternDetector for FormatHeredocDetector {
     fn detect(
         &self,
@@ -49,25 +62,30 @@ impl PatternDetector for FormatHeredocDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in FORMAT_PATTERN.captures_iter(&scan_code) {
-            if let (Some(match_pos), Some(name_match)) = (cap.get(0), cap.get(1)) {
-                let format_name = name_match.as_str().to_string();
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            let Some(match_pos) = cap.get(0) else {
+                continue;
+            };
+            let Some(format_name) = capture_group_text(&cap, 1) else {
+                continue;
+            };
+            let Some(location) = capture_location(&cap, offset, line_starts) else {
+                continue;
+            };
 
-                // Look for heredoc marker inside format body (simplified)
-                let body_start = match_pos.end();
-                let body_end = code[body_start..].find("\n.").unwrap_or(code.len() - body_start);
-                let body = &scan_code[body_start..body_start + body_end];
+            // Look for heredoc marker inside format body (simplified)
+            let body_start = match_pos.end();
+            let body_end = code[body_start..].find("\n.").unwrap_or(code.len() - body_start);
+            let body = &scan_code[body_start..body_start + body_end];
 
-                if body.contains("<<") {
-                    results.push((
-                        AntiPattern::FormatHeredoc {
-                            location: location.clone(),
-                            format_name,
-                            heredoc_delimiter: "UNKNOWN".to_string(), // Would need better extraction
-                        },
-                        location,
-                    ));
-                }
+            if body.contains("<<") {
+                results.push((
+                    AntiPattern::FormatHeredoc {
+                        location: location.clone(),
+                        format_name,
+                        heredoc_delimiter: "UNKNOWN".to_string(), // Would need better extraction
+                    },
+                    location,
+                ));
             }
         }
 
@@ -229,15 +247,18 @@ impl PatternDetector for DynamicDelimiterDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in DYNAMIC_DELIMITER_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
-                let expression = match_pos.as_str().to_string();
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            let Some(match_pos) = cap.get(0) else {
+                continue;
+            };
+            let expression = match_pos.as_str().to_string();
+            let Some(location) = capture_location(&cap, offset, line_starts) else {
+                continue;
+            };
 
-                results.push((
-                    AntiPattern::DynamicHeredocDelimiter { location: location.clone(), expression },
-                    location,
-                ));
-            }
+            results.push((
+                AntiPattern::DynamicHeredocDelimiter { location: location.clone(), expression },
+                location,
+            ));
         }
 
         results
@@ -281,18 +302,20 @@ impl PatternDetector for SourceFilterDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in SOURCE_FILTER_PATTERN.captures_iter(&scan_code) {
-            if let (Some(match_pos), Some(module_match)) = (cap.get(0), cap.get(1)) {
-                let filter_module = module_match.as_str().to_string();
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            let Some(filter_module) = capture_group_text(&cap, 1) else {
+                continue;
+            };
+            let Some(location) = capture_location(&cap, offset, line_starts) else {
+                continue;
+            };
 
-                results.push((
-                    AntiPattern::SourceFilterHeredoc {
-                        location: location.clone(),
-                        module: filter_module,
-                    },
-                    location,
-                ));
-            }
+            results.push((
+                AntiPattern::SourceFilterHeredoc {
+                    location: location.clone(),
+                    module: filter_module,
+                },
+                location,
+            ));
         }
 
         results
@@ -335,14 +358,14 @@ impl PatternDetector for RegexHeredocDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in REGEX_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            let Some(location) = capture_location(&cap, offset, line_starts) else {
+                continue;
+            };
 
-                results.push((
-                    AntiPattern::RegexCodeBlockHeredoc { location: location.clone() },
-                    location,
-                ));
-            }
+            results.push((
+                AntiPattern::RegexCodeBlockHeredoc { location: location.clone() },
+                location,
+            ));
         }
 
         results
@@ -384,14 +407,11 @@ impl PatternDetector for EvalHeredocDetector {
         let mut results = Vec::new();
 
         for cap in EVAL_HEREDOC_PATTERN.captures_iter(code) {
-            if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            let Some(location) = capture_location(&cap, offset, line_starts) else {
+                continue;
+            };
 
-                results.push((
-                    AntiPattern::EvalStringHeredoc { location: location.clone() },
-                    location,
-                ));
-            }
+            results.push((AntiPattern::EvalStringHeredoc { location: location.clone() }, location));
         }
 
         results
