@@ -100,6 +100,11 @@ static BEGIN_BLOCK_START_PATTERN: LazyLock<Regex> =
         Err(_) => unreachable!("BEGIN_BLOCK_START_PATTERN regex failed to compile"),
     });
 
+fn capture_location(cap: &regex::Captures<'_>, line_starts: &[usize], offset: usize) -> Option<Location> {
+    cap.get(0)
+        .map(|full_match| location_from_start(line_starts, offset, full_match.start()))
+}
+
 fn find_matching_brace(code: &str, opening_brace_idx: usize) -> Option<usize> {
     let bytes = code.as_bytes();
     let mut depth = 0usize;
@@ -229,9 +234,10 @@ impl PatternDetector for DynamicDelimiterDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in DYNAMIC_DELIMITER_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
+            if let (Some(match_pos), Some(location)) =
+                (cap.get(0), capture_location(&cap, line_starts, offset))
+            {
                 let expression = match_pos.as_str().to_string();
-                let location = location_from_start(line_starts, offset, match_pos.start());
 
                 results.push((
                     AntiPattern::DynamicHeredocDelimiter { location: location.clone(), expression },
@@ -335,8 +341,7 @@ impl PatternDetector for RegexHeredocDetector {
         let scan_code = mask_non_code_regions(code);
 
         for cap in REGEX_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            if let Some(location) = capture_location(&cap, line_starts, offset) {
 
                 results.push((
                     AntiPattern::RegexCodeBlockHeredoc { location: location.clone() },
@@ -384,8 +389,7 @@ impl PatternDetector for EvalHeredocDetector {
         let mut results = Vec::new();
 
         for cap in EVAL_HEREDOC_PATTERN.captures_iter(code) {
-            if let Some(match_pos) = cap.get(0) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
+            if let Some(location) = capture_location(&cap, line_starts, offset) {
 
                 results.push((
                     AntiPattern::EvalStringHeredoc { location: location.clone() },
@@ -454,7 +458,7 @@ impl PatternDetector for TiedHandleDetector {
         // by whether the handle is in the tied set. This avoids O(n) Regex
         // compilations (one per tied handle) and is faster for large files.
         for cap in PRINT_HEREDOC_PATTERN.captures_iter(&scan_code) {
-            let (Some(match_pos), Some(handle_match)) = (cap.get(0), cap.get(1)) else {
+            let Some(handle_match) = cap.get(1) else {
                 continue;
             };
 
@@ -463,14 +467,15 @@ impl PatternDetector for TiedHandleDetector {
                 raw_print_handle.strip_prefix('*').unwrap_or(raw_print_handle);
 
             if tied_handles.contains(normalized_print_handle) {
-                let location = location_from_start(line_starts, offset, match_pos.start());
-                results.push((
-                    AntiPattern::TiedHandleHeredoc {
-                        location: location.clone(),
-                        handle_name: normalized_print_handle.to_string(),
-                    },
-                    location,
-                ));
+                if let Some(location) = capture_location(&cap, line_starts, offset) {
+                    results.push((
+                        AntiPattern::TiedHandleHeredoc {
+                            location: location.clone(),
+                            handle_name: normalized_print_handle.to_string(),
+                        },
+                        location,
+                    ));
+                }
             }
         }
 
