@@ -27,6 +27,7 @@ phase marked `builder-ready: yes`**.
 | Perl-oracle subprocess env | (umbrella only) | #8551 | builder | 1+ | #8620 (ask-Perl subprocess seam inventory) |
 | Literal require/import | (umbrella only) | #4280 | builder | 2 | #8639 (rail doc after #8618 spec closeout) |
 | Real-workspace baseline | (umbrella only) | #7949 (suite), #7952 (editor-trust roadmap) | builder | 1+ | scope provider expectations for the baseline suite |
+| LSP interactive latency | [`development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md`](../development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md) | #0000 | builder | 11+ | phase 2 timing probes (`PERL_LSP_TIMING=1`) |
 | File policy rollout | (umbrella only) | #8174 | factory-droid | 1+ | next PR in the 3–11 ladder (xtask / companion ledgers / gate wiring) |
 | CI contributor UX | (umbrella only) | #4825 (sticky summary), #4826 (`just ci-doctor`) | builder | 2 | #4825 PR sticky comment |
 | Freshness / issue-spec | (umbrella only) | #8546 | builder | 2 | #8619 (`cargo xtask freshness-check` implementation) |
