@@ -23,6 +23,7 @@ phase marked `builder-ready: yes`**.
 | Rust 1.95 / clippy cleanup | [`development/RUST_1_95_ROLLOUT.md`](../development/RUST_1_95_ROLLOUT.md) | #8508 closed → tracker #8584 | codex | 11 | #8561 (`collapsible_match`) |
 | Strong clippy lints | [`development/STRONG_CLIPPY_LINTS_ROLLOUT.md`](../development/STRONG_CLIPPY_LINTS_ROLLOUT.md) | #8590 | codex | 1+ | #8601 (`manual_take`) |
 | Codecov / evidence boundaries | [`ci/codecov-rollout.md`](../ci/codecov-rollout.md) | (doc only — file umbrella before pickup) | codex | 8 | Cov-1 (`codecov.yml` quiet + scope) |
+| LSP interactive latency | [`development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md`](../development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md) | file after doc PR | codex | 12 | Phase 1 doc rail + timing spec |
 | Module completion latency | (umbrella only) | #8514 | builder | 1 | TTL cache for prefix module scans |
 | Perl-oracle subprocess env | (umbrella only) | #8551 | builder | 1+ | #8620 (ask-Perl subprocess seam inventory) |
 | Literal require/import | (umbrella only) | #4280 | builder | 2 | #8639 (rail doc after #8618 spec closeout) |
