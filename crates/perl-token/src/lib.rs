@@ -110,7 +110,6 @@ mod tests {
         assert_eq!(tok.end, 2);
     }
 
-
     #[test]
     fn token_len_saturates_for_inverted_span() {
         let tok = Token::new(TokenKind::Identifier, "x", 9, 4);
@@ -244,7 +243,6 @@ mod tests {
     }
 
     // --- TokenRef ---
-
 
     #[test]
     fn token_ref_len_saturates_for_inverted_span() {
