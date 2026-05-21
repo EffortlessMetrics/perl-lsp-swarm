@@ -20,6 +20,36 @@
 
 use std::collections::HashMap;
 
+mod string_scan {
+    pub(super) fn next_char_len(text: &str, pos: usize) -> usize {
+        text[pos..].chars().next().map_or(1, |c| c.len_utf8())
+    }
+
+    pub(super) fn is_word_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    }
+
+    pub(super) fn toggle_quote_state(
+        bytes: &[u8],
+        pos: usize,
+        in_single_quote: &mut bool,
+        in_double_quote: &mut bool,
+    ) -> Option<usize> {
+        match bytes[pos] {
+            b'\\' if *in_single_quote || *in_double_quote => Some(2),
+            b'\'' if !*in_double_quote => {
+                *in_single_quote = !*in_single_quote;
+                Some(1)
+            }
+            b'"' if !*in_single_quote => {
+                *in_double_quote = !*in_double_quote;
+                Some(1)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Maximum number of body lines before the inliner rejects the function.
 const MAX_BODY_LINES: usize = 50;
 
@@ -398,56 +428,25 @@ fn count_return_statements(body: &str) -> usize {
     let bytes = body.as_bytes();
 
     while pos < body.len() {
-        let b = bytes[pos];
-
-        // Track string context — handle backslash escapes
-        match b {
-            b'\\' if in_single_quote || in_double_quote => {
-                // Skip escaped character
-                pos += 2;
-                continue;
-            }
-            b'\'' if !in_double_quote => {
-                in_single_quote = !in_single_quote;
-                pos += 1;
-                continue;
-            }
-            b'"' if !in_single_quote => {
-                in_double_quote = !in_double_quote;
-                pos += 1;
-                continue;
-            }
-            _ => {}
+        if let Some(step) =
+            string_scan::toggle_quote_state(bytes, pos, &mut in_single_quote, &mut in_double_quote)
+        {
+            pos += step;
+            continue;
         }
 
-        // Only count `return` tokens outside string literals
-        if !in_single_quote && !in_double_quote {
-            let rest = &body[pos..];
-            if rest.starts_with("return") {
-                // Check character before
-                let before_ok = if pos > 0 {
-                    let prev = bytes[pos - 1];
-                    !prev.is_ascii_alphanumeric() && prev != b'_'
-                } else {
-                    true
-                };
-                // Check character after
-                let after_pos = pos + 6;
-                let after_ok = if after_pos < body.len() {
-                    let next = bytes[after_pos];
-                    !next.is_ascii_alphanumeric() && next != b'_'
-                } else {
-                    true
-                };
-                if before_ok && after_ok {
-                    count += 1;
-                }
-                pos += 6;
-                continue;
+        if !in_single_quote && !in_double_quote && body[pos..].starts_with("return") {
+            let before_ok = pos == 0 || !string_scan::is_word_byte(bytes[pos - 1]);
+            let after_pos = pos + 6;
+            let after_ok = after_pos >= body.len() || !string_scan::is_word_byte(bytes[after_pos]);
+            if before_ok && after_ok {
+                count += 1;
             }
+            pos += 6;
+            continue;
         }
 
-        pos += body[pos..].chars().next().map_or(1, |c| c.len_utf8());
+        pos += string_scan::next_char_len(body, pos);
     }
     count
 }
@@ -474,28 +473,16 @@ fn body_calls_self(body: &str, sub_name: &str) -> bool {
     let mut in_double_quote = false;
 
     while pos < body.len() {
-        let b = bytes[pos];
-        match b {
-            b'\\' if in_single_quote || in_double_quote => {
-                pos += 2;
-                continue;
-            }
-            b'\'' if !in_double_quote => {
-                in_single_quote = !in_single_quote;
-                pos += 1;
-                continue;
-            }
-            b'"' if !in_single_quote => {
-                in_double_quote = !in_double_quote;
-                pos += 1;
-                continue;
-            }
-            _ => {}
+        if let Some(step) =
+            string_scan::toggle_quote_state(bytes, pos, &mut in_single_quote, &mut in_double_quote)
+        {
+            pos += step;
+            continue;
         }
         if !in_single_quote && !in_double_quote && body[pos..].starts_with(&call_pattern) {
             return true;
         }
-        pos += body[pos..].chars().next().map_or(1, |c| c.len_utf8());
+        pos += string_scan::next_char_len(body, pos);
     }
     false
 }
