@@ -148,6 +148,7 @@ mod lexer;
 pub mod limits;
 pub mod mode;
 mod quote_handler;
+mod replacement_quote_context;
 pub mod token;
 pub mod tokenizer;
 mod unicode;
@@ -2873,7 +2874,7 @@ impl<'a> PerlLexer<'a> {
         quote: char,
         delim: char,
     ) -> Option<(usize, bool)> {
-        if Self::is_word_apostrophe(self.input, start, quote) {
+        if replacement_quote_context::is_word_apostrophe(self.input, start, quote) {
             return None;
         }
         // Adjacent quotes are literal replacement text (for example s/"/""/g),
@@ -2882,7 +2883,7 @@ impl<'a> PerlLexer<'a> {
             return None;
         }
         let mut pos = start.checked_add(quote.len_utf8())?;
-        let expression_quote = Self::can_start_replacement_expression_quote(self.input, start);
+        let expression_quote = replacement_quote_context::can_start_replacement_expression_quote(self.input, start);
         if !expression_quote && self.input.get(pos..).is_some_and(|text| text.starts_with(delim)) {
             return None;
         }
@@ -2928,45 +2929,6 @@ impl<'a> PerlLexer<'a> {
         }
 
         None
-    }
-
-    // Only skip delimiter-bearing inner strings in positions that look like
-    // replacement expressions; literal replacement quotes still let the next
-    // delimiter close the substitution.
-    fn can_start_replacement_expression_quote(input: &str, pos: usize) -> bool {
-        input
-            .get(..pos)
-            .and_then(|text| text.chars().rev().find(|ch| !ch.is_whitespace()))
-            .is_some_and(|ch| {
-                matches!(
-                    ch,
-                    '(' | '['
-                        | '{'
-                        | ','
-                        | '='
-                        | ':'
-                        | '?'
-                        | '!'
-                        | '~'
-                        | '+'
-                        | '-'
-                        | '*'
-                        | '%'
-                        | '&'
-                        | '|'
-                        | '^'
-                        | '<'
-                        | '>'
-                )
-            })
-    }
-
-    fn is_word_apostrophe(input: &str, pos: usize, quote: char) -> bool {
-        quote == '\''
-            && input
-                .get(..pos)
-                .and_then(|text| text.chars().next_back())
-                .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     }
 
     fn parse_transliteration(&mut self, start: usize) -> Option<Token> {
