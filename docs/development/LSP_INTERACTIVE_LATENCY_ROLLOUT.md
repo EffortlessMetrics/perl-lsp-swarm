@@ -18,9 +18,11 @@ If a PR in this rail expands into incremental parsing, parser-grammar changes, o
 
 ## Status
 
-| Phase | Issue / PR | Scope | Stack on |
+Tracking convention: all phases share the umbrella issue [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) for high-level coordination. Per-phase tracking issues are filed when each phase's PR opens, and this table is updated with the per-PR link at that time so progress is visible without one issue per phase sitting open empty.
+
+| Phase | Tracker | Scope | Stack on |
 |---|---|---|---|
-| 1. Scope-lock doc | this doc — [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | docs only | main |
+| 1. Scope-lock doc | this PR (umbrella [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229)) | docs only | n/a — lands first |
 | 2. Timing probes | [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | `PERL_LSP_TIMING=1` opt-in instrumentation | main |
 | 3. E2E runtime mode | [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | `--runtime-mode e2e`, workload profile for harnesses | main |
 | 4. Syntax-only diagnostics | [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | `--diagnostic-mode syntax-only` | main |
@@ -32,7 +34,7 @@ If a PR in this rail expands into incremental parsing, parser-grammar changes, o
 | 10. Semantic-token contract cleanup | [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | stop advertising `delta` until cache exists | main |
 
 Phases 2–7 and 10 can build in parallel — they touch disjoint subsystems.
-Phases 8 and 9 stack on [#223](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/223) (cancellation-registry typed migration) because they live on the cancellation surface.
+Phases 8 and 9 stack on [#223](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/223) (cancellation-registry typed migration) because they live on the cancellation surface. **If #223 reverts or substantially changes scope, Phases 8 and 9 revert as a unit** — their boundary conversion patterns assume the typed registry. The rest of the rail is independent.
 
 ## Exit criteria
 
@@ -41,6 +43,42 @@ Phases 8 and 9 stack on [#223](https://github.com/EffortlessMetrics/perl-lsp-swa
 - [ ] A Neovim harness can run `perllsp --runtime-mode e2e --diagnostic-mode syntax-only --diagnostic-debounce-ms 0` and exercise hover/completion in isolation from background work.
 - [ ] `PERL_LSP_TIMING=1` writes per-phase latency receipts to a non-stdout sink.
 - [ ] Status doc updated (`docs/project/status/lsp.md` regenerated post-merge).
+- [ ] Quantitative targets below are met or explicitly waived with a written rationale.
+
+## Quantitative targets
+
+These are the closeout thresholds for the rail. Phase 2 (timing probes) establishes the baseline; subsequent phases ratchet against it. All targets are p95 unless noted; measured on the Neovim harness against a medium real-workspace fixture (`test_corpus/medium-app/`) on a release build.
+
+| Surface | Phase 2 baseline (TBD) | Post-rail target | Hard cap |
+|---|---|---|---|
+| First-useful hover after `didOpen` | record on land | ≤ 100 ms | 250 ms |
+| First-useful completion after `didOpen` | record on land | ≤ 150 ms | 350 ms |
+| Steady-state hover (no `didChange` pending) | record on land | ≤ 50 ms | 120 ms |
+| Steady-state completion | record on land | ≤ 80 ms | 200 ms |
+| Parser-error diagnostic publish after `didOpen` | record on land | ≤ 50 ms | 150 ms |
+| Stale-request cancel latency (Phase 9) | n/a | ≤ 10 ms after `didChange` | 50 ms |
+
+"Baseline (TBD)" is filled in when Phase 2 lands and the timing probes write their first receipt. Phases 3–10 must not regress any baseline beyond its hard cap; they should also drive each metric toward (or past) the post-rail target.
+
+Hard caps are absolute fail conditions for closeout — if any metric exceeds its cap, the rail does not close. Soft targets are the success criterion the user-facing experience is aimed at.
+
+## Rollback
+
+Each phase ships with a clear revert path:
+
+| Phase | Rollback |
+|---|---|
+| 2. Timing probes | `PERL_LSP_TIMING=1` is opt-in; not setting the env var disables it. Revert = revert the commit; behavior is unchanged when the flag is unset. |
+| 3. E2E runtime mode | `--runtime-mode e2e` is opt-in; default mode unchanged. Revert = drop the flag from harness configs. |
+| 4. Syntax-only diagnostics | `--diagnostic-mode syntax-only` is opt-in. Revert = drop the flag; full diagnostics resume. |
+| 5. didOpen diagnostic defer | Behavior change in `didOpen` handling; revert via commit revert. Diagnostic correctness unaffected (still publishes, just debounced). |
+| 6. Pull-diagnostics short-circuit | Server checks client capabilities at runtime. Revert = commit revert; push computation resumes for all clients. |
+| 7. Eager-indexing off in e2e | Gated on `--runtime-mode e2e`; normal mode unchanged. |
+| 8. Latest-only diagnostics | Behavior change in diagnostic publishing; revert via commit revert. Worst-case fallback is the pre-rail behavior (stale diagnostics may publish, but no correctness loss). |
+| 9. Generation-aware stale cancellation | Behavior change in scheduler; revert via commit revert. Worst-case fallback is the pre-rail behavior (stale reads return potentially-out-of-date results, but no crash). |
+| 10. Semantic-token delta de-advertise | Capability advertisement change. Revert = restore the `delta: true` line in initialize response. |
+
+Hard rule: any rail phase that regresses correctness (not just latency) is reverted, not patched forward. Latency regressions can be tuned; correctness regressions are immediate reverts.
 
 ## Claim boundary
 
