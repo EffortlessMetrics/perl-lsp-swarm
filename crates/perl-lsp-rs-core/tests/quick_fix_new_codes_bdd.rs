@@ -217,7 +217,7 @@ fn deprecated_array_base_edit_removes_entire_statement_line()
 }
 
 #[test]
-fn deprecated_array_base_nonzero_assignment_is_also_offered()
+fn deprecated_array_base_nonzero_assignment_is_not_auto_fixed()
 -> Result<(), Box<dyn std::error::Error>> {
     // GIVEN `$[ = 1;` (non-default, requires manual renumbering)
     let source = "use strict;\n$[ = 1;\nprint $arr[1];\n";
@@ -227,11 +227,11 @@ fn deprecated_array_base_nonzero_assignment_is_also_offered()
     let diag = make_diag(dollar_start, dollar_end, "PL501", "Use of '$[' is deprecated");
     let actions = actions_for(source, &[diag]);
 
-    // THEN we still offer removal (caller is responsible for renumbering)
-    let action = find_action(&actions, |t| t.contains("$['"))
-        .ok_or_else(|| format!("no '$[' action in: {:?}", actions))?;
-    let result = edited(source, action);
-    assert_eq!(result, "use strict;\nprint $arr[1];\n");
+    // THEN we do not offer a destructive edit for non-zero array bases.
+    assert!(
+        !actions.iter().any(|action| action.title.contains("$['")),
+        "expected no destructive PL501 action for non-zero assignment, got: {actions:?}"
+    );
 
     Ok(())
 }

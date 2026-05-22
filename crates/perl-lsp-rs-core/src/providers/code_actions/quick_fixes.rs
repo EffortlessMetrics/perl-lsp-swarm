@@ -1678,13 +1678,12 @@ pub fn fix_unused_import(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<C
     }]
 }
 
-/// Remove a deprecated `$[` array-base variable assignment (PL501).
+/// Remove a deprecated `$[ = 0;` array-base variable assignment (PL501).
 ///
 /// `$[` was a Perl variable that changed the starting index for arrays and
 /// string operations. It has been deprecated since Perl 5.12. This fix removes
-/// the whole line containing the `$[` reference. Removing `$[ = 0;` is always
-/// safe (0 is the permanent default in modern Perl). Removing `$[ = N;` for
-/// N != 0 may require renumbering array subscripts elsewhere in the file.
+/// only a standalone `$[ = 0;` line. Non-zero assignments are intentionally not
+/// auto-fixed because removing them can require renumbering array subscripts.
 pub fn fix_deprecated_array_base(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
     let Some((line_start, line_end)) = diagnostic_line_range(source, diagnostic.range) else {
         return Vec::new();
@@ -1692,7 +1691,7 @@ pub fn fix_deprecated_array_base(source: &str, diagnostic: &QuickFixDiagnostic) 
     let Some(line_text) = source.get(line_start..line_end) else {
         return Vec::new();
     };
-    if !line_text.trim_start().starts_with("$[") {
+    if !is_zero_array_base_assignment(line_text) {
         return Vec::new();
     }
 
@@ -1708,6 +1707,20 @@ pub fn fix_deprecated_array_base(source: &str, diagnostic: &QuickFixDiagnostic) 
         },
         is_preferred: true,
     }]
+}
+
+fn is_zero_array_base_assignment(line_text: &str) -> bool {
+    let Some(rest) = line_text.trim_start().strip_prefix("$[") else {
+        return false;
+    };
+    let Some(rest) = rest.trim_start().strip_prefix('=') else {
+        return false;
+    };
+    let Some(rest) = rest.trim_start().strip_prefix('0') else {
+        return false;
+    };
+
+    rest.trim_start().starts_with(';')
 }
 
 /// Scope a global signal handler assignment with `local` (PL602).
