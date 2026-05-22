@@ -538,7 +538,7 @@ claim_boundary = "Published API baseline and storage-safe tooling hygiene only; 
 files = [
   ".perl-lsp/goals/active.toml",
   "plans/real-perl-editor-trust/implementation-plan.md",
-  "Justfile",
+  "justfile",
   ".ci/public-api-baselines",
 ]
 commands = [
