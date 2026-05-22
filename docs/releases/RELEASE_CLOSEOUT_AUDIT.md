@@ -52,7 +52,7 @@ that lets `release:published` fire downstream).
 
 ### 2. crates.io
 
-Primary packages:
+Primary packages (update list if workspace top-level binaries change):
 
 ```bash
 for crate in perllsp perl-lsp-rs perl-parser perl-dap; do
@@ -79,9 +79,9 @@ burst rate limit (crates.io: burst=5, refill 1/10min). Remediation:
 ### 3. VS Code Marketplace
 
 ```bash
-# Listing version:
+# Listing version (BSD grep portable; macOS/Linux both work):
 curl -s "https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs" \
-  | grep -oP 'data-version="\K[^"]+' | head -1
+  | grep -oE 'data-version="[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"/\1/'
 ```
 
 Or check programmatically via the marketplace gallery API. If not at
@@ -157,13 +157,24 @@ Re-dispatch: `gh workflow run scoop-bump.yml -f tag=vX.Y.Z`.
 choco search perllsp --exact
 ```
 
-Chocolatey moderation can queue submissions for hours/days. If pending
-in moderation queue: nothing to do but wait. If the workflow never
-fired:
+Chocolatey moderation can queue submissions for hours/days. If
+`choco search` returns a stale version, distinguish between "workflow
+never fired" and "submitted but queued in moderation":
+
+```bash
+# Did the bump workflow run at all for this version?
+gh run list --workflow=chocolatey-bump.yml --limit 10 \
+  | grep -E "vX\.Y\.Z|completed"
+```
+
+If the workflow never ran, dispatch it:
 
 ```bash
 gh workflow run chocolatey-bump.yml -f tag=vX.Y.Z
 ```
+
+If the workflow ran successfully but `choco search` is still stale, the
+submission is in moderation — nothing to do but wait.
 
 ### 9. End-to-end smoke
 
