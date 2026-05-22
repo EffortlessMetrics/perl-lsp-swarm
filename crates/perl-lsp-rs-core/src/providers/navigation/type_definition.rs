@@ -174,22 +174,7 @@ impl TypeDefinitionProvider {
                 None
             }
             // Package identifier or Package::method
-            NodeKind::Identifier { name } => {
-                if name.contains("::") {
-                    // Qualified name like Package::method
-                    let parts: Vec<&str> = name.split("::").collect();
-                    if parts.len() >= 2 {
-                        // Get the package name (everything except the last part)
-                        return Some(parts[..parts.len() - 1].join("::"));
-                    }
-                }
-                // Check if this identifier looks like a package name (starts with uppercase)
-                if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                    // Likely a package/class name
-                    return Some(name.clone());
-                }
-                None
-            }
+            NodeKind::Identifier { name } => Self::type_name_from_identifier(name),
             // Constructor: Package->new or new Package
             NodeKind::Binary { op, left, right } if op == "->" => {
                 // Handle Package->new pattern
@@ -409,25 +394,42 @@ impl TypeDefinitionProvider {
         if name.is_empty() { None } else { Some(name) }
     }
 
-    /// Try to infer the type of an object from its declaration or assignment
+    #[cfg(feature = "lsp-compat")]
+    fn package_like_identifier(name: &str) -> bool {
+        name.contains("::") || name.chars().next().is_some_and(|c| c.is_uppercase())
+    }
+
+    #[cfg(feature = "lsp-compat")]
+    fn type_name_from_identifier(name: &str) -> Option<String> {
+        if name.contains("::") {
+            let parts: Vec<&str> = name.split("::").collect();
+            if parts.len() >= 2 {
+                let last = parts[parts.len() - 1];
+                if last.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    return Some(name.to_string());
+                }
+                return Some(parts[..parts.len() - 1].join("::"));
+            }
+        }
+
+        if Self::package_like_identifier(name) { Some(name.to_string()) } else { None }
+    }
+
+    /// Try to infer the type of an object from its node shape.
     #[cfg(feature = "lsp-compat")]
     fn infer_object_type(&self, object: &Node) -> Option<String> {
         match &object.kind {
-            NodeKind::Variable { name, .. } => {
-                // Would need to track variable types through analysis
-                // For now, try common patterns like $self
-                if name == "$self" || name == "$this" {
-                    // Would need to find the enclosing package
-                    None
+            NodeKind::Identifier { name } => {
+                if Self::package_like_identifier(name) {
+                    Some(name.clone())
                 } else {
                     None
                 }
             }
-            // Direct constructor call
-            NodeKind::FunctionCall { name, .. } if name == "new" => {
-                // The package should be in the parent context
-                None
-            }
+            // Variables and nested method calls need data-flow or return-value facts.
+            NodeKind::Variable { .. }
+            | NodeKind::FunctionCall { .. }
+            | NodeKind::MethodCall { .. } => None,
             _ => None,
         }
     }
@@ -739,15 +741,79 @@ $obj->method();
     }
 
     #[test]
-    fn test_extract_type_from_constructor() {
+    fn test_extract_type_from_constructor_cursor_on_method() {
         let code = "my $obj = Package::Name->new();";
         let mut parser = Parser::new(code);
-        let _ast = must(parser.parse());
+        let ast = must(parser.parse());
 
-        let _provider = TypeDefinitionProvider::new();
+        let provider = TypeDefinitionProvider::new();
+        let node_at_new = must_some(provider.find_node_at_offset(&ast, 25));
+        let type_name = provider.extract_type_name(&node_at_new);
 
-        // Would need to traverse to find the right node
-        // This is a simplified test
+        assert_eq!(
+            type_name,
+            Some("Package::Name".to_string()),
+            "cursor on constructor method should extract the direct package receiver"
+        );
+    }
+
+    #[test]
+    fn test_extract_type_from_constructor_cursor_on_package() {
+        let code = "my $obj = Package::Name->new();";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+
+        let provider = TypeDefinitionProvider::new();
+        let node_at_package = must_some(provider.find_node_at_offset(&ast, 10));
+        let type_name = provider.extract_type_name(&node_at_package);
+
+        assert_eq!(
+            type_name,
+            Some("Package::Name".to_string()),
+            "qualified class identifiers should keep their final package component"
+        );
+    }
+
+    #[test]
+    fn test_extract_type_from_qualified_function_call_keeps_package_prefix() {
+        assert_eq!(
+            TypeDefinitionProvider::type_name_from_identifier("Package::function"),
+            Some("Package".to_string()),
+            "lowercase qualified call names should still resolve to their package prefix"
+        );
+    }
+
+    #[test]
+    fn test_extract_type_direct_package_receiver() {
+        let code = "Foo->bar();";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+
+        let provider = TypeDefinitionProvider::new();
+        let node_at_method = must_some(provider.find_node_at_offset(&ast, 5));
+        let type_name = provider.extract_type_name(&node_at_method);
+
+        assert_eq!(
+            type_name,
+            Some("Foo".to_string()),
+            "cursor on direct package method should resolve the package receiver"
+        );
+    }
+
+    #[test]
+    fn test_extract_type_chained_method_return_requires_fact() {
+        let code = "MyFactory->create()->do_work();";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+
+        let provider = TypeDefinitionProvider::new();
+        let node_at_method = must_some(provider.find_node_at_offset(&ast, 22));
+        let type_name = provider.extract_type_name(&node_at_method);
+
+        assert_eq!(
+            type_name, None,
+            "arbitrary chained method returns must not be treated as the original package"
+        );
     }
 
     #[test]
