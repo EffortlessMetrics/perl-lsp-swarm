@@ -616,6 +616,29 @@ files = [
 ]
 
 [[work_item]]
+id = "post-burndown-no-ready-lane-checkpoint"
+status = "completed"
+lane = "reliability"
+claim_boundary = "Control-plane routing checkpoint only; no parser bucket selection, measurement-gap invention, semantic-token class promotion, provider behavior, support-tier movement, release-lineage sync, PIR, determinism, or oracle-runner work."
+files = [
+  ".perl-lsp/goals/active.toml",
+  "plans/real-perl-editor-trust/implementation-plan.md",
+]
+commands = [
+  "rtk gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number,title,headRefName,mergeable,isDraft",
+  "rtk gh pr list --repo EffortlessMetrics/perl-lsp --state open --limit 100 --json number,title,headRefName,mergeable,isDraft",
+  "rtk bash -lc './scripts/cargo-safe xtask check-active-goal-manifest'",
+  "rtk bash -lc './scripts/cargo-safe xtask check-provider-promotion-ledger'",
+  "rtk bash -lc './scripts/cargo-safe xtask check-semantic-token-classes'",
+  "rtk bash -lc './scripts/cargo-safe xtask check-support-claims'",
+  "rtk bash -lc './scripts/cargo-safe xtask check-provider-confidence-matrix'",
+  "rtk bash -lc './scripts/cargo-safe xtask metrics parser-accuracy --check'",
+  "rtk bash -lc './scripts/cargo-safe xtask metrics ratchet-check parser_accuracy'",
+  "rtk bash -lc './scripts/storage-doctor'",
+  "rtk git diff --check",
+]
+
+[[work_item]]
 id = "cleanup-train-queue-review"
 status = "completed"
 lane = "reliability"

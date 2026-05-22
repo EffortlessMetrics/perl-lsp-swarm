@@ -784,6 +784,15 @@ Current executable slice
   not prove exact live-output parity against an existing live `class` token; the
   reviewed class therefore receives no semantic-token class policy row, provider
   promotion row, support-tier movement, or provider behavior change.
+- `post-burndown-no-ready-lane-checkpoint` is completed in the reliability lane.
+  The post-queue-burndown checkpoint records that both swarm and source PR
+  queues are empty, `parser_accuracy_next.md` still reports zero active failure
+  packets and no measurement gaps, generated parser status still reports no raw
+  failure buckets, semantic-token `class_declaration` remains deferred, provider
+  ledger and semantic-token policy checks pass, and substrate items remain
+  assignment-gated. This is a routing checkpoint only; it does not select a stale
+  parser bucket, invent a measurement gap, promote a token class, start PIR or
+  determinism, or add oracle-runner work.
 - The recent queue cleanup was tracked in
   [perl-lsp-swarm#88](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/88).
 
@@ -809,13 +818,21 @@ Claim boundary
   this plan, and ledger parity notes produced by existing checks. It must not
   change the ledger's promotion decision set, promote a fact class, or alter
   provider/support/parser status.
+- Post-burndown no-ready-lane checkpoints may update only active-goal routing
+  and this plan from current status/queue evidence. They must not select parser
+  work when `parser_accuracy_next.md` has no failure packets or measurement gaps,
+  must not use stale raw-bucket context when `parser.md` lists `none`, and must
+  not promote semantic-token or provider behavior without a ready row and
+  receipt.
 
 Proof commands
 
 ```bash
 rtk gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number,title,headRefName,mergeable,isDraft
+rtk gh pr list --repo EffortlessMetrics/perl-lsp --state open --limit 100 --json number,title,headRefName,mergeable,isDraft
 rtk bash -lc './scripts/cargo-safe xtask check-active-goal-manifest'
 rtk bash -lc './scripts/cargo-safe xtask check-provider-promotion-ledger'
+rtk bash -lc './scripts/cargo-safe xtask check-semantic-token-classes'
 rtk bash -lc './scripts/cargo-safe xtask check-support-claims'
 rtk bash -lc './scripts/cargo-safe xtask check-provider-confidence-matrix'
 rtk bash -lc './scripts/cargo-safe xtask metrics parser-accuracy --check'
