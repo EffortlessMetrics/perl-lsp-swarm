@@ -80,7 +80,7 @@ this to a minor version under 0.x semver.
 
 ### Looking ahead
 
-- LSP interactive latency rollout rail<!-- target doc lands via PR #231 --> at
+- LSP interactive latency rollout rail at
   [`docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md`](docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md).
   Workload-profile and stale-work-cancellation work that benefits
   Neovim and LSP4IJ equally; targets 0.15.1. Umbrella tracking: **#229**.
