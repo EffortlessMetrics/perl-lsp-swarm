@@ -30,6 +30,15 @@ use std::time::Instant;
 
 use super::super::LspServer;
 
+/// Sentinel request ID used for the notification-path token in
+/// [`Self::handle_completion_cancellable`]. Real client request IDs are
+/// always positive integers (per LSP convention) or strings; this negative
+/// integer cannot collide with any client- or server-generated ID. The
+/// token created with this ID is intentionally **not** registered in the
+/// global cancellation registry — it exists only as a local handle that the
+/// provider's cancel-check closure can read.
+const UNCANCELLABLE_LOCAL_TOKEN_ID: JsonRpcId = JsonRpcId::Integer(-1);
+
 static SNIPPET_PLACEHOLDER_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 static SNIPPET_SIMPLE_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
@@ -889,9 +898,14 @@ impl LspServer {
                     token
                 })
             } else {
-                // No typed request ID — create an uncancellable local token.
+                // Notification path: no client-visible id to cancel against. Use a
+                // synthetic sentinel id that won't collide with any real client or
+                // server ID (which are always positive integers). The token is
+                // created but never registered in the global registry, so external
+                // cancellation cannot reach it; it exists only for the
+                // cancel-check closure that the provider calls during its work.
                 PerlLspCancellationToken::new(
-                    JsonRpcId::Integer(-1),
+                    UNCANCELLABLE_LOCAL_TOKEN_ID,
                     "textDocument/completion".to_string(),
                 )
             };
