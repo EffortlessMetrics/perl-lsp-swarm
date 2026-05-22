@@ -444,10 +444,14 @@ mod tests {
 
     #[test]
     fn cursor_symbol_kind_derives_clone_and_copy() -> Result<(), Box<dyn std::error::Error>> {
+        fn assert_clone<T: Clone>() {}
+        fn assert_copy<T: Copy>() {}
+
+        assert_clone::<CursorSymbolKind>();
+        assert_copy::<CursorSymbolKind>();
+
         let original = CursorSymbolKind::Array;
-        let cloned = original.clone();
         let copied: CursorSymbolKind = original;
-        assert_eq!(cloned, CursorSymbolKind::Array);
         assert_eq!(copied, CursorSymbolKind::Array);
         Ok(())
     }
