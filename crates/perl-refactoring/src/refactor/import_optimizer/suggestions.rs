@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn test_organization_suggestions_sorted_imports_no_sort_suggestion() {
-        // Already sorted alphabetically — no sort suggestion expected
+        // Already sorted alphabetically - no sort suggestion expected
         let imports = vec![make_entry("Data::Dumper", &[]), make_entry("JSON", &[])];
         let result = organization_suggestions(&imports, &[]);
         assert!(!result.iter().any(|s| s.description.contains("Sort import")));
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_organization_suggestions_duplicate_symbols_triggers_symbol_suggestion() {
-        // "max" appears twice — dedup needed
+        // "max" appears twice - dedup needed
         let imports = vec![make_entry("List::Util", &["max", "max", "min"])];
         let result = organization_suggestions(&imports, &[]);
         assert!(result.iter().any(|s| s.description.contains("Sort and deduplicate symbols")));

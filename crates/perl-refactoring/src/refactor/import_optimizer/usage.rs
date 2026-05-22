@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_find_unused_imports_word_boundary_prevents_false_positive() -> Result<(), String> {
-        // "max" appears as part of "maximum" — must not count as used
+        // "max" appears as part of "maximum" - must not count as used
         let imports = vec![make_entry("List::Util", &["max"], 1)];
         let content = "my $x = maximum_value();";
         let result = find_unused_imports(&imports, content)?;
