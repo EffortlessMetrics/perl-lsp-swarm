@@ -201,14 +201,16 @@ mod mojibake_repair_branches {
         Ok(())
     }
 
-    /// Exercises line 235: `mojibake_marker_count(&candidate) >= mojibake_marker_count(text)`
-    /// - the repair produced a candidate that does NOT reduce markers, so the original
-    /// text is returned.
-    ///
-    /// `%C3%83%C2%83` decodes to "\u{c3}\u{0083}" (\u{c3} marker + U+0083 C1 control).
-    /// The repair loop collects \u{c3}->0xC3, U+0083->0x83.
-    /// `String::from_utf8([..., 0xC3, 0x83, ...])` succeeds -> "\u{c3}" (still a marker!).
-    /// `mojibake_marker_count("\u{c3}") = 1` is NOT less than `mojibake_marker_count("\u{c3}\u{0083}") = 1`.
+    // Exercises line 235:
+    // `mojibake_marker_count(&candidate) >= mojibake_marker_count(text)`.
+    // The repair produced a candidate that does not reduce markers, so the
+    // original text is returned.
+    //
+    // `%C3%83%C2%83` decodes to "\u{c3}\u{0083}" (\u{c3} marker + U+0083 C1 control).
+    // The repair loop collects \u{c3}->0xC3, U+0083->0x83.
+    // `String::from_utf8([..., 0xC3, 0x83, ...])` succeeds -> "\u{c3}".
+    // `mojibake_marker_count("\u{c3}") = 1` is not less than
+    // `mojibake_marker_count("\u{c3}\u{0083}") = 1`.
     #[test]
     fn mojibake_repair_candidate_not_better() -> Result<(), String> {
         // %C3%83 = \u{c3} (U+00C3, mojibake marker)
