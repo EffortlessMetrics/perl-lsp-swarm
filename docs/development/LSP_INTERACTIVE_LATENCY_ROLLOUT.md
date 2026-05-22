@@ -1,8 +1,8 @@
 # LSP Interactive Latency Rollout
 
-> **Substrate (already built)**: cancellation registry typed on `JsonRpcId` (#223); bounded-i32 outbound allocator and typed server-request IDs (#221).
-> **Connector gap**: the live editor still pays the full editor-loop tax — `didOpen` → full parse → all diagnostics → semantic tokens → file-watcher registration → eager workspace indexing — before first useful hover/completion. Latency harnesses measure that whole tax, not the user-visible request.
-> **0.15.x upside**: a clean Neovim/LSP4IJ/VS Code harness path where first-useful hover and completion latency are isolated from avoidable background work, and stale background work no longer defines worst-case latency.
+> **Substrate state**: bounded-i32 outbound allocator and typed server-request IDs landed in #221. The cancellation registry typed on `JsonRpcId` is still tracked by #223 and is required only for Phases 8 and 9.
+> **Connector gap**: the live editor still pays the full editor-loop tax - `didOpen` -> full parse -> all diagnostics -> semantic tokens -> file-watcher registration -> eager workspace indexing - before first useful hover/completion. Latency harnesses measure that whole tax, not the user-visible request.
+> **Rail upside**: a clean Neovim/LSP4IJ/VS Code harness path where first-useful hover and completion latency are isolated from avoidable background work, and stale background work no longer defines worst-case latency.
 
 ## Doctrine
 
@@ -12,7 +12,7 @@ It does **NOT**:
 
 - Implement true incremental AST reuse.
 - Change `TextDocumentSyncKind`.
-- Touch parser grammar, Tree-sitter, receiver facts, Rails, or release prep.
+- Touch parser grammar, Tree-sitter, receiver facts, rail routing, or release prep.
 
 If a PR in this rail expands into incremental parsing, parser-grammar changes, or `TextDocumentSyncKind` changes, **the PR is wrong-scope** and gets bounced back. This doc is the bouncer.
 
@@ -22,7 +22,7 @@ Tracking convention: all phases share the umbrella issue [#229](https://github.c
 
 | Phase | Tracker | Scope | Stack on |
 |---|---|---|---|
-| 1. Scope-lock doc | this PR (umbrella [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229)) | docs only | n/a — lands first |
+| 1. Scope-lock doc | this PR (umbrella [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229)) | docs only | n/a - lands first |
 | 2. Timing probes | [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | `PERL_LSP_TIMING=1` opt-in instrumentation | main |
 | 3. E2E runtime mode | [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | `--runtime-mode e2e`, workload profile for harnesses | main |
 | 4. Syntax-only diagnostics | [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | `--diagnostic-mode syntax-only` | main |
@@ -33,8 +33,8 @@ Tracking convention: all phases share the umbrella issue [#229](https://github.c
 | 9. Generation-aware stale cancellation | [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | cancel reads where `req.generation < doc.generation` | #223 + Phase 4 |
 | 10. Semantic-token contract cleanup | [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229) | stop advertising `delta` until cache exists | main |
 
-Phases 2–7 and 10 can build in parallel — they touch disjoint subsystems.
-Phases 8 and 9 stack on [#223](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/223) (cancellation-registry typed migration) because they live on the cancellation surface. **If #223 reverts or substantially changes scope, Phases 8 and 9 revert as a unit** — their boundary conversion patterns assume the typed registry. The rest of the rail is independent.
+Phases 2-7 and 10 can build in parallel because they touch disjoint subsystems.
+Phases 8 and 9 stack on [#223](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/223) (cancellation-registry typed migration) because they live on the cancellation surface. **If #223 reverts or substantially changes scope, Phases 8 and 9 revert as a unit** because their boundary conversion patterns assume the typed registry. The rest of the rail is independent.
 
 ## Exit criteria
 
@@ -47,20 +47,20 @@ Phases 8 and 9 stack on [#223](https://github.com/EffortlessMetrics/perl-lsp-swa
 
 ## Quantitative targets
 
-These are the closeout thresholds for the rail. Phase 2 (timing probes) establishes the baseline; subsequent phases ratchet against it. All targets are p95 unless noted; measured on the Neovim harness against a medium real-workspace fixture (`test_corpus/medium-app/`) on a release build.
+These are the closeout thresholds for the rail. Phase 2 (timing probes) establishes the baseline; subsequent phases ratchet against it. All targets are p95 unless noted; measured on the Neovim harness against the checked-in medium fixture selected by the Phase 2 receipt on a release build.
 
 | Surface | Phase 2 baseline (TBD) | Post-rail target | Hard cap |
 |---|---|---|---|
-| First-useful hover after `didOpen` | record on land | ≤ 100 ms | 250 ms |
-| First-useful completion after `didOpen` | record on land | ≤ 150 ms | 350 ms |
-| Steady-state hover (no `didChange` pending) | record on land | ≤ 50 ms | 120 ms |
-| Steady-state completion | record on land | ≤ 80 ms | 200 ms |
-| Parser-error diagnostic publish after `didOpen` | record on land | ≤ 50 ms | 150 ms |
-| Stale-request cancel latency (Phase 9) | n/a | ≤ 10 ms after `didChange` | 50 ms |
+| First-useful hover after `didOpen` | record on land | <= 100 ms | 250 ms |
+| First-useful completion after `didOpen` | record on land | <= 150 ms | 350 ms |
+| Steady-state hover (no `didChange` pending) | record on land | <= 50 ms | 120 ms |
+| Steady-state completion | record on land | <= 80 ms | 200 ms |
+| Parser-error diagnostic publish after `didOpen` | record on land | <= 50 ms | 150 ms |
+| Stale-request cancel latency (Phase 9) | n/a | <= 10 ms after `didChange` | 50 ms |
 
-"Baseline (TBD)" is filled in when Phase 2 lands and the timing probes write their first receipt. Phases 3–10 must not regress any baseline beyond its hard cap; they should also drive each metric toward (or past) the post-rail target.
+"Baseline (TBD)" is filled in when Phase 2 lands and the timing probes write their first receipt. Phases 3-10 must not regress any baseline beyond its hard cap; they should also drive each metric toward (or past) the post-rail target.
 
-Hard caps are absolute fail conditions for closeout — if any metric exceeds its cap, the rail does not close. Soft targets are the success criterion the user-facing experience is aimed at.
+Hard caps are absolute fail conditions for closeout: if any metric exceeds its cap, the rail does not close. Soft targets are the success criterion the user-facing experience is aimed at.
 
 ## Rollback
 
@@ -82,14 +82,16 @@ Hard rule: any rail phase that regresses correctness (not just latency) is rever
 
 ## Claim boundary
 
-This rail proves that **first-useful hover and completion latency in interactive mode is isolated from avoidable background work**: workload profiles, deferrals, and stale-work cancellation remove the editor-loop tax from latency measurement.
+This document proves only the rollout boundary and measurement contract. It does not change runtime behavior, advertised capabilities, support tiers, or release state.
+
+When the rail is complete, it is intended to prove that **first-useful hover and completion latency in interactive mode is isolated from avoidable background work**: workload profiles, deferrals, and stale-work cancellation remove the editor-loop tax from latency measurement.
 
 This rail does **NOT** prove:
 
 - That the parser can reuse AST across `didChange` edits (no incremental parse).
 - That diagnostics never recompute (only stale recomputations are discarded; valid recomputations on settled state still run).
-- That `TextDocumentSyncKind` changes — the rail explicitly does not modify sync kind.
-- That LSP4IJ and Neovim have identical latency profiles — both clients benefit, but per-client tuning is out of rail.
+- That `TextDocumentSyncKind` changes; the rail explicitly does not modify sync kind.
+- That LSP4IJ and Neovim have identical latency profiles; both clients benefit, but per-client tuning is out of rail.
 
 ## Hard rules
 
@@ -101,7 +103,7 @@ This rail does **NOT** prove:
 
 ```bash
 # Phase 2 (timing probes)
-PERL_LSP_TIMING=1 cargo run -p perl-lsp-rs --release -- --stdio 2>timing.log
+rtk powershell -NoProfile -Command '$env:PERL_LSP_TIMING="1"; rtk cargo run -p perl-lsp-rs --release -- --stdio 2>timing.log'
 # Inspect timing.log for didOpen / didChange / parse / diagnostics / queue-wait phases.
 
 # Phase 3 (e2e mode)
@@ -112,7 +114,7 @@ perllsp --diagnostic-mode syntax-only  # confirm only parser errors published
 
 # Phase 5 (didOpen defer)
 # Time between didOpen send and first publishDiagnostics with non-parser errors
-# should be ≥ debounce interval; parser-error publish should be < 50ms.
+# should be >= debounce interval; parser-error publish should be < 50ms.
 
 # Phase 7 (eager-indexing off in e2e)
 perllsp --runtime-mode e2e  # confirm workspace scan does not start before first request
@@ -130,7 +132,7 @@ perllsp --runtime-mode e2e  # confirm workspace scan does not start before first
 
 ## Neovim harness reference
 
-Once Phases 2–7 land:
+Once Phases 2-7 land:
 
 ```lua
 local caps = vim.lsp.protocol.make_client_capabilities()
