@@ -3586,3 +3586,275 @@ if (-e $path) {
 
     Ok(())
 }
+
+fn call_hierarchy_item_named<'a>(response: &'a Value, expected: &str) -> Result<&'a Value, String> {
+    let items = response.as_array().ok_or_else(|| {
+        format!("prepareCallHierarchy should return an array for {expected}; got {response:?}")
+    })?;
+
+    items
+        .iter()
+        .find(|item| item.get("name").and_then(Value::as_str) == Some(expected))
+        .ok_or_else(|| format!("expected CallHierarchyItem named {expected}; got {response:?}"))
+}
+
+fn incoming_call_names(response: &Value) -> BTreeSet<String> {
+    response
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|call| call.pointer("/from/name").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn incoming_call_uris(response: &Value) -> BTreeSet<String> {
+    response
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|call| call.pointer("/from/uri").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn outgoing_call_names(response: &Value) -> BTreeSet<String> {
+    response
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|call| call.pointer("/to/name").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[test]
+#[serial]
+fn bdd_call_hierarchy_single_file_round_trip_maps_callers_and_callees()
+-> Result<(), Box<dyn std::error::Error>> {
+    let scenario = BddScenario::new("Call hierarchy maps same-file callers and callees end to end");
+
+    let code = r#"sub validate {
+    my ($val) = @_;
+    return $val > 0;
+}
+
+sub log {
+    my ($msg) = @_;
+    print "$msg\n";
+}
+
+sub process {
+    my ($data) = @_;
+    validate($data);
+    log("processed");
+    return $data;
+}
+
+sub main {
+    process(42);
+    log("done");
+}
+
+main();
+"#;
+
+    scenario.given("a single file where main calls process and process calls two helpers");
+    let (mut harness, workspace) = setup_workspace(&[("main.pl", code)])?;
+    let uri = workspace.uri("main.pl");
+    harness.open(&uri, code)?;
+    harness.wait_for_symbol("process", Some(&uri), Duration::from_secs(10))?;
+    harness.barrier();
+
+    scenario.when("preparing call hierarchy at the process definition");
+    let (line, character) = find_position(code, "sub process");
+    let prepare = harness.request(
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character + 4 }
+        }),
+    )?;
+
+    scenario.then("the server returns a process call hierarchy item");
+    let process_item = call_hierarchy_item_named(&prepare, "process")?;
+
+    scenario.when("requesting incoming calls for process");
+    let incoming =
+        harness.request("callHierarchy/incomingCalls", json!({ "item": process_item }))?;
+
+    scenario.then("main appears as a caller");
+    let callers = incoming_call_names(&incoming);
+    assert!(
+        callers.contains("main"),
+        "incoming callers of process should include main; got {callers:?}; response={incoming:?}"
+    );
+
+    scenario.when("requesting outgoing calls for process");
+    let outgoing =
+        harness.request("callHierarchy/outgoingCalls", json!({ "item": process_item }))?;
+
+    scenario.then("validate and log appear as callees");
+    let callees = outgoing_call_names(&outgoing);
+    assert!(
+        callees.contains("validate"),
+        "outgoing calls from process should include validate; got {callees:?}; response={outgoing:?}"
+    );
+    assert!(
+        callees.contains("log"),
+        "outgoing calls from process should include log; got {callees:?}; response={outgoing:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn bdd_call_hierarchy_cross_file_incoming_finds_script_caller()
+-> Result<(), Box<dyn std::error::Error>> {
+    let scenario =
+        BddScenario::new("Call hierarchy finds cross-file callers through the workspace index");
+
+    let lib_code = r#"package DataHelper;
+use strict;
+use warnings;
+
+sub transform {
+    my ($input) = @_;
+    return uc($input);
+}
+
+1;
+"#;
+
+    let app_code = r#"use strict;
+use warnings;
+use lib './lib';
+use DataHelper;
+
+sub process {
+    my $result = DataHelper::transform("hello");
+    return $result;
+}
+
+process();
+"#;
+
+    scenario.given("a library module and a script that calls a qualified library function");
+    let (mut harness, workspace) =
+        setup_workspace(&[("lib/DataHelper.pm", lib_code), ("bin/app.pl", app_code)])?;
+    let lib_uri = workspace.uri("lib/DataHelper.pm");
+    let app_uri = workspace.uri("bin/app.pl");
+
+    harness.open(&lib_uri, lib_code)?;
+    harness.open(&app_uri, app_code)?;
+    harness.wait_for_symbol("transform", Some(&lib_uri), Duration::from_secs(10))?;
+    harness.barrier();
+
+    scenario.when("preparing call hierarchy at the library function definition");
+    let (line, character) = find_position(lib_code, "sub transform");
+    let prepare = harness.request(
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": lib_uri },
+            "position": { "line": line, "character": character + 4 }
+        }),
+    )?;
+
+    scenario.then("the server returns a transform call hierarchy item");
+    let transform_item = call_hierarchy_item_named(&prepare, "transform")?;
+
+    scenario.when("requesting incoming calls for the library function");
+    let incoming =
+        harness.request("callHierarchy/incomingCalls", json!({ "item": transform_item }))?;
+
+    scenario.then("the script process sub appears as a caller from the script URI");
+    let callers = incoming_call_names(&incoming);
+    assert!(
+        callers.contains("process"),
+        "incoming callers of transform should include process; got {callers:?}; response={incoming:?}"
+    );
+    let caller_uris = incoming_call_uris(&incoming);
+    assert!(
+        uri_set_contains(&caller_uris, &app_uri),
+        "incoming caller should be reported from app URI {app_uri}; got {caller_uris:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn bdd_call_hierarchy_oo_workflow_resolves_method_chain() -> Result<(), Box<dyn std::error::Error>>
+{
+    let scenario = BddScenario::new("Call hierarchy follows an object method call chain");
+
+    let code = r#"package Repository;
+
+sub new {
+    my ($class, %args) = @_;
+    return bless \%args, $class;
+}
+
+sub fetch {
+    my ($self, $id) = @_;
+    return $self->format_result($id);
+}
+
+sub format_result {
+    my ($self, $id) = @_;
+    return "result_$id";
+}
+
+package main;
+
+sub run_query {
+    my $repo = Repository->new(db => "test");
+    return $repo->fetch(1);
+}
+
+run_query();
+"#;
+
+    scenario.given("a Repository class where run_query calls fetch and fetch calls format_result");
+    let (mut harness, workspace) = setup_workspace(&[("repo.pl", code)])?;
+    let uri = workspace.uri("repo.pl");
+    harness.open(&uri, code)?;
+    harness.wait_for_symbol("fetch", Some(&uri), Duration::from_secs(10))?;
+    harness.barrier();
+
+    scenario.when("preparing call hierarchy at the fetch method definition");
+    let (line, character) = find_position(code, "sub fetch");
+    let prepare = harness.request(
+        "textDocument/prepareCallHierarchy",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character + 4 }
+        }),
+    )?;
+
+    scenario.then("the server returns a fetch call hierarchy item");
+    let fetch_item = call_hierarchy_item_named(&prepare, "fetch")?;
+
+    scenario.when("requesting outgoing calls for fetch");
+    let outgoing = harness.request("callHierarchy/outgoingCalls", json!({ "item": fetch_item }))?;
+
+    scenario.then("format_result appears as a callee");
+    let callees = outgoing_call_names(&outgoing);
+    assert!(
+        callees.contains("format_result"),
+        "outgoing calls from fetch should include format_result; got {callees:?}; response={outgoing:?}"
+    );
+
+    scenario.when("requesting incoming calls for fetch");
+    let incoming = harness.request("callHierarchy/incomingCalls", json!({ "item": fetch_item }))?;
+
+    scenario.then("run_query appears as a caller");
+    let callers = incoming_call_names(&incoming);
+    assert!(
+        callers.contains("run_query"),
+        "incoming callers of fetch should include run_query; got {callers:?}; response={incoming:?}"
+    );
+
+    Ok(())
+}
