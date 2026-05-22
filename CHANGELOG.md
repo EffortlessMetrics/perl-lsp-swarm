@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider-specific receipt is attached, avoiding false certainty while the
   live provider receipt wiring lands.
 
+### Planned
+
+- Documented the Rust 1.95 / 0.14.0 rollout sequence before implementation: compatibility spike first, then MSRV/toolchain, lint, no-panic, file-policy, CI routing, and release-prep lanes.
+- Added the proactive CI integrity guards rail ([`docs/development/RUST_1_95_PROACTIVE_GUARDS.md`](docs/development/RUST_1_95_PROACTIVE_GUARDS.md)) as a sibling rollout. Six guard PRs (PG-1 through PG-6) covering label enforcement, risk-pack referential integrity, lane mapping with matrix expansion, net-new workflow-allowlist ledger, CI Actuals emitter + subscription coverage check, and broad-glob justification tightening. Each row mirrors a sibling-repo proven shape.
+- Consolidated the remaining Rust 1.95 → 0.14.0 work into a single canonical roadmap: rewrote [`docs/development/RUST_1_95_ROLLOUT.md`](docs/development/RUST_1_95_ROLLOUT.md) into a post-landing source of truth (already landed / remaining implementation ladder / per-rail acceptance contracts / Claude-Codex operating contract); slimmed [`docs/ci/perl-lsp-rust-1.95-rollout.md`](docs/ci/perl-lsp-rust-1.95-rollout.md) to a historical pointer; added [`docs/ci/test-evidence-lanes.md`](docs/ci/test-evidence-lanes.md) defining the five evidence-lane shapes (PR-fast required / PR-targeted / nightly cron / release-only / advisory) with risk-pack auto-routing, skipped-by-policy receipts, and LEM cost framing. Umbrella tracking: **#8663**.
+
 ## [0.15.0] - 2026-MM-DD
 
 Release notes: [v0.15.0](docs/releases/v0.15.0.md)
@@ -72,9 +78,9 @@ this to a minor version under 0.x semver.
 - **`pending_workspace_configuration_requests`** is now keyed by
   `ServerRequestId` rather than raw `i64`. (#221)
 
-### Planned (latency rail — separate ladder, follows 0.15.0)
+### Looking ahead
 
-- LSP interactive latency rollout rail documented at
+- LSP interactive latency rollout rail<!-- target doc lands via PR #231 --> at
   [`docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md`](docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md).
   Workload-profile and stale-work-cancellation work that benefits
   Neovim and LSP4IJ equally; targets 0.15.1. Umbrella tracking: **#229**.
@@ -1519,3 +1525,4 @@ For the full cross-channel release history, see [RELEASE_HISTORY.md](RELEASE_HIS
 [0.8.8]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.8.5...v0.8.8
 [0.13.0-rc1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.4...v0.13.0-rc1
 [Unreleased]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.2...HEAD
+[0.15.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.14.0...v0.15.0
