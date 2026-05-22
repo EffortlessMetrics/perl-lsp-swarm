@@ -5,8 +5,8 @@
 > (e.g. `0.14.0-closeout-audit.md`).
 
 The 0.14.0 closeout left users on 0.13.3 because some channels never
-published. This doc is the bouncer that ensures the same gap doesn't
-recur for 0.15.0.
+published. This doc is the guardrail that prevents the same gap from
+recurring in future releases.
 
 ## Why the gap exists
 
@@ -23,9 +23,9 @@ on the prior version.
 | Homebrew tap | `brew-bump.yml` on `release:published` | Yes (auto-fires; tap-repo PR still needs merge) |
 | Scoop bucket | `scoop-bump.yml` on `release:published` | Yes (auto-fires; bucket-repo PR still needs merge) |
 | Chocolatey | `chocolatey-bump.yml` on `release:published` | Yes (auto-fires; package submission may queue) |
-| VS Code Marketplace | `publish-extension.yml` | **No — `workflow_dispatch` only** |
-| Open VSX | `publish-extension.yml` | **No — `workflow_dispatch` only** |
-| Docker (Hub + GHCR) | `docker-publish.yml` | **No — `workflow_dispatch` only** |
+| VS Code Marketplace | `publish-extension.yml` | **No - `workflow_dispatch` only** |
+| Open VSX | `publish-extension.yml` | **No - `workflow_dispatch` only** |
+| Docker (Hub + GHCR) | `docker-publish.yml` | **No - `workflow_dispatch` only** |
 
 **Three channels (Docker, VS Code Marketplace, Open VSX) require manual
 dispatch.** They are the most common 0.14.0-style "still pending"
@@ -45,7 +45,7 @@ gh release view vX.Y.Z --json name,isDraft,isPrerelease,publishedAt,assets \
 ```
 
 Expected: `isDraft=false`, asset count matches the platform matrix
-(typically 5 platforms × {tarball, sha256, sig} = ~15).
+(typically 5 platforms x {tarball, sha256, sig} = ~15).
 
 If draft: `gh release edit vX.Y.Z --draft=false` (this is the trigger
 that lets `release:published` fire downstream).
@@ -72,8 +72,8 @@ cargo metadata --format-version=1 --no-deps \
     done
 ```
 
-If any are stuck below `X.Y.Z`: most likely cause is the new-crate
-burst rate limit (crates.io: burst=5, refill 1/10min). Remediation:
+If any are stuck below `X.Y.Z`: a common cause is the new-crate burst
+rate limit (crates.io: burst=5, refill 1/10min). Remediation:
 `just publish-new-crates` per `docs/reference/MANUAL_PUBLISH_NEW_CRATES.md`.
 
 ### 3. VS Code Marketplace
@@ -174,7 +174,7 @@ gh workflow run chocolatey-bump.yml -f tag=vX.Y.Z
 ```
 
 If the workflow ran successfully but `choco search` is still stale, the
-submission is in moderation — nothing to do but wait.
+submission is in moderation - nothing to do but wait.
 
 ### 9. End-to-end smoke
 
@@ -184,14 +184,14 @@ platform works:
 ```bash
 # crates.io install
 cargo install perllsp --version X.Y.Z --force
-perllsp --version  # → X.Y.Z
+perllsp --version  # -> X.Y.Z
 
 # Homebrew
 brew upgrade perllsp
-perllsp --version  # → X.Y.Z
+perllsp --version  # -> X.Y.Z
 
 # Docker
-docker run --rm effortlessmetrics/perl-lsp:X.Y.Z --version  # → X.Y.Z
+docker run --rm effortlessmetrics/perl-lsp:X.Y.Z --version  # -> X.Y.Z
 ```
 
 For LSP4IJ specifically (the JetBrains plugin that hit the 0.14.x
