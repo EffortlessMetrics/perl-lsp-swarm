@@ -520,7 +520,8 @@ fn test_cancellation_registry_concurrent_operations_ac2() -> Result<(), Box<dyn 
 
                 // Each thread registers multiple tokens
                 for token_id in 0..20 {
-                    let request_id = JsonRpcId::String(format!("thread_{}_{}", thread_id, token_id));
+                    let request_id =
+                        JsonRpcId::String(format!("thread_{}_{}", thread_id, token_id));
 
                     // Create and register token
                     let start = Instant::now();

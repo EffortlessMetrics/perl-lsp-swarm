@@ -44,8 +44,7 @@ fn test_runtime_cancellation_module_exists() -> Result<(), Box<dyn std::error::E
 fn test_runtime_cancellation_token_methods() -> Result<(), Box<dyn std::error::Error>> {
     use perl_lsp_rs_core::protocol::JsonRpcId;
     use perl_lsp_rs_core::runtime::cancellation::PerlLspCancellationToken;
-    let token =
-        PerlLspCancellationToken::new(JsonRpcId::Integer(1), "test_provider".to_string());
+    let token = PerlLspCancellationToken::new(JsonRpcId::Integer(1), "test_provider".to_string());
     // Verify key methods exist and are callable.
     let _is_cancelled = token.is_cancelled();
     let _is_cancelled_relaxed = token.is_cancelled_relaxed();

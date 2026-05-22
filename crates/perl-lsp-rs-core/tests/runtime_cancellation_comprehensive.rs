@@ -164,8 +164,7 @@ fn registry_duplicate_id_overwrites() -> Result<(), Box<dyn std::error::Error>> 
 
     // The token should be the second one
     let id = JsonRpcId::Integer(1);
-    let retrieved =
-        registry.get_token(&id).ok_or("token should be retrievable after overwrite")?;
+    let retrieved = registry.get_token(&id).ok_or("token should be retrievable after overwrite")?;
     assert_eq!(retrieved.provider(), "second");
     Ok(())
 }
@@ -708,7 +707,10 @@ fn register_cancel_remove_many_sequential() -> Result<(), Box<dyn std::error::Er
         assert!(registry.is_cancelled(&JsonRpcId::Integer(i)), "token {i} should be cancelled");
     }
     for i in 25..50i64 {
-        assert!(!registry.is_cancelled(&JsonRpcId::Integer(i)), "token {i} should not be cancelled");
+        assert!(
+            !registry.is_cancelled(&JsonRpcId::Integer(i)),
+            "token {i} should not be cancelled"
+        );
     }
 
     for i in 0..50i64 {

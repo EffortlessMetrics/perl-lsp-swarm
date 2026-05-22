@@ -703,8 +703,7 @@ mod tests {
     /// Verifies that string request IDs (arbitrary Unicode) are correctly stored,
     /// cancelled, and removed after the migration from `format!("{:?}", value)` keying.
     #[test]
-    fn registry_handles_arbitrary_string_request_id()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn registry_handles_arbitrary_string_request_id() -> Result<(), Box<dyn std::error::Error>> {
         let registry = CancellationRegistry::new();
         let id = JsonRpcId::String("really-long-uuid-here-with-dashes".into());
 

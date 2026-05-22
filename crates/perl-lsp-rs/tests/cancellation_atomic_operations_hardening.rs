@@ -195,7 +195,10 @@ mod atomic_state_transition_tests {
     /// Test atomic ordering mutations under concurrent access
     #[test]
     fn test_atomic_ordering_mutations_concurrent() -> TestResult {
-        let token = Arc::new(PerlLspCancellationToken::new(JsonRpcId::Integer(6), "concurrent".to_string()));
+        let token = Arc::new(PerlLspCancellationToken::new(
+            JsonRpcId::Integer(6),
+            "concurrent".to_string(),
+        ));
         let num_threads = 10;
         let iterations = 100;
         let start_barrier = Arc::new(Barrier::new(num_threads));
@@ -274,7 +277,8 @@ mod registry_coordination_hardening_tests {
     #[test]
     fn test_register_token_rwlock_mutations() {
         let registry = CancellationRegistry::new();
-        let token = PerlLspCancellationToken::new(JsonRpcId::Integer(100), "register_test".to_string());
+        let token =
+            PerlLspCancellationToken::new(JsonRpcId::Integer(100), "register_test".to_string());
 
         // Test successful registration - targets RwLock::write() success path
         let result = registry.register_token(token.clone());
@@ -497,7 +501,8 @@ mod performance_optimization_hardening_tests {
     /// Test likely() branch prediction hint mutations
     #[test]
     fn test_branch_prediction_likely_mutations() {
-        let token = PerlLspCancellationToken::new(JsonRpcId::Integer(300), "branch_test".to_string());
+        let token =
+            PerlLspCancellationToken::new(JsonRpcId::Integer(300), "branch_test".to_string());
 
         // Test the common case (not cancelled) - should be optimized with likely()
         for _ in 0..1000 {
@@ -808,7 +813,8 @@ mod metrics_atomic_counter_hardening_tests {
         assert_eq!(initial_metrics.completed_count(), 0, "Initial completed count must be 0");
 
         // Register a token - should increment registered counter
-        let token = PerlLspCancellationToken::new(JsonRpcId::Integer(500), "metrics_test".to_string());
+        let token =
+            PerlLspCancellationToken::new(JsonRpcId::Integer(500), "metrics_test".to_string());
         registry.register_token(token.clone())?;
 
         assert_eq!(
@@ -894,7 +900,8 @@ mod global_registry_hardening_tests {
         );
 
         // Test that global registry operations work
-        let test_token = PerlLspCancellationToken::new(JsonRpcId::Integer(600), "global_test".to_string());
+        let test_token =
+            PerlLspCancellationToken::new(JsonRpcId::Integer(600), "global_test".to_string());
         let register_result = GLOBAL_CANCELLATION_REGISTRY.register_token(test_token.clone());
         assert!(register_result.is_ok(), "Global registry registration must succeed");
 

@@ -807,7 +807,8 @@ fn test_memory_overhead_validation_ac12() -> Result<(), Box<dyn std::error::Erro
             ("generic", None)
         };
 
-        let token = PerlLspCancellationToken::new(JsonRpcId::Integer(i as i64), provider_type.to_string());
+        let token =
+            PerlLspCancellationToken::new(JsonRpcId::Integer(i as i64), provider_type.to_string());
         registry.register_token(token.clone())?;
 
         if let Some(p) = params {
