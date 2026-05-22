@@ -32,7 +32,7 @@ this to a minor version under 0.x semver.
 
 ### Fixed
 
-- **LSP4IJ file-watcher registration crash** — Server no longer emits
+- **LSP4IJ file-watcher registration crash** - Server no longer emits
   wall-clock millisecond IDs for `client/registerCapability`
   (~1.7e12 overflows i32 in strict clients including LSP4IJ). All
   server-to-client requests now route through a bounded `AtomicI32`
@@ -41,17 +41,17 @@ this to a minor version under 0.x semver.
 
 ### Added
 
-- **Typed JSON-RPC request IDs** — `JsonRpcId` (strict-shape enum:
+- **Typed JSON-RPC request IDs** - `JsonRpcId` (strict-shape enum:
   integer | string; rejects null/fractional/object/array at the serde
   boundary) and `ServerRequestId` (positive-i32 newtype with no
   out-of-range constructor) added to `perl-lsp-rs-core::protocol`.
   The type system now makes the file-watcher crash structurally
   impossible to reintroduce. (#221, #224)
-- **Strict inbound ID validation** — Invalid request-ID shapes
+- **Strict inbound ID validation** - Invalid request-ID shapes
   (null, fractional, object, array) are rejected at the transport
   boundary instead of producing undefined behavior deep in the
   dispatcher. (#221)
-- **LSP4IJ regression test** — File-watcher registration request ID
+- **LSP4IJ regression test** - File-watcher registration request ID
   asserted to be a bounded integer in `1..=i32::MAX`. Source-guard
   tests pin the fix against `lifecycle/watchers.rs` re-introducing
   wall-clock-derived IDs. (#221)
@@ -66,7 +66,7 @@ this to a minor version under 0.x semver.
   `from_value()`. (#221)
 - **BREAKING:** `outbound::OutboundSender::send_request` now takes
   `ServerRequestId` instead of raw `i64`. (#221)
-- **Cancellation registry typed end-to-end** — `CancellationRegistry`
+- **Cancellation registry typed end-to-end** - `CancellationRegistry`
   tokens, cleanup contexts, and cache are keyed by `JsonRpcId`
   instead of `format!("{:?}", value)` strings.
   `PerlLspCancellationToken.request_id`,
@@ -84,12 +84,6 @@ this to a minor version under 0.x semver.
   [`docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md`](docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md).
   Workload-profile and stale-work-cancellation work that benefits
   Neovim and LSP4IJ equally; targets 0.15.1. Umbrella tracking: **#229**.
-
-### Planned
-
-- Documented the Rust 1.95 / 0.14.0 rollout sequence before implementation: compatibility spike first, then MSRV/toolchain, lint, no-panic, file-policy, CI routing, and release-prep lanes.
-- Added the proactive CI integrity guards rail ([`docs/development/RUST_1_95_PROACTIVE_GUARDS.md`](docs/development/RUST_1_95_PROACTIVE_GUARDS.md)) as a sibling rollout. Six guard PRs (PG-1 through PG-6) covering label enforcement, risk-pack referential integrity, lane mapping with matrix expansion, net-new workflow-allowlist ledger, CI Actuals emitter + subscription coverage check, and broad-glob justification tightening. Each row mirrors a sibling-repo proven shape.
-- Consolidated the remaining Rust 1.95 → 0.14.0 work into a single canonical roadmap: rewrote [`docs/development/RUST_1_95_ROLLOUT.md`](docs/development/RUST_1_95_ROLLOUT.md) into a post-landing source of truth (already landed / remaining implementation ladder / per-rail acceptance contracts / Claude-Codex operating contract); slimmed [`docs/ci/perl-lsp-rust-1.95-rollout.md`](docs/ci/perl-lsp-rust-1.95-rollout.md) to a historical pointer; added [`docs/ci/test-evidence-lanes.md`](docs/ci/test-evidence-lanes.md) defining the five evidence-lane shapes (PR-fast required / PR-targeted / nightly cron / release-only / advisory) with risk-pack auto-routing, skipped-by-policy receipts, and LEM cost framing. Umbrella tracking: **#8663**.
 
 ## [0.14.0] - 2026-05-12
 
