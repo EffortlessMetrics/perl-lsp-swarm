@@ -3,9 +3,9 @@
 //! The internal `#[cfg(test)]` module covers only the basic happy/panic paths
 //! for a single type each.  These integration-style tests in `tests/` cover:
 //!
-//! * `must`       — multiple value types, panic message content
-//! * `must_some`  — multiple value types, panic message content
-//! * `must_err`   — multiple error types, panic message content
+//! * `must`       - multiple value types, panic message content
+//! * `must_some`  - multiple value types, panic message content
+//! * `must_err`   - multiple error types, panic message content
 //!
 //! Panic-path tests use `std::panic::catch_unwind`.  All helpers are
 //! `#[track_caller]`, so the panic message is produced by the helper
@@ -28,7 +28,7 @@ fn panic_msg(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// must — happy paths
+// must - happy paths
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -73,7 +73,7 @@ fn must_returns_custom_struct() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ---------------------------------------------------------------------------
-// must — panic paths
+// must - panic paths
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -108,7 +108,7 @@ fn must_panics_on_err_str() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ---------------------------------------------------------------------------
-// must_some — happy paths
+// must_some - happy paths
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -139,7 +139,7 @@ fn must_some_returns_custom_struct() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ---------------------------------------------------------------------------
-// must_some — panic paths
+// must_some - panic paths
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -167,7 +167,7 @@ fn must_some_panics_on_none_u32() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // ---------------------------------------------------------------------------
-// must_err — happy paths
+// must_err - happy paths
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -204,7 +204,7 @@ fn must_err_returns_custom_error_struct() -> Result<(), Box<dyn std::error::Erro
 }
 
 // ---------------------------------------------------------------------------
-// must_err — panic paths
+// must_err - panic paths
 // ---------------------------------------------------------------------------
 
 #[test]
