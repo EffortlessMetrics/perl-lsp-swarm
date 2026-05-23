@@ -241,7 +241,11 @@ impl PerlStackParser {
         let line_str = caps.name("line").or_else(|| caps.name("line2"))?.as_str();
         let line: i64 = line_str.parse().ok()?;
 
-        let id = self.resolve_frame_id(provided_id);
+        let id = if self.auto_assign_ids {
+            self.resolve_frame_id(provided_id)
+        } else {
+            provided_id
+        };
 
         let source = Source::new(file);
         let frame = StackFrame::new(id, func, Some(source), line);
@@ -260,7 +264,11 @@ impl PerlStackParser {
         let line_str = caps.name("line")?.as_str();
         let line: i64 = line_str.parse().ok()?;
 
-        let id = self.resolve_frame_id(provided_id);
+        let id = if self.auto_assign_ids {
+            self.resolve_frame_id(provided_id)
+        } else {
+            provided_id
+        };
 
         let name = format!("(eval {})", eval_num);
         let source = Source::new(file).with_origin("eval");
@@ -553,6 +561,18 @@ $ = main::run() called from file `script.pl' line 5
 
         // Should use the frame number from the capture
         assert_eq!(frame.map(|f| f.id), Some(5));
+    }
+
+    #[test]
+    fn test_manual_id_assignment_for_context_and_eval_frames() {
+        use perl_tdd_support::must_some;
+        let mut parser = PerlStackParser::new().with_auto_ids(false);
+
+        let context = must_some(parser.parse_frame("main::(script.pl):42:", 77));
+        let eval = must_some(parser.parse_frame("(eval 10)[/path/to/file.pm:42]", 88));
+
+        assert_eq!(context.id, 77);
+        assert_eq!(eval.id, 88);
     }
 
     #[test]
