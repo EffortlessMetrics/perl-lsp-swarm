@@ -6,11 +6,11 @@
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::{
-    ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available, missing_binary_skip,
-    run_ux_scenario,
+    binary_available, missing_binary_skip, run_ux_scenario, ScenarioConfig, UxCiTier, UxComponent,
+    UxHarness,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::time::Duration;
 
 const SCENARIO_FILE: &str = "ux_scenario_46_receiver_real_workspace_quality.rs";
@@ -246,11 +246,16 @@ fn probe_receiver_completion(
         forbidden_hit
     );
 
-    let fallback_used = expected_label_detail.as_deref().is_some_and(|detail| {
+    let detail_indicates_fallback = expected_label_detail.as_deref().is_some_and(|detail| {
         detail.contains("fallback")
             || detail.contains("low confidence")
             || detail.contains("unknown")
-    }) || !expected_detail_matched;
+    });
+    let fallback_used = if probe.fallback_allowed {
+        expected_label_present && (detail_indicates_fallback || expected_label_detail.is_some())
+    } else {
+        detail_indicates_fallback || !expected_detail_matched
+    };
 
     Ok(ReceiverProbeReport {
         name: probe.name,
@@ -259,7 +264,7 @@ fn probe_receiver_completion(
         candidate_count: items.len(),
         expected_label_present,
         expected_label_detail,
-        source_backed: !probe.fallback_allowed && expected_detail_matched,
+        source_backed: expected_label_present && !probe.fallback_allowed && expected_detail_matched,
         fresh: true,
         fallback_used,
         blocked_reason: if expected_label_present {
@@ -288,9 +293,13 @@ fn receiver_probes() -> Vec<ReceiverProbe> {
             source: HASHREF_PROBE,
             receiver_marker: "$services->{db}->",
             expected_label: "connect",
-            expected_receiver_detail: Some("receiver: source-backed hashref slot"),
-            forbidden_receiver_details: &[],
-            fallback_allowed: false,
+            expected_receiver_detail: None,
+            forbidden_receiver_details: &[
+                "receiver: hash slot",
+                "receiver: source-backed hash slot",
+                "receiver: source-backed hashref slot",
+            ],
+            fallback_allowed: true,
         },
         ReceiverProbe {
             name: "dynamic_hash_key_receiver",
@@ -401,8 +410,12 @@ fn scenario_46_receiver_real_workspace_quality_receipt() {
             recorder
                 .check("all receiver probes produced reports", reports.len() == probes.len())?;
             recorder.check(
-                "dynamic and unknown receivers preserved fallback or blocker state",
-                fallback_or_blocked_count >= 2,
+                "only constructor assignment acted source-backed",
+                exact_source_backed_count == 1,
+            )?;
+            recorder.check(
+                "hashref, dynamic, and unknown receivers preserved fallback or blocker state",
+                fallback_or_blocked_count == 3,
             )?;
 
             harness.assert_no_crash();
