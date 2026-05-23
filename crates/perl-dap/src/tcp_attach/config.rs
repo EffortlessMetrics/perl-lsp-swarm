@@ -32,7 +32,7 @@ impl TcpAttachConfig {
 
     /// Validate the configuration
     pub fn validate(&self) -> Result<()> {
-        let host = self.host.trim();
+        let host = self.host.trim_matches(' ');
         if host.is_empty() {
             anyhow::bail!("Host cannot be empty");
         }
