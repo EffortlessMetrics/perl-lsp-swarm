@@ -39,6 +39,10 @@ use url::Url;
 pub fn normalize_uri(uri: &str) -> String {
     let trimmed = uri.trim();
 
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
     if let Some(normalized) = crate::classify::normalize_legacy_windows_uri(trimmed) {
         return normalized;
     }
@@ -93,6 +97,10 @@ pub fn normalize_uri(uri: &str) -> String {
 #[cfg(target_arch = "wasm32")]
 pub fn normalize_uri(uri: &str) -> String {
     let trimmed = uri.trim();
+
+    if trimmed.is_empty() {
+        return String::new();
+    }
 
     if let Some(normalized) = crate::classify::normalize_legacy_windows_uri(trimmed) {
         return normalized;
