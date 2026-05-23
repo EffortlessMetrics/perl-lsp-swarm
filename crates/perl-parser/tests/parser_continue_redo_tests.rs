@@ -74,6 +74,46 @@ fn parser_redo_keyword_recognized() {
     assert!(!redo_nodes.is_empty(), "Should find at least one redo node");
 }
 
+
+#[test]
+fn parser_continue_loop_control_keyword_recognized() {
+    let code = r#"while (1) { continue; }"#;
+    let ast = must(parse_code(code));
+
+    let continue_nodes = find_nodes(
+        &ast,
+        |kind| matches!(kind, NodeKind::LoopControl { op, .. } if op == "continue"),
+    );
+    assert_eq!(continue_nodes.len(), 1, "Should find exactly one continue loop-control node");
+
+    if let NodeKind::LoopControl { op, label } = &continue_nodes[0].kind {
+        assert_eq!(op, "continue", "Operation should be 'continue'");
+        assert!(label.is_none(), "Unlabeled continue should not have a label");
+    }
+}
+
+#[test]
+fn parser_continue_loop_control_with_label() {
+    let code = r#"
+LOOP: while ($count < 3) {
+    $count++;
+    continue LOOP if $count == 2;
+}
+"#;
+    let ast = must(parse_code(code));
+
+    let continue_nodes = find_nodes(
+        &ast,
+        |kind| matches!(kind, NodeKind::LoopControl { op, label, .. } if op == "continue" && label.is_some()),
+    );
+    assert_eq!(continue_nodes.len(), 1, "Should find exactly one labeled continue node");
+
+    if let NodeKind::LoopControl { op, label } = &continue_nodes[0].kind {
+        assert_eq!(op, "continue", "Operation should be 'continue'");
+        assert_eq!(label.as_deref(), Some("LOOP"), "Label should be 'LOOP'");
+    }
+}
+
 // ============================================================================
 // AC2: Continue/redo statements are parsed correctly in all loop types
 // ============================================================================
