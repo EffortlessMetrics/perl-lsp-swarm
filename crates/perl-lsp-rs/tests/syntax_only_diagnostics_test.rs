@@ -52,6 +52,14 @@ fn pull_items(result: Option<Value>) -> Result<Vec<Value>, Box<dyn std::error::E
     Ok(items)
 }
 
+fn diagnostic_start_character(item: &Value) -> Result<u64, Box<dyn std::error::Error>> {
+    item.get("range")
+        .and_then(|range| range.get("start"))
+        .and_then(|start| start.get("character"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| missing_field("diagnostic must include range.start.character").into())
+}
+
 #[test]
 fn syntax_only_reports_parse_errors() -> TestResult {
     let server = syntax_only_server();
@@ -75,6 +83,35 @@ fn syntax_only_reports_parse_errors() -> TestResult {
             "syntax-only diagnostic must use parse-error code; got {code}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn syntax_only_preserves_recovered_error_location() -> TestResult {
+    let server = syntax_only_server();
+    // Missing RHS after `+` emits a recovered parser error with its own source offset.
+    let src = "my $x = $a +;\n";
+    server.test_apply_did_open("file:///recovered.pl", src, 1)?;
+
+    let items = pull_items(
+        server.test_handle_document_diagnostic(pull_request_for("file:///recovered.pl"))?,
+    )?;
+    let recovered = items
+        .iter()
+        .find(|item| {
+            item.get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("Recovered"))
+        })
+        .ok_or_else(|| {
+            missing_field("syntax-only diagnostics must include recovered parse error")
+        })?;
+
+    let character = diagnostic_start_character(recovered)?;
+    assert!(
+        character > 0,
+        "Recovered parse errors must keep their parser-provided location, got {recovered:?}"
+    );
     Ok(())
 }
 
