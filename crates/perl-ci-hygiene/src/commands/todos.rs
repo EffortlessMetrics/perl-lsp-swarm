@@ -39,6 +39,14 @@ pub(crate) fn check_todos(repo_root: &Path, list_mode: bool) -> Result<i32> {
             .join("perl-parser-core")
             .join("tests")
             .join("complex_paren_args_tests.rs"),
+        // Documents the `todo` corpus marker flag (see crates/perl-corpus/src/lint.rs and
+        // inventory.rs); occurrences of the word "todo" name a feature, not an unlinked TODO.
+        repo_root
+            .join("crates")
+            .join("perl-corpus")
+            .join("tests")
+            .join("inventory_coverage_tests.rs"),
+        repo_root.join("crates").join("perl-corpus").join("tests").join("lint_coverage_tests.rs"),
     ];
 
     let todo_re = Regex::new(r"(?i)\b(?:todo|fixme)\b")?;
