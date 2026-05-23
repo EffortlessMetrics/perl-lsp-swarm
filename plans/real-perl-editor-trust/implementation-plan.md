@@ -807,11 +807,71 @@ Current executable slice
   chains. Array-index receiver facts must preserve low-confidence fallback and
   must not become exact source-backed completion evidence without a later
   promotion receipt.
-- `receiver-self-framework-accessor-fact-fixture` is active in the trust lane.
+- `receiver-self-framework-accessor-fact-fixture` is completed in the trust lane.
   It adds a facts-only semantic analyzer fixture proving source-derived
   `$self = MyApp::Service->new` evidence plus framework accessor-return facts.
-  This keeps the receiver fact substrate current without changing completion
-  provider output, support tiers, parser/corpus status, or release lineage.
+  It also locks fallback when the source-derived `$self` package does not match
+  the framework declaration. This keeps the receiver fact substrate current
+  without changing completion provider output, support tiers, parser/corpus
+  status, or release lineage.
+- `receiver-method-return-accessor-chain-fact-fixture` is completed in the trust
+  lane. It extends method-return expression facts for a static constructor
+  followed by a source-backed framework accessor, while preserving dynamic
+  accessor-chain fallback. This is semantic substrate only and does not change
+  completion provider output, support tiers, parser/corpus status, or release
+  lineage.
+- `receiver-local-accessor-chain-fact-fixture` is completed in the trust lane. It
+  extends method-return expression facts for lexical locals initialized or
+  assigned from a static constructor followed by a source-backed framework
+  accessor, while preserving dynamic local accessor-chain fallback. This is
+  semantic substrate only and does not change completion provider output,
+  support tiers, parser/corpus status, or release lineage.
+- `receiver-local-accessor-chain-fallback-receipt` is completed in the trust lane.
+  It extends the receipt-only completion fallback fixture so lexical-local
+  accessor-chain method-return receiver shapes preserve low-confidence fallback
+  and do not become exact source-backed completion evidence without a later
+  promotion receipt.
+- `receiver-dynamic-local-accessor-chain-fallback-receipt` is completed in the
+  trust lane. It extends the same receipt-only completion fallback fixture so a
+  lexical local initialized from a dynamic accessor receiver preserves
+  low-confidence fallback and does not become exact source-backed completion
+  evidence.
+- `receiver-conditional-local-reassignment-fallback-receipt` is completed in the
+  trust lane. It extends the same receipt-only completion fallback fixture so a
+  method-return receiver with conditional local reassignment preserves
+  low-confidence fallback and does not become exact source-backed completion
+  evidence.
+- `receiver-source-backed-hash-slot-ux-receipt` is completed in the trust lane. It
+  extends the real-workspace receiver-quality receipt so the already-promoted
+  plain hash-slot receiver pilot is visible in the editor UX harness as exact
+  source-backed evidence, while hashref-slot, dynamic-key, and unknown receiver
+  shapes remain fallback or blocked.
+- `receiver-static-package-ux-receipt` is completed in the trust lane. It extends
+  the same real-workspace receiver-quality receipt so static package receivers
+  such as `RealReceiver::DB->` are visible as exact high-confidence syntax
+  evidence while the source-backed fact count remains limited to constructor
+  assignment and plain hash-slot probes.
+- `receiver-self-this-ux-receipt` is completed in the trust lane. It adds a
+  receipt-only RealReceiver UX fixture for `$self->` and `$this->`
+  current-package receiver completion, including own-method, inherited-method,
+  and nearest shadowing boundaries. It does not change completion provider
+  logic, support tiers, parser/corpus buckets, generated/dynamic behavior,
+  release-lineage sync, or source-repo development routing.
+- `source-lineage-drift-review` is completed in the reliability lane. The #95
+  ancestry repair is merged, #9554 was ported through swarm #112, and the
+  active-goal manifest validator exists. Current `source/master` still has four
+  post-#95 development commits that are not in `origin/main`: #9567 runtime
+  tuning, #9568 read cancellation, #9569 syntax-only diagnostics, and #9570
+  startup indexing gate. These map to existing swarm PRs #279, #280, #286, and
+  #287, so they must be reviewed/restacked in swarm rather than synced from
+  source. Source PR #9571 was closed as superseded by swarm #288. Source PR
+  #9572 remains draft and needs manual review before any port.
+- `neovim-latency-swarm-restack-review` is active in the reliability lane. It
+  owns the swarm-native review/restack path for #279, #280, #286, #287, and
+  #288. It must preserve one semantic PR at a time and must not source-over-swarm
+  sync, merge development work in `perl-lsp`, broaden provider trust behavior,
+  promote support tiers, move parser/corpus buckets, change release/publish/
+  signing, or claim release-lineage sync.
 - The recent queue cleanup was tracked in
   [perl-lsp-swarm#88](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/88).
 
@@ -846,6 +906,52 @@ Claim boundary
   change completion provider logic, support tiers, parser/corpus buckets,
   generated/dynamic behavior, release-lineage sync, or source-repo development
   routing.
+- Receiver conditional local reassignment fallback work may add a receipt-only
+  UX test and status links for current method-return receiver fallback behavior.
+  It must not change completion provider logic, support tiers, parser/corpus
+  buckets, generated/dynamic behavior, release-lineage sync, or source-repo
+  development routing.
+- Receiver source-backed hash-slot UX receipt work may extend the existing
+  receiver real-workspace quality receipt and status links for the already
+  narrow source-backed plain hash-slot completion pilot. It must not change
+  completion provider logic, support tiers, hashref-slot behavior, broader
+  receiver promotion, parser/corpus buckets, generated/dynamic behavior,
+  release-lineage sync, or source-repo development routing.
+- Receiver static package UX receipt work may extend the existing receiver
+  real-workspace quality receipt and status links for current static package
+  receiver completion behavior. It must not change completion provider logic,
+  support tiers, broader receiver promotion, parser/corpus buckets,
+  generated/dynamic behavior, release-lineage sync, or source-repo development
+  routing.
+- Receiver self/this UX receipt work may add a receipt-only RealReceiver
+  completion fixture and status links for current-package `$self->` and
+  `$this->` receiver behavior. It must not change completion provider logic,
+  support tiers, broader receiver promotion, parser/corpus buckets,
+  generated/dynamic behavior, release-lineage sync, or source-repo development
+  routing.
+- Source-lineage drift review may update only active-goal routing and this plan
+  while recording current source/swarm queue evidence. It must not force-push,
+  reset, source-over-swarm sync, merge development work in `perl-lsp`, broaden
+  provider behavior, promote support tiers, move parser/corpus buckets, change
+  release/publish/signing, or claim release-lineage sync.
+- Neovim latency swarm restack review may inspect and restack the existing swarm
+  PR train #279, #280, #286, #287, and #288. It must not import the already
+  merged source commits by source-over-swarm sync, batch unrelated PRs, treat
+  latency receipts as provider trust promotion, change release/publish/signing,
+  or continue source-repo development.
+- Receiver local accessor-chain fallback work may extend the receipt-only
+  method/accessor fallback UX test and status links for current lexical-local
+  accessor-chain method-return receiver behavior. It must not change completion
+  provider logic, support tiers, parser/corpus buckets, local accessor-chain
+  receiver promotion, medium-confidence promotion, generated/dynamic behavior,
+  release-lineage sync, or source-repo development routing.
+- Receiver dynamic local accessor-chain fallback work may extend the
+  receipt-only method/accessor fallback UX test and status links for current
+  dynamic accessor-chain method-return receiver behavior. It must not change
+  completion provider logic, support tiers, parser/corpus buckets, local
+  accessor-chain receiver promotion, dynamic local accessor-chain receiver
+  promotion, medium-confidence promotion, generated/dynamic behavior,
+  release-lineage sync, or source-repo development routing.
 - Receiver bless confidence work may add a receipt-only UX test and status links
   for current literal/dynamic `bless` receiver behavior. It must not change
   completion provider logic, support tiers, parser/corpus buckets,
@@ -858,8 +964,19 @@ Claim boundary
   sync, or source-repo development routing.
 - Receiver self/framework accessor fact work may add facts-only semantic
   analyzer fixtures and status links for current source-derived `$self`
-  constructor assignment plus framework accessor-return evidence. It must not
-  change completion provider logic, support tiers, parser/corpus buckets,
+  constructor assignment plus framework accessor-return evidence and
+  mismatched-package fallback. It must not change completion provider logic,
+  support tiers, parser/corpus buckets, generated/dynamic behavior,
+  release-lineage sync, or source-repo development routing.
+- Receiver method-return accessor-chain fact work may add facts-only semantic
+  analyzer fixtures and status links for current static constructor-to-framework
+  accessor method-return evidence. It must not change completion provider
+  logic, support tiers, parser/corpus buckets, generated/dynamic behavior,
+  release-lineage sync, or source-repo development routing.
+- Receiver local accessor-chain fact work may add facts-only semantic analyzer
+  fixtures and status links for current lexical locals initialized or assigned
+  from static constructor-to-framework accessor chains. It must not change
+  completion provider logic, support tiers, parser/corpus buckets,
   generated/dynamic behavior, release-lineage sync, or source-repo development
   routing.
 
@@ -867,19 +984,25 @@ Proof commands
 
 ```bash
 rtk gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number,title,headRefName,mergeable,isDraft
-rtk cargo test -p perl-semantic-analyzer --test receiver_expression_facts self_constructor_framework_accessor_records_medium_confidence_object_shape --profile agent --locked -- --nocapture
-rtk cargo test -p perl-semantic-analyzer --test receiver_expression_facts --profile agent --locked -- --nocapture
+rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 95 --json number,state,mergedAt,mergeCommit,title,url
+rtk git fetch origin main
+rtk git fetch source master:refs/remotes/source/master
+rtk git rev-list --left-right --count origin/main...source/master
+rtk git log --oneline source/master --not origin/main
+rtk gh pr list -R EffortlessMetrics/perl-lsp --state open --limit 100 --json number,title,isDraft,headRefName,updatedAt,url
+rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 279 --json number,title,state,headRefName,mergeStateStatus,url
+rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 280 --json number,title,state,headRefName,mergeStateStatus,url
+rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 286 --json number,title,state,headRefName,mergeStateStatus,url
+rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 287 --json number,title,state,headRefName,mergeStateStatus,url
+rtk gh pr view -R EffortlessMetrics/perl-lsp-swarm 288 --json number,title,state,headRefName,mergeStateStatus,url
 rtk cargo xtask check-active-goal-manifest
 rtk cargo xtask check-support-claims
 rtk cargo xtask check-provider-confidence-matrix
-rtk cargo xtask metrics parser-accuracy --check
-rtk cargo xtask metrics ratchet-check parser_accuracy
 rtk git diff --check
 ```
 
 Rollback
 
-Revert the receiver self/framework accessor fact fixture PR. If the fixture
-exposes an unintended provider-output change, keep provider behavior unchanged,
-mark this work item planned, and open a separate fix with a narrower claim
-boundary.
+Revert the Neovim latency swarm restack routing PR. If a specific latency PR is
+unsafe or stale, close or replace that one swarm PR after preserving its branch
+history instead of importing source commits or syncing source over swarm.

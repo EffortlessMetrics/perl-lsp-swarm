@@ -1317,14 +1317,14 @@
         "first_useful_result": true,
         "protocol_goldens": false
       },
-      "user_journey": "request receiver-aware method completion over a multi-file CPAN-style workspace and record exact, fallback, and dynamic receiver boundaries",
+      "user_journey": "request receiver-aware method completion over a multi-file CPAN-style workspace and record static package, exact source-backed hash-slot, fallback, and dynamic receiver boundaries",
       "measures": [
         "workflow_pass_rate",
         "workflow_stability_rate"
       ],
       "expected_outcomes": [
-        "constructor-assignment, hashref-slot, dynamic-key, and unknown receiver probes complete without JSON-RPC errors",
-        "receipt records source-backed, fallback, and blocked receiver states without changing completion behavior",
+        "constructor-assignment, static-package, source-backed hash-slot, hashref-slot, dynamic-key, and unknown receiver probes complete without JSON-RPC errors",
+        "receipt records static package, source-backed hash-slot, fallback, and blocked receiver states without changing completion behavior",
         "dynamic and unknown receivers do not become exact source-backed receiver evidence"
       ],
       "confidence_signals": [
@@ -1344,15 +1344,15 @@
         "first_useful_result": true,
         "protocol_goldens": false
       },
-      "user_journey": "request receiver-aware method completion through accessor-return and method-return receiver chains and record fallback boundaries",
+      "user_journey": "request receiver-aware method completion through accessor-return, method-return, local accessor-chain, dynamic accessor-chain, and conditional local-reassignment receiver chains and record fallback boundaries",
       "measures": [
         "workflow_pass_rate",
         "workflow_stability_rate"
       ],
       "expected_outcomes": [
-        "accessor-return and method-return receiver probes complete without JSON-RPC errors",
+        "accessor-return, method-return, local accessor-chain, dynamic accessor-chain, and conditional local-reassignment receiver probes complete without JSON-RPC errors",
         "medium-confidence receiver facts preserve low-confidence fallback completion",
-        "accessor-return and method-return receivers do not become exact source-backed receiver evidence"
+        "accessor-return, method-return, local accessor-chain, dynamic accessor-chain, and conditional local-reassignment receivers do not become exact source-backed receiver evidence"
       ],
       "confidence_signals": [
         "first_five_minutes_harness",
@@ -1407,6 +1407,33 @@
         "static and dynamic array-index receiver probes complete without JSON-RPC errors",
         "array-index receiver facts preserve low-confidence fallback completion",
         "array-index receivers do not become exact source-backed receiver evidence"
+      ],
+      "confidence_signals": [
+        "first_five_minutes_harness",
+        "manual_editor_smoke",
+        "issue_burndown_regression_guard"
+      ]
+    },
+    {
+      "id": "receiver_self_this_quality",
+      "scenario_file": "ux_scenario_50_receiver_self_this_quality.rs",
+      "subsystem_owner": "editor_trust",
+      "ci_tier": "pr",
+      "component": "completion",
+      "instrumentation": {
+        "run_receipt": true,
+        "first_useful_result": true,
+        "protocol_goldens": false
+      },
+      "user_journey": "request receiver-aware method completion through $self and $this current-package receiver forms and record local-method, inherited-method, and shadowing boundaries",
+      "measures": [
+        "workflow_pass_rate",
+        "workflow_stability_rate"
+      ],
+      "expected_outcomes": [
+        "$self and $this receiver probes complete without JSON-RPC errors",
+        "current-package local methods remain ordinary local method candidates while inherited workspace methods carry exact self/this receiver detail",
+        "self/this receiver evidence does not leak source-backed object, hash-slot, static-package, bless, type-engine, unknown, or fallback labels into local-method candidates"
       ],
       "confidence_signals": [
         "first_five_minutes_harness",
