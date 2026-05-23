@@ -143,6 +143,12 @@ mod tests {
         }
 
         #[test]
+        fn test_normalize_uri_trims_surrounding_whitespace() {
+            let uri = normalize_uri(" \nfile:///tmp/test.pl\t ");
+            assert_eq!(uri, "file:///tmp/test.pl");
+        }
+
+        #[test]
         fn test_normalize_uri_canonicalizes_localhost_authority() {
             assert_eq!(normalize_uri("file://localhost/tmp/test.pl"), "file:///tmp/test.pl");
         }
