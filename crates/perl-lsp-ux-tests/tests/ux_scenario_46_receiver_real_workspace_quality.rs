@@ -270,6 +270,16 @@ fn probe_receiver_completion(
     })
 }
 
+fn report_by_name<'a>(
+    reports: &'a [ReceiverProbeReport],
+    name: &str,
+) -> Result<&'a ReceiverProbeReport> {
+    reports
+        .iter()
+        .find(|report| report.name == name)
+        .with_context(|| format!("missing receiver probe report `{name}`"))
+}
+
 fn receiver_probes() -> Vec<ReceiverProbe> {
     vec![
         ReceiverProbe {
@@ -288,9 +298,9 @@ fn receiver_probes() -> Vec<ReceiverProbe> {
             source: HASHREF_PROBE,
             receiver_marker: "$services->{db}->",
             expected_label: "connect",
-            expected_receiver_detail: Some("receiver: source-backed hashref slot"),
-            forbidden_receiver_details: &[],
-            fallback_allowed: false,
+            expected_receiver_detail: None,
+            forbidden_receiver_details: &["receiver: source-backed hashref slot"],
+            fallback_allowed: true,
         },
         ReceiverProbe {
             name: "dynamic_hash_key_receiver",
@@ -400,9 +410,27 @@ fn scenario_46_receiver_real_workspace_quality_receipt() {
 
             recorder
                 .check("all receiver probes produced reports", reports.len() == probes.len())?;
+            let constructor_report = report_by_name(&reports, "constructor_assignment_receiver")?;
             recorder.check(
-                "dynamic and unknown receivers preserved fallback or blocker state",
-                fallback_or_blocked_count >= 2,
+                "constructor assignment receiver acted with source-backed detail",
+                constructor_report.expected_label_present
+                    && constructor_report.source_backed
+                    && !constructor_report.fallback_used
+                    && constructor_report.blocked_reason.is_none(),
+            )?;
+            for fallback_probe in
+                ["hashref_slot_receiver", "dynamic_hash_key_receiver", "unknown_receiver"]
+            {
+                let report = report_by_name(&reports, fallback_probe)?;
+                recorder.check(
+                    &format!("{fallback_probe} preserved fallback or blocker state"),
+                    !report.source_backed
+                        && (report.fallback_used || report.blocked_reason.is_some()),
+                )?;
+            }
+            recorder.check(
+                "hashref, dynamic, and unknown receivers preserved fallback or blocker state",
+                fallback_or_blocked_count >= 3,
             )?;
 
             harness.assert_no_crash();
