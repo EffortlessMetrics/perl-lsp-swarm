@@ -41,7 +41,7 @@ fn profile_parse_empty_string_is_none() {
 
 #[test]
 fn profile_parse_is_case_sensitive() {
-    // Case sensitivity is part of the contract — receipts compare stable
+    // Case sensitivity is part of the contract; receipts compare stable
     // lowercase tokens, so a mixed-case input is intentionally rejected.
     assert!(NativeCriticProfile::parse("Strict").is_none());
     assert!(NativeCriticProfile::parse("RECOMMENDED").is_none());
@@ -65,7 +65,7 @@ fn profile_as_str_labels_are_stable() {
     assert_eq!(NativeCriticProfile::Strict.as_str(), "strict");
 }
 
-// ---- NativeCriticRegistry — empty / construction ---------------------------
+// ---- NativeCriticRegistry: empty / construction ----------------------------
 
 #[test]
 fn registry_new_is_empty() {
@@ -103,11 +103,11 @@ fn registry_add_rule_appends() {
     assert_eq!(registry.rule_ids(), vec!["first", "second"]);
 }
 
-// ---- NativeCriticRegistry — built-in profiles ------------------------------
+// ---- NativeCriticRegistry: built-in profiles -------------------------------
 
 #[test]
 fn registry_recommended_is_non_empty() {
-    // Don't pin the exact rule list — that would couple this test to the
+    // Don't pin the exact rule list; that would couple this test to the
     // recommended-set roster. Just verify a meaningful set was wired up.
     let registry = NativeCriticRegistry::recommended();
     assert!(!registry.is_empty(), "recommended bundle should have rules");
@@ -140,14 +140,14 @@ fn registry_built_in_profiles_have_unique_rule_ids() {
 #[test]
 fn registry_recommended_helper_matches_strict_profile() {
     // `NativeCriticRegistry::recommended()` is documented as a compatibility
-    // shim — it currently returns the strict profile. Pin that contract here
+    // shim: it currently returns the strict profile. Pin that contract here
     // so a quiet roster change doesn't slip past.
     let recommended_helper = NativeCriticRegistry::recommended().rule_ids();
     let strict_profile = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict).rule_ids();
     assert_eq!(recommended_helper, strict_profile);
 }
 
-// ---- NativeCriticRegistry::check — include / exclude / severity gates ------
+// ---- NativeCriticRegistry::check: include / exclude / severity gates --------
 
 #[test]
 fn check_returns_no_findings_when_registry_is_empty() {
