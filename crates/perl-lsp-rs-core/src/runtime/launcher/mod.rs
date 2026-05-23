@@ -378,6 +378,7 @@ pub enum LaunchAction {
 
 /// Canonical launch configuration consumed by the server runtime.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LaunchConfig {
     /// Transport used by the server.
     pub transport: TransportMode,

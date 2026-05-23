@@ -10,7 +10,8 @@
 //! 1. Compile-time defaults from [`RuntimeTuning::normal_defaults`] /
 //!    [`RuntimeTuning::e2e_defaults`].
 //! 2. Environment variables (`PERL_LSP_E2E`, `PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS`,
-//!    `PERL_LSP_DIAGNOSTIC_MODE`).
+//!    `PERL_LSP_DIAGNOSTIC_MODE`, `PERL_LSP_EAGER_WORKSPACE_INDEXING`,
+//!    `PERL_LSP_FILE_WATCHERS`).
 //! 3. CLI overrides parsed by [`crate::runtime::launcher::parse_args`].
 //!
 //! CLI wins over env, env wins over compiled defaults. The shape is
@@ -34,6 +35,7 @@ use std::time::Duration;
 /// the LSP capability advertisement is unchanged. Only the runtime workload
 /// pattern shifts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RuntimeMode {
     /// Production / normal editor behavior.
     Normal,
@@ -71,6 +73,7 @@ impl RuntimeMode {
 /// completion latency — running the full stack on every keystroke makes
 /// the "first useful answer" appear slower than the server actually is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DiagnosticMode {
     /// Full diagnostic pipeline.
     Normal,
@@ -104,6 +107,7 @@ impl DiagnosticMode {
 /// rather than going through a trait, because each field has one or two
 /// call sites and we want them legible at a glance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RuntimeTuning {
     /// Coarse workload pattern (drives the other defaults).
     pub runtime_mode: RuntimeMode,
