@@ -39,7 +39,7 @@ if ! command -v "${nvim_bin}" >/dev/null 2>&1; then
 fi
 if [[ ! -x "${perllsp_bin}" ]]; then
   echo "skip: perllsp binary not found at ${perllsp_bin}" >&2
-  echo "      build with: cargo build -p perl-lsp-rs --release --bin perl-lsp" >&2
+  echo "      build with: cargo build -p perllsp --release --bin perllsp" >&2
   exit 1
 fi
 
