@@ -2,9 +2,9 @@
 //!
 //! This receipt exercises receiver-aware completion over a small multi-file
 //! CPAN-style workspace. It records which receiver facts acted, fell back, or
-//! stayed blocked without changing completion behavior. The exact plain hash-slot
-//! probe covers the narrow source-backed receiver pilot; the hashref, dynamic,
-//! and unknown probes preserve fallback boundaries.
+//! stayed blocked without changing completion behavior. The static package and
+//! exact plain hash-slot probes cover high-confidence receiver evidence; the
+//! hashref, dynamic, and unknown probes preserve fallback boundaries.
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::{
@@ -20,6 +20,7 @@ const APP_PATH: &str = "lib/RealReceiver/App.pm";
 const DB_PATH: &str = "lib/RealReceiver/DB.pm";
 const MAILER_PATH: &str = "lib/RealReceiver/Mailer.pm";
 const STATIC_PROBE_PATH: &str = "script/static-receiver.pl";
+const STATIC_PACKAGE_PROBE_PATH: &str = "script/static-package-receiver.pl";
 const HASH_SLOT_PROBE_PATH: &str = "script/hash-slot-receiver.pl";
 const HASHREF_PROBE_PATH: &str = "script/hashref-receiver.pl";
 const DYNAMIC_PROBE_PATH: &str = "script/dynamic-receiver.pl";
@@ -95,6 +96,14 @@ my $app = RealReceiver::App->new;
 $app->
 "#;
 
+const STATIC_PACKAGE_PROBE: &str = r#"use strict;
+use warnings;
+use lib 'lib';
+use RealReceiver::DB;
+
+RealReceiver::DB->
+"#;
+
 const HASH_SLOT_PROBE: &str = r#"use strict;
 use warnings;
 use lib 'lib';
@@ -141,6 +150,7 @@ struct ReceiverProbe {
     expected_label: &'static str,
     expected_receiver_detail: Option<&'static str>,
     forbidden_receiver_details: &'static [&'static str],
+    source_backed_fact: bool,
     fallback_allowed: bool,
 }
 
@@ -153,6 +163,7 @@ struct ReceiverProbeReport {
     expected_label_present: bool,
     expected_label_detail: Option<String>,
     source_backed: bool,
+    exact_trusted: bool,
     fresh: bool,
     fallback_used: bool,
     blocked_reason: Option<String>,
@@ -166,6 +177,7 @@ fn create_harness() -> Result<UxHarness> {
             .with_file(DB_PATH, DB_PM)
             .with_file(MAILER_PATH, MAILER_PM)
             .with_file(STATIC_PROBE_PATH, STATIC_PROBE)
+            .with_file(STATIC_PACKAGE_PROBE_PATH, STATIC_PACKAGE_PROBE)
             .with_file(HASH_SLOT_PROBE_PATH, HASH_SLOT_PROBE)
             .with_file(HASHREF_PROBE_PATH, HASHREF_PROBE)
             .with_file(DYNAMIC_PROBE_PATH, DYNAMIC_PROBE)
@@ -272,7 +284,10 @@ fn probe_receiver_completion(
         candidate_count: items.len(),
         expected_label_present,
         expected_label_detail,
-        source_backed: !probe.fallback_allowed && expected_detail_matched,
+        source_backed: probe.source_backed_fact
+            && !probe.fallback_allowed
+            && expected_detail_matched,
+        exact_trusted: !probe.fallback_allowed && expected_detail_matched,
         fresh: true,
         fallback_used,
         blocked_reason: if expected_label_present {
@@ -303,6 +318,24 @@ fn receiver_probes() -> Vec<ReceiverProbe> {
             expected_label: "run",
             expected_receiver_detail: Some("receiver: source-backed object"),
             forbidden_receiver_details: &[],
+            source_backed_fact: true,
+            fallback_allowed: false,
+        },
+        ReceiverProbe {
+            name: "static_package_receiver",
+            file: STATIC_PACKAGE_PROBE_PATH,
+            source: STATIC_PACKAGE_PROBE,
+            receiver_marker: "RealReceiver::DB->",
+            expected_label: "connect",
+            expected_receiver_detail: Some("receiver: static package"),
+            forbidden_receiver_details: &[
+                "medium confidence",
+                "low confidence",
+                "receiver: source-backed object",
+                "receiver: hash slot",
+                "receiver: literal bless",
+            ],
+            source_backed_fact: false,
             fallback_allowed: false,
         },
         ReceiverProbe {
@@ -317,6 +350,7 @@ fn receiver_probes() -> Vec<ReceiverProbe> {
                 "receiver: source-backed hashref slot",
                 "receiver: literal bless",
             ],
+            source_backed_fact: true,
             fallback_allowed: false,
         },
         ReceiverProbe {
@@ -327,6 +361,7 @@ fn receiver_probes() -> Vec<ReceiverProbe> {
             expected_label: "connect",
             expected_receiver_detail: None,
             forbidden_receiver_details: &["receiver: source-backed hashref slot"],
+            source_backed_fact: false,
             fallback_allowed: true,
         },
         ReceiverProbe {
@@ -340,6 +375,7 @@ fn receiver_probes() -> Vec<ReceiverProbe> {
                 "receiver: source-backed hash slot",
                 "receiver: source-backed hashref slot",
             ],
+            source_backed_fact: false,
             fallback_allowed: true,
         },
         ReceiverProbe {
@@ -354,6 +390,7 @@ fn receiver_probes() -> Vec<ReceiverProbe> {
                 "receiver: source-backed hash slot",
                 "receiver: source-backed hashref slot",
             ],
+            source_backed_fact: false,
             fallback_allowed: true,
         },
     ]
@@ -378,6 +415,7 @@ fn scenario_46_receiver_real_workspace_quality_receipt() {
                 DB_PATH,
                 MAILER_PATH,
                 STATIC_PROBE_PATH,
+                STATIC_PACKAGE_PROBE_PATH,
                 HASH_SLOT_PROBE_PATH,
                 HASHREF_PROBE_PATH,
                 DYNAMIC_PROBE_PATH,
@@ -388,6 +426,7 @@ fn scenario_46_receiver_real_workspace_quality_receipt() {
                     DB_PATH => DB_PM,
                     MAILER_PATH => MAILER_PM,
                     STATIC_PROBE_PATH => STATIC_PROBE,
+                    STATIC_PACKAGE_PROBE_PATH => STATIC_PACKAGE_PROBE,
                     HASH_SLOT_PROBE_PATH => HASH_SLOT_PROBE,
                     HASHREF_PROBE_PATH => HASHREF_PROBE,
                     DYNAMIC_PROBE_PATH => DYNAMIC_PROBE,
@@ -411,6 +450,7 @@ fn scenario_46_receiver_real_workspace_quality_receipt() {
 
             let exact_source_backed_count =
                 reports.iter().filter(|report| report.source_backed).count();
+            let exact_trusted_count = reports.iter().filter(|report| report.exact_trusted).count();
             let fallback_or_blocked_count = reports
                 .iter()
                 .filter(|report| report.fallback_used || report.blocked_reason.is_some())
@@ -428,6 +468,7 @@ fn scenario_46_receiver_real_workspace_quality_receipt() {
                 "claim_boundary": "receipt-only receiver quality proof; no completion behavior change, support-tier promotion, broader hashref promotion, or generated/dynamic promotion",
                 "probe_count": reports.len(),
                 "exact_source_backed_count": exact_source_backed_count,
+                "exact_trusted_count": exact_trusted_count,
                 "fallback_or_blocked_count": fallback_or_blocked_count,
                 "missing_expected_labels": missing_expected_labels,
                 "reports": reports,
@@ -446,6 +487,19 @@ fn scenario_46_receiver_real_workspace_quality_receipt() {
                     && constructor_report.source_backed
                     && !constructor_report.fallback_used
                     && constructor_report.blocked_reason.is_none(),
+            )?;
+            let static_package_report = report_by_name(&reports, "static_package_receiver")?;
+            recorder.check(
+                "static package receiver acted with exact high-confidence detail",
+                static_package_report.expected_label_present
+                    && static_package_report.exact_trusted
+                    && !static_package_report.source_backed
+                    && !static_package_report.fallback_used
+                    && static_package_report.blocked_reason.is_none()
+                    && static_package_report
+                        .expected_label_detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("receiver: static package")),
             )?;
             let hash_slot_report = report_by_name(&reports, "source_backed_hash_slot_receiver")?;
             recorder.check(
@@ -476,6 +530,10 @@ fn scenario_46_receiver_real_workspace_quality_receipt() {
             recorder.check(
                 "exact receiver probes stayed limited to constructor assignment and hash slot",
                 exact_source_backed_count == 2,
+            )?;
+            recorder.check(
+                "exact trusted receiver probes include static package plus source-backed facts",
+                exact_trusted_count == 3,
             )?;
 
             harness.assert_no_crash();
