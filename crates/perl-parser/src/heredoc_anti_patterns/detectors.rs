@@ -38,6 +38,13 @@ static FORMAT_PATTERN: LazyLock<Regex> =
         Err(_) => unreachable!("FORMAT_PATTERN regex failed to compile"),
     });
 
+/// Pattern for extracting heredoc delimiter declarations.
+static HEREDOC_DELIMITER_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| match Regex::new(r#"<<\s*['"`]?([A-Za-z_][A-Za-z0-9_]*)['"`]?"#) {
+        Ok(re) => re,
+        Err(_) => unreachable!("HEREDOC_DELIMITER_PATTERN regex failed to compile"),
+    });
+
 impl PatternDetector for FormatHeredocDetector {
     fn detect(
         &self,
@@ -63,7 +70,7 @@ impl PatternDetector for FormatHeredocDetector {
                         AntiPattern::FormatHeredoc {
                             location: location.clone(),
                             format_name,
-                            heredoc_delimiter: "UNKNOWN".to_string(), // Would need better extraction
+                            heredoc_delimiter: extract_heredoc_delimiter(body),
                         },
                         location,
                     ));
@@ -99,6 +106,13 @@ static BEGIN_BLOCK_START_PATTERN: LazyLock<Regex> =
         Ok(re) => re,
         Err(_) => unreachable!("BEGIN_BLOCK_START_PATTERN regex failed to compile"),
     });
+
+fn extract_heredoc_delimiter(body: &str) -> String {
+    HEREDOC_DELIMITER_PATTERN
+        .captures(body)
+        .and_then(|captures| captures.get(1).map(|delimiter| delimiter.as_str().to_string()))
+        .unwrap_or_else(|| "UNKNOWN".to_string())
+}
 
 fn find_matching_brace(code: &str, opening_brace_idx: usize) -> Option<usize> {
     let bytes = code.as_bytes();
