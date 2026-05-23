@@ -63,6 +63,12 @@ fn code_invalid_regex_falls_through_to_parse_error() {
 }
 
 #[test]
+fn code_nesting_too_deep_falls_through_to_parse_error() {
+    let err = ParseError::NestingTooDeep { depth: 100, max_depth: 50 };
+    assert_eq!(parse_error_code(&err), DiagnosticCode::ParseError);
+}
+
+#[test]
 fn code_cancelled_falls_through_to_parse_error() {
     assert_eq!(parse_error_code(&ParseError::Cancelled), DiagnosticCode::ParseError);
 }
