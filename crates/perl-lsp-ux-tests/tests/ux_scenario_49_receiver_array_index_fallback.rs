@@ -8,11 +8,11 @@
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::{
-    ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available, missing_binary_skip,
-    run_ux_scenario,
+    binary_available, missing_binary_skip, run_ux_scenario, ScenarioConfig, UxCiTier, UxComponent,
+    UxHarness,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::time::Duration;
 
 const SCENARIO_FILE: &str = "ux_scenario_49_receiver_array_index_fallback.rs";
@@ -66,6 +66,7 @@ struct ArrayReceiverProbe {
     source: &'static str,
     receiver_marker: &'static str,
     expected_label: &'static str,
+    expected_detail: &'static str,
     forbidden_details: &'static [&'static str],
     dynamic_boundary: bool,
 }
@@ -167,6 +168,20 @@ fn probe_array_receiver(
     let expected_sort_text = expected_item.and_then(completion_sort_text);
     let expected_label_present = expected_item.is_some();
     let expected_detail = expected_label_detail.as_deref().unwrap_or_default();
+    anyhow::ensure!(
+        expected_detail.contains(probe.expected_detail),
+        "probe {} must preserve fallback detail `{}`; got {expected_detail:?}",
+        probe.name,
+        probe.expected_detail
+    );
+    let sort_text = expected_sort_text.as_deref().with_context(|| {
+        format!("probe {} fallback completion must include sortText", probe.name)
+    })?;
+    anyhow::ensure!(
+        sort_text.starts_with("6_"),
+        "probe {} fallback completion must remain tier 6; got {sort_text:?}",
+        probe.name
+    );
 
     let forbidden_hit = items.iter().find_map(|item| {
         let text = completion_text(item);
@@ -183,6 +198,7 @@ fn probe_array_receiver(
         forbidden_hit
     );
 
+    let source_backed = expected_detail.contains("receiver: source-backed");
     let medium_confidence = expected_detail.contains("medium confidence");
     let has_receiver_detail = expected_detail.contains("receiver:");
     let fallback_detail = expected_detail.contains("low confidence")
@@ -221,7 +237,7 @@ fn probe_array_receiver(
         expected_label_present,
         expected_label_detail,
         expected_sort_text,
-        source_backed: false,
+        source_backed,
         confidence,
         fresh: true,
         fallback_state,
@@ -249,11 +265,17 @@ fn array_receiver_probes() -> Vec<ArrayReceiverProbe> {
             source: STATIC_ARRAY_PROBE,
             receiver_marker: "$items[0]->",
             expected_label: "connect",
+            expected_detail: "receiver: unknown, low confidence",
             forbidden_details: &[
                 "receiver: source-backed object",
                 "receiver: hash slot",
                 "receiver: source-backed hashref slot",
                 "receiver: constructor assignment",
+                "receiver: type engine",
+                "receiver: literal bless",
+                "receiver: static package",
+                "receiver: self",
+                "receiver: this",
             ],
             dynamic_boundary: false,
         },
@@ -263,12 +285,17 @@ fn array_receiver_probes() -> Vec<ArrayReceiverProbe> {
             source: DYNAMIC_ARRAY_PROBE,
             receiver_marker: "$items[$i]->",
             expected_label: "connect",
+            expected_detail: "receiver: unknown, low confidence",
             forbidden_details: &[
                 "receiver: source-backed object",
                 "receiver: hash slot",
                 "receiver: source-backed hashref slot",
                 "receiver: constructor assignment",
                 "receiver: type engine",
+                "receiver: literal bless",
+                "receiver: static package",
+                "receiver: self",
+                "receiver: this",
             ],
             dynamic_boundary: true,
         },
@@ -337,8 +364,16 @@ fn scenario_49_receiver_array_index_fallback_receipt() {
             for probe_name in ["static_array_index_receiver", "dynamic_array_index_receiver"] {
                 let report = report_by_name(&reports, probe_name)?;
                 recorder.check(
-                    &format!("{probe_name} did not become exact source-backed evidence"),
-                    !report.source_backed && report.fallback_or_labeled_boundary,
+                    &format!("{probe_name} stayed tier-6 low-confidence fallback"),
+                    report.expected_label_present
+                        && report.confidence == "low"
+                        && report
+                            .expected_sort_text
+                            .as_deref()
+                            .is_some_and(|sort| sort.starts_with("6_"))
+                        && report.fallback_state == "low_confidence_labeled"
+                        && !report.source_backed
+                        && report.fallback_or_labeled_boundary,
                 )?;
             }
             let dynamic_report = report_by_name(&reports, "dynamic_array_index_receiver")?;
