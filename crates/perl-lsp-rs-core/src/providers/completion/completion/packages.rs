@@ -6,6 +6,9 @@ use super::{
     context::CompletionContext,
     items::{CompletionItem, CompletionItemKind},
 };
+use perl_semantic_analyzer::symbol::{
+    Symbol as LocalSymbol, SymbolKind as LocalSymbolKind, SymbolTable,
+};
 use perl_workspace::workspace_index::{
     SymbolKind as WsSymbolKind, WorkspaceIndex, WorkspaceSymbol,
 };
@@ -134,6 +137,77 @@ fn package_member_documentation(package_name: &str, symbol: &WorkspaceSymbol) ->
         .or_else(|| Some(fallback_member_documentation(package_name, symbol)))
 }
 
+fn local_member_documentation(package_name: &str, symbol: &LocalSymbol) -> Option<String> {
+    symbol.documentation.clone().or_else(|| {
+        Some(match symbol.kind {
+            LocalSymbolKind::Subroutine => {
+                format!(
+                    "Subroutine `{}` defined in package `{package_name}`.",
+                    symbol.qualified_name
+                )
+            }
+            LocalSymbolKind::Method => {
+                format!("Method `{}` defined in package `{package_name}`.", symbol.qualified_name)
+            }
+            LocalSymbolKind::Variable(_) => {
+                format!(
+                    "Package variable `{}` declared in `{package_name}`.",
+                    symbol.qualified_name
+                )
+            }
+            LocalSymbolKind::Constant => {
+                format!("Constant `{}` declared in `{package_name}`.", symbol.qualified_name)
+            }
+            _ => format!("Package member `{}` from `{package_name}`.", symbol.qualified_name),
+        })
+    })
+}
+
+fn local_completion_kind(symbol: &LocalSymbol) -> Option<CompletionItemKind> {
+    match symbol.kind {
+        LocalSymbolKind::Subroutine | LocalSymbolKind::Method => Some(CompletionItemKind::Function),
+        LocalSymbolKind::Variable(_) => Some(CompletionItemKind::Variable),
+        LocalSymbolKind::Constant => Some(CompletionItemKind::Constant),
+        _ => None,
+    }
+}
+
+fn is_source_backed_local_package_member(symbol: &LocalSymbol) -> bool {
+    let generated_declaration = matches!(
+        symbol.declaration.as_deref(),
+        Some(
+            "has"
+                | "requires"
+                | "before"
+                | "after"
+                | "around"
+                | "override"
+                | "augment"
+                | "mk_accessors"
+                | "mk_ro_accessors"
+                | "mk_rw_accessors"
+                | "mk_wo_accessors"
+        )
+    );
+    let generated_attribute = symbol.attributes.iter().any(|attribute| {
+        attribute.starts_with("framework=")
+            || attribute.starts_with("modifier=")
+            || attribute == "requires=true"
+    });
+    if generated_declaration || generated_attribute {
+        return false;
+    }
+
+    match symbol.kind {
+        LocalSymbolKind::Subroutine | LocalSymbolKind::Method => symbol.declaration.is_none(),
+        LocalSymbolKind::Variable(_) => symbol.declaration.as_deref() == Some("our"),
+        LocalSymbolKind::Constant => {
+            matches!(symbol.declaration.as_deref(), Some("constant" | "const" | "readonly"))
+        }
+        _ => false,
+    }
+}
+
 fn split_sigil(name: &str) -> (Option<char>, &str) {
     let mut chars = name.chars();
     match chars.next() {
@@ -156,6 +230,13 @@ fn symbol_sigil(symbol: &WorkspaceSymbol) -> Option<char> {
     }
 }
 
+fn local_symbol_sigil(symbol: &LocalSymbol) -> Option<char> {
+    match symbol.kind {
+        LocalSymbolKind::Variable(_) => split_sigil(&symbol.name).0,
+        _ => None,
+    }
+}
+
 fn qualified_member_name(package_name: &str, symbol: &WorkspaceSymbol) -> String {
     match symbol.kind {
         WsSymbolKind::Variable(_) => {
@@ -167,6 +248,71 @@ fn qualified_member_name(package_name: &str, symbol: &WorkspaceSymbol) -> String
             .clone()
             .unwrap_or_else(|| format!("{package_name}::{}", symbol.name)),
     }
+}
+
+fn local_qualified_member_name(package_name: &str, symbol: &LocalSymbol) -> String {
+    match symbol.kind {
+        LocalSymbolKind::Variable(_) => {
+            let (sigil, bare_name) = split_sigil(&symbol.name);
+            format!("{}{package_name}::{bare_name}", sigil.unwrap_or('$'))
+        }
+        _ => symbol.qualified_name.clone(),
+    }
+}
+
+fn add_local_package_member_completions(
+    completions: &mut Vec<CompletionItem>,
+    context: &CompletionContext,
+    symbol_table: &SymbolTable,
+    package_name: &str,
+    member_prefix: &str,
+    requested_sigil: Option<char>,
+) -> usize {
+    let mut added = 0usize;
+    let mut seen_labels: HashSet<String> =
+        completions.iter().map(|item| item.label.clone()).collect();
+    let package_prefix = format!("{package_name}::");
+
+    let mut symbols: Vec<&LocalSymbol> =
+        symbol_table.symbols.values().flat_map(|items| items.iter()).collect();
+    symbols.sort_by_key(|symbol| symbol.location.start);
+
+    for symbol in symbols {
+        let Some(kind) = local_completion_kind(symbol) else {
+            continue;
+        };
+        if !is_source_backed_local_package_member(symbol) {
+            continue;
+        }
+        if !symbol.qualified_name.starts_with(&package_prefix) {
+            continue;
+        }
+        if requested_sigil.is_some() && local_symbol_sigil(symbol) != requested_sigil {
+            continue;
+        }
+
+        let member_name = split_sigil(&symbol.name).1;
+        if !member_name.starts_with(member_prefix) || !seen_labels.insert(symbol.name.clone()) {
+            continue;
+        }
+
+        added += 1;
+        completions.push(CompletionItem {
+            label: symbol.name.clone(),
+            kind,
+            detail: Some(package_name.to_string()),
+            documentation: local_member_documentation(package_name, symbol),
+            insert_text: Some(local_qualified_member_name(package_name, symbol)),
+            sort_text: Some(format!("1_{}", symbol.name)),
+            filter_text: Some(symbol.name.clone()),
+            additional_edits: vec![],
+            text_edit_range: Some((context.prefix_start, context.position)),
+            commit_characters: None,
+            label_details: None,
+        });
+    }
+
+    added
 }
 
 fn add_known_core_module_completions(
@@ -209,6 +355,7 @@ fn add_known_core_module_completions(
 pub fn add_package_completions(
     completions: &mut Vec<CompletionItem>,
     context: &CompletionContext,
+    symbol_table: &SymbolTable,
     workspace_index: &Option<Arc<WorkspaceIndex>>,
 ) {
     // Split the prefix into package name and member prefix
@@ -220,9 +367,19 @@ pub fn add_package_completions(
     let member_prefix = parts.pop().unwrap_or("");
     let package_name = parts.join("::");
 
+    let mut member_count = add_local_package_member_completions(
+        completions,
+        context,
+        symbol_table,
+        &package_name,
+        member_prefix,
+        requested_sigil,
+    );
+
     // Query workspace index for members of the package (if available)
-    let mut workspace_member_count = 0;
     if let Some(index) = workspace_index {
+        let mut seen_labels: HashSet<String> =
+            completions.iter().map(|item| item.label.clone()).collect();
         let members = index.get_package_members(&package_name);
         for symbol in members {
             let item_kind = match symbol.kind {
@@ -238,8 +395,8 @@ pub fn add_package_completions(
             }
 
             let member_name = symbol_member_name(&symbol);
-            if member_name.starts_with(member_prefix) {
-                workspace_member_count += 1;
+            if member_name.starts_with(member_prefix) && seen_labels.insert(symbol.name.clone()) {
+                member_count += 1;
                 completions.push(CompletionItem {
                     label: symbol.name.clone(),
                     kind: item_kind,
@@ -257,8 +414,8 @@ pub fn add_package_completions(
         }
     }
 
-    // Only add core module completions if workspace didn't provide any
-    if workspace_member_count == 0 {
+    // Only add core module completions if source/workspace facts didn't provide any.
+    if member_count == 0 {
         add_known_core_module_completions(completions, context, &package_name, member_prefix);
     }
 }
