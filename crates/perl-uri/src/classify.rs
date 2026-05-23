@@ -46,11 +46,8 @@ pub fn uri_key(uri: &str) -> String {
         // Canonicalize localhost file authorities (file://localhost/...) to
         // the standard local form (file:///...) so equivalent URIs map to the
         // same key.
-        if parsed.scheme() == "file"
-            && is_local_file_authority(parsed.host_str())
-            && let Some(path) = strip_file_authority_prefix(&value, parsed.host_str())
-        {
-            value = format!("file://{path}");
+        if parsed.scheme() == "file" && is_local_file_authority(parsed.host_str()) {
+            value = local_file_uri_without_authority(&parsed);
         }
 
         if let Some(rest) = value.strip_prefix("file:///")
@@ -107,14 +104,21 @@ pub(crate) fn normalize_legacy_windows_uri(uri: &str) -> Option<String> {
     normalize_windows_path_to_key(path).or_else(|| normalize_unc_path_to_key(path))
 }
 
-fn strip_file_authority_prefix<'a>(value: &'a str, host: Option<&str>) -> Option<&'a str> {
-    let host = host?;
-    let prefix = format!("file://{host}");
-    value.strip_prefix(&prefix)
+pub(crate) fn is_local_file_authority(host: Option<&str>) -> bool {
+    matches!(host, Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]"))
 }
 
-pub(crate) fn is_local_file_authority(host: Option<&str>) -> bool {
-    matches!(host, Some("localhost") | Some("127.0.0.1") | Some("::1"))
+fn local_file_uri_without_authority(parsed: &Url) -> String {
+    let mut value = format!("file://{}", parsed.path());
+    if let Some(query) = parsed.query() {
+        value.push('?');
+        value.push_str(query);
+    }
+    if let Some(fragment) = parsed.fragment() {
+        value.push('#');
+        value.push_str(fragment);
+    }
+    value
 }
 
 fn strip_ascii_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
@@ -255,6 +259,7 @@ mod tests {
         assert_eq!(uri_key("file://[::1]/tmp/test.pl"), uri_key("file:///tmp/test.pl"));
     }
 
+    #[test]
     fn preserves_non_local_file_authority() {
         assert_eq!(uri_key("file://server/share/test.pl"), "file://server/share/test.pl");
     }
