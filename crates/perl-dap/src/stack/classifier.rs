@@ -136,14 +136,31 @@ impl PerlFrameClassifier {
         self
     }
 
+    fn is_under_root(path: &str, root: &str) -> bool {
+        let root = root.trim_end_matches(['/', '\\']);
+        if root.is_empty() {
+            return false;
+        }
+
+        if path == root {
+            return true;
+        }
+
+        if let Some(remainder) = path.strip_prefix(root) {
+            return remainder.starts_with(['/', '\\']);
+        }
+
+        false
+    }
+
     /// Checks if a path is under any of the user paths.
     fn is_under_user_path(&self, path: &str) -> bool {
-        self.user_paths.iter().any(|user_path| path.starts_with(user_path))
+        self.user_paths.iter().any(|user_path| Self::is_under_root(path, user_path))
     }
 
     /// Checks if a path is under any of the library paths.
     fn is_under_library_path(&self, path: &str) -> bool {
-        self.library_paths.iter().any(|lib_path| path.starts_with(lib_path))
+        self.library_paths.iter().any(|lib_path| Self::is_under_root(path, lib_path))
     }
 
     /// Checks if a path looks like a Perl core module.
@@ -337,6 +354,17 @@ mod tests {
 
         let frame = frame_with_path("/opt/mylibs/SomeModule.pm");
         assert_eq!(classifier.classify(&frame), FrameCategory::Library);
+    }
+
+    #[test]
+    fn test_explicit_path_matching_uses_directory_boundaries() {
+        let classifier = PerlFrameClassifier::new().with_user_path("/workspace/project");
+        let frame = frame_with_path("/workspace/project2/extlib/App.pm");
+        assert_eq!(classifier.classify(&frame), FrameCategory::Library);
+
+        let classifier = PerlFrameClassifier::new().with_library_path("/opt/lib");
+        let frame = frame_with_path("/opt/library/Foo.pm");
+        assert_eq!(classifier.classify(&frame), FrameCategory::User);
     }
 
     #[test]
