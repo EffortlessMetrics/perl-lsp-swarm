@@ -810,8 +810,10 @@ Current executable slice
 - `receiver-self-framework-accessor-fact-fixture` is active in the trust lane.
   It adds a facts-only semantic analyzer fixture proving source-derived
   `$self = MyApp::Service->new` evidence plus framework accessor-return facts.
-  This keeps the receiver fact substrate current without changing completion
-  provider output, support tiers, parser/corpus status, or release lineage.
+  It also locks fallback when the source-derived `$self` package does not match
+  the framework declaration. This keeps the receiver fact substrate current
+  without changing completion provider output, support tiers, parser/corpus
+  status, or release lineage.
 - The recent queue cleanup was tracked in
   [perl-lsp-swarm#88](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/88).
 
@@ -858,16 +860,17 @@ Claim boundary
   sync, or source-repo development routing.
 - Receiver self/framework accessor fact work may add facts-only semantic
   analyzer fixtures and status links for current source-derived `$self`
-  constructor assignment plus framework accessor-return evidence. It must not
-  change completion provider logic, support tiers, parser/corpus buckets,
-  generated/dynamic behavior, release-lineage sync, or source-repo development
-  routing.
+  constructor assignment plus framework accessor-return evidence and
+  mismatched-package fallback. It must not change completion provider logic,
+  support tiers, parser/corpus buckets, generated/dynamic behavior,
+  release-lineage sync, or source-repo development routing.
 
 Proof commands
 
 ```bash
 rtk gh pr list --repo EffortlessMetrics/perl-lsp-swarm --state open --limit 100 --json number,title,headRefName,mergeable,isDraft
 rtk cargo test -p perl-semantic-analyzer --test receiver_expression_facts self_constructor_framework_accessor_records_medium_confidence_object_shape --profile agent --locked -- --nocapture
+rtk cargo test -p perl-semantic-analyzer --test receiver_expression_facts self_framework_accessor_requires_matching_constructor_package --profile agent --locked -- --nocapture
 rtk cargo test -p perl-semantic-analyzer --test receiver_expression_facts --profile agent --locked -- --nocapture
 rtk cargo xtask check-active-goal-manifest
 rtk cargo xtask check-support-claims
