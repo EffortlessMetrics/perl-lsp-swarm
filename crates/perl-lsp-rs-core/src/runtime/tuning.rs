@@ -18,18 +18,21 @@
 //! deliberately small — six fields — because every dial we add is a new
 //! interaction with the rest of the server.
 //!
-//! This module owns the *shape* of the config and its parsing only. The
-//! actual behavioral wiring (debouncer interval, syntax-only diagnostics,
-//! workspace-indexing gate, etc.) lives in the consuming runtime.
+//! This module owns the *shape* of the config and its parsing only. A dial is
+//! behaviorally active only after the consuming runtime has explicit wiring for
+//! it. The initial runtime-tuning substrate wires diagnostic debounce behavior;
+//! follow-up latency PRs wire diagnostic scope, workspace-indexing, and watcher
+//! behavior.
 
 use std::time::Duration;
 
 /// Coarse-grained runtime workload mode.
 ///
-/// `Normal` is the default for editor sessions. `E2e` favours fast,
-/// low-noise behavior for latency-focused harnesses: zero diagnostic
-/// debounce, syntax-only diagnostics, no eager workspace indexing, and
-/// no opt-in file watching by default.
+/// `Normal` is the default for editor sessions. `E2e` records fast,
+/// low-noise defaults for latency-focused harnesses: zero diagnostic debounce,
+/// syntax-only diagnostics, no eager workspace indexing, and no opt-in file
+/// watching by default. Only fields with consuming runtime wiring change live
+/// behavior.
 ///
 /// This is **orthogonal** to [`FeatureProfile`](crate::governance::FeatureProfile):
 /// the LSP capability advertisement is unchanged. Only the runtime workload
