@@ -6,11 +6,11 @@
 
 use anyhow::{Context, Result};
 use perl_lsp_ux_tests::{
-    ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available, missing_binary_skip,
-    run_ux_scenario,
+    binary_available, missing_binary_skip, run_ux_scenario, ScenarioConfig, UxCiTier, UxComponent,
+    UxHarness,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::time::Duration;
 
 const SCENARIO_FILE: &str = "ux_scenario_47_receiver_method_accessor_fallback.rs";
@@ -271,6 +271,7 @@ fn receiver_probes() -> Vec<ReceiverFallbackProbe> {
             forbidden_details: &[
                 "receiver: source-backed object",
                 "receiver: hash slot",
+                "receiver: source-backed hashref slot",
                 "receiver: literal bless",
                 "receiver: type engine",
             ],
@@ -285,6 +286,7 @@ fn receiver_probes() -> Vec<ReceiverFallbackProbe> {
             forbidden_details: &[
                 "receiver: source-backed object",
                 "receiver: hash slot",
+                "receiver: source-backed hashref slot",
                 "receiver: literal bless",
                 "receiver: type engine",
             ],
