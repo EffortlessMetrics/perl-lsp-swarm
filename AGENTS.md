@@ -189,6 +189,8 @@ nix develop -c just ci-gate
 
 - CI runs on Linux. Code must be cross-platform — Windows CRLF and Unix LF both occur
   in the corpus.
+- In this repo, **burndown** means reviewing, improving, and merging PRs — not closing
+  PRs to reduce queue count.
 - You cannot read GitHub issues directly. Placeholder issue refs (`#0000`) are OK;
   the orchestrator retitles before merge.
 - If the pre-push hook fails on pre-existing fmt drift in unrelated files, you may use
