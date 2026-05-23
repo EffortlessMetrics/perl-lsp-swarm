@@ -834,7 +834,7 @@ struct LineContext<'a> {
 }
 
 fn is_keyword_boundary(ch: char) -> bool {
-    ch.is_whitespace() || matches!(ch, ';' | '{' | '}' | '(' | ')' | ',')
+    ch.is_whitespace() || matches!(ch, '!' | ';' | '{' | '}' | '(' | ')' | ',')
 }
 
 fn ends_with_keyword(prefix: &str, keyword: &str) -> bool {
@@ -1087,6 +1087,13 @@ mod tests {
         let provider = InlineCompletionProvider::new();
         let completions = provider.get_inline_completions("hook(", 0, 5);
         assert!(completions.items.iter().all(|i| !i.insert_text.starts_with("$result,")));
+    }
+
+    #[test]
+    fn ok_paren_trigger_fires_after_negation_operator() {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("!ok(", 0, 4);
+        assert!(completions.items.iter().any(|i| i.insert_text.starts_with("$result,")));
     }
 
     #[test]
