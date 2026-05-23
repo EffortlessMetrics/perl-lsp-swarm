@@ -20,10 +20,9 @@ END
     assert!(!diagnostics.is_empty());
     assert!(matches!(diagnostics[0].pattern, AntiPattern::FormatHeredoc { .. }));
 
-    let AntiPattern::FormatHeredoc { heredoc_delimiter, .. } = &diagnostics[0].pattern else {
-        unreachable!("expected FormatHeredoc");
-    };
-    assert_eq!(heredoc_delimiter, "END");
+    if let AntiPattern::FormatHeredoc { heredoc_delimiter, .. } = &diagnostics[0].pattern {
+        assert_eq!(heredoc_delimiter, "END");
+    }
 }
 
 #[test]
@@ -321,7 +320,7 @@ END
 "#;
 
     let diagnostics = detector.detect_all(code);
-    assert!(diagnostics
-        .iter()
-        .any(|diag| matches!(diag.pattern, AntiPattern::FormatHeredoc { .. })));
+    assert!(
+        diagnostics.iter().any(|diag| matches!(diag.pattern, AntiPattern::FormatHeredoc { .. }))
+    );
 }

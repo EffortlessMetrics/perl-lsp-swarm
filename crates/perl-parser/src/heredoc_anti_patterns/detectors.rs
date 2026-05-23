@@ -64,13 +64,14 @@ impl PatternDetector for FormatHeredocDetector {
                 let body_start = match_pos.end();
                 let body_end = code[body_start..].find("\n.").unwrap_or(code.len() - body_start);
                 let body = &scan_code[body_start..body_start + body_end];
+                let source_body = &code[body_start..body_start + body_end];
 
                 if body.contains("<<") {
                     results.push((
                         AntiPattern::FormatHeredoc {
                             location: location.clone(),
                             format_name,
-                            heredoc_delimiter: extract_heredoc_delimiter(body),
+                            heredoc_delimiter: extract_heredoc_delimiter(source_body),
                         },
                         location,
                     ));
