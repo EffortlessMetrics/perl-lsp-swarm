@@ -241,7 +241,11 @@ impl PerlStackParser {
         let line_str = caps.name("line").or_else(|| caps.name("line2"))?.as_str();
         let line: i64 = line_str.parse().ok()?;
 
-        let id = self.resolve_frame_id(provided_id);
+        let id = if self.auto_assign_ids {
+            self.resolve_frame_id(provided_id)
+        } else {
+            provided_id
+        };
 
         let source = Source::new(file);
         let frame = StackFrame::new(id, func, Some(source), line);

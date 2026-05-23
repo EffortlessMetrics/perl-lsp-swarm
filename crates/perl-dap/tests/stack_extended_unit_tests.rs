@@ -400,6 +400,13 @@ fn parser_with_auto_ids_false_and_no_frame_number() {
 }
 
 #[test]
+fn parser_context_uses_provided_id_when_auto_ids_disabled() {
+    let mut parser = PerlStackParser::new().with_auto_ids(false);
+    let frame = parser.parse_frame("main::(file.pm):100:", 77);
+    assert_eq!(frame.map(|f| f.id), Some(77));
+}
+
+#[test]
 fn parser_looks_like_frame_hash_prefix() {
     assert!(PerlStackParser::looks_like_frame("#0"));
 }
