@@ -154,6 +154,19 @@ mod tests {
         }
 
         #[test]
+        fn test_normalize_uri_trims_surrounding_whitespace() {
+            assert_eq!(
+                normalize_uri(" \nfile:///tmp/trimmed-normalize.pl\t "),
+                "file:///tmp/trimmed-normalize.pl"
+            );
+
+            let absolute_path = std::env::temp_dir().join("trimmed-normalize-path.pl");
+            let input = format!(" \t{}\n", absolute_path.display());
+            let expected = uri_key(&must(fs_path_to_uri(&absolute_path)));
+            assert_eq!(normalize_uri(&input), expected);
+        }
+
+        #[test]
         fn test_normalize_uri_absolute_path() {
             let path = std::env::temp_dir().join("normalize-uri-absolute.pl");
             let raw_path = path.to_string_lossy();
