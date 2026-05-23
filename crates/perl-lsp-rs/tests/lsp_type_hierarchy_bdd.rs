@@ -4,8 +4,8 @@
 //! The provider has stable assertion-driven e2e coverage in
 //! `lsp_type_hierarchy_e2e.rs`, but no narrative Given/When/Then scenario
 //! that reads as a user workflow. These tests wrap the two most common
-//! interactions — exploring subtypes from a base class and tracing
-//! supertypes via @ISA — under the existing BDD scenario logger.
+//! interactions - exploring subtypes from a base class and tracing
+//! supertypes via @ISA - under the existing BDD scenario logger.
 
 mod support;
 
