@@ -124,6 +124,26 @@ Each agent worktree must set `CARGO_TARGET_DIR` to a per-branch path under `/tmp
 
 CI enforces `(#NNN)` at the end of PR titles. If a PR title lacks this, the merge will fail at CI. The pre-merge guard (§1) catches this early.
 
+## §7 — Bare `unwrap()`/`expect()` in tests — mechanical enforcement gap
+
+The AGENTS.md rule "no bare `unwrap()` in tests — use `Result<()>` or
+`perl_tdd_support::must`/`must_some`" existed before the 0.15.1 lane but did not
+prevent violations. Every code PR in the 0.15.1 lane (#279, #280, #286, #287, #288)
+required a reviewer round-trip to strip bare test `unwrap/expect`.
+
+The rule is correct; what is missing is mechanical enforcement. Add to the reviewer's
+first-pass checklist:
+
+```bash
+cargo clippy --tests -- -D clippy::unwrap_used -D clippy::expect_used 2>&1 | grep "error\["
+```
+
+If this produces output, fix before posting any other review comment — this is always
+a quick fix and always holds up merge if left. Long-term fix: file a follow-up issue to
+add these lints to the workspace deny list for test builds.
+
+Source: 0.15.1 lane retrospective (2026-05-23), 5/5 code PRs hit this pattern.
+
 ---
 
 ## See Also
