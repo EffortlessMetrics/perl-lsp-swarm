@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Neovim lean smoke for the 0.15.1 latency lane (PR 6).
+# Neovim lean smoke for the 0.15.1 latency lane (PR 5/5).
 #
 # What this proves:
 #   - perllsp built from this branch starts under `--runtime-mode e2e` and
@@ -18,14 +18,14 @@
 #   ./scripts/ux/neovim_lean_smoke.sh /path/to/perllsp
 #
 # Environment:
-#   PERLLSP — explicit path to the perllsp binary (defaults to
+#   PERLLSP - explicit path to the perllsp binary (defaults to
 #             target/release/perllsp).
-#   NEOVIM   — explicit path to nvim (defaults to `nvim` from $PATH).
+#   NEOVIM   - explicit path to nvim (defaults to `nvim` from $PATH).
 #
 # Exit codes:
-#   0 — smoke passed.
-#   1 — required tool missing (nvim or perllsp).
-#   2 — runtime failure (timeout, non-zero exit from nvim).
+#   0 - smoke passed.
+#   1 - required tool missing (nvim or perllsp).
+#   2 - runtime failure (timeout, non-zero exit from nvim).
 
 set -euo pipefail
 

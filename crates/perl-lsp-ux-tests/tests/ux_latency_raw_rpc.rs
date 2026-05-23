@@ -1,4 +1,4 @@
-//! Raw-RPC latency receipts for the 0.15.1 Neovim latency lane (PR 6 of 5).
+//! Raw-RPC latency receipts for the 0.15.1 Neovim latency lane (PR 5/5).
 //!
 //! Five scenarios that exercise the e2e runtime path against the real LSP
 //! binary. They prove that:
@@ -7,7 +7,7 @@
 //! 2. `open -> hover` returns a useful answer.
 //! 3. `edit -> parse-error diagnostic` surfaces a parse error.
 //! 4. `edit -> diagnostic clear` clears diagnostics when the parse cleans.
-//! 5. `rapid typing -> latest completion wins` — under a burst of `didChange`
+//! 5. `rapid typing -> latest completion wins` - under a burst of `didChange`
 //!    notifications, the last completion request still returns successfully.
 //!
 //! These are intentionally "does it work end-to-end" tests, not numeric
@@ -91,7 +91,7 @@ fn ux_latency_open_then_completion() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("textDocument/completion errored under e2e config: {e}"))?;
 
     // E2E receipt: completion responded under e2e mode. Empty list is
-    // acceptable — the receipt is "the request completed cleanly", not
+    // acceptable: the receipt is "the request completed cleanly", not
     // "completion is high-quality" (that's the job of the dedicated
     // scenario_19 tests).
     let _ = items;
@@ -137,7 +137,7 @@ fn ux_latency_edit_publishes_parse_error_diagnostic() -> Result<()> {
         "syntax-only e2e mode must surface parse errors; got empty diagnostics list"
     );
 
-    // The diagnostic must be parser-sourced — syntax-only mode strips
+    // The diagnostic must be parser-sourced; syntax-only mode strips
     // critic / dead-code / module-resolution noise.
     let saw_parser =
         diags.iter().any(|d| d.get("source").and_then(|v| v.as_str()) == Some("perl-parser"));
@@ -189,7 +189,7 @@ fn ux_latency_rapid_typing_latest_request_returns() -> Result<()> {
 
     // Simulate a short edit burst: each version replaces the file with a
     // longer variable name, growing one character at a time. This is the
-    // typing-storm shape — every edit bumps the document generation, which
+    // typing-storm shape; every edit bumps the document generation, which
     // PR 4's generation-aware cancellation hooks onto.
     let burst = ["$va", "$val", "$valu", "$value"];
     for (i, partial) in burst.iter().enumerate() {
