@@ -142,7 +142,8 @@ fn windows_rooted_file_uri_to_path(url: &Url) -> Option<PathBuf> {
     use percent_encoding::percent_decode_str;
 
     match url.host_str() {
-        None | Some("localhost") => {}
+        None => {}
+        host if crate::classify::is_local_file_authority(host) => {}
         Some(_) => return None,
     }
 

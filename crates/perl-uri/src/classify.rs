@@ -47,8 +47,8 @@ pub fn uri_key(uri: &str) -> String {
         // the standard local form (file:///...) so equivalent URIs map to the
         // same key.
         if parsed.scheme() == "file"
-            && parsed.host_str() == Some("localhost")
-            && let Some(path) = value.strip_prefix("file://localhost")
+            && is_local_file_authority(parsed.host_str())
+            && let Some(path) = strip_file_authority_prefix(&value, parsed.host_str())
         {
             value = format!("file://{path}");
         }
@@ -105,6 +105,16 @@ pub(crate) fn normalize_legacy_windows_uri(uri: &str) -> Option<String> {
     let path = strip_localhost_authority(path).unwrap_or(path);
 
     normalize_windows_path_to_key(path).or_else(|| normalize_unc_path_to_key(path))
+}
+
+fn strip_file_authority_prefix<'a>(value: &'a str, host: Option<&str>) -> Option<&'a str> {
+    let host = host?;
+    let prefix = format!("file://{host}");
+    value.strip_prefix(&prefix)
+}
+
+pub(crate) fn is_local_file_authority(host: Option<&str>) -> bool {
+    matches!(host, Some("localhost") | Some("127.0.0.1") | Some("::1"))
 }
 
 fn strip_ascii_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
@@ -240,6 +250,11 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_loopback_file_authority() {
+        assert_eq!(uri_key("file://127.0.0.1/tmp/test.pl"), uri_key("file:///tmp/test.pl"));
+        assert_eq!(uri_key("file://[::1]/tmp/test.pl"), uri_key("file:///tmp/test.pl"));
+    }
+
     fn preserves_non_local_file_authority() {
         assert_eq!(uri_key("file://server/share/test.pl"), "file://server/share/test.pl");
     }
