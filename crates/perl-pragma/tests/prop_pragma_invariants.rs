@@ -125,9 +125,10 @@ proptest! {
         let input = format!("v5.{minor}");
         let version = parse_perl_version(&input);
         prop_assert!(version.is_some(), "Expected Some for well-formed input {:?}", input);
-        let v = version.unwrap();
-        prop_assert_eq!(v.major, 5);
-        prop_assert_eq!(v.minor, minor, "minor mismatch for input {:?}", input);
+        if let Some(v) = version {
+            prop_assert_eq!(v.major, 5);
+            prop_assert_eq!(v.minor, minor, "minor mismatch for input {:?}", input);
+        }
     }
 
     /// Round-trip: for zero-padded decimal forms "5.0XY", parsing recovers the
@@ -137,9 +138,10 @@ proptest! {
         let input = format!("5.{minor:03}");
         let version = parse_perl_version(&input);
         prop_assert!(version.is_some(), "Expected Some for well-formed input {:?}", input);
-        let v = version.unwrap();
-        prop_assert_eq!(v.major, 5);
-        prop_assert_eq!(v.minor, minor, "minor mismatch for input {:?}", input);
+        if let Some(v) = version {
+            prop_assert_eq!(v.major, 5);
+            prop_assert_eq!(v.minor, minor, "minor mismatch for input {:?}", input);
+        }
     }
 
     /// All well-formed major-5 strings should parse to Some.
