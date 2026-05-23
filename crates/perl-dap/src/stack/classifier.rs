@@ -137,9 +137,10 @@ impl PerlFrameClassifier {
     }
 
     fn is_under_root(path: &str, root: &str) -> bool {
+        let raw_root = root;
         let root = root.trim_end_matches(['/', '\\']);
         if root.is_empty() {
-            return false;
+            return Self::root_matches_filesystem_root(path, raw_root);
         }
 
         if path == root {
@@ -151,6 +152,12 @@ impl PerlFrameClassifier {
         }
 
         false
+    }
+
+    fn root_matches_filesystem_root(path: &str, root: &str) -> bool {
+        let uses_unix_root = !root.is_empty() && root.chars().all(|ch| ch == '/');
+        let uses_windows_root = !root.is_empty() && root.chars().all(|ch| ch == '\\');
+        (uses_unix_root && path.starts_with('/')) || (uses_windows_root && path.starts_with('\\'))
     }
 
     /// Checks if a path is under any of the user paths.
@@ -365,6 +372,17 @@ mod tests {
         let classifier = PerlFrameClassifier::new().with_library_path("/opt/lib");
         let frame = frame_with_path("/opt/library/Foo.pm");
         assert_eq!(classifier.classify(&frame), FrameCategory::User);
+    }
+
+    #[test]
+    fn test_explicit_path_matching_preserves_filesystem_roots() {
+        let classifier = PerlFrameClassifier::new().with_user_path("/");
+        let frame = frame_with_path("/workspace/project/extlib/App.pm");
+        assert_eq!(classifier.classify(&frame), FrameCategory::User);
+
+        let classifier = PerlFrameClassifier::new().with_library_path("\\");
+        let frame = frame_with_path("\\workspace\\project\\App.pm");
+        assert_eq!(classifier.classify(&frame), FrameCategory::Library);
     }
 
     #[test]
