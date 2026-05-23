@@ -36,8 +36,8 @@ list — lanes open and close as work is queued. The current active lanes
 are visible by filtering open PRs and issues on the `lane: <N>` label:
 
 ```bash
-gh pr list --search "label:\"lane: 6\""
-gh issue list --label "lane: 3"
+rtk gh pr list --search "label:\"lane: 6\""
+rtk gh issue list --label "lane: 3"
 ```
 
 A non-exhaustive map of recent lanes:
