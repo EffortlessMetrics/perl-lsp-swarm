@@ -13,7 +13,7 @@ use perl_lsp_ux_tests::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const SCENARIO_FILE: &str = "ux_scenario_46_receiver_real_workspace_quality.rs";
 const APP_PATH: &str = "lib/RealReceiver/App.pm";
@@ -235,14 +235,29 @@ fn probe_receiver_completion(
     probe: &ReceiverProbe,
 ) -> Result<ReceiverProbeReport> {
     let (line, character) = position_after(probe.source, probe.receiver_marker)?;
-    let items = harness.completion(probe.file, line, character)?;
-    for item in &items {
-        anyhow::ensure!(
-            item_has_completion_shape(item),
-            "completion item for probe {} must include label, insertText, or filterText: {item:?}",
-            probe.name
-        );
-    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let items = loop {
+        let items = harness.completion(probe.file, line, character)?;
+        for item in &items {
+            anyhow::ensure!(
+                item_has_completion_shape(item),
+                "completion item for probe {} must include label, insertText, or filterText: {item:?}",
+                probe.name
+            );
+        }
+        let expected_detail_matched = items
+            .iter()
+            .find(|item| completion_label(item) == Some(probe.expected_label))
+            .map(completion_text)
+            .as_deref()
+            .is_some_and(|detail| {
+                probe.expected_receiver_detail.is_some_and(|expected| detail.contains(expected))
+            });
+        if probe.fallback_allowed || expected_detail_matched || Instant::now() >= deadline {
+            break items;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
 
     let expected_item =
         items.iter().find(|item| completion_label(item) == Some(probe.expected_label));
