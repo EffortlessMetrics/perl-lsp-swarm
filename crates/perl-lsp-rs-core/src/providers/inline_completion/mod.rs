@@ -362,6 +362,22 @@ impl InlineCompletionProvider {
         }
 
         // Rule 7: After `return ` in constructor context
+        if prefix.ends_with("return $") {
+            if let Some(variable) = self.preferred_return_variable(context)
+                && let Some(name_without_sigil) = variable.strip_prefix('$')
+            {
+                push_item(
+                    0,
+                    InlineCompletionItem {
+                        insert_text: format!("{name_without_sigil};"),
+                        filter_text: Some(variable),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
+        }
+
         if prefix.ends_with("return ") {
             if let Some(variable) = self.preferred_return_variable(context) {
                 push_item(
@@ -974,6 +990,16 @@ mod tests {
 
         assert!(!completions.items.is_empty());
         assert!(completions.items.iter().any(|item| item.insert_text == "return $result;"));
+    }
+
+    #[test]
+    fn test_return_scalar_prefix_completes_nearby_variable_name_suffix() {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $result = compute();\n    return $\n}\n";
+        let completions = provider.get_inline_completions(source, 2, 12);
+
+        assert!(!completions.items.is_empty());
+        assert!(completions.items.iter().any(|item| item.insert_text == "result;"));
     }
 
     #[test]
