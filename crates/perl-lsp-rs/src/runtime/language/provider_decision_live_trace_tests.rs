@@ -1360,6 +1360,32 @@ fn live_type_definition_request_exposes_dynamic_type_constraint_blocker()
             && boundary.contains("low-confidence facts"),
         "dynamic type-constraint receipt must preserve type-definition blockers: {boundary}"
     );
+
+    let (line, character) = position_on_in(TYPE_DEFINITION_BOUNDARY_MAIN_DOC, "dynamic_child")?;
+    let result = response_result(
+        server.handle_request(request(
+            8,
+            "textDocument/typeDefinition",
+            Some(json!({
+                "textDocument": {"uri": TYPE_DEFINITION_BOUNDARY_MAIN_URI, "version": 1},
+                "position": {"line": line, "character": character}
+            })),
+        )),
+        "type definition same-line generated accessor fallback",
+    )?;
+    let locations =
+        result.as_array().ok_or("same-line generated accessor fallback should return an array")?;
+    assert!(
+        locations.is_empty(),
+        "generated accessor name must not inherit the dynamic type constraint blocker: {result}"
+    );
+
+    let explanation = explain_provider_decision(&server, "type_definition")?;
+    let receipt = request_receipt(&explanation, "type_definition")?;
+    assert_eq!(receipt.get("reason").and_then(Value::as_str), Some("missing_fact"));
+    assert_eq!(receipt.get("blocker").and_then(Value::as_str), Some("missing_fact"));
+    assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("fallback"));
+    assert_eq!(receipt.get("dynamic_boundary").and_then(Value::as_bool), Some(false));
     Ok(())
 }
 

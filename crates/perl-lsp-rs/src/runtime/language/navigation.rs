@@ -102,14 +102,18 @@ fn classify_type_definition_fallback_trace(
     };
 
     let character = usize::try_from(character).unwrap_or_default();
-    let window_start = character.saturating_sub(64);
-    let cursor_window = line_text.chars().skip(window_start).take(128).collect::<String>();
-    let compact_cursor_window =
-        cursor_window.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
+    let compact_before_cursor =
+        line_text.chars().take(character).filter(|ch| !ch.is_whitespace()).collect::<String>();
+    let compact_from_cursor = line_text
+        .chars()
+        .skip(character)
+        .take(64)
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
 
-    if cursor_window.contains("->$")
-        || cursor_window.contains("->${")
-        || compact_cursor_window.contains("isa=>$")
+    if compact_from_cursor.starts_with("->$")
+        || (compact_before_cursor.ends_with("->") && compact_from_cursor.starts_with('$'))
+        || (compact_before_cursor.ends_with("isa=>") && compact_from_cursor.starts_with('$'))
     {
         return TypeDefinitionFallbackTrace {
             reason: "dynamic_boundary",
