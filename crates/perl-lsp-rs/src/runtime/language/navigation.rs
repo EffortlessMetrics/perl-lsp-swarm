@@ -104,8 +104,13 @@ fn classify_type_definition_fallback_trace(
     let character = usize::try_from(character).unwrap_or_default();
     let window_start = character.saturating_sub(64);
     let cursor_window = line_text.chars().skip(window_start).take(128).collect::<String>();
+    let compact_cursor_window =
+        cursor_window.chars().filter(|ch| !ch.is_whitespace()).collect::<String>();
 
-    if cursor_window.contains("->$") || cursor_window.contains("->${") {
+    if cursor_window.contains("->$")
+        || cursor_window.contains("->${")
+        || compact_cursor_window.contains("isa=>$")
+    {
         return TypeDefinitionFallbackTrace {
             reason: "dynamic_boundary",
             blocker: "dynamic_boundary",
