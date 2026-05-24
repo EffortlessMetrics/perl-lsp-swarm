@@ -74,8 +74,17 @@ enum Commands {
     /// Validate Real Perl Editor Trust support claim map.
     CheckSupportClaims,
 
+    /// Validate the active swarm goal manifest and linked docs.
+    CheckActiveGoalManifest,
+
     /// Validate machine-readable Real Perl Editor Trust provider promotion ledger.
     CheckProviderPromotionLedger,
+
+    /// Validate declared differential real-Perl oracle fixtures.
+    CheckOracleFixtureManifest,
+
+    /// Validate differential real-Perl oracle receipt schema.
+    CheckOracleReceiptSchema,
 
     /// Validate semantic-token class promotion registry.
     CheckSemanticTokenClasses,
@@ -1477,6 +1486,13 @@ enum Commands {
     /// Remove stale `.claude/worktrees` entries and prune Git metadata.
     WorktreeCleanup,
 
+    /// Validate the committed Claude swarm agent roster contract.
+    ValidateSwarmAgentRoster {
+        /// Repository root containing `.claude/agents/agent-roster.json`.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
     /// Show summary statistics from swarm-metrics.jsonl.
     SwarmSummary {
         /// Path to operations directory (defaults to `.ops-perl-lsp`).
@@ -1677,6 +1693,45 @@ enum NonRustCommand {
         #[arg(long, hide = true)]
         root: Option<PathBuf>,
     },
+
+    /// Validate the non-Rust allowlist/debt TOML schema without walking git.
+    ValidatePolicy {
+        /// Override the default allowlist path (`policy/non-rust-allowlist.toml`).
+        #[arg(long, default_value = "policy/non-rust-allowlist.toml")]
+        allowlist: PathBuf,
+
+        /// Override the default debt path (`policy/non-rust-debt.toml`).
+        #[arg(long, default_value = "policy/non-rust-debt.toml")]
+        debt: PathBuf,
+    },
+
+    /// Find non-Rust tooling that should be migrated into Rust-owned surfaces.
+    MigrationCandidates {
+        /// Output format.
+        #[arg(long, value_enum, default_value = "markdown")]
+        format: MigrationCandidateFormatArg,
+
+        /// Optional output path (prints to stdout if omitted).
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Limit the number of candidates in the report.
+        #[arg(long)]
+        limit: Option<usize>,
+
+        /// Override the workspace root used for `git ls-files`. Test seam only.
+        #[arg(long, hide = true)]
+        root: Option<PathBuf>,
+    },
+}
+
+/// CLI-facing output format for non-Rust migration candidate reports.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum MigrationCandidateFormatArg {
+    /// Human-readable Markdown.
+    Markdown,
+    /// Machine-readable JSON.
+    Json,
 }
 
 /// CLI-facing grouping argument (mirrors `file_policy::ProposeGroupBy`).
@@ -2506,7 +2561,10 @@ fn main() -> Result<()> {
         Commands::CheckDevexDocs => devex_docs::run(),
         Commands::CheckProviderConfidenceMatrix => provider_confidence_matrix::run(),
         Commands::CheckSupportClaims => provider_confidence_matrix::run_support_claims(),
+        Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
+        Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckWorkspaceSymbolClasses => workspace_symbol_classes::run(),
         Commands::Queue { command } => match command {
@@ -3198,6 +3256,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::WorktreeCleanup => worktrees::cleanup(),
+        Commands::ValidateSwarmAgentRoster { root } => swarm_agent_roster::run(root),
         Commands::SwarmSummary { ops_dir, since, limit, format } => {
             swarm_summary::run(swarm_summary::SwarmSummaryConfig { ops_dir, since, limit, format })
         }
@@ -3253,6 +3312,25 @@ fn main() -> Result<()> {
                 tasks::file_policy::non_rust_propose(
                     &root,
                     ProposeConfig { output_dir, group_by, root_override },
+                )
+            }
+            NonRustCommand::ValidatePolicy { allowlist, debt } => {
+                use tasks::file_policy::ValidateNonRustPolicyConfig;
+                tasks::file_policy::validate_non_rust_policy(ValidateNonRustPolicyConfig {
+                    allowlist_path: allowlist,
+                    debt_path: debt,
+                })
+            }
+            NonRustCommand::MigrationCandidates { format, output, limit, root: root_override } => {
+                use tasks::file_policy::{MigrationCandidateFormat, MigrationCandidatesConfig};
+                let root = utils::project_root()?;
+                let format = match format {
+                    MigrationCandidateFormatArg::Markdown => MigrationCandidateFormat::Markdown,
+                    MigrationCandidateFormatArg::Json => MigrationCandidateFormat::Json,
+                };
+                tasks::file_policy::non_rust_migration_candidates(
+                    &root,
+                    MigrationCandidatesConfig { format, output, limit, root_override },
                 )
             }
         },

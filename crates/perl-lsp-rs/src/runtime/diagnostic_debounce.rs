@@ -1,15 +1,16 @@
 //! Diagnostic publication debouncer
 //!
 //! Coalesces rapid `didChange` diagnostic updates into a single publication
-//! after a configurable quiet period (default 250ms).
+//! after a quiet period. The interval is supplied at construction by the
+//! Scheduler, which reads it from the active [`RuntimeTuning`].
+//!
+//! [`RuntimeTuning`]: perl_lsp_rs_core::runtime::tuning::RuntimeTuning
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
-
-const DEFAULT_DEBOUNCE_MS: u64 = 250;
 
 enum DebounceMsg {
     Schedule(String),
@@ -23,13 +24,6 @@ pub(crate) struct DiagnosticDebouncer {
 }
 
 impl DiagnosticDebouncer {
-    pub(crate) fn new<F>(publish_fn: F) -> Self
-    where
-        F: Fn(&str) + Send + 'static,
-    {
-        Self::with_interval(Duration::from_millis(DEFAULT_DEBOUNCE_MS), publish_fn)
-    }
-
     pub(crate) fn with_interval<F>(interval: Duration, publish_fn: F) -> Self
     where
         F: Fn(&str) + Send + 'static,
@@ -151,6 +145,38 @@ mod tests {
     use parking_lot::Mutex;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn earliest_timeout_reports_none_for_empty_pending_set() {
+        let pending = HashMap::new();
+
+        assert!(earliest_timeout(&pending).is_none());
+    }
+
+    #[test]
+    fn earliest_timeout_saturates_when_deadline_already_passed() {
+        let mut pending = HashMap::new();
+        pending.insert("file:///expired.pl".to_string(), Instant::now() - Duration::from_millis(5));
+
+        assert_eq!(earliest_timeout(&pending), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn fire_expired_publishes_only_ready_uris_and_keeps_pending_count() {
+        let pending_count = AtomicUsize::new(0);
+        let published = Mutex::new(Vec::<String>::new());
+        let mut pending = HashMap::new();
+        pending.insert("file:///ready.pl".to_string(), Instant::now() - Duration::from_millis(1));
+        pending.insert("file:///later.pl".to_string(), Instant::now() + Duration::from_secs(30));
+        pending_count.store(pending.len(), Ordering::SeqCst);
+
+        fire_expired(&mut pending, &|uri| published.lock().push(uri.to_string()), &pending_count);
+
+        assert_eq!(published.lock().as_slice(), ["file:///ready.pl"]);
+        assert!(!pending.contains_key("file:///ready.pl"));
+        assert!(pending.contains_key("file:///later.pl"));
+        assert_eq!(pending_count.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn debouncer_fires_after_interval() {
