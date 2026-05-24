@@ -145,12 +145,30 @@ fn moniker_imported_sub_yields_import_kind_and_source_moniker() -> TestResult {
         "expected an import moniker for use List::Util qw(sum), got {kinds:?}"
     );
 
-    // moniker.rs:53-65: imported symbols also emit a secondary "export" moniker
-    // pointing at the source module identifier (e.g. "List.Util.sum").
-    let identifiers = moniker_identifiers(&monikers);
+    // moniker.rs:53-65: imported symbols also emit a secondary `kind=export`
+    // moniker pointing at the source module. Pin down both monikers
+    // independently — a regression that drops the source-pointing one would
+    // otherwise still pass the looser `identifiers.iter().any(...)` check
+    // (e.g. a single {kind:import, identifier:"List.Util.sum"} response).
     assert!(
-        identifiers.iter().any(|id| id.contains("List.Util") && id.contains("sum")),
-        "expected source-pointing moniker like List.Util.sum, got {identifiers:?}"
+        monikers.len() >= 2,
+        "imported symbol must yield at least two monikers (import + source export), got {monikers:?}"
+    );
+    assert!(
+        kinds.contains(&"export"),
+        "expected a secondary export moniker pointing at the source module, got kinds={kinds:?}"
+    );
+
+    let source_export = must_some(find_moniker_of_kind(&monikers, "export"));
+    let source_id = must_some(source_export.get("identifier").and_then(Value::as_str));
+    assert!(
+        source_id.contains("List.Util") && source_id.contains("sum"),
+        "export moniker identifier must point at the source (List.Util.sum), got {source_id:?}"
+    );
+    assert_eq!(
+        source_export.get("unique").and_then(Value::as_str),
+        Some("global"),
+        "source-pointing export moniker should be globally unique (moniker.rs:61), got {source_export}"
     );
 
     Ok(())
