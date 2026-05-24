@@ -78,7 +78,7 @@ fn assert_inline_value_shape(item: &Value) {
     assert_eq!(
         item.get("caseSensitiveLookup").and_then(Value::as_bool),
         Some(true),
-        "Perl is case-sensitive — caseSensitiveLookup must be true: {item}"
+        "Perl is case-sensitive - caseSensitiveLookup must be true: {item}"
     );
 }
 
@@ -226,7 +226,7 @@ fn inline_value_ranges_align_with_variable_columns() -> TestResult {
     assert_eq!(start_line, 0, "$value is on line 0");
     assert_eq!(end_line, 0, "$value range ends on line 0");
 
-    // "my $value = 99;" — `$value` spans columns 3..9 (sigil included, 6 UTF-16 units).
+    // "my $value = 99;" - `$value` spans columns 3..9 (sigil included, 6 UTF-16 units).
     let expected_start = line.find('$').map(|i| i as u64).unwrap_or(0);
     assert_eq!(start_char, expected_start, "$value start column mismatch");
     assert_eq!(end_char, expected_start + 6, "$value end column should cover sigil+name");
