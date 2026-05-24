@@ -146,7 +146,7 @@ All future work will use `just ci-gate` before merge.
 ## Resources
 
 - [Local CI Protocol](LOCAL_CI_PROTOCOL.md)
-- [Justfile](/justfile) - CI target definitions
+- [Justfile](../../justfile) - CI target definitions
 
 ---
 
