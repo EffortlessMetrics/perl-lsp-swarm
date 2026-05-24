@@ -3,7 +3,7 @@
 //! `DapDispatcher` is deprecated since 0.2.0 (workspace is now 0.15.0) and
 //! has no callers outside its own unit tests. Before its removal, these
 //! tests pin every behavior its current unit tests prove, but through the
-//! supported `DebugAdapter::handle_request` surface — the production code
+//! supported `DebugAdapter::handle_request` surface - the production code
 //! path used by `DapServer::run`.
 //!
 //! Each test below maps 1:1 to a `DapDispatcher` test in
@@ -70,7 +70,7 @@ print "result: $final\n";
     (file, path)
 }
 
-// ─── initialize ───────────────────────────────────────────────────────────────
+// --- initialize ---------------------------------------------------------------
 
 /// Mirrors `dispatcher::tests::test_handle_initialize`: `initialize` must
 /// report the two capabilities its unit test asserts on, via the
@@ -96,10 +96,7 @@ fn initialize_reports_configuration_done_and_evaluate_for_hovers() {
             assert_eq!(command, "initialize");
             must_some(body)
         }
-        other => {
-            must(Err::<(), _>(format!("expected Response, got {other:?}")));
-            unreachable!()
-        }
+        other => must(Err::<serde_json::Value, _>(format!("expected Response, got {other:?}"))),
     };
 
     let configuration_done =
@@ -138,7 +135,7 @@ fn successful_initialize_emits_initialized_event_with_no_body() {
 
 /// Mirrors `dispatcher::tests::test_failed_initialize_no_event`: when
 /// `initialize` fails, no `initialized` event must be emitted. The current
-/// implementation gates the event on `response_succeeded_for_command` —
+/// implementation gates the event on `response_succeeded_for_command` -
 /// this pins that gate.
 #[test]
 fn failed_initialize_does_not_emit_initialized_event() {
@@ -168,7 +165,7 @@ fn failed_initialize_does_not_emit_initialized_event() {
     }
 }
 
-// ─── setBreakpoints ───────────────────────────────────────────────────────────
+// --- setBreakpoints -----------------------------------------------------------
 
 /// Mirrors `dispatcher::tests::test_handle_set_breakpoints`: on a real
 /// Perl file, AST-valid lines must come back `verified: true`.
@@ -198,10 +195,7 @@ fn set_breakpoints_marks_executable_lines_verified() {
             assert_eq!(command, "setBreakpoints");
             must_some(body)
         }
-        other => {
-            must(Err::<(), _>(format!("expected Response, got {other:?}")));
-            unreachable!()
-        }
+        other => must(Err::<serde_json::Value, _>(format!("expected Response, got {other:?}"))),
     };
 
     let breakpoints = must_some(body.get("breakpoints").and_then(|b| b.as_array()));
@@ -236,10 +230,9 @@ fn set_breakpoints_preserves_request_order_through_dispatch() {
 
     let body = match response {
         DapMessage::Response { success: true, body, .. } => must_some(body),
-        other => {
-            must(Err::<(), _>(format!("expected successful Response, got {other:?}")));
-            unreachable!()
-        }
+        other => must(Err::<serde_json::Value, _>(format!(
+            "expected successful Response, got {other:?}"
+        ))),
     };
 
     let breakpoints = must_some(body.get("breakpoints").and_then(|b| b.as_array()));
@@ -280,10 +273,9 @@ fn set_breakpoints_replace_semantics_through_dispatch() {
 
     let body = match second {
         DapMessage::Response { success: true, body, .. } => must_some(body),
-        other => {
-            must(Err::<(), _>(format!("expected successful Response, got {other:?}")));
-            unreachable!()
-        }
+        other => must(Err::<serde_json::Value, _>(format!(
+            "expected successful Response, got {other:?}"
+        ))),
     };
 
     let breakpoints = must_some(body.get("breakpoints").and_then(|b| b.as_array()));
@@ -298,7 +290,7 @@ fn set_breakpoints_replace_semantics_through_dispatch() {
 
 /// Mirrors `dispatcher::tests::test_handle_set_breakpoints_missing_arguments`:
 /// the dispatch handler must reject `arguments: None` with a structured
-/// failure response — never panic, never return success.
+/// failure response - never panic, never return success.
 #[test]
 fn set_breakpoints_with_missing_arguments_fails_structured() {
     let mut adapter = DebugAdapter::new();
@@ -314,7 +306,7 @@ fn set_breakpoints_with_missing_arguments_fails_structured() {
     }
 }
 
-// ─── inlineValues ─────────────────────────────────────────────────────────────
+// --- inlineValues -------------------------------------------------------------
 
 /// Mirrors `dispatcher::tests::test_handle_inline_values`: scanning a
 /// two-line script must surface both `$x` and `$y` in the response.
@@ -342,10 +334,9 @@ fn inline_values_returns_scalars_for_two_line_script() {
 
     let body = match response {
         DapMessage::Response { success: true, body, .. } => must_some(body),
-        other => {
-            must(Err::<(), _>(format!("expected successful Response, got {other:?}")));
-            unreachable!()
-        }
+        other => must(Err::<serde_json::Value, _>(format!(
+            "expected successful Response, got {other:?}"
+        ))),
     };
 
     let values = must_some(body.get("inlineValues").and_then(|v| v.as_array()));
@@ -357,12 +348,12 @@ fn inline_values_returns_scalars_for_two_line_script() {
     assert!(saw_y, "inlineValues must surface $y, got {values:?}");
 }
 
-// ─── configurationDone ────────────────────────────────────────────────────────
+// --- configurationDone --------------------------------------------------------
 
 /// Documents the deliberate divergence from `DapDispatcher`:
 /// `DebugAdapter::handle_configuration_done` (in
 /// `crates/perl-dap/src/debug_adapter/process.rs`) does not gate on the
-/// initialized state — it returns success regardless. This has been the
+/// initialized state - it returns success regardless. This has been the
 /// production behavior for many releases (since `DapServer::run` has only
 /// ever wired `DebugAdapter` through stdio). Removing the unused
 /// `DapDispatcher` strict check does not change observed behavior.
@@ -387,11 +378,11 @@ fn configuration_done_before_initialize_is_permissive() {
     }
 }
 
-// ─── unknown command ─────────────────────────────────────────────────────────
+// --- unknown command ---------------------------------------------------------
 
 /// Mirrors `dispatcher::tests::test_handle_unknown_command`: an unknown
 /// command must return a structured failure whose message starts with
-/// `"Unknown command: <name>"` — the prefix `DapDispatcher` produced and
+/// `"Unknown command: <name>"` - the prefix `DapDispatcher` produced and
 /// that `DebugAdapter::dispatch_request` continues to produce
 /// (`debug_adapter/dispatch.rs:143-149`).
 #[test]
@@ -414,7 +405,7 @@ fn unknown_command_returns_unknown_command_prefix() {
     }
 }
 
-// ─── sequence numbers ─────────────────────────────────────────────────────────
+// --- sequence numbers ---------------------------------------------------------
 
 /// Mirrors `dispatcher::tests::test_response_sequence_numbers` /
 /// `test_event_sequence_numbers`: each response and each event carries a
@@ -430,19 +421,13 @@ fn response_and_event_sequence_numbers_increase_monotonically() {
 
     let r1_seq = match r1 {
         DapMessage::Response { seq, .. } => seq,
-        other => {
-            must(Err::<(), _>(format!("expected Response, got {other:?}")));
-            unreachable!()
-        }
+        other => must(Err::<i64, _>(format!("expected Response, got {other:?}"))),
     };
     let r2_seq = match r2 {
         DapMessage::Response { seq, .. } => seq,
-        other => {
-            must(Err::<(), _>(format!("expected Response, got {other:?}")));
-            unreachable!()
-        }
+        other => must(Err::<i64, _>(format!("expected Response, got {other:?}"))),
     };
-    assert!(r2_seq > r1_seq, "response seq must increase: {r1_seq} → {r2_seq}");
+    assert!(r2_seq > r1_seq, "response seq must increase: {r1_seq} -> {r2_seq}");
 
     // The `initialized` event was emitted during r1; drain it and confirm
     // its seq is strictly between r1's response seq and any later activity.
@@ -452,10 +437,7 @@ fn response_and_event_sequence_numbers_increase_monotonically() {
             assert_eq!(event, "initialized");
             seq
         }
-        other => {
-            must(Err::<(), _>(format!("expected initialized Event, got {other:?}")));
-            unreachable!()
-        }
+        other => must(Err::<i64, _>(format!("expected initialized Event, got {other:?}"))),
     };
     assert!(
         event_seq > r1_seq,
