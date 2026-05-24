@@ -2,23 +2,23 @@
 //!
 //! Invariants tested:
 //!
-//! 1. **Request round-trip** — any constructed `Request` survives JSON encode/decode
+//! 1. **Request round-trip** - any constructed `Request` survives JSON encode/decode
 //!    with all fields preserved.
-//! 2. **Response round-trip** — `Response` (success and error paths) survives encode/decode.
-//! 3. **Event round-trip** — `Event` survives encode/decode.
-//! 4. **SourceBreakpoint fields preserved** — all optional fields that are `Some` come
+//! 2. **Response round-trip** - `Response` (success and error paths) survives encode/decode.
+//! 3. **Event round-trip** - `Event` survives encode/decode.
+//! 4. **SourceBreakpoint fields preserved** - all optional fields that are `Some` come
 //!    back as `Some` after a round-trip.
-//! 5. **Breakpoint (response) fields preserved** — `id`, `verified`, `line` are stable.
-//! 6. **Idempotent re-serialization** — serializing the decoded value produces the
-//!    same JSON as the first serialization (serialize → deserialize → serialize == first).
-//! 7. **Optional-field omission** — `None` fields must not appear in the JSON payload
+//! 5. **Breakpoint (response) fields preserved** - `id`, `verified`, `line` are stable.
+//! 6. **Idempotent re-serialization** - serializing the decoded value produces the
+//!    same JSON as the first serialization (serialize -> deserialize -> serialize == first).
+//! 7. **Optional-field omission** - `None` fields must not appear in the JSON payload
 //!    (checked on a sample of types with `skip_serializing_if`).
-//! 8. **Capabilities round-trip** — arbitrarily-populated `Capabilities` survive
+//! 8. **Capabilities round-trip** - arbitrarily-populated `Capabilities` survive
 //!    encode/decode with boolean fields stable.
-//! 9. **LaunchRequestArguments round-trip** — all fields preserved, including `env` map.
-//! 10. **AttachRequestArguments round-trip** — TCP vs PID modes both survive.
-//! 11. **Thread / Scope / ProtocolVariable round-trip** — response body types survive.
-//! 12. **Module round-trip** — `Module` struct fields preserved.
+//! 9. **LaunchRequestArguments round-trip** - all fields preserved, including `env` map.
+//! 10. **AttachRequestArguments round-trip** - TCP vs PID modes both survive.
+//! 11. **Thread / Scope / ProtocolVariable round-trip** - response body types survive.
+//! 12. **Module round-trip** - `Module` struct fields preserved.
 
 use perl_dap::protocol::{
     AttachRequestArguments, Breakpoint, Capabilities, Event, ExceptionBreakpointFilter,
@@ -27,14 +27,14 @@ use perl_dap::protocol::{
 };
 use proptest::prelude::*;
 
-// ─── Strategy helpers ────────────────────────────────────────────────────────
+// --- Strategy helpers --------------------------------------------------------
 
 /// Strategy for a serde_json::Value used as an optional body/arguments field.
 ///
 /// NOTE: `serde_json::Value::Null` is intentionally excluded here.  When an
 /// `Option<serde_json::Value>` field is `Some(Null)`, serde serializes it as
 /// `"field":null`.  On deserialization, serde maps JSON `null` back to `None`
-/// for an `Option<T>` field, so `Some(Null)` → `None` is a known lossy path.
+/// for an `Option<T>` field, so `Some(Null)` -> `None` is a known lossy path.
 /// Using only non-null leaf values keeps round-trip assertions well-defined.
 fn non_null_leaf_json_value() -> impl Strategy<Value = serde_json::Value> {
     prop_oneof![
@@ -44,10 +44,14 @@ fn non_null_leaf_json_value() -> impl Strategy<Value = serde_json::Value> {
     ]
 }
 
-// ─── Invariant 1: Request round-trip ────────────────────────────────────────
+// --- Invariant 1: Request round-trip ----------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_request_json_roundtrip(
@@ -81,10 +85,14 @@ proptest! {
     }
 }
 
-// ─── Invariant 2: Response round-trip ────────────────────────────────────────
+// --- Invariant 2: Response round-trip ---------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_response_json_roundtrip(
@@ -129,10 +137,14 @@ proptest! {
     }
 }
 
-// ─── Invariant 3: Event round-trip ───────────────────────────────────────────
+// --- Invariant 3: Event round-trip ------------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_event_json_roundtrip(
@@ -167,10 +179,14 @@ proptest! {
     }
 }
 
-// ─── Invariant 4: SourceBreakpoint fields preserved ──────────────────────────
+// --- Invariant 4: SourceBreakpoint fields preserved -------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_source_breakpoint_fields_preserved(
@@ -215,10 +231,14 @@ proptest! {
     }
 }
 
-// ─── Invariant 5: Breakpoint (response) fields preserved ─────────────────────
+// --- Invariant 5: Breakpoint (response) fields preserved --------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_breakpoint_response_fields_preserved(
@@ -263,10 +283,14 @@ proptest! {
     }
 }
 
-// ─── Invariant 8: Capabilities round-trip ────────────────────────────────────
+// --- Invariant 8: Capabilities round-trip -----------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_capabilities_boolean_fields_stable(
@@ -324,10 +348,14 @@ proptest! {
     }
 }
 
-// ─── Invariant 9: LaunchRequestArguments round-trip ──────────────────────────
+// --- Invariant 9: LaunchRequestArguments round-trip -------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_launch_request_args_roundtrip(
@@ -375,10 +403,14 @@ proptest! {
     }
 }
 
-// ─── Invariant 10: AttachRequestArguments round-trip ─────────────────────────
+// --- Invariant 10: AttachRequestArguments round-trip ------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_attach_request_args_tcp_mode_roundtrip(
@@ -439,10 +471,14 @@ proptest! {
     }
 }
 
-// ─── Invariant 11: Thread / Scope / ProtocolVariable round-trip ──────────────
+// --- Invariant 11: Thread / Scope / ProtocolVariable round-trip -------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_thread_roundtrip(
@@ -529,10 +565,14 @@ proptest! {
     }
 }
 
-// ─── Invariant 12: Module round-trip ─────────────────────────────────────────
+// --- Invariant 12: Module round-trip ----------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_module_roundtrip(
@@ -565,10 +605,14 @@ proptest! {
     }
 }
 
-// ─── Invariant (extra): ExceptionBreakpointFilter round-trip ─────────────────
+// --- Invariant (extra): ExceptionBreakpointFilter round-trip ----------------
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_exception_breakpoint_filter_roundtrip(
