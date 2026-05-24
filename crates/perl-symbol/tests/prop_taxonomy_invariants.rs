@@ -1,6 +1,6 @@
 //! Property tests for the [`SymbolKind`] / [`VarKind`] taxonomy.
 //!
-//! These invariants protect the LSP-facing mappings — the workspace and
+//! These invariants protect the LSP-facing mappings: the workspace and
 //! document-symbol providers fan out from `to_lsp_kind()` /
 //! `to_lsp_kind_document_symbol()`, and the rename / completion features
 //! rely on `sigil()` and the category predicates being consistent.
@@ -29,6 +29,11 @@ fn symbol_kind_strategy() -> impl Strategy<Value = SymbolKind> {
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
     /// Every variant maps to an LSP `SymbolKind` in the protocol range
     /// `1..=26`. Returning `0` or any out-of-range value would crash
     /// `lsp-types` decoding in editors.
@@ -67,16 +72,18 @@ proptest! {
         match (kind.is_variable(), kind.sigil()) {
             (true, Some(s)) => {
                 let SymbolKind::Variable(vk) = kind else {
-                    prop_assert!(false, "is_variable() but not Variable variant: {kind:?}");
-                    unreachable!()
+                    return Err(proptest::test_runner::TestCaseError::fail(format!(
+                        "is_variable() but not Variable variant: {kind:?}"
+                    )));
                 };
                 prop_assert_eq!(s, vk.sigil(), "SymbolKind sigil disagrees with VarKind sigil");
             }
             (false, None) => {}
-            (is_var, sig) => prop_assert!(
-                false,
-                "is_variable={is_var} but sigil={sig:?} for {kind:?}"
-            ),
+            (is_var, sig) => {
+                return Err(proptest::test_runner::TestCaseError::fail(format!(
+                    "is_variable={is_var} but sigil={sig:?} for {kind:?}"
+                )));
+            }
         }
     }
 

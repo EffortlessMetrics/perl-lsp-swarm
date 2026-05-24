@@ -20,9 +20,9 @@ fn mixed_line_endings() -> impl Strategy<Value = String> {
             Just("\n".to_string()),
             Just("\r".to_string()),
             Just("\r\n".to_string()),
-            Just("é".to_string()),
-            Just("你".to_string()),
-            Just("𝐀".to_string()),
+            Just("\u{00e9}".to_string()),
+            Just("\u{4f60}".to_string()),
+            Just("\u{1d400}".to_string()),
         ],
         0..96,
     )
@@ -36,10 +36,15 @@ fn char_boundary_offsets(s: &str) -> Vec<usize> {
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
     /// Round-trip: every byte offset on a char boundary maps to an LSP
     /// position whose inverse lands back on the same byte. This is the
     /// fundamental contract for `textDocument/definition`, `hover`, and
-    /// every other request that travels byte → LSP → byte.
+    /// every other request that travels byte -> LSP -> byte.
     #[test]
     fn prop_byte_lsp_byte_roundtrip_on_char_boundaries(s in unicode_string()) {
         let mapper = PositionMapper::new(&s);
@@ -49,7 +54,7 @@ proptest! {
             prop_assert_eq!(
                 back,
                 Some(offset),
-                "byte→LSP→byte mismatch at offset {} (pos={:?}) for {:?}",
+                "byte->LSP->byte mismatch at offset {} (pos={:?}) for {:?}",
                 offset,
                 pos,
                 s
@@ -96,7 +101,7 @@ proptest! {
     }
 
     /// `apply_edit` is equivalent to splicing the replacement into the
-    /// underlying text by byte range — the same operation a non-rope-backed
+    /// underlying text by byte range: the same operation a non-rope-backed
     /// implementation would perform.
     #[test]
     fn prop_apply_edit_matches_byte_splice(
@@ -118,7 +123,7 @@ proptest! {
     }
 
     /// `apply_edit` with out-of-range byte indices must clamp rather than
-    /// panic — LSP clients have been known to send positions past the end
+    /// panic: LSP clients have been known to send positions past the end
     /// of the document during rapid edits.
     #[test]
     fn prop_apply_edit_clamps_out_of_range(

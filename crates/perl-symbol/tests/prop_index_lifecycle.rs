@@ -22,6 +22,11 @@ fn document_strategy() -> impl Strategy<Value = (String, Vec<String>)> {
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
+
     /// Calling `add_symbol` repeatedly with the same name must leave
     /// `search_prefix` returning that symbol exactly once. Duplicate
     /// completions in the editor (PR #122) regressed when this invariant
@@ -138,7 +143,7 @@ proptest! {
 
     /// Every symbol added via `add_symbol` must be reachable via fuzzy
     /// search on its first underscore-delimited token. Using snake_case
-    /// identifiers keeps the tokenization deterministic — the index's
+    /// identifiers keeps the tokenization deterministic: the index's
     /// tokenizer also splits on case changes, so a mixed-case query like
     /// `aA` would otherwise lower to `aa` which isn't a token.
     #[test]
