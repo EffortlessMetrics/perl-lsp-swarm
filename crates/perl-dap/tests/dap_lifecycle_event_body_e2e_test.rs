@@ -5,12 +5,12 @@
 //! `{ "restart": false }`. This file fills the matrix and locks down the
 //! `terminated` event body contract for the other inputs an IDE will send:
 //!
-//! - `terminate` with `restart: true`  → event body must echo `restart: true`
-//! - `terminate` with no `restart` arg → event body must NOT include `restart`
-//! - `terminate` with empty args (`{}`) → event body must NOT include `restart`
-//! - `terminate` twice in succession   → both calls succeed and emit events
-//! - `disconnect` (no session)         → terminated event body must be `None`
-//! - `restart` request (no session)    → fails cleanly per `unsupported` handler
+//! - `terminate` with `restart: true`: event body must echo `restart: true`
+//! - `terminate` with no `restart` arg: event body must NOT include `restart`
+//! - `terminate` with empty args (`{}`): event body must NOT include `restart`
+//! - `terminate` twice in succession: both calls succeed and emit events
+//! - `disconnect` (no session): terminated event body must be `None`
+//! - `restart` request (no session): fails cleanly per `unsupported` handler
 //!
 //! All tests are protocol-level: no `perl` process is spawned.
 
@@ -132,7 +132,7 @@ fn terminate_twice_in_succession_both_succeed_and_emit_events() -> TestResult {
         "first terminate must echo restart=false"
     );
 
-    // Second terminate — must also succeed; adapter is idempotent.
+    // Second terminate must also succeed; adapter is idempotent.
     let second = adapter.handle_request(2, "terminate", Some(json!({ "restart": true })));
     assert_response_success(&second, "terminate");
     let second_body = must_some(wait_for_event(&rx, "terminated", 200));
