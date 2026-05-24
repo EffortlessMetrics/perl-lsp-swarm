@@ -75,6 +75,7 @@ proptest! {
 
     /// `uri_to_fs_path(fs_path_to_uri(p))` must return `Some` and the
     /// resulting path must end with the same final component.
+    #[cfg(not(windows))]
     #[test]
     fn prop_path_to_uri_to_path_roundtrip(path in unix_abs_path()) {
         let Ok(uri) = fs_path_to_uri(&path) else {
@@ -98,6 +99,7 @@ proptest! {
     }
 
     /// With a Perl extension appended, the round-trip still holds.
+    #[cfg(not(windows))]
     #[test]
     fn prop_perl_path_to_uri_to_path_roundtrip(path in unix_perl_path()) {
         let Ok(uri) = fs_path_to_uri(&path) else {
@@ -118,6 +120,7 @@ proptest! {
 
     /// `fs_path_to_uri(uri_to_fs_path(u))` should reproduce a normalized
     /// URI equivalent to `uri_key(u)`.
+    #[cfg(not(windows))]
     #[test]
     fn prop_file_uri_to_path_to_uri_roundtrip(uri in file_uri_from_path()) {
         let Some(path) = uri_to_fs_path(&uri) else {
@@ -272,17 +275,24 @@ proptest! {
     fn prop_uri_key_lowercases_windows_drive(uri in windows_file_uri_upper_drive()) {
         let key = uri_key(&uri);
         // The key should start with `file:///` and the drive character must be lowercase.
-        if let Some(after_prefix) = key.strip_prefix("file:///") {
-            if let Some(drive_char) = after_prefix.chars().next() {
-                if drive_char.is_ascii_alphabetic() {
-                    prop_assert!(
-                        drive_char.is_ascii_lowercase(),
-                        "drive letter not lowercased in key: {}",
-                        key
-                    );
-                }
-            }
-        }
+        let Some(after_prefix) = key.strip_prefix("file:///") else {
+            prop_assert!(false, "uri_key output lost file URI prefix: {}", key);
+            return Ok(());
+        };
+        let Some(drive_char) = after_prefix.chars().next() else {
+            prop_assert!(false, "uri_key output has no drive letter: {}", key);
+            return Ok(());
+        };
+        prop_assert!(
+            drive_char.is_ascii_alphabetic(),
+            "uri_key output has non-drive prefix after file URI: {}",
+            key
+        );
+        prop_assert!(
+            drive_char.is_ascii_lowercase(),
+            "drive letter not lowercased in key: {}",
+            key
+        );
     }
 
     /// A lowercase and uppercase form of the same Windows drive URI must
@@ -294,21 +304,28 @@ proptest! {
         // Build the upper-drive variant by uppercasing the drive letter in the key.
         let lower_key = uri_key(&uri);
         // Create the upper version by replacing the drive letter character.
-        if let Some(rest) = lower_key.strip_prefix("file:///") {
-            if let Some(first_char) = rest.chars().next() {
-                if first_char.is_ascii_lowercase() {
-                    let upper = format!("file:///{}{}", first_char.to_ascii_uppercase(), &rest[1..]);
-                    let upper_key = uri_key(&upper);
-                    prop_assert_eq!(
-                        &lower_key,
-                        &upper_key,
-                        "drive case mismatch: lower={}, upper={}",
-                        lower_key,
-                        upper_key
-                    );
-                }
-            }
-        }
+        let Some(rest) = lower_key.strip_prefix("file:///") else {
+            prop_assert!(false, "uri_key output lost file URI prefix: {}", lower_key);
+            return Ok(());
+        };
+        let Some(first_char) = rest.chars().next() else {
+            prop_assert!(false, "uri_key output has no drive letter: {}", lower_key);
+            return Ok(());
+        };
+        prop_assert!(
+            first_char.is_ascii_lowercase(),
+            "lowercase URI strategy produced non-lowercase key: {}",
+            lower_key
+        );
+        let upper = format!("file:///{}{}", first_char.to_ascii_uppercase(), &rest[1..]);
+        let upper_key = uri_key(&upper);
+        prop_assert_eq!(
+            &lower_key,
+            &upper_key,
+            "drive case mismatch: lower={}, upper={}",
+            lower_key,
+            upper_key
+        );
     }
 }
 
