@@ -98,6 +98,26 @@ fn test_inline_completion_after_use() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[test]
+fn test_inline_completion_after_partial_use_token() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///test.pl";
+    open_doc(&server, uri, "use str");
+    let result = inline_completion(&server, uri, 0, 7)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+
+    assert!(!items.is_empty());
+    assert_eq!(
+        items[0]["insertText"].as_str().ok_or("insertText not a string")?,
+        "strict;"
+    );
+    assert!(
+        items.iter().all(|item| item["insertText"] == json!("strict;")),
+        "partial token 'str' should only suggest strict"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_inline_completion_after_use_preserves_priority_order()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = setup_server()?;

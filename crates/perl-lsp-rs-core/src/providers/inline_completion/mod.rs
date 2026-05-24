@@ -272,38 +272,25 @@ impl InlineCompletionProvider {
             );
         }
 
-        // Rule 2: After `use ` suggest common pragmas
-        if prefix.trim_end() == "use" || prefix.ends_with("use ") {
-            // Suggest strict first as it's most common
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "strict;".into(),
-                    filter_text: Some("strict".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-
-            push_item(
-                1,
-                InlineCompletionItem {
-                    insert_text: "warnings;".into(),
-                    filter_text: Some("warnings".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-
-            push_item(
-                2,
-                InlineCompletionItem {
-                    insert_text: "feature ':5.36';".into(),
-                    filter_text: Some("feature".into()),
-                    range: None,
-                    command: None,
-                },
-            );
+        // Rule 2: After `use` suggest common pragmas, including partial tokens.
+        if let Some(partial) = self.match_use_partial(prefix) {
+            for (priority, completion) in [
+                (0u8, "strict;"),
+                (1u8, "warnings;"),
+                (2u8, "feature ':5.36';"),
+            ] {
+                if completion.starts_with(partial) {
+                    push_item(
+                        priority,
+                        InlineCompletionItem {
+                            insert_text: completion.into(),
+                            filter_text: completion.split(';').next().map(str::to_string),
+                            range: None,
+                            command: None,
+                        },
+                    );
+                }
+            }
         }
 
         // Rule 3: After `sub <name>` without `{`, suggest smart body based on name pattern
@@ -468,6 +455,20 @@ impl InlineCompletionProvider {
             }
         }
         None
+    }
+
+    fn match_use_partial<'a>(&self, prefix: &'a str) -> Option<&'a str> {
+        let trimmed = prefix.trim_end();
+        if trimmed == "use" {
+            return Some("");
+        }
+
+        let after_use = trimmed.strip_prefix("use ")?;
+        if after_use.contains(char::is_whitespace) {
+            return None;
+        }
+
+        Some(after_use)
     }
 
     /// Check if we're in a constructor context (sub new or BUILD)
