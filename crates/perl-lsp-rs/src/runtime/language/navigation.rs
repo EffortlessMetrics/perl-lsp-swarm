@@ -82,6 +82,7 @@ struct TypeDefinitionFallbackTrace {
     dynamic_boundary: bool,
     request_version: Option<i32>,
     current_document_version: Option<i32>,
+    trace_only_no_live_behavior_change: bool,
 }
 
 impl Default for TypeDefinitionFallbackTrace {
@@ -97,6 +98,7 @@ impl Default for TypeDefinitionFallbackTrace {
             dynamic_boundary: false,
             request_version: None,
             current_document_version: None,
+            trace_only_no_live_behavior_change: true,
         }
     }
 }
@@ -114,6 +116,7 @@ impl TypeDefinitionFallbackTrace {
             dynamic_boundary: false,
             request_version: Some(request_version),
             current_document_version: Some(current_document_version),
+            trace_only_no_live_behavior_change: false,
         }
     }
 }
@@ -153,6 +156,7 @@ fn classify_type_definition_fallback_trace(
             dynamic_boundary: true,
             request_version: None,
             current_document_version: None,
+            trace_only_no_live_behavior_change: true,
         };
     }
 
@@ -1701,7 +1705,7 @@ impl LspServer {
             "fallback": if acted { "none" } else { fallback_trace.fallback },
             "fallback_state": if acted { "none" } else { fallback_trace.fallback },
             "dynamic_boundary": if acted { false } else { fallback_trace.dynamic_boundary },
-            "trace_only_no_live_behavior_change": true,
+            "trace_only_no_live_behavior_change": if acted { true } else { fallback_trace.trace_only_no_live_behavior_change },
             "claim_boundary": "records existing type-definition safe subset only; direct package/class identifiers and constructor receivers may resolve to open-document package definitions while variable receivers, chained method results, function-call results, missing package definitions, generated/no-source facts, dynamic boundaries, stale facts, low-confidence facts, and ambiguous identities remain fallback or blocked"
         });
         if !acted && let Some(object) = receipt.as_object_mut() {

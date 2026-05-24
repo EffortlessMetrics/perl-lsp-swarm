@@ -1451,6 +1451,10 @@ fn live_type_definition_request_blocks_stale_request_version()
     assert_eq!(receipt.get("dynamic_boundary").and_then(Value::as_bool), Some(false));
     assert_eq!(receipt.get("request_version").and_then(Value::as_i64), Some(1));
     assert_eq!(receipt.get("current_document_version").and_then(Value::as_i64), Some(2));
+    assert_eq!(
+        receipt.get("trace_only_no_live_behavior_change").and_then(Value::as_bool),
+        Some(false)
+    );
 
     let boundary =
         receipt.get("claim_boundary").and_then(Value::as_str).ok_or("missing boundary")?;
