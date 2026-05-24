@@ -10,13 +10,13 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use perl_tdd_support::must_some;
 use perl_uri::{
     fs_path_to_uri, is_file_uri, is_special_scheme, normalize_uri, uri_extension, uri_key,
     uri_to_fs_path,
 };
 use proptest::prelude::*;
 use proptest::test_runner::Config as ProptestConfig;
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Strategies
@@ -27,21 +27,38 @@ fn path_segment() -> impl Strategy<Value = String> {
     "[a-zA-Z0-9_-]{1,8}"
 }
 
-/// A plausible Unix absolute path: `/seg1/seg2/.../segN` with 1-5 segments.
-fn unix_abs_path() -> impl Strategy<Value = String> {
-    prop::collection::vec(path_segment(), 1..=5).prop_map(|segs| format!("/{}", segs.join("/")))
+/// A native absolute path built under the platform temp directory.
+fn native_abs_path() -> impl Strategy<Value = String> {
+    prop::collection::vec(path_segment(), 1..=5).prop_map(|segs| {
+        let mut path = std::env::temp_dir().join("perl_uri_prop");
+        for segment in segs {
+            path.push(segment);
+        }
+        path.to_string_lossy().into_owned()
+    })
 }
 
-/// A plausible Unix absolute path with a `.pl`, `.pm`, or `.t` extension on the
-/// final segment, exercising the common Perl file types handled by `uri_extension`.
-fn unix_perl_path() -> impl Strategy<Value = String> {
+/// A native absolute path with a `.pl`, `.pm`, or `.t` extension on the final
+/// segment, exercising the common Perl file types handled by `uri_extension`.
+fn native_perl_path() -> impl Strategy<Value = String> {
     let ext = prop::sample::select(vec!["pl", "pm", "t"]);
-    (unix_abs_path(), ext).prop_map(|(path, e)| format!("{path}.{e}"))
+    (prop::collection::vec(path_segment(), 1..=4), path_segment(), ext).prop_map(
+        |(dirs, file_name, e)| {
+            let mut path = std::env::temp_dir().join("perl_uri_prop");
+            for dir in dirs {
+                path.push(dir);
+            }
+            path.push(format!("{file_name}.{e}"));
+            path.to_string_lossy().into_owned()
+        },
+    )
 }
 
-/// A valid `file:///` URI built from a Unix-style path.
+/// A valid `file://` URI built from a native absolute path.
 fn file_uri_from_path() -> impl Strategy<Value = String> {
-    unix_abs_path().prop_map(|path| format!("file://{path}"))
+    native_abs_path().prop_filter_map("native path must convert to file URI", |path| {
+        fs_path_to_uri(path.as_str()).ok()
+    })
 }
 
 /// A canonical `file:///C:/...` Windows-style URI (drive letter lowercase).
@@ -74,9 +91,9 @@ proptest! {
     // ------------------------------------------------------------------
 
     /// `uri_to_fs_path(fs_path_to_uri(p))` must return `Some` and the
-    /// resulting path must end with the same final component.
+    /// resulting path must match the original native path.
     #[test]
-    fn prop_path_to_uri_to_path_roundtrip(path in unix_abs_path()) {
+    fn prop_path_to_uri_to_path_roundtrip(path in native_abs_path()) {
         let Ok(uri) = fs_path_to_uri(&path) else {
             // On some test environments current_dir may be unavailable;
             // accept that gracefully.
@@ -87,10 +104,10 @@ proptest! {
             prop_assert!(false, "uri_to_fs_path returned None for URI: {}", uri);
             return Ok(());
         };
-        let recovered_str = recovered_path.to_string_lossy().into_owned();
+        let original_path = PathBuf::from(&path);
         prop_assert_eq!(
-            recovered_str.as_str(),
-            path.as_str(),
+            &recovered_path,
+            &original_path,
             "Round-trip mismatch: original={}, recovered={}",
             path,
             recovered_path.display()
@@ -99,7 +116,7 @@ proptest! {
 
     /// With a Perl extension appended, the round-trip still holds.
     #[test]
-    fn prop_perl_path_to_uri_to_path_roundtrip(path in unix_perl_path()) {
+    fn prop_perl_path_to_uri_to_path_roundtrip(path in native_perl_path()) {
         let Ok(uri) = fs_path_to_uri(&path) else {
             return Ok(());
         };
@@ -108,8 +125,7 @@ proptest! {
             prop_assert!(false, "uri_to_fs_path returned None for URI: {}", uri);
             return Ok(());
         };
-        let recovered_str = recovered_path.to_string_lossy().into_owned();
-        prop_assert_eq!(recovered_str.as_str(), path.as_str());
+        prop_assert_eq!(&recovered_path, &PathBuf::from(&path));
     }
 
     // ------------------------------------------------------------------
@@ -190,7 +206,7 @@ proptest! {
     /// `fs_path_to_uri` must be deterministic: two calls with the same path
     /// produce the same result.
     #[test]
-    fn prop_fs_path_to_uri_is_deterministic(path in unix_abs_path()) {
+    fn prop_fs_path_to_uri_is_deterministic(path in native_abs_path()) {
         let first = fs_path_to_uri(&path);
         let second = fs_path_to_uri(&path);
         prop_assert_eq!(
@@ -250,7 +266,7 @@ proptest! {
     /// For Perl paths, the extension extracted from the URI must match the
     /// extension appended in the strategy.
     #[test]
-    fn prop_uri_extension_matches_perl_extension(path in unix_perl_path()) {
+    fn prop_uri_extension_matches_perl_extension(path in native_perl_path()) {
         let Ok(uri) = fs_path_to_uri(&path) else {
             return Ok(());
         };
@@ -346,6 +362,6 @@ fn regression_roundtrip_path_with_spaces() {
         return;
     };
     let recovered = uri_to_fs_path(&uri);
-    let recovered_path = must_some(recovered);
+    let recovered_path = perl_tdd_support::must_some(recovered);
     assert_eq!(recovered_path.to_string_lossy(), path);
 }
