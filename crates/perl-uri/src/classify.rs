@@ -46,11 +46,8 @@ pub fn uri_key(uri: &str) -> String {
         // Canonicalize localhost file authorities (file://localhost/...) to
         // the standard local form (file:///...) so equivalent URIs map to the
         // same key.
-        if parsed.scheme() == "file"
-            && parsed.host_str() == Some("localhost")
-            && let Some(path) = value.strip_prefix("file://localhost")
-        {
-            value = format!("file://{path}");
+        if parsed.scheme() == "file" && is_local_file_authority(parsed.host_str()) {
+            value = local_file_uri_without_authority(&parsed);
         }
 
         if let Some(rest) = value.strip_prefix("file:///")
@@ -105,6 +102,23 @@ pub(crate) fn normalize_legacy_windows_uri(uri: &str) -> Option<String> {
     let path = strip_localhost_authority(path).unwrap_or(path);
 
     normalize_windows_path_to_key(path).or_else(|| normalize_unc_path_to_key(path))
+}
+
+pub(crate) fn is_local_file_authority(host: Option<&str>) -> bool {
+    matches!(host, Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]"))
+}
+
+fn local_file_uri_without_authority(parsed: &Url) -> String {
+    let mut value = format!("file://{}", parsed.path());
+    if let Some(query) = parsed.query() {
+        value.push('?');
+        value.push_str(query);
+    }
+    if let Some(fragment) = parsed.fragment() {
+        value.push('#');
+        value.push_str(fragment);
+    }
+    value
 }
 
 fn strip_ascii_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
@@ -240,6 +254,12 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_loopback_file_authority() {
+        assert_eq!(uri_key("file://127.0.0.1/tmp/test.pl"), uri_key("file:///tmp/test.pl"));
+        assert_eq!(uri_key("file://[::1]/tmp/test.pl"), uri_key("file:///tmp/test.pl"));
+    }
+
+    #[test]
     fn preserves_non_local_file_authority() {
         assert_eq!(uri_key("file://server/share/test.pl"), "file://server/share/test.pl");
     }
@@ -251,10 +271,12 @@ mod tests {
 
     #[test]
     fn normalizes_surrounding_whitespace_before_keying() {
+        assert_eq!(uri_key("  file:///tmp/test.pl\n"), "file:///tmp/test.pl");
         assert_eq!(
             uri_key(" \tfile:///C:/Users/dev/trimmed.pl\n"),
             "file:///c:/Users/dev/trimmed.pl"
         );
+        assert_eq!(uri_key("\tfile:///C:/Users/dev/test.pl  "), "file:///c:/Users/dev/test.pl");
         assert_eq!(uri_key("  not-a-uri  "), "not-a-uri");
     }
 
@@ -273,6 +295,12 @@ mod tests {
         // Some editors send a bare `C:\...` path with no scheme at all.
         assert_eq!(uri_key(r"C:\Users\dev\plain_path.pl"), "file:///c:/Users/dev/plain_path.pl");
         assert_eq!(uri_key(r"c:\users\dev\lowercase.pl"), "file:///c:/users/dev/lowercase.pl");
+    }
+
+    #[test]
+    fn normalizes_windows_drive_paths_without_directory_separator() {
+        assert_eq!(uri_key(r"C:relative\script.pl"), "file:///c:/relative/script.pl");
+        assert_eq!(uri_key("file://D:relative/script.pl"), "file:///d:/relative/script.pl");
     }
 
     #[test]
@@ -375,6 +403,12 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_legacy_unc_share_roots() {
+        assert_eq!(uri_key(r"\\server\share"), "file://server/share");
+        assert_eq!(uri_key(r"file://\\server\share"), "file://server/share");
+    }
+
+    #[test]
     fn linux_paths_not_treated_as_windows() {
         // Linux absolute paths like `/home/user/file.pl` must not be misidentified
         // as Windows paths (index-1 byte is not `:`).
@@ -405,6 +439,12 @@ mod tests {
         assert!(is_special_scheme("UNTITLED:Untitled-1"));
         assert!(is_special_scheme("GIT:relative/path"));
         assert!(is_special_scheme("VSCODE-NOTEBOOK-CELL:bad uri"));
+    }
+
+    #[test]
+    fn detects_all_special_scheme_fallback_prefixes() {
+        assert!(is_special_scheme("VSCODE-NOTEBOOK:invalid notebook uri"));
+        assert!(is_special_scheme("VSCODE-VFS:invalid vfs uri"));
     }
 
     #[test]

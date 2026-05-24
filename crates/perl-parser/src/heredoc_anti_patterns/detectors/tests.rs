@@ -19,6 +19,10 @@ END
     // So diagnostics[0] should be FormatHeredoc.
     assert!(!diagnostics.is_empty());
     assert!(matches!(diagnostics[0].pattern, AntiPattern::FormatHeredoc { .. }));
+
+    if let AntiPattern::FormatHeredoc { heredoc_delimiter, .. } = &diagnostics[0].pattern {
+        assert_eq!(heredoc_delimiter, "END");
+    }
 }
 
 #[test]
@@ -47,6 +51,26 @@ BEGIN {
         server = localhost
 END
     }
+}
+"###;
+
+    let diagnostics = detector.detect_all(code);
+    let begin_count = diagnostics
+        .iter()
+        .filter(|diag| matches!(diag.pattern, AntiPattern::BeginTimeHeredoc { .. }))
+        .count();
+    assert_eq!(begin_count, 1);
+}
+
+#[test]
+fn test_begin_heredoc_ignores_braces_in_comments() {
+    let detector = AntiPatternDetector::new();
+    let code = r###"
+BEGIN {
+    # comment with } brace
+    $config = <<'END';
+    server = localhost
+END
 }
 "###;
 
@@ -299,4 +323,28 @@ END
     assert!(
         diagnostics.iter().any(|diag| matches!(diag.pattern, AntiPattern::FormatHeredoc { .. }))
     );
+}
+
+#[test]
+fn test_find_matching_brace_skips_braces_inside_quoted_strings() {
+    let code = r#"BEGIN { my $text = "not a } brace"; { 1 } }"#;
+    let Some(opening) = code.find('{') else {
+        unreachable!("opening brace exists");
+    };
+
+    let closing = super::find_matching_brace(code, opening);
+
+    assert_eq!(closing, code.rfind('}'));
+}
+
+#[test]
+fn test_find_matching_brace_returns_none_for_unclosed_block() {
+    let code = "BEGIN { my $text = '{ still open';";
+    let Some(opening) = code.find('{') else {
+        unreachable!("opening brace exists");
+    };
+
+    let closing = super::find_matching_brace(code, opening);
+
+    assert!(closing.is_none());
 }

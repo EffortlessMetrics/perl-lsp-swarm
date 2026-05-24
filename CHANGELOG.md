@@ -9,17 +9,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 0.15.1 Neovim latency lane:
+  - `--runtime-mode e2e` / `PERL_LSP_E2E=1` for latency-focused editor
+    harnesses. Defaults: zero diagnostic debounce, syntax-only
+    diagnostics, no eager workspace indexing, no file watchers.
+  - `--diagnostic-mode syntax-only` /
+    `PERL_LSP_DIAGNOSTIC_MODE=syntax-only` restricts diagnostics to
+    parse errors only; skips semantic / native critic / external
+    perlcritic / module-resolution / workspace dead-code passes. Both
+    push and pull diagnostic paths honour the gate.
+  - `--diagnostic-debounce-ms <ms>` /
+    `PERL_LSP_DIAGNOSTIC_DEBOUNCE_MS=<ms>` configurable diagnostic
+    publish debounce window. `0` bypasses the debouncer entirely.
+  - E2E startup gate: `initialized` no longer kicks off eager workspace
+    indexing under e2e mode (override with `--eager-workspace-indexing
+    true`).
+  - Generation-aware stale read cancellation in the scheduler. Hover,
+    completion, definition, declaration, typeDefinition, implementation,
+    and references are cancelled with `RequestCancelled` when the
+    document generation advances between ingress and dispatch. Turns
+    typing storms into "latest request wins" instead of "every cursor
+    position gets its own work item."
+  - Raw-RPC latency receipts in `perl-lsp-ux-tests::ux_latency_raw_rpc`
+    and a Neovim lean smoke script at
+    `scripts/ux/neovim_lean_smoke.sh`.
 - Added the conservative `perl.explainProviderDecision` LSP execute-command
   surface. It returns the structured provider decision explanation payload and
   reports a low-confidence `missing_fact` / `no_result` fallback when no
   provider-specific receipt is attached, avoiding false certainty while the
   live provider receipt wiring lands.
 
+### Notes (0.15.1)
+
+- This release does not implement true incremental AST reuse. The live
+  LSP path still full-parses after text changes; latency improvements
+  come from skipping avoidable background work and cancelling stale
+  reads earlier.
+- For latency testing, use a release binary with
+  `--runtime-mode e2e --diagnostic-mode syntax-only
+  --diagnostic-debounce-ms 0`, disable file watchers, and disable
+  semantic tokens at the client unless you are explicitly testing
+  semantic highlighting.
+
 ### Planned
 
 - Documented the Rust 1.95 / 0.14.0 rollout sequence before implementation: compatibility spike first, then MSRV/toolchain, lint, no-panic, file-policy, CI routing, and release-prep lanes.
 - Added the proactive CI integrity guards rail ([`docs/development/RUST_1_95_PROACTIVE_GUARDS.md`](docs/development/RUST_1_95_PROACTIVE_GUARDS.md)) as a sibling rollout. Six guard PRs (PG-1 through PG-6) covering label enforcement, risk-pack referential integrity, lane mapping with matrix expansion, net-new workflow-allowlist ledger, CI Actuals emitter + subscription coverage check, and broad-glob justification tightening. Each row mirrors a sibling-repo proven shape.
 - Consolidated the remaining Rust 1.95 → 0.14.0 work into a single canonical roadmap: rewrote [`docs/development/RUST_1_95_ROLLOUT.md`](docs/development/RUST_1_95_ROLLOUT.md) into a post-landing source of truth (already landed / remaining implementation ladder / per-rail acceptance contracts / Claude-Codex operating contract); slimmed [`docs/ci/perl-lsp-rust-1.95-rollout.md`](docs/ci/perl-lsp-rust-1.95-rollout.md) to a historical pointer; added [`docs/ci/test-evidence-lanes.md`](docs/ci/test-evidence-lanes.md) defining the five evidence-lane shapes (PR-fast required / PR-targeted / nightly cron / release-only / advisory) with risk-pack auto-routing, skipped-by-policy receipts, and LEM cost framing. Umbrella tracking: **#8663**.
+
+## [0.15.0] - 2026-05-22
+
+Release notes: [v0.15.0](docs/releases/v0.15.0.md)
+
+Minor release focused on JSON-RPC type safety and fixing the LSP4IJ
+file-watcher registration crash. Breaking change in the public
+`perl-lsp-rs-core::protocol` API (request/response ID field type) lifts
+this to a minor version under 0.x semver.
+
+### Fixed
+
+- **LSP4IJ file-watcher registration crash** - Server no longer emits
+  wall-clock millisecond IDs for `client/registerCapability`
+  (~1.7e12 overflows i32 in strict clients including LSP4IJ). All
+  server-to-client requests now route through a bounded `AtomicI32`
+  allocator that emits values in `1..=i32::MAX` and wraps cleanly.
+  This unblocks JetBrains users on the LSP4IJ plugin. (#221, #224)
+
+### Added
+
+- **Typed JSON-RPC request IDs** - `JsonRpcId` (strict-shape enum:
+  integer | string; rejects null/fractional/object/array at the serde
+  boundary) and `ServerRequestId` (positive-i32 newtype with no
+  out-of-range constructor) added to `perl-lsp-rs-core::protocol`.
+  The type system now makes the file-watcher crash structurally
+  impossible to reintroduce. (#221, #224)
+- **Strict inbound ID validation** - Invalid request-ID shapes
+  (null, fractional, object, array) are rejected at the transport
+  boundary instead of producing undefined behavior deep in the
+  dispatcher. (#221)
+- **LSP4IJ regression test** - File-watcher registration request ID
+  asserted to be a bounded integer in `1..=i32::MAX`. Source-guard
+  tests pin the fix against `lifecycle/watchers.rs` re-introducing
+  wall-clock-derived IDs. (#221)
+
+### Changed
+
+- **BREAKING:** `JsonRpcRequest.id` and `JsonRpcResponse.id` are now
+  `Option<JsonRpcId>` instead of `Option<serde_json::Value>`.
+  Consumers of the published `perl-lsp-rs-core::protocol` crate must
+  use `JsonRpcId::Integer(N)` / `JsonRpcId::String(...)` in tests and
+  any external construction. `Value` round-trips via `to_value()` /
+  `from_value()`. (#221)
+- **BREAKING:** `outbound::OutboundSender::send_request` now takes
+  `ServerRequestId` instead of raw `i64`. (#221)
+- **Cancellation registry typed end-to-end** - `CancellationRegistry`
+  tokens, cleanup contexts, and cache are keyed by `JsonRpcId`
+  instead of `format!("{:?}", value)` strings.
+  `PerlLspCancellationToken.request_id`,
+  `RequestCleanupGuard.request_id`, `cancel_mark` / `is_cancelled` /
+  `register_progress_request`, and the runtime `cancelled` /
+  `progress_token_to_request` collections all move from `Value` to
+  `JsonRpcId`. Integer and string IDs with the same textual form
+  (e.g. `7` vs `"7"`) are now independently cancellable. (#223, #224)
+- **`pending_workspace_configuration_requests`** is now keyed by
+  `ServerRequestId` rather than raw `i64`. (#221)
+
+### Looking ahead
+
+- LSP interactive latency rollout rail at
+  [`docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md`](docs/development/LSP_INTERACTIVE_LATENCY_ROLLOUT.md).
+  Workload-profile and stale-work-cancellation work that benefits
+  Neovim and LSP4IJ equally; targets 0.15.1. Umbrella tracking: **#229**.
 
 ## [0.14.0] - 2026-05-12
 
@@ -1455,3 +1555,4 @@ For the full cross-channel release history, see [RELEASE_HISTORY.md](RELEASE_HIS
 [0.8.8]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.8.5...v0.8.8
 [0.13.0-rc1]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.12.4...v0.13.0-rc1
 [Unreleased]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.13.2...HEAD
+[0.15.0]: https://github.com/EffortlessMetrics/perl-lsp/compare/v0.14.0...v0.15.0

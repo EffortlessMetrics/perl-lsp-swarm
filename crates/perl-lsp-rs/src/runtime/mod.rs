@@ -5,8 +5,8 @@
 
 use crate::runtime::diagnostics::PullDiagnosticsOrchestrator;
 use crate::runtime::types::{
-    DocumentScanView, PendingWorkspaceConfigurationRequest, best_workspace_folder_for_doc,
-    source_path_from_uri, workspace_folder_path,
+    DocumentScanView, PendingWorkspaceConfigurationRequest, ServerRequestId,
+    best_workspace_folder_for_doc, source_path_from_uri, workspace_folder_path,
 };
 use crate::runtime::workspace_folder::WorkspaceFolderState;
 
@@ -43,7 +43,7 @@ mod workspace_progress;
 
 // Re-export protocol types for backward compatibility
 // Tests and external code import these from perl_lsp::
-pub use crate::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse};
 
 // Re-export window types for public API
 pub use window::{MessageType, ShowDocumentOptions};
@@ -63,6 +63,7 @@ use crate::call_hierarchy_provider::CallHierarchyProvider;
 use crate::cancellation::{GLOBAL_CANCELLATION_REGISTRY, PerlLspCancellationToken};
 // Wave G3 (#4535): perl-lsp-feature-governance absorbed into perl-lsp-rs-core::governance
 use perl_lsp_rs_core::governance::FeatureProfile;
+use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
 
 // Import LSP providers from features (these moved from perl-parser to perl-lsp)
 use crate::features::{
@@ -112,7 +113,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
 };
 use url::Url;
 
@@ -164,7 +165,7 @@ pub struct LspServer {
     /// Client capabilities (behind mutex for interior mutability — written once during initialize)
     client_capabilities: Mutex<ClientCapabilities>,
     /// Cancelled request IDs
-    cancelled: Arc<Mutex<HashSet<Value>>>,
+    cancelled: Arc<Mutex<HashSet<JsonRpcId>>>,
     /// Workspace folders with full state representation
     ///
     /// This replaces the previous `Vec<String>` approach to support multi-root
@@ -180,14 +181,14 @@ pub struct LspServer {
     /// Workspace configuration for module resolution
     workspace_config: Arc<Mutex<WorkspaceConfig>>,
     /// Atomic counter for generating unique request IDs
-    next_request_id: Arc<AtomicI64>,
+    next_request_id: Arc<AtomicI32>,
     /// Pending workspace/configuration reverse requests keyed by request ID.
     pending_workspace_configuration_requests:
-        Arc<Mutex<HashMap<i64, PendingWorkspaceConfigurationRequest>>>,
+        Arc<Mutex<HashMap<ServerRequestId, PendingWorkspaceConfigurationRequest>>>,
     /// Active progress tokens for work done progress tracking
     progress_tokens: Arc<Mutex<HashSet<String>>>,
     /// Maps progress tokens to their originating request IDs for cancellation routing
-    progress_token_to_request: Arc<Mutex<HashMap<String, Value>>>,
+    progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     /// Refresh controller for debounced client refresh requests
     refresh_controller: refresh::RefreshController,
     /// Diagnostic publication debouncer (installed after Arc wrapping in Scheduler::new)
@@ -202,6 +203,16 @@ pub struct LspServer {
     stream_session_manager: stream_session::StreamSessionManager,
     /// Runtime feature profile selected by launch arguments or compiled default.
     feature_profile: FeatureProfile,
+    /// Runtime workload tuning (e2e mode, diagnostic scope, debounce, indexing gates).
+    ///
+    /// Resolved at construction by layering env vars and CLI args on top of the
+    /// compiled defaults. The server treats this as read-only after construction.
+    pub(crate) runtime_tuning: RuntimeTuning,
+    /// Monotonic counter bumped every time `start_workspace_indexing` is
+    /// called (before any internal guards). Lets tests observe whether
+    /// the `initialized` gate fired, without needing to set up a real
+    /// workspace on disk.
+    pub(crate) workspace_indexing_invocation_count: Arc<std::sync::atomic::AtomicUsize>,
     /// Cache of extracted POD documentation keyed by resolved file path.
     pod_cache: Arc<Mutex<HashMap<PathBuf, perl_pod::PodDoc>>>,
     /// Cache of SemanticAnalyzer results keyed by (normalized_uri, content_hash).
@@ -400,6 +411,29 @@ impl LspServer {
     /// Active feature profile for this server instance.
     pub(crate) const fn feature_profile(&self) -> FeatureProfile {
         self.feature_profile
+    }
+
+    /// Active runtime tuning for this server instance.
+    pub const fn runtime_tuning(&self) -> RuntimeTuning {
+        self.runtime_tuning
+    }
+
+    /// Whether `initialized` should trigger an eager workspace-wide
+    /// indexing scan. The default for normal editor sessions is `true`;
+    /// e2e harness mode defaults to `false` so latency tests do not pay
+    /// for indexing they will not consult. The user can override either
+    /// way via `--eager-workspace-indexing` /
+    /// `PERL_LSP_EAGER_WORKSPACE_INDEXING`.
+    pub fn should_start_workspace_indexing(&self) -> bool {
+        self.runtime_tuning.eager_workspace_indexing
+    }
+
+    /// Count of times `start_workspace_indexing` was invoked. Used by
+    /// tests to assert the e2e startup gate fires (or doesn't). Never
+    /// reset; monotonic for the lifetime of the server.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub fn workspace_indexing_invocation_count(&self) -> usize {
+        self.workspace_indexing_invocation_count.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Get the registered AI inline-completion backend, if any.
@@ -1008,7 +1042,16 @@ impl LspServer {
     /// is deferred until a quiet period elapses. If no debouncer is installed
     /// (unit tests that construct LspServer directly), falls through to immediate
     /// publication.
+    ///
+    /// When [`RuntimeTuning::diagnostic_debounce_is_immediate`] is true (e.g. e2e
+    /// mode), the debouncer is bypassed and diagnostics publish synchronously —
+    /// the worker thread's millisecond-granularity wakeup would otherwise mask
+    /// the latency we are trying to measure.
     pub(crate) fn publish_diagnostics_debounced(&self, uri: &str) {
+        if self.runtime_tuning.diagnostic_debounce_is_immediate() {
+            self.publish_diagnostics(uri);
+            return;
+        }
         let guard = self.diagnostic_debouncer.lock();
         if let Some(ref d) = *guard {
             d.schedule(uri);
@@ -1179,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_pressure_snapshot_reports_async_queues() {
+    fn runtime_pressure_snapshot_reports_async_queues() -> Result<(), Box<dyn std::error::Error>> {
         use std::time::{Duration, Instant};
 
         let server = LspServer::new();
@@ -1203,8 +1246,9 @@ mod tests {
             line: 0,
             character: 0,
         });
+        let request_id = ServerRequestId::new(1).ok_or("valid request id")?;
         server.pending_workspace_configuration_requests.lock().insert(
-            1,
+            request_id,
             PendingWorkspaceConfigurationRequest {
                 folder_uris: vec!["file:///".to_string()],
                 includes_global_item: true,
@@ -1231,6 +1275,7 @@ mod tests {
         assert_eq!(snapshot.file_watcher_pending_uris, 1);
         assert_eq!(snapshot.pending_workspace_configuration_requests, 1);
         assert_eq!(snapshot.active_stream_sessions, 1);
+        Ok(())
     }
 
     #[test]

@@ -946,6 +946,7 @@ ci-gate:
     just ci-clippy-gate && \
     just ci-unwrap-panic-ratchet && \
     just ci-unsafe-ratchet && \
+    just ci-print-in-lib-ratchet && \
     just ci-forbid-fatal && \
     just ci-test-lib && \
     just check-all-targets && \
@@ -1074,6 +1075,12 @@ ci-unsafe-ratchet:
     @echo "🛡️  Checking unsafe syntax ratchet..."
     @cargo xtask ci-hygiene check-unsafe-prod
     @echo "✅ Unsafe syntax ratchet passed"
+
+# Print-macro ratchet: no raw println!/eprintln! in library source (use tracing)
+ci-print-in-lib-ratchet:
+    @echo "🖨️  Checking print-macro ratchet (library source only)..."
+    @cargo xtask ci-hygiene check-print-in-lib
+    @echo "✅ Print-macro ratchet passed"
 
 # Forbid fatal constructs gate - catches abort/exit/panic that Clippy misses
 ci-forbid-fatal:
@@ -1210,6 +1217,16 @@ ci-lsp-bdd:
     @echo "🎭 Running LSP BDD workflow tests..."
     @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
         cargo test -p perl-lsp-rs --locked --test lsp_bdd_workflows -- --test-threads=1
+    @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
+        cargo test -p perl-lsp-rs --locked --test lsp_inline_completion_stream_bdd_workflows -- --test-threads=1
+    @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
+        cargo test -p perl-lsp-rs --locked --test lsp_linked_editing_bdd_ux_tests -- --test-threads=1
+    @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
+        cargo test -p perl-lsp-rs --locked --test lsp_ux_navigation_bdd_tests -- --test-threads=1
+    @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
+        cargo test -p perl-lsp-rs --locked --test lsp_ux_document_symbols_bdd -- --test-threads=1
+    @env -u RUSTC_WRAPPER RUST_TEST_THREADS=1 CARGO_BUILD_JOBS=1 \
+        cargo test -p perl-lsp-rs --locked --test lsp_completion_ux_bdd -- --test-threads=1
     @echo "✅ LSP BDD workflow tests passed"
 
 # LSP compatibility coverage for absorbed provider and feature governance surfaces.
@@ -1605,6 +1622,25 @@ health-detail:
     @echo ""
     @echo "📁 Largest source files (by lines):"
     @find crates/*/src -name '*.rs' -exec wc -l {} \; 2>/dev/null | sort -nr | head -10 || echo "  None found"
+
+# Show BDD test coverage statistics across crates
+bdd-stats:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "BDD Test Coverage"
+    echo "================="
+    echo ""
+    echo "Total BDD test files:           $(find crates -name '*_bdd*.rs' -type f 2>/dev/null | wc -l)"
+    echo "BddScenario/UxScenario uses:    $(grep -rhE 'BddScenario::new|UxScenario::new' crates --include='*.rs' 2>/dev/null | wc -l)"
+    echo ""
+    echo "BDD files by crate:"
+    echo "  perl-lexer:        $(find crates/perl-lexer/tests -maxdepth 1 -name '*_bdd*.rs' 2>/dev/null | wc -l)"
+    echo "  perl-lsp-rs:       $(find crates/perl-lsp-rs/tests -maxdepth 1 -name '*_bdd*.rs' 2>/dev/null | wc -l)"
+    echo "  perl-lsp-rs-core:  $(find crates/perl-lsp-rs-core/tests -maxdepth 1 -name '*_bdd*.rs' 2>/dev/null | wc -l)"
+    echo "  perl-module:       $(find crates/perl-module/tests -maxdepth 1 -name '*_bdd*.rs' 2>/dev/null | wc -l)"
+    echo "  perl-workspace:    $(find crates/perl-workspace/tests -maxdepth 1 -name '*_bdd*.rs' 2>/dev/null | wc -l)"
+    echo "  perl-parser:       $(find crates/perl-parser/tests -maxdepth 1 -name '*_bdd*.rs' 2>/dev/null | wc -l)"
+    echo "  perl-symbol:       $(find crates/perl-symbol/tests -maxdepth 1 -name '*_bdd*.rs' 2>/dev/null | wc -l)"
 
 # Show ignored test counts (categorised summary with baseline delta)
 ignored-tests:
@@ -2061,7 +2097,7 @@ _semver-check-install:
 _public-api-install:
     @if ! command -v cargo-public-api >/dev/null 2>&1; then \
         echo "Installing cargo-public-api..."; \
-        cargo install cargo-public-api --locked --version 0.50.1; \
+        ./scripts/cargo-safe install cargo-public-api --locked --version 0.50.1; \
     fi
 
 # Check public API surface of facade crates against committed baselines
@@ -2078,7 +2114,7 @@ public-api-check:
             FAILED=1
             continue
         fi
-        cargo public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " > "/tmp/${crate}-current.txt" || true
+        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " > "/tmp/${crate}-current.txt" || true
         if ! diff -u "$BASELINE" "/tmp/${crate}-current.txt" > "/tmp/${crate}-diff.txt" 2>&1; then
             echo "FAIL Public API changed in ${crate}:"
             cat "/tmp/${crate}-diff.txt"
@@ -2097,7 +2133,7 @@ public-api-update:
     echo "Regenerating public API baselines..."
     mkdir -p .ci/public-api-baselines
     for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
-        cargo public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " \
+        ./scripts/cargo-safe public-api -p "$crate" --simplified 2>/dev/null | grep "^pub " \
             > ".ci/public-api-baselines/${crate}.txt" || true
         echo "Updated ${crate}: $(wc -l < .ci/public-api-baselines/${crate}.txt) lines"
     done
