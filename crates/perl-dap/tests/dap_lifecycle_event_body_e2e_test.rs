@@ -44,23 +44,13 @@ fn wait_for_event(rx: &Receiver<DapMessage>, name: &str, timeout_ms: u64) -> Opt
     None
 }
 
-fn assert_response_success(response: &DapMessage, expected_command: &str) {
+fn assert_response_success(response: &DapMessage, expected_command: &str) -> TestResult {
     let DapMessage::Response { success, command, message, .. } = response else {
-        panic_other("expected Response", response);
-        unreachable!()
+        return Err(format!("expected Response for {expected_command}, got {response:?}").into());
     };
     assert!(*success, "expected success for {expected_command}, got error: {message:?}");
     assert_eq!(command, expected_command, "command field mismatch");
-}
-
-#[track_caller]
-fn panic_other(label: &str, msg: &DapMessage) {
-    // Centralized panic site: clippy::panic is allowed only here as the
-    // single failure-path assertion helper for unexpected DapMessage variants.
-    #[allow(clippy::panic)]
-    {
-        panic!("{label}, got {msg:?}");
-    }
+    Ok(())
 }
 
 #[test]
@@ -68,7 +58,7 @@ fn terminate_with_restart_true_echoes_flag_in_event_body() -> TestResult {
     let (mut adapter, rx) = create_test_adapter();
 
     let response = adapter.handle_request(1, "terminate", Some(json!({ "restart": true })));
-    assert_response_success(&response, "terminate");
+    assert_response_success(&response, "terminate")?;
 
     let body = must_some(wait_for_event(&rx, "terminated", 200));
     let restart = body.get("restart").and_then(Value::as_bool);
@@ -86,7 +76,7 @@ fn terminate_with_no_arguments_omits_restart_field() -> TestResult {
     let (mut adapter, rx) = create_test_adapter();
 
     let response = adapter.handle_request(1, "terminate", None);
-    assert_response_success(&response, "terminate");
+    assert_response_success(&response, "terminate")?;
 
     let body = must_some(wait_for_event(&rx, "terminated", 200));
     // Per debug_adapter::process::handle_terminate: when no restart arg was
@@ -106,7 +96,7 @@ fn terminate_with_empty_arguments_omits_restart_field() -> TestResult {
     let (mut adapter, rx) = create_test_adapter();
 
     let response = adapter.handle_request(1, "terminate", Some(json!({})));
-    assert_response_success(&response, "terminate");
+    assert_response_success(&response, "terminate")?;
 
     let body = must_some(wait_for_event(&rx, "terminated", 200));
     let has_restart = body.get("restart").is_some();
@@ -124,7 +114,7 @@ fn terminate_twice_in_succession_both_succeed_and_emit_events() -> TestResult {
 
     // First terminate
     let first = adapter.handle_request(1, "terminate", Some(json!({ "restart": false })));
-    assert_response_success(&first, "terminate");
+    assert_response_success(&first, "terminate")?;
     let first_body = must_some(wait_for_event(&rx, "terminated", 200));
     assert_eq!(
         first_body.get("restart").and_then(Value::as_bool),
@@ -134,7 +124,7 @@ fn terminate_twice_in_succession_both_succeed_and_emit_events() -> TestResult {
 
     // Second terminate — must also succeed; adapter is idempotent.
     let second = adapter.handle_request(2, "terminate", Some(json!({ "restart": true })));
-    assert_response_success(&second, "terminate");
+    assert_response_success(&second, "terminate")?;
     let second_body = must_some(wait_for_event(&rx, "terminated", 200));
     assert_eq!(
         second_body.get("restart").and_then(Value::as_bool),
@@ -150,7 +140,7 @@ fn disconnect_without_session_emits_terminated_event_with_null_body() -> TestRes
     let (mut adapter, rx) = create_test_adapter();
 
     let response = adapter.handle_request(1, "disconnect", None);
-    assert_response_success(&response, "disconnect");
+    assert_response_success(&response, "disconnect")?;
 
     // Per session_lifecycle_tests.rs::test_session_lifecycle_disconnect_without_session,
     // disconnect emits a terminated event. We tighten the contract by asserting
@@ -175,11 +165,10 @@ fn restart_request_without_session_fails_cleanly() -> TestResult {
     // The dispatcher's fall-through path must return success=false with a
     // descriptive message rather than panicking.
     let response = adapter.handle_request(1, "restart", None);
-    let DapMessage::Response { success, command, message, .. } = response else {
-        panic_other("expected Response for restart", &response);
-        unreachable!()
+    let DapMessage::Response { success, command, message, .. } = &response else {
+        return Err(format!("expected Response for restart, got {response:?}").into());
     };
-    assert!(!success, "restart should not silently succeed when unimplemented");
+    assert!(!*success, "restart should not silently succeed when unimplemented");
     assert_eq!(command, "restart");
     assert!(message.is_some(), "restart failure must carry a message for the IDE");
 
