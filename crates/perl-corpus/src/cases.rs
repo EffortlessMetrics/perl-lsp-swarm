@@ -1371,10 +1371,7 @@ fn normalize_tag(tag: &str) -> &str {
 fn has_tag(case: &EdgeCase, tag: &str) -> bool {
     let normalized_tag = normalize_tag(tag);
     !normalized_tag.is_empty()
-        && case
-            .tags
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(normalized_tag))
+        && case.tags.iter().any(|candidate| candidate.eq_ignore_ascii_case(normalized_tag))
 }
 
 fn case_has_any_tag(case: &EdgeCase, tags: &[&str]) -> bool {
