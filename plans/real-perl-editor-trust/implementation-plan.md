@@ -912,8 +912,30 @@ Current executable slice
   fallback with `type_definition_not_proven` instead of resolving through
   unproven data-flow inference.
 - `provider-proof-assignment-gate-after-type-definition-project-blockers` is
+  completed in the reliability lane. It kept future work assignment-gated until
+  the type-definition ambiguous-identity blocker receipt was selected from the
+  provider dashboard and live provider behavior.
+- `type-definition-ambiguous-identity-blocker-receipt` is completed in the
+  trust lane. It hardens type-definition so duplicate open-document package
+  declarations are low-confidence fallback with an `ambiguous_identity`
+  provider-decision blocker instead of exact type-definition locations. This
+  narrows the existing safe subset; it does not add data-flow inference,
+  generated/dynamic promotion, support-tier movement, parser/corpus bucket
+  movement, release-lineage sync, or source-repo development.
+- `provider-proof-assignment-gate-after-type-definition-ambiguous-identity` is
   active in the reliability lane. It keeps future work assignment-gated after
-  the project-shaped type-definition blocker receipt.
+  the type-definition ambiguous-identity blocker receipt.
+- `receiver-generated-no-source-fallback-receipt` is completed in the trust lane.
+  RealReceiver scenario 46 now includes a generated/no-source framework-method
+  receiver probe that must stay fallback or blocked and must not expose exact
+  source-backed, static package, self/this, hash-slot, literal-bless, or
+  type-engine receiver details. This is a receipt-only boundary and does not
+  change completion behavior, promote generated/no-source framework-method
+  receivers, promote support tiers, move parser/corpus buckets, sync release
+  lineage, or continue source-repo development. The proof commands build
+  `perl-lsp` into an external agent target, set `PERL_LSP_BIN` to that binary,
+  and then run the focused scenario so the UX receipt cannot pass as an infra
+  skip.
 - The recent queue cleanup was tracked in
   [perl-lsp-swarm#88](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/88).
 
@@ -964,6 +986,13 @@ Claim boundary
   receiver completion behavior. It must not change completion provider logic,
   support tiers, broader receiver promotion, parser/corpus buckets,
   generated/dynamic behavior, release-lineage sync, or source-repo development
+  routing.
+- Receiver generated/no-source fallback receipt work may extend the existing
+  receiver real-workspace quality receipt and status links for current
+  generated/no-source framework-method receiver fallback behavior. It must not
+  change completion provider logic, support tiers, generated/no-source
+  framework-method receiver promotion, broader receiver promotion,
+  parser/corpus buckets, release-lineage sync, or source-repo development
   routing.
 - Receiver self/this UX receipt work may add a receipt-only RealReceiver
   completion fixture and status links for current-package `$self->` and
@@ -1058,6 +1087,17 @@ Claim boundary
   buckets, broaden generated/dynamic behavior, sync release lineage, or
   continue source-repo development routing.
 - Provider proof assignment-gate after type-definition project blockers may
+  update only active-goal routing and this plan until a specific scoped provider
+  class, parser gap, DAP module-path behavior change, or active PR is explicitly
+  assigned. It must not create a semantic-token, DAP, parser, support-tier,
+  release-lineage, or source-repo development claim on its own.
+- Type-definition ambiguous-identity blocker work may harden the live
+  type-definition request path and add a runtime receipt so duplicate
+  open-document package definitions return no exact locations with an
+  `ambiguous_identity` blocker. It must not add data-flow inference, generated
+  or dynamic receiver promotion, support-tier movement, parser/corpus bucket
+  movement, release-lineage sync, or source-repo development routing.
+- Provider proof assignment-gate after type-definition ambiguous identity may
   update only active-goal routing and this plan until a specific scoped provider
   class, parser gap, DAP module-path behavior change, or active PR is explicitly
   assigned. It must not create a semantic-token, DAP, parser, support-tier,
