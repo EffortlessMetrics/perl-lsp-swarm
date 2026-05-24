@@ -55,7 +55,6 @@ pub fn parse_sections(text: &str, path: &Path) -> Vec<Section> {
             continue;
         }
 
-        section_index += 1;
         let section_text = &text[start..end];
         let lines: Vec<&str> = section_text.lines().collect();
         if lines.len() < 2 {
@@ -66,6 +65,7 @@ pub fn parse_sections(text: &str, path: &Path) -> Vec<Section> {
         if title.is_empty() {
             continue;
         }
+        section_index += 1;
         let after_title_idx = if lines.len() > 2 && sec_re.is_match(lines[2]) { 3 } else { 2 };
 
         let mut meta = HashMap::<String, String>::new();
