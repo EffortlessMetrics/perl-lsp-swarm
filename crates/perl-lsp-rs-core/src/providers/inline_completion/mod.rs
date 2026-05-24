@@ -272,38 +272,43 @@ impl InlineCompletionProvider {
             );
         }
 
-        // Rule 2: After `use ` suggest common pragmas
-        if prefix.trim_end() == "use" || prefix.ends_with("use ") {
-            // Suggest strict first as it's most common
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "strict;".into(),
-                    filter_text: Some("strict".into()),
-                    range: None,
-                    command: None,
-                },
-            );
+        // Rule 2: During `use` declarations suggest common pragmas, including partial inputs.
+        if let Some(use_fragment) = self.use_fragment(prefix) {
+            if "strict".starts_with(use_fragment) {
+                push_item(
+                    0,
+                    InlineCompletionItem {
+                        insert_text: "strict;".into(),
+                        filter_text: Some("strict".into()),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
 
-            push_item(
-                1,
-                InlineCompletionItem {
-                    insert_text: "warnings;".into(),
-                    filter_text: Some("warnings".into()),
-                    range: None,
-                    command: None,
-                },
-            );
+            if "warnings".starts_with(use_fragment) {
+                push_item(
+                    1,
+                    InlineCompletionItem {
+                        insert_text: "warnings;".into(),
+                        filter_text: Some("warnings".into()),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
 
-            push_item(
-                2,
-                InlineCompletionItem {
-                    insert_text: "feature ':5.36';".into(),
-                    filter_text: Some("feature".into()),
-                    range: None,
-                    command: None,
-                },
-            );
+            if "feature".starts_with(use_fragment) {
+                push_item(
+                    2,
+                    InlineCompletionItem {
+                        insert_text: "feature ':5.36';".into(),
+                        filter_text: Some("feature".into()),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
         }
 
         // Rule 3: After `sub <name>` without `{`, suggest smart body based on name pattern
@@ -451,6 +456,21 @@ impl InlineCompletionProvider {
 
         self.add_contextual_fallbacks(context, &mut items, &mut sequence);
         self.normalize_items(items)
+    }
+
+    fn use_fragment<'a>(&self, prefix: &'a str) -> Option<&'a str> {
+        let trimmed = prefix.trim_end();
+        let rest = trimmed.strip_prefix("use")?;
+        if rest.is_empty() {
+            return Some("");
+        }
+
+        let fragment = rest.strip_prefix(' ')?;
+        if fragment.is_empty() || fragment.chars().all(|ch| ch.is_ascii_alphabetic()) {
+            return Some(fragment);
+        }
+
+        None
     }
 
     /// Check if we're after a sub declaration without body
@@ -854,6 +874,15 @@ mod tests {
         let completions = provider.get_inline_completions("use ", 0, 4);
         assert!(!completions.items.is_empty());
         assert!(completions.items.iter().any(|i| i.insert_text == "strict;"));
+    }
+
+    #[test]
+    fn test_after_partial_use_prefix() {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("use st", 0, 6);
+        assert!(!completions.items.is_empty());
+        assert!(completions.items.iter().any(|item| item.insert_text == "strict;"));
+        assert!(!completions.items.iter().any(|item| item.insert_text == "warnings;"));
     }
 
     #[test]
