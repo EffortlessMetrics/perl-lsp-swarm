@@ -28,7 +28,7 @@ permissions:
 jobs:
   aggregate:
     name: Aggregate ci-actuals into ci-lane-history.json
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 20
 
     steps:

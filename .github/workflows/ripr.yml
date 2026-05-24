@@ -28,7 +28,7 @@ permissions:
 jobs:
   ripr:
     name: ripr static exposure
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 45
     continue-on-error: true
     if: github.event.pull_request.draft != true

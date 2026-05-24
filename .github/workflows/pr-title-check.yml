@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   validate-title:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Check PR title
         uses: actions/github-script@v9

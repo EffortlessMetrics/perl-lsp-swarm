@@ -31,7 +31,7 @@ permissions:
 jobs:
   init:
     name: Prepare version metadata
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     outputs:
       version: ${{ steps.version.outputs.version }}
       major_minor: ${{ steps.version.outputs.major_minor }}
@@ -50,7 +50,7 @@ jobs:
 
   build:
     name: Build builder image (${{ matrix.platform }})
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     needs: init
     timeout-minutes: 150
     strategy:
@@ -106,7 +106,7 @@ jobs:
 
   build-perl-runtime:
     name: Build perl-lsp runtime image (${{ matrix.platform }})
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     needs: init
     timeout-minutes: 60
     strategy:
@@ -160,7 +160,7 @@ jobs:
 
   publish-dockerhub:
     name: Publish to Docker Hub
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     needs: init
     timeout-minutes: 150
     if: github.event.inputs.push != 'false'
@@ -208,7 +208,7 @@ jobs:
 
   publish-dockerhub-perl:
     name: Publish perl-lsp runtime to Docker Hub
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     needs: init
     timeout-minutes: 60
     if: github.event.inputs.push != 'false'
@@ -256,7 +256,7 @@ jobs:
   summary:
     name: Summary
     needs: [build, build-perl-runtime, publish-dockerhub, publish-dockerhub-perl]
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     if: always()
 
     steps:

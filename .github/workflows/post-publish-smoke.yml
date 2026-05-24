@@ -36,7 +36,7 @@ jobs:
   # outputs the version it published; for workflow_dispatch the user supplies it.
   resolve-version:
     name: Resolve version
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -91,7 +91,7 @@ jobs:
     name: Smoke test v${{ needs.resolve-version.outputs.version }}
     needs: resolve-version
     if: needs.resolve-version.outputs.should_run == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 30
 
     steps:

@@ -28,7 +28,7 @@ permissions:
 jobs:
   published-extension-smoke:
     name: Published extension smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: self-hosted
     timeout-minutes: 25
     strategy:
       fail-fast: false

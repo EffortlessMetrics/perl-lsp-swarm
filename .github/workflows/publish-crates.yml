@@ -32,7 +32,7 @@ jobs:
   # Step 1: Compute topological publish order from cargo metadata
   compute-order:
     name: Compute publish order
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 5
     outputs:
       crates: ${{ steps.topo.outputs.crates }}
@@ -234,7 +234,7 @@ jobs:
   publish:
     name: Publish crates
     needs: compute-order
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 360
 
     steps:
@@ -570,7 +570,7 @@ jobs:
     name: Verify all crates published
     needs: [compute-order, publish]
     if: always() && needs.compute-order.result == 'success' && github.event.inputs.dry_run != 'true'
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
 
     steps:

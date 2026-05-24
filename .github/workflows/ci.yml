@@ -38,7 +38,7 @@ env:
 jobs:
   draft-pr-check:
     name: Draft PR guard
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 1
     outputs:
       run_ci: ${{ steps.guard.outputs.run_ci }}
@@ -63,7 +63,7 @@ jobs:
   # ── Preflight: skip superseded SHAs to save cost ─────────────────────
   preflight-latest-check:
     name: Preflight — is this SHA latest?
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 2
     needs: draft-pr-check
     if: needs.draft-pr-check.outputs.run_ci == 'true'
@@ -91,7 +91,7 @@ jobs:
   # Two incidents on 2026-04-28 each cost 1-3h of orchestrator + builder time.
   conflict-markers:
     name: Conflict marker check
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 2
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
@@ -115,7 +115,7 @@ jobs:
   # ── PR Smoke: fast feedback for every PR (~1-2 min) ──────────────────
   pr-smoke:
     name: PR Smoke (Fast Feedback)
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 35
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
@@ -202,7 +202,7 @@ jobs:
   # ── Merge Gate shards: bounded validation lanes for every PR/push ────
   merge-gate-shards:
     name: CI Gate shard (${{ matrix.name }})
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 20
     # No functional dependency on pr-smoke output; run in parallel after preflight
     # + conflict guard to reduce end-to-end merge-gate wall time.
@@ -390,7 +390,7 @@ jobs:
   # ── Merge Gate: aggregate shard and required job status ───────────────
   merge-gate:
     name: CI Gate (Merge-Blocking)
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 2
     needs:
       - draft-pr-check
@@ -479,7 +479,7 @@ jobs:
   # ── UX Tests: first-5-minutes scenario regression suite ──────────────
   ux-tests:
     name: UX Regression Tests
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 15
     # UX suite does not consume pr-smoke artifacts/results; parallelize after preflight.
     needs: [draft-pr-check, preflight-latest-check]
@@ -606,7 +606,7 @@ jobs:
   # ── Compile All Targets: catch integration-test + bench bit-rot ───────
   check-all-targets:
     name: Compile All Targets (bit-rot guard)
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
@@ -639,7 +639,7 @@ jobs:
 
   lsp-memory-smoke:
     name: LSP Memory Smoke
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 15
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
@@ -747,7 +747,7 @@ jobs:
   # cross-target compile check + tests cover the surface.
   windows-scope:
     name: Windows scope
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 5
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
@@ -824,7 +824,7 @@ jobs:
   # still wired. Runs only when windows-scope says required=true.
   windows-canary:
     name: Windows Canary
-    runs-on: windows-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     needs: [draft-pr-check, preflight-latest-check, windows-scope]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true' && needs.windows-scope.outputs.required == 'true'
@@ -860,7 +860,7 @@ jobs:
   # broken scope doesn't slip through as a green required check).
   windows-required:
     name: Windows Required
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 2
     needs: [draft-pr-check, preflight-latest-check, windows-scope, windows-canary]
     if: always() && needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
@@ -899,7 +899,7 @@ jobs:
   # (Nightly Windows soak runs are owned by ci-nightly.yml, not here.)
   windows-full-guardrails:
     name: Windows Full Guardrails (${{ matrix.lane.name }})
-    runs-on: windows-latest
+    runs-on: self-hosted
     timeout-minutes: 35
     needs: [draft-pr-check, preflight-latest-check, windows-scope]
     if: |

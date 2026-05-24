@@ -35,7 +35,7 @@ env:
 jobs:
   route-rust-small:
     name: Route Perl LSP Rust Small
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     outputs:
       target: ${{ steps.route.outputs.target }}
@@ -318,7 +318,7 @@ jobs:
       needs.route-rust-small.result == 'success' &&
       needs.route-rust-small.outputs.target == 'github' &&
       needs.route-rust-small.outputs.fallback_allowed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 60
     env:
       CARGO_INCREMENTAL: "0"
@@ -355,7 +355,7 @@ jobs:
       - rust-small-cx43
       - rust-small-github
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     steps:
       - name: Evaluate routed result

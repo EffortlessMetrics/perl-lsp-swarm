@@ -14,7 +14,7 @@ env:
 
 jobs:
   droid-security-scan:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     permissions:
       contents: write

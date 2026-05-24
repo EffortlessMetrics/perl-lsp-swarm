@@ -23,7 +23,7 @@ jobs:
     if: |
       github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'ci:perl-matrix')
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 25
     strategy:
       fail-fast: false

@@ -20,7 +20,7 @@ permissions:
 jobs:
   managed-binary-smoke:
     name: VS Code smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: self-hosted
     timeout-minutes: 15
     strategy:
       fail-fast: false

@@ -39,7 +39,7 @@ jobs:
   # ── Preflight: skip superseded SHAs to save cost ─────────────────────
   preflight-latest-check:
     name: Preflight — is this SHA latest?
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 2
     outputs:
       is_latest: ${{ steps.check.outputs.is_latest }}
@@ -72,7 +72,7 @@ jobs:
 
   cargo-audit:
     name: Cargo Audit (RustSec)
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
     needs: preflight-latest-check
     if: needs.preflight-latest-check.outputs.is_latest == 'true'
@@ -127,7 +127,7 @@ jobs:
 
   cargo-deny:
     name: Cargo Deny (Policy Enforcement)
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
     needs: preflight-latest-check
     if: needs.preflight-latest-check.outputs.is_latest == 'true'
@@ -163,7 +163,7 @@ jobs:
 
   trivy-repo-scan:
     name: Trivy Repository Scan
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 15
     needs: preflight-latest-check
     if: needs.preflight-latest-check.outputs.is_latest == 'true'
@@ -221,7 +221,7 @@ jobs:
 
   trivy-docker-scan:
     name: Trivy Docker Image Scan
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 20
     needs: preflight-latest-check
     if: (needs.preflight-latest-check.outputs.is_latest == 'true') && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')

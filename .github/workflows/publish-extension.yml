@@ -21,7 +21,7 @@ permissions:
 jobs:
   prepare-vsix:
     name: Prepare VSIX
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 15
     outputs:
       artifact_name: ${{ steps.version.outputs.artifact_name }}
@@ -112,7 +112,7 @@ jobs:
   publish-vscode-marketplace:
     name: Publish VS Code Marketplace
     needs: prepare-vsix
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
     env:
       VERSION: ${{ needs.prepare-vsix.outputs.version }}
@@ -162,7 +162,7 @@ jobs:
   publish-open-vsx:
     name: Publish Open VSX
     needs: prepare-vsix
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
     env:
       OVSX_PAT: ${{ secrets.OVSX_PAT }}
@@ -203,7 +203,7 @@ jobs:
   github-release-asset:
     name: Attach VSIX to GitHub Release
     needs: prepare-vsix
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
     permissions:
       contents: write
@@ -243,7 +243,7 @@ jobs:
       - prepare-vsix
       - publish-vscode-marketplace
     if: ${{ needs.prepare-vsix.outputs.is_prerelease != 'true' && needs.publish-vscode-marketplace.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 25
     permissions:
       contents: read
@@ -280,7 +280,7 @@ jobs:
       - prepare-vsix
       - publish-open-vsx
     if: ${{ needs.publish-open-vsx.result == 'success' }}
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 25
     permissions:
       contents: read
@@ -321,7 +321,7 @@ jobs:
       - published-marketplace-smoke
       - published-open-vsx-smoke
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 5
 
     steps:

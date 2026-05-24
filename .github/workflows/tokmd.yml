@@ -18,7 +18,7 @@ jobs:
   review:
     name: tokmd Review Cockpit
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:tokmd')
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
 
     steps:

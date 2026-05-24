@@ -34,7 +34,7 @@ permissions:
 jobs:
   publish-dry-run-self-test:
     name: Publish dry-run gate self-test
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
 
     steps:
@@ -74,7 +74,7 @@ jobs:
 
   install-target-selection-self-test:
     name: Installer target-selection self-test
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
 
     steps:

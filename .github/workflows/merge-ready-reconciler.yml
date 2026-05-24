@@ -32,7 +32,7 @@ env:
 
 jobs:
   reconcile:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     # Job-level gate satisfies CI workflow spend audit
     # (`cargo xtask ci-audit-workflows`). The reconciler is a queue-wide
     # sweep and is intended to fire on every event listed in `on:` above —
