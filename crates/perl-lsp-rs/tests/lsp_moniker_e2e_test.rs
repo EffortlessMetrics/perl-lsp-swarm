@@ -147,7 +147,7 @@ fn moniker_imported_sub_yields_import_kind_and_source_moniker() -> TestResult {
 
     // moniker.rs:53-65: imported symbols also emit a secondary `kind=export`
     // moniker pointing at the source module. Pin down both monikers
-    // independently — a regression that drops the source-pointing one would
+    // independently - a regression that drops the source-pointing one would
     // otherwise still pass the looser `identifiers.iter().any(...)` check
     // (e.g. a single {kind:import, identifier:"List.Util.sum"} response).
     assert!(
