@@ -272,37 +272,16 @@ impl InlineCompletionProvider {
             );
         }
 
-        // Rule 2: After `use ` suggest common pragmas
-        if prefix.trim_end() == "use" || prefix.ends_with("use ") {
-            // Suggest strict first as it's most common
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "strict;".into(),
-                    filter_text: Some("strict".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-
-            push_item(
-                1,
-                InlineCompletionItem {
-                    insert_text: "warnings;".into(),
-                    filter_text: Some("warnings".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-
-            push_item(
+        // Rule 2: While typing `use ...`, suggest and narrow common pragmas.
+        if let Some(typed_use_prefix) = self.typed_use_prefix(prefix) {
+            self.push_use_suggestion(&mut push_item, typed_use_prefix, "strict", "strict;", 0);
+            self.push_use_suggestion(&mut push_item, typed_use_prefix, "warnings", "warnings;", 1);
+            self.push_use_suggestion(
+                &mut push_item,
+                typed_use_prefix,
+                "feature",
+                "feature ':5.36';",
                 2,
-                InlineCompletionItem {
-                    insert_text: "feature ':5.36';".into(),
-                    filter_text: Some("feature".into()),
-                    range: None,
-                    command: None,
-                },
             );
         }
 
@@ -451,6 +430,39 @@ impl InlineCompletionProvider {
 
         self.add_contextual_fallbacks(context, &mut items, &mut sequence);
         self.normalize_items(items)
+    }
+
+    fn typed_use_prefix<'a>(&self, prefix: &'a str) -> Option<&'a str> {
+        let trimmed = prefix.trim_end();
+        let use_prefix = trimmed.strip_prefix("use")?;
+        if !use_prefix.is_empty() && !use_prefix.starts_with(char::is_whitespace) {
+            return None;
+        }
+
+        Some(use_prefix.trim())
+    }
+
+    fn push_use_suggestion<F>(
+        &self,
+        push_item: &mut F,
+        typed_use_prefix: &str,
+        filter: &str,
+        insert_text: &str,
+        priority: u8,
+    ) where
+        F: FnMut(u8, InlineCompletionItem),
+    {
+        if typed_use_prefix.is_empty() || filter.starts_with(typed_use_prefix) {
+            push_item(
+                priority,
+                InlineCompletionItem {
+                    insert_text: insert_text.into(),
+                    filter_text: Some(filter.into()),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
     }
 
     /// Check if we're after a sub declaration without body
@@ -854,6 +866,24 @@ mod tests {
         let completions = provider.get_inline_completions("use ", 0, 4);
         assert!(!completions.items.is_empty());
         assert!(completions.items.iter().any(|i| i.insert_text == "strict;"));
+    }
+
+    #[test]
+    fn test_partial_use_prefix_filters_suggestions() {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("use st", 0, 6);
+
+        assert!(completions.items.iter().any(|i| i.insert_text == "strict;"));
+        assert!(!completions.items.iter().any(|i| i.insert_text == "warnings;"));
+        assert!(!completions.items.iter().any(|i| i.insert_text == "feature ':5.36';"));
+    }
+
+    #[test]
+    fn test_use_without_whitespace_has_no_suggestions() {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("useful", 0, 6);
+
+        assert!(completions.items.is_empty());
     }
 
     #[test]
