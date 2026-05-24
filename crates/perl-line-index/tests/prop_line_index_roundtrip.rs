@@ -6,7 +6,7 @@
 //! - **Monotonicity**: if `b1 < b2` then the (line, col) position of `b1` is
 //!   lexicographically less than or equal to that of `b2`.
 //! - **line 0 always exists**: `position_to_byte(0, 0)` is always `Some(0)`.
-//! - **Out-of-range line returns `None`**: line index ≥ number of newlines + 1.
+//! - **Out-of-range line returns `None`**: line index >= number of newlines + 1.
 //! - **`checked` and `unchecked` agree on the final line** of a document.
 //! - **Empty input**: a single line at (0,0) with byte 0.
 //! - **Single `\n`**: two lines, with correct byte assignments.
@@ -30,7 +30,7 @@ fn text_with_newlines(max_len: usize) -> impl Strategy<Value = String> {
             "[a-zA-Z0-9 ]{0,16}".prop_map(|s| s),
             // Newline fragment
             Just("\n".to_string()),
-            // CR+LF fragment (CRLF — \r is treated as a regular byte)
+            // CR+LF fragment (CRLF: \r is treated as a regular byte)
             Just("\r\n".to_string()),
             // Single carriage return (regular byte, not a line terminator)
             Just("\r".to_string()),
@@ -50,7 +50,11 @@ fn text_with_newlines(max_len: usize) -> impl Strategy<Value = String> {
 // ---------------------------------------------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     /// Every byte in `0..text.len()` round-trips through `byte_to_position` and back.
     #[test]

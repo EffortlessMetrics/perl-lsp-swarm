@@ -43,14 +43,25 @@ fn any_token_kind() -> impl Strategy<Value = TokenKind> {
 // ---------------------------------------------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     /// `try_new` accepts ordered spans and preserves the endpoints.
     #[test]
     fn span_try_new_accepts_ordered_span((start, end) in ordered_span()) {
         let result = TokenSpan::try_new(start, end);
         prop_assert!(result.is_ok(), "try_new failed for ordered span ({}, {})", start, end);
-        let span = result.unwrap_or_else(|_| unreachable!());
+        let span = match result {
+            Ok(span) => span,
+            Err(err) => {
+                return Err(proptest::test_runner::TestCaseError::fail(format!(
+                    "try_new failed for ordered span ({start}, {end}): {err}"
+                )));
+            }
+        };
         prop_assert_eq!(span.start, start);
         prop_assert_eq!(span.end, end);
     }
@@ -73,6 +84,7 @@ proptest! {
 
     /// `is_empty()` is equivalent to `len() == 0`.
     #[test]
+    // This property intentionally compares `is_empty` with the raw length predicate.
     #[allow(clippy::len_zero)]
     fn span_is_empty_iff_len_zero((start, end) in ordered_span()) {
         let span = TokenSpan::new(start, end);
@@ -163,7 +175,11 @@ proptest! {
 // ---------------------------------------------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     /// `TokenRef::try_new` accepts ordered spans.
     #[test]
@@ -175,7 +191,14 @@ proptest! {
         let result = TokenRef::try_new(kind, "x", start, end);
         prop_assert!(result.is_ok(),
             "try_new failed for ordered ({},{}) kind={:?}", start, end, kind);
-        let r = result.unwrap_or_else(|_| unreachable!());
+        let r = match result {
+            Ok(token_ref) => token_ref,
+            Err(err) => {
+                return Err(proptest::test_runner::TestCaseError::fail(format!(
+                    "try_new failed for ordered ({start},{end}) kind={kind:?}: {err}"
+                )));
+            }
+        };
         prop_assert_eq!(r.start, start);
         prop_assert_eq!(r.end, end);
     }
@@ -203,7 +226,7 @@ proptest! {
         (start, end) in ordered_span(),
         kind in any_token_kind(),
     ) {
-        // TokenRef::new is unchecked — accepts any (start, end) regardless of text length
+        // TokenRef::new is unchecked: accepts any (start, end) regardless of text length
         let r = TokenRef::new(kind, "x", start, end);
         prop_assert_eq!(r.len(), end - start);
     }
@@ -266,7 +289,11 @@ fn sigil_spellings_round_trip() {
 // ---------------------------------------------------------------------------
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        failure_persistence: None,
+        ..ProptestConfig::default()
+    })]
 
     /// Every kind has a non-empty `display_name`.
     #[test]
