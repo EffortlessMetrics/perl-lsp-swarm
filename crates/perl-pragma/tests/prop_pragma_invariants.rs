@@ -12,8 +12,8 @@
 //! Perl version feature bundles are NOT strictly monotonic (i.e. newer is not
 //! a superset of older). Specific features are *removed* at certain milestones:
 //!
-//! - `switch` / `smartmatch`: present up to v5.34, removed from v5.36 bundle
-//!   (`switch` gone from 5.36, `smartmatch` gone from 5.42).
+//! - `switch`: present up to v5.34, removed from the v5.36 bundle.
+//! - `smartmatch`: present up to v5.40, removed from the v5.42 bundle.
 //! - `indirect` / `multidimensional`: removed from v5.38 bundle.
 //! - `bareword_filehandles`: removed from v5.38 bundle.
 //! - `apostrophe_as_package_separator`: removed from v5.42 bundle.
@@ -368,13 +368,21 @@ proptest! {
         prop_assert!(v <= v, "Version ordering should be reflexive: 5.{} <= 5.{}", v.minor, v.minor);
     }
 
-    /// PerlVersion ordering is antisymmetric: v1 < v2 implies !(v2 < v1).
+    /// PerlVersion strict ordering is asymmetric: v1 < v2 implies !(v2 < v1).
     #[test]
-    fn prop_version_order_antisymmetric(minor1 in minor_strategy(), minor2 in minor_strategy()) {
+    fn prop_version_strict_order_asymmetric(minor1 in minor_strategy(), minor2 in minor_strategy()) {
         let v1 = PerlVersion::new(5, minor1);
         let v2 = PerlVersion::new(5, minor2);
         if v1 < v2 {
-            prop_assert!(v2 >= v1, "5.{} < 5.{} should mean 5.{} is NOT < 5.{}", minor1, minor2, minor2, minor1);
+            prop_assert_eq!(
+                v2.cmp(&v1),
+                std::cmp::Ordering::Greater,
+                "5.{} < 5.{} should mean 5.{} > 5.{}",
+                minor1,
+                minor2,
+                minor2,
+                minor1
+            );
         }
     }
 
