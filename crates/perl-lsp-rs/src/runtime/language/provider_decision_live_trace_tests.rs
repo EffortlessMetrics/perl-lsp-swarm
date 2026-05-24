@@ -1,4 +1,4 @@
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::{JsonRpcId, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::LspServer;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -19,6 +19,82 @@ sub target {
 my $ready = 1;
 my $call = target();
 my $prefix = $re;
+"#;
+const TYPE_DEFINITION_LIB_URI: &str = "file:///workspace/lib/Trace/TypeTarget.pm";
+const TYPE_DEFINITION_LIB_DOC: &str = r#"package Trace::TypeTarget;
+use strict;
+use warnings;
+
+sub new { bless {}, shift }
+
+1;
+"#;
+const TYPE_DEFINITION_MAIN_URI: &str = "file:///workspace/script/type-definition.pl";
+const TYPE_DEFINITION_MAIN_DOC: &str = r#"use strict;
+use warnings;
+use Trace::TypeTarget;
+
+my $object = Trace::TypeTarget->new;
+
+1;
+"#;
+const TYPE_DEFINITION_FALLBACK_URI: &str = "file:///workspace/script/type-definition-fallback.pl";
+const TYPE_DEFINITION_FALLBACK_DOC: &str = r#"use strict;
+use warnings;
+
+my $object = build_object();
+$object->method;
+
+1;
+"#;
+const TYPE_DEFINITION_PROJECT_LIB_URI: &str = "file:///workspace/lib/Trace/ProjectTypeTarget.pm";
+const TYPE_DEFINITION_PROJECT_LIB_DOC: &str = r#"package Trace::ProjectTypeTarget;
+use strict;
+use warnings;
+
+sub new { bless {}, shift }
+sub child { Trace::ProjectTypeTarget->new }
+sub run { 1 }
+
+1;
+"#;
+const TYPE_DEFINITION_PROJECT_MAIN_URI: &str =
+    "file:///workspace/script/type-definition-project.pl";
+const TYPE_DEFINITION_PROJECT_MAIN_DOC: &str = r#"use strict;
+use warnings;
+use Trace::ProjectTypeTarget;
+
+sub build_project_target {
+    return Trace::ProjectTypeTarget->new;
+}
+
+my $from_function = build_project_target();
+$from_function->run;
+
+build_project_target()->run;
+Trace::ProjectTypeTarget->new->child->run;
+
+1;
+"#;
+const TYPE_DEFINITION_AMBIGUOUS_LIB_A_URI: &str = "file:///workspace/lib/Trace/AmbiguousTypeA.pm";
+const TYPE_DEFINITION_AMBIGUOUS_LIB_B_URI: &str = "file:///workspace/lib/Trace/AmbiguousTypeB.pm";
+const TYPE_DEFINITION_AMBIGUOUS_LIB_DOC: &str = r#"package Trace::AmbiguousType;
+use strict;
+use warnings;
+
+sub new { bless {}, shift }
+
+1;
+"#;
+const TYPE_DEFINITION_AMBIGUOUS_MAIN_URI: &str =
+    "file:///workspace/script/type-definition-ambiguous.pl";
+const TYPE_DEFINITION_AMBIGUOUS_MAIN_DOC: &str = r#"use strict;
+use warnings;
+use Trace::AmbiguousType;
+
+my $object = Trace::AmbiguousType->new;
+
+1;
 "#;
 const MISSING_MODULE_DIAGNOSTIC_DOC: &str = "use Missing::Payload;\n";
 
@@ -131,7 +207,7 @@ fn create_server() -> LspServer {
 fn request(id: i64, method: &str, params: Option<Value>) -> JsonRpcRequest {
     JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
-        id: Some(json!(id)),
+        id: Some(JsonRpcId::Integer(id)),
         method: method.to_string(),
         params,
     }
@@ -164,6 +240,86 @@ fn open_trace_document(server: &LspServer) -> Result<(), Box<dyn std::error::Err
         "textDocument": {
             "uri": TRACE_URI,
             "text": TRACE_DOC,
+            "languageId": "perl",
+            "version": 1
+        }
+    })))?;
+    Ok(())
+}
+
+fn open_type_definition_documents(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
+    server.test_handle_did_open(Some(json!({
+        "textDocument": {
+            "uri": TYPE_DEFINITION_LIB_URI,
+            "text": TYPE_DEFINITION_LIB_DOC,
+            "languageId": "perl",
+            "version": 1
+        }
+    })))?;
+    server.test_handle_did_open(Some(json!({
+        "textDocument": {
+            "uri": TYPE_DEFINITION_MAIN_URI,
+            "text": TYPE_DEFINITION_MAIN_DOC,
+            "languageId": "perl",
+            "version": 1
+        }
+    })))?;
+    Ok(())
+}
+
+fn open_type_definition_fallback_document(
+    server: &LspServer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    server.test_handle_did_open(Some(json!({
+        "textDocument": {
+            "uri": TYPE_DEFINITION_FALLBACK_URI,
+            "text": TYPE_DEFINITION_FALLBACK_DOC,
+            "languageId": "perl",
+            "version": 1
+        }
+    })))?;
+    Ok(())
+}
+
+fn open_type_definition_project_documents(
+    server: &LspServer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    server.test_handle_did_open(Some(json!({
+        "textDocument": {
+            "uri": TYPE_DEFINITION_PROJECT_LIB_URI,
+            "text": TYPE_DEFINITION_PROJECT_LIB_DOC,
+            "languageId": "perl",
+            "version": 1
+        }
+    })))?;
+    server.test_handle_did_open(Some(json!({
+        "textDocument": {
+            "uri": TYPE_DEFINITION_PROJECT_MAIN_URI,
+            "text": TYPE_DEFINITION_PROJECT_MAIN_DOC,
+            "languageId": "perl",
+            "version": 1
+        }
+    })))?;
+    Ok(())
+}
+
+fn open_type_definition_ambiguous_documents(
+    server: &LspServer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for uri in [TYPE_DEFINITION_AMBIGUOUS_LIB_A_URI, TYPE_DEFINITION_AMBIGUOUS_LIB_B_URI] {
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "text": TYPE_DEFINITION_AMBIGUOUS_LIB_DOC,
+                "languageId": "perl",
+                "version": 1
+            }
+        })))?;
+    }
+    server.test_handle_did_open(Some(json!({
+        "textDocument": {
+            "uri": TYPE_DEFINITION_AMBIGUOUS_MAIN_URI,
+            "text": TYPE_DEFINITION_AMBIGUOUS_MAIN_DOC,
             "languageId": "perl",
             "version": 1
         }
@@ -386,6 +542,17 @@ fn position_after(needle: &str) -> Result<(u32, u32), Box<dyn std::error::Error>
 
 fn position_on(needle: &str) -> Result<(u32, u32), Box<dyn std::error::Error>> {
     for (line_idx, line) in TRACE_DOC.lines().enumerate() {
+        if let Some(character) = line.find(needle) {
+            let line = u32::try_from(line_idx)?;
+            let character = u32::try_from(character)?;
+            return Ok((line, character));
+        }
+    }
+    Err(format!("needle `{needle}` not found").into())
+}
+
+fn position_on_in(source: &str, needle: &str) -> Result<(u32, u32), Box<dyn std::error::Error>> {
+    for (line_idx, line) in source.lines().enumerate() {
         if let Some(character) = line.find(needle) {
             let line = u32::try_from(line_idx)?;
             let character = u32::try_from(character)?;
@@ -764,6 +931,257 @@ fn live_diagnostic_request_attaches_explainable_payload() -> Result<(), Box<dyn 
         .pointer("/copyable_payload/request_receipt/diagnostic_explanation/schema_version")
         .and_then(Value::as_str);
     assert_eq!(copyable_receipt, Some("diagnostic_explanation.v1"));
+    Ok(())
+}
+
+#[test]
+fn live_type_definition_request_exposes_source_backed_provider_trace()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    initialize(&server)?;
+    open_type_definition_documents(&server)?;
+    let (line, character) = position_on_in(TYPE_DEFINITION_MAIN_DOC, "Trace::TypeTarget->new")?;
+
+    let result = response_result(
+        server.handle_request(request(
+            6,
+            "textDocument/typeDefinition",
+            Some(json!({
+                "textDocument": {"uri": TYPE_DEFINITION_MAIN_URI, "version": 1},
+                "position": {"line": line, "character": character}
+            })),
+        )),
+        "type definition source-backed",
+    )?;
+    let locations = result.as_array().ok_or("type definition should return an array")?;
+    assert!(!locations.is_empty(), "direct class receiver should resolve: {result}");
+
+    let explanation = explain_provider_decision(&server, "type_definition")?;
+    let receipt = request_receipt(&explanation, "type_definition")?;
+    assert_eq!(receipt.get("schema_version").and_then(Value::as_str), Some("provider_decision.v1"));
+    assert_eq!(receipt.get("provider").and_then(Value::as_str), Some("type_definition"));
+    assert_eq!(
+        receipt.get("provider_action").and_then(Value::as_str),
+        Some("textDocument/typeDefinition")
+    );
+    assert_eq!(receipt.get("decision").and_then(Value::as_str), Some("acted"));
+    assert_eq!(
+        receipt.get("reason").and_then(Value::as_str),
+        Some("source_backed_high_confidence")
+    );
+    assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("parser_syntax"));
+    assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("high"));
+    assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
+    assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        receipt.get("source_backed_state").and_then(Value::as_str),
+        Some("open_document_type_definition")
+    );
+    assert_eq!(receipt.get("fallback").and_then(Value::as_str), Some("none"));
+    assert_eq!(receipt.get("dynamic_boundary").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        receipt.get("result_count").and_then(Value::as_u64),
+        Some(u64::try_from(locations.len())?)
+    );
+    assert_eq!(
+        receipt.get("trace_only_no_live_behavior_change").and_then(Value::as_bool),
+        Some(true)
+    );
+    let boundary =
+        receipt.get("claim_boundary").and_then(Value::as_str).ok_or("missing boundary")?;
+    assert!(
+        boundary.contains("direct package/class identifiers")
+            && boundary.contains("generated/no-source")
+            && boundary.contains("dynamic boundaries"),
+        "type-definition acted receipt must preserve proof boundaries: {boundary}"
+    );
+    assert_eq!(
+        explanation.pointer("/copyable_payload/request_receipt/provider").and_then(Value::as_str),
+        Some("type_definition")
+    );
+    Ok(())
+}
+
+#[test]
+fn live_type_definition_request_exposes_data_flow_fallback_trace()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    initialize(&server)?;
+    open_type_definition_fallback_document(&server)?;
+    let (line, character) = position_on_in(TYPE_DEFINITION_FALLBACK_DOC, "$object->method")?;
+
+    let result = response_result(
+        server.handle_request(request(
+            6,
+            "textDocument/typeDefinition",
+            Some(json!({
+                "textDocument": {"uri": TYPE_DEFINITION_FALLBACK_URI, "version": 1},
+                "position": {"line": line, "character": character}
+            })),
+        )),
+        "type definition fallback",
+    )?;
+    let locations = result.as_array().ok_or("type definition fallback should return an array")?;
+    assert!(
+        locations.is_empty(),
+        "variable receiver without data-flow proof must not resolve exactly: {result}"
+    );
+
+    let explanation = explain_provider_decision(&server, "type_definition")?;
+    let receipt = request_receipt(&explanation, "type_definition")?;
+    assert_eq!(receipt.get("schema_version").and_then(Value::as_str), Some("provider_decision.v1"));
+    assert_eq!(receipt.get("provider").and_then(Value::as_str), Some("type_definition"));
+    assert_eq!(
+        receipt.get("provider_action").and_then(Value::as_str),
+        Some("textDocument/typeDefinition")
+    );
+    assert_eq!(receipt.get("decision").and_then(Value::as_str), Some("fallback"));
+    assert_eq!(receipt.get("reason").and_then(Value::as_str), Some("missing_fact"));
+    assert_eq!(receipt.get("blocker").and_then(Value::as_str), Some("missing_fact"));
+    assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("fallback"));
+    assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
+    assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
+    assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        receipt.get("source_backed_state").and_then(Value::as_str),
+        Some("type_definition_not_proven")
+    );
+    assert_eq!(receipt.get("fallback").and_then(Value::as_str), Some("no_result"));
+    assert_eq!(receipt.get("dynamic_boundary").and_then(Value::as_bool), Some(false));
+    assert_eq!(receipt.get("result_count").and_then(Value::as_u64), Some(0));
+    let boundary =
+        receipt.get("claim_boundary").and_then(Value::as_str).ok_or("missing boundary")?;
+    assert!(
+        boundary.contains("variable receivers")
+            && boundary.contains("chained method results")
+            && boundary.contains("function-call results"),
+        "type-definition fallback receipt must preserve data-flow blockers: {boundary}"
+    );
+    Ok(())
+}
+
+#[test]
+fn live_type_definition_request_exposes_project_receiver_data_flow_blockers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    initialize(&server)?;
+    open_type_definition_project_documents(&server)?;
+
+    for (needle, boundary_fragment) in [
+        ("$from_function->run", "variable receivers"),
+        ("build_project_target()->run", "function-call results"),
+        ("child->run", "chained method results"),
+    ] {
+        let (line, character) = position_on_in(TYPE_DEFINITION_PROJECT_MAIN_DOC, needle)?;
+
+        let result = response_result(
+            server.handle_request(request(
+                6,
+                "textDocument/typeDefinition",
+                Some(json!({
+                    "textDocument": {"uri": TYPE_DEFINITION_PROJECT_MAIN_URI, "version": 1},
+                    "position": {"line": line, "character": character}
+                })),
+            )),
+            "type definition project receiver/data-flow fallback",
+        )?;
+        let locations = result
+            .as_array()
+            .ok_or("project receiver/data-flow fallback should return an array")?;
+        assert!(
+            locations.is_empty(),
+            "{needle} must not resolve to the open package without data-flow proof: {result}"
+        );
+
+        let explanation = explain_provider_decision(&server, "type_definition")?;
+        let receipt = request_receipt(&explanation, "type_definition")?;
+        assert_eq!(
+            receipt.get("schema_version").and_then(Value::as_str),
+            Some("provider_decision.v1")
+        );
+        assert_eq!(receipt.get("provider").and_then(Value::as_str), Some("type_definition"));
+        assert_eq!(receipt.get("decision").and_then(Value::as_str), Some("fallback"));
+        assert_eq!(receipt.get("reason").and_then(Value::as_str), Some("missing_fact"));
+        assert_eq!(receipt.get("blocker").and_then(Value::as_str), Some("missing_fact"));
+        assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("fallback"));
+        assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
+        assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            receipt.get("source_backed_state").and_then(Value::as_str),
+            Some("type_definition_not_proven")
+        );
+        assert_eq!(receipt.get("fallback_state").and_then(Value::as_str), Some("no_result"));
+        assert_eq!(receipt.get("result_count").and_then(Value::as_u64), Some(0));
+
+        let boundary =
+            receipt.get("claim_boundary").and_then(Value::as_str).ok_or("missing boundary")?;
+        assert!(
+            boundary.contains(boundary_fragment)
+                && boundary.contains("generated/no-source")
+                && boundary.contains("dynamic boundaries"),
+            "{needle} receipt must preserve project-shaped data-flow blocker boundary: {boundary}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn live_type_definition_request_blocks_ambiguous_package_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    initialize(&server)?;
+    open_type_definition_ambiguous_documents(&server)?;
+    let (line, character) =
+        position_on_in(TYPE_DEFINITION_AMBIGUOUS_MAIN_DOC, "Trace::AmbiguousType->new")?;
+
+    let result = response_result(
+        server.handle_request(request(
+            6,
+            "textDocument/typeDefinition",
+            Some(json!({
+                "textDocument": {"uri": TYPE_DEFINITION_AMBIGUOUS_MAIN_URI, "version": 1},
+                "position": {"line": line, "character": character}
+            })),
+        )),
+        "type definition ambiguous package fallback",
+    )?;
+    let locations = result.as_array().ok_or("ambiguous package fallback should return an array")?;
+    assert!(
+        locations.is_empty(),
+        "ambiguous package identity must not return exact type-definition locations: {result}"
+    );
+
+    let explanation = explain_provider_decision(&server, "type_definition")?;
+    let receipt = request_receipt(&explanation, "type_definition")?;
+    assert_eq!(receipt.get("schema_version").and_then(Value::as_str), Some("provider_decision.v1"));
+    assert_eq!(receipt.get("provider").and_then(Value::as_str), Some("type_definition"));
+    assert_eq!(receipt.get("decision").and_then(Value::as_str), Some("fallback"));
+    assert_eq!(
+        receipt.get("reason").and_then(Value::as_str),
+        Some("ambiguous_low_confidence_candidates")
+    );
+    assert_eq!(receipt.get("blocker").and_then(Value::as_str), Some("ambiguous_identity"));
+    assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("parser_syntax"));
+    assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
+    assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        receipt.get("source_backed_state").and_then(Value::as_str),
+        Some("ambiguous_type_definition_identity")
+    );
+    assert_eq!(receipt.get("fallback_state").and_then(Value::as_str), Some("no_result"));
+    assert_eq!(receipt.get("result_count").and_then(Value::as_u64), Some(0));
+    assert_eq!(receipt.get("ambiguous_candidate_count").and_then(Value::as_u64), Some(2));
+
+    let boundary =
+        receipt.get("claim_boundary").and_then(Value::as_str).ok_or("missing boundary")?;
+    assert!(
+        boundary.contains("ambiguous type-definition identities")
+            && boundary.contains("one open-document package definition")
+            && boundary.contains("generated/no-source")
+            && boundary.contains("dynamic boundaries"),
+        "ambiguous package receipt must preserve exactness blockers: {boundary}"
+    );
     Ok(())
 }
 

@@ -25,12 +25,10 @@ const REQUIRED_PLANNED: &[&str] = &[
     "rust::const_item_interior_mutations",
     "rust::function_casts_as_integer",
     "clippy::same_length_and_capacity",
-    "clippy::manual_ilog2",
     "clippy::disallowed_fields",
     "clippy::manual_checked_ops",
     "clippy::manual_take",
     "clippy::manual_pop_if",
-    "clippy::unnecessary_trailing_comma",
 ];
 
 #[derive(Debug, Deserialize)]

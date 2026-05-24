@@ -6,6 +6,8 @@ fn is_undefined_variable_message(msg_lower: &str) -> bool {
         || (contains_diagnostic_phrase(msg_lower, "undefined")
             && (contains_diagnostic_phrase(msg_lower, "variable")
                 || contains_diagnostic_phrase(msg_lower, "global symbol")))
+        // Real Perl: "Global symbol "$x" requires explicit package name at file.pl line N."
+        || contains_diagnostic_phrase(msg_lower, "requires explicit package name")
 }
 
 fn contains_diagnostic_phrase(haystack: &str, needle: &str) -> bool {
@@ -520,14 +522,45 @@ impl DiagnosticCode {
             || contains_diagnostic_phrase(&msg_lower, "2-arg")
         {
             Some(Self::TwoArgOpen)
+        // Real Perl: "Subroutine foo redefined at file.pl line N."
+        } else if contains_diagnostic_phrase(&msg_lower, "subroutine")
+            && contains_diagnostic_phrase(&msg_lower, "redefined")
+        {
+            Some(Self::DuplicateSubroutine)
         } else if contains_diagnostic_phrase(&msg_lower, "invalid prototype character")
             || contains_diagnostic_phrase(&msg_lower, "illegal character in prototype")
+            // Real Perl: "Prototype mismatch: sub foo ($$) vs sub foo ($) at file.pl line N."
+            || contains_diagnostic_phrase(&msg_lower, "prototype mismatch")
         {
             Some(Self::InvalidPrototype)
         } else if contains_diagnostic_phrase(&msg_lower, "parse error")
             || contains_diagnostic_phrase(&msg_lower, "syntax error")
         {
             Some(Self::ParseError)
+        // Real Perl: "Use of uninitialized value $x in string at file.pl line N."
+        // Also: "Use of uninitialized value in concatenation (.) or string at file.pl line N."
+        } else if contains_diagnostic_phrase(&msg_lower, "uninitialized value") {
+            Some(Self::UninitializedVariable)
+        // Real Perl: "Can't locate Foo/Bar.pm in @INC (...) at file.pl line N."
+        } else if contains_diagnostic_phrase(&msg_lower, "can't locate")
+            && msg_lower.contains(".pm")
+        {
+            Some(Self::ModuleNotFound)
+        // Real Perl: `Bareword "foo" not allowed while 'strict subs' in use at file.pl line N.`
+        // Real Perl: "Unquoted string "foo" may clash with future reserved word at file.pl line N."
+        // Note: the actual bareword name is interpolated between "Bareword" and "not allowed",
+        // so we match on "strict subs" (unique to this warning) or "unquoted string".
+        } else if contains_diagnostic_phrase(&msg_lower, "strict subs")
+            || contains_diagnostic_phrase(&msg_lower, "unquoted string")
+            || contains_diagnostic_phrase(&msg_lower, "bareword not allowed")
+        {
+            Some(Self::UnquotedBareword)
+        // Real Perl: "defined(@array) is deprecated (it's always defined) at file.pl line N."
+        // Real Perl: "defined(%hash) is deprecated (it's always defined) at file.pl line N."
+        } else if msg_lower.contains("defined(")
+            && contains_diagnostic_phrase(&msg_lower, "deprecated")
+        {
+            Some(Self::DeprecatedDefined)
         } else {
             None
         }
