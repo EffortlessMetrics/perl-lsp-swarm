@@ -945,6 +945,31 @@ Current executable slice
   not broaden type-definition behavior, add data-flow inference, promote
   generated or dynamic facts, promote support tiers, move parser/corpus buckets,
   sync release lineage, or continue source-repo development.
+- `provider-proof-assignment-gate-after-type-definition-dynamic-type-constraint`
+  is completed in the reliability lane. It selected a stale-fact blocker receipt
+  from the type-definition provider dashboard.
+- `type-definition-stale-fact-blocker-receipt` is completed in the trust lane.
+  It adds a receipt-only runtime trace for stale `textDocument/typeDefinition`
+  request versions. Stale requests return the existing content-modified error,
+  record no exact type-definition locations, and persist a `stale_fact` blocker
+  receipt for `perl.explainProviderDecision`. This does not broaden
+  type-definition behavior, add data-flow inference, promote generated or
+  dynamic facts, promote support tiers, move parser/corpus buckets, sync release
+  lineage, or continue source-repo development.
+- `provider-proof-assignment-gate-after-type-definition-stale-fact` is completed
+  in the reliability lane. It selected a dynamic bless package-argument blocker
+  receipt from the type-definition provider dashboard.
+- `type-definition-dynamic-bless-blocker-receipt` is completed in the trust
+  lane. It adds a receipt-only runtime trace for project-shaped
+  `bless {}, $runtime_type_name` package arguments. The request returns no exact
+  type-definition locations and records a `dynamic_boundary` blocker for
+  `perl.explainProviderDecision`. This does not broaden type-definition
+  behavior, add data-flow inference, promote generated or dynamic facts, promote
+  support tiers, move parser/corpus buckets, sync release lineage, or continue
+  source-repo development.
+- `provider-proof-assignment-gate-after-type-definition-dynamic-bless` is active
+  in the reliability lane. It selected a stale request-version blocker receipt
+  from the type-definition provider dashboard.
 - `type-definition-stale-request-version-blocker-receipt` is completed in the
   trust lane. It adds the type-definition request-version freshness guard and a
   provider-decision receipt proving stale request versions are labeled

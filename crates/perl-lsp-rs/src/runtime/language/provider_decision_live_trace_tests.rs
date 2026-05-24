@@ -1,4 +1,4 @@
-use crate::protocol::{CONTENT_MODIFIED, JsonRpcId, JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::LspServer;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -6,6 +6,7 @@ use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+const CONTENT_MODIFIED_CODE: i32 = -32801;
 const TRACE_URI: &str = "file:///workspace/lib/Trace/Live.pm";
 const TRACE_DOC: &str = r#"package Trace::Live;
 use strict;
@@ -116,6 +117,10 @@ use Trace::BoundaryTarget;
 has runtime_installed_accessor => (is => 'ro');
 my $runtime_type_name = runtime_value();
 has dynamic_child => (is => 'ro', isa => $runtime_type_name);
+
+sub make_dynamic_bless {
+    return bless {}, $runtime_type_name;
+}
 
 my $method_name = 'run';
 my $dynamic_receiver = runtime_value();
@@ -260,10 +265,9 @@ fn response_result(
 fn response_error(
     response: Option<JsonRpcResponse>,
     context: &str,
-) -> Result<(i32, String), Box<dyn std::error::Error>> {
+) -> Result<JsonRpcError, Box<dyn std::error::Error>> {
     let response = response.ok_or_else(|| format!("{context}: missing JSON-RPC response"))?;
-    let error = response.error.ok_or_else(|| format!("{context}: missing JSON-RPC error"))?;
-    Ok((error.code, error.message))
+    response.error.ok_or_else(|| format!("{context}: expected JSON-RPC error").into())
 }
 
 fn initialize(server: &LspServer) -> Result<(), Box<dyn std::error::Error>> {
@@ -1399,23 +1403,83 @@ fn live_type_definition_request_exposes_dynamic_type_constraint_blocker()
 }
 
 #[test]
-fn live_type_definition_request_blocks_stale_request_version()
+fn live_type_definition_request_exposes_dynamic_bless_blocker()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();
     initialize(&server)?;
+    open_type_definition_boundary_documents(&server)?;
+
+    let (line, character) =
+        position_on_in(TYPE_DEFINITION_BOUNDARY_MAIN_DOC, "bless {}, $runtime_type_name")?;
+    let character = character + u32::try_from("bless {}, ".len())?;
+
+    let result = response_result(
+        server.handle_request(request(
+            9,
+            "textDocument/typeDefinition",
+            Some(json!({
+                "textDocument": {"uri": TYPE_DEFINITION_BOUNDARY_MAIN_URI, "version": 1},
+                "position": {"line": line, "character": character}
+            })),
+        )),
+        "type definition dynamic bless package fallback",
+    )?;
+    let locations =
+        result.as_array().ok_or("dynamic bless package fallback should return an array")?;
+    assert!(
+        locations.is_empty(),
+        "dynamic bless package argument must not resolve to exact type-definition locations: {result}"
+    );
+
+    let explanation = explain_provider_decision(&server, "type_definition")?;
+    let receipt = request_receipt(&explanation, "type_definition")?;
+    assert_eq!(receipt.get("provider").and_then(Value::as_str), Some("type_definition"));
+    assert_eq!(receipt.get("decision").and_then(Value::as_str), Some("fallback"));
+    assert_eq!(receipt.get("reason").and_then(Value::as_str), Some("dynamic_boundary"));
+    assert_eq!(receipt.get("blocker").and_then(Value::as_str), Some("dynamic_boundary"));
+    assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("dynamic_boundary"));
+    assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
+    assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("fresh"));
+    assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        receipt.get("source_backed_state").and_then(Value::as_str),
+        Some("dynamic_type_definition_boundary")
+    );
+    assert_eq!(receipt.get("fallback_state").and_then(Value::as_str), Some("no_result"));
+    assert_eq!(receipt.get("result_count").and_then(Value::as_u64), Some(0));
+    assert_eq!(receipt.get("dynamic_boundary").and_then(Value::as_bool), Some(true));
+
+    let boundary =
+        receipt.get("claim_boundary").and_then(Value::as_str).ok_or("missing boundary")?;
+    assert!(
+        boundary.contains("dynamic boundaries")
+            && boundary.contains("generated/no-source")
+            && boundary.contains("stale facts")
+            && boundary.contains("low-confidence facts"),
+        "dynamic bless package receipt must preserve type-definition blockers: {boundary}"
+    );
+    Ok(())
+}
+
+fn assert_stale_type_definition_request_version_receipt() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = create_server();
+    initialize(&server)?;
     open_type_definition_documents(&server)?;
+
+    let edited_doc = format!("{TYPE_DEFINITION_MAIN_DOC}\n# edit freshness marker\n");
     server.test_handle_did_change(Some(json!({
         "textDocument": {
             "uri": TYPE_DEFINITION_MAIN_URI,
             "version": 2
         },
-        "contentChanges": [{
-            "text": TYPE_DEFINITION_MAIN_DOC
-        }]
+        "contentChanges": [
+            { "text": edited_doc }
+        ]
     })))?;
-    let (line, character) = position_on_in(TYPE_DEFINITION_MAIN_DOC, "Trace::TypeTarget->new")?;
 
-    let (code, message) = response_error(
+    let (line, character) = position_on_in(TYPE_DEFINITION_MAIN_DOC, "Trace::TypeTarget->new")?;
+    let error = response_error(
         server.handle_request(request(
             9,
             "textDocument/typeDefinition",
@@ -1424,10 +1488,13 @@ fn live_type_definition_request_blocks_stale_request_version()
                 "position": {"line": line, "character": character}
             })),
         )),
-        "type definition stale request version",
+        "type definition stale request",
     )?;
-    assert_eq!(code, CONTENT_MODIFIED);
-    assert_eq!(message, "Document changed before request executed");
+    assert_eq!(error.code, CONTENT_MODIFIED_CODE);
+    assert!(
+        error.message.contains("Document changed before request executed"),
+        "stale type-definition request should use content-modified freshness error: {error}"
+    );
 
     let explanation = explain_provider_decision(&server, "type_definition")?;
     let receipt = request_receipt(&explanation, "type_definition")?;
@@ -1435,7 +1502,7 @@ fn live_type_definition_request_blocks_stale_request_version()
     assert_eq!(receipt.get("decision").and_then(Value::as_str), Some("blocked"));
     assert_eq!(receipt.get("reason").and_then(Value::as_str), Some("stale_fact"));
     assert_eq!(receipt.get("blocker").and_then(Value::as_str), Some("stale_fact"));
-    assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("fallback"));
+    assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("request_version"));
     assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
     assert_eq!(receipt.get("freshness").and_then(Value::as_str), Some("stale"));
     assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
@@ -1459,10 +1526,26 @@ fn live_type_definition_request_blocks_stale_request_version()
     let boundary =
         receipt.get("claim_boundary").and_then(Value::as_str).ok_or("missing boundary")?;
     assert!(
-        boundary.contains("stale facts") && boundary.contains("direct package/class identifiers"),
-        "stale type-definition receipt must preserve safe-subset boundaries: {boundary}"
+        boundary.contains("stale facts")
+            && boundary.contains("generated/no-source")
+            && boundary.contains("dynamic boundaries")
+            && boundary.contains("direct package/class identifiers")
+            && boundary.contains("low-confidence facts"),
+        "stale type-definition receipt must preserve provider blockers: {boundary}"
     );
     Ok(())
+}
+
+#[test]
+fn live_type_definition_request_exposes_stale_fact_blocker()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_stale_type_definition_request_version_receipt()
+}
+
+#[test]
+fn live_type_definition_request_blocks_stale_request_version()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_stale_type_definition_request_version_receipt()
 }
 
 #[test]

@@ -92,6 +92,8 @@ fallback_conditions = [
   "missing_package_definition",
   "stale_request_version_requires_fresh_document_facts",
   "dynamic_type_constraint_requires_runtime_value",
+  "dynamic_bless_package_requires_runtime_value",
+  "stale_request_version",
   "ambiguous_package_identity",
   "unsupported_receiver_shape",
 ]

@@ -110,7 +110,7 @@ impl TypeDefinitionFallbackTrace {
             reason: "stale_fact",
             blocker: "stale_fact",
             source_backed_state: "stale_type_definition_request",
-            fact_source: "fallback",
+            fact_source: "request_version",
             freshness: "stale",
             fallback: "refresh_workspace_facts",
             dynamic_boundary: false,
@@ -118,6 +118,22 @@ impl TypeDefinitionFallbackTrace {
             current_document_version: Some(current_document_version),
             trace_only_no_live_behavior_change: false,
         }
+    }
+}
+
+fn stale_type_definition_fallback_trace() -> TypeDefinitionFallbackTrace {
+    TypeDefinitionFallbackTrace {
+        decision: "blocked",
+        reason: "stale_fact",
+        blocker: "stale_fact",
+        source_backed_state: "stale_type_definition_request",
+        fact_source: "request_version",
+        freshness: "stale",
+        fallback: "refresh_workspace_facts",
+        dynamic_boundary: false,
+        request_version: None,
+        current_document_version: None,
+        trace_only_no_live_behavior_change: false,
     }
 }
 
@@ -144,6 +160,7 @@ fn classify_type_definition_fallback_trace(
     if compact_from_cursor.starts_with("->$")
         || (compact_before_cursor.ends_with("->") && compact_from_cursor.starts_with('$'))
         || (compact_before_cursor.ends_with("isa=>") && compact_from_cursor.starts_with('$'))
+        || (compact_before_cursor.ends_with("bless{},") && compact_from_cursor.starts_with('$'))
     {
         return TypeDefinitionFallbackTrace {
             decision: "fallback",
@@ -1599,25 +1616,22 @@ impl LspServer {
                 character,
                 include_declaration: None,
             };
-
-            if let Some(request_version) = req_version {
-                let current_document_version = {
-                    let documents = self.documents_guard();
-                    self.get_document(&documents, uri).map(|doc| doc.version)
-                };
-                if let Some(current_document_version) = current_document_version
-                    && request_version < current_document_version
-                {
-                    self.record_type_definition_provider_decision_trace(
-                        &trace_context,
-                        0,
+            if let Err(error) = self.ensure_latest(uri, req_version) {
+                let fallback_trace = match (req_version, self.document_version(uri)) {
+                    (Some(request_version), Some(current_document_version)) => {
                         TypeDefinitionFallbackTrace::stale_request(
                             request_version,
                             current_document_version,
-                        ),
-                    );
-                    return Err(Self::content_modified());
-                }
+                        )
+                    }
+                    _ => stale_type_definition_fallback_trace(),
+                };
+                self.record_type_definition_provider_decision_trace(
+                    &trace_context,
+                    0,
+                    fallback_trace,
+                );
+                return Err(error);
             }
 
             // Acquire minimal data under lock, then drop it
