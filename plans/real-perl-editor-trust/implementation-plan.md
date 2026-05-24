@@ -945,9 +945,17 @@ Current executable slice
   not broaden type-definition behavior, add data-flow inference, promote
   generated or dynamic facts, promote support tiers, move parser/corpus buckets,
   sync release lineage, or continue source-repo development.
-- `provider-proof-assignment-gate-after-type-definition-dynamic-type-constraint`
+- `type-definition-stale-request-version-blocker-receipt` is completed in the
+  trust lane. It adds the type-definition request-version freshness guard and a
+  provider-decision receipt proving stale request versions are labeled
+  `stale_fact` with stale freshness before returning content-modified instead
+  of answering from current source under an old request version. This narrows
+  type-definition freshness behavior; it does not add data-flow inference,
+  promote generated or dynamic facts, promote support tiers, move parser/corpus
+  buckets, sync release lineage, or continue source-repo development.
+- `provider-proof-assignment-gate-after-type-definition-stale-request-version`
   is active in the reliability lane. It keeps future work assignment-gated after
-  the dynamic type-constraint blocker receipt.
+  the stale request-version blocker receipt.
 - `receiver-generated-no-source-fallback-receipt` is completed in the trust lane.
   RealReceiver scenario 46 now includes a generated/no-source framework-method
   receiver probe that must stay fallback or blocked and must not expose exact
