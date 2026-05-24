@@ -15,8 +15,8 @@ fuzz_target!(|data: &[u8]| {
     let input = bounded_utf8_lossy(data);
     let idx = LineIndex::new(&input);
 
-    // Roundtrip invariant: for every char boundary, mapping byte → (line, col)
-    // → byte must return the original byte. This is the central correctness
+    // Roundtrip invariant: for every char boundary, mapping byte -> (line, col)
+    // -> byte must return the original byte. This is the central correctness
     // property of LineIndex and the source of past UTF-8 boundary bugs.
     for (byte, _) in input.char_indices().take(MAX_PROBE_POSITIONS) {
         let (line, col) = idx.byte_to_position(byte);
@@ -27,7 +27,7 @@ fuzz_target!(|data: &[u8]| {
             input.len()
         );
         // Checked variant must agree with the unchecked one whenever the
-        // unchecked one returns Some — they only differ for inputs past the
+        // unchecked one returns Some - they only differ for inputs past the
         // line boundary.
         assert_eq!(
             idx.position_to_byte_checked(line, col),
@@ -47,7 +47,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = idx.position_to_byte_checked(usize::MAX, 0);
     let _ = idx.position_to_byte_checked(0, usize::MAX);
 
-    // Probing a byte offset past text_len must not panic — exercises the
+    // Probing a byte offset past text_len must not panic - exercises the
     // binary-search saturation path.
     let _ = idx.byte_to_position(end.saturating_add(1));
     let _ = idx.byte_to_position(usize::MAX / 2);

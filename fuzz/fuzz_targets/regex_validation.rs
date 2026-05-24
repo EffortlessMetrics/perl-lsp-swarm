@@ -34,12 +34,12 @@ fuzz_target!(|data: &[u8]| {
     let _ = validator.find_code_execution(&input, 0);
     let _ = validator.find_nested_quantifier(&input, 0);
 
-    // Offset propagation path — start_pos shouldn't change error-handling shape,
+    // Offset propagation path - start_pos shouldn't change error-handling shape,
     // but it exercises arithmetic on the offset that is reported in diagnostics.
     let _ = validator.validate(&pattern, 17);
     let _ = validator.find_code_execution(&pattern, 17);
 
-    // Analyzer surfaces — both must accept arbitrary patterns/modifiers.
+    // Analyzer surfaces - both must accept arbitrary patterns/modifiers.
     let captures = RegexAnalyzer::extract_named_captures(&pattern);
     // Invariant: every reported capture group must point inside the input.
     for capture in &captures {

@@ -13,7 +13,7 @@ fn bounded_utf8_lossy(data: &[u8]) -> std::borrow::Cow<'_, str> {
 fn assert_doc_well_formed(doc: &PodDoc, source: &str) {
     // Every extracted field must be a substring-like fragment of the input, in
     // the weak sense that it cannot exceed the source length. (POD extraction
-    // trims and concatenates — a strict substring check would over-constrain.)
+    // trims and concatenates - a strict substring check would over-constrain.)
     let len = source.len();
     if let Some(name) = &doc.name {
         assert!(name.len() <= len, "name field longer than source");
@@ -33,7 +33,7 @@ fn assert_doc_well_formed(doc: &PodDoc, source: &str) {
 fuzz_target!(|data: &[u8]| {
     let input = bounded_utf8_lossy(data);
 
-    // Pass 1: arbitrary input. Must not panic on any byte sequence — POD
+    // Pass 1: arbitrary input. Must not panic on any byte sequence - POD
     // extraction is a permissive line-oriented scanner that historically has
     // had off-by-one trouble with truncated directives like `=cut\0` or `=head`
     // without a following digit.
