@@ -126,9 +126,9 @@ fn test_inline_completion_after_partial_use_token() -> Result<(), Box<dyn std::e
     let items = result["items"].as_array().ok_or("items array")?;
 
     assert!(!items.is_empty());
-    assert_eq!(items[0]["insertText"].as_str().ok_or("insertText not a string")?, "strict;");
+    assert_eq!(items[0]["insertText"].as_str().ok_or("insertText not a string")?, "ict;");
     assert!(
-        items.iter().all(|item| item["insertText"] == json!("strict;")),
+        items.iter().all(|item| item["insertText"] == json!("ict;")),
         "partial token 'str' should only suggest strict"
     );
     Ok(())

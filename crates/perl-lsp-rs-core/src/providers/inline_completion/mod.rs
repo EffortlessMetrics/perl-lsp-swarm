@@ -469,10 +469,11 @@ impl InlineCompletionProvider {
         F: FnMut(u8, InlineCompletionItem),
     {
         if typed_use_prefix.is_empty() || filter.starts_with(typed_use_prefix) {
+            let inserted_text = insert_text.strip_prefix(typed_use_prefix).unwrap_or(insert_text);
             push_item(
                 priority,
                 InlineCompletionItem {
-                    insert_text: insert_text.into(),
+                    insert_text: inserted_text.into(),
                     filter_text: Some(filter.into()),
                     range: None,
                     command: None,
@@ -916,7 +917,7 @@ mod tests {
         let provider = InlineCompletionProvider::new();
         let completions = provider.get_inline_completions("use st", 0, 6);
 
-        assert!(completions.items.iter().any(|i| i.insert_text == "strict;"));
+        assert!(completions.items.iter().any(|i| i.insert_text == "rict;"));
         assert!(!completions.items.iter().any(|i| i.insert_text == "warnings;"));
         assert!(!completions.items.iter().any(|i| i.insert_text == "feature ':5.36';"));
     }
