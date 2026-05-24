@@ -250,7 +250,7 @@ fn moniker_subs_in_package_with_use_base_get_parent_monikers() -> TestResult {
         assert_moniker_shape(m);
     }
 
-    // moniker.rs:80-92 — subs in packages with use base emit additional
+    // moniker.rs:80-92 - subs in packages with use base emit additional
     // monikers pointing at potential parent definitions.
     let identifiers = moniker_identifiers(&monikers);
     assert!(
@@ -269,7 +269,7 @@ fn moniker_on_empty_position_returns_empty_array() -> TestResult {
     let uri = "file:///moniker_empty.pl";
     harness.open(uri, "# just a comment\n")?;
 
-    // Cursor inside a comment — no symbol → empty array per moniker.rs:100.
+    // Cursor inside a comment - no symbol, so return an empty array per moniker.rs:100.
     let monikers = request_monikers(&mut harness, uri, 0, 5)?;
     assert!(
         monikers.is_empty(),
