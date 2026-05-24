@@ -10,48 +10,16 @@ use assert_cmd::Command;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::{Command as StdCommand, Stdio},
 };
 use tempfile::TempDir;
+
+mod git_test_support;
+
+use git_test_support::{add_and_commit, init_git_repo};
 
 // ---------------------------------------------------------------------------
 // Helpers (shared with check_file_policy.rs pattern)
 // ---------------------------------------------------------------------------
-
-/// Initialize a minimal git repo in `dir` with one initial commit.
-fn init_git_repo(dir: &Path) -> Result<()> {
-    git_cmd(&["init", "-b", "master"], Some(dir)).or_else(|_| git_cmd(&["init"], Some(dir)))?;
-    git_cmd(&["config", "user.email", "test@test.com"], Some(dir))?;
-    git_cmd(&["config", "user.name", "Test"], Some(dir))?;
-    let _ = git_cmd(&["checkout", "-b", "master"], Some(dir));
-    Ok(())
-}
-
-fn git_cmd(args: &[&str], cwd: Option<&Path>) -> Result<()> {
-    let mut cmd = StdCommand::new("git");
-    cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    let status = cmd.status()?;
-    if !status.success() {
-        anyhow::bail!("git {:?} failed with {:?}", args, status.code());
-    }
-    Ok(())
-}
-
-fn add_and_commit(repo: &Path, files: &[(&str, &str)], message: &str) -> Result<()> {
-    for (name, content) in files {
-        let path = repo.join(name);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, content)?;
-    }
-    git_cmd(&["add", "."], Some(repo))?;
-    git_cmd(&["commit", "-m", message], Some(repo))?;
-    Ok(())
-}
 
 /// Build the standard allowlist header with no entries (empty ledger).
 fn empty_allowlist() -> String {
@@ -332,6 +300,41 @@ fn propose_emits_human_markdown() -> Result<()> {
             || md_content.contains("### `book`")
             || md_content.contains("### `docs`"),
         "markdown must have per-group sections"
+    );
+
+    Ok(())
+}
+
+/// `propose` highlights automation groups that should move into Rust-owned
+/// tooling instead of being blindly accepted as long-lived non-Rust surfaces.
+#[test]
+fn propose_highlights_rust_migration_candidates() -> Result<()> {
+    let files: Vec<(&str, &str)> = vec![
+        ("scripts/build.sh", "#!/bin/bash"),
+        ("scripts/release.py", "print('release')"),
+        ("docs/guide.md", "# guide"),
+    ];
+    let (_tmp, root) = setup_repo(&files)?;
+
+    let output = run_propose(&root, &[])?;
+    assert!(
+        output.status.success(),
+        "propose must exit 0; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let md_content = fs::read_to_string(root.join("target/policy/non-rust-proposal.md"))?;
+    assert!(
+        md_content.contains("## Rust migration candidates"),
+        "markdown must include a Rust migration candidate section"
+    );
+    assert!(
+        md_content.contains("`scripts`"),
+        "scripts group must be identified as a migration candidate: {md_content}"
+    );
+    assert!(
+        md_content.contains("xtask tasks"),
+        "automation scripts must recommend the xtask core design: {md_content}"
     );
 
     Ok(())

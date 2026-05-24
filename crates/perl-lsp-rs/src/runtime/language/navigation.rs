@@ -21,6 +21,16 @@ use crate::runtime::routing::{IndexAccessMode, route_index_access};
 #[cfg(feature = "workspace")]
 use std::sync::OnceLock;
 
+mod core_modules;
+#[cfg(feature = "workspace")]
+mod mojolicious_routes;
+mod xs_bootstrap;
+
+use self::core_modules::is_core_perl_module;
+#[cfg(feature = "workspace")]
+use self::mojolicious_routes::resolve_mojolicious_route_definition;
+use self::xs_bootstrap::{extract_xs_bootstrap_target, xs_bootstrap_location};
+
 #[cfg(feature = "workspace")]
 static FQN_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
@@ -35,16 +45,6 @@ static VAR_METHOD_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::n
 
 #[cfg(feature = "workspace")]
 static SUPER_METHOD_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
-
-#[cfg(feature = "workspace")]
-static MOJO_STRING_ROUTE_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
-
-#[cfg(feature = "workspace")]
-static MOJO_KV_ROUTE_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
-
-#[cfg(feature = "workspace")]
-static MOJO_KV_ROUTE_RE_ACTION_FIRST: OnceLock<Result<regex::Regex, regex::Error>> =
-    OnceLock::new();
 
 #[cfg(feature = "workspace")]
 static GOTO_LABEL_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
@@ -189,255 +189,6 @@ enum EarlyDefinitionTarget {
     XsBootstrap(String),
 }
 
-fn is_module_token_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'\'')
-}
-
-fn normalize_bootstrap_module(token: &str, current_package: &str) -> Option<String> {
-    let trimmed = token.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    if trimmed == "__PACKAGE__" {
-        return Some(current_package.to_string());
-    }
-
-    let normalized = normalize_package_separator(trimmed).into_owned();
-    let first = normalized.chars().next()?;
-    if normalized.contains("::") || first.is_ascii_uppercase() { Some(normalized) } else { None }
-}
-
-fn parse_bootstrap_argument(
-    text: &str,
-    mut start: usize,
-    current_package: &str,
-) -> Option<(usize, usize, String)> {
-    while let Some(byte) = text.as_bytes().get(start) {
-        if byte.is_ascii_whitespace() || *byte == b',' {
-            start += 1;
-        } else {
-            break;
-        }
-    }
-
-    let bytes = text.as_bytes();
-    let byte = *bytes.get(start)?;
-
-    if byte == b'\'' || byte == b'"' {
-        let quote = byte;
-        let token_start = start + 1;
-        let mut end = token_start;
-        while let Some(next) = bytes.get(end) {
-            if *next == quote {
-                break;
-            }
-            end += 1;
-        }
-        let token = text.get(token_start..end)?;
-        let module = normalize_bootstrap_module(token, current_package)?;
-        return Some((token_start, end, module));
-    }
-
-    let mut end = start;
-    while let Some(next) = bytes.get(end) {
-        if is_module_token_byte(*next) {
-            end += 1;
-        } else {
-            break;
-        }
-    }
-
-    if end <= start {
-        return None;
-    }
-
-    let token = text.get(start..end)?;
-    let module = normalize_bootstrap_module(token, current_package)?;
-    Some((start, end, module))
-}
-
-fn extract_xs_loader_target(
-    text: &str,
-    cursor: usize,
-    current_package: &str,
-    marker: &str,
-) -> Option<String> {
-    let mut search_from = 0;
-    while let Some(found) = text.get(search_from..)?.find(marker) {
-        let marker_start = search_from + found;
-        let marker_end = marker_start + marker.len();
-        let mut arg_start = marker_end;
-
-        while let Some(byte) = text.as_bytes().get(arg_start) {
-            if byte.is_ascii_whitespace() {
-                arg_start += 1;
-            } else {
-                break;
-            }
-        }
-
-        if text.as_bytes().get(arg_start) == Some(&b'(') {
-            arg_start += 1;
-        }
-
-        if let Some((token_start, token_end, module_name)) =
-            parse_bootstrap_argument(text, arg_start, current_package)
-            && ((cursor >= marker_start && cursor <= marker_end)
-                || (cursor >= token_start && cursor <= token_end))
-        {
-            return Some(module_name);
-        }
-
-        search_from = marker_end;
-    }
-
-    None
-}
-
-fn extract_bare_bootstrap_target(
-    text: &str,
-    cursor: usize,
-    current_package: &str,
-) -> Option<String> {
-    let mut search_from = 0;
-    let needle = "bootstrap";
-    while let Some(found) = text.get(search_from..)?.find(needle) {
-        let start = search_from + found;
-        let end = start + needle.len();
-
-        let left_ok = start == 0 || !is_module_token_byte(text.as_bytes()[start - 1]);
-        let right_ok = end == text.len() || !is_module_token_byte(text.as_bytes()[end]);
-        let qualified = start >= 2 && &text[start - 2..start] == "::";
-        if !left_ok || !right_ok || qualified {
-            search_from = end;
-            continue;
-        }
-
-        if let Some((token_start, token_end, module_name)) =
-            parse_bootstrap_argument(text, end, current_package)
-            && ((cursor >= start && cursor <= end)
-                || (cursor >= token_start && cursor <= token_end))
-        {
-            return Some(module_name);
-        }
-
-        search_from = end;
-    }
-
-    None
-}
-
-fn extract_qualified_bootstrap_target(text: &str, cursor: usize) -> Option<String> {
-    let mut search_from = 0;
-    let needle = "::bootstrap";
-    while let Some(found) = text.get(search_from..)?.find(needle) {
-        let suffix_start = search_from + found;
-        let mut module_start = suffix_start;
-        while module_start > 0 && is_module_token_byte(text.as_bytes()[module_start - 1]) {
-            module_start -= 1;
-        }
-
-        if module_start == suffix_start {
-            search_from = suffix_start + needle.len();
-            continue;
-        }
-
-        let module = text.get(module_start..suffix_start)?;
-        let module_name = normalize_bootstrap_module(module, "main")?;
-        let full_end = suffix_start + needle.len();
-        if cursor >= module_start && cursor <= full_end {
-            return Some(module_name);
-        }
-
-        search_from = full_end;
-    }
-
-    None
-}
-
-fn extract_xs_bootstrap_target(text: &str, cursor: usize, current_package: &str) -> Option<String> {
-    extract_xs_loader_target(text, cursor, current_package, "XSLoader::load")
-        .or_else(|| {
-            extract_xs_loader_target(text, cursor, current_package, "DynaLoader::bootstrap")
-        })
-        .or_else(|| extract_bare_bootstrap_target(text, cursor, current_package))
-        .or_else(|| extract_qualified_bootstrap_target(text, cursor))
-}
-
-fn xs_boot_symbol_name(module_name: &str) -> String {
-    format!("boot_{}", normalize_package_separator(module_name).replace("::", "__"))
-}
-
-fn xs_bootstrap_location(path: &Path, module_name: &str) -> Value {
-    let uri = Url::from_file_path(path).map(|url| url.to_string()).unwrap_or_default();
-    let boot_symbol = xs_boot_symbol_name(module_name);
-
-    if let Ok(text) = read_text_file_with_encoding(path)
-        && let Some(offset) = text.find(&boot_symbol)
-    {
-        let (start_line, start_char) = byte_to_line_col(&text, offset);
-        let (end_line, end_char) = byte_to_line_col(&text, offset + boot_symbol.len());
-        return json!({
-            "uri": uri,
-            "range": {
-                "start": {"line": start_line, "character": start_char},
-                "end": {"line": end_line, "character": end_char},
-            },
-        });
-    }
-
-    location_from_path(path)
-}
-
-/// Returns `true` if the module name is a known Perl core pragma or standard module
-/// that will never be found on disk in a user's workspace.
-///
-/// This list covers the pragmas and core modules that every Perl installation ships
-/// with and that users most commonly reference with `use` or `require`.  It is
-/// intentionally conservative — if a module is not listed here and is not found in
-/// the workspace, the definition handler falls through to the normal "not found"
-/// path unchanged.
-fn is_core_perl_module(name: &str) -> bool {
-    matches!(
-        name,
-        "strict"
-            | "warnings"
-            | "warnings::register"
-            | "utf8"
-            | "feature"
-            | "constant"
-            | "vars"
-            | "lib"
-            | "parent"
-            | "base"
-            | "overload"
-            | "overloading"
-            | "Scalar::Util"
-            | "List::Util"
-            | "Carp"
-            | "Exporter"
-            | "POSIX"
-            | "Data::Dumper"
-            | "File::Basename"
-            | "File::Path"
-            | "File::Spec"
-            | "Storable"
-            | "Encode"
-            | "MIME::Base64"
-            | "Digest::MD5"
-            | "Digest::SHA"
-            | "IO::File"
-            | "IO::Handle"
-            | "Fcntl"
-            | "Socket"
-            | "Time::HiRes"
-            | "Time::Local"
-            | "Getopt::Long"
-            | "Pod::Usage"
-    )
-}
-
 /// Look up a symbol definition in the workspace index.
 ///
 /// Tries two lookup strategies:
@@ -516,175 +267,6 @@ pub(super) fn workspace_document_text(
         crate::workspace_index::uri_to_fs_path(uri)
             .and_then(|path| read_text_file_with_encoding(&path).ok())
     })
-}
-
-#[cfg(feature = "workspace")]
-fn get_mojo_string_route_regex() -> Result<&'static regex::Regex, JsonRpcError> {
-    MOJO_STRING_ROUTE_RE
-        .get_or_init(|| {
-            regex::Regex::new(
-                r##"->\s*to\s*\(\s*['"](?P<controller>[^'"#]+)#(?P<action>[^'"]+)['"]\s*\)"##,
-            )
-        })
-        .as_ref()
-        .map_err(|err| {
-            crate::protocol::internal_error(&format!(
-                "Failed to initialize Mojolicious route regex: {err}"
-            ))
-        })
-}
-
-#[cfg(feature = "workspace")]
-fn get_mojo_kv_route_regex() -> Result<&'static regex::Regex, JsonRpcError> {
-    MOJO_KV_ROUTE_RE
-        .get_or_init(|| {
-            regex::Regex::new(
-                r#"->\s*to\s*\(\s*controller\s*=>\s*['"](?P<controller>[^'"]+)['"]\s*,\s*action\s*=>\s*['"](?P<action>[^'"]+)['"]\s*\)"#,
-            )
-        })
-        .as_ref()
-        .map_err(|err| {
-            crate::protocol::internal_error(&format!(
-                "Failed to initialize Mojolicious route regex: {err}"
-            ))
-        })
-}
-
-#[cfg(feature = "workspace")]
-fn get_mojo_kv_route_regex_action_first() -> Result<&'static regex::Regex, JsonRpcError> {
-    MOJO_KV_ROUTE_RE_ACTION_FIRST
-        .get_or_init(|| {
-            regex::Regex::new(
-                r#"->\s*to\s*\(\s*action\s*=>\s*['"](?P<action>[^'"]+)['"]\s*,\s*controller\s*=>\s*['"](?P<controller>[^'"]+)['"]\s*\)"#,
-            )
-        })
-        .as_ref()
-        .map_err(|err| {
-            crate::protocol::internal_error(&format!(
-                "Failed to initialize Mojolicious route regex: {err}"
-            ))
-        })
-}
-
-#[cfg(feature = "workspace")]
-fn mojolicious_app_root(current_package: &str) -> Option<String> {
-    let package = current_package.trim();
-    if package.is_empty() {
-        return None;
-    }
-
-    Some(package.strip_suffix("::App").unwrap_or(package).to_string())
-}
-
-#[cfg(feature = "workspace")]
-fn normalize_mojolicious_controller_name(raw: &str) -> Option<String> {
-    let normalized = raw.trim().trim_matches('\'').trim_matches('"').trim();
-    if normalized.is_empty() {
-        return None;
-    }
-
-    let mut segments = Vec::new();
-    for segment in
-        normalized.split("::").flat_map(|part| part.split('/')).flat_map(|part| part.split('-'))
-    {
-        let segment = segment.trim();
-        if segment.is_empty() {
-            continue;
-        }
-        let mut normalized_segment = String::new();
-        let mut capitalize_next = true;
-        for ch in segment.chars() {
-            if ch == '_' {
-                capitalize_next = true;
-                continue;
-            }
-
-            if capitalize_next {
-                normalized_segment.extend(ch.to_uppercase());
-                capitalize_next = false;
-            } else {
-                normalized_segment.push(ch);
-            }
-        }
-
-        if normalized_segment.is_empty() {
-            continue;
-        }
-        segments.push(normalized_segment);
-    }
-
-    if segments.is_empty() { None } else { Some(segments.join("::")) }
-}
-
-#[cfg(feature = "workspace")]
-fn resolve_mojolicious_route_definition(
-    workspace_index: &crate::workspace_index::WorkspaceIndex,
-    current_package: &str,
-    text_around: &str,
-    cursor_in_text: usize,
-) -> Option<crate::workspace_index::Location> {
-    let app_root = mojolicious_app_root(current_package)?;
-
-    let try_route = |controller: &str, action: &str| {
-        let controller_name = normalize_mojolicious_controller_name(controller)?;
-        let package_name = format!("{app_root}::Controller::{controller_name}");
-        find_workspace_definition_location(workspace_index, &package_name, action)
-    };
-
-    let string_re = get_mojo_string_route_regex().ok()?;
-    for cap in string_re.captures_iter(text_around) {
-        let Some(full_match) = cap.get(0) else {
-            continue;
-        };
-        if cursor_in_text < full_match.start() || cursor_in_text >= full_match.end() {
-            continue;
-        }
-
-        let Some(controller_match) = cap.name("controller") else {
-            continue;
-        };
-        let Some(action_match) = cap.name("action") else {
-            continue;
-        };
-
-        if (cursor_in_text >= controller_match.start() && cursor_in_text < controller_match.end())
-            || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end())
-        {
-            if let Some(location) = try_route(controller_match.as_str(), action_match.as_str()) {
-                return Some(location);
-            }
-        }
-    }
-
-    for kv_re in [get_mojo_kv_route_regex().ok()?, get_mojo_kv_route_regex_action_first().ok()?] {
-        for cap in kv_re.captures_iter(text_around) {
-            let Some(full_match) = cap.get(0) else {
-                continue;
-            };
-            if cursor_in_text < full_match.start() || cursor_in_text >= full_match.end() {
-                continue;
-            }
-
-            let Some(controller_match) = cap.name("controller") else {
-                continue;
-            };
-            let Some(action_match) = cap.name("action") else {
-                continue;
-            };
-
-            if (cursor_in_text >= controller_match.start()
-                && cursor_in_text < controller_match.end())
-                || (cursor_in_text >= action_match.start() && cursor_in_text < action_match.end())
-            {
-                if let Some(location) = try_route(controller_match.as_str(), action_match.as_str())
-                {
-                    return Some(location);
-                }
-            }
-        }
-    }
-
-    None
 }
 
 #[cfg(feature = "workspace")]
@@ -1728,34 +1310,31 @@ impl LspServer {
         params: Option<Value>,
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Convert raw Value ID to typed ID at the boundary.
+        let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         // RAII guard ensures cleanup on all exit paths (early returns, errors, panics)
-        let _cleanup_guard = RequestCleanupGuard::from_ref(request_id);
+        let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
 
         if let Some(params) = params {
             // Create or get cancellation token for this request
-            let token = if let Some(req_id) = request_id {
-                GLOBAL_CANCELLATION_REGISTRY.get_token(req_id).unwrap_or_else(|| {
+            if let Some(ref tid) = typed_id {
+                let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
                     let token = PerlLspCancellationToken::new(
-                        req_id.clone(),
+                        tid.clone(),
                         "textDocument/definition".to_string(),
                     );
                     let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
                     token
-                })
-            } else {
-                PerlLspCancellationToken::new(
-                    serde_json::Value::Null,
-                    "textDocument/definition".to_string(),
-                )
-            };
-
-            // Early cancellation check with relaxed read
-            if token.is_cancelled_relaxed() {
-                return Err(JsonRpcError {
-                    code: REQUEST_CANCELLED,
-                    message: "Request cancelled - definition provider".to_string(),
-                    data: None,
                 });
+
+                // Early cancellation check with relaxed read
+                if token.is_cancelled_relaxed() {
+                    return Err(JsonRpcError {
+                        code: REQUEST_CANCELLED,
+                        message: "Request cancelled - definition provider".to_string(),
+                        data: None,
+                    });
+                }
             }
 
             // Delegate to original handler
@@ -1917,14 +1496,24 @@ impl LspServer {
         if let Some(params) = params {
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
+            let trace_context = NavigationDecisionTraceContext {
+                provider: "type_definition",
+                provider_action: "textDocument/typeDefinition",
+                uri: uri.to_string(),
+                line,
+                character,
+                include_declaration: None,
+            };
 
             // Acquire minimal data under lock, then drop it
             let ast = {
                 let documents = self.documents_guard();
                 let Some(doc) = self.get_document(&documents, uri) else {
+                    self.record_type_definition_provider_decision_trace(&trace_context, 0);
                     return Ok(Some(json!([])));
                 };
                 let Some(ast) = doc.ast.as_ref() else {
+                    self.record_type_definition_provider_decision_trace(&trace_context, 0);
                     return Ok(Some(json!([])));
                 };
                 ast.clone()
@@ -1938,11 +1527,96 @@ impl LspServer {
             if let Some(locations) =
                 provider.find_type_definition(ast.as_ref(), line, character, uri, &doc_map)
             {
-                return Ok(Some(json!(locations)));
+                if locations.len() == 1 {
+                    self.record_type_definition_provider_decision_trace(
+                        &trace_context,
+                        locations.len(),
+                    );
+                    return Ok(Some(json!(locations)));
+                }
+
+                self.record_type_definition_ambiguous_identity_trace(
+                    &trace_context,
+                    locations.len(),
+                );
+                return Ok(Some(json!([])));
             }
+            self.record_type_definition_provider_decision_trace(&trace_context, 0);
         }
 
         Ok(Some(json!([])))
+    }
+
+    fn record_type_definition_provider_decision_trace(
+        &self,
+        context: &NavigationDecisionTraceContext,
+        result_count: usize,
+    ) {
+        let acted = result_count > 0;
+        let result_count = u64::try_from(result_count).unwrap_or(u64::MAX);
+        let mut receipt = json!({
+            "provider": context.provider,
+            "provider_action": context.provider_action,
+            "decision": if acted { "acted" } else { "fallback" },
+            "reason": if acted { "source_backed_high_confidence" } else { "missing_fact" },
+            "uri": context.uri,
+            "line": context.line,
+            "character": context.character,
+            "result_count": result_count,
+            "live_provider_result_count": result_count,
+            "fact_source": if acted { "parser_syntax" } else { "fallback" },
+            "confidence": if acted { "high" } else { "low" },
+            "freshness": "fresh",
+            "source_backed": acted,
+            "source_backed_state": if acted {
+                "open_document_type_definition"
+            } else {
+                "type_definition_not_proven"
+            },
+            "fallback": if acted { "none" } else { "no_result" },
+            "fallback_state": if acted { "none" } else { "no_result" },
+            "dynamic_boundary": false,
+            "trace_only_no_live_behavior_change": true,
+            "claim_boundary": "records existing type-definition safe subset only; direct package/class identifiers and constructor receivers may resolve to open-document package definitions while variable receivers, chained method results, function-call results, missing package definitions, generated/no-source facts, dynamic boundaries, stale facts, low-confidence facts, and ambiguous identities remain fallback or blocked"
+        });
+        if !acted && let Some(object) = receipt.as_object_mut() {
+            object.insert("blocker".to_string(), json!("missing_fact"));
+        }
+
+        self.record_provider_decision_trace(context.provider, &receipt);
+    }
+
+    fn record_type_definition_ambiguous_identity_trace(
+        &self,
+        context: &NavigationDecisionTraceContext,
+        candidate_count: usize,
+    ) {
+        let candidate_count = u64::try_from(candidate_count).unwrap_or(u64::MAX);
+        let receipt = json!({
+            "provider": context.provider,
+            "provider_action": context.provider_action,
+            "decision": "fallback",
+            "reason": "ambiguous_low_confidence_candidates",
+            "blocker": "ambiguous_identity",
+            "uri": context.uri,
+            "line": context.line,
+            "character": context.character,
+            "result_count": 0,
+            "live_provider_result_count": 0,
+            "ambiguous_candidate_count": candidate_count,
+            "fact_source": "parser_syntax",
+            "confidence": "low",
+            "freshness": "fresh",
+            "source_backed": false,
+            "source_backed_state": "ambiguous_type_definition_identity",
+            "fallback": "no_result",
+            "fallback_state": "no_result",
+            "dynamic_boundary": false,
+            "trace_only_no_live_behavior_change": false,
+            "claim_boundary": "blocks ambiguous type-definition identities; direct package/class identifiers and constructor receivers may resolve only when they identify one open-document package definition, while duplicate package declarations, variable receivers, chained method results, function-call results, missing package definitions, generated/no-source facts, dynamic boundaries, stale facts, low-confidence facts, and unsupported identities remain fallback or blocked"
+        });
+
+        self.record_provider_decision_trace(context.provider, &receipt);
     }
 
     /// Handle textDocument/implementation request

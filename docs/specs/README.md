@@ -43,6 +43,10 @@ generated sections.
 - [PLSP-SPEC-0021: Diagnostic explanation v1](PLSP-SPEC-0021-diagnostic-explanation-v1.md)
 - [PLSP-SPEC-0022: Module path authority](PLSP-SPEC-0022-module-path-authority.md)
 - [PLSP-SPEC-0023: Ambient inputs](PLSP-SPEC-0023-ambient-inputs.md)
+- [PLSP-SPEC-0024: Framework fact adapter contract](PLSP-SPEC-0024-framework-fact-adapters.md)
+- [PLSP-SPEC-0025: PIR v0 contract](PLSP-SPEC-0025-pir-v0.md)
+- [PLSP-SPEC-0026: Determinism receipt v1](PLSP-SPEC-0026-determinism-receipt-v1.md)
+- [PLSP-SPEC-0027: Differential real-Perl oracle contract](PLSP-SPEC-0027-differential-real-perl-oracle.md)
 
 ## Acceptance and Proof
 

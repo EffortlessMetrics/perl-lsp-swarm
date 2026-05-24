@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 ///
 /// Returns `Ok(Output)` if the command finishes within the timeout, or
 /// `Err(String)` with a human-readable message if it times out or fails
-/// to spawn.
+/// to spawn. A `timeout_secs` value of `0` disables timeout enforcement.
 pub fn run_command_with_timeout(mut cmd: Command, timeout_secs: u64) -> Result<Output, String> {
-    let timeout = Duration::from_secs(timeout_secs);
+    let timeout = (timeout_secs > 0).then(|| Duration::from_secs(timeout_secs));
     let start = Instant::now();
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -31,7 +31,7 @@ pub fn run_command_with_timeout(mut cmd: Command, timeout_secs: u64) -> Result<O
                 .map_err(|error| format!("failed collecting command output: {error}"));
         }
 
-        if start.elapsed() >= timeout {
+        if timeout.is_some_and(|timeout| start.elapsed() >= timeout) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!("command timed out after {} seconds", timeout_secs));
@@ -94,6 +94,10 @@ mod tests {
         }
     }
 
+    fn nonexistent_command() -> Command {
+        Command::new("__perl_lsp_nonexistent_command__")
+    }
+
     #[test]
     fn unit_timeout_fires_for_slow_command() {
         let start = Instant::now();
@@ -116,6 +120,13 @@ mod tests {
     }
 
     #[test]
+    fn unit_zero_timeout_disables_deadline() {
+        let result = run_command_with_timeout(fast_command(), 0);
+
+        assert!(result.is_ok(), "expected zero-timeout command to run to completion");
+    }
+
+    #[test]
     fn unit_nonzero_exit_is_returned_as_output() {
         let result = run_command_with_timeout(guaranteed_nonzero_exit_command(), 10);
 
@@ -123,6 +134,16 @@ mod tests {
         if let Ok(output) = result {
             assert_eq!(output.status.code(), Some(7));
             assert!(!output.status.success());
+        }
+    }
+
+    #[test]
+    fn unit_spawn_failure_surfaces_start_error() {
+        let result = run_command_with_timeout(nonexistent_command(), 10);
+
+        assert!(result.is_err(), "expected spawn error for nonexistent command");
+        if let Err(message) = result {
+            assert!(message.contains("command failed to start"));
         }
     }
 }
