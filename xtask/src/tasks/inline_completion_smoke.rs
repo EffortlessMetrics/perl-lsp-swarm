@@ -6,9 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub fn run(binary: PathBuf) -> Result<()> {
-    if !binary.is_file() {
-        bail!("inline-completion smoke binary does not exist: {}", binary.display());
-    }
+    let binary = resolve_binary_path(binary)?;
 
     run_static_client(&binary)?;
     run_dynamic_client(&binary)?;
@@ -305,4 +303,24 @@ fn shutdown_exit(client: &UxClient, timeout: Duration) -> Result<()> {
 
 fn ux<T>(result: anyhow::Result<T>) -> Result<T> {
     result.map_err(|error| eyre!("{error:#}"))
+}
+
+fn resolve_binary_path(binary: PathBuf) -> Result<PathBuf> {
+    if binary.is_file() {
+        return Ok(binary);
+    }
+
+    #[cfg(windows)]
+    {
+        let has_extension = binary.extension().is_some();
+        if !has_extension {
+            let mut exe = binary.clone();
+            exe.set_extension("exe");
+            if exe.is_file() {
+                return Ok(exe);
+            }
+        }
+    }
+
+    bail!("inline-completion smoke binary does not exist: {}", binary.display());
 }
