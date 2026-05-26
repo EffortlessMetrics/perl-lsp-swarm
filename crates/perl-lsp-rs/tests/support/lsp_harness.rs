@@ -13,6 +13,7 @@
 
 use parking_lot::{Condvar, Mutex};
 use perl_lsp_rs_core::transport::framing::{ContentLengthFramer, frame};
+use perl_lsp_rs_core::{governance::FeatureProfile, runtime::tuning::RuntimeTuning};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::{Cursor, Write};
@@ -130,6 +131,50 @@ impl LspHarness {
         Self::new_raw()
     }
 
+    /// Create a new test harness with explicit runtime tuning.
+    pub fn new_with_tuning(runtime_tuning: RuntimeTuning) -> Self {
+        let output_buffer = Arc::new(Mutex::new(Vec::new()));
+        let output_signal = Arc::new(Condvar::new());
+        let notification_buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let server_requests = Arc::new(Mutex::new(VecDeque::new()));
+
+        let writer = Arc::new(Mutex::new(Box::new(TestWriter {
+            buffer: output_buffer.clone(),
+            signal: output_signal.clone(),
+            notifications: notification_buffer.clone(),
+            server_requests: server_requests.clone(),
+        }) as Box<dyn Write + Send>));
+        let server = SendableServer(perl_lsp::LspServer::with_output_feature_profile_and_tuning(
+            writer,
+            FeatureProfile::current(),
+            runtime_tuning,
+        ));
+
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let handle = thread::spawn(move || {
+            let server = server;
+            while let Ok(msg) = rx.recv() {
+                if msg.is_empty() {
+                    break;
+                }
+                let mut cursor = Cursor::new(msg);
+                let _ = server.0.handle_message(&mut cursor);
+            }
+        });
+
+        Self {
+            sender: tx,
+            output_buffer,
+            output_framer: ContentLengthFramer::new(),
+            output_signal,
+            notification_buffer,
+            server_requests,
+            next_request_id: 1,
+            handle: Some(handle),
+            canceled_ids: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     /// Create a new test harness without sending initialize
     /// Used for testing pre-initialization behavior
     pub fn new_without_initialize() -> Self {
@@ -209,6 +254,52 @@ impl LspHarness {
                 Duration::from_millis(100) // CI: extra settling time
             } else {
                 Duration::from_millis(50) // Local: minimal settling time
+            };
+            thread::sleep(settle_time);
+        }
+
+        Ok(response)
+    }
+
+    /// Initialize with an explicit clientInfo object.
+    pub fn initialize_with_client_info(
+        &mut self,
+        capabilities: Option<Value>,
+        client_info: Value,
+    ) -> Result<Value, String> {
+        let caps = capabilities.unwrap_or_else(|| json!({ "textDocument": {} }));
+
+        let init_request = json!({
+            "jsonrpc": "2.0",
+            "id": self.next_request_id,
+            "method": "initialize",
+            "params": {
+                "processId": std::process::id(),
+                "clientInfo": client_info,
+                "capabilities": caps,
+                "rootUri": "file:///workspace"
+            }
+        });
+        self.next_request_id += 1;
+
+        let is_ci = std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok();
+        let is_windows = cfg!(windows);
+        let init_timeout =
+            if is_ci || is_windows { Duration::from_secs(5) } else { Duration::from_secs(2) };
+        let init_timeout = if Self::is_coverage_instrumented() {
+            init_timeout.max(Duration::from_secs(6))
+        } else {
+            init_timeout
+        };
+
+        let response = self.send_request_with_timeout(init_request, init_timeout)?;
+
+        if response.get("capabilities").is_some() {
+            self.notify("initialized", json!({}));
+            let settle_time = if is_ci || is_windows {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_millis(50)
             };
             thread::sleep(settle_time);
         }

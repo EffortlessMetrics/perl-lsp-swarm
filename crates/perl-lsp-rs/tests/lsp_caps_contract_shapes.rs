@@ -265,6 +265,25 @@ fn test_capability_shapes_lsp_318_contract() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+#[test]
+fn semantic_tokens_do_not_advertise_delta_without_result_id()
+-> Result<(), Box<dyn std::error::Error>> {
+    let caps_json = capabilities_json(BuildFlags::all());
+    let semantic_tokens =
+        caps_json.get("semanticTokensProvider").ok_or("semanticTokensProvider must be present")?;
+
+    assert_eq!(
+        semantic_tokens.get("full"),
+        Some(&json!(true)),
+        "semantic tokens must advertise full-only support until resultId-backed delta is implemented"
+    );
+    assert!(
+        semantic_tokens.pointer("/full/delta").is_none(),
+        "semantic tokens must not advertise delta without resultId state"
+    );
+    Ok(())
+}
+
 /// Test that non-advertised features return MethodNotFound
 #[test]
 fn test_non_advertised_features_return_method_not_found() -> Result<(), Box<dyn std::error::Error>>

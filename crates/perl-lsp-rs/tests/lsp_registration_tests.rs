@@ -5,7 +5,9 @@
 
 mod support;
 
-use serde_json::json;
+use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
+use serde_json::{Value, json};
+use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -259,4 +261,102 @@ fn guardrail_inline_completion_registration_and_capability_wiring() -> TestResul
     );
 
     Ok(())
+}
+
+#[test]
+fn e2e_mode_does_not_register_file_watchers() -> TestResult {
+    let mut harness = LspHarness::new_with_tuning(RuntimeTuning::e2e_defaults());
+    harness.initialize(Some(dynamic_file_watcher_caps()))?;
+
+    let requests = harness.drain_server_requests(500);
+    assert!(
+        !has_registration_method(&requests, "workspace/didChangeWatchedFiles"),
+        "e2e runtime tuning must suppress dynamic file watcher registration"
+    );
+    Ok(())
+}
+
+#[test]
+fn normal_mode_registers_file_watchers_when_client_supports_dynamic_watchers() -> TestResult {
+    let mut harness = LspHarness::new_with_tuning(RuntimeTuning::normal_defaults());
+    harness.initialize(Some(dynamic_file_watcher_caps()))?;
+
+    let requests = harness.drain_server_requests(500);
+    assert!(
+        has_registration_method(&requests, "workspace/didChangeWatchedFiles"),
+        "normal runtime tuning should register file watchers for dynamic-capable clients"
+    );
+    Ok(())
+}
+
+#[test]
+fn jetbrains_still_disables_file_watchers_even_if_client_advertises_support() -> TestResult {
+    let mut harness = LspHarness::new_with_tuning(RuntimeTuning::normal_defaults());
+    harness.initialize_with_client_info(
+        Some(dynamic_file_watcher_caps()),
+        json!({ "name": "JetBrains", "version": "test" }),
+    )?;
+
+    let requests = harness.drain_server_requests(500);
+    assert!(
+        !has_registration_method(&requests, "workspace/didChangeWatchedFiles"),
+        "JetBrains clients must not receive dynamic file watcher registration"
+    );
+    Ok(())
+}
+
+#[test]
+fn inline_completion_dynamic_registration_not_blocked_by_file_watchers_false() -> TestResult {
+    let mut harness = LspHarness::new_with_tuning(RuntimeTuning::e2e_defaults());
+    harness.initialize(Some(dynamic_file_watcher_and_inline_caps()))?;
+
+    let requests = harness.drain_server_requests(500);
+    assert!(
+        !has_registration_method(&requests, "workspace/didChangeWatchedFiles"),
+        "e2e runtime tuning must suppress only file watcher registration"
+    );
+    assert!(
+        has_registration_method(&requests, "textDocument/inlineCompletion"),
+        "disabling file watchers must not suppress inline completion dynamic registration"
+    );
+    Ok(())
+}
+
+fn dynamic_file_watcher_caps() -> Value {
+    json!({
+        "textDocument": {},
+        "workspace": {
+            "didChangeWatchedFiles": {
+                "dynamicRegistration": true
+            }
+        }
+    })
+}
+
+fn dynamic_file_watcher_and_inline_caps() -> Value {
+    json!({
+        "textDocument": {
+            "inlineCompletion": {
+                "dynamicRegistration": true
+            }
+        },
+        "workspace": {
+            "didChangeWatchedFiles": {
+                "dynamicRegistration": true
+            }
+        }
+    })
+}
+
+fn has_registration_method(requests: &[Value], method: &str) -> bool {
+    requests.iter().any(|request| {
+        request.get("method") == Some(&json!("client/registerCapability"))
+            && request.pointer("/params/registrations").and_then(Value::as_array).is_some_and(
+                |registrations| {
+                    registrations
+                        .iter()
+                        .any(|entry| entry.get("method").and_then(Value::as_str) == Some(method))
+                },
+            )
+    })
 }
