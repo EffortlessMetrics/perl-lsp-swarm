@@ -13,6 +13,7 @@
 | Test counts & tracked debt | [status/tests.md](status/tests.md) |
 | Parser corpus & coverage | [status/parser.md](status/parser.md) |
 | Quality metrics | [status/quality.md](status/quality.md) |
+| Coverage/RIPR enforcement baseline | [status/coverage_and_ripr_enforcement.md](status/coverage_and_ripr_enforcement.md) |
 | Semantic capability dashboard | [status/semantic_capability_dashboard.md](status/semantic_capability_dashboard.md) |
 | Real Perl Editor Trust v1 dashboard | [status/real_perl_editor_trust_v1.md](status/real_perl_editor_trust_v1.md) |
 | Editor UX planning scaffold | [status/editor_ux.json](status/editor_ux.json) |
@@ -35,6 +36,7 @@
 | **Test counts** | See [status/tests.md](status/tests.md) | Generated per-merge |
 | **Parser coverage** | See [status/parser.md](status/parser.md) | Generated per-merge |
 | **Quality metrics** | See [status/quality.md](status/quality.md) | Generated per-merge |
+| **Coverage/RIPR enforcement baseline** | See [status/coverage_and_ripr_enforcement.md](status/coverage_and_ripr_enforcement.md) | Human-owned baseline |
 | **Editor UX planning scaffold** | See [status/editor_ux.json](status/editor_ux.json) | Generated per-merge |
 
 ## How to Update Metrics

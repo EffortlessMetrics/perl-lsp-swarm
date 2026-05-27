@@ -15,9 +15,20 @@ like (#0000) or (#9999) will fail CI.
 - [ ] trust
 - [ ] substrate
 - [ ] reliability
+- [ ] coverage / proof / enforcement
 
 ## Claim Boundary
 <!-- What changes, and what does this PR explicitly not claim? -->
+
+## Quality Proof
+<!-- Required for coverage/proof/enforcement lane PRs. Write N/A for unrelated lanes. -->
+- Objective:
+- Claim boundary:
+- Non-goals:
+- RIPR/coverage effect:
+- Local proof commands and pass/fail results:
+- Cleanup performed (`rtk git status --short --branch`, `rtk git diff --check`, `rtk bash scripts/storage-doctor`):
+- What remains (advisory burn-down debt or `N/A`):
 
 ## Promotion Discipline
 <!-- Required for trust-lane PRs. Write N/A for substrate or reliability PRs. -->
@@ -51,10 +62,13 @@ like (#0000) or (#9999) will fail CI.
 ## Verification
 - [ ] Lane and risk surface are declared above.
 - [ ] Trust-lane PRs name promotion, fallback, blocker, and receipt boundaries.
-- [ ] `cargo xtask fmt` — clean
+- [ ] `rtk cargo xtask fmt` — clean
 - [ ] I used a narrow orthogonal pass first (freshness check, truth-check, or targeted repro) before the broader gate.
-- [ ] `cargo clippy -p <crate> --tests` — clean
-- [ ] `cargo test -p <crate>` — pass
+- [ ] `rtk cargo clippy -p <crate> --tests` — clean
+- [ ] `rtk cargo test -p <crate>` — pass
+- [ ] `rtk git status --short --branch` — reviewed
+- [ ] `rtk git diff --check` — clean
+- [ ] `rtk bash scripts/storage-doctor` — clean or cleaned up lane-created build output
 - [ ] This PR introduces UX-visible changes. I have verified that error messages are actionable and the UX test harness still passes.
 
 ## Retained State

@@ -17,7 +17,7 @@ The initial PR slice keeps the branch gate on library/unit tests (`--lib`) so it
 Generate an HTML coverage report locally:
 
 ```bash
-just coverage
+rtk just coverage
 ```
 
 This will:
@@ -32,7 +32,7 @@ This will:
 Get a quick coverage summary in the terminal:
 
 ```bash
-just coverage-summary
+rtk just coverage-summary
 ```
 
 ### LCOV Format (for CI)
@@ -40,10 +40,17 @@ just coverage-summary
 Generate coverage in LCOV format (compatible with Codecov):
 
 ```bash
-just coverage-lcov
+rtk just coverage-lcov
 ```
 
 This creates `lcov.info` in the project root.
+
+For the PR proof rail, generate the Codecov/quality-gate LCOV that includes
+the parser surface and `xtask` receipt/gate code:
+
+```bash
+rtk just coverage-proof-lcov
+```
 
 ## CI Integration
 
@@ -52,12 +59,12 @@ This creates `lcov.info` in the project root.
 Coverage is automatically generated and uploaded to Codecov from the nightly `test-coverage` job in `.github/workflows/ci-nightly.yml`:
 
 - **On every push to `main`/`master`**: No coverage job by default
-- **On PRs with `ci:coverage` label**: Parser coverage with branch data
+- **On every PR**: Parser coverage with branch data and the Codecov patch gate
 - **On manual workflow dispatch**: Parser coverage with branch data
 
 ### Viewing Coverage in PRs
 
-When the `ci:coverage` label is applied to a PR:
+When a PR opens or updates:
 
 1. The nightly coverage job runs automatically
 2. Coverage data is uploaded to Codecov
@@ -77,23 +84,31 @@ The README includes a Codecov badge showing the current coverage on the `master`
 
 ## Coverage Thresholds
 
-Coverage thresholds are defined in `codecov.yml`:
+Coverage status thresholds are defined in `codecov.yml`:
 
 | Target | Threshold | Notes |
 |--------|-----------|-------|
-| **Project** | 70% | Overall workspace coverage |
-| **Patch** | 75% | New code should have higher coverage |
-| **perl-parser** | 75% | Core parsing logic |
-| **perl-lsp** | 70% | LSP integration |
-| **perl-lexer** | 80% | Tokenization (highly testable) |
-| **perl-dap** | 65% | Experimental, bridge mode |
-| **perl-corpus** | 60% | Test infrastructure |
+| **Project** | 95% | Overall coverage target, informational during burn-down; final gate requires `0.25%` threshold and blocking status |
+| **Patch** | 95% | Blocking PR gate with `0%` threshold |
+
+Codecov flags identify the crate paths for parser, `xtask`, LSP, lexer, DAP,
+and corpus coverage tracking. The PR proof upload uses the `parser,xtask` flags
+because `lcov.info` includes both the parser surface and the receipt/gate code.
+Flags do not carry independent status targets in this slice; crate-specific
+blocking thresholds should be added as explicit status rules when they are
+promoted.
 
 ### Threshold Philosophy
 
-- **70% baseline**: Prevents coverage regressions without blocking velocity
-- **75% for patches**: Encourages well-tested new code
-- **Per-crate targets**: Higher for core, testable components (parser, lexer)
+- **95% patch gate**: New code must carry behavior proof before merge
+- **95% project target**: Project coverage burns down toward the final blocking gate
+- **Per-crate flags**: Component trend views stay available without adding
+  unsupported Codecov flag-level targets
+- **Temporary project exception**: `policy/quality-gate-exceptions.toml`
+  records the dated `project-coverage-burndown` exception while the project
+  status remains informational; it does not waive the final blocking target.
+- **Final project gate**: `quality-gate --mode enforce` fails until Codecov
+  project status is promoted to blocking `95%` target with `0.25%` threshold.
 
 Branch coverage uses the checked-in policy file instead of Codecov status thresholds for the initial PR slice:
 
@@ -114,23 +129,102 @@ The following paths are excluded from coverage analysis (configured in `codecov.
 - `crates/*/benches/**` - Benchmark code
 - `crates/*/examples/**` - Example code
 - `crates/*/build.rs` - Build scripts
-- `xtask/**` - Development tooling
 - `fuzz/**` - Fuzzing infrastructure
 - `**/*_generated.rs` - Generated code
 
+`xtask/**` is intentionally not ignored: the quality gate and receipt
+generators are proof-rail code, so patch coverage must apply to them.
+The coverage baseline receipt records `coverage_scope`; final
+`quality-gate --mode enforce` requires workspace scope covering every Cargo
+workspace member root plus the `xtask` proof rail, so parser-only or
+parser-plus-xtask LCOV cannot satisfy repo-wide project coverage enforcement.
+Absolute Linux or Windows `SF` paths in LCOV are normalized back to
+repo-relative paths before the receipt computes scope or below-target file
+guidance.
+
 ## Coverage Workflow
 
-The nightly coverage job (`.github/workflows/ci-nightly.yml`, `test-coverage`) performs these steps:
+The coverage job (`.github/workflows/ci-nightly.yml`, `test-coverage`) runs on
+PRs, nightly schedule, and manual dispatch. It performs these steps:
 
-1. **Install toolchain**: Rust stable with `llvm-tools-preview` component
+1. **Install toolchain**: Rust nightly with `llvm-tools-preview` component
 2. **Install cargo-llvm-cov**: Using `taiki-e/install-action@v2` for speed
 3. **Cache dependencies**: Uses `Swatinem/rust-cache@v2` for faster builds
 4. **Create fixtures**: Legacy LSP test fixtures (if needed)
-5. **Generate coverage**: Run tests with LLVM instrumentation and branch coverage
-6. **Display summary**: Show coverage summary in logs
-7. **Check baseline**: Compare branch coverage to `.ci/coverage-baseline.txt`
-8. **Upload to Codecov**: Upload `lcov.info` to Codecov service
-9. **Archive report**: Save `lcov.info` as workflow artifact (30-day retention)
+5. **Run parser branch ratchet**: Generate the lean parser-library branch
+   coverage snapshot and compare it to `.ci/coverage-baseline.txt`
+6. **Generate proof LCOV**: Regenerate `lcov.info` with parser code plus the
+   `xtask` proof rail, so Codecov and `quality-gate` receipts see the code
+   that emits the proof
+7. **Display summary**: Show coverage summary in logs
+8. **Write coverage receipt**: Emit
+   `target/receipts/quality/coverage-baseline.json` for `quality-gate`,
+   including the top below-target LCOV files and representative positive,
+   1-based uncovered line samples. The receipt command rejects LCOV snapshots
+   with no measured `LF` lines so empty reports cannot masquerade as `100%`
+   coverage, rejects LCOV `DA` entries whose line number is `0`, and records
+   `coverage_scope` from normalized repo-relative `SF` paths so final
+   enforcement can reject partial LCOV inputs.
+   `quality-gate` only renders positive uncovered line samples in its aggregate
+   receipt and markdown summary.
+9. **Run quality gate**: Verify the coverage receipt is current and the
+    Codecov patch policy is enforcing via `quality-gate --mode
+    enforce-patch-coverage --codecov codecov.yml`; the gate reads that live
+    policy file as authoritative over any policy snapshot stored in the receipt
+    and also verifies that Codecov comments include `diff` and `files`
+    guidance. If the receipt includes a patch
+    percentage, the gate blocks values below `95%` and includes ranked
+    below-target files and uncovered line samples when the local coverage
+    receipt contains actionable rows. Non-actionable file rows are filtered so
+    the failure falls back to Codecov `diff`/`files` guidance instead of naming
+    a vague repair target. Final enforce mode also blocks partial or unknown
+    `coverage_scope` receipts. CI preserves the gate's failure exit code while
+    still appending the generated markdown repair summary to the GitHub step
+    summary.
+10. **Upload to Codecov**: Upload `lcov.info` to Codecov service with
+    `parser,xtask` flags; Codecov patch status is required at `95%`.
+11. **Archive proof**: Save `lcov.info`, the coverage receipt, and the
+    coverage quality-gate receipt/summary as workflow
+   artifacts. CI first checks that each required proof artifact exists and is
+   non-empty, so a partial upload cannot hide a missing receipt.
+
+The coverage quality-gate markdown also includes the PR-body proof fields for
+coverage/proof/enforcement lane changes: objective, claim boundary, non-goals,
+RIPR/coverage effect, local proof commands, cleanup performed, and what remains.
+Its suggested local proof commands include `rtk git status --short --branch`,
+`rtk git diff --check`, and `rtk bash scripts/storage-doctor` so cleanup evidence
+travels with the receipt guidance instead of being a separate memory-only step.
+
+`quality-gate` records `coverage.codecov_config_status` separately from the
+LCOV receipt status. A missing or invalid `codecov.yml` becomes its own repair
+action, so policy failures are not hidden behind a stale coverage receipt.
+
+Coverage failures should name behavior proof, not just lines. The gate guidance
+points agents toward tests for error paths, boundaries, config parsing,
+serialization, cancellation, provider decisions, and output contracts in the
+ranked uncovered files.
+
+When the Codecov patch percentage is known locally or supplied by CI, pass it
+through the aggregate gate:
+
+```bash
+rtk cargo xtask quality-gate --mode enforce-patch-coverage --codecov codecov.yml --patch-coverage 97.25
+```
+
+The resulting receipt records `coverage.patch_source = "cli"`, and rerun/check
+commands in the markdown summary preserve the same patch percentage.
+
+When the numeric patch percentage is not available inside the local job but the
+required Codecov patch status is the blocking PR source, make that delegation
+explicit instead of leaving patch coverage unknown:
+
+```bash
+rtk cargo xtask quality-gate --mode enforce-patch-coverage --codecov codecov.yml --patch-status-source codecov
+```
+
+That receipt records `coverage.patch_source = "codecov_status"`. If neither
+`--patch-coverage` nor `--patch-status-source codecov` is provided, the patch
+gate fails with `patch_coverage_unknown`.
 
 ### Environment Variables
 
@@ -146,7 +240,8 @@ Set this GitHub Actions secret at the repository or organization level:
 
 - `CODECOV_TOKEN`
 
-The coverage and test-results uploads use this token. Codecov upload failures are configured as non-blocking so service outages or missing token setup do not block merge-gate CI.
+The coverage and test-results uploads use this token. The coverage upload is a
+required proof path for the patch gate, so upload failures are not hidden.
 
 ## Configuration Files
 
@@ -164,7 +259,7 @@ The `codecov.yml` file at the project root configures:
 
 The coverage workflow file defines:
 
-- When coverage runs (push to main, PR labels, manual dispatch)
+- When coverage runs (PR, schedule, manual dispatch)
 - Build and test environment
 - Upload configuration
 - Artifact retention
@@ -176,7 +271,7 @@ The coverage workflow file defines:
 The `just coverage` recipes automatically install `cargo-llvm-cov` if missing. To install manually:
 
 ```bash
-cargo install cargo-llvm-cov --locked
+rtk cargo install cargo-llvm-cov --locked
 ```
 
 ### Coverage report generation fails
@@ -191,7 +286,8 @@ If your shell does not proxy `cargo +nightly` correctly on Windows, use `rustup 
 
 ### Codecov upload fails
 
-The workflow sets `fail_ci_if_error: false` so Codecov upload failures don't block PRs. Check:
+The coverage workflow sets `fail_ci_if_error: true` because Codecov patch
+coverage is a required PR gate. Check:
 
 1. Codecov service status: https://status.codecov.io/
 2. Workflow logs for upload details
@@ -203,8 +299,18 @@ Check:
 
 1. `CODECOV_TOKEN` is configured as a GitHub Actions secret.
 2. The JUnit file exists under `target/test-results/`.
-3. The receipt JSON exists under `target/receipts/`.
-4. The Codecov upload step is non-blocking, so failures should be visible in logs without failing the gate.
+
+### Coverage proof upload fails
+
+Check:
+
+1. `lcov.info` exists in the workspace root.
+2. The coverage receipt exists at
+   `target/receipts/quality/coverage-baseline.json`.
+3. The coverage quality-gate receipt exists at
+   `target/receipts/quality/coverage-quality-gate.json`.
+4. The coverage proof artifact uses `if-no-files-found: error`, so missing proof
+   fails the workflow.
 
 ### Coverage numbers look wrong
 
@@ -243,7 +349,7 @@ Use coverage to find gaps:
 
 ```bash
 # Generate HTML report
-just coverage
+rtk just coverage
 
 # Open target/coverage/index.html
 # Find uncovered lines (red highlighting)
@@ -253,15 +359,17 @@ just coverage
 
 ## Integration with CI Gates
 
-Coverage is **not** part of the fast merge gate (`just ci-gate`) to avoid slowing down the development cycle. Coverage runs:
+Coverage is part of the PR proof surface through the `Codecov / Patch 95`
+check, the Codecov patch status, and the coverage quality-gate receipt. It runs:
 
-- On `main`/`master` for baseline tracking
-- On PRs with explicit `ci:coverage` label
+- On every PR for patch coverage proof
 - On manual workflow dispatch
+- On the nightly schedule for trend/canary proof
 
 Branch coverage in the parser coverage lane is enforced separately through the baseline ratchet in `.ci/coverage-baseline.txt`.
 
-This keeps the merge gate fast (<5 min) while providing coverage visibility when needed.
+The `ci:coverage` label remains a legacy routing alias; it is no longer
+required for the patch gate.
 
 ## Test Analytics
 

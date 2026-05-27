@@ -27,6 +27,7 @@
 | Provider cutover matrix | [provider_cutover.md](provider_cutover.md) | Human | Provider shadow/live state changes |
 | Module resolution conformance | [module_resolution.md](module_resolution.md) | Human | Module-resolution behavior or tracking changes |
 | Quality metrics | [quality.md](quality.md) | Generator | Every merge |
+| Coverage and RIPR enforcement baseline | [coverage_and_ripr_enforcement.md](coverage_and_ripr_enforcement.md) | Human | Coverage/ripr policy or baseline changes |
 | DAP debugger scorecard | [dap.md](dap.md) | Generator | Every DAP-touching merge |
 | Release readiness | [release.md](release.md) | Human | Ship readiness changes |
 | Workspace & indexing scorecard | [workspace.md](workspace.md) | Generator | Every workspace-touching merge |

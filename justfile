@@ -1856,6 +1856,17 @@ coverage-lcov:
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     @echo "✅ Coverage: lcov.info"
 
+# Generate coverage proof LCOV for Codecov and quality-gate receipts.
+coverage-proof-lcov:
+    @echo "Generating coverage proof LCOV (parser + proof rail)..."
+    @if [[ ! -x "$HOME/.cargo/bin/cargo-llvm-cov" ]]; then \
+        echo "cargo-llvm-cov not found. Installing..."; \
+        "$HOME/.cargo/bin/rustup" run nightly cargo install cargo-llvm-cov --locked; \
+    fi
+    @"$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov -p perl-parser -p xtask --locked --branch --lcov --output-path lcov.info \
+        --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
+    @echo "Coverage proof: lcov.info"
+
 # Show coverage summary (terminal)
 coverage-summary:
     @echo "📊 Coverage Summary"
@@ -2702,7 +2713,9 @@ ci-metrics-ratchet:
     @echo "Checking scorecard floor metrics..."
     cargo run -p xtask -- metrics ratchet-check parser
     cargo run -p xtask -- metrics ratchet-check engineering_health
+    cargo run -p xtask -- metrics ratchet-check memory_plateau
     cargo run -p xtask -- metrics ratchet-check parser_accuracy
+    cargo run -p xtask -- metrics ratchet-check parser_accuracy_gold
     cargo run -p xtask -- metrics ratchet-check token
     cargo run -p xtask -- metrics ratchet-check editor_ux
     @echo "Scorecard ratchet passed"

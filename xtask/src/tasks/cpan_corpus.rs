@@ -994,14 +994,15 @@ Some other line";
         let result = run_command_with_timeout(cmd, Duration::from_secs(2))?;
         assert!(!result.timed_out);
         assert!(result.output.status.success());
-        assert_eq!(String::from_utf8_lossy(&result.output.stderr), "warn\n");
+        let stderr = String::from_utf8_lossy(&result.output.stderr).replace("\r\n", "\n");
+        assert_eq!(stderr, "warn\n");
         Ok(())
     }
 
     #[test]
     fn test_run_command_with_timeout_kills_hung_process() -> Result<()> {
         let mut cmd = Command::new("perl");
-        cmd.args(["-e", "$|=1; print STDERR qq(waiting\\n); sleep 5;"]);
+        cmd.args(["-e", "select STDERR; $|=1; print STDERR qq(waiting\\n); sleep 5;"]);
 
         let started = Instant::now();
         let result = run_command_with_timeout(cmd, Duration::from_millis(200))?;

@@ -28,8 +28,12 @@ warrant different cadences:
 | Bounded smoke (acceptance-flavoured but capped) | every PR | Constant-cost-per-PR signal that the user-flow surface still works end-to-end. Specifically *not* a full sweep. |
 | Broad acceptance / property / fuzz / BDD matrix | label-gated **or** nightly cron | Real evidence but expensive; only fire when a reviewer explicitly asks (`bdd`, `property-tests`, `fuzz`, `full-ci`) or on the scheduled cron. |
 | Mutation testing | targeted PR (`mutation` label) **or** nightly cron **or** release readiness | High-cost runtime evidence; never default-PR. |
-| `ripr` (static oracle-gap) | every Rust-diff PR | Cheap static substitute that surfaces "this changed line is not exercised by any test that could discriminate behavior." Advisory only. |
-| Coverage | push to `master`, label-gated PR (`coverage`), workflow_dispatch | Codecov upload is push-billed; on-demand for PRs. |
+| `ripr` (static oracle-gap) | every Rust-diff PR | Cheap static substitute that surfaces "this changed line is not exercised by any test that could discriminate behavior." New severe gaps block; existing debt burns down under the dated `ripr-total-burndown` exception in `policy/quality-gate-exceptions.toml`. |
+| Coverage | every PR, nightly schedule, workflow_dispatch | Codecov patch status is the merge gate for changed-line coverage; `coverage-baseline.json` and `quality-gate --mode enforce-patch-coverage --codecov codecov.yml` prove the local receipt and live Codecov patch policy rail, and block below-target patch values when a patch percentage is present; project coverage remains burn-down telemetry under the dated `project-coverage-burndown` exception until promoted, and final `quality-gate --mode enforce` requires the Codecov project policy to become blocking `95%` / `0.25%`. |
+
+Both quality-gate summaries include PR-body proof guidance so agents can paste
+the objective, claim boundary, non-goals, RIPR effect, coverage effect, local
+proof commands, cleanup status, and remaining gaps into the PR before review.
 
 The doctrine, from [`ripr.md`](ripr.md):
 
@@ -57,7 +61,15 @@ inventory):
   [`../development/RUST_1_95_PROACTIVE_GUARDS.md`](../development/RUST_1_95_PROACTIVE_GUARDS.md)
   for the planned guards rail).
 - `cargo deny check` (if wired into the canonical CI workflow).
-- `ripr` advisory lane.
+- `ripr` new-gap gate.
+- Codecov patch coverage gate (`95%`, `0%` threshold).
+- `policy/quality-gate-exceptions.toml` documents the temporary total-RIPR and
+  project-coverage burn-down exceptions; those entries do not waive the final
+  `quality-gate --mode enforce` target. The transition gates require this
+  ledger to be present and valid while burn-down debt exists. Final enforce also
+  rejects an informational Codecov project policy, so the project status must be
+  promoted before the exception ledger is removed. Exception dates are
+  machine-checked as `YYYY-MM-DD` with `updated <= review_after <= expires`.
 
 The bound matters as much as the inclusion: PR-fast lanes have a
 **capped** cost. A 30-minute property sweep does not belong here; a
@@ -77,7 +89,7 @@ changes).
 | `property-tests` | broad property sweep in `property-testing.yml` (high case-count). |
 | `fuzz` | quick-fuzz across all parser surfaces in `fuzzing.yml`. |
 | `mutation` | targeted mutation testing in `mutation-testing.yml` (scoped to touched risk-pack). |
-| `coverage` | `coverage.yml` Codecov upload on PR. |
+| `coverage` | Legacy label alias; the Codecov patch gate now runs on every PR. |
 | `security-audit` | standalone `cargo-deny` in `ci-security.yml` (also fires on push-main + weekly cron). |
 | `full-ci` | "spend authorization": activates every label-gated lane on a single PR. Reviewer signs off on the cost. |
 
@@ -89,7 +101,7 @@ canary lanes.
 - Full property-test sweep (256+ cases per crate).
 - Full fuzz matrix at extended budget.
 - Full mutation sweep across trust surfaces.
-- Coverage on `master` (`coverage.yml`).
+- Coverage trend canary (`ci-nightly.yml`).
 - `ci-nightly.yml` for any other long-running canary.
 
 The point of nightly: surface regressions that the bounded PR-fast
@@ -114,9 +126,12 @@ end-to-end release execution flow.
 ### 5. Advisory
 
 Lanes that emit signal but **never block merge**. A reviewer reads
-their findings and treats them as input to judgement.
+their findings and treats them as input to judgement. This category does not
+include the diff-scoped RIPR new-gap gate or Codecov patch gate; both are
+frontdoor blockers in the coverage / RIPR proof lane.
 
-- `ripr` (static oracle-gap detection).
+- Repo-wide RIPR+ total-debt burn-down reports, until the zero gate is
+  promoted. Diff-scoped new RIPR+ gaps are blocking now.
 - Bot review lanes: `droid-review`, `tokmd`, `CodeRabbit` if active.
 - `pr-plan` LEM forecast.
 - `methodology-gate` (currently advisory pending its own ratchet).

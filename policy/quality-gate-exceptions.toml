@@ -1,0 +1,53 @@
+# Quality Gate Temporary Exceptions
+#
+# These entries document transition debt while the coverage/proof lane burns
+# down toward the final blocking state. They do not waive final
+# `cargo xtask quality-gate --mode enforce` blockers.
+# `quality-gate` validates the required entry ids plus metric receipt,
+# aggregate-gate JSON/markdown, and Codecov policy evidence paths so this
+# ledger cannot silently drop the active transition debt.
+# `review_after` is enforced by `quality-gate`; due entries invalidate the
+# transitional gate until they are re-justified with fresh evidence and dates.
+# `expires` is enforced by `quality-gate`; expired entries invalidate the
+# transitional gate instead of becoming silent waivers.
+# Final `quality-gate --mode enforce` also fails while these temporary entries
+# remain active; remove this ledger after the final targets are met.
+# `status` must be `active` while entries remain. A retired or inactive ledger
+# with transition entries is invalid because it hides live burn-down debt.
+
+schema_version = 1
+policy = "quality-gate-exceptions"
+owner = "EffortlessMetrics"
+status = "active"
+updated = "2026-05-26"
+
+[[exception]]
+id = "ripr-total-burndown"
+applies_to = "ripr_total_not_zero"
+owner = "coverage-proof-lane"
+reason = "Existing repo-wide RIPR+ debt is being burned down with focused tests while new diff-scoped gaps are already blocking."
+final_target = "ripr_plus.unresolved == 0"
+current_evidence = [
+  "target/receipts/quality/ripr-plus.json",
+  "target/receipts/quality/quality-gate.json",
+  "target/receipts/quality/quality-gate.md",
+]
+removal_criteria = "Remove after cargo xtask quality-gate --mode enforce reports ripr_plus.unresolved == 0 on main."
+review_after = "2026-06-07"
+expires = "2026-08-07"
+
+[[exception]]
+id = "project-coverage-burndown"
+applies_to = "project_coverage_below_target"
+owner = "coverage-proof-lane"
+reason = "Project coverage is below the final 95% target while patch coverage is already enforced for changed code."
+final_target = "coverage.project >= 95.0"
+current_evidence = [
+  "target/receipts/quality/coverage-baseline.json",
+  "target/receipts/quality/coverage-quality-gate.json",
+  "target/receipts/quality/coverage-quality-gate.md",
+  "codecov.yml",
+]
+removal_criteria = "Remove after Codecov project coverage is at or above 95% and the project status is promoted from informational to blocking."
+review_after = "2026-06-07"
+expires = "2026-08-07"

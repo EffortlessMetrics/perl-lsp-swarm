@@ -1,7 +1,7 @@
 use super::super::token;
 use super::accuracy::{
     ParserAccuracyArtifactSummary, ParserAccuracyDenominator, ParserAccuracyFamilySummary,
-    ParserAccuracyMetricSummary,
+    ParserAccuracyMetricSummary, read_parser_accuracy_artifact,
 };
 use super::failure::{
     FailureCluster, build_failure_bucket_details, build_failure_worklist, classify_failure_bucket,

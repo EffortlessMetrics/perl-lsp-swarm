@@ -423,7 +423,7 @@ review_after = "2026-06-07"
 expires = "2026-08-07"
 
 # =============================================================================
-# Oracle-gap lane (advisory)
+# Oracle-gap lane (new-gap gate)
 # =============================================================================
 
 [[lane]]
@@ -432,25 +432,28 @@ workflow = ".github/workflows/ripr.yml"
 job = "ripr"
 tier = "frontdoor"
 kind = "oracle_gap"
-blocking = false
+blocking = true
 default_pr = true
 runner = "ubuntu_24_04"
 base_lem = 4
 owner = "testing"
-intent = "Find static oracle-gap evidence for changed Rust behavior."
+intent = "Find static oracle-gap evidence for changed Rust behavior and block new severe gaps."
 failure_mode = "Changed behavior is reachable but tests do not appear to discriminate it."
-proof_obligation = "Run static RIPR exposure analysis and advisory PR evidence routing on production Rust diffs."
+proof_obligation = "Run static RIPR exposure analysis, keep the repo-wide RIPR+ baseline receipt current, and fail when diff-scoped PR evidence reports new severe gaps."
 evidence = [
   "target/ripr/pr/repo-exposure.json",
   "target/ripr/pr/summary.md",
   "target/ripr/review/comments.json",
   "target/ripr/review/annotations.txt",
   "target/xtask/impacted-evidence/latest.json",
+  "target/receipts/quality/ripr-plus.json",
+  "target/receipts/quality/quality-gate.json",
+  "target/receipts/quality/quality-gate.md",
 ]
 allowed_triggers = ["pull_request", "workflow_dispatch"]
 labels = ["ripr", "full-ci"]
 expensive = false
-blocking_promotion_allowed = false
+blocking_promotion_allowed = true
 duplicate_of = ["nightly:mutation"]
 review_after = "2026-06-07"
 expires = "2026-08-07"
@@ -486,18 +489,24 @@ expires = "2026-11-07"
 id = "coverage"
 workflow = ".github/workflows/ci-nightly.yml"
 job = "test-coverage"
-tier = "nightly"
+tier = "frontdoor"
 kind = "coverage"
-blocking = false
-default_pr = false
+blocking = true
+default_pr = true
 runner = "ubuntu_24_04"
 base_lem = 45
 owner = "testing"
-intent = "Measure execution surface."
-failure_mode = "Coverage drops or important code becomes unexecuted."
-proof_obligation = "Run cargo-llvm-cov and upload report."
-evidence = ["lcov.info", "Codecov"]
-allowed_triggers = ["schedule", "workflow_dispatch", "pull_request:labeled"]
+intent = "Measure execution surface and enforce 95% patch coverage."
+failure_mode = "New or changed code is not covered by behavior tests."
+proof_obligation = "Run cargo-llvm-cov, write the coverage baseline receipt, upload LCOV to Codecov, and require patch coverage >=95%."
+evidence = [
+  "lcov.info",
+  "target/receipts/quality/coverage-baseline.json",
+  "target/receipts/quality/coverage-quality-gate.json",
+  "target/receipts/quality/coverage-quality-gate.md",
+  "Codecov patch 95",
+]
+allowed_triggers = ["pull_request", "schedule", "workflow_dispatch"]
 labels = ["ci:coverage", "coverage", "full-ci"]
 expensive = true
 duplicate_of = []

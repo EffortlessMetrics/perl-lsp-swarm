@@ -183,8 +183,9 @@ fn list() -> Result<()> {
 fn gc(stale_only: bool, apply: bool, force: bool, ttl_hours: i64) -> Result<()> {
     let root = project_root()?;
     let mut state = load_state(&root)?;
-    let cutoff = Utc::now() - Duration::hours(ttl_hours);
-    let stale_ids = gc_candidates(&state, stale_only, cutoff);
+    let now = Utc::now();
+    let cutoff = now - Duration::hours(ttl_hours);
+    let stale_ids = gc_candidates(&state, stale_only, cutoff, now);
 
     if stale_ids.is_empty() {
         println!("no leases eligible for gc");
@@ -227,13 +228,18 @@ fn gc(stale_only: bool, apply: bool, force: bool, ttl_hours: i64) -> Result<()> 
     Ok(())
 }
 
-fn gc_candidates(state: &LeaseState, stale_only: bool, cutoff: DateTime<Utc>) -> BTreeSet<String> {
+fn gc_candidates(
+    state: &LeaseState,
+    stale_only: bool,
+    cutoff: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> BTreeSet<String> {
     state
         .leases
         .iter()
         .filter(|lease| {
             if stale_only {
-                lease.last_heartbeat < cutoff || lease.lease_expiry < Utc::now()
+                lease.last_heartbeat < cutoff || lease.lease_expiry < now
             } else {
                 true
             }
@@ -373,7 +379,8 @@ mod tests {
         let fixture = include_str!("../../tests/fixtures/worktree-allocator/gc-stale.json");
         let state: LeaseState = serde_json::from_str(fixture)?;
         let cutoff = DateTime::parse_from_rfc3339("2026-04-30T00:00:00Z")?.with_timezone(&Utc);
-        let candidates = gc_candidates(&state, true, cutoff);
+        let now = DateTime::parse_from_rfc3339("2026-04-30T12:00:00Z")?.with_timezone(&Utc);
+        let candidates = gc_candidates(&state, true, cutoff, now);
         assert!(candidates.contains("wt-stale-1"));
         assert!(!candidates.contains("wt-fresh-1"));
         Ok(())

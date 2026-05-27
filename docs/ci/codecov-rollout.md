@@ -3,8 +3,14 @@
 > **Context**: This document is part of perl-lsp's [Industrialized AI](why-industrialized.md) CI architecture. The choices here are responses to operating at 1000+ PRs/day, not premature optimization.
 
 Tightens Codecov's posture in perl-lsp so it accurately reflects what's
-actually uploaded, stays out of branch-protection theater, and remains
+actually uploaded, blocks only the proof signals that are ready, and remains
 useful alongside the other evidence lanes.
+
+> 2026-05-26 update: the coverage / RIPR proof lane supersedes the original
+> non-blocking Codecov posture for patch coverage. Codecov patch coverage is
+> now the blocking PR signal at `95%` with `0%` threshold; project coverage
+> remains informational until burn-down reaches the final target and the
+> Codecov project policy is promoted to blocking `95%` / `0.25%`.
 
 > Doctrine: Codecov is **one** evidence lane alongside parser corpus, UX
 > tests, `ripr`, mutation, real-Perl oracle, no-panic, file policy, and
@@ -33,22 +39,28 @@ Codecov does **not** answer:
 | Surface                  | Current                                                                                              | Target                                                                                  |
 | ------------------------ | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | README badge             | present (`alt="code coverage"`)                                                                      | clearer alt text (`alt="Codecov parser branch coverage"`); MSRV badge synced to 1.95    |
-| `codecov.yml`            | broad: 70% project, 75% patch, `if_ci_failed: error`, per-crate `parser` / `lsp` / `lexer` / `dap` / `corpus` flags, PR comments **on** | quiet: informational statuses, single `parser-branch` flag matching real upload, comments **off**, github-checks annotations **off** |
+| `codecov.yml`            | patch `95%` / `0%` blocking, project `95%` informational during burn-down, per-crate `parser` / `xtask` / `lsp` / `lexer` / `dap` / `corpus` flags, PR comments **on** | patch remains blocking; project becomes blocking only after burn-down |
 | Coverage workflow        | inline in `.github/workflows/ci-nightly.yml::test-coverage`                                          | (optional, late) dedicated `.github/workflows/coverage.yml`                             |
-| Coverage flag uploaded   | `parser`                                                                                             | `parser-branch` (matches what's actually scoped + the local baseline)                   |
+| Coverage flag uploaded   | `parser,xtask` under the `coverage-proof` upload                                                     | keep parser and proof-rail coverage inspectable while final project coverage burns down |
 | Branch-coverage ratchet  | `.ci/coverage-baseline.txt` (50.00% branch / 92.11% line / 1.00% allowed drop / 80.00% target)        | unchanged in PR ladder, calibrated only after several stable runs (PR Cov-8)            |
-| Coverage receipt         | absent                                                                                               | `target/coverage/coverage-receipt.json` per run, with claim boundary inlined            |
+| Coverage receipt         | `target/receipts/quality/coverage-baseline.json` and `coverage-quality-gate.{json,md}` in the coverage job | consumed by `cargo xtask quality-gate`, with claim boundary and coverage scope inlined |
 | Test Analytics           | receipt → JUnit upload in PR-fast / gate shards / UX regression lanes                                | unchanged; documented as **test telemetry**, distinct from coverage                      |
 | Policy registration      | `codecov.yml` not in `policy/non-rust-allowlist.toml`                                                | added under `policy/non-rust-allowlist.toml` with `review_after` + `covered_by`         |
 
 ## PR ladder
 
+The original Cov-* ladder below is historical context. The current coverage /
+RIPR proof lane has already promoted patch coverage to a blocking `95%` / `0%`
+gate and uses `coverage-baseline.json` plus `coverage-quality-gate.{json,md}`
+as receipts. Do not reintroduce the earlier non-blocking patch posture or the
+single `parser-branch` upload as the active plan.
+
 Each row is one PR. Branch from clean `origin/master`. Do **not** combine.
 
 | #     | Branch                                  | Title                                                          | Tracking      | Notes                                                                                   |
 | ----- | --------------------------------------- | -------------------------------------------------------------- | ------------- | --------------------------------------------------------------------------------------- |
-| Cov-1 | `ci/codecov-config`                     | `ci(codecov): quiet and scope coverage statuses`               | #8578         | Replace `codecov.yml`: comments off, informational project/patch, single `parser-branch` flag |
-| Cov-2 | `ci/coverage-receipt`                   | `ci(coverage): add parser branch coverage receipt`             | #8582         | `ci-nightly.yml::test-coverage` — change flag to `parser-branch`, harden upload condition (token detection + `continue-on-error`), emit `coverage-receipt.json`, write step summary |
+| Cov-1 | `ci/codecov-config`                     | `ci(codecov): quiet and scope coverage statuses`               | #8578         | Superseded by proof lane: patch is now blocking at `95%` / `0%`; project remains informational during burn-down |
+| Cov-2 | `ci/coverage-receipt`                   | `ci(coverage): add parser branch coverage receipt`             | #8582         | Superseded by proof lane: `ci-nightly.yml::test-coverage` now emits `target/receipts/quality/coverage-baseline.json` and `coverage-quality-gate.{json,md}` |
 | Cov-3 | `docs/codecov-lane`                     | `docs(ci): document Codecov coverage lane boundary`            | #8586         | Create `docs/ci/codecov.md` with claim boundary; reference from `docs/how-to/COVERAGE.md` if/when that doc exists |
 | Cov-4 | `docs/readme-codecov-badge`             | `docs(readme): clarify Codecov badge scope`                    | merged #8541  | `alt="code coverage"` → `alt="Codecov parser branch coverage"`; MSRV badge `1.93` → `1.95` |
 | Cov-5 | `ci/codecov-test-analytics-docs`        | `ci(codecov): document receipt-backed test analytics`          | #8588         | Adds a table that separates coverage vs Test Analytics vs branch ratchet (none blocking) |
@@ -60,10 +72,11 @@ Each row is one PR. Branch from clean `origin/master`. Do **not** combine.
 
 ## PR Cov-1 — `codecov.yml` shape
 
-Replace the current file with this template. Tighten coverage scope to the
-parser/lexer/AST surface that actually has the branch-coverage ratchet
-behind it; everything else (`lsp`, `dap`, `corpus`) is removed until those
-get their own measurement story.
+The active `codecov.yml` contract is patch `95%` / `0%` blocking, project
+`95%` informational during burn-down, actionable `diff` / `files` PR comments,
+and coverage flags that keep parser code plus the `xtask` proof rail
+inspectable. The older non-blocking `parser-branch` template below is
+historical context only; do not apply it to the current proof lane.
 
 ```yaml
 codecov:
@@ -116,26 +129,42 @@ ignore:
   - "crates/*/benches/**"
   - "crates/*/examples/**"
   - "crates/*/build.rs"
-  - "xtask/**"
   - "fuzz/**"
   - "vscode-extension/**"
   - "**/*_generated.rs"
 ```
 
+Do not ignore `xtask/**`: the quality-gate and receipt emitters are part of the
+proof rail and must remain under patch coverage pressure.
+
 ## PR Cov-2 — `test-coverage` job changes
 
 Inside `.github/workflows/ci-nightly.yml::test-coverage`:
 
-1. Rename the Codecov flag from `parser` to `parser-branch` (matches what
-   the ratchet actually measures, and the new `codecov.yml`).
-2. Add token detection so the upload step is a no-op when
-   `secrets.CODECOV_TOKEN` is absent (fork PRs, etc.).
-3. Use `continue-on-error: true` and `fail_ci_if_error: false` on the
-   `codecov-action` step.
-4. After `just coverage-branch-gate`, emit
-   `target/coverage/coverage-receipt.json` with claim-boundary fields.
-5. Upload both `lcov.info` and `coverage-receipt.json` as artifacts.
-6. Write a GitHub step summary listing artifact presence and the claim
+1. Keep the Codecov upload flags aligned with the proof LCOV (`parser,xtask` in
+   the active workflow) so the parser surface and proof rail are inspectable.
+2. Keep the `test-coverage` job on every pull request, without label or path
+   filters, while schedule and manual runs continue to work.
+3. Keep the `codecov-action` step fail-fast once patch coverage is a required
+   PR gate.
+4. Keep `rtk just coverage-branch-gate` as the lean parser branch ratchet, then
+   run `rtk just coverage-proof-lcov` to overwrite `lcov.info` with parser plus
+   proof-rail coverage before receipt generation.
+5. After the proof LCOV is present, emit
+   `target/receipts/quality/coverage-baseline.json` with claim-boundary fields.
+6. Run `rtk cargo xtask quality-gate --mode enforce-patch-coverage --codecov
+   codecov.yml --patch-status-source codecov` against the coverage receipt so
+   CI proves the local receipt is current, has positive measured LCOV lines, the
+   explicit live Codecov patch policy is blocking, the required external patch
+   status source is named, the receipt carries coverage scope for later final
+   enforcement, that live policy is authoritative over any receipt snapshot,
+   and Codecov failure comments include diff/file guidance.
+   Preserve the gate's failure exit code while still appending
+   `coverage-quality-gate.md` to the GitHub step summary.
+7. Upload `lcov.info`, `coverage-baseline.json`, and the coverage quality-gate
+   receipt/summary as artifacts after checking that each required proof file is
+   present and non-empty.
+8. Write a GitHub step summary listing artifact presence and the claim
    boundary in one paragraph.
 
 Pin the `codecov/codecov-action` to the existing SHA pinned in the rest of
@@ -148,7 +177,7 @@ the workflow file — do not introduce a new floating tag.
 
 Codecov is scoped Rust execution-surface telemetry for perl-lsp.
 
-Current uploaded coverage flag: `parser-branch`
+Current uploaded coverage flags: `parser,xtask`
 
 Current coverage scope:
 - `perl-parser`
@@ -158,16 +187,18 @@ Current coverage scope:
 - `perl-ast-v2`
 - `perl-token`
 
-The lane answers: "Did tests execute this parser/lexer/AST surface, and
-did branch coverage regress beyond the accepted baseline budget?"
+The lane answers: "Did tests execute this parser/proof-rail surface, did patch
+coverage stay at or above 95%, and did branch coverage regress beyond the
+accepted baseline budget?"
 
 It does not answer correctness, completeness, or release readiness — see
 `docs/development/RUST_1_95_ROLLOUT.md` and `docs/project/status/` for the
 relevant evidence lanes.
 
 The local branch-coverage source of truth is `.ci/coverage-baseline.txt`.
-Codecov project/patch statuses are informational until stable data is
-available. Codecov comments are disabled to reduce PR noise.
+Codecov patch status is blocking at `95%`; project status remains
+informational until the final coverage burn-down gate is promoted. Codecov
+comments must include diff/file guidance for the proof lane.
 
 Test Analytics is separate from coverage. CI receipts are converted to
 JUnit and uploaded so gate behavior is visible without rerunning tests
@@ -197,7 +228,8 @@ Add to `docs/ci/codecov.md` and/or wherever lane docs live:
 | Codecov surface       | Source                                | Meaning                       | Blocking?                  |
 | --------------------- | ------------------------------------- | ----------------------------- | -------------------------- |
 | Coverage badge        | `lcov.info` from `test-coverage`      | Parser branch coverage trend  | No                         |
-| Project/patch status  | Codecov `parser-branch` flag          | Informational coverage status | No                         |
+| Patch status          | Codecov patch result                  | Changed-code coverage proof   | Yes, `95%` / `0%`          |
+| Project status        | Codecov project result                | Burn-down telemetry           | No, until final promotion  |
 | Test Analytics        | Receipt → JUnit uploads               | CI gate / test result viz.    | No                         |
 | Branch ratchet        | `.ci/coverage-baseline.txt` + script  | Local coverage regression gate | Yes inside coverage lane  |
 
@@ -227,7 +259,7 @@ language = "yaml"
 surface = "ci"
 classification = "config"
 owner = "release/ci"
-reason = "Runs label-gated and scheduled coverage, mutation, performance, memory, and strict lanes."
+reason = "Runs the default coverage PR gate plus scheduled/manual and label-gated expensive lanes."
 covered_by = ["cargo xtask check-file-policy", "docs/ci/codecov.md"]
 created = "2026-05-11"
 review_after = "2026-08-11"
@@ -254,21 +286,21 @@ this is the intent, not the bit-exact representation.
 Skip this PR if `ci-nightly.yml::test-coverage` continues to be ergonomic.
 Extract into `.github/workflows/coverage.yml` only if:
 
-- Coverage cadence diverges from "nightly" (PR-label use grows, badge
-  consumers want a clean run URL).
+- Coverage cadence diverges from "nightly" or badge consumers want a clean run
+  URL.
 - Or workflow file-size becomes a review burden.
 
 When extracting:
 
 - Use `cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}`.
-- Trigger on `schedule` + `workflow_dispatch` + PR labels (`ci:coverage`,
-  `coverage`, `full-ci`).
+- Trigger on every `pull_request` plus `schedule` and `workflow_dispatch`;
+  patch coverage is a front-door PR gate, not a label-gated lane.
 - Remove the `test-coverage` job from `ci-nightly.yml` in the same PR.
 
 ## PR Cov-8 — Optional ratchet calibration
 
-Only after several stable `master` and `ci:coverage` runs with the new
-`parser-branch` flag. Update `.ci/coverage-baseline.txt`:
+Only after several stable `master` and default PR coverage runs with the
+`parser,xtask` upload flags. Update `.ci/coverage-baseline.txt`:
 
 - Raise `baseline_branch_coverage` only when actuals are consistently above
   it across 5+ runs.
@@ -279,13 +311,15 @@ Only after several stable `master` and `ci:coverage` runs with the new
 
 ```bash
 # YAML parse
-python3 -c "import yaml; yaml.safe_load(open('codecov.yml').read())"
+rtk python3 -c "import yaml; yaml.safe_load(open('codecov.yml').read())"
 
 # Coverage lane locally
-just coverage-branch-gate
-python3 -m json.tool target/coverage/coverage-receipt.json   # PR Cov-2 onward
-cargo xtask fmt
-git diff --check
+rtk just coverage-branch-gate
+rtk just coverage-proof-lcov
+rtk cargo xtask coverage-baseline --lcov lcov.info --receipt target/receipts/quality/coverage-baseline.json --check
+rtk cargo xtask quality-gate --mode enforce-patch-coverage --coverage-receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-status-source codecov --receipt target/receipts/quality/coverage-quality-gate.json --summary target/receipts/quality/coverage-quality-gate.md --check
+rtk cargo xtask fmt
+rtk git diff --check
 ```
 
 ## PR body template
@@ -323,8 +357,8 @@ or release readiness.
 - Scope matches PR title:
 - Files touched are expected:
 - No duplicate coverage upload lane:
-- Codecov remains non-blocking:
-- Codecov comments remain disabled:
+- Codecov project coverage remains non-blocking during burn-down:
+- Codecov comments include actionable diff/files guidance:
 - Coverage / Test Analytics distinction preserved:
 - Local validation:
 - CI status:
@@ -336,7 +370,7 @@ or release readiness.
 
 - Combine Codecov work with: Rust 1.95 lint cleanup, no-panic baseline,
   file-policy rollout, provider cutover, `@INC` work, dependency bumps.
-- Make Codecov branch-protection blocking.
+- Make Codecov project coverage branch-protection blocking before burn-down.
 - Enable Codecov PR comments.
 - Claim Codecov proves parser semantics, LSP / DAP behavior, `@INC`
   correctness, CPAN corpus adequacy, mutation adequacy, no-panic safety,
@@ -358,27 +392,29 @@ shape so it slots cleanly into the rail index alongside
 `docs/development/CI_UX_RAIL.md`.
 
 > **Substrate (already built)**: this rollout doc itself (#8539, merged),
-> README badge fix (#8541, merged), the `parser-branch` flag scope and
-> `.ci/coverage-baseline.txt` ratchet baseline. The original umbrella
+> README badge fix (#8541, merged), the Codecov patch gate, the proof-LCOV
+> `parser,xtask` upload, and `.ci/coverage-baseline.txt` ratchet baseline. The original umbrella
 > #8508 is closed; the rail tracker is #8635.
-> **Connector gap**: scope Codecov's upload + status to parser-branch
-> coverage (Cov-1), emit a parser coverage receipt artifact (Cov-2), and
-> document the evidence-lane boundary (Cov-3, Cov-5) so Codecov never
+> **Connector gap**: burn project coverage to 95%, keep the receipt/summary
+> artifacts current, and document the evidence-lane boundary so Codecov never
 > implicitly claims more than it measures.
 > **0.14.0 upside**: contributors and reviewers can trust the Codecov
 > surface as a narrow, accurate signal — parser branch coverage,
 > informational — without confusing it for release-readiness proof or
 > for parser semantic correctness.
+>
+> **Current proof-lane update**: patch coverage is now blocking at `95%` / `0%`;
+> project coverage remains burn-down telemetry until final promotion.
 
 ### Status
 
 | Phase | Issue | Builder-ready? | PR | Receipt |
 |---|---|---|---|---|
 | Cov-1 — scope flag | #8578 | filed by ladder agent | — | `codecov.yml` shape matches Cov-1 template above |
-| Cov-2 — parser coverage receipt artifact | #8582 | filed by ladder agent | — | `cargo xtask coverage-ratchet` emits `target/coverage/coverage-receipt.json` |
+| Cov-2 â€” parser coverage receipt artifact | #8582 | superseded by proof lane | â€” | `rtk cargo xtask coverage-baseline` emits `target/receipts/quality/coverage-baseline.json`; `quality-gate` emits `coverage-quality-gate.{json,md}` |
 | Cov-3 — coverage-lane boundary doc | #8586 | filed by ladder agent | — | `docs/ci/codecov.md` lands with claim boundary |
 | Cov-5 — Test Analytics doc | #8588 | filed by ladder agent | — | doc section in `docs/ci/codecov.md` clearly separates coverage vs Test Analytics |
-| Cov-6 — policy registration | #8594 | filed by ladder agent | — | `cargo xtask check-file-policy --mode advisory` shows `codecov.yml` registered |
+| Cov-6 — policy registration | #8594 | filed by ladder agent | — | `rtk cargo xtask check-file-policy --mode advisory` shows `codecov.yml` registered |
 
 Optional, deferred until several stable runs:
 
@@ -396,11 +432,11 @@ Optional, deferred until several stable runs:
 
 ### Claim boundary
 
-**This rail proves**: Codecov is a *scoped, quiet, informational*
-evidence lane that reports parser branch coverage against the local
-ratchet. Cov-1/2 narrow what's uploaded; Cov-3/5 document what it means;
-Cov-6 brings the config file under the same file-policy ledger every
-other non-rust surface uses.
+**This rail proves**: Codecov is a scoped evidence lane with blocking patch
+coverage, burn-down project coverage, local coverage receipts, and quality-gate
+summaries. Cov-1/2 are superseded by the proof lane's current policy and
+artifacts; Cov-3/5 document what the signal means; Cov-6 brings the config file
+under the same file-policy ledger every other non-rust surface uses.
 
 **This rail does NOT prove**:
 
@@ -423,20 +459,20 @@ the failure mode this rail exists to prevent.
 
 ```bash
 # Branch-coverage ratchet (local, primary receipt).
-cargo xtask coverage-ratchet
+rtk cargo xtask coverage-ratchet
 
 # PR-fast gate receipt (records what was actually verified pre-merge).
-cargo xtask gates --tier pr-fast --base origin/master --receipt
+rtk cargo xtask gates --tier pr-fast --base origin/master --receipt
 
 # Confirm Codecov surface is registered under file policy (Cov-6).
-cargo xtask check-file-policy --mode advisory
+rtk cargo xtask check-file-policy --mode advisory
 
 # Per-phase issue status.
-gh issue view 8578
-gh issue view 8582
-gh issue view 8586
-gh issue view 8588
-gh issue view 8594
+rtk gh issue view 8578
+rtk gh issue view 8582
+rtk gh issue view 8586
+rtk gh issue view 8588
+rtk gh issue view 8594
 ```
 
 ### Related
@@ -470,6 +506,6 @@ Coordinate by searching open issues with the `codecov` or `Cov-`
 filename pattern before filing duplicates:
 
 ```bash
-gh api 'repos/EffortlessMetrics/perl-lsp/issues?state=open&per_page=100' \
+rtk gh api 'repos/EffortlessMetrics/perl-lsp/issues?state=open&per_page=100' \
   --jq '.[] | select(.title | test("(codecov|Cov-)")) | "#\(.number) \(.title)"'
 ```

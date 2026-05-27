@@ -11,9 +11,10 @@ This directory holds the checked-in policy snapshot that keeps the gate practica
 ## Local commands
 
 ```bash
-just coverage-summary
-just coverage-branch-gate
-just coverage-baseline-refresh
+rtk just coverage-summary
+rtk just coverage-branch-gate
+rtk just coverage-proof-lcov
+rtk just coverage-baseline-refresh
 ```
 
 ## Policy shape
@@ -31,8 +32,10 @@ Refresh `.ci/coverage-baseline.txt` only when the new parser coverage snapshot i
 Typical flow:
 
 1. Improve tests or coverage scope
-2. Run `just coverage-branch-gate` to confirm the lane is green
-3. Run `just coverage-baseline-refresh`
-4. Commit the updated baseline with the related test/coverage change
+2. Run `rtk just coverage-branch-gate` to confirm the parser ratchet is green
+3. Run `rtk just coverage-proof-lcov` when refreshing the Codecov/quality-gate
+   proof LCOV
+4. Run `rtk just coverage-baseline-refresh`
+5. Commit the updated baseline with the related test/coverage change
 
 Do not refresh the baseline to hide an accidental regression.

@@ -74,7 +74,9 @@ defined in `xtask/src/tasks/metrics/ratchet.rs` (`SubsystemBaseline`):
 |------|-----------|------------|
 | `.ci/metrics/baselines/parser.json` | Parser corpus cleanliness | `system_clean_rate`, `cpan_clean_rate`, `system_crash_count`, `strict_clean_subset_pass_rate` |
 | `.ci/metrics/baselines/engineering_health.json` | Build/test hygiene | `strict_clean_subset_pass_rate` |
+| `.ci/metrics/baselines/memory_plateau.json` | Memory plateau scorecard | See file |
 | `.ci/metrics/baselines/parser_accuracy.json` | Span / AST correctness | See file |
+| `.ci/metrics/baselines/parser_accuracy_gold.json` | Gold parser accuracy corpus | See file |
 | `.ci/metrics/baselines/token.json` | Lexer token health | See file |
 | `.ci/metrics/baselines/editor_ux.json` | Editor UX scorecard | See file |
 

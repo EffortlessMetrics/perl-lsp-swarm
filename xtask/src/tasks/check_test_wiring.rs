@@ -239,10 +239,31 @@ fn test_candidate_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn should_ignore_candidate(path: &Path) -> bool {
-    let path_str = path.to_string_lossy();
+    has_component(path, "fixtures") || has_component_sequence(path, &["src", "gen"])
+}
 
-    path.components().any(|component| component.as_os_str() == "fixtures")
-        || path_str.contains("/src/gen/")
+fn has_component(path: &Path, needle: &str) -> bool {
+    path.components().any(|component| component.as_os_str() == needle)
+}
+
+fn has_component_sequence(path: &Path, sequence: &[&str]) -> bool {
+    if sequence.is_empty() {
+        return false;
+    }
+
+    let mut matched = 0usize;
+    for component in path.components() {
+        if component.as_os_str() == sequence[matched] {
+            matched += 1;
+            if matched == sequence.len() {
+                return true;
+            }
+        } else {
+            matched = usize::from(component.as_os_str() == sequence[0]);
+        }
+    }
+
+    false
 }
 
 fn reachable_files(roots: &[PathBuf]) -> Result<HashSet<PathBuf>> {
@@ -414,7 +435,10 @@ mod tests {
 
         let report = scan(root).unwrap();
         assert_eq!(report.offenders.len(), 1);
-        assert!(report.offenders[0].path.ends_with("crates/perl-audit/src/orphan.rs"));
+        assert!(
+            Path::new(&report.offenders[0].path)
+                .ends_with(Path::new("crates/perl-audit/src/orphan.rs"))
+        );
     }
 
     #[test]
@@ -496,6 +520,6 @@ fn generated_test() {}
         let candidates = test_candidate_files(&root.join("src"));
 
         assert_eq!(candidates.len(), 1);
-        assert!(candidates[0].ends_with("src/real.rs"));
+        assert!(candidates[0].ends_with(Path::new("src/real.rs")));
     }
 }

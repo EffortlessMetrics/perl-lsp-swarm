@@ -418,13 +418,12 @@ jobs:
           retention-days: 30
 
   test-coverage:
-    name: Test Coverage
+    name: Codecov / Patch 95
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'ci:coverage')) ||
+      github.event_name == 'pull_request' ||
       github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@v6
@@ -456,21 +455,85 @@ jobs:
           touch archive/legacy-tests/test_fixtures/Module.pm
           touch archive/legacy-tests/test_fixtures/test.t
 
-      - name: Run tests with coverage (parser only, lean)
+      - name: Run parser branch coverage ratchet
         env:
           RUSTFLAGS: "-Copt-level=1 -Cdebuginfo=2"
           CARGO_BUILD_JOBS: 2
         run: just coverage-branch-gate
 
+      - name: Generate coverage proof LCOV
+        env:
+          RUSTFLAGS: "-Copt-level=1 -Cdebuginfo=2"
+          CARGO_BUILD_JOBS: 2
+        run: just coverage-proof-lcov
+
+      - name: Write coverage receipt
+        run: |
+          cargo xtask coverage-baseline \
+            --lcov lcov.info \
+            --receipt target/receipts/quality/coverage-baseline.json
+          cargo xtask coverage-baseline \
+            --lcov lcov.info \
+            --receipt target/receipts/quality/coverage-baseline.json \
+            --check
+
+      - name: Enforce patch coverage policy
+        if: always()
+        run: |
+          set +e
+          cargo xtask quality-gate \
+            --mode enforce-patch-coverage \
+            --coverage-receipt target/receipts/quality/coverage-baseline.json \
+            --codecov codecov.yml \
+            --patch-status-source codecov \
+            --receipt target/receipts/quality/coverage-quality-gate.json \
+            --summary target/receipts/quality/coverage-quality-gate.md
+          QUALITY_GATE_STATUS=$?
+          set -e
+          if [ -f target/receipts/quality/coverage-quality-gate.md ]; then
+            cat target/receipts/quality/coverage-quality-gate.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$QUALITY_GATE_STATUS"
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354  # v6.0.1
-        continue-on-error: true
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
-          flags: parser
-          name: parser-branch-coverage
-          fail_ci_if_error: false
+          flags: parser,xtask
+          name: coverage-proof
+          fail_ci_if_error: true
+
+      - name: Verify coverage proof artifacts
+        if: always()
+        shell: bash
+        run: |
+          missing=0
+          for file in \
+            lcov.info \
+            target/receipts/quality/coverage-baseline.json \
+            target/receipts/quality/coverage-quality-gate.json \
+            target/receipts/quality/coverage-quality-gate.md
+          do
+            if [ ! -s "$file" ]; then
+              echo "::error file=$file::Missing required coverage proof artifact"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Upload coverage proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-proof
+          path: |
+            lcov.info
+            target/receipts/quality/coverage-baseline.json
+            target/receipts/quality/coverage-quality-gate.json
+            target/receipts/quality/coverage-quality-gate.md
+          retention-days: 14
+          if-no-files-found: error
 
   tautology-check:
     name: Tautology Detection

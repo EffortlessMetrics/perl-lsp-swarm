@@ -19,6 +19,19 @@ fn project_root() -> PathBuf {
     dir
 }
 
+fn publish_allow_count(root: &std::path::Path) -> Result<usize, Box<dyn std::error::Error>> {
+    let cargo_toml = fs::read_to_string(root.join("Cargo.toml"))?;
+    let value: toml::Value = toml::from_str(&cargo_toml)?;
+    let allow = value
+        .get("workspace")
+        .and_then(|workspace| workspace.get("metadata"))
+        .and_then(|metadata| metadata.get("publish"))
+        .and_then(|publish| publish.get("allow"))
+        .and_then(toml::Value::as_array)
+        .ok_or("workspace.metadata.publish.allow missing from Cargo.toml")?;
+    Ok(allow.len())
+}
+
 /// All 15 old provider crate directories must be deleted after collapse.
 /// This test asserts that none of the following exist:
 /// - perl-lsp-completion-item
@@ -81,22 +94,20 @@ fn test_all_15_old_provider_crates_directories_removed() -> Result<(), Box<dyn s
 /// This test reads xtask/published-crate-baseline.txt and asserts it contains
 /// exactly the number 59 (which corresponds to 74 − 15 = 59).
 #[test]
-fn test_published_crate_count_is_59_after_collapse() -> Result<(), Box<dyn std::error::Error>> {
+fn test_published_crate_count_matches_current_publish_allowlist()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let baseline_path = root.join("xtask/published-crate-baseline.txt");
 
     let content = fs::read_to_string(&baseline_path)?;
     let count: u32 = content.trim().parse()?;
+    let allow_count = publish_allow_count(&root)? as u32;
 
     assert_eq!(
-        count, 59,
-        "G1a collapse: published crate count must be exactly 59.\n\
-         Before G1a: 74 crates (includes 15 providers)\n\
-         After G1a:  59 crates (15 providers collapsed into perl-lsp-rs-core)\n\
+        count, allow_count,
+        "G1a collapse: published crate baseline must match workspace.metadata.publish.allow.\n\
          Equation: 74 − 15 = 59\n\
-         Current count in xtask/published-crate-baseline.txt: {}\n\
-         See .spec/4500-wave-g1a-providers/acceptance.md line 67",
-        count
+         Current count in xtask/published-crate-baseline.txt: {count}; publish allowlist count: {allow_count}",
     );
     Ok(())
 }

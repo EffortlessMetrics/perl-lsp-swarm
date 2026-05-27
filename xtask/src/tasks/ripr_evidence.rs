@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const DEFAULT_ROOT: &str = ".";
-const DEFAULT_BASE: &str = "origin/master";
+const DEFAULT_BASE: &str = "origin/HEAD";
 const DEFAULT_HEAD: &str = "HEAD";
 
 const PR_EVIDENCE_JSON: &str = "target/ripr/pr/repo-exposure.json";
@@ -25,6 +25,7 @@ const ANNOTATIONS_TXT: &str = "target/ripr/review/annotations.txt";
 const PR_SUMMARY_MD: &str = "target/ripr/pr/summary.md";
 const IMPACTED_JSON: &str = "target/xtask/impacted-evidence/latest.json";
 const IMPACTED_MD: &str = "target/xtask/impacted-evidence/latest.md";
+const LOCAL_COMMAND_PREFIX: &str = "rtk";
 
 pub fn ripr_pr(root: &str, base: &str, head: &str, check: bool) -> Result<()> {
     let repo = repo_root()?;
@@ -65,7 +66,7 @@ pub fn ripr_pr_summary(check: bool) -> Result<()> {
         let actual = fs::read_to_string(&path)
             .with_context(|| format!("missing or unreadable {PR_SUMMARY_MD}"))?;
         if actual != summary {
-            bail!("{PR_SUMMARY_MD} is stale; run `cargo xtask ripr-pr-summary`");
+            bail!("{PR_SUMMARY_MD} is stale; run `{}`", local_xtask_command("ripr-pr-summary"));
         }
         println!("PR evidence summary is current.");
     } else {
@@ -90,7 +91,7 @@ pub fn ripr_annotations(comments: &str, out: &str, check: bool) -> Result<()> {
         let actual = fs::read_to_string(&out_path)
             .with_context(|| format!("missing or unreadable {out}"))?;
         if actual != generated.text {
-            bail!("{out} is stale; run `cargo xtask ripr-annotations`");
+            bail!("{out} is stale; run `{}`", local_xtask_command("ripr-annotations"));
         }
         println!("RIPR annotations are current.");
     } else {
@@ -128,7 +129,7 @@ pub fn impacted_evidence(
         let actual_md = fs::read_to_string(repo.join(IMPACTED_MD))
             .with_context(|| format!("missing or unreadable {IMPACTED_MD}"))?;
         if actual_json != json_text || actual_md != markdown {
-            bail!("impacted evidence is stale; run `cargo xtask impacted-evidence`");
+            bail!("impacted evidence is stale; run `{}`", local_xtask_command("impacted-evidence"));
         }
         println!("Impacted evidence is current.");
     } else {
@@ -142,6 +143,10 @@ pub fn impacted_evidence(
 
 fn normalized_option(value: &str, default: &str) -> String {
     if value.trim().is_empty() { default.to_string() } else { value.to_string() }
+}
+
+fn local_xtask_command(args: &str) -> String {
+    format!("{LOCAL_COMMAND_PREFIX} cargo xtask {args}")
 }
 
 fn repo_root() -> Result<PathBuf> {
@@ -160,15 +165,15 @@ struct PrEvidenceOptions {
 }
 
 fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
-    verify_revision(repo, &options.base)?;
-    verify_revision(repo, &options.head)?;
+    let base_sha = resolve_revision(repo, &options.base)?;
+    let head_sha = resolve_revision(repo, &options.head)?;
     let changed_files = changed_files(repo, &options.base, &options.head)?;
     write_pr_diff(repo, &options.base, &options.head)?;
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
-    let packet = pr_evidence_packet(options, &changed_files, &check_value);
-    validate_pr_evidence_packet(&packet, options, changed_files.len(), true)?;
+    let packet = pr_evidence_packet(options, &base_sha, &head_sha, &changed_files, &check_value);
+    validate_pr_evidence_packet(&packet, options, &base_sha, &head_sha, changed_files.len(), true)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
     write_text(&repo.join(PR_EVIDENCE_MD), &render_pr_evidence_markdown(&packet))?;
     println!("Wrote {PR_EVIDENCE_JSON}");
@@ -177,8 +182,8 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 }
 
 fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
-    verify_revision(repo, &options.base)?;
-    verify_revision(repo, &options.head)?;
+    let base_sha = resolve_revision(repo, &options.base)?;
+    let head_sha = resolve_revision(repo, &options.head)?;
     let changed_files = changed_files(repo, &options.base, &options.head)?;
     let text = fs::read_to_string(repo.join(PR_EVIDENCE_JSON))
         .with_context(|| format!("missing or unreadable {PR_EVIDENCE_JSON}"))?;
@@ -187,6 +192,8 @@ fn check_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     validate_pr_evidence_packet(
         &packet,
         options,
+        &base_sha,
+        &head_sha,
         changed_files.len(),
         repo.join(PR_EVIDENCE_MD).exists(),
     )?;
@@ -210,6 +217,8 @@ fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<String> {
 
 fn pr_evidence_packet(
     options: &PrEvidenceOptions,
+    base_sha: &str,
+    head_sha: &str,
     changed_files: &[String],
     check_value: &Value,
 ) -> Value {
@@ -237,7 +246,9 @@ fn pr_evidence_packet(
         "status": if warnings.is_empty() { "advisory" } else { "incomplete" },
         "root": options.root,
         "base": options.base,
+        "base_sha": base_sha,
         "head": options.head,
+        "head_sha": head_sha,
         "summary": {
             "changed_files": changed_files.len(),
             "comments": 0,
@@ -287,6 +298,8 @@ fn pr_evidence_packet(
 fn validate_pr_evidence_packet(
     packet: &Value,
     options: &PrEvidenceOptions,
+    base_sha: &str,
+    head_sha: &str,
     expected_changed_files: usize,
     markdown_exists: bool,
 ) -> Result<()> {
@@ -297,7 +310,9 @@ fn validate_pr_evidence_packet(
     expect_string(packet, "scope", "diff", &mut violations);
     expect_string(packet, "root", &options.root, &mut violations);
     expect_string(packet, "base", &options.base, &mut violations);
+    expect_string(packet, "base_sha", base_sha, &mut violations);
     expect_string(packet, "head", &options.head, &mut violations);
+    expect_string(packet, "head_sha", head_sha, &mut violations);
     match packet.get("status").and_then(Value::as_str) {
         Some("advisory" | "incomplete" | "error") => {}
         Some(other) => violations.push(format!("status {other:?} is not valid")),
@@ -365,7 +380,15 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
     out.push_str(&format!("- status: `{}`\n", string_field(packet, "status", "unknown")));
     out.push_str(&format!("- root: `{}`\n", md_escape(string_field(packet, "root", DEFAULT_ROOT))));
     out.push_str(&format!("- base: `{}`\n", md_escape(string_field(packet, "base", DEFAULT_BASE))));
+    out.push_str(&format!(
+        "- base sha: `{}`\n",
+        md_escape(string_field(packet, "base_sha", "unknown"))
+    ));
     out.push_str(&format!("- head: `{}`\n", md_escape(string_field(packet, "head", DEFAULT_HEAD))));
+    out.push_str(&format!(
+        "- head sha: `{}`\n",
+        md_escape(string_field(packet, "head_sha", "unknown"))
+    ));
     out.push_str(&format!("- changed files: {}\n\n", count_field(summary, "changed_files")));
     out.push_str("## RIPR\n\n");
     out.push_str(&format!("- changed-line comments: {}\n", count_field(summary, "comments")));
@@ -416,22 +439,24 @@ struct ReviewCommentsOptions {
 }
 
 fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result<()> {
-    verify_revision(repo, &options.base)?;
-    verify_revision(repo, &options.head)?;
+    let base_sha = resolve_revision(repo, &options.base)?;
+    let head_sha = resolve_revision(repo, &options.head)?;
     let root = command_root_arg(repo, &options.root)?;
     if let Err(err) = run_ripr_review_comments(repo, options, &root) {
-        write_error_review_comments(repo, options, &root, &err.to_string())?;
+        write_error_review_comments(repo, options, &root, &base_sha, &head_sha, &err.to_string())?;
+    } else {
+        stamp_review_comments_receipt(repo, options, &base_sha, &head_sha)?;
     }
-    validate_review_comments(repo, options, true)?;
+    validate_review_comments(repo, options, &base_sha, &head_sha, true)?;
     println!("Wrote {REVIEW_COMMENTS_JSON}");
     println!("Wrote {REVIEW_COMMENTS_MD}");
     Ok(())
 }
 
 fn check_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result<()> {
-    verify_revision(repo, &options.base)?;
-    verify_revision(repo, &options.head)?;
-    validate_review_comments(repo, options, true)?;
+    let base_sha = resolve_revision(repo, &options.base)?;
+    let head_sha = resolve_revision(repo, &options.head)?;
+    validate_review_comments(repo, options, &base_sha, &head_sha, true)?;
     println!("Review comments contract ok: {REVIEW_COMMENTS_JSON}");
     Ok(())
 }
@@ -467,6 +492,8 @@ fn run_ripr_review_comments(
 fn validate_review_comments(
     repo: &Path,
     options: &ReviewCommentsOptions,
+    base_sha: &str,
+    head_sha: &str,
     markdown_required: bool,
 ) -> Result<()> {
     let text = fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))
@@ -477,7 +504,9 @@ fn validate_review_comments(
     expect_string(&packet, "schema_version", "0.1", &mut violations);
     expect_string(&packet, "tool", "ripr", &mut violations);
     expect_string(&packet, "base", &options.base, &mut violations);
+    expect_string(&packet, "base_sha", base_sha, &mut violations);
     expect_string(&packet, "head", &options.head, &mut violations);
+    expect_string(&packet, "head_sha", head_sha, &mut violations);
     match packet.get("status").and_then(Value::as_str) {
         Some("advisory" | "incomplete" | "error") => {}
         Some(other) => violations.push(format!("status {other:?} is not valid")),
@@ -501,10 +530,33 @@ fn validate_review_comments(
     }
 }
 
+fn stamp_review_comments_receipt(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+    base_sha: &str,
+    head_sha: &str,
+) -> Result<()> {
+    let path = repo.join(REVIEW_COMMENTS_JSON);
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("missing or unreadable {REVIEW_COMMENTS_JSON}"))?;
+    let mut packet: Value = serde_json::from_str(&text)
+        .with_context(|| format!("{REVIEW_COMMENTS_JSON} is invalid"))?;
+    let Some(object) = packet.as_object_mut() else {
+        bail!("{REVIEW_COMMENTS_JSON} root is not an object");
+    };
+    object.insert("base".to_string(), Value::String(options.base.clone()));
+    object.insert("base_sha".to_string(), Value::String(base_sha.to_string()));
+    object.insert("head".to_string(), Value::String(options.head.clone()));
+    object.insert("head_sha".to_string(), Value::String(head_sha.to_string()));
+    write_text(&path, &format_json(&packet)?)
+}
+
 fn write_error_review_comments(
     repo: &Path,
     options: &ReviewCommentsOptions,
     root: &str,
+    base_sha: &str,
+    head_sha: &str,
     error: &str,
 ) -> Result<()> {
     let packet = json!({
@@ -513,7 +565,9 @@ fn write_error_review_comments(
         "status": "error",
         "root": normalize_path_text(root),
         "base": options.base,
+        "base_sha": base_sha,
         "head": options.head,
+        "head_sha": head_sha,
         "mode": "fast",
         "rendering_limits": {
             "max_inline_comments": 0,
@@ -1008,11 +1062,11 @@ fn normalize_labels(labels: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
+fn resolve_revision(repo: &Path, rev: &str) -> Result<String> {
     let commit = format!("{rev}^{{commit}}");
-    run_git_output(repo, &["rev-parse", "--verify", commit.as_str()])
-        .map(|_| ())
-        .with_context(|| format!("bad base/head revision {rev:?}"))
+    let output = run_git_output(repo, &["rev-parse", "--verify", commit.as_str()])
+        .with_context(|| format!("bad base/head revision {rev:?}"))?;
+    Ok(output.trim().to_string())
 }
 
 fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
@@ -1303,6 +1357,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_ripr_base_uses_remote_head_default() {
+        assert_eq!(normalized_option("", DEFAULT_BASE), "origin/HEAD");
+    }
+
+    #[test]
+    fn local_repair_guidance_commands_use_rtk_prefix() {
+        assert_eq!(local_xtask_command("ripr-pr-summary"), "rtk cargo xtask ripr-pr-summary");
+        assert_eq!(local_xtask_command("ripr-annotations"), "rtk cargo xtask ripr-annotations");
+        assert_eq!(local_xtask_command("impacted-evidence"), "rtk cargo xtask impacted-evidence");
+    }
+
+    #[test]
     fn mutation_label_routes_targeted() {
         let decision = routing_decision(&["mutation".to_string()], false);
         assert!(decision.requires_targeted_mutation);
@@ -1324,5 +1390,136 @@ mod tests {
         assert!(!decision.requires_targeted_mutation);
         assert!(!decision.requires_full_owner_mutation);
         assert_eq!(decision.mode, "fast_only");
+    }
+
+    #[test]
+    fn pr_evidence_packet_records_resolved_revisions() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+        };
+        let packet = pr_evidence_packet(
+            &options,
+            "base-sha",
+            "head-sha",
+            &["xtask/src/main.rs".to_string()],
+            &json!({
+                "summary": {
+                    "weakly_exposed": 0,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": 0
+                }
+            }),
+        );
+
+        assert_eq!(packet.get("base_sha").and_then(Value::as_str), Some("base-sha"));
+        assert_eq!(packet.get("head_sha").and_then(Value::as_str), Some("head-sha"));
+        validate_pr_evidence_packet(&packet, &options, "base-sha", "head-sha", 1, true)?;
+        Ok(())
+    }
+
+    #[test]
+    fn pr_evidence_packet_rejects_stale_head_revision() {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+        };
+        let packet = pr_evidence_packet(
+            &options,
+            "base-sha",
+            "old-head-sha",
+            &[],
+            &json!({
+                "summary": {
+                    "weakly_exposed": 0,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": 0
+                }
+            }),
+        );
+
+        assert!(
+            validate_pr_evidence_packet(&packet, &options, "base-sha", "new-head-sha", 0, true)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn review_comments_receipt_is_stamped_with_resolved_revisions() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            timeout_seconds: None,
+        };
+        write_minimal_review_comments(repo.path(), None, None)?;
+
+        stamp_review_comments_receipt(repo.path(), &options, "base-sha", "head-sha")?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.path().join(REVIEW_COMMENTS_JSON))?)?;
+        assert_eq!(packet.get("base_sha").and_then(Value::as_str), Some("base-sha"));
+        assert_eq!(packet.get("head_sha").and_then(Value::as_str), Some("head-sha"));
+        validate_review_comments(repo.path(), &options, "base-sha", "head-sha", false)?;
+        Ok(())
+    }
+
+    #[test]
+    fn review_comments_receipt_rejects_stale_head_revision() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            timeout_seconds: None,
+        };
+        write_minimal_review_comments(repo.path(), Some("base-sha"), Some("old-head-sha"))?;
+
+        assert!(
+            validate_review_comments(repo.path(), &options, "base-sha", "new-head-sha", false)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    fn write_minimal_review_comments(
+        repo: &Path,
+        base_sha: Option<&str>,
+        head_sha: Option<&str>,
+    ) -> Result<()> {
+        let path = repo.join(REVIEW_COMMENTS_JSON);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut packet = json!({
+            "schema_version": "0.1",
+            "tool": "ripr",
+            "status": "advisory",
+            "base": "origin/main",
+            "head": "HEAD",
+            "summary": {
+                "comments": 0,
+                "summary_only": 0,
+                "suppressed": 0
+            },
+            "comments": [],
+            "summary_only": [],
+            "suppressed": [],
+            "warnings": []
+        });
+        let object = packet
+            .as_object_mut()
+            .ok_or_else(|| eyre!("minimal review-comments packet must be an object"))?;
+        if let Some(base_sha) = base_sha {
+            object.insert("base_sha".to_string(), Value::String(base_sha.to_string()));
+        }
+        if let Some(head_sha) = head_sha {
+            object.insert("head_sha".to_string(), Value::String(head_sha.to_string()));
+        }
+        fs::write(path, format_json(&packet)?)?;
+        Ok(())
     }
 }

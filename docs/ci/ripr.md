@@ -18,9 +18,13 @@ oracle-aware than coverage, far cheaper than mutation testing.
 
 ---
 
-## Rust 1.95 rollout note
+## Current routing posture
 
-During the Rust 1.95 / 0.14.0 rollout, `ripr` remains advisory. The rollout map in [perl-lsp-rust-1.95-rollout.md](perl-lsp-rust-1.95-rollout.md) keeps normal PRs on ripr plus existing gates, reserves mutation testing for targeted/nightly/release lanes, and calls out routing follow-up work for docs-only and fixture-only changes.
+The `ripr` workflow now runs for every non-draft PR and reruns when a draft PR
+becomes ready for review. This slice establishes current repo-wide, diff-scoped,
+and review-guidance RIPR receipts for every merge candidate. Blocking
+`quality-gate` enforcement is wired in a later proof-lane slice after the CLI
+contract and exception policy are landed.
 
 ## What ripr does
 
@@ -51,17 +55,25 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 
 ## When it runs
 
-- Every PR that touches `crates/**`, `xtask/**`, `Cargo.toml`, `Cargo.lock`, or `ripr.toml`.
-- Skipped on docs-only PRs.
+- Every PR targeting `master` or `main`.
+- No path filter is applied: docs-only, policy-only, workflow-only, and code
+  PRs all run the proof receipt workflow so every merge has current RIPR
+  evidence.
+- Draft PRs are skipped while draft, then the explicit `ready_for_review`
+  trigger runs the workflow before the PR can merge.
 - Manual via `workflow_dispatch`.
-- Forced via the `ripr` label (PR 07 wires this through PR Plan).
+- Labels can still route deeper or more expensive evidence lanes elsewhere,
+  but this ready-for-review receipt workflow is no longer label-gated.
 
 ---
 
 ## Behavior
 
-- `continue-on-error: true` - does **not** block merges.
+- Remains advisory in this slice; blocking new-gap enforcement is promoted
+  through the later quality-gate CI wiring.
 - Produces diff-scoped PR evidence under `target/ripr/pr/`.
+- Produces the repo-wide RIPR+ baseline receipt at
+  `target/receipts/quality/ripr-plus.json`.
 - Produces review guidance under `target/ripr/review/`.
 - In CI, review guidance has an explicit timeout and falls back to an
   advisory `error` artifact instead of blocking the workflow.
@@ -93,40 +105,37 @@ The suppression file is read by `ripr.toml`'s `[suppressions] path` setting.
 
 | PR | What happens |
 |---:|---|
-| 06 | Advisory only — this PR. |
-| 18 | Narrow soft-gate for new high-confidence findings on production Rust diffs. Acknowledged via `ripr-waive` / `full-ci` / `ci-budget-ack` labels. |
+| 1 | Ready-for-review workflow routing, no path filter, repo-wide RIPR+ receipt, diff-scoped RIPR PR receipt, and review-guidance receipt. No CI enforcement. |
+| Later | `cargo xtask quality-gate --mode enforce-new-ripr` becomes the blocking new-gap gate after its CLI contract lands. |
+| Later | Total RIPR+ unresolved count reaches zero, then full `quality-gate --mode enforce` becomes blocking. |
 
-The soft-gate at PR 18 only fires when:
-
-- Classification is `reachable_unrevealed` or `weakly_exposed`.
-- Production Rust changed and no nearby test changed.
-- Finding is not in `policy/ripr-suppressions.toml`.
-- Confidence is high.
-
-ripr is **never** used as proof; it is used as a **prompt**.
+This first routing slice makes the receipts available on every PR. Later slices
+define the stable `quality-gate` interface, enforce new gaps, and finally require
+repo-wide RIPR+ zero after burn-down.
 
 ---
 
 ## Toolchain
 
-`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.5.0` as
-the current advisory version for this lane.
+`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.5.0`.
 
 ---
 
 ## Running locally
 
 ```bash
-cargo install ripr --version 0.5.0 --locked
-ripr doctor
-cargo xtask ripr-pr --base origin/master --head HEAD
-cargo xtask ripr-review-comments --base origin/master --head HEAD
-cargo xtask impacted-evidence
-cargo xtask ripr-pr-summary
-cargo xtask ripr-annotations
-cargo xtask ripr-pr --base origin/master --head HEAD --check
-cargo xtask ripr-review-comments --base origin/master --head HEAD --check
-cargo xtask impacted-evidence --check
-cargo xtask ripr-pr-summary --check
-cargo xtask ripr-annotations --check
+rtk cargo install ripr --version 0.5.0 --locked
+rtk ripr doctor
+rtk cargo xtask ripr-pr --base origin/HEAD --head HEAD
+rtk cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+rtk cargo xtask ripr-review-comments --base origin/HEAD --head HEAD
+rtk cargo xtask impacted-evidence
+rtk cargo xtask ripr-pr-summary
+rtk cargo xtask ripr-annotations
+rtk cargo xtask ripr-pr --base origin/HEAD --head HEAD --check
+rtk cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+rtk cargo xtask ripr-review-comments --base origin/HEAD --head HEAD --check
+rtk cargo xtask impacted-evidence --check
+rtk cargo xtask ripr-pr-summary --check
+rtk cargo xtask ripr-annotations --check
 ```

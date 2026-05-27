@@ -149,16 +149,16 @@ areas = ["path_normalization", "module_resolution", "sandbox"]
 duplicate_of = []
 
 # -----------------------------------------------------------------------------
-# Oracle-gap / advisory lanes
+# Oracle-gap / proof enforcement lanes
 # -----------------------------------------------------------------------------
 
 [lane.ripr_advisory]
-description = "Static RIPR exposure analysis for production Rust diffs."
+description = "Static RIPR exposure analysis and new-gap enforcement for production Rust diffs."
 intent = "oracle-gap detection"
 runner = "ubuntu_24_04"
 base_lem = 4
 default_pr = true
-blocking = false
+blocking = true
 paths = ["crates/**/src/**", "xtask/src/**"]
 labels = ["ripr", "full-ci"]
 outputs = [
@@ -166,6 +166,9 @@ outputs = [
   "target/ripr/pr/summary.md",
   "target/ripr/review/comments.json",
   "target/xtask/impacted-evidence/latest.json",
+  "target/receipts/quality/ripr-plus.json",
+  "target/receipts/quality/quality-gate.json",
+  "target/receipts/quality/quality-gate.md",
   "step-summary",
 ]
 duplicate_of = ["nightly:mutation"]
@@ -208,14 +211,21 @@ branches = ["master"]
 duplicate_of = []
 
 [lane.coverage]
-description = "Coverage collection."
-intent = "execution-surface measurement"
+description = "Coverage collection and Codecov patch gate."
+intent = "execution-surface measurement and patch proof"
 runner = "ubuntu_24_04"
 base_lem = 45
-default_pr = false
-blocking = false
+default_pr = true
+blocking = true
 labels = ["ci:coverage", "coverage", "full-ci"]
-branches = ["master"]
+branches = ["pull_request", "master"]
+outputs = [
+  "lcov.info",
+  "target/receipts/quality/coverage-baseline.json",
+  "target/receipts/quality/coverage-quality-gate.json",
+  "target/receipts/quality/coverage-quality-gate.md",
+  "Codecov patch 95",
+]
 duplicate_of = []
 
 [lane.mutation]
