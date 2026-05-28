@@ -231,13 +231,6 @@ fn parse_hunk_new_start(hunk: &str) -> Option<u64> {
         .and_then(|start| start.parse::<u64>().ok())
 }
 
-fn patch_coverage_from_changed_lines(
-    lcov: &LcovSummary,
-    changed_lines: &BTreeMap<String, BTreeSet<u64>>,
-) -> f64 {
-    patch_coverage_from_changed_lines_for_root(None, lcov, changed_lines)
-}
-
 fn patch_coverage_from_changed_lines_for_root(
     root: Option<&Path>,
     lcov: &LcovSummary,
@@ -453,7 +446,7 @@ deleted file mode 100644
             BTreeSet::from([11, 12, 99]),
         )]);
 
-        assert_eq!(patch_coverage_from_changed_lines(&lcov, &changed), 50.0);
+        assert_eq!(patch_coverage_from_changed_lines_for_root(None, &lcov, &changed), 50.0);
         Ok(())
     }
 
@@ -462,7 +455,7 @@ deleted file mode 100644
         let lcov = LcovSummary::default();
         let changed = BTreeMap::from([("docs/ci/ripr.md".to_string(), BTreeSet::from([10, 11]))]);
 
-        assert_eq!(patch_coverage_from_changed_lines(&lcov, &changed), 100.0);
+        assert_eq!(patch_coverage_from_changed_lines_for_root(None, &lcov, &changed), 100.0);
         Ok(())
     }
 
