@@ -1494,6 +1494,16 @@ mod tests {
     }
 
     #[test]
+    fn revision_sha_rejects_missing_revision() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+
+        assert!(revision_sha(repo, "refs/heads/does-not-exist").is_err());
+        Ok(())
+    }
+
+    #[test]
     fn pr_evidence_packet_carries_revision_shas() -> Result<()> {
         let options = PrEvidenceOptions {
             root: ".".to_string(),
@@ -1564,6 +1574,24 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn stamp_review_comments_receipt_rejects_non_object() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("target/ripr/review"))?;
+        fs::write(repo.join(REVIEW_COMMENTS_JSON), "[]\n")?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            timeout_seconds: None,
+        };
+
+        assert!(stamp_review_comments_receipt(repo, &options).is_err());
+        Ok(())
+    }
+
     fn init_git_repo(repo: &Path) -> Result<()> {
         fs::write(repo.join("tracked.txt"), "base\n")?;
         run_git(repo, &["init"])?;
@@ -1584,5 +1612,13 @@ mod tests {
             .context("git command returned non-UTF8 output")?
             .trim()
             .to_string())
+    }
+
+    #[test]
+    fn run_git_reports_failure_status() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+
+        assert!(run_git(temp.path(), &["definitely-not-a-git-command"]).is_err());
+        Ok(())
     }
 }

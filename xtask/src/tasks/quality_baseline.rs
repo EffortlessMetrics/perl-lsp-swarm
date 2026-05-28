@@ -415,12 +415,18 @@ deleted file mode 100644
 +++ /dev/null
 @@ -1 +0,0 @@
 -let removed_file = true;
+diff --git a/crates/nohunk/src/lib.rs b/crates/nohunk/src/lib.rs
+index 3333333..4444444 100644
+--- a/crates/nohunk/src/lib.rs
++++ b/crates/nohunk/src/lib.rs
++let ignored_without_hunk = true;
 ";
 
         let changed = parse_changed_lines(diff);
         let lines = changed.get("crates/example/src/lib.rs").ok_or("missing changed file entry")?;
 
         assert_eq!(lines.iter().copied().collect::<Vec<_>>(), vec![11, 12, 32, 33]);
+        assert!(!changed.contains_key("crates/nohunk/src/lib.rs"));
         Ok(())
     }
 
@@ -429,17 +435,26 @@ deleted file mode 100644
         let lcov = LcovSummary {
             line_hit: 3,
             line_found: 4,
-            files: vec![FileCoverage {
-                path: "crates/example/src/lib.rs".to_string(),
-                line_hit: 1,
-                line_found: 3,
-                uncovered_lines: vec![12, 40],
-                lines: vec![
-                    LcovLine { number: 11, hit_count: 1 },
-                    LcovLine { number: 12, hit_count: 0 },
-                    LcovLine { number: 40, hit_count: 0 },
-                ],
-            }],
+            files: vec![
+                FileCoverage {
+                    path: "crates/example/src/lib.rs".to_string(),
+                    line_hit: 1,
+                    line_found: 3,
+                    uncovered_lines: vec![12, 40],
+                    lines: vec![
+                        LcovLine { number: 11, hit_count: 1 },
+                        LcovLine { number: 12, hit_count: 0 },
+                        LcovLine { number: 40, hit_count: 0 },
+                    ],
+                },
+                FileCoverage {
+                    path: "crates/other/src/lib.rs".to_string(),
+                    line_hit: 0,
+                    line_found: 1,
+                    uncovered_lines: vec![5],
+                    lines: vec![LcovLine { number: 5, hit_count: 0 }],
+                },
+            ],
         };
         let changed = BTreeMap::from([(
             "crates/example/src/lib.rs".to_string(),
@@ -447,6 +462,22 @@ deleted file mode 100644
         )]);
 
         assert_eq!(patch_coverage_from_changed_lines_for_root(None, &lcov, &changed), 50.0);
+        Ok(())
+    }
+
+    #[test]
+    fn changed_lines_since_reports_bad_base() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::write(repo.join("tracked.rs"), "fn tracked() {}\n")?;
+        run_git(repo, &["init"])?;
+        run_git(repo, &["add", "tracked.rs"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "base"],
+        )?;
+
+        assert!(changed_lines_since(repo, "refs/heads/does-not-exist").is_err());
         Ok(())
     }
 
@@ -571,5 +602,13 @@ deleted file mode 100644
             return Err(format!("git {:?} failed with status {}", args, output.status).into());
         }
         Ok(String::from_utf8(output.stdout)?)
+    }
+
+    #[test]
+    fn run_git_reports_failure_status() -> TestResult {
+        let temp = tempfile::tempdir()?;
+
+        assert!(run_git(temp.path(), &["definitely-not-a-git-command"]).is_err());
+        Ok(())
     }
 }
