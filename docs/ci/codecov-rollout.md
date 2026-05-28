@@ -18,7 +18,7 @@ Current policy:
 
 - patch `95%` / `0%` is the front-door PR coverage policy;
 - project `95%` remains informational during burn-down;
-- `xtask/src/` is included in the PR patch gate through workspace binary-unit coverage so proof-rail CLI code stays visible;
+- proof-lane `xtask/src/` paths are included through focused quality-gate and RIPR integration coverage;
 - per-flag `target` fields are not used because project and patch status blocks own thresholds.
 
 The first blocking proof workflow now runs patch coverage on every ready PR and

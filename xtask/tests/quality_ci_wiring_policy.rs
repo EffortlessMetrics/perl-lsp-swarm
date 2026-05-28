@@ -77,7 +77,7 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
     assert!(
         codecov_upload_step.contains("uses: codecov/codecov-action@")
             && codecov_upload_step.contains("files: target/lcov.info"),
-        "Codecov upload step must upload the workspace lib/bin LCOV receipt"
+        "Codecov upload step must upload the workspace library plus xtask proof-lane LCOV receipt"
     );
     for required in [
         "just coverage-proof \"origin/$base_ref\"",
@@ -103,11 +103,17 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "coverage-proof base='origin/master':",
         "coverage_target=\"${CARGO_TARGET_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/perl-lsp-swarm-coverage-target}\"",
         "CARGO_TARGET_DIR=\"$coverage_target\"",
-        "cargo llvm-cov --workspace --lib --bins",
+        "cargo llvm-cov clean --workspace",
+        "cargo llvm-cov --workspace --lib --locked --no-report",
+        "cargo llvm-cov test quality_baseline -p xtask --bin xtask",
+        "cargo llvm-cov test ripr -p xtask --bin xtask",
+        "--test quality_ci_wiring_policy",
+        "--test quality_gate_patch_coverage_cli_policy",
+        "cargo llvm-cov report --lcov --output-path target/lcov.info",
         "--lcov --output-path target/lcov.info",
         "cargo xtask coverage-baseline",
         "--patch-base \"{{base}}\"",
-        "--scope workspace-lib-bin",
+        "--scope workspace-lib-xtask-quality",
         "cargo xtask quality-gate",
         "--mode enforce-patch-coverage",
         "--receipt target/receipts/quality/quality-gate-coverage.json",

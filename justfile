@@ -1921,7 +1921,8 @@ coverage-branch-gate:
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     @bash ./scripts/check-coverage-baseline.sh lcov.info .ci/coverage-baseline.txt
 
-# Generate workspace lib/bin coverage, derive patch coverage from the diff, and enforce the patch gate.
+# Generate workspace library coverage plus focused xtask proof-lane coverage,
+# derive patch coverage from the diff, and enforce the patch gate.
 coverage-proof base='origin/master':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1933,20 +1934,33 @@ coverage-proof base='origin/master':
     mkdir -p target/receipts/quality
     mkdir -p "$coverage_target"
     echo "coverage target: $coverage_target"
-    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov --workspace --lib --bins --locked --lcov --output-path target/lcov.info \
+    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov clean --workspace
+    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov --workspace --lib --locked --no-report
+    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov test quality_baseline -p xtask --bin xtask --locked --no-report --no-clean
+    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov test ripr -p xtask --bin xtask --locked --no-report --no-clean
+    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov test -p xtask --locked --no-report --no-clean \
+        --test codecov_patch_gate_policy \
+        --test quality_ci_wiring_policy \
+        --test quality_gate_cli_policy \
+        --test quality_gate_exception_policy \
+        --test quality_gate_patch_coverage_cli_policy \
+        --test quality_gate_ripr_new_gap_cli_policy \
+        --test quality_pr_summary_policy \
+        --test ripr_new_gap_gate_workflow
+    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
-        --scope workspace-lib-bin
+        --scope workspace-lib-xtask-quality
     cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
-        --scope workspace-lib-bin \
+        --scope workspace-lib-xtask-quality \
         --check
     cargo xtask quality-gate \
         --mode enforce-patch-coverage \
