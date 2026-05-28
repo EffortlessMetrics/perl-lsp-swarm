@@ -166,7 +166,7 @@ fn finish_file(summary: &mut LcovSummary, current: &mut FileCoverage) {
 
 fn patch_coverage_from_diff(root: &Path, base: &str, lcov: &LcovSummary) -> Result<f64> {
     let changed_lines = changed_lines_since(root, base)?;
-    Ok(patch_coverage_from_changed_lines(lcov, &changed_lines))
+    Ok(patch_coverage_from_changed_lines_for_root(Some(root), lcov, &changed_lines))
 }
 
 fn changed_lines_since(root: &Path, base: &str) -> Result<BTreeMap<String, BTreeSet<u64>>> {
@@ -235,11 +235,19 @@ fn patch_coverage_from_changed_lines(
     lcov: &LcovSummary,
     changed_lines: &BTreeMap<String, BTreeSet<u64>>,
 ) -> f64 {
+    patch_coverage_from_changed_lines_for_root(None, lcov, changed_lines)
+}
+
+fn patch_coverage_from_changed_lines_for_root(
+    root: Option<&Path>,
+    lcov: &LcovSummary,
+    changed_lines: &BTreeMap<String, BTreeSet<u64>>,
+) -> f64 {
     let mut executable_found = 0;
     let mut executable_hit = 0;
 
     for file in &lcov.files {
-        let Some(lines) = changed_lines.get(&file.path) else {
+        let Some(lines) = changed_lines_for_lcov_file(root, &file.path, changed_lines) else {
             continue;
         };
         for line in &file.lines {
@@ -253,6 +261,32 @@ fn patch_coverage_from_changed_lines(
     }
 
     if executable_found == 0 { 100.0 } else { percent(executable_hit, executable_found) }
+}
+
+fn changed_lines_for_lcov_file<'a>(
+    root: Option<&Path>,
+    path: &str,
+    changed_lines: &'a BTreeMap<String, BTreeSet<u64>>,
+) -> Option<&'a BTreeSet<u64>> {
+    changed_lines.get(path).or_else(|| {
+        root.and_then(|root| relative_lcov_path(root, path))
+            .and_then(|relative| changed_lines.get(&relative))
+    })
+}
+
+fn relative_lcov_path(root: &Path, path: &str) -> Option<String> {
+    let root_text = root
+        .canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/");
+    let path_text = Path::new(path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(path))
+        .to_string_lossy()
+        .replace('\\', "/");
+    let prefix = format!("{}/", root_text.trim_end_matches('/'));
+    path_text.strip_prefix(&prefix).map(str::to_string)
 }
 
 fn read_codecov_status(path: &Path) -> Result<JsonValue> {
@@ -381,6 +415,13 @@ index 1111111..2222222 100644
 -let old = true;
 +let replacement = true;
 +let second = true;
+\\ No newline at end of file
+diff --git a/crates/deleted/src/lib.rs b/crates/deleted/src/lib.rs
+deleted file mode 100644
+--- a/crates/deleted/src/lib.rs
++++ /dev/null
+@@ -1 +0,0 @@
+-let removed_file = true;
 ";
 
         let changed = parse_changed_lines(diff);
@@ -423,5 +464,119 @@ index 1111111..2222222 100644
 
         assert_eq!(patch_coverage_from_changed_lines(&lcov, &changed), 100.0);
         Ok(())
+    }
+
+    #[test]
+    fn build_receipt_derives_patch_coverage_from_git_diff() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("src"))?;
+        fs::write(repo.join("src/lib.rs"), "pub fn value() -> bool {\n    true\n}\n")?;
+        run_git(repo, &["init"])?;
+        run_git(repo, &["add", "src/lib.rs"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "base"],
+        )?;
+        let base = run_git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
+
+        fs::write(repo.join("src/lib.rs"), "pub fn value() -> bool {\n    false\n}\n")?;
+        run_git(repo, &["add", "src/lib.rs"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "head"],
+        )?;
+        let lcov = repo.join("lcov.info");
+        fs::write(
+            &lcov,
+            format!(
+                "SF:{}\nDA:1,1\nDA:2,0\nDA:3,1\nend_of_record\n",
+                repo.join("src/lib.rs").display()
+            ),
+        )?;
+        let codecov = repo.join("codecov.yml");
+        fs::write(
+            &codecov,
+            "coverage:\n  status:\n    patch:\n      default:\n        target: 95%\n",
+        )?;
+        let args = CoverageBaselineArgs {
+            lcov,
+            receipt: repo.join("target/coverage-baseline.json"),
+            codecov,
+            patch_coverage: None,
+            patch_base: Some(base),
+            scope: Some("workspace-lib-xtask-quality".to_string()),
+            check: false,
+        };
+
+        let receipt = build_receipt(repo, &args)?;
+
+        assert_eq!(receipt["coverage"]["patch"], json!(0.0));
+        assert_eq!(receipt["scope"], json!("workspace-lib-xtask-quality"));
+        Ok(())
+    }
+
+    #[test]
+    fn build_receipt_allows_missing_patch_source() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        run_git(repo, &["init"])?;
+        fs::write(repo.join("tracked.rs"), "fn tracked() {}\n")?;
+        run_git(repo, &["add", "tracked.rs"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "base"],
+        )?;
+        let lcov = repo.join("lcov.info");
+        fs::write(
+            &lcov,
+            format!("SF:{}\nDA:1,1\nend_of_record\n", repo.join("tracked.rs").display()),
+        )?;
+        let codecov = repo.join("codecov.yml");
+        fs::write(&codecov, "coverage:\n  status: {}\n")?;
+        let args = CoverageBaselineArgs {
+            lcov,
+            receipt: repo.join("target/coverage-baseline.json"),
+            codecov,
+            patch_coverage: None,
+            patch_base: None,
+            scope: None,
+            check: false,
+        };
+
+        let receipt = build_receipt(repo, &args)?;
+
+        assert!(receipt["coverage"].as_object().is_some_and(serde_json::Map::is_empty));
+        assert_eq!(receipt["scope"], json!("unspecified"));
+        Ok(())
+    }
+
+    #[test]
+    fn coverage_baseline_command_preserves_regeneration_inputs() -> TestResult {
+        let args = CoverageBaselineArgs {
+            lcov: PathBuf::from("target/lcov.info"),
+            receipt: PathBuf::from("target/receipts/quality/coverage-baseline.json"),
+            codecov: PathBuf::from("codecov.yml"),
+            patch_coverage: Some(96.123),
+            patch_base: Some("origin/main".to_string()),
+            scope: Some("workspace-lib-xtask-quality".to_string()),
+            check: false,
+        };
+
+        let command = coverage_baseline_command(&args, true);
+
+        assert!(command.contains("--patch-coverage 96.12"));
+        assert!(command.contains("--patch-base origin/main"));
+        assert!(command.contains("--scope workspace-lib-xtask-quality"));
+        assert!(command.ends_with(" --check"));
+        Ok(())
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) -> TestResult<String> {
+        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        if !output.status.success() {
+            return Err(format!("git {:?} failed with status {}", args, output.status).into());
+        }
+        Ok(String::from_utf8(output.stdout)?)
     }
 }

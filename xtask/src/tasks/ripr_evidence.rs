@@ -1479,4 +1479,110 @@ mod tests {
         assert!(!decision.requires_full_owner_mutation);
         assert_eq!(decision.mode, "fast_only");
     }
+
+    #[test]
+    fn revision_sha_reads_current_head() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+
+        let head = revision_sha(repo, "HEAD")?;
+
+        assert_eq!(current_head(repo)?, head);
+        assert_eq!(head.len(), 40);
+        Ok(())
+    }
+
+    #[test]
+    fn pr_evidence_packet_carries_revision_shas() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+        };
+        let check_value = json!({
+            "summary": {
+                "weakly_exposed": 1,
+                "reachable_unrevealed": 0,
+                "no_static_path": 0
+            }
+        });
+
+        let packet = pr_evidence_packet(
+            &options,
+            &["xtask/src/tasks/ripr_evidence.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+        );
+
+        assert_eq!(packet["base_sha"], json!("base-sha"));
+        assert_eq!(packet["head_sha"], json!("head-sha"));
+        validate_pr_evidence_packet(&packet, &options, 1, true, "base-sha", "head-sha")?;
+        Ok(())
+    }
+
+    #[test]
+    fn stamp_review_comments_receipt_records_current_revisions() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("target/ripr/review"))?;
+        fs::write(repo.join(REVIEW_COMMENTS_MD), "# Review comments\n")?;
+        fs::write(
+            repo.join(REVIEW_COMMENTS_JSON),
+            format_json(&json!({
+                "schema_version": "0.1",
+                "tool": "ripr",
+                "status": "advisory",
+                "root": ".",
+                "base": "HEAD",
+                "head": "HEAD",
+                "mode": "fast",
+                "summary": {},
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            }))?,
+        )?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            timeout_seconds: None,
+        };
+
+        stamp_review_comments_receipt(repo, &options)?;
+        validate_review_comments(repo, &options, true)?;
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        let head = revision_sha(repo, "HEAD")?;
+
+        assert_eq!(packet["base_sha"], json!(head));
+        assert_eq!(packet["head_sha"], json!(head));
+        Ok(())
+    }
+
+    fn init_git_repo(repo: &Path) -> Result<()> {
+        fs::write(repo.join("tracked.txt"), "base\n")?;
+        run_git(repo, &["init"])?;
+        run_git(repo, &["add", "tracked.txt"])?;
+        run_git(
+            repo,
+            &["-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "base"],
+        )?;
+        Ok(())
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) -> Result<String> {
+        let output = Command::new("git").args(args).current_dir(repo).output()?;
+        if !output.status.success() {
+            bail!("git {:?} failed with status {}", args, output.status);
+        }
+        Ok(String::from_utf8(output.stdout)
+            .context("git command returned non-UTF8 output")?
+            .trim()
+            .to_string())
+    }
 }
