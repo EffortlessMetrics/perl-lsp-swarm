@@ -24,8 +24,8 @@
       "ci_tier": "pr",
       "component": "completion",
       "instrumentation": {
-        "run_receipt": true,
-        "first_useful_result": true,
+        "run_receipt": false,
+        "first_useful_result": false,
         "protocol_goldens": false
       },
       "user_journey": "open a simple Perl file and verify hover and completion work without crashing",
