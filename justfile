@@ -1934,11 +1934,15 @@ coverage-proof base='origin/master':
     mkdir -p target/receipts/quality
     mkdir -p "$coverage_target"
     echo "coverage target: $coverage_target"
-    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov clean --workspace
-    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov --workspace --lib --locked --no-report
-    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov test quality_baseline -p xtask --bin xtask --locked --no-report --no-clean
-    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov test ripr -p xtask --bin xtask --locked --no-report --no-clean
-    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov test -p xtask --locked --no-report --no-clean \
+    export CARGO_TARGET_DIR="$coverage_target"
+    "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov clean --workspace
+    coverage_env="$coverage_target/llvm-cov-env.sh"
+    "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov show-env --sh > "$coverage_env"
+    source "$coverage_env"
+    "$HOME/.cargo/bin/rustup" run nightly cargo test --workspace --lib --locked
+    "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask quality_baseline --locked
+    "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask ripr --locked
+    "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --locked \
         --test codecov_patch_gate_policy \
         --test quality_ci_wiring_policy \
         --test quality_gate_cli_policy \
@@ -1947,7 +1951,7 @@ coverage-proof base='origin/master':
         --test quality_gate_ripr_new_gap_cli_policy \
         --test quality_pr_summary_policy \
         --test ripr_new_gap_gate_workflow
-    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --lcov --output-path target/lcov.info \
+    "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     cargo xtask coverage-baseline \
         --lcov target/lcov.info \
