@@ -1071,7 +1071,48 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn live_ci_classifier_blocks_missing_required_proof_context() {
+    fn merge_ready_required_checks_policy_loads_only_required_contexts() -> Result<()> {
+        let root = unique_policy_root("required-checks");
+        let policy_dir = root.join(".ci").join("policies");
+        std::fs::create_dir_all(&policy_dir)?;
+        std::fs::write(
+            policy_dir.join("required-checks.toml"),
+            r#"
+[[checks]]
+name = "Perl LSP Rust Small Result"
+required = true
+
+[[checks]]
+name = "ripr+ New Gap Gate"
+required = true
+
+[[checks]]
+name = "advisory-lint"
+required = false
+"#,
+        )?;
+
+        let checks = load_required_ci_checks(&root)?;
+
+        assert!(checks.contains("Perl LSP Rust Small Result"));
+        assert!(checks.contains("ripr+ New Gap Gate"));
+        assert!(!checks.contains("advisory-lint"));
+
+        let _cleanup = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    fn unique_policy_root(name: &str) -> PathBuf {
+        let suffix = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => duration.as_nanos(),
+            Err(_) => 0,
+        };
+        std::env::temp_dir()
+            .join(format!("perl-lsp-swarm-queue-reconciler-{name}-{}-{suffix}", std::process::id()))
+    }
+
+    #[test]
+    fn merge_ready_live_ci_classifier_blocks_missing_required_proof_context() {
         let checks = vec![
             successful_check("Perl LSP Rust Small Result"),
             successful_check("ripr+ New Gap Gate"),
@@ -1088,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn live_ci_classifier_blocks_pending_required_proof_context() {
+    fn merge_ready_live_ci_classifier_blocks_pending_required_proof_context() {
         let checks = vec![
             successful_check("Perl LSP Rust Small Result"),
             successful_check("ripr+ New Gap Gate"),
@@ -1112,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn live_ci_classifier_blocks_skipped_required_proof_context() {
+    fn merge_ready_live_ci_classifier_blocks_skipped_required_proof_context() {
         let checks = vec![
             successful_check("Perl LSP Rust Small Result"),
             successful_check("ripr+ New Gap Gate"),
@@ -1136,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn live_ci_classifier_passes_only_when_required_proof_contexts_pass() {
+    fn merge_ready_live_ci_classifier_passes_only_when_required_proof_contexts_pass() {
         let checks = vec![
             successful_check("Perl LSP Rust Small Result"),
             successful_check("ripr+ New Gap Gate"),
