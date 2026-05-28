@@ -1481,6 +1481,13 @@ mod tests {
     }
 
     #[test]
+    fn normalized_option_uses_default_for_blank_values() {
+        assert_eq!(normalized_option("", DEFAULT_ROOT), DEFAULT_ROOT);
+        assert_eq!(normalized_option("  ", DEFAULT_BASE), DEFAULT_BASE);
+        assert_eq!(normalized_option("HEAD", DEFAULT_HEAD), "HEAD");
+    }
+
+    #[test]
     fn revision_sha_reads_current_head() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
@@ -1589,6 +1596,43 @@ mod tests {
         };
 
         assert!(stamp_review_comments_receipt(repo, &options).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn validate_review_comments_rejects_stale_revision_receipt() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("target/ripr/review"))?;
+        fs::write(repo.join(REVIEW_COMMENTS_MD), "# Review comments\n")?;
+        fs::write(
+            repo.join(REVIEW_COMMENTS_JSON),
+            format_json(&json!({
+                "schema_version": "0.1",
+                "tool": "ripr",
+                "status": "advisory",
+                "root": ".",
+                "base": "HEAD",
+                "base_sha": "stale-base",
+                "head": "HEAD",
+                "head_sha": "stale-head",
+                "mode": "fast",
+                "summary": {},
+                "comments": [],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            }))?,
+        )?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            timeout_seconds: None,
+        };
+
+        assert!(validate_review_comments(repo, &options, true).is_err());
         Ok(())
     }
 

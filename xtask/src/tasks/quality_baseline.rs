@@ -491,6 +491,83 @@ index 3333333..4444444 100644
     }
 
     #[test]
+    fn parse_lcov_ignores_malformed_rows_and_tracks_uncovered_samples() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let lcov = temp.path().join("lcov.info");
+        fs::write(
+            &lcov,
+            "\
+SF:crates/example/src/lib.rs
+DA:not-a-line,1
+DA:0,1
+DA:2,not-a-hit-count
+DA:3,0
+DA:4,7
+end_of_record
+",
+        )?;
+
+        let summary = parse_lcov(&lcov)?;
+        let file = summary.files.first().ok_or("missing LCOV file summary")?;
+        let gap = file_gap_json(file).ok_or("missing uncovered file gap")?;
+
+        assert_eq!(summary.line_found, 2);
+        assert_eq!(summary.line_hit, 1);
+        assert_eq!(file.uncovered_lines, vec![3]);
+        assert_eq!(gap["sample_uncovered_lines"], json!([3]));
+        Ok(())
+    }
+
+    #[test]
+    fn read_codecov_status_returns_status_tree() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let codecov = temp.path().join("codecov.yml");
+        fs::write(
+            &codecov,
+            "\
+coverage:
+  status:
+    patch:
+      default:
+        target: 95%
+        threshold: 0%
+    project:
+      default:
+        target: 95%
+        informational: true
+",
+        )?;
+
+        let status = read_codecov_status(&codecov)?;
+
+        assert_eq!(status["patch"]["default"]["target"], json!("95%"));
+        assert_eq!(status["project"]["default"]["informational"], json!(true));
+        Ok(())
+    }
+
+    #[test]
+    fn absolute_lcov_paths_match_repo_relative_changed_lines() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("crates/example/src"))?;
+        let source = repo.join("crates/example/src/lib.rs");
+        fs::write(&source, "pub fn covered() {}\n")?;
+        let changed =
+            BTreeMap::from([("crates/example/src/lib.rs".to_string(), BTreeSet::from([1]))]);
+
+        let lines =
+            changed_lines_for_lcov_file(Some(repo), &source.display().to_string(), &changed)
+                .ok_or("absolute LCOV path did not match changed lines")?;
+
+        assert!(lines.contains(&1));
+        assert_eq!(
+            relative_lcov_path(repo, &source.display().to_string()).as_deref(),
+            Some("crates/example/src/lib.rs")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn build_receipt_derives_patch_coverage_from_git_diff() -> TestResult {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
