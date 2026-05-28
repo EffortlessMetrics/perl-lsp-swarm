@@ -286,7 +286,76 @@ fn build_source_fix_all(code_actions: &[Value], uri: &str) -> Option<Value> {
     Some(action)
 }
 
+fn is_pragma_snippet_action(action: &Value) -> bool {
+    action.get("kind").and_then(Value::as_str) == Some("quickfix")
+        && action.get("title").and_then(Value::as_str).is_some_and(|title| {
+            matches!(
+                title,
+                "Add use strict;" | "Add use warnings;" | "Add 'use strict' and 'use warnings'"
+            )
+        })
+}
+
+fn snippet_text_edits_from_changes(action: &Value, uri: &str) -> Option<Vec<Value>> {
+    let edits = action
+        .pointer("/edit/changes")
+        .and_then(Value::as_object)
+        .and_then(|changes| changes.get(uri))
+        .and_then(Value::as_array)?;
+
+    let mut snippet_edits = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let range = edit.get("range")?.clone();
+        let new_text = edit.get("newText")?.as_str()?;
+        snippet_edits.push(json!({
+            "range": range,
+            "snippet": {
+                "kind": "snippet",
+                "value": new_text,
+            },
+        }));
+    }
+
+    if snippet_edits.is_empty() { None } else { Some(snippet_edits) }
+}
+
+fn convert_pragma_quickfix_edits_to_snippet_text_edits(
+    code_actions: &mut [Value],
+    uri: &str,
+    document_version: i32,
+) {
+    for action in code_actions {
+        if !is_pragma_snippet_action(action) {
+            continue;
+        }
+
+        let Some(snippet_edits) = snippet_text_edits_from_changes(action, uri) else {
+            continue;
+        };
+
+        if let Some(action_object) = action.as_object_mut() {
+            action_object.insert(
+                "edit".to_string(),
+                json!({
+                    "documentChanges": [{
+                        "textDocument": {
+                            "uri": uri,
+                            "version": document_version,
+                        },
+                        "edits": snippet_edits,
+                    }],
+                }),
+            );
+        }
+    }
+}
+
 impl LspServer {
+    fn supports_workspace_snippet_text_edits(&self) -> bool {
+        let caps = self.client_capabilities.lock();
+        caps.workspace_edit_document_changes_support && caps.workspace_edit_snippet_edit_support
+    }
+
     /// Handle textDocument/codeAction request
     pub(crate) fn handle_code_action(
         &self,
@@ -581,6 +650,14 @@ impl LspServer {
                 code_actions.push(fix_all);
             }
 
+            if self.supports_workspace_snippet_text_edits() {
+                convert_pragma_quickfix_edits_to_snippet_text_edits(
+                    &mut code_actions,
+                    uri,
+                    doc.version,
+                );
+            }
+
             retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
             Ok(Some(json!(code_actions)))
         } else {
@@ -625,6 +702,14 @@ impl LspServer {
                         "changes": changes,
                     },
                 }));
+            }
+
+            if self.supports_workspace_snippet_text_edits() {
+                convert_pragma_quickfix_edits_to_snippet_text_edits(
+                    &mut code_actions,
+                    uri,
+                    doc.version,
+                );
             }
 
             // Always offer debug actions for files with issues
