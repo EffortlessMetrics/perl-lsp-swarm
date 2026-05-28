@@ -213,17 +213,25 @@ fn load_required_checks(root: &Path) -> Result<Vec<String>> {
     let value: toml::Value = toml::from_str(&raw)
         .with_context(|| format!("failed to parse required checks policy: {}", path.display()))?;
 
+    Ok(required_check_names_from_policy(&value))
+}
+
+fn required_check_names_from_policy(value: &toml::Value) -> Vec<String> {
     let mut checks = Vec::new();
+
     if let Some(array) = value.get("checks").and_then(toml::Value::as_array) {
         for item in array {
-            if let Some(name) = item.get("name").and_then(toml::Value::as_str) {
+            if item.get("required").and_then(toml::Value::as_bool) == Some(true)
+                && let Some(name) = item.get("name").and_then(toml::Value::as_str)
+            {
                 checks.push(name.to_string());
             }
         }
     }
 
     checks.sort_unstable();
-    Ok(checks)
+    checks.dedup();
+    checks
 }
 
 fn resolve_base_sha(root: &Path) -> Result<String> {
@@ -505,5 +513,51 @@ mod tests {
         let h1 = fnv1a64_hex(b"hello");
         let h2 = fnv1a64_hex(b"world");
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_required_check_names_include_only_required_status_contexts()
+    -> color_eyre::eyre::Result<()> {
+        let policy: toml::Value = toml::from_str(
+            r#"
+            [[check]]
+            name = "Workflow-shape lint only"
+            required = true
+
+            [[checks]]
+            name = "Proof required"
+            required = true
+
+            [[checks]]
+            name = "Missing required flag"
+            "#,
+        )?;
+
+        let checks = required_check_names_from_policy(&policy);
+        assert_eq!(checks, vec!["Proof required"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_required_check_names_deduplicate_sorted_names() -> color_eyre::eyre::Result<()> {
+        let policy: toml::Value = toml::from_str(
+            r#"
+            [[check]]
+            name = "ripr+ New Gap Gate"
+            required = true
+
+            [[checks]]
+            name = "Codecov / Patch 95"
+            required = true
+
+            [[checks]]
+            name = "ripr+ New Gap Gate"
+            required = true
+            "#,
+        )?;
+
+        let checks = required_check_names_from_policy(&policy);
+        assert_eq!(checks, vec!["Codecov / Patch 95", "ripr+ New Gap Gate"]);
+        Ok(())
     }
 }

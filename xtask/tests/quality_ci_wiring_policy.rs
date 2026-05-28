@@ -169,6 +169,36 @@ fn docs_describe_transitional_blocking_contract() {
     );
 }
 
+#[test]
+fn conventional_required_checks_record_live_proof_floor() {
+    let root = repo_root();
+    let policy = must(fs::read_to_string(root.join(".ci/policies/required-checks.toml")));
+    let merge_ready_doc = must(fs::read_to_string(root.join("docs/ci/merge-ready-protocol.md")));
+    let status_doc =
+        must(fs::read_to_string(root.join("docs/project/status/coverage_and_ripr_enforcement.md")));
+    let parsed: toml::Value = must(toml::from_str(&policy));
+
+    for required in ["Perl LSP Rust Small Result", "ripr+ New Gap Gate", "Codecov / Patch 95"] {
+        assert!(
+            policy_required_check(&parsed, required),
+            "required-check policy must mark `{required}` as required under GitHub enforcement"
+        );
+        assert!(
+            merge_ready_doc.contains(required) && status_doc.contains(required),
+            "docs must name live required proof context `{required}`"
+        );
+    }
+}
+
+fn policy_required_check(policy: &toml::Value, name: &str) -> bool {
+    policy.get("checks").and_then(toml::Value::as_array).into_iter().flatten().any(|item| {
+        item.get("name").and_then(toml::Value::as_str) == Some(name)
+            && item.get("required").and_then(toml::Value::as_bool) == Some(true)
+            && item.get("enforcement").and_then(toml::Value::as_str)
+                == Some("github-branch-protection")
+    })
+}
+
 fn repo_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     must_some(manifest.parent()).to_path_buf()
