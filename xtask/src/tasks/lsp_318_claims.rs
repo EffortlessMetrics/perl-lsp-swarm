@@ -819,4 +819,9 @@ mod tests {
         let text = "{\n  \"semanticTokensProvider\": {\n    \"delta\": true\n  }\n}\n";
         assert_eq!(line_number_for_pointer(text, "/semanticTokensProvider/full/delta"), 3);
     }
+
+    #[test]
+    fn claim_guard_accepts_current_lsp_318_contract() -> Result<()> {
+        run()
+    }
 }
