@@ -673,6 +673,40 @@ coverage:
         Ok(())
     }
 
+    #[test]
+    fn check_mode_reports_full_regeneration_command_for_stale_receipt() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        let lcov = repo.join("lcov.info");
+        let receipt = repo.join("target/receipts/quality/coverage-baseline.json");
+        let codecov = repo.join("codecov.yml");
+        fs::create_dir_all(receipt.parent().ok_or("receipt missing parent")?)?;
+        fs::write(&lcov, "SF:xtask/src/tasks/quality_baseline.rs\nDA:1,1\nend_of_record\n")?;
+        fs::write(
+            &codecov,
+            "coverage:\n  status:\n    patch:\n      default:\n        target: 95%\n",
+        )?;
+        fs::write(&receipt, "{}\n")?;
+        let args = CoverageBaselineArgs {
+            lcov,
+            receipt,
+            codecov,
+            patch_coverage: Some(94.0),
+            patch_base: None,
+            scope: Some("workspace-lib-xtask-quality".to_string()),
+            check: true,
+        };
+
+        let err = run(args).expect_err("stale receipt should fail check mode");
+        let message = err.to_string();
+
+        assert!(message.contains("coverage baseline receipt is stale"));
+        assert!(message.contains("rtk cargo xtask coverage-baseline"));
+        assert!(message.contains("--patch-coverage 94.00"));
+        assert!(message.contains("--scope workspace-lib-xtask-quality"));
+        Ok(())
+    }
+
     fn run_git(repo: &Path, args: &[&str]) -> TestResult<String> {
         let output = Command::new("git").args(args).current_dir(repo).output()?;
         if !output.status.success() {
