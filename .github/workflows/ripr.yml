@@ -20,10 +20,9 @@ permissions:
 
 jobs:
   ripr:
-    name: ripr static exposure
+    name: ripr+ New Gap Gate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    continue-on-error: true
     if: github.event.pull_request.draft != true
     env:
       RIPR_VERSION: "0.5.0"
@@ -84,6 +83,29 @@ jobs:
           cargo xtask ripr-pr-summary --check
           cargo xtask ripr-annotations --check
 
+      - name: Enforce new RIPR gap quality gate
+        if: always()
+        run: |
+          cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/${{ github.base_ref || 'master' }}" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md
+          cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/${{ github.base_ref || 'master' }}" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md \
+            --check
+
       - name: Append PR evidence summary
         if: always()
         shell: bash
@@ -92,6 +114,12 @@ jobs:
             cat target/ripr/pr/summary.md >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No RIPR PR evidence summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/receipts/quality/quality-gate-ripr.md ]; then
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            cat target/receipts/quality/quality-gate-ripr.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RIPR quality-gate summary was produced." >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ -f target/ripr/review/annotations.txt ]; then
             cat target/ripr/review/annotations.txt
@@ -107,5 +135,7 @@ jobs:
             target/ripr/review/**
             target/xtask/impacted-evidence/**
             target/receipts/quality/ripr-plus.json
+            target/receipts/quality/quality-gate-ripr.json
+            target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
-          if-no-files-found: warn
+          if-no-files-found: error

@@ -1921,6 +1921,44 @@ coverage-branch-gate:
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     @bash ./scripts/check-coverage-baseline.sh lcov.info .ci/coverage-baseline.txt
 
+# Generate workspace coverage, derive patch coverage from the diff, and enforce the patch gate.
+coverage-proof base='origin/master':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -x "$HOME/.cargo/bin/cargo-llvm-cov" ]]; then
+        echo "cargo-llvm-cov not found. Installing..."
+        "$HOME/.cargo/bin/rustup" run nightly cargo install cargo-llvm-cov --locked
+    fi
+    mkdir -p target/receipts/quality
+    "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov --workspace --locked --lcov --output-path target/lcov.info \
+        --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
+    cargo xtask coverage-baseline \
+        --lcov target/lcov.info \
+        --receipt target/receipts/quality/coverage-baseline.json \
+        --codecov codecov.yml \
+        --patch-base "{{base}}" \
+        --scope workspace
+    cargo xtask coverage-baseline \
+        --lcov target/lcov.info \
+        --receipt target/receipts/quality/coverage-baseline.json \
+        --codecov codecov.yml \
+        --patch-base "{{base}}" \
+        --scope workspace \
+        --check
+    cargo xtask quality-gate \
+        --mode enforce-patch-coverage \
+        --coverage-receipt target/receipts/quality/coverage-baseline.json \
+        --codecov codecov.yml \
+        --receipt target/receipts/quality/quality-gate-coverage.json \
+        --summary target/receipts/quality/quality-gate-coverage.md
+    cargo xtask quality-gate \
+        --mode enforce-patch-coverage \
+        --coverage-receipt target/receipts/quality/coverage-baseline.json \
+        --codecov codecov.yml \
+        --receipt target/receipts/quality/quality-gate-coverage.json \
+        --summary target/receipts/quality/quality-gate-coverage.md \
+        --check
+
 # Refresh the checked-in coverage baseline from a fresh parser coverage snapshot.
 coverage-baseline-refresh:
     @just coverage-lcov

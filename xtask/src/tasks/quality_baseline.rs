@@ -1,6 +1,7 @@
 //! Coverage baseline receipt generation for the proof lane.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -16,6 +17,8 @@ pub struct CoverageBaselineArgs {
     pub receipt: PathBuf,
     pub codecov: PathBuf,
     pub patch_coverage: Option<f64>,
+    pub patch_base: Option<String>,
+    pub scope: Option<String>,
     pub check: bool,
 }
 
@@ -32,6 +35,13 @@ struct FileCoverage {
     line_hit: u64,
     line_found: u64,
     uncovered_lines: Vec<u64>,
+    lines: Vec<LcovLine>,
+}
+
+#[derive(Debug, Default)]
+struct LcovLine {
+    number: u64,
+    hit_count: u64,
 }
 
 pub fn run(args: CoverageBaselineArgs) -> Result<()> {
@@ -44,10 +54,8 @@ pub fn run(args: CoverageBaselineArgs) -> Result<()> {
             .with_context(|| format!("reading coverage receipt {}", args.receipt.display()))?;
         if normalize(&existing) != normalize(&rendered) {
             bail!(
-                "coverage baseline receipt is stale: regenerate with `rtk cargo xtask coverage-baseline --lcov {} --receipt {} --codecov {}`",
-                args.lcov.display(),
-                args.receipt.display(),
-                args.codecov.display()
+                "coverage baseline receipt is stale: regenerate with `{}`",
+                coverage_baseline_command(&args, false)
             );
         }
         println!("coverage baseline receipt is current: {}", args.receipt.display());
@@ -63,6 +71,11 @@ fn build_receipt(root: &Path, args: &CoverageBaselineArgs) -> Result<JsonValue> 
     let lcov = parse_lcov(&args.lcov)?;
     let codecov = read_codecov_status(&args.codecov)?;
     let line_coverage = percent(lcov.line_hit, lcov.line_found);
+    let patch_coverage = match (args.patch_coverage, args.patch_base.as_deref()) {
+        (Some(patch), _) => Some(round2(patch)),
+        (None, Some(base)) => Some(patch_coverage_from_diff(root, base, &lcov)?),
+        (None, None) => None,
+    };
     let files_below_target = lcov
         .files
         .iter()
@@ -72,8 +85,8 @@ fn build_receipt(root: &Path, args: &CoverageBaselineArgs) -> Result<JsonValue> 
         .collect::<Vec<_>>();
 
     let mut coverage = serde_json::Map::new();
-    if let Some(patch) = args.patch_coverage {
-        coverage.insert("patch".to_string(), json!(round2(patch)));
+    if let Some(patch) = patch_coverage {
+        coverage.insert("patch".to_string(), json!(patch));
     }
 
     Ok(json!({
@@ -81,6 +94,7 @@ fn build_receipt(root: &Path, args: &CoverageBaselineArgs) -> Result<JsonValue> 
         "kind": "coverage_baseline",
         "head": current_head(root)?,
         "lcov": display_path(&args.lcov),
+        "scope": args.scope.as_deref().unwrap_or("unspecified"),
         "coverage": coverage,
         "codecov_status": codecov,
         "coverage_scope": {
@@ -123,6 +137,7 @@ fn parse_lcov(path: &Path) -> Result<LcovSummary> {
                 continue;
             };
             current.line_found += 1;
+            current.lines.push(LcovLine { number: line_number, hit_count });
             if hit_count > 0 {
                 current.line_hit += 1;
             } else {
@@ -147,6 +162,97 @@ fn finish_file(summary: &mut LcovSummary, current: &mut FileCoverage) {
     summary.line_hit += current.line_hit;
     summary.line_found += current.line_found;
     summary.files.push(std::mem::take(current));
+}
+
+fn patch_coverage_from_diff(root: &Path, base: &str, lcov: &LcovSummary) -> Result<f64> {
+    let changed_lines = changed_lines_since(root, base)?;
+    Ok(patch_coverage_from_changed_lines(lcov, &changed_lines))
+}
+
+fn changed_lines_since(root: &Path, base: &str) -> Result<BTreeMap<String, BTreeSet<u64>>> {
+    let diff_range = format!("{base}...HEAD");
+    let output = Command::new("git")
+        .args(["diff", "--unified=0", "--no-ext-diff", &diff_range, "--", ":(glob)**/*.rs"])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("running git diff for patch coverage against {base}"))?;
+    if !output.status.success() {
+        bail!("git diff for patch coverage failed with status {}", output.status);
+    }
+    let diff = String::from_utf8(output.stdout).context("git diff returned non-UTF8 output")?;
+    Ok(parse_changed_lines(&diff))
+}
+
+fn parse_changed_lines(diff: &str) -> BTreeMap<String, BTreeSet<u64>> {
+    let mut changed = BTreeMap::<String, BTreeSet<u64>>::new();
+    let mut current_file: Option<String> = None;
+    let mut new_line: Option<u64> = None;
+
+    for line in diff.lines() {
+        if let Some(path) = line.strip_prefix("+++ b/") {
+            current_file = Some(path.trim().replace('\\', "/"));
+            new_line = None;
+            continue;
+        }
+        if line.starts_with("+++ /dev/null") {
+            current_file = None;
+            new_line = None;
+            continue;
+        }
+        if let Some(hunk) = line.strip_prefix("@@ ") {
+            new_line = parse_hunk_new_start(hunk);
+            continue;
+        }
+
+        let Some(path) = current_file.as_ref() else {
+            continue;
+        };
+        let Some(line_number) = new_line else {
+            continue;
+        };
+
+        if line.starts_with('+') && !line.starts_with("+++") {
+            changed.entry(path.clone()).or_default().insert(line_number);
+            new_line = Some(line_number + 1);
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            continue;
+        } else if !line.starts_with('\\') {
+            new_line = Some(line_number + 1);
+        }
+    }
+
+    changed
+}
+
+fn parse_hunk_new_start(hunk: &str) -> Option<u64> {
+    hunk.split_whitespace()
+        .find(|part| part.starts_with('+'))
+        .and_then(|part| part.trim_start_matches('+').split(',').next())
+        .and_then(|start| start.parse::<u64>().ok())
+}
+
+fn patch_coverage_from_changed_lines(
+    lcov: &LcovSummary,
+    changed_lines: &BTreeMap<String, BTreeSet<u64>>,
+) -> f64 {
+    let mut executable_found = 0;
+    let mut executable_hit = 0;
+
+    for file in &lcov.files {
+        let Some(lines) = changed_lines.get(&file.path) else {
+            continue;
+        };
+        for line in &file.lines {
+            if lines.contains(&line.number) {
+                executable_found += 1;
+                if line.hit_count > 0 {
+                    executable_hit += 1;
+                }
+            }
+        }
+    }
+
+    if executable_found == 0 { 100.0 } else { percent(executable_hit, executable_found) }
 }
 
 fn read_codecov_status(path: &Path) -> Result<JsonValue> {
@@ -229,4 +335,93 @@ fn write_text(path: &Path, text: &str) -> Result<()> {
 
 fn display_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn coverage_baseline_command(args: &CoverageBaselineArgs, check: bool) -> String {
+    let mut command = format!(
+        "rtk cargo xtask coverage-baseline --lcov {} --receipt {} --codecov {}",
+        args.lcov.display(),
+        args.receipt.display(),
+        args.codecov.display()
+    );
+    if let Some(patch) = args.patch_coverage {
+        command.push_str(&format!(" --patch-coverage {patch:.2}"));
+    }
+    if let Some(base) = &args.patch_base {
+        command.push_str(&format!(" --patch-base {base}"));
+    }
+    if let Some(scope) = &args.scope {
+        command.push_str(&format!(" --scope {scope}"));
+    }
+    if check {
+        command.push_str(" --check");
+    }
+    command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    #[test]
+    fn parse_changed_lines_tracks_added_new_file_lines() -> TestResult {
+        let diff = "\
+diff --git a/crates/example/src/lib.rs b/crates/example/src/lib.rs
+index 1111111..2222222 100644
+--- a/crates/example/src/lib.rs
++++ b/crates/example/src/lib.rs
+@@ -10,0 +11,2 @@
++let covered = true;
++let uncovered = false;
+@@ -20 +23,0 @@
+-let removed = true;
+@@ -30 +32,2 @@
+-let old = true;
++let replacement = true;
++let second = true;
+";
+
+        let changed = parse_changed_lines(diff);
+        let lines = changed.get("crates/example/src/lib.rs").ok_or("missing changed file entry")?;
+
+        assert_eq!(lines.iter().copied().collect::<Vec<_>>(), vec![11, 12, 32, 33]);
+        Ok(())
+    }
+
+    #[test]
+    fn patch_coverage_counts_only_changed_executable_lcov_lines() -> TestResult {
+        let lcov = LcovSummary {
+            line_hit: 3,
+            line_found: 4,
+            files: vec![FileCoverage {
+                path: "crates/example/src/lib.rs".to_string(),
+                line_hit: 1,
+                line_found: 3,
+                uncovered_lines: vec![12, 40],
+                lines: vec![
+                    LcovLine { number: 11, hit_count: 1 },
+                    LcovLine { number: 12, hit_count: 0 },
+                    LcovLine { number: 40, hit_count: 0 },
+                ],
+            }],
+        };
+        let changed = BTreeMap::from([(
+            "crates/example/src/lib.rs".to_string(),
+            BTreeSet::from([11, 12, 99]),
+        )]);
+
+        assert_eq!(patch_coverage_from_changed_lines(&lcov, &changed), 50.0);
+        Ok(())
+    }
+
+    #[test]
+    fn patch_coverage_is_full_when_diff_has_no_executable_lcov_lines() -> TestResult {
+        let lcov = LcovSummary::default();
+        let changed = BTreeMap::from([("docs/ci/ripr.md".to_string(), BTreeSet::from([10, 11]))]);
+
+        assert_eq!(patch_coverage_from_changed_lines(&lcov, &changed), 100.0);
+        Ok(())
+    }
 }
