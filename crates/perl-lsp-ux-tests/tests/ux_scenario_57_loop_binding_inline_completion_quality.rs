@@ -133,13 +133,6 @@ fn insert_texts_for(items: &[Value]) -> Vec<String> {
         .collect()
 }
 
-fn assert_contains(insert_texts: &[String], expected: &str, label: &str) {
-    assert!(
-        insert_texts.iter().any(|actual| actual == expected),
-        "{label} did not include expected insert `{expected}`; actual: {insert_texts:?}"
-    );
-}
-
 fn assert_excludes_fragment(insert_texts: &[String], forbidden: &str, label: &str) {
     assert!(
         insert_texts.iter().all(|actual| !actual.contains(forbidden)),
@@ -171,7 +164,10 @@ fn scenario_57_loop_binding_inline_completion_quality_stdio() -> Result<()> {
         ARRAY_LOOP_SOURCE,
         "my $user (@users) {\n    \n}",
     )?;
-    assert_contains(&array_insert_texts, "my $user (@users) {\n    \n}", "array loop binding");
+    assert!(
+        array_insert_texts.iter().any(|actual| actual == "my $user (@users) {\n    \n}"),
+        "array loop binding did not include visible @users insert; actual: {array_insert_texts:?}"
+    );
     assert_excludes_fragment(&array_insert_texts, PLACEHOLDER_INSERT, "array loop binding");
 
     let hash_insert_texts = wait_for_loop_binding(
@@ -180,10 +176,9 @@ fn scenario_57_loop_binding_inline_completion_quality_stdio() -> Result<()> {
         HASH_LOOP_SOURCE,
         "my $id (keys %users_by_id) {\n    \n}",
     )?;
-    assert_contains(
-        &hash_insert_texts,
-        "my $id (keys %users_by_id) {\n    \n}",
-        "hash loop binding",
+    assert!(
+        hash_insert_texts.iter().any(|actual| actual == "my $id (keys %users_by_id) {\n    \n}"),
+        "hash loop binding did not include visible %users_by_id key insert; actual: {hash_insert_texts:?}"
     );
     assert_excludes_fragment(&hash_insert_texts, PLACEHOLDER_INSERT, "hash loop binding");
 
@@ -193,10 +188,9 @@ fn scenario_57_loop_binding_inline_completion_quality_stdio() -> Result<()> {
         ARRAY_PREFERENCE_SOURCE,
         "my $user (@users) {\n    \n}",
     )?;
-    assert_contains(
-        &array_preference_insert_texts,
-        "my $user (@users) {\n    \n}",
-        "array preference loop binding",
+    assert!(
+        array_preference_insert_texts.iter().any(|actual| actual == "my $user (@users) {\n    \n}"),
+        "array preference loop binding did not keep @users preferred; actual: {array_preference_insert_texts:?}"
     );
     assert_excludes_fragment(
         &array_preference_insert_texts,
@@ -215,7 +209,10 @@ fn scenario_57_loop_binding_inline_completion_quality_stdio() -> Result<()> {
         STATUS_LOOP_SOURCE,
         "my $item (@status) {\n    \n}",
     )?;
-    assert_contains(&status_insert_texts, "my $item (@status) {\n    \n}", "status loop binding");
+    assert!(
+        status_insert_texts.iter().any(|actual| actual == "my $item (@status) {\n    \n}"),
+        "status loop binding did not avoid unsafe singular trimming; actual: {status_insert_texts:?}"
+    );
     assert_excludes_fragment(&status_insert_texts, "$statu", "status loop binding");
     assert_excludes_fragment(&status_insert_texts, PLACEHOLDER_INSERT, "status loop binding");
 
