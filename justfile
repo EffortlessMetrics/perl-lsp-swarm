@@ -1921,7 +1921,7 @@ coverage-branch-gate:
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     @bash ./scripts/check-coverage-baseline.sh lcov.info .ci/coverage-baseline.txt
 
-# Generate workspace coverage, derive patch coverage from the diff, and enforce the patch gate.
+# Generate workspace lib/bin coverage, derive patch coverage from the diff, and enforce the patch gate.
 coverage-proof base='origin/master':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -1933,20 +1933,20 @@ coverage-proof base='origin/master':
     mkdir -p target/receipts/quality
     mkdir -p "$coverage_target"
     echo "coverage target: $coverage_target"
-    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov --workspace --locked --lcov --output-path target/lcov.info \
+    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov --workspace --lib --bins --locked --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
-        --scope workspace
+        --scope workspace-lib-bin
     cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
-        --scope workspace \
+        --scope workspace-lib-bin \
         --check
     cargo xtask quality-gate \
         --mode enforce-patch-coverage \

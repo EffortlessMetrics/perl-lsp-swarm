@@ -77,7 +77,7 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
     assert!(
         codecov_upload_step.contains("uses: codecov/codecov-action@")
             && codecov_upload_step.contains("files: target/lcov.info"),
-        "Codecov upload step must upload the workspace LCOV receipt"
+        "Codecov upload step must upload the workspace lib/bin LCOV receipt"
     );
     for required in [
         "just coverage-proof \"origin/$base_ref\"",
@@ -103,11 +103,11 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "coverage-proof base='origin/master':",
         "coverage_target=\"${CARGO_TARGET_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/perl-lsp-swarm-coverage-target}\"",
         "CARGO_TARGET_DIR=\"$coverage_target\"",
-        "cargo llvm-cov --workspace",
+        "cargo llvm-cov --workspace --lib --bins",
         "--lcov --output-path target/lcov.info",
         "cargo xtask coverage-baseline",
         "--patch-base \"{{base}}\"",
-        "--scope workspace",
+        "--scope workspace-lib-bin",
         "cargo xtask quality-gate",
         "--mode enforce-patch-coverage",
         "--receipt target/receipts/quality/quality-gate-coverage.json",
