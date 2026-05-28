@@ -5,6 +5,7 @@
 //! suggestions use the `InlineCompletionBackend` trait for pluggable providers.
 
 use perl_lexer::{PerlLexer, TokenType};
+use perl_parser_core::{Parser, RecoverySalvageProfile};
 use perl_position_tracking::utf16_line_col_to_offset;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,17 @@ pub struct PreparedInlineCompletionContext {
     pub imports: Vec<String>,
 }
 
+/// Request-local facts supplied by the LSP runtime.
+///
+/// The deterministic provider remains usable with only source text, but the
+/// runtime can pass workspace-derived facts here so inline completion can
+/// prefer project-aware suggestions without depending on runtime state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InlineCompletionEnvironment {
+    /// Modules reachable from the current document's effective `@INC`.
+    pub available_modules: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SemanticInlineContext {
     pub(crate) lexical_scope: InlineLexicalScope,
@@ -41,7 +53,10 @@ pub(crate) struct SemanticInlineContext {
     pub(crate) expected_syntax: ExpectedSyntax,
     pub(crate) visible_variables: Vec<VariableFact>,
     pub(crate) receiver_hint: Option<ReceiverHint>,
+    pub(crate) dbi_receiver_kind: Option<DbiReceiverKind>,
     pub(crate) imported_modules: Vec<ModuleFact>,
+    pub(crate) available_modules: Vec<ModuleFact>,
+    pub(crate) current_package_methods: Vec<MethodFact>,
     pub(crate) file_role: FileRole,
     pub(crate) style: InlineStyleContext,
 }
@@ -93,6 +108,14 @@ impl VariableFact {
     fn is_scalar(&self) -> bool {
         self.sigil == VariableSigil::Scalar
     }
+
+    fn is_array(&self) -> bool {
+        self.sigil == VariableSigil::Array
+    }
+
+    fn is_hash(&self) -> bool {
+        self.sigil == VariableSigil::Hash
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,10 +150,21 @@ pub(crate) struct ModuleFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MethodFact {
+    pub(crate) name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReceiverHint {
     SelfReceiver,
     Variable(VariableFact),
     Package(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DbiReceiverKind {
+    DatabaseHandle,
+    StatementHandle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,10 +385,272 @@ pub trait InlineCompletionBackend: Send + Sync {
 
 #[derive(Debug)]
 struct RankedCompletionItem {
-    priority: u8,
+    score: InlineCandidateScore,
     order: usize,
     item: InlineCompletionItem,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InlineCandidateScore(i16);
+
+impl InlineCandidateScore {
+    const LEGACY_PRIORITY_STEP: i16 = 100;
+
+    fn for_candidate(
+        source: InlineCandidateSourceKind,
+        priority: u8,
+        item: &InlineCompletionItem,
+        semantic_context: &SemanticInlineContext,
+    ) -> Self {
+        Self(Self::legacy_base(priority) + semantic_bonus(source, item, semantic_context))
+    }
+
+    fn legacy_base(priority: u8) -> i16 {
+        10_000 - i16::from(priority) * Self::LEGACY_PRIORITY_STEP
+    }
+
+    #[cfg(test)]
+    fn from_legacy_priority(priority: u8) -> Self {
+        Self(Self::legacy_base(priority))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineCandidateSourceKind {
+    Receiver,
+    Module,
+    Syntax,
+    Test,
+    Shebang,
+    ContextualFallback,
+}
+
+fn semantic_bonus(
+    source: InlineCandidateSourceKind,
+    item: &InlineCompletionItem,
+    context: &SemanticInlineContext,
+) -> i16 {
+    match source {
+        InlineCandidateSourceKind::Receiver => receiver_candidate_bonus(item, context),
+        InlineCandidateSourceKind::Module => module_candidate_bonus(item, context),
+        InlineCandidateSourceKind::Syntax => syntax_candidate_bonus(item, context),
+        InlineCandidateSourceKind::Test => test_candidate_bonus(context),
+        InlineCandidateSourceKind::Shebang => shebang_candidate_bonus(context),
+        InlineCandidateSourceKind::ContextualFallback => {
+            contextual_fallback_candidate_bonus(item, context)
+        }
+    }
+}
+
+fn module_candidate_bonus(item: &InlineCompletionItem, context: &SemanticInlineContext) -> i16 {
+    if context.expected_syntax != ExpectedSyntax::UseModule {
+        return 0;
+    }
+
+    let module_name = item.insert_text.trim_end_matches(';');
+    if context
+        .available_modules
+        .binary_search_by(|module| module.name.as_str().cmp(module_name))
+        .is_ok()
+    {
+        return 35;
+    }
+
+    0
+}
+
+fn receiver_candidate_bonus(item: &InlineCompletionItem, context: &SemanticInlineContext) -> i16 {
+    if context.expected_syntax != ExpectedSyntax::MethodName {
+        return 0;
+    }
+
+    let method_name = item.insert_text.trim_end_matches("()");
+    if context.current_package_methods.iter().any(|method| method.name == method_name) {
+        return 30;
+    }
+
+    10
+}
+
+fn syntax_candidate_bonus(item: &InlineCompletionItem, context: &SemanticInlineContext) -> i16 {
+    match context.expected_syntax {
+        ExpectedSyntax::UseModule
+            if matches!(
+                item.insert_text.as_str(),
+                "strict;" | "warnings;" | "feature ':5.36';"
+            ) =>
+        {
+            20
+        }
+        ExpectedSyntax::ReturnExpression if item.insert_text.ends_with(';') => 20,
+        ExpectedSyntax::LexicalVariableName
+            if item.insert_text.starts_with("self =")
+                && context.visible_variables.iter().any(VariableFact::is_scalar_self) =>
+        {
+            20
+        }
+        ExpectedSyntax::PackageName
+        | ExpectedSyntax::BlessArguments
+        | ExpectedSyntax::LoopBinding => 15,
+        ExpectedSyntax::SubroutineBody if item.insert_text.starts_with(" {") => 15,
+        _ => 0,
+    }
+}
+
+fn test_candidate_bonus(context: &SemanticInlineContext) -> i16 {
+    match context.expected_syntax {
+        ExpectedSyntax::TestAssertionArguments => 30,
+        _ if context.file_role == FileRole::Test => 20,
+        _ => 0,
+    }
+}
+
+fn shebang_candidate_bonus(context: &SemanticInlineContext) -> i16 {
+    if context.expected_syntax == ExpectedSyntax::ShebangInterpreter { 20 } else { 0 }
+}
+
+fn contextual_fallback_candidate_bonus(
+    item: &InlineCompletionItem,
+    context: &SemanticInlineContext,
+) -> i16 {
+    if context.file_role == FileRole::Test
+        && (item.insert_text.starts_with("is(") || item.insert_text.starts_with("ok("))
+    {
+        return 25;
+    }
+
+    if item.insert_text.starts_with("return ")
+        && matches!(context.expected_syntax, ExpectedSyntax::EmptyStatement)
+        && !context.visible_variables.is_empty()
+    {
+        return 15;
+    }
+
+    if item.insert_text == "done_testing();" && context.file_role == FileRole::Test {
+        return 10;
+    }
+
+    0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParseDamage {
+    terminated_early: bool,
+    error_node_count: usize,
+    diagnostics_count: usize,
+    recovered_count: usize,
+}
+
+impl ParseDamage {
+    fn worse_than(&self, baseline: &Self) -> bool {
+        (self.terminated_early && !baseline.terminated_early)
+            || self.error_node_count > baseline.error_node_count
+            || self.diagnostics_count > baseline.diagnostics_count
+            || self.recovered_count > baseline.recovered_count
+    }
+}
+
+fn parse_damage_for_probe(source: &str) -> ParseDamage {
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+    let salvage = RecoverySalvageProfile::from_parse(&output.ast, &output.diagnostics, false);
+
+    ParseDamage {
+        terminated_early: output.terminated_early,
+        error_node_count: salvage.error_node_count,
+        diagnostics_count: output.error_count(),
+        recovered_count: output.recovered_count,
+    }
+}
+
+fn parse_probe_after_item(
+    current_line: &str,
+    item: &InlineCompletionItem,
+    line: u32,
+    character: u32,
+) -> Option<String> {
+    let (start_character, end_character) = item
+        .range
+        .as_ref()
+        .map(|range| {
+            if range.start.line != line || range.end.line != line {
+                return None;
+            }
+            Some((range.start.character, range.end.character))
+        })
+        .unwrap_or(Some((character, character)))?;
+
+    let start = utf16_line_col_to_offset(current_line, 0, start_character);
+    let end = utf16_line_col_to_offset(current_line, 0, end_character);
+    if start > end {
+        return None;
+    }
+
+    let mut probe = String::with_capacity(current_line.len() + item.insert_text.len());
+    probe.push_str(&current_line[..start]);
+    probe.push_str(item.insert_text.as_str());
+    probe.push_str(&current_line[end..]);
+    Some(probe)
+}
+
+#[derive(Debug)]
+struct InlineCandidateSink<'a> {
+    semantic_context: &'a SemanticInlineContext,
+    items: Vec<RankedCompletionItem>,
+    sequence: usize,
+}
+
+impl<'a> InlineCandidateSink<'a> {
+    fn new(semantic_context: &'a SemanticInlineContext) -> Self {
+        Self { semantic_context, items: Vec::new(), sequence: 0 }
+    }
+
+    fn push(
+        &mut self,
+        source: InlineCandidateSourceKind,
+        priority: u8,
+        item: InlineCompletionItem,
+    ) {
+        let score =
+            InlineCandidateScore::for_candidate(source, priority, &item, self.semantic_context);
+        self.items.push(RankedCompletionItem { score, order: self.sequence, item });
+        self.sequence += 1;
+    }
+
+    fn into_items(self) -> Vec<RankedCompletionItem> {
+        self.items
+    }
+}
+
+trait InlineCandidateSource {
+    const SOURCE: InlineCandidateSourceKind;
+
+    fn add_candidates(
+        &self,
+        provider: &InlineCompletionProvider,
+        context: &PreparedInlineCompletionContext,
+        semantic_context: &SemanticInlineContext,
+        sink: &mut InlineCandidateSink<'_>,
+    );
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReceiverCandidateSource;
+
+#[derive(Debug, Clone, Copy)]
+struct ModuleCandidateSource;
+
+#[derive(Debug, Clone, Copy)]
+struct SyntaxCandidateSource;
+
+#[derive(Debug, Clone, Copy)]
+struct TestCandidateSource;
+
+#[derive(Debug, Clone, Copy)]
+struct ShebangCandidateSource;
+
+#[derive(Debug, Clone, Copy)]
+struct ContextualFallbackSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HardRejectZone {
@@ -387,15 +683,33 @@ impl InlineCompletionProvider {
         line: u32,
         character: u32,
     ) -> InlineCompletionList {
+        self.get_inline_completions_with_environment(
+            text,
+            line,
+            character,
+            &InlineCompletionEnvironment::default(),
+        )
+    }
+
+    /// Get inline completions using request-local semantic environment facts.
+    pub fn get_inline_completions_with_environment(
+        &self,
+        text: &str,
+        line: u32,
+        character: u32,
+        environment: &InlineCompletionEnvironment,
+    ) -> InlineCompletionList {
         if let Some(context) = self.prepare_context(text, line, character) {
-            let semantic_context = self.semantic_context_for_source(text, &context);
+            let semantic_context =
+                self.semantic_context_for_request(text, line, &context, environment);
             let items = self.get_completions_for_context(&context, &semantic_context);
-            return self.apply_replacement_ranges_for_context(
+            let list = self.apply_replacement_ranges_for_context(
                 InlineCompletionList { items },
                 &context,
                 line,
                 character,
             );
+            return self.filter_parse_safe_items(list, &context, line, character);
         }
 
         InlineCompletionList { items: vec![] }
@@ -420,11 +734,35 @@ impl InlineCompletionProvider {
 
         for item in &mut list.items {
             if item.range.is_none() && item_matches_fragment(item, fragment.text) {
-                item.range = Some(range.clone());
+                item.range = Some(range);
             }
         }
 
         list
+    }
+
+    fn filter_parse_safe_items(
+        &self,
+        list: InlineCompletionList,
+        context: &PreparedInlineCompletionContext,
+        line: u32,
+        character: u32,
+    ) -> InlineCompletionList {
+        let baseline = parse_damage_for_probe(context.current_line.as_str());
+        let items = list
+            .items
+            .into_iter()
+            .filter(|item| {
+                parse_probe_after_item(context.current_line.as_str(), item, line, character)
+                    .map(|probe| {
+                        let candidate = parse_damage_for_probe(probe.as_str());
+                        !candidate.worse_than(&baseline)
+                    })
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        InlineCompletionList { items }
     }
 
     /// Prepare surrounding code context for deterministic suggestions and
@@ -493,220 +831,15 @@ impl InlineCompletionProvider {
         context: &PreparedInlineCompletionContext,
         semantic_context: &SemanticInlineContext,
     ) -> Vec<InlineCompletionItem> {
-        let prefix = context.prefix.as_str();
-        let full_line = context.current_line.as_str();
-        let mut items = Vec::<RankedCompletionItem>::new();
-        let mut sequence = 0usize;
+        let mut sink = InlineCandidateSink::new(semantic_context);
+        ReceiverCandidateSource.add_candidates(self, context, semantic_context, &mut sink);
+        ModuleCandidateSource.add_candidates(self, context, semantic_context, &mut sink);
+        SyntaxCandidateSource.add_candidates(self, context, semantic_context, &mut sink);
+        TestCandidateSource.add_candidates(self, context, semantic_context, &mut sink);
+        ShebangCandidateSource.add_candidates(self, context, semantic_context, &mut sink);
+        ContextualFallbackSource.add_candidates(self, context, semantic_context, &mut sink);
 
-        let mut push_item = |priority: u8, item: InlineCompletionItem| {
-            items.push(RankedCompletionItem { priority, order: sequence, item });
-            sequence += 1;
-        };
-
-        // Rule 1: After `->` suggest `new()`
-        if let Some(fragment) = method_arrow_fragment(prefix)
-            && semantic_context.expected_syntax == ExpectedSyntax::MethodName
-            && completion_matches_fragment("new", "new()", fragment)
-        {
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "new()".into(),
-                    filter_text: Some("new".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-        }
-
-        // Rule 2: After `use ` suggest common pragmas
-        if prefix.trim_end() == "use" || use_completion_fragment(prefix).is_some() {
-            let typed_fragment = use_completion_fragment(prefix).unwrap_or("");
-            // Suggest strict first as it's most common
-            if completion_matches_fragment("strict", "strict;", typed_fragment) {
-                push_item(
-                    0,
-                    InlineCompletionItem {
-                        insert_text: "strict;".into(),
-                        filter_text: Some("strict".into()),
-                        range: None,
-                        command: None,
-                    },
-                );
-            }
-
-            if completion_matches_fragment("warnings", "warnings;", typed_fragment) {
-                push_item(
-                    1,
-                    InlineCompletionItem {
-                        insert_text: "warnings;".into(),
-                        filter_text: Some("warnings".into()),
-                        range: None,
-                        command: None,
-                    },
-                );
-            }
-
-            if completion_matches_fragment("feature", "feature ':5.36';", typed_fragment) {
-                push_item(
-                    2,
-                    InlineCompletionItem {
-                        insert_text: "feature ':5.36';".into(),
-                        filter_text: Some("feature".into()),
-                        range: None,
-                        command: None,
-                    },
-                );
-            }
-        }
-
-        // Rule 3: After `sub <name>` without `{`, suggest smart body based on name pattern
-        if let Some(sub_name) = self.match_sub_declaration(prefix) {
-            if !full_line.contains('{') {
-                let body = self.generate_smart_body(&sub_name);
-                push_item(
-                    0,
-                    InlineCompletionItem {
-                        insert_text: format!(" {{\n{}\n}}", body),
-                        filter_text: Some("{".into()),
-                        range: None,
-                        command: None,
-                    },
-                );
-            }
-        }
-
-        // Rule 4: After `my $` suggest common variable patterns
-        if ends_with_keyword(prefix, "my $") {
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "self = shift;".into(),
-                    filter_text: Some("self".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-        }
-
-        // Rule 5: After `package ` suggest common suffix patterns
-        if ends_with_keyword(prefix, "package ") {
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "MyPackage;\n\nuse strict;\nuse warnings;".into(),
-                    filter_text: Some("MyPackage".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-        }
-
-        // Rule 6: After `bless ` suggest common patterns
-        if ends_with_keyword(prefix, "bless ") {
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "$self, $class;".into(),
-                    filter_text: Some("$self".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-        }
-
-        // Rule 7: After `return ` in constructor context
-        if ends_with_keyword(prefix, "return ") {
-            if let Some(variable) = self.preferred_return_variable(&semantic_context) {
-                push_item(
-                    0,
-                    InlineCompletionItem {
-                        insert_text: format!("{variable};"),
-                        filter_text: Some(variable),
-                        range: None,
-                        command: None,
-                    },
-                );
-            } else if self
-                .is_in_constructor_context(semantic_context.enclosing_sub.as_deref(), prefix)
-            {
-                push_item(
-                    1,
-                    InlineCompletionItem {
-                        insert_text: "$self;".into(),
-                        filter_text: Some("$self".into()),
-                        range: None,
-                        command: None,
-                    },
-                );
-            }
-        }
-
-        // Rule 8: Complete common loops
-        if ends_with_keyword(prefix, "for ") {
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "my $item (@items) {\n    \n}".into(),
-                    filter_text: Some("my".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-        }
-
-        if ends_with_keyword(prefix, "foreach ") {
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "my $item (@items) {\n    \n}".into(),
-                    filter_text: Some("my".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-        }
-
-        // Rule 9: Complete common test patterns
-        if ends_with_keyword(prefix, "ok(") {
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "$result, 'test description');".into(),
-                    filter_text: Some("$result".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-        }
-
-        if ends_with_keyword(prefix, "is(") {
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "$got, $expected, 'test description');".into(),
-                    filter_text: Some("$got".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-        }
-
-        // Rule 10: Complete shebang
-        if prefix == "#!" || prefix == "#!/" {
-            push_item(
-                0,
-                InlineCompletionItem {
-                    insert_text: "/usr/bin/env perl".into(),
-                    filter_text: Some("perl".into()),
-                    range: None,
-                    command: None,
-                },
-            );
-        }
-
-        self.add_contextual_fallbacks(context, &semantic_context, &mut items, &mut sequence);
-        self.normalize_items(items)
+        self.normalize_items(sink.into_items())
     }
 
     /// Check if we're after a sub declaration without body
@@ -740,11 +873,31 @@ impl InlineCompletionProvider {
     /// - `is_*`, `has_*`, `can_*` -> boolean accessor pattern
     /// - `_*` -> private method placeholder
     /// - default -> simple method template
-    fn generate_smart_body(&self, sub_name: &str) -> String {
+    fn generate_subroutine_completion(
+        &self,
+        sub_name: &str,
+        semantic_context: &SemanticInlineContext,
+    ) -> String {
+        if sub_name == "new"
+            && semantic_context.style.sub_argument_style == SubArgumentStyle::Signature
+        {
+            return format!(
+                " ($class, %args) {{\n{}\n}}",
+                self.generate_smart_body(sub_name, semantic_context)
+            );
+        }
+
+        format!(" {{\n{}\n}}", self.generate_smart_body(sub_name, semantic_context))
+    }
+
+    fn generate_smart_body(
+        &self,
+        sub_name: &str,
+        semantic_context: &SemanticInlineContext,
+    ) -> String {
         // Constructor patterns
         if sub_name == "new" || sub_name == "BUILD" {
-            return "    my $class = shift;\n    my $self = bless {}, $class;\n    return $self;"
-                .to_string();
+            return constructor_body(semantic_context.style.sub_argument_style);
         }
 
         // Getter pattern: get_something or something_getter
@@ -786,23 +939,36 @@ impl InlineCompletionProvider {
         lines: &[&str],
         line_index: usize,
     ) -> (Option<String>, Option<usize>) {
-        lines.iter().take(line_index + 1).enumerate().fold(
-            (None, None),
-            |mut state, (idx, line)| {
-                if let Some(name) = self.parse_sub_name(line) {
-                    state = (Some(name), Some(idx));
+        let mut scope = None::<FunctionScope>;
+        for (idx, line) in lines.iter().take(line_index + 1).enumerate() {
+            if let Some(name) = self.parse_sub_name(line) {
+                scope = Some(FunctionScope {
+                    name,
+                    start_line: idx,
+                    block_depth: 0,
+                    opened_block: false,
+                });
+            }
+
+            if let Some(active) = scope.as_mut() {
+                let delta = brace_delta(line);
+                active.opened_block |= line_opens_block(line);
+                active.block_depth += delta;
+                if idx < line_index && active.opened_block && active.block_depth <= 0 {
+                    scope = None;
                 }
-                state
-            },
-        )
+            }
+        }
+
+        scope.map(|active| (Some(active.name), Some(active.start_line))).unwrap_or((None, None))
     }
 
     fn current_package(&self, lines: &[&str], line_index: usize) -> Option<String> {
-        lines
-            .iter()
-            .take(line_index + 1)
-            .filter_map(|line| self.parse_package_name(line))
-            .next_back()
+        let mut scanner = PackageScopeScanner::new();
+        for line in lines.iter().take(line_index + 1) {
+            scanner.advance(line, self.parse_package_name(line));
+        }
+        scanner.current_package().map(str::to_string)
     }
 
     fn previous_non_empty_line<'a>(
@@ -858,7 +1024,9 @@ impl InlineCompletionProvider {
 
     fn collect_variables(&self, visible_text: &str) -> Vec<String> {
         let mut variables = Vec::new();
-        for declaration_group in collect_declared_variable_groups(visible_text).into_iter().rev() {
+        for declaration_group in
+            collect_live_declared_variable_groups(visible_text).into_iter().rev()
+        {
             for variable in declaration_group {
                 self.push_unique_variable(&mut variables, variable);
             }
@@ -924,21 +1092,120 @@ impl InlineCompletionProvider {
             expected_syntax: self.expected_syntax(context),
             visible_variables,
             receiver_hint: receiver_hint_from_prefix(context.prefix.as_str()),
+            dbi_receiver_kind: None,
             imported_modules,
+            available_modules: Vec::new(),
+            current_package_methods: Vec::new(),
             file_role: self.file_role(context),
             style: InlineStyleContext::unknown(context),
         }
     }
 
+    #[cfg(test)]
     fn semantic_context_for_source(
         &self,
         text: &str,
         context: &PreparedInlineCompletionContext,
     ) -> SemanticInlineContext {
+        self.semantic_context_for_source_with_environment(
+            text,
+            context,
+            &InlineCompletionEnvironment::default(),
+        )
+    }
+
+    #[cfg(test)]
+    fn semantic_context_for_source_with_environment(
+        &self,
+        text: &str,
+        context: &PreparedInlineCompletionContext,
+        environment: &InlineCompletionEnvironment,
+    ) -> SemanticInlineContext {
+        self.semantic_context_for_source_with_environment_and_dbi_text(
+            text,
+            text,
+            context,
+            environment,
+        )
+    }
+
+    fn semantic_context_for_request(
+        &self,
+        text: &str,
+        line: u32,
+        context: &PreparedInlineCompletionContext,
+        environment: &InlineCompletionEnvironment,
+    ) -> SemanticInlineContext {
+        let lines = self.normalized_lines(text);
+        let line_index = usize::try_from(line).unwrap_or(usize::MAX);
+        let visible_text = if line_index < lines.len() {
+            self.visible_text_until_cursor(&lines, line_index, context.prefix.as_str())
+        } else {
+            text.to_string()
+        };
+
+        self.semantic_context_for_source_with_environment_and_dbi_text(
+            text,
+            visible_text.as_str(),
+            context,
+            environment,
+        )
+    }
+
+    fn semantic_context_for_source_with_environment_and_dbi_text(
+        &self,
+        text: &str,
+        dbi_visible_text: &str,
+        context: &PreparedInlineCompletionContext,
+        environment: &InlineCompletionEnvironment,
+    ) -> SemanticInlineContext {
         let mut semantic_context = self.semantic_context_for_prepared_context(context);
+        semantic_context.available_modules = available_module_facts(&environment.available_modules);
         semantic_context.file_role = self.file_role_for_source(context, text);
         semantic_context.style = self.style_context_for_source(context, text);
+        semantic_context.dbi_receiver_kind =
+            dbi_receiver_kind_for_source(dbi_visible_text, &semantic_context);
+        semantic_context.current_package_methods = self.current_package_methods_for_source(
+            text,
+            semantic_context.package.as_deref(),
+            semantic_context.enclosing_sub.as_deref(),
+        );
         semantic_context
+    }
+
+    fn current_package_methods_for_source(
+        &self,
+        text: &str,
+        current_package: Option<&str>,
+        enclosing_sub: Option<&str>,
+    ) -> Vec<MethodFact> {
+        let Some(target_package) = current_package else {
+            return Vec::new();
+        };
+
+        let mut package_scanner = PackageScopeScanner::new();
+        let mut methods = Vec::<MethodFact>::new();
+        for line in self.normalized_lines(text) {
+            package_scanner.advance(line, self.parse_package_name(line));
+
+            if package_scanner.current_package() != Some(target_package) {
+                continue;
+            }
+
+            let Some(method_name) = self.parse_sub_name(line) else {
+                continue;
+            };
+            if enclosing_sub == Some(method_name.as_str()) {
+                continue;
+            }
+            if methods.iter().any(|method| method.name == method_name) {
+                continue;
+            }
+
+            methods.push(MethodFact { name: method_name });
+        }
+
+        methods
     }
 
     fn expected_syntax(&self, context: &PreparedInlineCompletionContext) -> ExpectedSyntax {
@@ -1021,8 +1288,7 @@ impl InlineCompletionProvider {
         &self,
         context: &PreparedInlineCompletionContext,
         semantic_context: &SemanticInlineContext,
-        items: &mut Vec<RankedCompletionItem>,
-        sequence: &mut usize,
+        sink: &mut InlineCandidateSink<'_>,
     ) {
         let prefix = context.prefix.trim();
         let comment_context = context
@@ -1037,80 +1303,92 @@ impl InlineCompletionProvider {
             && context.variables.is_empty()
             && context.previous_non_empty_line.is_none()
         {
-            items.push(RankedCompletionItem {
-                priority: 8,
-                order: *sequence,
-                item: InlineCompletionItem {
+            sink.push(
+                InlineCandidateSourceKind::ContextualFallback,
+                8,
+                InlineCompletionItem {
                     insert_text: "#!/usr/bin/env perl\nuse strict;\nuse warnings;\n\n".into(),
                     filter_text: Some("perl".into()),
                     range: None,
                     command: None,
                 },
-            });
-            *sequence += 1;
-            items.push(RankedCompletionItem {
-                priority: 9,
-                order: *sequence,
-                item: InlineCompletionItem {
+            );
+            sink.push(
+                InlineCandidateSourceKind::ContextualFallback,
+                9,
+                InlineCompletionItem {
                     insert_text: "use strict;\nuse warnings;\n\n".into(),
                     filter_text: Some("strict".into()),
                     range: None,
                     command: None,
                 },
-            });
-            *sequence += 1;
+            );
         }
 
         if prefix.is_empty() {
+            let mut pushed_test_assertion = false;
+            if semantic_context.file_role == FileRole::Test
+                && let Some(assertion) = self.preferred_test_statement(semantic_context)
+            {
+                sink.push(
+                    InlineCandidateSourceKind::ContextualFallback,
+                    0,
+                    InlineCompletionItem {
+                        filter_text: Some(test_statement_filter_text(assertion.as_str()).into()),
+                        insert_text: assertion,
+                        range: None,
+                        command: None,
+                    },
+                );
+                pushed_test_assertion = true;
+            }
+
             if let Some(variable) = self.preferred_return_variable(semantic_context) {
-                items.push(RankedCompletionItem {
-                    priority: 0,
-                    order: *sequence,
-                    item: InlineCompletionItem {
+                sink.push(
+                    InlineCandidateSourceKind::ContextualFallback,
+                    0,
+                    InlineCompletionItem {
                         insert_text: format!("return {variable};"),
                         filter_text: Some(variable),
                         range: None,
                         command: None,
                     },
-                });
-                *sequence += 1;
+                );
             }
 
-            if semantic_context.file_role == FileRole::Test {
-                items.push(RankedCompletionItem {
-                    priority: 1,
-                    order: *sequence,
-                    item: InlineCompletionItem {
+            if semantic_context.file_role == FileRole::Test && !pushed_test_assertion {
+                sink.push(
+                    InlineCandidateSourceKind::ContextualFallback,
+                    1,
+                    InlineCompletionItem {
                         insert_text: "done_testing();".into(),
                         filter_text: Some("done_testing".into()),
                         range: None,
                         command: None,
                     },
-                });
-                *sequence += 1;
+                );
             }
 
             if comment_context
                 && let Some(variable) = self.preferred_assignment_variable(semantic_context)
             {
-                items.push(RankedCompletionItem {
-                    priority: 2,
-                    order: *sequence,
-                    item: InlineCompletionItem {
+                sink.push(
+                    InlineCandidateSourceKind::ContextualFallback,
+                    2,
+                    InlineCompletionItem {
                         insert_text: format!("my {variable} = shift;"),
                         filter_text: Some(variable),
                         range: None,
                         command: None,
                     },
-                });
-                *sequence += 1;
+                );
             }
         }
     }
 
     fn normalize_items(&self, mut items: Vec<RankedCompletionItem>) -> Vec<InlineCompletionItem> {
         items.sort_by(|left, right| {
-            left.priority.cmp(&right.priority).then_with(|| left.order.cmp(&right.order))
+            right.score.0.cmp(&left.score.0).then_with(|| left.order.cmp(&right.order))
         });
 
         let mut deduped = Vec::new();
@@ -1147,6 +1425,97 @@ impl InlineCompletionProvider {
             .map(VariableFact::as_perl_variable)
     }
 
+    fn preferred_loop_binding(&self, context: &SemanticInlineContext) -> Option<String> {
+        if let Some(array) = context.visible_variables.iter().find(|variable| variable.is_array()) {
+            let item_name = singular_loop_variable_name(array.name.as_str());
+            return Some(format!("my ${item_name} ({}) {{\n    \n}}", array.as_perl_variable()));
+        }
+
+        let hash = context.visible_variables.iter().find(|variable| variable.is_hash())?;
+        let key_name = hash_key_loop_variable_name(hash.name.as_str());
+        Some(format!("my ${key_name} (keys {}) {{\n    \n}}", hash.as_perl_variable()))
+    }
+
+    fn current_package_method_items(
+        &self,
+        context: &SemanticInlineContext,
+        fragment: &str,
+    ) -> Vec<InlineCompletionItem> {
+        context
+            .current_package_methods
+            .iter()
+            .filter(|method| {
+                completion_matches_fragment(
+                    method.name.as_str(),
+                    &format!("{}()", method.name),
+                    fragment,
+                )
+            })
+            .map(|method| InlineCompletionItem {
+                insert_text: format!("{}()", method.name),
+                filter_text: Some(method.name.clone()),
+                range: None,
+                command: None,
+            })
+            .collect()
+    }
+
+    fn preferred_test_statement(&self, context: &SemanticInlineContext) -> Option<String> {
+        self.preferred_is_assertion_arguments(context)
+            .map(|arguments| format!("is({arguments}"))
+            .or_else(|| {
+                self.preferred_ok_assertion_arguments(context)
+                    .map(|arguments| format!("ok({arguments}"))
+            })
+    }
+
+    fn preferred_ok_assertion_arguments(&self, context: &SemanticInlineContext) -> Option<String> {
+        if !self.supports_test_assertions(context) {
+            return None;
+        }
+
+        let actual = self.preferred_test_actual_variable(context)?;
+        Some(format!("{}, 'test description');", actual.as_perl_variable()))
+    }
+
+    fn preferred_is_assertion_arguments(&self, context: &SemanticInlineContext) -> Option<String> {
+        if !self.supports_test_assertions(context) {
+            return None;
+        }
+
+        let actual = self.preferred_test_actual_variable(context)?;
+        let expected = context.visible_variables.iter().find(|variable| {
+            variable.is_scalar()
+                && !variable.is_scalar_self()
+                && is_preferred_test_expected_name(variable.name.as_str())
+        })?;
+
+        if actual == expected {
+            return None;
+        }
+
+        Some(format!(
+            "{}, {}, 'test description');",
+            actual.as_perl_variable(),
+            expected.as_perl_variable()
+        ))
+    }
+
+    fn preferred_test_actual_variable<'a>(
+        &self,
+        context: &'a SemanticInlineContext,
+    ) -> Option<&'a VariableFact> {
+        context.visible_variables.iter().find(|variable| {
+            variable.is_scalar()
+                && !variable.is_scalar_self()
+                && is_preferred_test_actual_name(variable.name.as_str())
+        })
+    }
+
+    fn supports_test_assertions(&self, context: &SemanticInlineContext) -> bool {
+        matches!(context.style.test_framework, TestFramework::Test2V0 | TestFramework::TestMore)
+    }
+
     fn push_unique(&self, values: &mut Vec<String>, value: String) {
         if values.iter().any(|existing| existing == &value) {
             return;
@@ -1162,6 +1531,379 @@ impl InlineCompletionProvider {
     }
 }
 
+impl InlineCandidateSource for ReceiverCandidateSource {
+    const SOURCE: InlineCandidateSourceKind = InlineCandidateSourceKind::Receiver;
+
+    fn add_candidates(
+        &self,
+        provider: &InlineCompletionProvider,
+        context: &PreparedInlineCompletionContext,
+        semantic_context: &SemanticInlineContext,
+        sink: &mut InlineCandidateSink<'_>,
+    ) {
+        let prefix = context.prefix.as_str();
+        if let Some(fragment) = method_arrow_fragment(prefix)
+            && semantic_context.expected_syntax == ExpectedSyntax::MethodName
+        {
+            if semantic_context.receiver_hint == Some(ReceiverHint::SelfReceiver) {
+                for method in provider.current_package_method_items(semantic_context, fragment) {
+                    sink.push(Self::SOURCE, 0, method);
+                }
+            } else if let Some(kind) = semantic_context.dbi_receiver_kind {
+                for method in dbi_receiver_method_items(kind, fragment) {
+                    sink.push(Self::SOURCE, 0, method);
+                }
+            } else if completion_matches_fragment("new", "new()", fragment) {
+                sink.push(
+                    Self::SOURCE,
+                    0,
+                    InlineCompletionItem {
+                        insert_text: "new()".into(),
+                        filter_text: Some("new".into()),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
+        }
+    }
+}
+
+impl InlineCandidateSource for ModuleCandidateSource {
+    const SOURCE: InlineCandidateSourceKind = InlineCandidateSourceKind::Module;
+
+    fn add_candidates(
+        &self,
+        _provider: &InlineCompletionProvider,
+        context: &PreparedInlineCompletionContext,
+        semantic_context: &SemanticInlineContext,
+        sink: &mut InlineCandidateSink<'_>,
+    ) {
+        if semantic_context.expected_syntax != ExpectedSyntax::UseModule {
+            return;
+        }
+
+        let Some(fragment) = use_completion_fragment(context.prefix.as_str()) else {
+            return;
+        };
+        if !should_suggest_available_module(fragment) {
+            return;
+        }
+
+        let mut added = 0usize;
+        for module in &semantic_context.available_modules {
+            if !completion_matches_fragment(module.name.as_str(), module.name.as_str(), fragment) {
+                continue;
+            }
+
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: format!("{};", module.name),
+                    filter_text: Some(module.name.clone()),
+                    range: None,
+                    command: None,
+                },
+            );
+            added += 1;
+            if added >= MAX_INLINE_COMPLETION_ITEMS {
+                break;
+            }
+        }
+    }
+}
+
+impl InlineCandidateSource for SyntaxCandidateSource {
+    const SOURCE: InlineCandidateSourceKind = InlineCandidateSourceKind::Syntax;
+
+    fn add_candidates(
+        &self,
+        provider: &InlineCompletionProvider,
+        context: &PreparedInlineCompletionContext,
+        semantic_context: &SemanticInlineContext,
+        sink: &mut InlineCandidateSink<'_>,
+    ) {
+        let prefix = context.prefix.as_str();
+        let full_line = context.current_line.as_str();
+
+        if prefix.trim_end() == "use" || use_completion_fragment(prefix).is_some() {
+            let typed_fragment = use_completion_fragment(prefix).unwrap_or("");
+            if completion_matches_fragment("strict", "strict;", typed_fragment) {
+                sink.push(
+                    Self::SOURCE,
+                    0,
+                    InlineCompletionItem {
+                        insert_text: "strict;".into(),
+                        filter_text: Some("strict".into()),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
+
+            if completion_matches_fragment("warnings", "warnings;", typed_fragment) {
+                sink.push(
+                    Self::SOURCE,
+                    1,
+                    InlineCompletionItem {
+                        insert_text: "warnings;".into(),
+                        filter_text: Some("warnings".into()),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
+
+            if completion_matches_fragment("feature", "feature ':5.36';", typed_fragment) {
+                sink.push(
+                    Self::SOURCE,
+                    2,
+                    InlineCompletionItem {
+                        insert_text: "feature ':5.36';".into(),
+                        filter_text: Some("feature".into()),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
+        }
+
+        if let Some(sub_name) = provider.match_sub_declaration(prefix)
+            && !full_line.contains('{')
+        {
+            let insert_text = provider.generate_subroutine_completion(&sub_name, semantic_context);
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text,
+                    filter_text: Some("{".into()),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if ends_with_keyword(prefix, "my $") {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: "self = shift;".into(),
+                    filter_text: Some("self".into()),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if ends_with_keyword(prefix, "package ") {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: "MyPackage;\n\nuse strict;\nuse warnings;".into(),
+                    filter_text: Some("MyPackage".into()),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if ends_with_keyword(prefix, "bless ") {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: "$self, $class;".into(),
+                    filter_text: Some("$self".into()),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if ends_with_keyword(prefix, "return ") {
+            if let Some(variable) = provider.preferred_return_variable(semantic_context) {
+                sink.push(
+                    Self::SOURCE,
+                    0,
+                    InlineCompletionItem {
+                        insert_text: format!("{variable};"),
+                        filter_text: Some(variable),
+                        range: None,
+                        command: None,
+                    },
+                );
+            } else if provider
+                .is_in_constructor_context(semantic_context.enclosing_sub.as_deref(), prefix)
+            {
+                sink.push(
+                    Self::SOURCE,
+                    1,
+                    InlineCompletionItem {
+                        insert_text: "$self;".into(),
+                        filter_text: Some("$self".into()),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
+        }
+
+        if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
+            if let Some(binding) = provider.preferred_loop_binding(semantic_context) {
+                sink.push(
+                    Self::SOURCE,
+                    0,
+                    InlineCompletionItem {
+                        insert_text: binding,
+                        filter_text: Some("my".into()),
+                        range: None,
+                        command: None,
+                    },
+                );
+            }
+        }
+    }
+}
+
+impl InlineCandidateSource for TestCandidateSource {
+    const SOURCE: InlineCandidateSourceKind = InlineCandidateSourceKind::Test;
+
+    fn add_candidates(
+        &self,
+        provider: &InlineCompletionProvider,
+        context: &PreparedInlineCompletionContext,
+        semantic_context: &SemanticInlineContext,
+        sink: &mut InlineCandidateSink<'_>,
+    ) {
+        let prefix = context.prefix.as_str();
+
+        if ends_with_keyword(prefix, "ok(")
+            && let Some(arguments) = provider.preferred_ok_assertion_arguments(semantic_context)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    filter_text: Some(arguments.clone()),
+                    insert_text: arguments,
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if ends_with_keyword(prefix, "is(")
+            && let Some(arguments) = provider.preferred_is_assertion_arguments(semantic_context)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    filter_text: Some(arguments.clone()),
+                    insert_text: arguments,
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+    }
+}
+
+impl InlineCandidateSource for ShebangCandidateSource {
+    const SOURCE: InlineCandidateSourceKind = InlineCandidateSourceKind::Shebang;
+
+    fn add_candidates(
+        &self,
+        _provider: &InlineCompletionProvider,
+        context: &PreparedInlineCompletionContext,
+        _semantic_context: &SemanticInlineContext,
+        sink: &mut InlineCandidateSink<'_>,
+    ) {
+        let prefix = context.prefix.as_str();
+        if prefix == "#!" || prefix == "#!/" {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: "/usr/bin/env perl".into(),
+                    filter_text: Some("perl".into()),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+    }
+}
+
+impl InlineCandidateSource for ContextualFallbackSource {
+    const SOURCE: InlineCandidateSourceKind = InlineCandidateSourceKind::ContextualFallback;
+
+    fn add_candidates(
+        &self,
+        provider: &InlineCompletionProvider,
+        context: &PreparedInlineCompletionContext,
+        semantic_context: &SemanticInlineContext,
+        sink: &mut InlineCandidateSink<'_>,
+    ) {
+        provider.add_contextual_fallbacks(context, semantic_context, sink);
+    }
+}
+
+fn is_preferred_test_actual_name(name: &str) -> bool {
+    matches!(name, "actual" | "got" | "result" | "status" | "success" | "value")
+}
+
+fn is_preferred_test_expected_name(name: &str) -> bool {
+    matches!(name, "expected" | "expected_result" | "want")
+}
+
+fn test_statement_filter_text(statement: &str) -> &'static str {
+    if statement.starts_with("ok(") { "ok" } else { "is" }
+}
+
+fn singular_loop_variable_name(array_name: &str) -> String {
+    match array_name {
+        "children" => "child".into(),
+        "entries" => "entry".into(),
+        "items" => "item".into(),
+        "people" => "person".into(),
+        "statuses" => "status".into(),
+        name if name.ends_with("ies") && name.len() > 3 => {
+            format!("{}y", &name[..name.len() - 3])
+        }
+        name if name.ends_with("ches")
+            || name.ends_with("shes")
+            || name.ends_with("sses")
+            || name.ends_with("xes")
+            || name.ends_with("zes") =>
+        {
+            name[..name.len() - 2].to_string()
+        }
+        name if name.ends_with('s')
+            && name.len() > 1
+            && !name.ends_with("is")
+            && !name.ends_with("ss")
+            && !name.ends_with("us") =>
+        {
+            name[..name.len() - 1].to_string()
+        }
+        _ => "item".into(),
+    }
+}
+
+fn hash_key_loop_variable_name(hash_name: &str) -> String {
+    hash_name
+        .strip_suffix("_by_id")
+        .map(|_| "id".into())
+        .or_else(|| hash_name.strip_suffix("_by_name").map(|_| "name".into()))
+        .or_else(|| hash_name.strip_suffix("_by_key").map(|_| "key".into()))
+        .unwrap_or_else(|| "key".into())
+}
+
 struct LineContext<'a> {
     prefix: &'a str,
     current_line: &'a str,
@@ -1170,6 +1912,45 @@ struct LineContext<'a> {
 struct ReplacementFragment<'a> {
     text: &'a str,
     start_byte: usize,
+}
+
+#[derive(Debug)]
+struct FunctionScope {
+    name: String,
+    start_line: usize,
+    block_depth: i32,
+    opened_block: bool,
+}
+
+#[derive(Debug, Default)]
+struct PackageScopeScanner {
+    package: Option<String>,
+    block_depth: Option<i32>,
+}
+
+impl PackageScopeScanner {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn current_package(&self) -> Option<&str> {
+        self.package.as_deref()
+    }
+
+    fn advance(&mut self, line: &str, parsed_package: Option<String>) {
+        if let Some(package) = parsed_package {
+            self.package = Some(package);
+            self.block_depth = package_line_opens_block(line).then_some(0);
+        }
+
+        if let Some(depth) = self.block_depth.as_mut() {
+            *depth += brace_delta(line);
+            if *depth <= 0 {
+                self.package = None;
+                self.block_depth = None;
+            }
+        }
+    }
 }
 
 fn is_keyword_boundary(ch: char) -> bool {
@@ -1200,6 +1981,53 @@ fn last_keyword_index(prefix: &str, keyword: &str) -> Option<usize> {
 
 fn contains_keyword(text: &str, keyword: &str) -> bool {
     last_keyword_index(text, keyword).is_some()
+}
+
+fn package_line_opens_block(line: &str) -> bool {
+    line.trim_start().starts_with("package ") && line_opens_block(line)
+}
+
+fn line_opens_block(line: &str) -> bool {
+    structural_brace_scan(line).opens_block
+}
+
+fn brace_delta(line: &str) -> i32 {
+    structural_brace_scan(line).delta
+}
+
+#[derive(Debug, Default)]
+struct StructuralBraceScan {
+    opens_block: bool,
+    delta: i32,
+}
+
+fn structural_brace_scan(line: &str) -> StructuralBraceScan {
+    let mut scan = StructuralBraceScan::default();
+    let mut single_quoted = false;
+    let mut double_quoted = false;
+    let mut escaped = false;
+
+    for ch in line.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if single_quoted || double_quoted => escaped = true,
+            '\'' if !double_quoted => single_quoted = !single_quoted,
+            '"' if !single_quoted => double_quoted = !double_quoted,
+            '#' if !single_quoted && !double_quoted => break,
+            '{' if !single_quoted && !double_quoted => {
+                scan.opens_block = true;
+                scan.delta += 1;
+            }
+            '}' if !single_quoted && !double_quoted => scan.delta -= 1,
+            _ => {}
+        }
+    }
+
+    scan
 }
 
 fn indentation_style_from_line(line: &str) -> IndentationStyle {
@@ -1261,6 +2089,22 @@ fn constructor_style(text: &str) -> ConstructorStyle {
     ConstructorStyle::Unknown
 }
 
+fn constructor_body(argument_style: SubArgumentStyle) -> String {
+    match argument_style {
+        SubArgumentStyle::Signature => {
+            "    my $self = bless {}, $class;\n    return $self;".to_string()
+        }
+        SubArgumentStyle::AtUnderscore => {
+            "    my ($class, %args) = @_;\n    my $self = bless {}, $class;\n    return $self;"
+                .to_string()
+        }
+        SubArgumentStyle::Shift | SubArgumentStyle::Unknown => {
+            "    my $class = shift;\n    my $self = bless {}, $class;\n    return $self;"
+                .to_string()
+        }
+    }
+}
+
 fn non_comment_code_lines(text: &str) -> impl Iterator<Item = &str> {
     text.lines().filter(|line| {
         let trimmed = line.trim_start();
@@ -1268,8 +2112,20 @@ fn non_comment_code_lines(text: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-fn collect_declared_variable_groups(text: &str) -> Vec<Vec<String>> {
+fn collect_live_declared_variable_groups(text: &str) -> Vec<Vec<String>> {
+    let (groups, final_depth) = collect_scoped_declared_variable_groups_with_final_depth(text);
+    groups
+        .into_iter()
+        .filter(|group| group.depth <= final_depth)
+        .map(|group| group.variables)
+        .collect()
+}
+
+fn collect_scoped_declared_variable_groups_with_final_depth(
+    text: &str,
+) -> (Vec<ScopedVariableGroup>, i32) {
     let mut groups = Vec::new();
+    let mut depth = 0;
     for raw_line in non_comment_code_lines(text) {
         let line = code_before_line_comment(raw_line);
         let mut search_start = 0usize;
@@ -1280,12 +2136,38 @@ fn collect_declared_variable_groups(text: &str) -> Vec<Vec<String>> {
             };
             let variables = variables_declared_after_keyword(&line[tail_start..]);
             if !variables.is_empty() {
-                groups.push(variables);
+                groups.push(ScopedVariableGroup {
+                    depth: declaration_scope_depth(line, keyword_start, depth),
+                    variables,
+                });
             }
             search_start = keyword_start + 1;
         }
+        depth += brace_delta(line);
     }
-    groups
+    (groups, depth)
+}
+
+#[derive(Debug)]
+struct ScopedVariableGroup {
+    depth: i32,
+    variables: Vec<String>,
+}
+
+fn declaration_scope_depth(line: &str, keyword_start: usize, line_depth: i32) -> i32 {
+    let depth_before_declaration = line_depth + brace_delta(&line[..keyword_start]);
+    if declaration_is_for_loop_binding(line, keyword_start) {
+        depth_before_declaration + 1
+    } else {
+        depth_before_declaration
+    }
+}
+
+fn declaration_is_for_loop_binding(line: &str, keyword_start: usize) -> bool {
+    line[..keyword_start]
+        .split_whitespace()
+        .next_back()
+        .is_some_and(|keyword| matches!(keyword, "for" | "foreach"))
 }
 
 fn find_variable_declaration(line: &str, search_start: usize) -> Option<(usize, usize)> {
@@ -1459,6 +2341,115 @@ fn receiver_hint_from_prefix(prefix: &str) -> Option<ReceiverHint> {
     None
 }
 
+fn dbi_receiver_kind_for_source(
+    text: &str,
+    context: &SemanticInlineContext,
+) -> Option<DbiReceiverKind> {
+    let Some(ReceiverHint::Variable(variable)) = context.receiver_hint.as_ref() else {
+        return None;
+    };
+    if !variable.is_scalar() {
+        return None;
+    }
+
+    let imported_dbi = context.imported_modules.iter().any(|module| module.name == "DBI");
+    let assigned_from_dbi_connect = non_comment_code_lines(text)
+        .map(code_before_line_comment)
+        .any(|line| line_assigns_variable_from_dbi_connect(line, variable.name.as_str()));
+    if is_likely_dbi_database_handle(
+        variable.name.as_str(),
+        imported_dbi,
+        assigned_from_dbi_connect,
+    ) {
+        return Some(DbiReceiverKind::DatabaseHandle);
+    }
+
+    let prepared_statement = non_comment_code_lines(text)
+        .map(code_before_line_comment)
+        .any(|line| line_assigns_variable_from_dbi_prepare(line, variable.name.as_str()));
+    if is_likely_dbi_statement_handle(variable.name.as_str(), imported_dbi, prepared_statement) {
+        return Some(DbiReceiverKind::StatementHandle);
+    }
+
+    None
+}
+
+fn is_likely_dbi_database_handle(name: &str, imported_dbi: bool, has_dbi_connect: bool) -> bool {
+    has_dbi_connect || (matches!(name, "dbh" | "db") || name.ends_with("_dbh")) && imported_dbi
+}
+
+fn is_likely_dbi_statement_handle(
+    name: &str,
+    imported_dbi: bool,
+    prepared_statement: bool,
+) -> bool {
+    prepared_statement && (name == "sth" || name.ends_with("_sth") || imported_dbi)
+}
+
+fn line_assigns_variable_from_dbi_connect(line: &str, variable_name: &str) -> bool {
+    line_assigns_variable_from_method_receiver(line, variable_name, "connect")
+        .is_some_and(|receiver| receiver == "DBI")
+        || line_assigns_variable_from_method_receiver(line, variable_name, "connect_cached")
+            .is_some_and(|receiver| receiver == "DBI")
+}
+
+fn line_assigns_variable_from_dbi_prepare(line: &str, variable_name: &str) -> bool {
+    line_assigns_variable_from_method_receiver(line, variable_name, "prepare")
+        .is_some_and(is_likely_dbi_database_receiver)
+}
+
+fn is_likely_dbi_database_receiver(receiver: &str) -> bool {
+    receiver == "$dbh" || receiver == "$db" || receiver.ends_with("_dbh")
+}
+
+fn line_assigns_variable_from_method_receiver<'line>(
+    line: &'line str,
+    variable_name: &str,
+    method_name: &str,
+) -> Option<&'line str> {
+    let (left, right) = line.split_once('=')?;
+    let variable = format!("${variable_name}");
+    if !left
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$')))
+        .any(|part| part == variable)
+    {
+        return None;
+    }
+
+    let method_call = format!("->{method_name}");
+    let method_start = right.find(method_call.as_str())?;
+    let receiver_prefix = right[..method_start].trim_end();
+    let receiver_start = receiver_prefix
+        .char_indices()
+        .rev()
+        .find_map(|(idx, ch)| (!is_receiver_fragment_char(ch)).then_some(idx + ch.len_utf8()))
+        .unwrap_or(0);
+    let receiver = receiver_prefix[receiver_start..].trim();
+    (!receiver.is_empty()).then_some(receiver)
+}
+
+fn dbi_receiver_method_items(kind: DbiReceiverKind, fragment: &str) -> Vec<InlineCompletionItem> {
+    let method_names: &[&str] = match kind {
+        DbiReceiverKind::DatabaseHandle => {
+            &["prepare", "do", "selectrow_array", "selectall_arrayref", "disconnect"]
+        }
+        DbiReceiverKind::StatementHandle => {
+            &["execute", "fetchrow_hashref", "fetchrow_array", "finish"]
+        }
+    };
+
+    method_names
+        .iter()
+        .filter(|method| completion_matches_fragment(method, &format!("{method}()"), fragment))
+        .map(|method| InlineCompletionItem {
+            insert_text: format!("{method}()"),
+            filter_text: Some((*method).to_string()),
+            range: None,
+            command: None,
+        })
+        .collect()
+}
+
 fn is_receiver_fragment_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '$' | '@' | '%')
 }
@@ -1470,6 +2461,10 @@ fn hard_reject_zone_at_cursor(
 ) -> Option<HardRejectZone> {
     if cursor_is_inside_pod(text, cursor_offset) {
         return Some(HardRejectZone::Pod);
+    }
+
+    if cursor_is_inside_format_body(text, cursor_offset) {
+        return Some(HardRejectZone::HeredocBody);
     }
 
     let protected_ranges = protected_token_ranges(text);
@@ -1603,6 +2598,33 @@ fn cursor_is_inside_pod(text: &str, cursor_offset: usize) -> bool {
     pod_start.is_some_and(|start| start <= cursor_offset)
 }
 
+fn cursor_is_inside_format_body(text: &str, cursor_offset: usize) -> bool {
+    let mut body_start = None;
+    for (line_start, line_end, line_text) in line_spans(text) {
+        if body_start.is_none() {
+            if is_format_declaration_line(line_text) {
+                body_start = Some(line_end);
+            }
+            continue;
+        }
+
+        if is_format_terminator_line(line_text) {
+            body_start = None;
+            continue;
+        }
+
+        if body_start.is_some_and(|start| start <= cursor_offset && cursor_offset < line_end) {
+            return true;
+        }
+
+        if cursor_offset < line_start {
+            return false;
+        }
+    }
+
+    body_start.is_some_and(|start| start <= cursor_offset)
+}
+
 fn line_spans(text: &str) -> impl Iterator<Item = (usize, usize, &str)> {
     let mut offset = 0usize;
     text.split_inclusive('\n').map(move |line| {
@@ -1644,6 +2666,19 @@ fn is_pod_cut_line(line: &str) -> bool {
     }
 
     line.split_whitespace().next() == Some("=cut")
+}
+
+fn is_format_declaration_line(line: &str) -> bool {
+    let code = code_before_line_comment(line).trim();
+    let Some(rest) = code.strip_prefix("format") else {
+        return false;
+    };
+
+    rest.chars().next().is_some_and(is_keyword_boundary) && code.ends_with('=')
+}
+
+fn is_format_terminator_line(line: &str) -> bool {
+    line.trim() == "."
 }
 
 fn prefix_has_unclosed_match_regex(prefix: &str) -> bool {
@@ -1701,6 +2736,23 @@ fn use_completion_fragment(prefix: &str) -> Option<&str> {
     fragment.chars().all(is_module_fragment_char).then_some(fragment)
 }
 
+fn should_suggest_available_module(fragment: &str) -> bool {
+    !fragment.is_empty()
+        && (fragment.contains("::")
+            || fragment.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()))
+}
+
+fn available_module_facts(modules: &[String]) -> Vec<ModuleFact> {
+    let mut facts: Vec<ModuleFact> = modules
+        .iter()
+        .filter(|module| !module.is_empty())
+        .map(|module| ModuleFact { name: module.clone() })
+        .collect();
+    facts.sort_by(|left, right| left.name.cmp(&right.name));
+    facts.dedup_by(|left, right| left.name == right.name);
+    facts
+}
+
 fn completion_matches_fragment(filter_text: &str, insert_text: &str, fragment: &str) -> bool {
     fragment.is_empty() || filter_text.starts_with(fragment) || insert_text.starts_with(fragment)
 }
@@ -1747,7 +2799,7 @@ fn replacement_range(
 }
 
 fn is_replacement_fragment_char(ch: char) -> bool {
-    is_identifier_fragment_char(ch) || matches!(ch, '$' | '@' | '%')
+    is_identifier_fragment_char(ch) || matches!(ch, '$' | '@' | '%' | ':')
 }
 
 fn is_identifier_fragment_char(ch: char) -> bool {
@@ -1779,6 +2831,41 @@ mod tests {
     }
 
     #[test]
+    fn use_namespace_suggests_available_module_from_environment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let environment = InlineCompletionEnvironment {
+            available_modules: vec![
+                "A::First".to_string(),
+                "B::Second".to_string(),
+                "C::Third".to_string(),
+                "D::Fourth".to_string(),
+                "E::Fifth".to_string(),
+                "F::Sixth".to_string(),
+                "Other::Tool".to_string(),
+                "My::App".to_string(),
+                "My::App::Config".to_string(),
+            ],
+        };
+        let completions =
+            provider.get_inline_completions_with_environment("use My::", 0, 8, &environment);
+
+        let module = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "My::App;")
+            .ok_or("expected My::App module inline completion")?;
+        assert_eq!(module.filter_text.as_deref(), Some("My::App"));
+        let range = module.range.as_ref().ok_or("module completion should replace typed prefix")?;
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 4);
+        assert_eq!(range.end.line, 0);
+        assert_eq!(range.end.character, 8);
+        assert!(completions.items.iter().all(|item| item.insert_text != "Other::Tool;"));
+        Ok(())
+    }
+
+    #[test]
     fn use_partial_token_replaces_typed_prefix() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let completions = provider.get_inline_completions("use str", 0, 7);
@@ -1794,6 +2881,103 @@ mod tests {
         assert_eq!(range.end.line, 0);
         assert_eq!(range.end.character, 7);
         assert!(completions.items.iter().all(|item| item.insert_text != "warnings;"));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_safety_keeps_partial_token_replacement() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("use str", 0, 7);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "strict;")
+            .ok_or("expected parse-safe strict; completion")?;
+
+        assert_eq!(item.filter_text.as_deref(), Some("strict"));
+        assert!(item.range.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_safety_rejects_candidate_that_adds_error() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let context = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
+        let list = InlineCompletionList {
+            items: vec![
+                InlineCompletionItem {
+                    insert_text: "my $value = 1;".into(),
+                    filter_text: Some("$value".into()),
+                    range: None,
+                    command: None,
+                },
+                InlineCompletionItem {
+                    insert_text: "my $value = ;".into(),
+                    filter_text: Some("$value".into()),
+                    range: None,
+                    command: None,
+                },
+            ],
+        };
+
+        let filtered = provider.filter_parse_safe_items(list, &context, 0, 0);
+
+        assert!(filtered.items.iter().any(|item| item.insert_text == "my $value = 1;"));
+        assert!(filtered.items.iter().all(|item| item.insert_text != "my $value = ;"));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_safety_rejects_multiline_candidate_that_adds_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let context = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
+        let list = InlineCompletionList {
+            items: vec![
+                InlineCompletionItem {
+                    insert_text: "my $value = 1;\nreturn $value;".into(),
+                    filter_text: Some("$value".into()),
+                    range: None,
+                    command: None,
+                },
+                InlineCompletionItem {
+                    insert_text: "my $value = ;\nreturn $value;".into(),
+                    filter_text: Some("$value".into()),
+                    range: None,
+                    command: None,
+                },
+            ],
+        };
+
+        let filtered = provider.filter_parse_safe_items(list, &context, 0, 0);
+
+        assert!(
+            filtered.items.iter().any(|item| item.insert_text == "my $value = 1;\nreturn $value;")
+        );
+        assert!(
+            filtered.items.iter().all(|item| item.insert_text != "my $value = ;\nreturn $value;")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_safety_does_not_drop_incomplete_baseline_improvements()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $value = ";
+        let context = provider.prepare_context(source, 0, 12).ok_or("expected prepared context")?;
+        let list = InlineCompletionList {
+            items: vec![InlineCompletionItem {
+                insert_text: "1;".into(),
+                filter_text: Some("1".into()),
+                range: None,
+                command: None,
+            }],
+        };
+
+        let filtered = provider.filter_parse_safe_items(list, &context, 0, 12);
+
+        assert!(filtered.items.iter().any(|item| item.insert_text == "1;"));
         Ok(())
     }
 
@@ -1919,6 +3103,176 @@ mod tests {
     }
 
     #[test]
+    fn self_receiver_prefers_current_package_methods() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "package Demo;\nsub save {}\nsub display_name {}\nsub caller {\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 4, character);
+
+        let first = completions.items.first().ok_or("expected self method completion")?;
+        assert_eq!(first.insert_text, "save()");
+        assert!(
+            completions.items.iter().any(|item| item.insert_text == "display_name()"),
+            "expected current package method suggestions, got {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "new()"),
+            "$self-> should not fall back to generic constructor guesses when methods are known"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dbi_database_handle_receiver_suggests_common_methods() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use DBI;\nmy $dbh = DBI->connect($dsn);\n$dbh->\n";
+        let character = "$dbh->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        assert_eq!(insert_texts.first(), Some(&"prepare()"));
+        assert!(insert_texts.contains(&"do()"));
+        assert!(insert_texts.contains(&"disconnect()"));
+        assert!(
+            !insert_texts.contains(&"new()"),
+            "DBI database handle must not fall back to generic constructor guesses"
+        );
+    }
+
+    #[test]
+    fn dbi_statement_handle_partial_receiver_suggests_fetch_methods_with_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "use DBI;\nmy $dbh = DBI->connect($dsn);\nmy $sth = $dbh->prepare($sql);\n$sth->f\n";
+        let character = "$sth->f".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 3, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "fetchrow_hashref()")
+            .ok_or("expected DBI statement handle fetchrow_hashref() completion")?;
+        let range =
+            item.range.as_ref().ok_or("partial DBI method completion must carry a range")?;
+
+        assert_eq!(range.start.line, 3);
+        assert_eq!(range.start.character, "$sth->".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 3);
+        assert_eq!(range.end.character, character);
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "new()"),
+            "DBI statement handle must not fall back to generic constructor guesses"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn non_dbi_connect_receiver_does_not_get_dbi_methods() {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $socket = Client->connect($dsn);\n$socket->\n";
+        let character = "$socket->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        for unexpected in ["prepare()", "do()", "disconnect()"] {
+            assert!(
+                !insert_texts.contains(&unexpected),
+                "non-DBI connect receivers must not receive DBI methods: {insert_texts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn imported_dbi_unrelated_prepare_receiver_does_not_get_statement_methods() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use DBI;\nmy $query = $builder->prepare($sql);\n$query->f\n";
+        let character = "$query->f".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "fetchrow_hashref()"),
+            "non-DBI prepare receivers must not receive statement-handle methods: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn future_dbi_assignment_does_not_affect_current_receiver_completion() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use DBI;\n$conn->\nmy $conn = DBI->connect($dsn);\n";
+        let character = "$conn->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        for unexpected in ["prepare()", "do()", "disconnect()"] {
+            assert!(
+                !insert_texts.contains(&unexpected),
+                "future DBI assignments must not shape current receiver completions: {insert_texts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn self_receiver_partial_method_replaces_typed_fragment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "package Demo;\nsub save {}\nsub display_name {}\nsub caller {\n    $self->dis\n}\n";
+        let character = "    $self->dis".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 4, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "display_name()")
+            .ok_or("expected display_name() completion")?;
+        let range = item.range.as_ref().ok_or("partial method completion must carry a range")?;
+
+        assert_eq!(range.start.line, 4);
+        assert_eq!(range.start.character, "    $self->".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 4);
+        assert_eq!(range.end.character, character);
+        Ok(())
+    }
+
+    #[test]
+    fn self_receiver_does_not_suggest_other_package_methods() {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "package Other;\nsub external {}\npackage Demo;\nsub caller {\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 4, character);
+
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "external()"),
+            "other package methods should not be suggested for current-package self receiver"
+        );
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "new()"),
+            "$self-> with no known current-package methods should stay quiet"
+        );
+    }
+
+    #[test]
+    fn self_receiver_does_not_leak_methods_after_block_scoped_package() {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "package Demo {\nsub save {}\nsub caller {\n    $self->\n}\n}\nsub external {}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 3, character);
+
+        assert!(completions.items.iter().any(|item| item.insert_text == "save()"));
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "external()"),
+            "methods after a block-scoped package must not leak into that package"
+        );
+    }
+
+    #[test]
     fn test_prepare_context_collects_function_variables_and_imports()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
@@ -1989,6 +3343,36 @@ mod tests {
         assert_eq!(semantic.expected_syntax, ExpectedSyntax::MethodName);
         assert_eq!(semantic.receiver_hint, Some(ReceiverHint::SelfReceiver));
         assert_eq!(semantic.file_role, FileRole::Unknown);
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_context_source_collects_current_package_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Other;\nsub external {}\npackage Demo;\nsub save {}\nsub display_name {}\nsub caller {\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let prepared = provider
+            .prepare_context(source, 6, character)
+            .ok_or("expected prepared inline context")?;
+        let semantic = provider.semantic_context_for_source(source, &prepared);
+
+        let methods: Vec<&str> =
+            semantic.current_package_methods.iter().map(|method| method.name.as_str()).collect();
+        assert_eq!(methods, vec!["save", "display_name"]);
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_context_source_resets_after_block_scoped_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Demo {\nsub save {}\n}\n\nmy $value = 1;\n";
+        let prepared = provider.prepare_context(source, 4, 0).ok_or("expected context")?;
+        let semantic = provider.semantic_context_for_source(source, &prepared);
+
+        assert_eq!(semantic.package, None);
+        assert!(semantic.current_package_methods.is_empty());
         Ok(())
     }
 
@@ -2276,6 +3660,127 @@ mod tests {
     }
 
     #[test]
+    fn prepared_context_excludes_variables_from_closed_blocks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "{\n    my @users = fetch_users();\n}\nfor ";
+        let prepared = provider.prepare_context(source, 3, 4).ok_or("expected prepared context")?;
+        let completions = provider.get_inline_completions(source, 3, 4);
+
+        assert!(
+            prepared.variables.iter().all(|variable| variable != "@users"),
+            "closed block array should not be visible at the cursor: {:?}",
+            prepared.variables
+        );
+        assert!(
+            completions.items.is_empty(),
+            "loop binding should stay silent when the only collection is out of scope: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_context_excludes_variables_from_closed_subroutines()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $result = compute();\n}\n\nreturn ";
+        let prepared = provider.prepare_context(source, 4, 7).ok_or("expected prepared context")?;
+        let completions = provider.get_inline_completions(source, 4, 7);
+
+        assert_eq!(prepared.current_function, None);
+        assert!(
+            prepared.variables.iter().all(|variable| variable != "$result"),
+            "closed subroutine scalar should not be visible at the cursor: {:?}",
+            prepared.variables
+        );
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "$result;"),
+            "return completion should not use a closed subroutine lexical: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_context_excludes_variables_from_single_line_closed_subroutines()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper { my $result = compute(); }\n\nreturn ";
+        let prepared = provider.prepare_context(source, 2, 7).ok_or("expected prepared context")?;
+        let completions = provider.get_inline_completions(source, 2, 7);
+
+        assert_eq!(prepared.current_function, None);
+        assert!(
+            prepared.variables.iter().all(|variable| variable != "$result"),
+            "single-line closed subroutine scalar should not be visible at the cursor: {:?}",
+            prepared.variables
+        );
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "$result;"),
+            "return completion should not use a single-line closed subroutine lexical: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn structural_brace_scan_ignores_simple_quoted_braces() {
+        assert!(!line_opens_block("my $text = \"{\";"));
+        assert!(!line_opens_block("my $text = '{';"));
+        assert_eq!(brace_delta("my $text = \"{\";"), 0);
+        assert_eq!(brace_delta("my $text = \"}\";"), 0);
+        assert_eq!(brace_delta("my $text = \"\\\"{\";"), 0);
+        assert_eq!(brace_delta("sub helper {"), 1);
+        assert_eq!(brace_delta("}"), -1);
+    }
+
+    #[test]
+    fn prepared_context_excludes_variables_when_closed_sub_contains_open_brace_string()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $result = \"{\";\n}\n\nreturn ";
+        let prepared = provider.prepare_context(source, 4, 7).ok_or("expected prepared context")?;
+        let completions = provider.get_inline_completions(source, 4, 7);
+
+        assert_eq!(prepared.current_function, None);
+        assert!(
+            prepared.variables.iter().all(|variable| variable != "$result"),
+            "closed subroutine scalar should not stay visible because a string contains '{{': {:?}",
+            prepared.variables
+        );
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "$result;"),
+            "return completion should not use a closed subroutine lexical after quoted '{{': {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_context_keeps_function_scope_when_string_contains_close_brace()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $text = \"}\";\n    return ";
+        let prepared =
+            provider.prepare_context(source, 2, 11).ok_or("expected prepared context")?;
+        let completions = provider.get_inline_completions(source, 2, 11);
+
+        assert_eq!(prepared.current_function.as_deref(), Some("helper"));
+        assert!(
+            prepared.variables.iter().any(|variable| variable == "$text"),
+            "lexical declared inside the active subroutine should remain visible: {:?}",
+            prepared.variables
+        );
+        assert!(
+            completions.items.iter().any(|item| item.insert_text == "$text;"),
+            "return completion should still use active subroutine lexical after quoted '}}': {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn prepared_context_ignores_undeclared_mentions_for_return_context()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
@@ -2343,6 +3848,102 @@ mod tests {
     }
 
     #[test]
+    fn test_file_blank_line_suggests_test_more_assertion_from_declared_variables()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Test::More;\n\nmy $got = compute();\nmy $expected = 42;\n\n";
+        let completions = provider.get_inline_completions(source, 4, 0);
+
+        let first = completions.items.first().ok_or("expected inline completion")?;
+        assert_eq!(first.insert_text, "is($got, $expected, 'test description');");
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "done_testing();"),
+            "done_testing should not be suggested ahead of a concrete assertion: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_file_blank_line_suggests_test2_assertion_from_declared_variables()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Test2::V0;\n\nmy $result = compute();\n\n";
+        let completions = provider.get_inline_completions(source, 3, 0);
+
+        let first = completions.items.first().ok_or("expected inline completion")?;
+        assert_eq!(first.insert_text, "ok($result, 'test description');");
+        Ok(())
+    }
+
+    #[test]
+    fn test_file_blank_line_without_test_import_does_not_suggest_assertion() {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $got = compute();\nmy $expected = 42;\n\n";
+        let completions = provider.get_inline_completions(source, 2, 0);
+
+        assert!(
+            completions
+                .items
+                .iter()
+                .all(|item| !item.insert_text.starts_with("is(")
+                    && !item.insert_text.starts_with("ok(")),
+            "non-test files should not get test assertion statements: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn ok_paren_in_test_file_uses_declared_scalar_argument()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Test::More;\nmy $status = compute();\n!ok(";
+        let completions = provider.get_inline_completions(source, 2, 4);
+
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text.starts_with("$status,"))
+            .ok_or("expected ok arguments from declared $status")?;
+        assert_eq!(item.insert_text, "$status, 'test description');");
+        Ok(())
+    }
+
+    #[test]
+    fn is_paren_in_test_file_uses_declared_actual_expected_pair()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Test::More;\nmy $actual = compute();\nmy $expected = 42;\nis(";
+        let completions = provider.get_inline_completions(source, 3, 3);
+
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text.starts_with("$actual,"))
+            .ok_or("expected is arguments from declared actual/expected variables")?;
+        assert_eq!(item.insert_text, "$actual, $expected, 'test description');");
+        Ok(())
+    }
+
+    #[test]
+    fn test_assertion_requires_declared_actual_and_expected_variables() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Test::More;\n\n$got = compute();\nmy $expected = 42;\n\n";
+        let completions = provider.get_inline_completions(source, 4, 0);
+
+        assert!(
+            completions
+                .items
+                .iter()
+                .all(|item| !item.insert_text.starts_with("is(")
+                    && !item.insert_text.starts_with("ok(")),
+            "undeclared actual variable should not drive assertion suggestion: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        assert!(completions.items.iter().any(|item| item.insert_text == "done_testing();"));
+    }
+
+    #[test]
     fn test_blank_line_after_comment_still_has_contextual_suggestions() {
         let provider = InlineCompletionProvider::new();
         let source = "use Test::More;\n\nsub helper {\n    my $result = 1;\n    # explain next step\n    \n}\n";
@@ -2350,7 +3951,12 @@ mod tests {
 
         assert!(!completions.items.is_empty());
         assert!(completions.items.iter().any(|item| item.insert_text == "return $result;"));
-        assert!(completions.items.iter().any(|item| item.insert_text == "done_testing();"));
+        let has_ok_assertion = completions
+            .items
+            .iter()
+            .any(|item| item.insert_text == "ok($result, 'test description');");
+        assert!(has_ok_assertion);
+        assert!(completions.items.iter().all(|item| item.insert_text != "done_testing();"));
     }
 
     #[test]
@@ -2525,6 +4131,106 @@ mod tests {
     }
 
     #[test]
+    fn for_loop_uses_visible_array_for_binding() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my @users = fetch_users();\nfor ";
+        let completions = provider.get_inline_completions(source, 1, 4);
+        let first = completions.items.first().ok_or("expected loop binding completion")?;
+
+        assert_eq!(first.insert_text, "my $user (@users) {\n    \n}");
+        assert!(
+            completions.items.iter().all(|item| !item.insert_text.contains("(@items)")),
+            "loop completion must use visible arrays instead of snippet placeholders: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn foreach_loop_singularizes_visible_array_name() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my @entries = read_entries();\nforeach ";
+        let completions = provider.get_inline_completions(source, 1, 8);
+        let first = completions.items.first().ok_or("expected foreach binding completion")?;
+
+        assert_eq!(first.insert_text, "my $entry (@entries) {\n    \n}");
+        Ok(())
+    }
+
+    #[test]
+    fn loop_binding_does_not_blindly_trim_non_plural_s_suffixes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my @status = fetch_status();\nfor ";
+        let completions = provider.get_inline_completions(source, 1, 4);
+        let first = completions.items.first().ok_or("expected loop binding completion")?;
+
+        assert_eq!(first.insert_text, "my $item (@status) {\n    \n}");
+        assert!(
+            completions.items.iter().all(|item| !item.insert_text.contains("$statu")),
+            "loop binding must not trim singular-looking names ending in s: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn loop_binding_handles_statuses_plural() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my @statuses = fetch_statuses();\nfor ";
+        let completions = provider.get_inline_completions(source, 1, 4);
+        let first = completions.items.first().ok_or("expected loop binding completion")?;
+
+        assert_eq!(first.insert_text, "my $status (@statuses) {\n    \n}");
+        Ok(())
+    }
+
+    #[test]
+    fn for_loop_uses_visible_hash_keys_when_no_array_is_available()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my %users_by_id = load_users();\nfor ";
+        let completions = provider.get_inline_completions(source, 1, 4);
+        let first = completions.items.first().ok_or("expected hash key loop completion")?;
+
+        assert_eq!(first.insert_text, "my $id (keys %users_by_id) {\n    \n}");
+        assert!(
+            completions.items.iter().all(|item| !item.insert_text.contains("(@items)")),
+            "loop completion must not fall back to snippet placeholders: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn for_loop_prefers_visible_array_over_hash() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my %users_by_id = load_users();\nmy @users = values %users_by_id;\nfor ";
+        let completions = provider.get_inline_completions(source, 2, 4);
+        let first = completions.items.first().ok_or("expected array loop completion")?;
+
+        assert_eq!(first.insert_text, "my $user (@users) {\n    \n}");
+        assert!(
+            completions.items.iter().all(|item| !item.insert_text.contains("keys %users_by_id")),
+            "visible arrays should stay preferred over hash key loops: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn loop_binding_without_visible_collection_stays_silent() {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("for ", 0, 4);
+
+        assert!(
+            completions.items.is_empty(),
+            "loop binding should not invent placeholder collections: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn ok_paren_trigger_requires_word_boundary() {
         let provider = InlineCompletionProvider::new();
         let completions = provider.get_inline_completions("hook(", 0, 5);
@@ -2534,7 +4240,8 @@ mod tests {
     #[test]
     fn ok_paren_trigger_fires_after_negation_operator() {
         let provider = InlineCompletionProvider::new();
-        let completions = provider.get_inline_completions("!ok(", 0, 4);
+        let source = "use Test::More;\nmy $result = compute();\n!ok(";
+        let completions = provider.get_inline_completions(source, 2, 4);
         assert!(completions.items.iter().any(|i| i.insert_text.starts_with("$result,")));
     }
 
@@ -2561,7 +4268,7 @@ mod tests {
         let provider = InlineCompletionProvider::new();
         let items = vec![
             RankedCompletionItem {
-                priority: 2,
+                score: InlineCandidateScore::from_legacy_priority(2),
                 order: 0,
                 item: InlineCompletionItem {
                     insert_text: "late".into(),
@@ -2571,7 +4278,7 @@ mod tests {
                 },
             },
             RankedCompletionItem {
-                priority: 0,
+                score: InlineCandidateScore::from_legacy_priority(0),
                 order: 1,
                 item: InlineCompletionItem {
                     insert_text: "first".into(),
@@ -2581,7 +4288,7 @@ mod tests {
                 },
             },
             RankedCompletionItem {
-                priority: 0,
+                score: InlineCandidateScore::from_legacy_priority(0),
                 order: 2,
                 item: InlineCompletionItem {
                     insert_text: "first".into(),
@@ -2591,7 +4298,7 @@ mod tests {
                 },
             },
             RankedCompletionItem {
-                priority: 1,
+                score: InlineCandidateScore::from_legacy_priority(1),
                 order: 3,
                 item: InlineCompletionItem {
                     insert_text: "second".into(),
@@ -2601,7 +4308,7 @@ mod tests {
                 },
             },
             RankedCompletionItem {
-                priority: 3,
+                score: InlineCandidateScore::from_legacy_priority(3),
                 order: 4,
                 item: InlineCompletionItem {
                     insert_text: "third".into(),
@@ -2611,7 +4318,7 @@ mod tests {
                 },
             },
             RankedCompletionItem {
-                priority: 4,
+                score: InlineCandidateScore::from_legacy_priority(4),
                 order: 5,
                 item: InlineCompletionItem {
                     insert_text: "fourth".into(),
@@ -2621,7 +4328,7 @@ mod tests {
                 },
             },
             RankedCompletionItem {
-                priority: 5,
+                score: InlineCandidateScore::from_legacy_priority(5),
                 order: 6,
                 item: InlineCompletionItem {
                     insert_text: "fifth".into(),
@@ -2640,5 +4347,37 @@ mod tests {
         assert_eq!(normalized[2].insert_text, "late");
         assert_eq!(normalized[3].insert_text, "third");
         assert_eq!(normalized[4].insert_text, "fourth");
+    }
+
+    #[test]
+    fn test_normalize_items_prefers_semantic_score_before_sequence() {
+        let provider = InlineCompletionProvider::new();
+        let items = vec![
+            RankedCompletionItem {
+                score: InlineCandidateScore::from_legacy_priority(0),
+                order: 0,
+                item: InlineCompletionItem {
+                    insert_text: "return $result;".into(),
+                    filter_text: Some("$result".into()),
+                    range: None,
+                    command: None,
+                },
+            },
+            RankedCompletionItem {
+                score: InlineCandidateScore(InlineCandidateScore::legacy_base(0) + 25),
+                order: 1,
+                item: InlineCompletionItem {
+                    insert_text: "is($got, $expected, 'test description');".into(),
+                    filter_text: Some("is".into()),
+                    range: None,
+                    command: None,
+                },
+            },
+        ];
+
+        let normalized = provider.normalize_items(items);
+
+        assert_eq!(normalized[0].insert_text, "is($got, $expected, 'test description');");
+        assert_eq!(normalized[1].insert_text, "return $result;");
     }
 }

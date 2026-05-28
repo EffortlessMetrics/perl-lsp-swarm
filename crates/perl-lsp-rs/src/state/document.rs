@@ -303,6 +303,12 @@ pub struct ClientCapabilities {
     /// When true, the server can provide `Diagnostic.message` as
     /// `MarkupContent` in pull diagnostics responses.
     pub markup_message_support: bool,
+    /// Supports static documentation for classes of code actions (LSP 3.18).
+    ///
+    /// Parsed from `capabilities.textDocument.codeAction.documentationSupport`.
+    /// When true, the server may advertise `CodeActionOptions.documentation` in
+    /// `codeActionProvider`.
+    pub code_action_documentation_support: bool,
     /// Supports workspace/codeLens/refresh request
     pub code_lens_refresh_support: bool,
     /// Supports workspace/semanticTokens/refresh request
@@ -311,6 +317,12 @@ pub struct ClientCapabilities {
     pub inlay_hint_refresh_support: bool,
     /// Client declared textDocument/inlayHint capability
     pub inlay_hint_support: bool,
+    /// Properties the client can resolve via codeLens/resolve
+    ///
+    /// Parsed from `capabilities.textDocument.codeLens.resolveSupport.properties`.
+    /// The server must only defer CodeLens properties that appear here. A `None`
+    /// value means the client sent no CodeLens `resolveSupport` entry.
+    pub code_lens_resolve_support: Option<std::collections::HashSet<String>>,
     /// Supports workspace/inlineValue/refresh request
     pub inline_value_refresh_support: bool,
     /// Supports workspace/diagnostic/refresh request
@@ -333,4 +345,16 @@ pub struct ClientCapabilities {
     /// When true the server may include a `labelDetails` object in completion
     /// items and in `completionItem/resolve` responses.
     pub label_details_support: bool,
+    /// Client supports `CompletionList.itemDefaults.data` (LSP 3.18).
+    ///
+    /// Parsed from `capabilities.textDocument.completion.completionList.itemDefaults`.
+    /// When true, completion responses may include shared `itemDefaults.data`
+    /// for clients that understand completion-list default item data.
+    pub completion_list_item_defaults_data_support: bool,
+    /// Client supports `CompletionList.applyKind` (LSP 3.18).
+    ///
+    /// Parsed from `capabilities.textDocument.completion.completionList.applyKindSupport`.
+    /// When true, completion responses may describe how supported item defaults
+    /// combine with per-item fields.
+    pub completion_list_apply_kind_support: bool,
 }

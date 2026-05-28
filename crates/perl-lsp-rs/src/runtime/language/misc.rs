@@ -13,9 +13,11 @@
 use super::super::*;
 use crate::protocol::{invalid_params, req_position, req_uri};
 use crate::state::{code_lens_cap, code_lens_resolve_deadline, inlay_hints_cap};
+use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_with_cache;
+use perl_lsp_rs_core::providers::inline_completion::InlineCompletionEnvironment;
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 use perl_parser_core::source_file::is_perl_source_uri;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod debug_launch;
 mod inline_values;
@@ -138,10 +140,38 @@ fn apply_inline_completion_trigger_policy(
     trigger_kind: InlineCompletionTriggerKind,
 ) -> perl_lsp_rs_core::providers::inline_completion::InlineCompletionList {
     if trigger_kind == InlineCompletionTriggerKind::Automatic {
+        list.items.retain(is_safe_automatic_inline_item);
         list.items.truncate(1);
     }
 
     list
+}
+
+fn is_safe_automatic_inline_item(
+    item: &perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem,
+) -> bool {
+    let text = item.insert_text.trim();
+    !text.is_empty()
+        && text.chars().count() <= 80
+        && text.ends_with(';')
+        && !text.contains(['\r', '\n', '$', '@', '%', '{', '}', '[', ']', '(', ')'])
+        && !text.contains("...")
+}
+
+fn inline_use_module_fragment(prefix: &str) -> Option<&str> {
+    let current_line = prefix.rsplit(['\n', '\r']).next()?;
+    let use_index = current_line.rfind("use ")?;
+    let fragment = &current_line[use_index + 4..];
+    fragment
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ':' | '_'))
+        .then_some(fragment)
+}
+
+fn should_collect_inline_modules(fragment: &str) -> bool {
+    !fragment.is_empty()
+        && (fragment.contains("::")
+            || fragment.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()))
 }
 
 impl LspServer {
@@ -543,13 +573,17 @@ impl LspServer {
             return Err(crate::protocol::method_not_advertised());
         }
 
-        let cap = code_lens_cap();
-
         if let Some(params) = params {
             let uri = req_uri(&params)?;
+            let cap = code_lens_cap();
+            let doc_snapshot = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned()
+            };
 
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
+            if let Some(doc) = doc_snapshot {
+                let start = Instant::now();
+                let deadline = code_lens_resolve_deadline();
                 if let Some(ref ast) = doc.ast {
                     let provider = CodeLensProvider::with_source(doc.text.clone())
                         .with_file_path(uri.to_string());
@@ -566,6 +600,7 @@ impl LspServer {
                         lenses.truncate(cap);
                     }
 
+                    let lenses = self.prepare_code_lenses_for_client(lenses, start, deadline);
                     return Ok(Some(json!(lenses)));
                 } else {
                     // Text-based fallback when AST is not available
@@ -581,12 +616,98 @@ impl LspServer {
                         );
                         text_lenses.truncate(cap);
                     }
+                    let text_lenses =
+                        self.prepare_code_lenses_for_client(text_lenses, start, deadline);
                     return Ok(Some(json!(text_lenses)));
                 }
             }
         }
 
         Ok(Some(json!([])))
+    }
+
+    fn client_supports_code_lens_command_resolve(&self) -> bool {
+        self.client_capabilities
+            .lock()
+            .code_lens_resolve_support
+            .as_ref()
+            .is_some_and(|properties| properties.contains("command"))
+    }
+
+    fn prepare_code_lenses_for_client(
+        &self,
+        lenses: Vec<crate::code_lens_provider::CodeLens>,
+        start: Instant,
+        deadline: Duration,
+    ) -> Vec<crate::code_lens_provider::CodeLens> {
+        if self.client_supports_code_lens_command_resolve() {
+            return lenses;
+        }
+
+        lenses
+            .into_iter()
+            .map(|lens| self.resolve_code_lens_for_client(lens, start, deadline))
+            .collect()
+    }
+
+    fn resolve_code_lens_for_client(
+        &self,
+        lens: crate::code_lens_provider::CodeLens,
+        start: Instant,
+        deadline: Duration,
+    ) -> crate::code_lens_provider::CodeLens {
+        if lens.command.is_some() || lens.data.is_none() {
+            return lens;
+        }
+
+        let symbol_name =
+            lens.data.as_ref().and_then(|d| d.get("name")).and_then(|n| n.as_str()).unwrap_or("");
+        let symbol_kind = lens
+            .data
+            .as_ref()
+            .and_then(|d| d.get("kind"))
+            .and_then(|k| k.as_str())
+            .unwrap_or("unknown");
+        let reference_count =
+            self.count_code_lens_references(symbol_name, symbol_kind, start, deadline);
+        resolve_code_lens(lens, reference_count)
+    }
+
+    fn count_code_lens_references(
+        &self,
+        symbol_name: &str,
+        symbol_kind: &str,
+        start: Instant,
+        deadline: Duration,
+    ) -> usize {
+        #[cfg(feature = "workspace")]
+        let index_count = self.coordinator().map(|coord| coord.index().count_usages(symbol_name));
+        #[cfg(not(feature = "workspace"))]
+        let index_count: Option<usize> = None;
+
+        if let Some(count) = index_count {
+            return count;
+        }
+
+        let snapshot = self.documents_scan_snapshot();
+        let mut count = 0;
+        for (scanned_docs, view) in snapshot.iter().enumerate() {
+            if scanned_docs % 10 == 0 && start.elapsed() >= deadline {
+                tracing::debug!(
+                    scanned = scanned_docs,
+                    count,
+                    "CodeLensResolve: deadline exceeded, returning partial"
+                );
+                break;
+            }
+
+            if let Some(ref ast) = view.ast {
+                count += self.count_references(ast, symbol_name, symbol_kind);
+            } else {
+                count += self.count_references_text_based(&view.text, symbol_name, symbol_kind);
+            }
+        }
+        count
     }
 
     /// Handle codeLens/resolve request
@@ -623,43 +744,8 @@ impl LspServer {
                     .and_then(|k| k.as_str())
                     .unwrap_or("unknown");
 
-                // Fast path: use workspace index if available (more accurate,
-                // excludes references in comments/strings)
-                #[cfg(feature = "workspace")]
-                let index_count =
-                    self.coordinator().map(|coord| coord.index().count_usages(symbol_name));
-                #[cfg(not(feature = "workspace"))]
-                let index_count: Option<usize> = None;
-
-                let total_references = if let Some(count) = index_count {
-                    count
-                } else {
-                    // Slow path: scan all documents with AST/text fallback
-                    let snapshot = self.documents_scan_snapshot();
-                    let mut count = 0;
-                    for (scanned_docs, view) in snapshot.iter().enumerate() {
-                        // Check deadline periodically (every 10 documents)
-                        if scanned_docs % 10 == 0 && start.elapsed() >= deadline {
-                            tracing::debug!(
-                                scanned = scanned_docs,
-                                count,
-                                "CodeLensResolve: deadline exceeded, returning partial"
-                            );
-                            break;
-                        }
-
-                        if let Some(ref ast) = view.ast {
-                            count += self.count_references(ast, symbol_name, symbol_kind);
-                        } else {
-                            count += self.count_references_text_based(
-                                &view.text,
-                                symbol_name,
-                                symbol_kind,
-                            );
-                        }
-                    }
-                    count
-                };
+                let total_references =
+                    self.count_code_lens_references(symbol_name, symbol_kind, start, deadline);
 
                 let resolved = resolve_code_lens(lens, total_references);
                 return Ok(Some(json!(resolved)));
@@ -750,8 +836,25 @@ impl LspServer {
             }
 
             // Deterministic fallback
+            let environment = provider
+                .prepare_context(&text, line, character)
+                .map(|context| {
+                    self.inline_completion_environment_for_context(
+                        uri,
+                        text.as_str(),
+                        line,
+                        character,
+                        &context,
+                    )
+                })
+                .unwrap_or_default();
             let completions = constrain_inline_completions_to_selected_info(
-                provider.get_inline_completions(&text, line, character),
+                provider.get_inline_completions_with_environment(
+                    &text,
+                    line,
+                    character,
+                    &environment,
+                ),
                 selected_completion.as_ref(),
                 line,
                 character,
@@ -766,6 +869,38 @@ impl LspServer {
         }
 
         Ok(Some(json!({ "items": [] })))
+    }
+
+    fn inline_completion_environment_for_context(
+        &self,
+        uri: &str,
+        text: &str,
+        line: u32,
+        character: u32,
+        context: &perl_lsp_rs_core::providers::inline_completion::PreparedInlineCompletionContext,
+    ) -> InlineCompletionEnvironment {
+        let Some(fragment) = inline_use_module_fragment(context.prefix.as_str()) else {
+            return InlineCompletionEnvironment::default();
+        };
+        if !should_collect_inline_modules(fragment) {
+            return InlineCompletionEnvironment::default();
+        }
+        let Some(cursor_offset) = position_to_offset(text, line, character) else {
+            return InlineCompletionEnvironment::default();
+        };
+
+        let (include_paths, system_inc_paths, include_system_inc) =
+            self.module_completion_roots_for_doc(uri, text, cursor_offset);
+        let available_modules = collect_module_names_from_roots_with_cache(
+            fragment,
+            &include_paths,
+            &system_inc_paths,
+            include_system_inc,
+            Some(&self.module_scan_cache),
+            &|| false,
+        );
+
+        InlineCompletionEnvironment { available_modules }
     }
 
     /// Attempt AI-backed inline completion.
