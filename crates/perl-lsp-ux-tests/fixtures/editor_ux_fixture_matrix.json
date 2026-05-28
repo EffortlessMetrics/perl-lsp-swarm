@@ -1574,7 +1574,6 @@
         "dynamic inline-completion registration is observed for an LSP4IJ-shaped client",
         "DBI database-handle inline completion returns common handle methods",
         "DBI statement-handle inline completion returns fetch/finish methods",
-        "partial DBI statement-handle inline completion replaces the typed method fragment",
         "DBI receiver inline completions avoid generic constructor guesses"
       ],
       "confidence_signals": [

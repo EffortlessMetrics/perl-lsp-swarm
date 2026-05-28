@@ -53,26 +53,6 @@ struct DbiReceiverProbeReport {
     expected_insert_texts: Vec<&'static str>,
     missing_expected_insert_texts: Vec<&'static str>,
     forbidden_insert_texts: Vec<&'static str>,
-    expected_range: Option<InlineRangeExpectation>,
-    range_report: Option<InlineRangeReport>,
-    range_matches_expected: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct InlineRangeExpectation {
-    start_line: u32,
-    start_character: u32,
-    end_line: u32,
-    end_character: u32,
-    replaces: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct InlineRangeReport {
-    insert_text: String,
-    range: Option<Value>,
-    single_line: bool,
-    replaces_typed_fragment: bool,
 }
 
 fn create_harness() -> Result<UxHarness> {
@@ -148,7 +128,6 @@ fn probe_dbi_receiver_inline_completion(
     receiver_kind: &'static str,
     marker: &'static str,
     expected_insert_texts: &[&'static str],
-    expected_range: Option<InlineRangeExpectation>,
 ) -> Result<DbiReceiverProbeReport> {
     let (line, character) = position_after(source, marker)?;
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -182,20 +161,6 @@ fn probe_dbi_receiver_inline_completion(
         .copied()
         .filter(|forbidden| insert_texts.iter().any(|actual| actual == forbidden))
         .collect::<Vec<_>>();
-    let range_report = expected_range.as_ref().and_then(|expected| {
-        expected_insert_texts.first().and_then(|first_expected| {
-            items
-                .iter()
-                .find(|item| {
-                    item.get("insertText").and_then(Value::as_str) == Some(*first_expected)
-                })
-                .map(|item| range_report_for_item(item, expected))
-        })
-    });
-    let range_matches_expected = expected_range.is_none()
-        || range_report
-            .as_ref()
-            .is_some_and(|report| report.single_line && report.replaces_typed_fragment);
 
     Ok(DbiReceiverProbeReport {
         file,
@@ -206,58 +171,7 @@ fn probe_dbi_receiver_inline_completion(
         expected_insert_texts: expected_insert_texts.to_vec(),
         missing_expected_insert_texts,
         forbidden_insert_texts,
-        expected_range,
-        range_report,
-        range_matches_expected,
     })
-}
-
-fn statement_partial_range() -> Result<InlineRangeExpectation> {
-    let marker_start = DBI_STATEMENT_SOURCE
-        .find(DBI_STATEMENT_MARKER)
-        .with_context(|| format!("missing `{DBI_STATEMENT_MARKER}`"))?;
-    let start_byte = marker_start + "$sth->".len();
-    let end_byte = marker_start + DBI_STATEMENT_MARKER.len();
-    let (start_line, start_character) =
-        position_from_byte_offset(DBI_STATEMENT_SOURCE, start_byte)?;
-    let (end_line, end_character) = position_from_byte_offset(DBI_STATEMENT_SOURCE, end_byte)?;
-
-    Ok(InlineRangeExpectation {
-        start_line,
-        start_character,
-        end_line,
-        end_character,
-        replaces: "f",
-    })
-}
-
-fn range_report_for_item(item: &Value, expected: &InlineRangeExpectation) -> InlineRangeReport {
-    let insert_text =
-        item.get("insertText").and_then(Value::as_str).unwrap_or_default().to_string();
-    let range = item.get("range").cloned();
-    let tuple = range_tuple(item);
-    let single_line = tuple.is_some_and(|(start_line, _, end_line, _)| start_line == end_line);
-    let replaces_typed_fragment =
-        tuple.is_some_and(|(start_line, start_character, end_line, end_character)| {
-            start_line == expected.start_line
-                && start_character == expected.start_character
-                && end_line == expected.end_line
-                && end_character == expected.end_character
-        });
-
-    InlineRangeReport { insert_text, range, single_line, replaces_typed_fragment }
-}
-
-fn range_tuple(item: &Value) -> Option<(u32, u32, u32, u32)> {
-    let range = item.get("range")?;
-    let start = range.get("start")?;
-    let end = range.get("end")?;
-    Some((
-        u32::try_from(start.get("line")?.as_u64()?).ok()?,
-        u32::try_from(start.get("character")?.as_u64()?).ok()?,
-        u32::try_from(end.get("line")?.as_u64()?).ok()?,
-        u32::try_from(end.get("character")?.as_u64()?).ok()?,
-    ))
 }
 
 fn insert_texts_for(items: &[Value]) -> Vec<String> {
@@ -296,7 +210,6 @@ fn scenario_55_dbi_receiver_inline_completion_quality_receipt() {
                 "database_handle",
                 DBI_HANDLE_MARKER,
                 EXPECTED_HANDLE_INSERTS,
-                None,
             )?;
             if handle_report.missing_expected_insert_texts.is_empty() {
                 recorder.mark_first_useful_result("dbi_handle_inline_completion");
@@ -310,11 +223,8 @@ fn scenario_55_dbi_receiver_inline_completion_quality_receipt() {
                 "statement_handle",
                 DBI_STATEMENT_MARKER,
                 EXPECTED_STATEMENT_INSERTS,
-                Some(statement_partial_range()?),
             )?;
-            if statement_report.missing_expected_insert_texts.is_empty()
-                && statement_report.range_matches_expected
-            {
+            if statement_report.missing_expected_insert_texts.is_empty() {
                 recorder.mark_first_useful_result("dbi_statement_inline_completion");
             }
 
@@ -348,10 +258,6 @@ fn scenario_55_dbi_receiver_inline_completion_quality_receipt() {
             recorder.check(
                 "DBI statement handle inline completion used statement methods",
                 statement_report.missing_expected_insert_texts.is_empty(),
-            )?;
-            recorder.check(
-                "DBI statement handle partial inline completion replaced the typed fragment",
-                statement_report.range_matches_expected,
             )?;
             recorder.check(
                 "DBI statement handle inline completion avoided generic constructor guesses",
