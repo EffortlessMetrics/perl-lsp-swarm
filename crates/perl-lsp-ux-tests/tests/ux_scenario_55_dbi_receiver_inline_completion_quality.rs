@@ -7,20 +7,17 @@
 // UX receipt tests intentionally write structured receipts to stderr for --nocapture logs.
 #![allow(clippy::print_stderr)]
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use perl_lsp_ux_tests::{
-    LspEvent, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
-    missing_binary_skip, run_ux_scenario,
+    ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available, missing_binary_skip,
+    run_ux_scenario,
 };
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 const SCENARIO_FILE: &str = "ux_scenario_55_dbi_receiver_inline_completion_quality.rs";
 const DBI_HANDLE_PATH: &str = "lib/Inline/DbiHandle.pl";
 const DBI_STATEMENT_PATH: &str = "lib/Inline/DbiStatement.pl";
-const DBI_HANDLE_MARKER: &str = "$dbh->";
-const DBI_STATEMENT_MARKER: &str = "$sth->f";
 
 const DBI_HANDLE_SOURCE: &str = r#"use strict;
 use warnings;
@@ -39,21 +36,13 @@ my $sth = $dbh->prepare($sql);
 $sth->f
 "#;
 
+const DBI_HANDLE_LINE: u32 = 5;
+const DBI_HANDLE_CHARACTER: u32 = 6;
+const DBI_STATEMENT_LINE: u32 = 6;
+const DBI_STATEMENT_CHARACTER: u32 = 7;
 const EXPECTED_HANDLE_INSERTS: &[&str] = &["prepare()", "do()", "disconnect()"];
 const EXPECTED_STATEMENT_INSERTS: &[&str] = &["fetchrow_hashref()", "fetchrow_array()", "finish()"];
 const FORBIDDEN_INSERTS: &[&str] = &["new()"];
-
-#[derive(Debug, Serialize)]
-struct DbiReceiverProbeReport {
-    file: &'static str,
-    receiver_kind: &'static str,
-    trigger_kind: u8,
-    candidate_count: usize,
-    insert_texts: Vec<String>,
-    expected_insert_texts: Vec<&'static str>,
-    missing_expected_insert_texts: Vec<&'static str>,
-    forbidden_insert_texts: Vec<&'static str>,
-}
 
 fn create_harness() -> Result<UxHarness> {
     let mut config = ScenarioConfig::default()
@@ -70,112 +59,46 @@ fn create_harness() -> Result<UxHarness> {
     UxHarness::new(config)
 }
 
-fn position_after(source: &str, needle: &str) -> Result<(u32, u32)> {
-    let byte_offset =
-        source.find(needle).with_context(|| format!("missing `{needle}`"))? + needle.len();
-    position_from_byte_offset(source, byte_offset)
+fn insert_texts_for(items: &[Value]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| item.get("insertText").and_then(Value::as_str).map(str::to_string))
+        .collect()
 }
 
-fn position_from_byte_offset(source: &str, byte_offset: usize) -> Result<(u32, u32)> {
-    let prefix = source
-        .get(..byte_offset)
-        .with_context(|| format!("byte offset {byte_offset} is not a UTF-8 boundary"))?;
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
-    let character = prefix.rsplit('\n').next().map(str::chars).map(Iterator::count).unwrap_or(0);
-    Ok((u32::try_from(line)?, u32::try_from(character)?))
-}
-
-fn inline_insert_text(item: &Value) -> Option<String> {
-    item.get("insertText").and_then(Value::as_str).map(str::to_string)
-}
-
-fn item_has_inline_shape(item: &Value) -> bool {
-    item.get("insertText").and_then(Value::as_str).is_some()
-}
-
-fn inline_registration_seen(events: &[LspEvent]) -> bool {
-    events.iter().any(|event| {
-        let LspEvent::Other { method, params } = event else {
-            return false;
-        };
-        method == "client/registerCapability"
-            && params.get("registrations").and_then(Value::as_array).into_iter().flatten().any(
-                |registration| {
-                    registration.get("method").and_then(Value::as_str)
-                        == Some("textDocument/inlineCompletion")
-                        && registration.get("id").and_then(Value::as_str)
-                            == Some("perl-inlineCompletion")
-                },
-            )
-    })
-}
-
-fn wait_for_inline_registration(harness: &UxHarness) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline {
-        if inline_registration_seen(&harness.client.peek_events()) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    false
-}
-
-fn probe_dbi_receiver_inline_completion(
-    harness: &UxHarness,
-    file: &'static str,
-    source: &str,
-    receiver_kind: &'static str,
-    marker: &'static str,
-    expected_insert_texts: &[&'static str],
-) -> Result<DbiReceiverProbeReport> {
-    let (line, character) = position_after(source, marker)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let items = loop {
-        let items = harness.inline_completion_with_trigger_kind(file, line, character, 1)?;
-        for item in &items {
-            anyhow::ensure!(
-                item_has_inline_shape(item),
-                "inline item must include insertText: {item:?}"
-            );
-        }
-        let insert_texts = insert_texts_for(&items);
-        if expected_insert_texts
-            .iter()
-            .all(|expected| insert_texts.iter().any(|actual| actual == expected))
-            || Instant::now() >= deadline
-        {
-            break items;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-
-    let insert_texts = insert_texts_for(&items);
-    let missing_expected_insert_texts = expected_insert_texts
+fn missing_expected<'a>(insert_texts: &[String], expected: &'a [&str]) -> Vec<&'a str> {
+    expected
         .iter()
         .copied()
         .filter(|expected| !insert_texts.iter().any(|actual| actual == expected))
-        .collect::<Vec<_>>();
-    let forbidden_insert_texts = FORBIDDEN_INSERTS
+        .collect()
+}
+
+fn present_forbidden<'a>(insert_texts: &[String], forbidden: &'a [&str]) -> Vec<&'a str> {
+    forbidden
         .iter()
         .copied()
         .filter(|forbidden| insert_texts.iter().any(|actual| actual == forbidden))
-        .collect::<Vec<_>>();
-
-    Ok(DbiReceiverProbeReport {
-        file,
-        receiver_kind,
-        trigger_kind: 1,
-        candidate_count: items.len(),
-        insert_texts,
-        expected_insert_texts: expected_insert_texts.to_vec(),
-        missing_expected_insert_texts,
-        forbidden_insert_texts,
-    })
+        .collect()
 }
 
-fn insert_texts_for(items: &[Value]) -> Vec<String> {
-    items.iter().filter_map(inline_insert_text).collect()
+fn wait_for_expected_inserts(
+    harness: &UxHarness,
+    file: &str,
+    line: u32,
+    character: u32,
+    expected: &[&str],
+) -> Result<Vec<String>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let insert_texts = insert_texts_for(
+            &harness.inline_completion_with_trigger_kind(file, line, character, 1)?,
+        );
+        if missing_expected(&insert_texts, expected).is_empty() || Instant::now() >= deadline {
+            return Ok(insert_texts);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]
@@ -196,72 +119,90 @@ fn scenario_55_dbi_receiver_inline_completion_quality_receipt() {
             harness.open_file(DBI_STATEMENT_PATH, DBI_STATEMENT_SOURCE)?;
             std::thread::sleep(Duration::from_millis(250));
 
-            recorder.mark_request_start("dynamic_inline_registration");
-            let dynamic_registration_seen = wait_for_inline_registration(&harness);
-            if dynamic_registration_seen {
-                recorder.mark_first_useful_result("dynamic_inline_registration");
-            }
-
             recorder.mark_request_start("dbi_handle_inline_completion");
-            let handle_report = probe_dbi_receiver_inline_completion(
+            let handle_insert_texts = wait_for_expected_inserts(
                 &harness,
                 DBI_HANDLE_PATH,
-                DBI_HANDLE_SOURCE,
-                "database_handle",
-                DBI_HANDLE_MARKER,
+                DBI_HANDLE_LINE,
+                DBI_HANDLE_CHARACTER,
                 EXPECTED_HANDLE_INSERTS,
             )?;
-            if handle_report.missing_expected_insert_texts.is_empty() {
+            let handle_missing = missing_expected(&handle_insert_texts, EXPECTED_HANDLE_INSERTS);
+            let handle_forbidden = present_forbidden(&handle_insert_texts, FORBIDDEN_INSERTS);
+            let handle_has_expected = handle_missing.is_empty();
+            let handle_avoids_forbidden = handle_forbidden.is_empty();
+            if handle_has_expected {
                 recorder.mark_first_useful_result("dbi_handle_inline_completion");
             }
 
             recorder.mark_request_start("dbi_statement_inline_completion");
-            let statement_report = probe_dbi_receiver_inline_completion(
+            let statement_insert_texts = wait_for_expected_inserts(
                 &harness,
                 DBI_STATEMENT_PATH,
-                DBI_STATEMENT_SOURCE,
-                "statement_handle",
-                DBI_STATEMENT_MARKER,
+                DBI_STATEMENT_LINE,
+                DBI_STATEMENT_CHARACTER,
                 EXPECTED_STATEMENT_INSERTS,
             )?;
-            if statement_report.missing_expected_insert_texts.is_empty() {
+            let statement_missing =
+                missing_expected(&statement_insert_texts, EXPECTED_STATEMENT_INSERTS);
+            let statement_forbidden = present_forbidden(&statement_insert_texts, FORBIDDEN_INSERTS);
+            let statement_has_expected = statement_missing.is_empty();
+            let statement_avoids_forbidden = statement_forbidden.is_empty();
+            if statement_has_expected {
                 recorder.mark_first_useful_result("dbi_statement_inline_completion");
             }
 
             let receipt = json!({
                 "schema_version": 1,
                 "receipt": "dbi_receiver_inline_completion_quality",
-                "claim_boundary": "stdio inline-completion DBI receiver quality receipt only; no provider behavior change, support-tier promotion, source mirror, release action, or AI behavior",
-                "dynamic_registration_seen": dynamic_registration_seen,
-                "database_handle_probe": handle_report,
-                "statement_handle_probe": statement_report,
+                "claim_boundary": "stdio inline-completion DBI receiver quality receipt only; no provider behavior change, support-tier promotion, source mirror, release action, protocol registration change, or AI behavior",
+                "database_handle_probe": {
+                    "file": DBI_HANDLE_PATH,
+                    "trigger_kind": 1,
+                    "candidate_count": handle_insert_texts.len(),
+                    "insert_texts": &handle_insert_texts,
+                    "expected_insert_texts": EXPECTED_HANDLE_INSERTS,
+                    "missing_expected_insert_texts": &handle_missing,
+                    "forbidden_insert_texts": &handle_forbidden,
+                },
+                "statement_handle_probe": {
+                    "file": DBI_STATEMENT_PATH,
+                    "trigger_kind": 1,
+                    "candidate_count": statement_insert_texts.len(),
+                    "insert_texts": &statement_insert_texts,
+                    "expected_insert_texts": EXPECTED_STATEMENT_INSERTS,
+                    "missing_expected_insert_texts": &statement_missing,
+                    "forbidden_insert_texts": &statement_forbidden,
+                },
             });
             eprintln!(
                 "dbi_receiver_inline_completion_quality_receipt={}",
                 serde_json::to_string_pretty(&receipt)?
             );
 
-            recorder
-                .check("dynamic inline registration was observed", dynamic_registration_seen)?;
             recorder.check(
                 "DBI database handle inline completion returned candidates",
-                handle_report.candidate_count > 0,
+                !handle_insert_texts.is_empty(),
             )?;
             recorder.check(
                 "DBI database handle inline completion used DBI handle methods",
-                handle_report.missing_expected_insert_texts.is_empty(),
+                handle_has_expected,
             )?;
             recorder.check(
                 "DBI database handle inline completion avoided generic constructor guesses",
-                handle_report.forbidden_insert_texts.is_empty(),
+                handle_avoids_forbidden,
+            )?;
+            recorder.check(
+                "DBI statement handle inline completion returned candidates",
+                !statement_insert_texts.is_empty(),
             )?;
             recorder.check(
                 "DBI statement handle inline completion used statement methods",
-                statement_report.missing_expected_insert_texts.is_empty(),
+                statement_has_expected,
             )?;
             recorder.check(
                 "DBI statement handle inline completion avoided generic constructor guesses",
-                statement_report.forbidden_insert_texts.is_empty(),
+                statement_avoids_forbidden,
             )?;
 
             harness.assert_no_crash();

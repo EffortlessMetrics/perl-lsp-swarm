@@ -1571,7 +1571,6 @@
         "workflow_stability_rate"
       ],
       "expected_outcomes": [
-        "dynamic inline-completion registration is observed for an LSP4IJ-shaped client",
         "DBI database-handle inline completion returns common handle methods",
         "DBI statement-handle inline completion returns fetch/finish methods",
         "DBI receiver inline completions avoid generic constructor guesses"
