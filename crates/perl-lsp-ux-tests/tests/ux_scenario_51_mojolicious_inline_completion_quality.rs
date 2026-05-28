@@ -48,6 +48,40 @@ struct InlineModuleProbeReport {
     expected_insert_texts: Vec<&'static str>,
     missing_expected_insert_texts: Vec<&'static str>,
     forbidden_insert_texts: Vec<&'static str>,
+    expected_range: InlineRangeExpectation,
+    range_reports: Vec<InlineRangeReport>,
+    range_violation_insert_texts: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct InlineRangeExpectation {
+    start_line: u32,
+    start_character: u32,
+    end_line: u32,
+    end_character: u32,
+    replaces: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct InlineRangeReport {
+    insert_text: String,
+    range: Option<Value>,
+    single_line: bool,
+    replaces_typed_prefix: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct InlineSelectedCompletionReport {
+    file: &'static str,
+    selected_text: &'static str,
+    selected_range: InlineRangeExpectation,
+    accepted_candidate_count: usize,
+    accepted_insert_texts: Vec<String>,
+    accepted_ranges_match_selection: bool,
+    conflicting_selected_text: &'static str,
+    conflicting_candidate_count: usize,
+    conflicting_insert_texts: Vec<String>,
+    conflict_suppressed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -163,6 +197,21 @@ fn probe_module_inline_completion(harness: &UxHarness) -> Result<InlineModulePro
         .copied()
         .filter(|forbidden| insert_texts.iter().any(|actual| actual == forbidden))
         .collect::<Vec<_>>();
+    let expected_range = expected_module_range()?;
+    let range_reports = EXPECTED_MODULE_INSERTS
+        .iter()
+        .filter_map(|expected| {
+            items
+                .iter()
+                .find(|item| item.get("insertText").and_then(Value::as_str) == Some(*expected))
+                .map(|item| range_report_for_item(item, &expected_range))
+        })
+        .collect::<Vec<_>>();
+    let range_violation_insert_texts = range_reports
+        .iter()
+        .filter(|report| !report.replaces_typed_prefix)
+        .map(|report| report.insert_text.clone())
+        .collect::<Vec<_>>();
 
     Ok(InlineModuleProbeReport {
         file: MODULE_IMPORT_PROBE_PATH,
@@ -172,7 +221,59 @@ fn probe_module_inline_completion(harness: &UxHarness) -> Result<InlineModulePro
         expected_insert_texts: EXPECTED_MODULE_INSERTS.to_vec(),
         missing_expected_insert_texts,
         forbidden_insert_texts,
+        expected_range,
+        range_reports,
+        range_violation_insert_texts,
     })
+}
+
+fn expected_module_range() -> Result<InlineRangeExpectation> {
+    let marker_start = MODULE_IMPORT_PROBE_SOURCE
+        .find(MODULE_MARKER)
+        .with_context(|| format!("missing `{MODULE_MARKER}`"))?;
+    let start_byte = marker_start + "use ".len();
+    let end_byte = marker_start + MODULE_MARKER.len();
+    let (start_line, start_character) =
+        position_from_byte_offset(MODULE_IMPORT_PROBE_SOURCE, start_byte)?;
+    let (end_line, end_character) =
+        position_from_byte_offset(MODULE_IMPORT_PROBE_SOURCE, end_byte)?;
+
+    Ok(InlineRangeExpectation {
+        start_line,
+        start_character,
+        end_line,
+        end_character,
+        replaces: "Mojolicious::",
+    })
+}
+
+fn range_report_for_item(item: &Value, expected: &InlineRangeExpectation) -> InlineRangeReport {
+    let insert_text =
+        item.get("insertText").and_then(Value::as_str).unwrap_or_default().to_string();
+    let range = item.get("range").cloned();
+    let tuple = range_tuple(item);
+    let single_line = tuple.is_some_and(|(start_line, _, end_line, _)| start_line == end_line);
+    let replaces_typed_prefix =
+        tuple.is_some_and(|(start_line, start_character, end_line, end_character)| {
+            start_line == expected.start_line
+                && start_character == expected.start_character
+                && end_line == expected.end_line
+                && end_character == expected.end_character
+        });
+
+    InlineRangeReport { insert_text, range, single_line, replaces_typed_prefix }
+}
+
+fn range_tuple(item: &Value) -> Option<(u32, u32, u32, u32)> {
+    let range = item.get("range")?;
+    let start = range.get("start")?;
+    let end = range.get("end")?;
+    Some((
+        u32::try_from(start.get("line")?.as_u64()?).ok()?,
+        u32::try_from(start.get("character")?.as_u64()?).ok()?,
+        u32::try_from(end.get("line")?.as_u64()?).ok()?,
+        u32::try_from(end.get("character")?.as_u64()?).ok()?,
+    ))
 }
 
 fn probe_hard_zone_inline_completion(harness: &UxHarness) -> Result<InlineSilenceProbeReport> {
@@ -193,6 +294,81 @@ fn probe_hard_zone_inline_completion(harness: &UxHarness) -> Result<InlineSilenc
         candidate_count: items.len(),
         stayed_silent: items.is_empty(),
         insert_texts,
+    })
+}
+
+fn probe_selected_completion_info(harness: &UxHarness) -> Result<InlineSelectedCompletionReport> {
+    let (line, character) = position_after(MODULE_IMPORT_PROBE_SOURCE, MODULE_MARKER)?;
+    let selected_range = expected_module_range()?;
+    let selected_text = "Mojolicious::Commands";
+    let accepted_items = harness.inline_completion_with_context(
+        MODULE_IMPORT_PROBE_PATH,
+        line,
+        character,
+        json!({
+            "triggerKind": 1,
+            "selectedCompletionInfo": {
+                "range": range_json(&selected_range),
+                "text": selected_text,
+            }
+        }),
+    )?;
+    for item in &accepted_items {
+        anyhow::ensure!(
+            item_has_inline_shape(item),
+            "inline item must include insertText: {item:?}"
+        );
+    }
+    let accepted_insert_texts = insert_texts_for(&accepted_items);
+    let accepted_ranges_match_selection = accepted_items
+        .iter()
+        .all(|item| range_report_for_item(item, &selected_range).replaces_typed_prefix);
+
+    let conflicting_selected_text = "Mojo::Base";
+    let conflicting_items = harness.inline_completion_with_context(
+        MODULE_IMPORT_PROBE_PATH,
+        line,
+        character,
+        json!({
+            "triggerKind": 1,
+            "selectedCompletionInfo": {
+                "range": range_json(&selected_range),
+                "text": conflicting_selected_text,
+            }
+        }),
+    )?;
+    for item in &conflicting_items {
+        anyhow::ensure!(
+            item_has_inline_shape(item),
+            "inline item must include insertText: {item:?}"
+        );
+    }
+    let conflicting_insert_texts = insert_texts_for(&conflicting_items);
+
+    Ok(InlineSelectedCompletionReport {
+        file: MODULE_IMPORT_PROBE_PATH,
+        selected_text,
+        selected_range,
+        accepted_candidate_count: accepted_items.len(),
+        accepted_insert_texts,
+        accepted_ranges_match_selection,
+        conflicting_selected_text,
+        conflicting_candidate_count: conflicting_items.len(),
+        conflicting_insert_texts,
+        conflict_suppressed: conflicting_items.is_empty(),
+    })
+}
+
+fn range_json(range: &InlineRangeExpectation) -> Value {
+    json!({
+        "start": {
+            "line": range.start_line,
+            "character": range.start_character,
+        },
+        "end": {
+            "line": range.end_line,
+            "character": range.end_character,
+        }
     })
 }
 
@@ -235,6 +411,18 @@ fn scenario_51_mojolicious_inline_completion_quality_receipt() {
                 recorder.mark_first_useful_result("module_import_inline_completion");
             }
 
+            recorder.mark_request_start("selected_completion_info_alignment");
+            let selected_completion_report = probe_selected_completion_info(&harness)?;
+            if selected_completion_report
+                .accepted_insert_texts
+                .iter()
+                .any(|insert_text| insert_text == "Mojolicious::Commands;")
+                && selected_completion_report.accepted_ranges_match_selection
+                && selected_completion_report.conflict_suppressed
+            {
+                recorder.mark_first_useful_result("selected_completion_info_alignment");
+            }
+
             recorder.mark_request_start("hard_zone_inline_completion");
             let hard_zone_report = probe_hard_zone_inline_completion(&harness)?;
             if hard_zone_report.stayed_silent {
@@ -249,6 +437,7 @@ fn scenario_51_mojolicious_inline_completion_quality_receipt() {
                 "fixture_file_count": fixture_file_count,
                 "dynamic_registration_seen": dynamic_registration_seen,
                 "module_probe": module_report,
+                "selected_completion_probe": selected_completion_report,
                 "hard_zone_probe": hard_zone_report,
             });
             eprintln!(
@@ -269,6 +458,26 @@ fn scenario_51_mojolicious_inline_completion_quality_receipt() {
             recorder.check(
                 "invoked module inline completion avoided unrelated/generic inserts",
                 module_report.forbidden_insert_texts.is_empty(),
+            )?;
+            recorder.check(
+                "invoked module inline completion replaced the typed module prefix",
+                module_report.range_violation_insert_texts.is_empty(),
+            )?;
+            recorder.check(
+                "selectedCompletionInfo returned only the selected extending module",
+                selected_completion_report
+                    .accepted_insert_texts
+                    .iter()
+                    .any(|insert_text| insert_text == "Mojolicious::Commands;")
+                    && selected_completion_report.accepted_candidate_count == 1,
+            )?;
+            recorder.check(
+                "selectedCompletionInfo preserved the selected completion range",
+                selected_completion_report.accepted_ranges_match_selection,
+            )?;
+            recorder.check(
+                "conflicting selectedCompletionInfo suppressed ghost text",
+                selected_completion_report.conflict_suppressed,
             )?;
             recorder.check(
                 "automatic inline completion stayed silent in line comment",
