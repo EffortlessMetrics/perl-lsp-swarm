@@ -1156,6 +1156,106 @@ mod tests {
         );
     }
 
+    #[test]
+    fn code_action_runtime_emits_snippet_text_edits_when_supported()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        {
+            let mut caps = server.client_capabilities.lock();
+            caps.workspace_edit_document_changes_support = true;
+            caps.workspace_edit_snippet_edit_support = true;
+        }
+
+        let uri = "file:///runtime_snippet.pl";
+        open_test_document(&server, uri, "print 'hello';\n");
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 5 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let response = response.ok_or("missing code action response")?;
+        let actions = response.as_array().ok_or("code action response must be an array")?;
+        let strict_action = actions
+            .iter()
+            .find(|action| action.get("title").and_then(Value::as_str) == Some("Add use strict;"))
+            .ok_or("missing strict pragma action")?;
+
+        assert_eq!(
+            strict_action
+                .pointer("/edit/documentChanges/0/edits/0/snippet/kind")
+                .and_then(Value::as_str),
+            Some("snippet")
+        );
+        assert_eq!(
+            strict_action
+                .pointer("/edit/documentChanges/0/edits/0/snippet/value")
+                .and_then(Value::as_str),
+            Some("use strict;\n")
+        );
+        assert!(
+            strict_action.pointer("/edit/changes").is_none(),
+            "snippet-capable clients should receive documentChanges: {strict_action}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn code_action_runtime_emits_snippet_text_edits_without_ast_when_supported()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        {
+            let mut caps = server.client_capabilities.lock();
+            caps.workspace_edit_document_changes_support = true;
+            caps.workspace_edit_snippet_edit_support = true;
+        }
+
+        let uri = "file:///runtime_snippet_no_ast.pl";
+        open_test_document(&server, uri, "print 'hello';\n");
+        {
+            let mut docs = server.documents.lock();
+            let doc = docs.get_mut(uri).ok_or("missing opened document")?;
+            doc.ast = None;
+        }
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 5 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let response = response.ok_or("missing code action response")?;
+        let actions = response.as_array().ok_or("code action response must be an array")?;
+        let combined_action = actions
+            .iter()
+            .find(|action| {
+                action.get("title").and_then(Value::as_str)
+                    == Some("Add 'use strict' and 'use warnings'")
+            })
+            .ok_or("missing combined pragma action")?;
+
+        assert_eq!(
+            combined_action
+                .pointer("/edit/documentChanges/0/edits/0/snippet/kind")
+                .and_then(Value::as_str),
+            Some("snippet")
+        );
+        assert_eq!(
+            combined_action
+                .pointer("/edit/documentChanges/0/edits/0/snippet/value")
+                .and_then(Value::as_str),
+            Some("use strict;\nuse warnings;\n\n")
+        );
+
+        Ok(())
+    }
+
     /// Build a minimal quickfix action for use in unit tests.  The action has
     /// exactly one edit on the supplied single-line range and a single
     /// associated diagnostic so we can verify diagnostic propagation.
@@ -1242,6 +1342,112 @@ mod tests {
                 "documentChanges": document_changes,
             }
         })
+    }
+
+    #[test]
+    fn snippet_text_edit_conversion_rewrites_pragma_quickfixes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let uri = "file:///snippet_conversion.pl";
+        let mut actions = vec![
+            make_quickfix(uri, 0, 0, 0, "use strict;\n", "Add use strict;", Some("PL201")),
+            make_quickfix(uri, 1, 0, 0, "use Test2::V0;\n", "Add Test2 import", Some("PL202")),
+        ];
+
+        convert_pragma_quickfix_edits_to_snippet_text_edits(&mut actions, uri, 7);
+
+        assert_eq!(
+            actions[0].pointer("/edit/documentChanges/0/textDocument/uri").and_then(Value::as_str),
+            Some(uri)
+        );
+        assert_eq!(
+            actions[0]
+                .pointer("/edit/documentChanges/0/textDocument/version")
+                .and_then(Value::as_i64),
+            Some(7)
+        );
+        assert_eq!(
+            actions[0]
+                .pointer("/edit/documentChanges/0/edits/0/snippet/kind")
+                .and_then(Value::as_str),
+            Some("snippet")
+        );
+        assert_eq!(
+            actions[0]
+                .pointer("/edit/documentChanges/0/edits/0/snippet/value")
+                .and_then(Value::as_str),
+            Some("use strict;\n")
+        );
+        assert!(
+            actions[0].pointer("/edit/changes").is_none(),
+            "converted action should replace changes with documentChanges: {}",
+            actions[0]
+        );
+        assert!(
+            actions[1].pointer("/edit/documentChanges").is_none(),
+            "non-pragma quickfixes must stay as plain text edits: {}",
+            actions[1]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn snippet_text_edit_conversion_skips_unsupported_action_shapes() {
+        let uri = "file:///snippet_fallback.pl";
+        let mut actions = vec![
+            json!({
+                "title": "Add use warnings;",
+                "kind": "refactor",
+                "edit": {
+                    "changes": {
+                        uri: [{
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 0, "character": 0},
+                            },
+                            "newText": "use warnings;\n",
+                        }]
+                    }
+                }
+            }),
+            json!({
+                "title": "Add use warnings;",
+                "kind": "quickfix",
+                "edit": {
+                    "changes": {
+                        uri: [{
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 0, "character": 0},
+                            }
+                        }]
+                    }
+                }
+            }),
+            json!({
+                "kind": "quickfix",
+                "edit": {
+                    "changes": {
+                        uri: [{
+                            "range": {
+                                "start": {"line": 0, "character": 0},
+                                "end": {"line": 0, "character": 0},
+                            },
+                            "newText": "use warnings;\n",
+                        }]
+                    }
+                }
+            }),
+        ];
+
+        convert_pragma_quickfix_edits_to_snippet_text_edits(&mut actions, uri, 9);
+
+        for action in actions {
+            assert!(
+                action.pointer("/edit/documentChanges").is_none(),
+                "unsupported action shape must not be converted: {action}"
+            );
+        }
     }
 
     #[test]
