@@ -64,13 +64,25 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         ) && !coverage_job.contains("ci:coverage"),
         "patch coverage must be a front-door PR gate, not label-gated"
     );
+    let codecov_upload_start = must_some(coverage_job.find("- name: Upload coverage to Codecov"));
+    let after_codecov_upload = &coverage_job[codecov_upload_start..];
+    let codecov_upload_end =
+        must_some(after_codecov_upload.find("\n      - name: Upload coverage proof artifacts"));
+    let codecov_upload_step = &after_codecov_upload[..codecov_upload_end];
+    assert_eq!(
+        codecov_upload_step.matches("fail_ci_if_error: true").count(),
+        1,
+        "Codecov upload must fail the job when coverage upload/status integration errors"
+    );
+    assert!(
+        codecov_upload_step.contains("uses: codecov/codecov-action@")
+            && codecov_upload_step.contains("files: target/lcov.info"),
+        "Codecov upload step must upload the workspace LCOV receipt"
+    );
     for required in [
         "just coverage-proof \"origin/$base_ref\"",
         "target/receipts/quality/quality-gate-coverage.md",
         "GITHUB_STEP_SUMMARY",
-        "uses: codecov/codecov-action@",
-        "files: target/lcov.info",
-        "fail_ci_if_error: true",
         "name: coverage-proof-${{ github.sha }}",
         "target/lcov.info",
         "target/receipts/quality/coverage-baseline.json",
