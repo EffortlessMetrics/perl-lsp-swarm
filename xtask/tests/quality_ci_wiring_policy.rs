@@ -191,7 +191,9 @@ fn conventional_required_checks_record_live_proof_floor() {
         must(fs::read_to_string(root.join("docs/project/status/coverage_and_ripr_enforcement.md")));
     let parsed: toml::Value = must(toml::from_str(&policy));
 
-    for required in ["Perl LSP Rust Small Result", "ripr+ New Gap Gate", "Codecov / Patch 95"] {
+    for required in
+        ["Perl LSP Rust Small Result", "ripr+ New Gap Gate", "Codecov / Patch 95", "codecov/patch"]
+    {
         assert!(
             policy_required_check(&parsed, required),
             "required-check policy must mark `{required}` as required under GitHub enforcement"
