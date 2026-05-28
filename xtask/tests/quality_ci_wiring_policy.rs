@@ -127,6 +127,7 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "--test quality_ci_wiring_policy",
         "--test quality_gate_patch_coverage_cli_policy",
         "cargo llvm-cov report --lcov --output-path target/lcov.info",
+        "--test lsp_318_claim_guard_policy",
         "--lcov --output-path target/lcov.info",
         "cargo xtask coverage-baseline",
         "--patch-base \"{{base}}\"",
