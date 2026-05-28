@@ -2,6 +2,7 @@
 
 use std::{fs, path::PathBuf};
 
+use assert_cmd::Command;
 use perl_tdd_support::{must, must_some};
 
 #[test]
@@ -127,7 +128,6 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "--test quality_ci_wiring_policy",
         "--test quality_gate_patch_coverage_cli_policy",
         "cargo llvm-cov report --lcov --output-path target/lcov.info",
-        "--test lsp_318_claim_guard_policy",
         "--lcov --output-path target/lcov.info",
         "cargo xtask coverage-baseline",
         "--patch-base \"{{base}}\"",
@@ -140,6 +140,17 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
     ] {
         assert!(justfile.contains(required), "coverage-proof missing `{required}`");
     }
+}
+
+#[test]
+fn coverage_proof_exercises_lsp_318_claim_guard() {
+    let root = repo_root();
+
+    must(Command::cargo_bin("xtask"))
+        .current_dir(root)
+        .arg("check-lsp-318-claims")
+        .assert()
+        .success();
 }
 
 #[test]

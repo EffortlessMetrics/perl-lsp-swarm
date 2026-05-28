@@ -1950,7 +1950,6 @@ coverage-proof base='origin/main':
         --test quality_gate_patch_coverage_cli_policy \
         --test quality_gate_ripr_new_gap_cli_policy \
         --test quality_pr_summary_policy \
-        --test lsp_318_claim_guard_policy \
         --test ripr_new_gap_gate_workflow
     "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
