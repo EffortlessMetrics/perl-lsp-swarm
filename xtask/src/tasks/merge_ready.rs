@@ -341,6 +341,7 @@ fn is_required_workflow_candidate(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::must;
 
     fn make_receipt(
         head_sha: &str,
@@ -516,48 +517,67 @@ mod tests {
     }
 
     #[test]
-    fn test_required_check_names_include_only_required_status_contexts()
-    -> color_eyre::eyre::Result<()> {
-        let policy: toml::Value = toml::from_str(
-            r#"
-            [[check]]
-            name = "Workflow-shape lint only"
-            required = true
+    fn test_load_required_checks_reads_required_status_contexts_from_policy_file() {
+        let tmp_dir = must(tempfile::tempdir());
+        let policy_dir = tmp_dir.path().join(".ci").join("policies");
+        must(fs::create_dir_all(&policy_dir));
+        must(fs::write(
+            policy_dir.join("required-checks.toml"),
+            concat!(
+                "[[check]]\n",
+                "name = \"Workflow-shape lint only\"\n",
+                "required = true\n",
+                "\n",
+                "[[checks]]\n",
+                "name = \"Codecov / Patch 95\"\n",
+                "required = true\n",
+                "\n",
+                "[[checks]]\n",
+                "name = \"ripr+ New Gap Gate\"\n",
+                "required = true\n",
+            ),
+        ));
 
-            [[checks]]
-            name = "Proof required"
-            required = true
-
-            [[checks]]
-            name = "Missing required flag"
-            "#,
-        )?;
-
-        let checks = required_check_names_from_policy(&policy);
-        assert_eq!(checks, vec!["Proof required"]);
-        Ok(())
+        let checks = must(load_required_checks(tmp_dir.path()));
+        assert_eq!(checks, vec!["Codecov / Patch 95", "ripr+ New Gap Gate"]);
     }
 
     #[test]
-    fn test_required_check_names_deduplicate_sorted_names() -> color_eyre::eyre::Result<()> {
-        let policy: toml::Value = toml::from_str(
-            r#"
-            [[check]]
-            name = "ripr+ New Gap Gate"
-            required = true
+    fn test_required_check_names_include_only_required_status_contexts() {
+        let policy: toml::Value = must(toml::from_str(concat!(
+            "[[check]]\n",
+            "name = \"Workflow-shape lint only\"\n",
+            "required = true\n",
+            "\n",
+            "[[checks]]\n",
+            "name = \"Proof required\"\n",
+            "required = true\n",
+            "\n",
+            "[[checks]]\n",
+            "name = \"Missing required flag\"\n",
+        )));
 
-            [[checks]]
-            name = "Codecov / Patch 95"
-            required = true
+        let checks = required_check_names_from_policy(&policy);
+        assert_eq!(checks, vec!["Proof required"]);
+    }
 
-            [[checks]]
-            name = "ripr+ New Gap Gate"
-            required = true
-            "#,
-        )?;
+    #[test]
+    fn test_required_check_names_deduplicate_sorted_names() {
+        let policy: toml::Value = must(toml::from_str(concat!(
+            "[[check]]\n",
+            "name = \"ripr+ New Gap Gate\"\n",
+            "required = true\n",
+            "\n",
+            "[[checks]]\n",
+            "name = \"Codecov / Patch 95\"\n",
+            "required = true\n",
+            "\n",
+            "[[checks]]\n",
+            "name = \"ripr+ New Gap Gate\"\n",
+            "required = true\n",
+        )));
 
         let checks = required_check_names_from_policy(&policy);
         assert_eq!(checks, vec!["Codecov / Patch 95", "ripr+ New Gap Gate"]);
-        Ok(())
     }
 }
