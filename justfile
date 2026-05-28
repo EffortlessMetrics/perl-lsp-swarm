@@ -1923,7 +1923,7 @@ coverage-branch-gate:
 
 # Generate workspace library coverage plus focused xtask proof-lane coverage,
 # derive patch coverage from the diff, and enforce the patch gate.
-coverage-proof base='origin/master':
+coverage-proof base='origin/main':
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ ! -x "$HOME/.cargo/bin/cargo-llvm-cov" ]]; then

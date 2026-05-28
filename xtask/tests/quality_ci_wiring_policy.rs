@@ -10,8 +10,9 @@ fn ripr_workflow_blocks_new_gaps_and_requires_receipts() {
     let workflow = must(fs::read_to_string(root.join(".github/workflows/ripr.yml")));
 
     assert!(workflow.contains("name: ripr+ New Gap Gate"), "RIPR check name must be explicit");
+    let gate_step = must_some(workflow_step(&workflow, "Enforce new RIPR gap quality gate"));
     assert!(
-        !workflow.contains("continue-on-error: true"),
+        !gate_step.contains("continue-on-error: true"),
         "RIPR new-gap gate must be blocking after PR8"
     );
     for required in [
@@ -59,6 +60,11 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "coverage job must have a branch-protection-ready check name"
     );
     assert!(
+        coverage_job.contains("uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd")
+            && coverage_job.contains("persist-credentials: false"),
+        "coverage proof checkout must be pinned and must not persist write credentials"
+    );
+    assert!(
         coverage_job.contains(
             "(github.event_name == 'pull_request' && github.event.pull_request.draft != true)"
         ) && !coverage_job.contains("ci:coverage"),
@@ -80,6 +86,8 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "Codecov upload step must upload the workspace library plus xtask proof-lane LCOV receipt"
     );
     for required in [
+        "BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}",
+        "base_ref=\"$BASE_REF\"",
         "just coverage-proof \"origin/$base_ref\"",
         "cache-targets: false",
         "RUSTFLAGS: \"-Cdebuginfo=0\"",
@@ -96,11 +104,16 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         assert!(coverage_job.contains(required), "coverage job missing `{required}`");
     }
     assert!(
+        coverage_job
+            .contains("uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"),
+        "coverage proof artifact upload must pin the action SHA"
+    );
+    assert!(
         !coverage_job.contains("continue-on-error: true"),
         "coverage patch proof must not make Codecov upload advisory"
     );
     for required in [
-        "coverage-proof base='origin/master':",
+        "coverage-proof base='origin/main':",
         "coverage_target=\"${CARGO_TARGET_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/perl-lsp-swarm-coverage-target}\"",
         "export CARGO_TARGET_DIR=\"$coverage_target\"",
         "cargo llvm-cov clean --workspace",
@@ -159,4 +172,25 @@ fn docs_describe_transitional_blocking_contract() {
 fn repo_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     must_some(manifest.parent()).to_path_buf()
+}
+
+fn workflow_step<'a>(content: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("- name: {name}");
+    let start = content.find(&needle)?;
+    let rest = &content[start..];
+    let next = rest
+        .lines()
+        .skip(1)
+        .scan(needle.len() + 1, |offset, line| {
+            let current = *offset;
+            *offset += line.len() + 1;
+            Some((current, line))
+        })
+        .find_map(
+            |(offset, line)| {
+                if line.trim_start().starts_with("- name:") { Some(offset) } else { None }
+            },
+        )
+        .unwrap_or(rest.len());
+    Some(&rest[..next])
 }

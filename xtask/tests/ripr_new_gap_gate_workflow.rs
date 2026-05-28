@@ -30,8 +30,10 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         workflow.contains("if: github.event.pull_request.draft != true"),
         "ripr.yml may skip draft PRs while they are still draft"
     );
+    let gate_step = workflow_step(&workflow, "Enforce new RIPR gap quality gate")
+        .ok_or("missing RIPR gate step")?;
     assert!(
-        !workflow.contains("continue-on-error: true"),
+        !gate_step.contains("continue-on-error: true"),
         "RIPR workflow is now promoted past PR1 routing-only mode and must block new-gap failures"
     );
     assert!(
