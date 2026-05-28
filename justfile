@@ -1951,6 +1951,22 @@ coverage-proof base='origin/master':
         --test quality_gate_ripr_new_gap_cli_policy \
         --test quality_pr_summary_policy \
         --test ripr_new_gap_gate_workflow
+    smoke_lcov="$coverage_target/coverage-baseline-dispatch-smoke.lcov"
+    smoke_receipt="$coverage_target/coverage-baseline-dispatch-smoke.json"
+    printf 'SF:%s\nDA:1,1\nDA:2,1\nend_of_record\n' "$coverage_target/quality-proof-smoke.rs" > "$smoke_lcov"
+    "$HOME/.cargo/bin/rustup" run nightly cargo run -p xtask --locked -- coverage-baseline \
+        --lcov "$smoke_lcov" \
+        --receipt "$smoke_receipt" \
+        --codecov codecov.yml \
+        --patch-coverage 100 \
+        --scope coverage-proof-smoke
+    "$HOME/.cargo/bin/rustup" run nightly cargo run -p xtask --locked -- coverage-baseline \
+        --lcov "$smoke_lcov" \
+        --receipt "$smoke_receipt" \
+        --codecov codecov.yml \
+        --patch-coverage 100 \
+        --scope coverage-proof-smoke \
+        --check
     "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     cargo xtask coverage-baseline \
