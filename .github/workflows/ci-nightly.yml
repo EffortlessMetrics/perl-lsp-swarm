@@ -460,8 +460,8 @@ jobs:
 
       - name: Run workspace coverage proof
         env:
-          RUSTFLAGS: "-Copt-level=1 -Cdebuginfo=2"
-          CARGO_BUILD_JOBS: 2
+          RUSTFLAGS: "-Cdebuginfo=0"
+          CARGO_BUILD_JOBS: 1
         run: |
           base_ref="${{ github.base_ref || 'master' }}"
           git fetch --no-tags --depth=200 origin "$base_ref" || true

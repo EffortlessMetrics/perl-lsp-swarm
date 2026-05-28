@@ -82,6 +82,8 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
     for required in [
         "just coverage-proof \"origin/$base_ref\"",
         "cache-targets: false",
+        "RUSTFLAGS: \"-Cdebuginfo=0\"",
+        "CARGO_BUILD_JOBS: 1",
         "target/receipts/quality/quality-gate-coverage.md",
         "GITHUB_STEP_SUMMARY",
         "name: coverage-proof-${{ github.sha }}",
