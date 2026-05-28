@@ -381,12 +381,8 @@ pub fn run() -> Result<()> {
         SCHEMA_VALIDATION_TEST_MARKERS,
         &mut violations,
     )?;
-    check_required_markers(
-        &root,
-        SEMANTIC_LEGEND_TEST,
-        SEMANTIC_LEGEND_TEST_MARKERS,
-        &mut violations,
-    )?;
+    let semantic_legend_markers = SEMANTIC_LEGEND_TEST_MARKERS;
+    check_required_markers(&root, SEMANTIC_LEGEND_TEST, semantic_legend_markers, &mut violations)?;
     check_required_markers(&root, COMPLETION_TEST, COMPLETION_TEST_MARKERS, &mut violations)?;
     check_required_markers(&root, CODE_LENS_TEST, CODE_LENS_TEST_MARKERS, &mut violations)?;
     check_required_markers(&root, WINDOW_TEST, WINDOW_TEST_MARKERS, &mut violations)?;
