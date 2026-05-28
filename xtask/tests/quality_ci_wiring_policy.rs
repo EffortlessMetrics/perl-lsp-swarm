@@ -81,6 +81,7 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
     );
     for required in [
         "just coverage-proof \"origin/$base_ref\"",
+        "cache-targets: false",
         "target/receipts/quality/quality-gate-coverage.md",
         "GITHUB_STEP_SUMMARY",
         "name: coverage-proof-${{ github.sha }}",
@@ -98,6 +99,8 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
     );
     for required in [
         "coverage-proof base='origin/master':",
+        "coverage_target=\"${CARGO_TARGET_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/perl-lsp-swarm-coverage-target}\"",
+        "CARGO_TARGET_DIR=\"$coverage_target\"",
         "cargo llvm-cov --workspace",
         "--lcov --output-path target/lcov.info",
         "cargo xtask coverage-baseline",

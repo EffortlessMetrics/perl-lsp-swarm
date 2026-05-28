@@ -1929,8 +1929,11 @@ coverage-proof base='origin/master':
         echo "cargo-llvm-cov not found. Installing..."
         "$HOME/.cargo/bin/rustup" run nightly cargo install cargo-llvm-cov --locked
     fi
+    coverage_target="${CARGO_TARGET_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/perl-lsp-swarm-coverage-target}"
     mkdir -p target/receipts/quality
-    "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov --workspace --locked --lcov --output-path target/lcov.info \
+    mkdir -p "$coverage_target"
+    echo "coverage target: $coverage_target"
+    CARGO_TARGET_DIR="$coverage_target" "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov --workspace --locked --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     cargo xtask coverage-baseline \
         --lcov target/lcov.info \
