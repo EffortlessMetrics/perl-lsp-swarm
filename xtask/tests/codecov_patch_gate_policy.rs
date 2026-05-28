@@ -47,6 +47,20 @@ fn codecov_patch_status_requires_95_with_no_threshold() -> Result<(), Box<dyn st
         !raw_config.contains("- \"xtask/**\""),
         "proof-rail xtask code must not be ignored by Codecov"
     );
+    let ignored_paths = config
+        .get("ignore")
+        .and_then(Value::as_sequence)
+        .ok_or("codecov.yml is missing ignore paths")?;
+    for required_ignore in
+        [".github/**", ".ci/**", "codecov.yml", "docs/**", "justfile", "xtask/tests/**"]
+    {
+        assert!(
+            ignored_paths
+                .iter()
+                .any(|path| matches!(path, Value::String(path) if path == required_ignore)),
+            "Codecov patch status must ignore non-LCOV proof-lane path `{required_ignore}`"
+        );
+    }
     assert_eq!(
         yaml_path(&config, &["flags", "xtask", "paths", "0"]),
         Some("xtask/src/"),
