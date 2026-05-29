@@ -164,7 +164,7 @@ impl IncrementalTree {
                     self.map_node(arg);
                 }
             }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 self.map_node(condition);
                 self.map_node(then_branch);
                 for (cond, branch) in elsif_branches {
@@ -1021,7 +1021,7 @@ impl IncrementalParserV2 {
                 name: name.clone(),
                 args: args.iter().map(|a| self.clone_with_shifted_positions(a, shift)).collect(),
             },
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => NodeKind::If {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, keyword, .. } => NodeKind::If {
                 condition: Box::new(self.clone_with_shifted_positions(condition, shift)),
                 then_branch: Box::new(self.clone_with_shifted_positions(then_branch, shift)),
                 elsif_branches: elsif_branches
@@ -1037,6 +1037,7 @@ impl IncrementalParserV2 {
                 else_branch: else_branch
                     .as_ref()
                     .map(|b| Box::new(self.clone_with_shifted_positions(b, shift))),
+                keyword: keyword.clone(),
             },
             _ => node.kind.clone(), // For leaf nodes, just clone
         };
@@ -1224,7 +1225,7 @@ impl IncrementalParserV2 {
                     count += self.count_nodes(arg);
                 }
             }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 count += self.count_nodes(condition);
                 count += self.count_nodes(then_branch);
                 for (cond, branch) in elsif_branches {

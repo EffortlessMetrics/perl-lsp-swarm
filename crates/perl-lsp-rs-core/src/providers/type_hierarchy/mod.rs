@@ -522,7 +522,7 @@ impl TypeHierarchyProvider {
         match &node.kind {
             NodeKind::Program { statements } => Some(statements.iter().collect()),
             NodeKind::Block { statements } => Some(statements.iter().collect()),
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 let mut children = vec![condition.as_ref(), then_branch.as_ref()];
                 for branch in elsif_branches {
                     children.push(&branch.0);

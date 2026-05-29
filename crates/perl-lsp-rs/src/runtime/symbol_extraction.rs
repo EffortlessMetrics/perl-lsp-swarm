@@ -356,7 +356,7 @@ impl LspServer {
                 }
             }
 
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 count += self.count_references(condition, symbol_name, symbol_kind);
                 count += self.count_references(then_branch, symbol_name, symbol_kind);
                 for (cond, branch) in elsif_branches {
@@ -368,7 +368,7 @@ impl LspServer {
                 }
             }
 
-            NodeKind::While { condition, body, continue_block }
+            NodeKind::While { condition, body, continue_block , .. }
             | NodeKind::For { condition: Some(condition), body, continue_block, .. } => {
                 count += self.count_references(condition, symbol_name, symbol_kind);
                 count += self.count_references(body, symbol_name, symbol_kind);

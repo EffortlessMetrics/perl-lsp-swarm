@@ -1225,7 +1225,7 @@ fn test_find_subroutines_in_if_branch() -> Result<(), Box<dyn std::error::Error>
             statements: vec![Node::new(
                 NodeKind::If {
                     condition: Box::new(Node::new(
-                        NodeKind::Number { value: "1".to_string() },
+                        NodeKind::Number { value: "1".to_string() , .. },
                         SourceLocation { start: 0, end: 0 },
                     )),
                     then_branch: Box::new(Node::new(

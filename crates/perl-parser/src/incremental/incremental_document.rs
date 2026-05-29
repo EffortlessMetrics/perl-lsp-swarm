@@ -464,7 +464,7 @@ impl IncrementalDocument {
                     }
                 }
             }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 if self.update_token_in_tree(condition, source, edit) {
                     return true;
                 }
@@ -565,7 +565,7 @@ impl IncrementalDocument {
                     return true;
                 }
             }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 if self.insert_reusable(condition, reusable) {
                     return true;
                 }
@@ -672,7 +672,7 @@ impl IncrementalDocument {
             NodeKind::ExpressionStatement { expression } => {
                 **expression = self.adjust_node_position(expression, delta)?;
             }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 **condition = self.adjust_node_position(condition, delta)?;
                 **then_branch = self.adjust_node_position(then_branch, delta)?;
                 for (cond, branch) in elsif_branches {
@@ -760,7 +760,7 @@ impl IncrementalDocument {
                         }
                     }
                 }
-                NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+                NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                     if let Some(found) = self.find_in_node(condition, pos) {
                         return Some(found);
                     }
@@ -849,7 +849,7 @@ impl IncrementalDocument {
             NodeKind::ExpressionStatement { expression } => {
                 self.cache_node(expression);
             }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 self.cache_node(condition);
                 self.cache_node(then_branch);
                 for (cond, branch) in elsif_branches {
@@ -947,7 +947,7 @@ impl IncrementalDocument {
             NodeKind::ExpressionStatement { expression } => {
                 count += self.count_nodes(expression);
             }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 count += self.count_nodes(condition);
                 count += self.count_nodes(then_branch);
                 for (cond, branch) in elsif_branches {

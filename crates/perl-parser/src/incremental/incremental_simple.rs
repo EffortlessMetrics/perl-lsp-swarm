@@ -209,7 +209,7 @@ impl SimpleIncrementalParser {
             NodeKind::Unary { operand, .. } => {
                 count += self.count_nodes(operand);
             }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 count += self.count_nodes(condition);
                 count += self.count_nodes(then_branch);
                 for (cond, branch) in elsif_branches {

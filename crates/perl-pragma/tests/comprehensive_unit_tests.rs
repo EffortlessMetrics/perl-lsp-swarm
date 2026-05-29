@@ -877,7 +877,7 @@ fn if_branches_traversed() -> Result<(), Box<dyn std::error::Error>> {
             then_branch: Box::new(then_branch),
             elsif_branches: vec![],
             else_branch: Some(Box::new(else_branch)),
-        },
+        , .. },
         location: loc(10, 65),
     };
     let ast = program(vec![use_node("strict", &[], 0, 9), if_node]);
@@ -904,7 +904,7 @@ fn if_elsif_else_branches_restore_state() -> Result<(), Box<dyn std::error::Erro
             then_branch: Box::new(then_branch),
             elsif_branches: vec![(Box::new(dummy_node(41, 42)), Box::new(elsif_branch))],
             else_branch: Some(Box::new(else_branch)),
-        },
+        , .. },
         location: loc(10, 90),
     };
     let ast =
@@ -934,7 +934,7 @@ fn while_body_traversed() -> Result<(), Box<dyn std::error::Error>> {
             condition: Box::new(dummy_node(10, 15)),
             body: Box::new(body),
             continue_block: None,
-        },
+        , .. },
         location: loc(10, 40),
     };
     let ast = program(vec![while_node]);
@@ -1568,7 +1568,7 @@ fn if_without_else_does_not_panic() -> Result<(), Box<dyn std::error::Error>> {
             then_branch: Box::new(then_branch),
             elsif_branches: vec![],
             else_branch: None,
-        },
+        , .. },
         location: loc(10, 40),
     };
     let ast = program(vec![if_node]);
@@ -1974,7 +1974,7 @@ fn while_node(body_node: Node, continue_node: Option<Node>, start: usize, end: u
             condition: Box::new(dummy_node(start + 1, start + 2)),
             body: Box::new(body_node),
             continue_block: continue_node.map(Box::new),
-        },
+        , .. },
         location: loc(start, end),
     }
 }

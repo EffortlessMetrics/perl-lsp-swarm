@@ -430,7 +430,7 @@ impl CallHierarchyProvider {
                     return Some(result);
                 }
             }
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
                 if let Some(result) = f(condition) {
                     return Some(result);
                 }

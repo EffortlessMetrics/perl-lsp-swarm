@@ -240,7 +240,7 @@ fn test_if_sexp_fallback() {
             then_branch: Box::new(then_branch),
             elsif_branches: vec![],
             else_branch: None,
-        },
+        , .. },
     );
     let sexp = node.to_sexp();
     assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");

@@ -572,7 +572,7 @@ fn test_label_inside_package_is_not_package_qualified() -> Result<(), String> {
     let while_node = Node::new(
         NodeKind::While {
             condition: Box::new(Node::new(
-                NodeKind::Number { value: "1".to_string() },
+                NodeKind::Number { value: "1".to_string() , .. },
                 loc(25, 26),
             )),
             body: Box::new(body),

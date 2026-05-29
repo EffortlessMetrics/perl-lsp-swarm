@@ -1224,7 +1224,7 @@ mod tests {
                                         NodeKind::Variable {
                                             name: "$a".to_string(),
                                             sigil: "$".to_string(),
-                                        },
+                                        , .. },
                                         crate::ast::SourceLocation { start: 0, end: 0 },
                                     )),
                                     then_branch: Box::new(Node::new(
@@ -1262,7 +1262,7 @@ mod tests {
                 statements: vec![Node::new(
                     NodeKind::If {
                         condition: Box::new(Node::new(
-                            NodeKind::Variable { name: "$x".to_string(), sigil: "$".to_string() },
+                            NodeKind::Variable { name: "$x".to_string(), sigil: "$".to_string() , .. },
                             crate::ast::SourceLocation { start: 0, end: 0 },
                         )),
                         then_branch: Box::new(Node::new(

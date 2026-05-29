@@ -209,7 +209,7 @@ fn collect_variables_inner(node: &Node, vars: &mut HashSet<String>, locals: &mut
                 collect_variables_inner(arg, vars, locals);
             }
         }
-        NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+        NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
             collect_variables_inner(condition, vars, locals);
             collect_variables_inner(then_branch, vars, locals);
             for (cond, branch) in elsif_branches {
