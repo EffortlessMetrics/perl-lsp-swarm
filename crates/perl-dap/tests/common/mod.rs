@@ -62,10 +62,23 @@ impl DapWorkflowSession {
     /// Callers must call `set_breakpoints` and `configuration_done` before
     /// `wait_stopped` to follow the DAP ordering requirement.
     pub fn launch(&mut self, script_path: &str) -> Result<(), String> {
+        self.launch_with_stop_on_entry(script_path, false)
+    }
+
+    /// Launch a script with deterministic DAP test environment variables.
+    ///
+    /// `stop_on_entry` controls whether launch emits an initial
+    /// `stopped(reason=entry)` event.  Tests that set it to `true` should
+    /// explicitly continue from the entry stop before expecting breakpoints.
+    pub fn launch_with_stop_on_entry(
+        &mut self,
+        script_path: &str,
+        stop_on_entry: bool,
+    ) -> Result<(), String> {
         let args = json!({
             "program": script_path,
             "args": [],
-            "stopOnEntry": false,
+            "stopOnEntry": stop_on_entry,
             "env": {
                 "PERL_PERTURB_KEYS": "0",
                 "PERL_HASH_SEED": "0",
@@ -108,6 +121,53 @@ impl DapWorkflowSession {
         });
         let resp = self.request("setBreakpoints", Some(args));
         self.expect_success(&resp, "setBreakpoints")
+    }
+
+    /// Send `setBreakpoints` and assert each requested line is verified.
+    ///
+    /// This keeps e2e tests from silently accepting a breakpoint response that
+    /// contains an unverified breakpoint or an unexpected remapped line.
+    pub fn set_verified_breakpoints(
+        &mut self,
+        source_path: &str,
+        lines: &[u64],
+    ) -> Result<Vec<Value>, String> {
+        let body =
+            self.set_breakpoints(source_path, lines)?.ok_or("setBreakpoints returned no body")?;
+        let breakpoints = body
+            .get("breakpoints")
+            .and_then(Value::as_array)
+            .ok_or("setBreakpoints body missing `breakpoints` array")?;
+
+        if breakpoints.len() != lines.len() {
+            return Err(format!(
+                "expected {} breakpoint entries, got {}",
+                lines.len(),
+                breakpoints.len()
+            ));
+        }
+
+        for (idx, (breakpoint, expected_line)) in breakpoints.iter().zip(lines.iter()).enumerate() {
+            let verified = breakpoint
+                .get("verified")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| format!("breakpoint {idx} missing boolean `verified`"))?;
+            if !verified {
+                return Err(format!("breakpoint {idx} for line {expected_line} was not verified"));
+            }
+
+            let actual_line = breakpoint
+                .get("line")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("breakpoint {idx} missing numeric `line`"))?;
+            if actual_line != *expected_line {
+                return Err(format!(
+                    "breakpoint {idx} expected line {expected_line}, got {actual_line}"
+                ));
+            }
+        }
+
+        Ok(breakpoints.clone())
     }
 
     /// Send `configurationDone`.
