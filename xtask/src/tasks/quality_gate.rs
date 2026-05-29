@@ -458,7 +458,13 @@ struct ExceptionRequirements {
 #[derive(Debug, Deserialize)]
 struct QualityException {
     id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    scope: String,
     owner: String,
+    #[serde(default)]
+    issue: Option<String>,
     reason: String,
     final_target: String,
     evidence: String,
@@ -620,6 +626,8 @@ fn exception_validation_errors(exception: &QualityException) -> Vec<String> {
     let mut errors = Vec::new();
     for (field, value) in [
         ("id", exception.id.as_str()),
+        ("kind", exception.kind.as_str()),
+        ("scope", exception.scope.as_str()),
         ("owner", exception.owner.as_str()),
         ("reason", exception.reason.as_str()),
         ("final_target", exception.final_target.as_str()),
@@ -632,6 +640,9 @@ fn exception_validation_errors(exception: &QualityException) -> Vec<String> {
         if value.trim().is_empty() {
             errors.push(format!("{field} is required"));
         }
+    }
+    if !exception.kind.trim().is_empty() && exception.kind != "temporary_burndown" {
+        errors.push("kind must be temporary_burndown".to_string());
     }
     errors
 }
@@ -651,7 +662,10 @@ fn quality_exception_receipt_entry(
 ) -> Value {
     json!({
         "id": exception.id,
+        "kind": exception.kind,
+        "scope": exception.scope,
         "owner": exception.owner,
+        "issue": exception.issue,
         "reason": exception.reason,
         "final_target": exception.final_target,
         "evidence": exception.evidence,
@@ -1024,8 +1038,8 @@ fn patch_coverage_below_target_action(
     coverage: &CoverageReceipt,
     args: &QualityGateArgs,
 ) -> Value {
-    let top_files =
-        if coverage.patch_files.is_empty() { &coverage.top_files } else { &coverage.patch_files };
+    let uses_changed_files = !coverage.patch_files.is_empty();
+    let top_files = if uses_changed_files { &coverage.patch_files } else { &coverage.top_files };
     let path = coverage
         .patch_files
         .first()
@@ -1041,6 +1055,7 @@ fn patch_coverage_below_target_action(
         "current": round2(patch),
         "target": PATCH_TARGET,
         "source": source,
+        "file_scope": if uses_changed_files { "changed_files" } else { "project_fallback" },
         "top_files": top_files,
         "suggested_test": "Prefer focused tests for error paths, boundary conditions, config parsing, serialization, cancellation, and output contracts.",
         "repair": "Add behavior-oriented tests for the uncovered changed-code surfaces, then refresh coverage evidence.",
@@ -1149,7 +1164,7 @@ fn quality_exception_invalid_action(
         "path": display_path(path),
         "id": exception.id,
         "reason": errors.join("; "),
-        "repair": "Fill owner, reason, final_target, evidence, removal_criteria, review_after, and expires for the temporary quality exception.",
+        "repair": "Fill kind = \"temporary_burndown\", scope, owner, reason, final_target, evidence, removal_criteria, review_after, and expires for the temporary quality exception.",
         "verify": quality_exception_policy_command(path, true),
         "receipt": quality_exception_policy_command(path, false),
     })
@@ -1481,6 +1496,14 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
             }
         }
         if let Some(files) = action.get("top_files").and_then(Value::as_array) {
+            let coverage_file_label = match (kind, action.get("file_scope").and_then(Value::as_str))
+            {
+                ("patch_coverage_below_target", Some("changed_files")) => "changed coverage file",
+                ("patch_coverage_below_target", Some("project_fallback")) => {
+                    "project fallback coverage file"
+                }
+                _ => "coverage file",
+            };
             for file in files {
                 let path = file.get("path").and_then(Value::as_str).unwrap_or("unknown");
                 let samples = file
@@ -1496,7 +1519,7 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
                     })
                     .unwrap_or_default();
                 markdown.push_str(&format!(
-                    "- coverage file: `{path}` sample uncovered lines: {samples}\n"
+                    "- {coverage_file_label}: `{path}` sample uncovered lines: {samples}\n"
                 ));
             }
         }
