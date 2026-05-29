@@ -6,7 +6,7 @@
 
 use std::error::Error;
 
-use lsp_types::Range;
+use lsp_types::{Position, Range};
 use perl_lsp_rs_core::providers::inline_completion::{
     InlineCompletionItem, InlineCompletionProvider,
 };
@@ -58,6 +58,26 @@ fn accepted_inline_completion_edits_preserve_local_parse_state() -> TestResult {
         assert_accepted_edit_preserves_parse_state(&scenario)?;
     }
 
+    Ok(())
+}
+
+#[test]
+fn accepted_inline_completion_edit_application_rejects_invalid_ranges() -> TestResult {
+    let item = InlineCompletionItem {
+        insert_text: "strict;".into(),
+        filter_text: Some("strict".into()),
+        range: Some(Range { start: Position::new(0, 4), end: Position::new(0, 1) }),
+        command: None,
+    };
+
+    let err = match apply_inline_item("use str\n", 0, 7, &item) {
+        Ok(edited) => {
+            return Err(format!("invalid range should fail, edited text was {edited:?}").into());
+        }
+        Err(err) => err,
+    };
+
+    assert!(err.contains("range 4..1"), "unexpected invalid-range error: {err}");
     Ok(())
 }
 
