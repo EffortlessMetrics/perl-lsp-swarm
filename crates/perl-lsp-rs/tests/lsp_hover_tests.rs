@@ -403,18 +403,16 @@ fn test_hover_use_strict_links_perldoc_virtual_document() -> TestResult {
         .and_then(|value| value.as_str())
         .ok_or_else(|| format!("hover response missing markdown value: {result}"))?;
 
-    assert!(
-        value.contains("perldoc://strict"),
-        "pragma hover should expose the editor-native perldoc URI: {value}"
-    );
-    assert!(
-        value.contains("https://perldoc.perl.org/strict"),
-        "pragma hover should keep the existing external perldoc link: {value}"
-    );
-    assert!(
-        !value.to_ascii_lowercase().contains("command:") && !value.contains("$("),
-        "pragma hover must not introduce trusted markdown command links or theme icons: {value}"
-    );
+    let expected = "**Pragma: `strict`**\n\n\
+        _Enable strict variable/subroutine/reference checking_\n\n\
+        Restricts unsafe Perl constructs. Enables compile-time errors for undeclared variables \
+        (`vars`), bareword subroutine names (`subs`), and symbolic references (`refs`). Use \
+        `use strict;` to enable all three categories at once, or `use strict 'vars'` for \
+        individual categories.\n\n\
+        **Common usage**: Always include `use strict;` at the top of every Perl file.\n\n\
+        [perldoc strict](https://perldoc.perl.org/strict) | \
+        [Open virtual perldoc](perldoc://strict)";
+    assert_eq!(value, expected);
     Ok(())
 }
 
