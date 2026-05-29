@@ -171,3 +171,92 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
 
     Ok(links)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Context, Result, anyhow};
+
+    fn collect(text: &str, uri: &str) -> Result<Vec<DocumentLink>> {
+        let uri = Url::parse(uri)?;
+        collect_document_links(text, &uri).map_err(anyhow::Error::msg)
+    }
+
+    fn link_with_tooltip<'a>(links: &'a [DocumentLink], needle: &str) -> Result<&'a DocumentLink> {
+        links
+            .iter()
+            .find(|link| link.tooltip.as_deref().is_some_and(|tooltip| tooltip.contains(needle)))
+            .with_context(|| format!("missing document link tooltip containing `{needle}`"))
+    }
+
+    fn target_text(link: &DocumentLink) -> Result<String> {
+        Ok(link.target.as_ref().context("document link target")?.to_string())
+    }
+
+    #[test]
+    fn module_use_links_to_metacpan_with_utf16_range() -> Result<()> {
+        let text = "my $emoji = '🙂'; use Foo::Bar;\n";
+
+        let links = collect(text, "file:///workspace/project/lib/App.pm")?;
+
+        let link = link_with_tooltip(&links, "Foo::Bar")?;
+        assert_eq!(target_text(link)?, "https://metacpan.org/pod/Foo::Bar");
+        assert_eq!(link.range.start, Position::new(0, 22));
+        assert_eq!(link.range.end, Position::new(0, 30));
+        Ok(())
+    }
+
+    #[test]
+    fn require_module_links_to_metacpan_without_file_path_duplicate() -> Result<()> {
+        let text = "require Local::Thing;\nrequire 'Local/Thing.pm';\n";
+
+        let links = collect(text, "file:///workspace/project/bin/app.pl")?;
+
+        let module_link = link_with_tooltip(&links, "Local::Thing")?;
+        assert_eq!(target_text(module_link)?, "https://metacpan.org/pod/Local::Thing");
+        let metacpan_count = links
+            .iter()
+            .filter(|link| target_text(link).is_ok_and(|target| target.contains("metacpan.org")))
+            .count();
+        assert_eq!(metacpan_count, 1);
+        assert_eq!(links.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn quoted_require_and_do_resolve_relative_to_document_directory() -> Result<()> {
+        let text = "require 'lib/Helper.pm';\ndo \"script/bootstrap.pl\";\n";
+
+        let links = collect(text, "file:///workspace/project/bin/app.pl")?;
+
+        let require_link = link_with_tooltip(&links, "lib/Helper.pm")?;
+        assert_eq!(target_text(require_link)?, "file:///workspace/project/bin/lib/Helper.pm");
+        let do_link = link_with_tooltip(&links, "script/bootstrap.pl")?;
+        assert_eq!(target_text(do_link)?, "file:///workspace/project/bin/script/bootstrap.pl");
+        Ok(())
+    }
+
+    #[test]
+    fn non_file_document_uri_keeps_metacpan_links_and_skips_relative_file_links() -> Result<()> {
+        let text = "use Foo::Bar;\nrequire 'lib/Helper.pm';\n";
+
+        let links = collect(text, "untitled:Untitled-1")?;
+
+        assert_eq!(links.len(), 1);
+        let link = link_with_tooltip(&links, "Foo::Bar")?;
+        assert_eq!(target_text(link)?, "https://metacpan.org/pod/Foo::Bar");
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_absolute_file_path_is_ignored_without_failing_collection() -> Result<()> {
+        let text = "require 'unterminated;\n";
+
+        let links = collect(text, "file:///workspace/project/bin/app.pl")?;
+
+        if !links.is_empty() {
+            return Err(anyhow!("unterminated quoted require should not produce document links"));
+        }
+        Ok(())
+    }
+}
