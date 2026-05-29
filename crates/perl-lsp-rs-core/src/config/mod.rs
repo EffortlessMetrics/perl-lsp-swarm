@@ -164,11 +164,12 @@ pub struct ServerConfig {
 pub struct AiCompletionConfig {
     /// Whether AI completions are enabled. Default: false.
     pub enabled: bool,
-    /// Provider type. Currently only "openai_compat" is supported.
+    /// Provider type. Supported values: "openai_compat" and "local".
     pub provider: String,
-    /// API endpoint URL.
+    /// API endpoint URL. Leave empty with provider "local" to use the
+    /// built-in local OpenAI-compatible default.
     pub endpoint: String,
-    /// Model identifier (e.g., "gpt-4o-mini").
+    /// Model identifier (e.g., "gpt-4o-mini" or "qwen2.5-coder:1.5b").
     pub model: String,
     /// Environment variable name containing the API key.
     pub api_key_env: String,

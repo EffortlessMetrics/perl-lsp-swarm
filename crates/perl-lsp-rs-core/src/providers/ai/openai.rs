@@ -16,8 +16,9 @@ pub struct OpenAiConfig {
     pub endpoint: String,
     /// The model name to use (e.g. `gpt-4o`).
     pub model: String,
-    /// API key for authentication.
-    pub api_key: String,
+    /// Optional API key for authentication. Local OpenAI-compatible runtimes
+    /// such as Ollama do not require one.
+    pub api_key: Option<String>,
     /// Global timeout in milliseconds.
     pub timeout_ms: u64,
 }
@@ -116,11 +117,27 @@ mod tests {
             OpenAiConfig {
                 endpoint: endpoint.to_string(),
                 model: "gpt-4o-mini".to_string(),
-                api_key: "test-key".to_string(),
+                api_key: Some("test-key".to_string()),
                 timeout_ms: 1000,
             },
             Arc::new(RateLimiter::new(1.0, 1)),
         )
+    }
+
+    #[test]
+    fn local_compatible_provider_omits_auth_when_api_key_absent() {
+        let provider = OpenAiProvider::new(
+            OpenAiConfig {
+                endpoint: "http://127.0.0.1:11434/v1/chat/completions".to_string(),
+                model: "qwen2.5-coder:1.5b".to_string(),
+                api_key: None,
+                timeout_ms: 1000,
+            },
+            Arc::new(RateLimiter::new(1.0, 1)),
+        );
+
+        assert!(provider.config.api_key.is_none());
+        assert!(!provider.uses_responses_api());
     }
 
     #[test]
@@ -167,21 +184,22 @@ impl InlineCompletionBackend for OpenAiProvider {
         let config = ureq::Agent::config_builder().timeout_global(Some(timeout)).build();
         let agent = ureq::Agent::new_with_config(config);
 
-        let response = agent
-            .post(&self.config.endpoint)
-            .header("Authorization", &format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .send_json(&body)
-            .map_err(|e| {
-                let msg = e.to_string();
-                if msg.contains("timed out") || msg.contains("timeout") {
-                    BackendError::Timeout
-                } else if msg.contains("401") || msg.contains("403") {
-                    BackendError::Auth(msg)
-                } else {
-                    BackendError::Transport(msg)
-                }
-            })?;
+        let mut request =
+            agent.post(&self.config.endpoint).header("Content-Type", "application/json");
+        if let Some(api_key) = self.config.api_key.as_deref() {
+            request = request.header("Authorization", &format!("Bearer {api_key}"));
+        }
+
+        let response = request.send_json(&body).map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("timed out") || msg.contains("timeout") {
+                BackendError::Timeout
+            } else if msg.contains("401") || msg.contains("403") {
+                BackendError::Auth(msg)
+            } else {
+                BackendError::Transport(msg)
+            }
+        })?;
 
         let reader = BufReader::new(response.into_body().into_reader());
         let mut parser = SseParser::new(reader);
