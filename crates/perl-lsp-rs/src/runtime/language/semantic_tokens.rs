@@ -492,6 +492,12 @@ fn filter_encoded_semantic_tokens_by_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn semantic_token_value(value: &Value) -> Result<u32, Box<dyn std::error::Error>> {
+        let raw = value.as_u64().ok_or("semantic token value was not an unsigned integer")?;
+        Ok(u32::try_from(raw)?)
+    }
 
     #[test]
     fn filter_encoded_semantic_tokens_by_line_reencodes_retained_range()
@@ -508,6 +514,67 @@ mod tests {
             vec![1, 2, 3, 2, 0, 0, 5, 4, 3, 1, 1, 1, 2, 4, 0]
         );
         assert!(filter_encoded_semantic_tokens_by_line(tokens, 3, 4).is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn handle_semantic_tokens_range_uses_core_label_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///semantic_range_label.pl";
+        let source = "OUTER: while ($x) {\n    last OUTER;\n}\n";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": source,
+            }
+        })))?;
+
+        let result = server
+            .handle_semantic_tokens_range(Some(json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 1, "character": 0 },
+                    "end": { "line": 1, "character": 20 }
+                }
+            })))?
+            .ok_or("semantic tokens range result missing")?;
+        let data = result
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or("semantic tokens range data missing")?;
+        let label_idx =
+            *crate::semantic_tokens::legend().map.get("label").ok_or("label token missing")?;
+
+        let mut line = 0u32;
+        let mut col = 0u32;
+        let mut labels = Vec::new();
+        let mut chunks = data.chunks_exact(5);
+        for chunk in &mut chunks {
+            let delta_line = semantic_token_value(&chunk[0])?;
+            let delta_start = semantic_token_value(&chunk[1])?;
+            let length = semantic_token_value(&chunk[2])?;
+            let token_type = semantic_token_value(&chunk[3])?;
+            let modifiers = semantic_token_value(&chunk[4])?;
+
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == label_idx {
+                labels.push((line, col, length, modifiers));
+            }
+        }
+        if !chunks.remainder().is_empty() {
+            return Err("semantic token data length was not a multiple of five".into());
+        }
+
+        assert_eq!(labels, vec![(1, 9, 5, 0)]);
 
         Ok(())
     }
