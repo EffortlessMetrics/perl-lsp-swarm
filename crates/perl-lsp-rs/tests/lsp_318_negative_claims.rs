@@ -768,6 +768,13 @@ fn position_of(text: &str, needle: &str) -> TestResult<(u32, u32)> {
     Ok((line, character))
 }
 
+#[test]
+fn apply_edit_position_of_counts_newline_boundary() -> TestResult {
+    assert_eq!(position_of("reset();\n", "reset")?, (0, 0));
+    assert_eq!(position_of("first();\n  reset();\n", "reset")?, (1, 2));
+    Ok(())
+}
+
 fn assert_absent(value: &Value, pointer: &str) -> TestResult {
     assert!(value.pointer(pointer).is_none(), "{pointer} must be absent from {value}");
     Ok(())
