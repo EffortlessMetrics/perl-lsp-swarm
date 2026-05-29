@@ -127,9 +127,11 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "cargo test -p xtask --bin xtask queue_reconciler --locked",
         "cargo test -p xtask --bin xtask ripr --locked",
         "cargo test -p xtask --bin xtask inline_completion_quality --locked",
+        "cargo test -p xtask --bin xtask semantic_inline_receipts --locked",
         "cargo test -p xtask --locked",
         "--test quality_ci_wiring_policy",
         "--test quality_gate_patch_coverage_cli_policy",
+        "--test semantic_inline_receipts_cli",
         "cargo llvm-cov report --lcov --output-path target/lcov.info",
         "--lcov --output-path target/lcov.info",
         "cargo xtask coverage-baseline",
@@ -178,8 +180,15 @@ fn docs_describe_transitional_blocking_contract() {
     assert!(
         status_doc.contains("quality-gate")
             && status_doc.contains("Markdown summaries")
-            && status_doc.contains("repo-wide RIPR+ zero and project coverage 95% remain")
-            && status_doc.contains("burn-down targets"),
+            && status_doc.contains("Current Blocking Proof Floor")
+            && status_doc.contains("Codecov upload or")
+            && status_doc.contains("processing failures through `fail_ci_if_error: true`")
+            && status_doc.contains(
+                "generated quality-gate receipts are freshness-checked for patch, new-RIPR,"
+            )
+            && status_doc.contains("project coverage is visible in coverage receipts")
+            && status_doc.contains("total active RIPR+ unresolved gaps")
+            && status_doc.contains("An active temporary exception is not a final-enforcement pass"),
         "status doc must keep final targets separate from transitional enforcement"
     );
 }
