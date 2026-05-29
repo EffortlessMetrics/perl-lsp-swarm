@@ -389,4 +389,19 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn quality_counter_map_returns_none_when_counter_is_absent() -> Result<()> {
+        let quality = json!({
+            "fixtures_total": 2,
+            "checks": {
+                "hard_zone_rejected": 1,
+                "parse_regressions": 0
+            }
+        });
+
+        assert!(quality_counter_map(&quality, "/checks/suppression_reasons")?.is_none());
+
+        Ok(())
+    }
 }

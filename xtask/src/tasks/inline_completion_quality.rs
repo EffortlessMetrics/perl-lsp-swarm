@@ -839,6 +839,36 @@ mod tests {
     }
 
     #[test]
+    fn measured_suppression_reason_ignores_non_silent_scenarios() {
+        let suggestion = Scenario {
+            name: "suggestion",
+            source_name: "unit",
+            source: "use <<CURSOR>>",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Suggestion {
+                first: Some("strict;"),
+                expected: &["strict;"],
+                not_expected: &[],
+            },
+        };
+        let replacement = Scenario {
+            name: "replacement",
+            source_name: "unit",
+            source: "use str<<CURSOR>>",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::ReplacementRange {
+                insert_text: "strict;",
+                replaces: "str",
+            },
+        };
+
+        assert!(measured_suppression_reason(&suggestion, 0, true).is_none());
+        assert!(measured_suppression_reason(&replacement, 0, true).is_none());
+    }
+
+    #[test]
     fn inline_completion_quality_receipt_records_suppression_reasons() -> Result<()> {
         let temp = TempDir::new()?;
         let receipt_path = temp.path().join("inline-completion-quality.json");
@@ -846,22 +876,18 @@ mod tests {
         run(receipt_path.clone())?;
 
         let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path)?)?;
-        let expected_hard_zones = u64::try_from(
-            scenarios()
-                .iter()
-                .filter(|scenario| {
-                    scenario.hard_zone && matches!(scenario.assertion, ScenarioAssertion::Silent)
-                })
-                .count(),
-        )?;
-        let expected_no_visible_context = u64::try_from(
-            scenarios()
-                .iter()
-                .filter(|scenario| {
-                    !scenario.hard_zone && matches!(scenario.assertion, ScenarioAssertion::Silent)
-                })
-                .count(),
-        )?;
+        let expected_hard_zones = scenarios()
+            .iter()
+            .filter(|scenario| {
+                scenario.hard_zone && matches!(scenario.assertion, ScenarioAssertion::Silent)
+            })
+            .count() as u64;
+        let expected_no_visible_context = scenarios()
+            .iter()
+            .filter(|scenario| {
+                !scenario.hard_zone && matches!(scenario.assertion, ScenarioAssertion::Silent)
+            })
+            .count() as u64;
 
         assert_eq!(
             receipt.pointer("/checks/suppression_reasons/hard_zone").and_then(Value::as_u64),
