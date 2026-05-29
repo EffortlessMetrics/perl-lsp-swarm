@@ -238,7 +238,7 @@ fn apply_workspace_edit_metadata_emitted_when_supported_for_refactor_request() -
     let uri = "file:///workspace/lib/ApplyEdit/Pilot.pm";
     let source = apply_edit_safe_delete_source();
     harness.open(uri, source)?;
-    let (line, character) = position_of(source, "reset {")?;
+    let (line, character) = (4_u32, 4_u32);
     let result = harness.request(
         "workspace/executeCommand",
         json!({
@@ -293,7 +293,7 @@ fn apply_workspace_edit_metadata_emitted_when_supported_for_refactor_request() -
 fn apply_workspace_edit_metadata_absent_without_metadata_support() -> TestResult {
     let uri = "file:///workspace/lib/ApplyEdit/Pilot.pm";
     let source = apply_edit_safe_delete_source();
-    let (line, character) = position_of(source, "reset {")?;
+    let (line, character) = (4_u32, 4_u32);
 
     let mut harness = LspHarness::new_raw();
     harness.initialize_ready(
@@ -757,22 +757,6 @@ sub reset {
 
 1;
 "#
-}
-
-fn position_of(text: &str, needle: &str) -> TestResult<(u32, u32)> {
-    let offset = text.find(needle).ok_or_else(|| format!("missing {needle:?} in test source"))?;
-    let prefix = &text[..offset];
-    let line = u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count())?;
-    let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
-    let character = u32::try_from(text[line_start..offset].chars().count())?;
-    Ok((line, character))
-}
-
-#[test]
-fn apply_edit_position_of_counts_newline_boundary() -> TestResult {
-    assert_eq!(position_of("reset();\n", "reset")?, (0, 0));
-    assert_eq!(position_of("first();\n  reset();\n", "reset")?, (1, 2));
-    Ok(())
 }
 
 fn assert_absent(value: &Value, pointer: &str) -> TestResult {
