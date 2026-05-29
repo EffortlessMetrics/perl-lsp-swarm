@@ -18,6 +18,10 @@ pub struct OpenAiConfig {
     pub model: String,
     /// API key for authentication.
     pub api_key: String,
+    /// HTTP header that carries the API key.
+    pub api_key_header: String,
+    /// Optional authentication scheme prepended before the API key.
+    pub api_key_prefix: Option<String>,
     /// Global timeout in milliseconds.
     pub timeout_ms: u64,
 }
@@ -28,10 +32,31 @@ pub struct OpenAiProvider {
     limiter: Arc<RateLimiter>,
 }
 
+impl OpenAiConfig {
+    /// Build a default bearer-token configuration for OpenAI-compatible web APIs.
+    pub fn new(endpoint: String, model: String, api_key: String, timeout_ms: u64) -> Self {
+        Self {
+            endpoint,
+            model,
+            api_key,
+            api_key_header: "Authorization".to_string(),
+            api_key_prefix: Some("Bearer".to_string()),
+            timeout_ms,
+        }
+    }
+}
+
 impl OpenAiProvider {
     /// Create a new provider with the given config and rate limiter.
     pub fn new(config: OpenAiConfig, limiter: Arc<RateLimiter>) -> Self {
         Self { config, limiter }
+    }
+
+    fn auth_header_value(&self) -> String {
+        match self.config.api_key_prefix.as_deref().filter(|prefix| !prefix.is_empty()) {
+            Some(prefix) => format!("{prefix} {}", self.config.api_key),
+            None => self.config.api_key.clone(),
+        }
     }
 
     fn build_request_body(&self, req: &BackendRequest) -> serde_json::Value {
@@ -113,12 +138,12 @@ mod tests {
 
     fn provider_with_endpoint(endpoint: &str) -> OpenAiProvider {
         OpenAiProvider::new(
-            OpenAiConfig {
-                endpoint: endpoint.to_string(),
-                model: "gpt-4o-mini".to_string(),
-                api_key: "test-key".to_string(),
-                timeout_ms: 1000,
-            },
+            OpenAiConfig::new(
+                endpoint.to_string(),
+                "gpt-4o-mini".to_string(),
+                "test-key".to_string(),
+                1000,
+            ),
             Arc::new(RateLimiter::new(1.0, 1)),
         )
     }
@@ -149,6 +174,29 @@ mod tests {
         let data = r#"{"type":"response.completed"}"#;
         assert_eq!(OpenAiProvider::extract_finish_reason(data), Some("stop".to_string()));
     }
+
+    #[test]
+    fn default_config_uses_bearer_authorization_header() {
+        let provider = provider_with_endpoint("https://api.openai.com/v1/chat/completions");
+        assert_eq!(provider.config.api_key_header, "Authorization");
+        assert_eq!(provider.auth_header_value(), "Bearer test-key");
+    }
+
+    #[test]
+    fn custom_web_connector_auth_header_can_send_raw_key() {
+        let mut config = OpenAiConfig::new(
+            "https://example.test/v1/chat/completions".to_string(),
+            "custom-code-model".to_string(),
+            "connector-key".to_string(),
+            1000,
+        );
+        config.api_key_header = "x-api-key".to_string();
+        config.api_key_prefix = None;
+        let provider = OpenAiProvider::new(config, Arc::new(RateLimiter::new(1.0, 1)));
+
+        assert_eq!(provider.config.api_key_header, "x-api-key");
+        assert_eq!(provider.auth_header_value(), "connector-key");
+    }
 }
 
 impl InlineCompletionBackend for OpenAiProvider {
@@ -169,7 +217,7 @@ impl InlineCompletionBackend for OpenAiProvider {
 
         let response = agent
             .post(&self.config.endpoint)
-            .header("Authorization", &format!("Bearer {}", self.config.api_key))
+            .header(self.config.api_key_header.as_str(), self.auth_header_value().as_str())
             .header("Content-Type", "application/json")
             .send_json(&body)
             .map_err(|e| {

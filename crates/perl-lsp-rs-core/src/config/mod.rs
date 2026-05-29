@@ -172,6 +172,10 @@ pub struct AiCompletionConfig {
     pub model: String,
     /// Environment variable name containing the API key.
     pub api_key_env: String,
+    /// HTTP header used to send the API key. Default: Authorization.
+    pub api_key_header: String,
+    /// Optional auth scheme prepended before the API key. Default: Bearer.
+    pub api_key_prefix: Option<String>,
     /// Request timeout in milliseconds. Default: 1800.
     pub timeout_ms: u64,
     /// Maximum output tokens per request. Default: 64.
@@ -203,6 +207,8 @@ impl Default for AiCompletionConfig {
             endpoint: String::new(),
             model: "gpt-4o-mini".to_string(),
             api_key_env: "OPENAI_API_KEY".to_string(),
+            api_key_header: "Authorization".to_string(),
+            api_key_prefix: Some("Bearer".to_string()),
             timeout_ms: 1800,
             max_output_tokens: 64,
             rate_limit_rps: 1.0,
@@ -405,6 +411,13 @@ impl ServerConfig {
             }
             if let Some(key_env) = ai.get("apiKeyEnv").and_then(|v| v.as_str()) {
                 self.ai_completion.api_key_env = key_env.to_string();
+            }
+            if let Some(key_header) = ai.get("apiKeyHeader").and_then(|v| v.as_str()) {
+                self.ai_completion.api_key_header = key_header.to_string();
+            }
+            if let Some(key_prefix) = ai.get("apiKeyPrefix") {
+                self.ai_completion.api_key_prefix =
+                    key_prefix.as_str().map(str::to_string).filter(|prefix| !prefix.is_empty());
             }
             if let Some(timeout) = ai.get("timeoutMs").and_then(|v| v.as_u64()) {
                 self.ai_completion.timeout_ms = timeout;
@@ -931,6 +944,10 @@ pub struct ProjectAiCompletionConfig {
     pub model: Option<String>,
     /// Environment variable name for API key.
     pub api_key_env: Option<String>,
+    /// HTTP header used to send the API key.
+    pub api_key_header: Option<String>,
+    /// Optional auth scheme prepended before the API key.
+    pub api_key_prefix: Option<String>,
 }
 
 /// `[formatting]` section of `.perl-lsp.toml`.
@@ -1067,6 +1084,13 @@ impl ProjectConfig {
         }
         if let Some(ref key_env) = self.ai_completion.api_key_env {
             config.ai_completion.api_key_env = key_env.clone();
+        }
+        if let Some(ref key_header) = self.ai_completion.api_key_header {
+            config.ai_completion.api_key_header = key_header.clone();
+        }
+        if let Some(ref key_prefix) = self.ai_completion.api_key_prefix {
+            config.ai_completion.api_key_prefix =
+                (!key_prefix.is_empty()).then(|| key_prefix.clone());
         }
 
         // Apply formatting configuration
@@ -1378,6 +1402,8 @@ profile = "recommended"
                 "endpoint": "http://127.0.0.1:11434/v1",
                 "model": "codellama",
                 "apiKeyEnv": "LOCAL_AI_KEY",
+                "apiKeyHeader": "x-api-key",
+                "apiKeyPrefix": "",
                 "timeoutMs": 2500,
                 "maxOutputTokens": 128,
                 "rateLimitRps": 2.5,
@@ -1409,6 +1435,8 @@ profile = "recommended"
         assert_eq!(config.ai_completion.endpoint, "http://127.0.0.1:11434/v1");
         assert_eq!(config.ai_completion.model, "codellama");
         assert_eq!(config.ai_completion.api_key_env, "LOCAL_AI_KEY");
+        assert_eq!(config.ai_completion.api_key_header, "x-api-key");
+        assert_eq!(config.ai_completion.api_key_prefix, None);
         assert_eq!(config.ai_completion.timeout_ms, 2500);
         assert_eq!(config.ai_completion.max_output_tokens, 128);
         assert_eq!(config.ai_completion.rate_limit_rps, 2.5);

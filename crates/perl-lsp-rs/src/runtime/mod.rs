@@ -471,12 +471,14 @@ impl LspServer {
             return;
         };
 
-        let provider_config = perl_lsp_rs_core::providers::ai::OpenAiConfig {
-            endpoint: ai_config.endpoint.clone(),
-            model: ai_config.model.clone(),
+        let mut provider_config = perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
+            ai_config.endpoint.clone(),
+            ai_config.model.clone(),
             api_key,
-            timeout_ms: ai_config.timeout_ms,
-        };
+            ai_config.timeout_ms,
+        );
+        provider_config.api_key_header = ai_config.api_key_header.clone();
+        provider_config.api_key_prefix = ai_config.api_key_prefix.clone();
 
         let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
             ai_config.rate_limit_rps,
