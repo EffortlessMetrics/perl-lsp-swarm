@@ -365,6 +365,11 @@ name = "prop_dap_protocol_roundtrip"
 path = "tests/prop_dap_protocol_roundtrip.rs"
 # Property tests: DAP protocol message JSON round-trip invariants
 
+[[test]]
+name = "prop_perl_value"
+path = "tests/prop_perl_value.rs"
+# Property tests: PerlValue JSON round-trip and renderer metadata invariants
+
 [[bench]]
 name = "dap_benchmarks"
 path = "benches/dap_benchmarks.rs"
