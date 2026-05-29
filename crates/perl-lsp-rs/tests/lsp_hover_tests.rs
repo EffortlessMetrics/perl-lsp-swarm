@@ -381,6 +381,43 @@ fn test_hover_capability_advertised() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn test_hover_use_strict_links_perldoc_virtual_document() -> TestResult {
+    let doc = "use strict;\nuse warnings;\nmy $value = 1;\n";
+
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open_document("file:///pragma_perldoc.pl", doc)?;
+
+    let result = harness.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": {"uri": "file:///pragma_perldoc.pl"},
+            "position": {"line": 0, "character": 5}
+        }),
+    )?;
+
+    let value = result
+        .get("contents")
+        .and_then(|contents| contents.get("value"))
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("hover response missing markdown value: {result}"))?;
+
+    assert!(
+        value.contains("perldoc://strict"),
+        "pragma hover should expose the editor-native perldoc URI: {value}"
+    );
+    assert!(
+        value.contains("https://perldoc.perl.org/strict"),
+        "pragma hover should keep the existing external perldoc link: {value}"
+    );
+    assert!(
+        !value.to_ascii_lowercase().contains("command:") && !value.contains("$("),
+        "pragma hover must not introduce trusted markdown command links or theme icons: {value}"
+    );
+    Ok(())
+}
+
 /// Tests feature spec: navigation.rs#hover-builtin-context-sensitive-docs
 ///
 /// Validates that dual-context builtins (gmtime, keys, wantarray, grep, caller)

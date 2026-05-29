@@ -15,6 +15,25 @@ fn test_internal_pl_sv_yes_hover_from_sigiled_token() {
 }
 
 #[test]
+fn pragma_hover_links_external_and_virtual_perldoc() {
+    let hover = must_some(LspServer::build_pragma_hover("strict"));
+    let value = must_some(hover["contents"]["value"].as_str());
+
+    assert!(
+        value.contains("https://perldoc.perl.org/strict"),
+        "pragma hover should keep the external perldoc link: {value}"
+    );
+    assert!(
+        value.contains("perldoc://strict"),
+        "pragma hover should expose the virtual perldoc URI: {value}"
+    );
+    assert!(
+        !value.to_ascii_lowercase().contains("command:") && !value.contains("$("),
+        "pragma hover must not introduce trusted markdown command links or theme icons: {value}"
+    );
+}
+
+#[test]
 fn pod_hover_cache_prunes_at_cap_and_evicts_active_document_path()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
