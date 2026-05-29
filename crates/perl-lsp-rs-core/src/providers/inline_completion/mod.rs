@@ -1402,16 +1402,16 @@ impl InlineCompletionProvider {
         if ends_with_keyword(prefix, "bless ") {
             return ExpectedSyntax::BlessArguments;
         }
-        if ends_with_keyword(prefix, "return ") {
+        if return_expression_fragment(prefix).is_some() {
             return ExpectedSyntax::ReturnExpression;
         }
-        if is_guard_condition_prefix(prefix) {
+        if guard_condition_fragment(prefix).is_some() {
             return ExpectedSyntax::GuardCondition;
         }
-        if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
+        if loop_binding_fragment(prefix).is_some() {
             return ExpectedSyntax::LoopBinding;
         }
-        if ends_with_keyword(prefix, "ok(") || ends_with_keyword(prefix, "is(") {
+        if test_assertion_fragment(prefix).is_some() {
             return ExpectedSyntax::TestAssertionArguments;
         }
         if prefix == "#!" || prefix == "#!/" {
@@ -1622,15 +1622,20 @@ impl InlineCompletionProvider {
             .map(VariableFact::as_perl_variable)
     }
 
-    fn preferred_loop_binding(&self, context: &SemanticInlineContext) -> Option<String> {
+    fn preferred_loop_binding_item(
+        &self,
+        context: &SemanticInlineContext,
+    ) -> Option<(String, String)> {
         if let Some(array) = context.visible_variables.iter().find(|variable| variable.is_array()) {
+            let collection = array.as_perl_variable();
             let item_name = singular_loop_variable_name(array.name.as_str());
-            return Some(format!("my ${item_name} ({}) {{\n    \n}}", array.as_perl_variable()));
+            return Some((format!("my ${item_name} ({collection}) {{\n    \n}}"), collection));
         }
 
         let hash = context.visible_variables.iter().find(|variable| variable.is_hash())?;
+        let collection = hash.as_perl_variable();
         let key_name = hash_key_loop_variable_name(hash.name.as_str());
-        Some(format!("my ${key_name} (keys {}) {{\n    \n}}", hash.as_perl_variable()))
+        Some((format!("my ${key_name} (keys {collection}) {{\n    \n}}"), collection))
     }
 
     fn current_package_method_items(
@@ -1921,7 +1926,7 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
-        if ends_with_keyword(prefix, "return ") {
+        if return_expression_fragment(prefix).is_some() {
             if let Some(variable) = provider.preferred_return_variable(semantic_context) {
                 sink.push(
                     Self::SOURCE,
@@ -1949,7 +1954,7 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             }
         }
 
-        if is_guard_condition_prefix(prefix)
+        if guard_condition_fragment(prefix).is_some()
             && let Some(condition) = provider.preferred_guard_condition(semantic_context)
         {
             sink.push(
@@ -1964,14 +1969,16 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
-        if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
-            if let Some(binding) = provider.preferred_loop_binding(semantic_context) {
+        if loop_binding_fragment(prefix).is_some() {
+            if let Some((binding, collection)) =
+                provider.preferred_loop_binding_item(semantic_context)
+            {
                 sink.push(
                     Self::SOURCE,
                     0,
                     InlineCompletionItem {
                         insert_text: binding,
-                        filter_text: Some("my".into()),
+                        filter_text: Some(collection),
                         range: None,
                         command: None,
                     },
@@ -1993,7 +2000,7 @@ impl InlineCandidateSource for TestCandidateSource {
     ) {
         let prefix = context.prefix.as_str();
 
-        if ends_with_keyword(prefix, "ok(")
+        if test_assertion_fragment(prefix).is_some_and(|trigger| trigger == "ok")
             && let Some(arguments) = provider.preferred_ok_assertion_arguments(semantic_context)
         {
             sink.push(
@@ -2008,7 +2015,7 @@ impl InlineCandidateSource for TestCandidateSource {
             );
         }
 
-        if ends_with_keyword(prefix, "is(")
+        if test_assertion_fragment(prefix).is_some_and(|trigger| trigger == "is")
             && let Some(arguments) = provider.preferred_is_assertion_arguments(semantic_context)
         {
             sink.push(
@@ -2084,11 +2091,44 @@ fn is_preferred_guard_condition_name(name: &str) -> bool {
         || name.ends_with("_ok")
 }
 
-fn is_guard_condition_prefix(prefix: &str) -> bool {
-    ends_with_keyword(prefix, "return unless ")
-        || ends_with_keyword(prefix, "return if ")
-        || ends_with_keyword(prefix, "next if ")
-        || ends_with_keyword(prefix, "last if ")
+fn return_expression_fragment(prefix: &str) -> Option<&str> {
+    keyword_fragment(prefix, "return ", is_expression_fragment_char)
+}
+
+fn guard_condition_fragment(prefix: &str) -> Option<&str> {
+    ["return unless ", "return if ", "next if ", "last if "]
+        .into_iter()
+        .find_map(|keyword| keyword_fragment(prefix, keyword, is_expression_fragment_char))
+}
+
+fn loop_binding_fragment(prefix: &str) -> Option<&str> {
+    ["for ", "foreach "]
+        .into_iter()
+        .find_map(|keyword| keyword_fragment(prefix, keyword, is_expression_fragment_char))
+}
+
+fn test_assertion_fragment(prefix: &str) -> Option<&'static str> {
+    if keyword_fragment(prefix, "ok(", is_expression_fragment_char).is_some() {
+        return Some("ok");
+    }
+    if keyword_fragment(prefix, "is(", is_expression_fragment_char).is_some() {
+        return Some("is");
+    }
+    None
+}
+
+fn keyword_fragment<'a>(
+    prefix: &'a str,
+    keyword: &str,
+    is_fragment_char: impl Fn(char) -> bool,
+) -> Option<&'a str> {
+    let keyword_index = last_keyword_index(prefix, keyword)?;
+    let fragment = &prefix[keyword_index + keyword.len()..];
+    fragment.chars().all(is_fragment_char).then_some(fragment)
+}
+
+fn is_expression_fragment_char(ch: char) -> bool {
+    is_identifier_fragment_char(ch) || matches!(ch, '$' | '@' | '%' | ':')
 }
 
 fn test_statement_filter_text(statement: &str) -> &'static str {
@@ -4589,6 +4629,86 @@ mod tests {
             completions.items.iter().any(|i| i.insert_text == "self = shift;"),
             "`my $` after `(` should still trigger the my-dollar rule"
         );
+    }
+
+    #[test]
+    fn return_partial_variable_replaces_fragment() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $result = compute();\nreturn $res";
+        let completions = provider.get_inline_completions(source, 1, 11);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$result;")
+            .ok_or("expected return variable completion for partial fragment")?;
+        let range = item.range.as_ref().ok_or("partial return completion must carry a range")?;
+
+        assert_eq!(range.start.line, 1);
+        assert_eq!(range.start.character, 7);
+        assert_eq!(range.end.line, 1);
+        assert_eq!(range.end.character, 11);
+        Ok(())
+    }
+
+    #[test]
+    fn guard_condition_partial_variable_replaces_fragment() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $ready = check();\nreturn unless $rea";
+        let completions = provider.get_inline_completions(source, 1, 18);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$ready;")
+            .ok_or("expected guard condition completion for partial fragment")?;
+        let range = item.range.as_ref().ok_or("partial guard completion must carry a range")?;
+
+        assert_eq!(range.start.line, 1);
+        assert_eq!(range.start.character, 14);
+        assert_eq!(range.end.line, 1);
+        assert_eq!(range.end.character, 18);
+        Ok(())
+    }
+
+    #[test]
+    fn test_assertion_partial_variable_replaces_fragment() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Test::More;\nmy $result = compute();\nok($res";
+        let completions = provider.get_inline_completions(source, 2, 7);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$result, 'test description');")
+            .ok_or("expected ok assertion arguments for partial fragment")?;
+        let range = item.range.as_ref().ok_or("partial assertion completion must carry a range")?;
+
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, 3);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn loop_binding_partial_collection_replaces_fragment() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "my @users = fetch_users();\nfor @us";
+        let completions = provider.get_inline_completions(source, 1, 7);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "my $user (@users) {\n    \n}")
+            .ok_or("expected loop binding completion for partial collection")?;
+        let range =
+            item.range.as_ref().ok_or("partial loop binding completion must carry a range")?;
+
+        assert_eq!(range.start.line, 1);
+        assert_eq!(range.start.character, 4);
+        assert_eq!(range.end.line, 1);
+        assert_eq!(range.end.character, 7);
+        Ok(())
     }
 
     #[test]
