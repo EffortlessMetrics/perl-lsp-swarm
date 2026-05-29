@@ -101,6 +101,20 @@ fn inline_completion_fixture_corpus_returns_expected_ghost_text() -> TestResult 
             not_expected: &["return $ghost;"],
         },
         SuggestionFixture {
+            name: "control_condition_uses_visible_guard_variable",
+            source: "sub run {\n    my $ready = check();\n    if (<<CURSOR>>\n}\n",
+            first: Some("$ready) {\n    \n}"),
+            expected: &["$ready) {\n    \n}"],
+            not_expected: &["$self) {\n    \n}"],
+        },
+        SuggestionFixture {
+            name: "lexical_assignment_uses_visible_scalar",
+            source: "sub copy {\n    my $result = compute();\n    my $copy = <<CURSOR>>\n}\n",
+            first: Some("$result;"),
+            expected: &["$result;"],
+            not_expected: &["$copy;"],
+        },
+        SuggestionFixture {
             name: "self_receiver_prefers_current_package_methods",
             source: "package Other;\nsub external {}\n\npackage Demo;\nsub save {}\nsub display_name {}\nsub caller {\n    my $self = shift;\n    $self-><<CURSOR>>\n}\n",
             first: Some("save()"),

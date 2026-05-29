@@ -77,7 +77,9 @@ pub(crate) enum ExpectedSyntax {
     BlessArguments,
     ReturnExpression,
     GuardCondition,
+    ControlCondition,
     LoopBinding,
+    LexicalAssignmentExpression,
     TestAssertionArguments,
     ShebangInterpreter,
     SubroutineBody,
@@ -589,7 +591,9 @@ fn syntax_candidate_reason(context: &SemanticInlineContext) -> InlineCandidateRe
     match context.expected_syntax {
         ExpectedSyntax::ReturnExpression
         | ExpectedSyntax::GuardCondition
-        | ExpectedSyntax::LoopBinding => InlineCandidateReason::VisibleLexical,
+        | ExpectedSyntax::ControlCondition
+        | ExpectedSyntax::LoopBinding
+        | ExpectedSyntax::LexicalAssignmentExpression => InlineCandidateReason::VisibleLexical,
         _ => InlineCandidateReason::SourceSyntax,
     }
 }
@@ -656,6 +660,8 @@ fn syntax_candidate_bonus(item: &InlineCompletionItem, context: &SemanticInlineC
         {
             20
         }
+        ExpectedSyntax::ControlCondition if item.insert_text.contains(") {") => 20,
+        ExpectedSyntax::LexicalAssignmentExpression if item.insert_text.ends_with(';') => 20,
         ExpectedSyntax::LexicalVariableName
             if item.insert_text.starts_with("self =")
                 && context.visible_variables.iter().any(VariableFact::is_scalar_self) =>
@@ -1408,6 +1414,12 @@ impl InlineCompletionProvider {
         if is_guard_condition_prefix(prefix) {
             return ExpectedSyntax::GuardCondition;
         }
+        if control_condition_prefix(prefix).is_some() {
+            return ExpectedSyntax::ControlCondition;
+        }
+        if lexical_assignment_rhs_prefix(prefix).is_some() {
+            return ExpectedSyntax::LexicalAssignmentExpression;
+        }
         if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
             return ExpectedSyntax::LoopBinding;
         }
@@ -1615,10 +1627,20 @@ impl InlineCompletionProvider {
     }
 
     fn preferred_assignment_variable(&self, context: &SemanticInlineContext) -> Option<String> {
+        self.preferred_assignment_source_variable(context, "")
+    }
+
+    fn preferred_assignment_source_variable(
+        &self,
+        context: &SemanticInlineContext,
+        excluded_name: &str,
+    ) -> Option<String> {
         context
             .visible_variables
             .iter()
-            .find(|variable| variable.is_scalar() && !variable.is_scalar_self())
+            .find(|variable| {
+                variable.is_scalar() && !variable.is_scalar_self() && variable.name != excluded_name
+            })
             .map(VariableFact::as_perl_variable)
     }
 
@@ -1949,6 +1971,37 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             }
         }
 
+        if control_condition_prefix(prefix).is_some()
+            && let Some(condition) = provider.preferred_guard_condition(semantic_context)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: format!("{condition}) {{\n    \n}}"),
+                    filter_text: Some(condition),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if let Some(assigned_name) = lexical_assignment_rhs_prefix(prefix)
+            && let Some(variable) =
+                provider.preferred_assignment_source_variable(semantic_context, assigned_name)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: format!("{variable};"),
+                    filter_text: Some(variable),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
         if is_guard_condition_prefix(prefix)
             && let Some(condition) = provider.preferred_guard_condition(semantic_context)
         {
@@ -2089,6 +2142,23 @@ fn is_guard_condition_prefix(prefix: &str) -> bool {
         || ends_with_keyword(prefix, "return if ")
         || ends_with_keyword(prefix, "next if ")
         || ends_with_keyword(prefix, "last if ")
+}
+
+fn control_condition_prefix(prefix: &str) -> Option<&str> {
+    ["if (", "unless (", "while ("].into_iter().find(|keyword| ends_with_keyword(prefix, keyword))
+}
+
+fn lexical_assignment_rhs_prefix(prefix: &str) -> Option<&str> {
+    let trimmed = prefix.trim_end();
+    let lhs = trimmed.strip_suffix('=')?.trim_end();
+    let variable_start = lhs.rfind('$')?;
+    let declaration = lhs[..variable_start].trim_end();
+    let variable_name = &lhs[variable_start + 1..];
+
+    (declaration.ends_with("my")
+        && !variable_name.is_empty()
+        && variable_name.chars().all(is_identifier_fragment_char))
+    .then_some(variable_name)
 }
 
 fn test_statement_filter_text(statement: &str) -> &'static str {
