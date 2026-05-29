@@ -365,6 +365,7 @@ Current semantic inline UX receipt inventory:
 | `loop_binding_inline_completion_quality` | `ux_scenario_57_loop_binding_inline_completion_quality.rs` | Visible collection loop bindings, hash key iteration, array preference, and safe singular naming. |
 | `guard_condition_inline_completion_quality` | `ux_scenario_58_guard_condition_inline_completion_quality.rs` | Guard-condition continuations use visible scalar facts without unrelated result or receiver guesses. |
 | `real_workspace_module_import_inline_completion_quality` | `ux_scenario_59_real_workspace_module_import_inline_completion_quality.rs` | Effective `@INC`-aware module-import ghost text, `no lib` suppression, and workspace-root wildcard suppression. |
+| `package_boundary_receiver_inline_completion_quality` | `ux_scenario_60_package_boundary_receiver_inline_completion_quality.rs` | Project-shaped `$self->` receiver ghost text stays inside the package already on screen and suppresses neighboring-package methods. |
 
 Still future or deliberately gated:
 
