@@ -777,3 +777,35 @@ fn scenarios() -> &'static [Scenario] {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_condition_quality_scenarios_are_registered() {
+        let names: Vec<&str> = scenarios().iter().map(|scenario| scenario.name).collect();
+
+        assert!(names.contains(&"guard_condition_prefers_boolean_named_visible_scalar"));
+        assert!(names.contains(&"guard_condition_prefers_skip_flag_over_receiver"));
+    }
+
+    #[test]
+    fn guard_condition_quality_scenarios_pass() -> Result<()> {
+        let provider = InlineCompletionProvider::new();
+
+        for name in [
+            "guard_condition_prefers_boolean_named_visible_scalar",
+            "guard_condition_prefers_skip_flag_over_receiver",
+        ] {
+            let scenario = scenarios()
+                .iter()
+                .find(|scenario| scenario.name == name)
+                .ok_or_else(|| eyre!("missing inline completion quality scenario {name}"))?;
+            let (_item_count, _notes, parse_regressions) = run_scenario(&provider, scenario)?;
+            assert_eq!(parse_regressions, 0);
+        }
+
+        Ok(())
+    }
+}

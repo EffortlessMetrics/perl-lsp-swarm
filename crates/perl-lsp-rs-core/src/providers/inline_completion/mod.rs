@@ -3285,14 +3285,8 @@ mod tests {
         let insert_texts: Vec<&str> =
             completions.items.iter().map(|item| item.insert_text.as_str()).collect();
 
-        assert!(
-            insert_texts.contains(&"$is_valid;"),
-            "guard completion should prefer boolean-looking lexical: {insert_texts:?}"
-        );
-        assert!(
-            !insert_texts.contains(&"$result;"),
-            "guard completion should not prefer generic result over boolean lexical: {insert_texts:?}"
-        );
+        assert!(insert_texts.contains(&"$is_valid;"));
+        assert!(!insert_texts.contains(&"$result;"));
     }
 
     #[test]
@@ -3302,10 +3296,81 @@ mod tests {
         let character = "    return unless ".encode_utf16().count() as u32;
         let completions = provider.get_inline_completions(source, 2, character);
 
-        assert!(
-            completions.items.is_empty(),
-            "guard condition should stay silent without visible scalar context: {:?}",
-            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        assert!(completions.items.is_empty());
+    }
+
+    #[test]
+    fn guard_condition_prefers_valid_scalar_name() {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $valid = validate();\n    return unless ";
+        let character = "    return unless ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert_eq!(
+            completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("$valid;")
+        );
+    }
+
+    #[test]
+    fn guard_condition_prefers_ready_scalar_name() {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $ready = is_ready();\n    return if ";
+        let character = "    return if ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert_eq!(
+            completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("$ready;")
+        );
+    }
+
+    #[test]
+    fn guard_condition_prefers_ok_scalar_name() {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $ok = check_status();\n    last if ";
+        let character = "    last if ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert_eq!(completions.items.first().map(|item| item.insert_text.as_str()), Some("$ok;"));
+    }
+
+    #[test]
+    fn guard_condition_prefers_has_prefix_scalar_name() {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $has_value = load_value();\n    return unless ";
+        let character = "    return unless ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert_eq!(
+            completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("$has_value;")
+        );
+    }
+
+    #[test]
+    fn guard_condition_prefers_can_prefix_scalar_name() {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $can_retry = should_retry();\n    return if ";
+        let character = "    return if ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert_eq!(
+            completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("$can_retry;")
+        );
+    }
+
+    #[test]
+    fn guard_condition_prefers_ok_suffix_scalar_name() {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $status_ok = check_status();\n    next if ";
+        let character = "    next if ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert_eq!(
+            completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("$status_ok;")
         );
     }
 
