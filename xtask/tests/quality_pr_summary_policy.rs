@@ -96,6 +96,36 @@ fn pull_request_template_has_quality_gate_repair_packet_fields() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn next_action_selects_requested_kind_and_rejects_missing_kind() -> TestResult {
+    let receipt = json!({
+        "next_actions": [
+            {
+                "kind": "project_coverage_below_target",
+                "path": "xtask/src/tasks/quality_gate.rs"
+            },
+            {
+                "kind": "patch_coverage_below_target",
+                "file_scope": "changed_files",
+                "path": "xtask/src/tasks/ripr_evidence.rs"
+            }
+        ]
+    });
+
+    let action = next_action(&receipt, "patch_coverage_below_target")?;
+    assert_eq!(action.get("file_scope").and_then(Value::as_str), Some("changed_files"));
+    assert_eq!(
+        action.get("path").and_then(Value::as_str),
+        Some("xtask/src/tasks/ripr_evidence.rs")
+    );
+    assert!(
+        next_action(&receipt, "new_ripr_gap").is_err(),
+        "missing action kind must fail instead of returning the wrong repair packet"
+    );
+
+    Ok(())
+}
+
 struct FixturePaths {
     coverage: PathBuf,
     codecov: PathBuf,
