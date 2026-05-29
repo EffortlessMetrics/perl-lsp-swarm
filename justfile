@@ -2342,6 +2342,7 @@ fuzz-regression duration='30':
     @just fuzz declaration_parsing {{duration}} || true
     @just fuzz heredoc_parsing {{duration}} || true
     @just fuzz incremental_edit_sequences {{duration}} || true
+    @just fuzz line_index_roundtrip {{duration}} || true
     @just fuzz lsp_cancellation_registry {{duration}} || true
     @just fuzz module_surface {{duration}} || true
     @just fuzz parser_integration {{duration}} || true

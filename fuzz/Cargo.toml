@@ -19,6 +19,9 @@ version = "1.0.149"
 [dependencies.perl-lsp-rs-core]
 path = "../crates/perl-lsp-rs-core"
 
+[dependencies.perl-line-index]
+path = "../crates/perl-line-index"
+
 [dependencies.perl-lexer]
 path = "../crates/perl-lexer"
 
@@ -137,6 +140,14 @@ bench = false
 [[bin]]
 name = "incremental_edit_sequences"
 path = "fuzz_targets/incremental_edit_sequences.rs"
+test = false
+doc = false
+bench = false
+
+
+[[bin]]
+name = "line_index_roundtrip"
+path = "fuzz_targets/line_index_roundtrip.rs"
 test = false
 doc = false
 bench = false
