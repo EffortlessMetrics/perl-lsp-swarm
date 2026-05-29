@@ -3,6 +3,7 @@
 //! Each method checks the relevant client capability before sending.
 
 use super::*;
+use crate::protocol::methods::WORKSPACE_APPLY_EDIT;
 
 #[allow(dead_code)]
 impl LspServer {
@@ -27,6 +28,30 @@ impl LspServer {
                 }
             }
         }
+    }
+
+    pub(crate) fn request_apply_workspace_edit_with_metadata(
+        &self,
+        label: &str,
+        edit: Value,
+        is_refactoring: bool,
+    ) -> io::Result<Option<ServerRequestId>> {
+        let caps = self.client_capabilities.lock();
+        if !caps.workspace_apply_edit_support || !caps.workspace_edit_metadata_support {
+            return Ok(None);
+        }
+        drop(caps);
+
+        let params = json!({
+            "label": label,
+            "edit": edit,
+            "metadata": {
+                "isRefactoring": is_refactoring,
+            },
+        });
+        let id = self.send_request(WORKSPACE_APPLY_EDIT, params)?;
+        tracing::debug!(%label, "Requested workspace/applyEdit with metadata");
+        Ok(Some(id))
     }
 
     /// Request client to refresh code lenses (workspace/codeLens/refresh)
