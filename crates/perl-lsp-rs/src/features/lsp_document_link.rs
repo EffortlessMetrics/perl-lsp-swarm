@@ -8,6 +8,16 @@ use lsp_types::{DocumentLink, Position, Range, Uri};
 use std::path::PathBuf;
 use url::Url;
 
+fn line_start_offsets(content: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (idx, ch) in content.char_indices() {
+        if ch == '\n' {
+            starts.push(idx + 1);
+        }
+    }
+    starts
+}
+
 fn to_range(content: &str, start: usize, end: usize) -> Range {
     // Simple byte->(line,col) translator
     let (mut line, mut col, mut i) = (0u32, 0u32, 0usize);
@@ -50,7 +60,10 @@ fn to_range(content: &str, start: usize, end: usize) -> Range {
 pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>, String> {
     let mut links = Vec::new();
 
+    let line_starts = line_start_offsets(text);
+
     for (line_idx, line) in text.lines().enumerate() {
+        let line_start = line_starts.get(line_idx).copied().unwrap_or(text.len());
         // `use Foo::Bar;`
         if let Some(idx) = line.find("use ") {
             let rest = &line[idx + 4..];
@@ -59,8 +72,7 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == ':' || *c == '_')
                 .collect();
             if !name.is_empty() && name.contains("::") {
-                let s =
-                    text[..].lines().take(line_idx).map(|l| l.len() + 1).sum::<usize>() + idx + 4;
+                let s = line_start + idx + 4;
                 let e = s + name.len();
                 links.push(DocumentLink {
                     range: to_range(text, s, e),
@@ -88,9 +100,7 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
                     .take_while(|c| c.is_ascii_alphanumeric() || *c == ':' || *c == '_')
                     .collect();
                 if !name.is_empty() && name.contains("::") {
-                    let s = text[..].lines().take(line_idx).map(|l| l.len() + 1).sum::<usize>()
-                        + idx
-                        + 8;
+                    let s = line_start + idx + 8;
                     let e = s + name.len();
                     links.push(DocumentLink {
                         range: to_range(text, s, e),
@@ -117,10 +127,7 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
                 if quote == '\'' || quote == '"' {
                     if let Some(endq) = rest[1..].find(quote) {
                         let path = &rest[1..1 + endq];
-                        let s = text[..].lines().take(line_idx).map(|l| l.len() + 1).sum::<usize>()
-                            + idx
-                            + kw.len()
-                            + 1;
+                        let s = line_start + idx + kw.len() + 1;
                         let e = s + path.len();
                         // Try to resolve relative to current file
                         let target = if PathBuf::from(path).is_absolute() {
