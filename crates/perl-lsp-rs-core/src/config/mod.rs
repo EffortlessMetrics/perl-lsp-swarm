@@ -164,13 +164,13 @@ pub struct ServerConfig {
 pub struct AiCompletionConfig {
     /// Whether AI completions are enabled. Default: false.
     pub enabled: bool,
-    /// Provider type. Currently only "openai_compat" is supported.
+    /// Provider type. Supports hosted `openai_compat` and local OpenAI-compatible aliases such as `local`, `ollama`, and `llama_cpp`.
     pub provider: String,
-    /// API endpoint URL.
+    /// API endpoint URL. Empty uses a provider-specific default.
     pub endpoint: String,
-    /// Model identifier (e.g., "gpt-4o-mini").
+    /// Model identifier (e.g., `gpt-4o-mini` or `qwen2.5-coder:1.5b`).
     pub model: String,
-    /// Environment variable name containing the API key.
+    /// Environment variable name containing the API key. Local providers may leave it unset.
     pub api_key_env: String,
     /// Request timeout in milliseconds. Default: 1800.
     pub timeout_ms: u64,

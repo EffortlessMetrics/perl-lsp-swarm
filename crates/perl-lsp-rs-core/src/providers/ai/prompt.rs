@@ -7,8 +7,9 @@ use crate::providers::inline_completion::PreparedInlineCompletionContext;
 /// Returns a `(system, user)` message pair suitable for the chat completions API.
 pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, String) {
     let mut system = String::from(
-        "You are a Perl code completion assistant. Complete the code at the cursor position. \
-         Return ONLY the completion text, no explanation, no markdown.",
+        "You are a Perl code completion assistant optimized for fast inline completions. \
+         Complete the code at the cursor position. Return ONLY the completion text, \
+         no explanation, no markdown, and do not repeat text that already appears after the cursor.",
     );
 
     // Add context about the current scope
@@ -30,6 +31,9 @@ pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, S
     }
     user.push_str(&context.prefix);
     user.push_str("<CURSOR>");
+    if !context.suffix.is_empty() {
+        user.push_str(&context.suffix);
+    }
 
     (system, user)
 }
@@ -42,7 +46,8 @@ mod tests {
     fn basic_prompt_includes_prefix() {
         let ctx = PreparedInlineCompletionContext {
             prefix: "my $x = ".to_string(),
-            current_line: "my $x = ".to_string(),
+            suffix: " + 1;".to_string(),
+            current_line: "my $x =  + 1;".to_string(),
             previous_non_empty_line: Some("use strict;".to_string()),
             current_function: Some("new".to_string()),
             current_package: Some("MyClass".to_string()),
@@ -55,6 +60,7 @@ mod tests {
         assert!(system.contains("new"));
         assert!(user.contains("my $x = "));
         assert!(user.contains("<CURSOR>"));
+        assert!(user.contains(" + 1;"));
         assert!(user.contains("use strict;"));
     }
 }

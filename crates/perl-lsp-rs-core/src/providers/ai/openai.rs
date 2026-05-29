@@ -16,7 +16,7 @@ pub struct OpenAiConfig {
     pub endpoint: String,
     /// The model name to use (e.g. `gpt-4o`).
     pub model: String,
-    /// API key for authentication.
+    /// API key for authentication. Empty for local OpenAI-compatible endpoints that do not require auth.
     pub api_key: String,
     /// Global timeout in milliseconds.
     pub timeout_ms: u64,
@@ -133,6 +133,40 @@ mod tests {
     }
 
     #[test]
+    fn accepts_empty_api_key_for_local_endpoints() {
+        let provider = OpenAiProvider::new(
+            OpenAiConfig {
+                endpoint: "http://127.0.0.1:11434/v1/chat/completions".to_string(),
+                model: "qwen2.5-coder:1.5b".to_string(),
+                api_key: String::new(),
+                timeout_ms: 750,
+            },
+            Arc::new(RateLimiter::new(1.0, 1)),
+        );
+
+        let request = crate::providers::inline_completion::BackendRequest {
+            context: crate::providers::inline_completion::PreparedInlineCompletionContext {
+                prefix: "return ".to_string(),
+                suffix: ";".to_string(),
+                current_line: "return ;".to_string(),
+                previous_non_empty_line: None,
+                current_function: Some("value".to_string()),
+                current_package: Some("Local::Model".to_string()),
+                variables: vec!["$result".to_string()],
+                imports: Vec::new(),
+            },
+            max_output_tokens: 16,
+            timeout_ms: 750,
+        };
+
+        let body = provider.build_request_body(&request);
+        assert_eq!(
+            body.get("model").and_then(serde_json::Value::as_str),
+            Some("qwen2.5-coder:1.5b")
+        );
+    }
+
+    #[test]
     fn extracts_chat_completions_delta() {
         let data = r#"{"choices":[{"delta":{"content":"my $"},"finish_reason":null}]}"#;
         assert_eq!(OpenAiProvider::extract_content_delta(data), Some("my $".to_string()));
@@ -167,21 +201,22 @@ impl InlineCompletionBackend for OpenAiProvider {
         let config = ureq::Agent::config_builder().timeout_global(Some(timeout)).build();
         let agent = ureq::Agent::new_with_config(config);
 
-        let response = agent
-            .post(&self.config.endpoint)
-            .header("Authorization", &format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .send_json(&body)
-            .map_err(|e| {
-                let msg = e.to_string();
-                if msg.contains("timed out") || msg.contains("timeout") {
-                    BackendError::Timeout
-                } else if msg.contains("401") || msg.contains("403") {
-                    BackendError::Auth(msg)
-                } else {
-                    BackendError::Transport(msg)
-                }
-            })?;
+        let mut request =
+            agent.post(&self.config.endpoint).header("Content-Type", "application/json");
+        if !self.config.api_key.is_empty() {
+            request = request.header("Authorization", &format!("Bearer {}", self.config.api_key));
+        }
+
+        let response = request.send_json(&body).map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("timed out") || msg.contains("timeout") {
+                BackendError::Timeout
+            } else if msg.contains("401") || msg.contains("403") {
+                BackendError::Auth(msg)
+            } else {
+                BackendError::Transport(msg)
+            }
+        })?;
 
         let reader = BufReader::new(response.into_body().into_reader());
         let mut parser = SseParser::new(reader);

@@ -1022,6 +1022,12 @@ impl LspServer {
         let texts = backend.complete(&req)?;
         let items = texts
             .into_iter()
+            .filter_map(|text| {
+                perl_lsp_rs_core::providers::inline_completion::sanitize_ai_completion_text(
+                    text.as_str(),
+                    context,
+                )
+            })
             .map(|text| perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem {
                 insert_text: text,
                 filter_text: None,

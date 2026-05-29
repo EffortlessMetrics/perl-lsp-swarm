@@ -17,6 +17,9 @@ const MAX_INLINE_COMPLETION_ITEMS: usize = 5;
 pub struct PreparedInlineCompletionContext {
     /// Prefix on the current line up to the request position.
     pub prefix: String,
+    /// Suffix on the current line after the request position.
+    #[serde(default)]
+    pub suffix: String,
     /// Full current line with trailing newline removed.
     pub current_line: String,
     /// Closest previous non-empty line, if any.
@@ -382,6 +385,56 @@ pub trait InlineCompletionBackend: Send + Sync {
         req: &BackendRequest,
         sink: &mut dyn FnMut(StreamChunk) -> StreamControl,
     ) -> Result<(), BackendError>;
+}
+
+/// Normalize raw AI text into an inline-completion candidate.
+///
+/// Local code models often echo the prompt prefix/suffix or wrap answers in
+/// Markdown fences. This helper keeps the backend interface permissive while
+/// making the LSP-facing ghost text concise and safe to rank alongside
+/// deterministic completions.
+pub fn sanitize_ai_completion_text(
+    text: &str,
+    context: &PreparedInlineCompletionContext,
+) -> Option<String> {
+    let mut candidate = text.trim().to_string();
+    if candidate.is_empty() {
+        return None;
+    }
+
+    if candidate.starts_with("```") {
+        candidate = candidate
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.trim_start().starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+    }
+
+    if let Some(stripped) = candidate.strip_prefix(context.prefix.as_str()) {
+        candidate = stripped.trim_start().to_string();
+    } else if let Some(stripped) = candidate.strip_prefix(context.prefix.trim_start()) {
+        candidate = stripped.trim_start().to_string();
+    }
+
+    if !context.suffix.is_empty()
+        && let Some(stripped) = candidate.strip_suffix(context.suffix.as_str())
+    {
+        candidate = stripped.trim_end().to_string();
+    }
+
+    if candidate.starts_with("<CURSOR>") {
+        candidate = candidate["<CURSOR>".len()..].trim_start().to_string();
+    }
+
+    let lower = candidate.to_ascii_lowercase();
+    if lower.starts_with("here is") || lower.starts_with("sure,") || candidate.is_empty() {
+        return None;
+    }
+
+    Some(candidate)
 }
 
 #[derive(Debug)]
@@ -967,6 +1020,7 @@ impl InlineCompletionProvider {
 
         Some(PreparedInlineCompletionContext {
             prefix: line_context.prefix.to_string(),
+            suffix: line_context.suffix.to_string(),
             current_line: line_context.current_line.to_string(),
             previous_non_empty_line: self
                 .previous_non_empty_line(&lines, line_index)
@@ -989,7 +1043,11 @@ impl InlineCompletionProvider {
         let current_line = *lines.get(line_index)?;
         let prefix_end = utf16_line_col_to_offset(current_line, 0, character);
 
-        Some(LineContext { prefix: &current_line[..prefix_end], current_line })
+        Some(LineContext {
+            prefix: &current_line[..prefix_end],
+            suffix: &current_line[prefix_end..],
+            current_line,
+        })
     }
 
     fn normalized_lines<'a>(&self, text: &'a str) -> Vec<&'a str> {
@@ -2136,6 +2194,7 @@ fn hash_key_loop_variable_name(hash_name: &str) -> String {
 
 struct LineContext<'a> {
     prefix: &'a str,
+    suffix: &'a str,
     current_line: &'a str,
 }
 
@@ -3984,6 +4043,38 @@ mod tests {
             "iterable mention should not be treated as a loop lexical: {:?}",
             prepared.variables
         );
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_context_captures_cursor_suffix_for_local_ai()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub value {\n    return ;\n}\n";
+        let prepared =
+            provider.prepare_context(source, 1, 11).ok_or("expected prepared context")?;
+
+        assert_eq!(prepared.prefix, "    return ");
+        assert_eq!(prepared.suffix, ";");
+        assert_eq!(prepared.current_line, "    return ;");
+        Ok(())
+    }
+
+    #[test]
+    fn sanitize_ai_completion_removes_echoed_prompt_edges() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub value {\n    return ;\n}\n";
+        let prepared =
+            provider.prepare_context(source, 1, 11).ok_or("expected prepared context")?;
+
+        let sanitized = sanitize_ai_completion_text("    return $result;", &prepared)
+            .ok_or("expected sanitized completion")?;
+        assert_eq!(sanitized, "$result");
+
+        let fenced = sanitize_ai_completion_text("```perl\n$result;\n```", &prepared)
+            .ok_or("expected fenced completion")?;
+        assert_eq!(fenced, "$result");
         Ok(())
     }
 

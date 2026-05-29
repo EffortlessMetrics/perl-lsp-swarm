@@ -390,6 +390,40 @@ impl LspServer {
         })
     }
 
+    fn ai_provider_requires_api_key(
+        ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
+    ) -> bool {
+        !matches!(
+            ai_config.provider.to_ascii_lowercase().as_str(),
+            "local" | "local_openai_compat" | "ollama" | "llama_cpp"
+        )
+    }
+
+    fn ai_endpoint_for_provider(
+        ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
+    ) -> String {
+        if !ai_config.endpoint.is_empty() {
+            return ai_config.endpoint.clone();
+        }
+
+        if Self::ai_provider_requires_api_key(ai_config) {
+            "https://api.openai.com/v1/chat/completions".to_string()
+        } else {
+            "http://127.0.0.1:11434/v1/chat/completions".to_string()
+        }
+    }
+
+    fn ai_model_for_provider(ai_config: &perl_lsp_rs_core::config::AiCompletionConfig) -> String {
+        let hosted_default = perl_lsp_rs_core::config::AiCompletionConfig::default().model;
+        if Self::ai_provider_requires_api_key(ai_config) {
+            if ai_config.model.is_empty() { hosted_default } else { ai_config.model.clone() }
+        } else if ai_config.model.is_empty() || ai_config.model == hosted_default {
+            "qwen2.5-coder:1.5b".to_string()
+        } else {
+            ai_config.model.clone()
+        }
+    }
+
     fn resolve_ai_api_key_with<F>(
         ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
         mut read_env: F,
@@ -449,9 +483,9 @@ impl LspServer {
 
     /// Refresh the AI inline-completion backend based on current configuration.
     ///
-    /// When `ai_completion.enabled` is `true` and the API key environment variable
-    /// resolves to a non-empty string, constructs an `OpenAiProvider` and stores it.
-    /// Otherwise clears the backend to `None`, disabling AI completions.
+    /// When `ai_completion.enabled` is `true`, constructs an `OpenAiProvider`
+    /// and stores it. Hosted providers require a non-empty API key environment
+    /// variable; local providers may run without one.
     ///
     /// Called during initialization (after project config is loaded) and on every
     /// `didChangeConfiguration` notification that touches the `aiCompletion` section.
@@ -464,16 +498,25 @@ impl LspServer {
         }
 
         // Resolve API key from configured env var with compatibility aliases for
-        // common OpenAI-compatible providers.
-        let Some(api_key) = Self::resolve_ai_api_key(&ai_config) else {
-            tracing::warn!(env_var = %ai_config.api_key_env, "AI completion enabled but API key env var is empty or unset");
-            *self.ai_inline_backend.lock() = None;
-            return;
+        // hosted OpenAI-compatible providers. Local providers intentionally run
+        // without an API key so small fast models served by Ollama or llama.cpp
+        // work out of the box.
+        let api_key = if Self::ai_provider_requires_api_key(&ai_config) {
+            let Some(api_key) = Self::resolve_ai_api_key(&ai_config) else {
+                tracing::warn!(env_var = %ai_config.api_key_env, "AI completion enabled but API key env var is empty or unset");
+                *self.ai_inline_backend.lock() = None;
+                return;
+            };
+            api_key
+        } else {
+            Self::resolve_ai_api_key(&ai_config).unwrap_or_default()
         };
 
+        let endpoint = Self::ai_endpoint_for_provider(&ai_config);
+        let model = Self::ai_model_for_provider(&ai_config);
         let provider_config = perl_lsp_rs_core::providers::ai::OpenAiConfig {
-            endpoint: ai_config.endpoint.clone(),
-            model: ai_config.model.clone(),
+            endpoint: endpoint.clone(),
+            model: model.clone(),
             api_key,
             timeout_ms: ai_config.timeout_ms,
         };
@@ -487,7 +530,7 @@ impl LspServer {
             perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
         *self.ai_inline_backend.lock() = Some(Arc::new(provider));
 
-        tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+        tracing::info!(provider = %ai_config.provider, endpoint = %endpoint, model = %model, "AI inline completion backend configured");
     }
 
     /// Get the subprocess runtime for external tool execution (perltidy, perlcritic).
@@ -1404,6 +1447,23 @@ mod tests {
             LspServer::resolve_ai_api_key_with(&config, read_env).as_deref(),
             Some("gemini-key")
         );
+    }
+
+    #[test]
+    fn local_ai_provider_does_not_require_api_key() {
+        let config = AiCompletionConfig {
+            provider: "local".to_string(),
+            endpoint: String::new(),
+            model: String::new(),
+            ..AiCompletionConfig::default()
+        };
+
+        assert!(!LspServer::ai_provider_requires_api_key(&config));
+        assert_eq!(
+            LspServer::ai_endpoint_for_provider(&config),
+            "http://127.0.0.1:11434/v1/chat/completions"
+        );
+        assert_eq!(LspServer::ai_model_for_provider(&config), "qwen2.5-coder:1.5b");
     }
 
     // --- include_paths_for_doc tests ---
