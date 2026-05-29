@@ -384,6 +384,49 @@ impl UxHarness {
         }
     }
 
+    /// Request code actions for a source range.
+    ///
+    /// The `diagnostics` slice is passed through as the LSP
+    /// `CodeActionContext.diagnostics` payload so scenario tests can exercise
+    /// the same diagnostic-to-quick-fix path editors use after receiving
+    /// `textDocument/publishDiagnostics`.
+    pub fn code_actions(
+        &self,
+        relative_path: &str,
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+        diagnostics: &[Value],
+        only: &[&str],
+    ) -> Result<Vec<Value>> {
+        let uri = self.workspace.uri(relative_path);
+        let context = json!({
+            "diagnostics": diagnostics,
+            "only": only,
+        });
+        let resp = self.client.request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": start_line, "character": start_character },
+                    "end": { "line": end_line, "character": end_character },
+                },
+                "context": context,
+            }),
+            self.config.timeout,
+        )?;
+        if resp.get("error").is_some() {
+            return Err(anyhow!("codeAction returned error: {}", resp["error"]));
+        }
+        match resp["result"].as_array() {
+            Some(actions) => Ok(actions.clone()),
+            None if resp["result"].is_null() => Ok(Vec::new()),
+            None => Ok(vec![resp["result"].clone()]),
+        }
+    }
+
     /// Request completion and collect best-effort labels for UX assertions.
     ///
     /// Label extraction order per completion item:
