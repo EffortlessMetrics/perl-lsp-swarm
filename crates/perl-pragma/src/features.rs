@@ -186,3 +186,73 @@ pub(crate) fn apply_feature_state(state: &mut PragmaState, args: &[String], enab
 
     changed
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn string_args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    #[test]
+    fn feature_aliases_enable_canonical_feature_names() {
+        let mut state = PragmaState::default();
+
+        assert!(apply_feature_state(&mut state, &string_args(&["postfix_deref", "builtin"]), true));
+
+        assert!(state.has_feature("postderef_qq"));
+        assert!(state.has_feature("postfix_deref"));
+        assert!(state.has_feature("module_true"));
+        assert!(state.has_feature("builtin"));
+        assert_eq!(state.features, vec!["postderef_qq", "module_true"]);
+    }
+
+    #[test]
+    fn feature_bundle_arguments_accept_qw_lists() {
+        let mut state = PragmaState::default();
+
+        assert!(apply_feature_state(&mut state, &string_args(&["qw(say state signatures)"]), true));
+
+        assert!(state.has_feature("say"));
+        assert!(state.has_feature("state"));
+        assert!(state.has_feature("signatures"));
+        assert!(state.signatures_strict);
+    }
+
+    #[test]
+    fn disabling_all_features_clears_derived_flags_once() {
+        let mut state = PragmaState::default();
+        assert!(apply_feature_state(&mut state, &string_args(&[":all"]), true));
+        assert!(state.unicode_strings);
+        assert!(state.signatures_strict);
+
+        assert!(apply_feature_state(&mut state, &string_args(&[":all"]), false));
+        assert!(state.features.is_empty());
+        assert!(!state.unicode_strings);
+        assert!(!state.signatures_strict);
+
+        assert!(!apply_feature_state(&mut state, &string_args(&[":all"]), false));
+    }
+
+    #[test]
+    fn no_feature_without_args_restores_default_bundle_and_reports_noop_when_unchanged() {
+        let mut state =
+            PragmaState { features: DEFAULT_FEATURES.to_vec(), ..PragmaState::default() };
+
+        assert!(!apply_feature_state(&mut state, &[], false));
+        assert_eq!(state.features, DEFAULT_FEATURES);
+
+        state.features.clear();
+        assert!(apply_feature_state(&mut state, &[], false));
+        assert_eq!(state.features, DEFAULT_FEATURES);
+    }
+
+    #[test]
+    fn unknown_feature_names_do_not_change_state() {
+        let mut state = PragmaState::default();
+
+        assert!(!apply_feature_state(&mut state, &string_args(&["not_a_feature"]), true));
+        assert!(state.features.is_empty());
+    }
+}
