@@ -31,7 +31,13 @@ fn quality_gate_summary_names_gates_receipts_and_repair_packets() -> TestResult 
     assert!(!output.status.success(), "fixture should fail so the summary includes repairs");
 
     let receipt: Value = serde_json::from_str(&fs::read_to_string(&paths.receipt)?)?;
-    let patch_action = next_action(&receipt, "patch_coverage_below_target")?;
+    let patch_action = receipt
+        .pointer("/next_actions/0")
+        .ok_or("quality gate receipt must include patch coverage repair action first")?;
+    assert_eq!(
+        patch_action.get("kind").and_then(Value::as_str),
+        Some("patch_coverage_below_target")
+    );
     assert_eq!(patch_action.get("file_scope").and_then(Value::as_str), Some("changed_files"));
     assert_eq!(
         patch_action.pointer("/top_files/0/path").and_then(Value::as_str),
@@ -92,36 +98,6 @@ fn pull_request_template_has_quality_gate_repair_packet_fields() -> TestResult {
     ] {
         assert!(template.contains(required), "PR template missing `{required}`");
     }
-
-    Ok(())
-}
-
-#[test]
-fn next_action_selects_requested_kind_and_rejects_missing_kind() -> TestResult {
-    let receipt = json!({
-        "next_actions": [
-            {
-                "kind": "project_coverage_below_target",
-                "path": "xtask/src/tasks/quality_gate.rs"
-            },
-            {
-                "kind": "patch_coverage_below_target",
-                "file_scope": "changed_files",
-                "path": "xtask/src/tasks/ripr_evidence.rs"
-            }
-        ]
-    });
-
-    let action = next_action(&receipt, "patch_coverage_below_target")?;
-    assert_eq!(action.get("file_scope").and_then(Value::as_str), Some("changed_files"));
-    assert_eq!(
-        action.get("path").and_then(Value::as_str),
-        Some("xtask/src/tasks/ripr_evidence.rs")
-    );
-    assert!(
-        next_action(&receipt, "new_ripr_gap").is_err(),
-        "missing action kind must fail instead of returning the wrong repair packet"
-    );
 
     Ok(())
 }
@@ -345,14 +321,4 @@ fn write_text(path: &Path, value: &str) -> TestResult {
 
 fn write_json(path: &Path, value: Value) -> TestResult {
     write_text(path, &serde_json::to_string_pretty(&value)?)
-}
-
-fn next_action<'a>(receipt: &'a Value, kind: &str) -> TestResult<&'a Value> {
-    receipt
-        .get("next_actions")
-        .and_then(Value::as_array)
-        .and_then(|actions| {
-            actions.iter().find(|action| action.get("kind").and_then(Value::as_str) == Some(kind))
-        })
-        .ok_or_else(|| format!("missing next action `{kind}`").into())
 }
