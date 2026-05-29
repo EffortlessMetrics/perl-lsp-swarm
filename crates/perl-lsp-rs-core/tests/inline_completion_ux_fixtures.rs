@@ -8,7 +8,7 @@ use std::error::Error;
 
 use lsp_types::Range;
 use perl_lsp_rs_core::providers::inline_completion::{
-    InlineCompletionList, InlineCompletionProvider,
+    InlineCompletionEnvironment, InlineCompletionList, InlineCompletionProvider,
 };
 use perl_parser_core::position::{offset_to_utf16_line_col, utf16_line_col_to_offset};
 
@@ -38,6 +38,18 @@ impl InlineCompletionScenario {
             self.text.as_str(),
             self.line,
             self.character,
+        )
+    }
+
+    fn completions_with_environment(
+        &self,
+        environment: &InlineCompletionEnvironment,
+    ) -> InlineCompletionList {
+        InlineCompletionProvider::new().get_inline_completions_with_environment(
+            self.text.as_str(),
+            self.line,
+            self.character,
+            environment,
         )
     }
 }
@@ -148,6 +160,148 @@ fn inline_completion_fixture_corpus_returns_expected_ghost_text() -> TestResult 
 
     for fixture in fixtures {
         assert_suggestions(fixture)?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_covers_language_construct_prompts() -> TestResult {
+    let fixtures = [
+        SuggestionFixture {
+            name: "empty_file_scaffold",
+            source: "<<CURSOR>>",
+            first: Some("#!/usr/bin/env perl\nuse strict;\nuse warnings;\n\n"),
+            expected: &["#!/usr/bin/env perl\nuse strict;\nuse warnings;\n\n"],
+            not_expected: &["done_testing();"],
+        },
+        SuggestionFixture {
+            name: "shebang_interpreter",
+            source: "#!<<CURSOR>>",
+            first: Some("/usr/bin/env perl"),
+            expected: &["/usr/bin/env perl"],
+            not_expected: &["strict;"],
+        },
+        SuggestionFixture {
+            name: "package_declaration",
+            source: "package <<CURSOR>>",
+            first: Some("MyPackage;\n\nuse strict;\nuse warnings;"),
+            expected: &["MyPackage;\n\nuse strict;\nuse warnings;"],
+            not_expected: &["strict;"],
+        },
+        SuggestionFixture {
+            name: "bless_arguments",
+            source: "sub new {\n    my $class = shift;\n    my $self = {};\n    bless <<CURSOR>>\n}\n",
+            first: Some("$self, $class;"),
+            expected: &["$self, $class;"],
+            not_expected: &["return $self;"],
+        },
+    ];
+
+    for fixture in fixtures {
+        assert_suggestions(fixture)?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_covers_semantic_statement_prompts() -> TestResult {
+    let fixtures = [
+        SuggestionFixture {
+            name: "guard_condition_prefers_booleanish_scalar",
+            source: "sub save {\n    my $result = compute();\n    my $is_ready = validate($result);\n    return unless <<CURSOR>>\n}\n",
+            first: Some("$is_ready;"),
+            expected: &["$is_ready;"],
+            not_expected: &["$result;"],
+        },
+        SuggestionFixture {
+            name: "loop_binding_singularizes_array_name",
+            source: "sub render {\n    my @children = @_;\n    for <<CURSOR>>\n}\n",
+            first: Some("my $child (@children) {\n    \n}"),
+            expected: &["my $child (@children) {\n    \n}"],
+            not_expected: &["my $item (@children) {\n    \n}"],
+        },
+        SuggestionFixture {
+            name: "loop_binding_uses_hash_key_name",
+            source: "sub render {\n    my %user_by_id = load_users();\n    foreach <<CURSOR>>\n}\n",
+            first: Some("my $id (keys %user_by_id) {\n    \n}"),
+            expected: &["my $id (keys %user_by_id) {\n    \n}"],
+            not_expected: &["my $item (%user_by_id) {\n    \n}"],
+        },
+        SuggestionFixture {
+            name: "test_more_ok_arguments_use_visible_actual",
+            source: "use Test::More;\n\nmy $success = run_case();\n\nok(<<CURSOR>>",
+            first: Some("$success, 'test description');"),
+            expected: &["$success, 'test description');"],
+            not_expected: &["done_testing();"],
+        },
+        SuggestionFixture {
+            name: "test_more_is_arguments_use_actual_and_want",
+            source: "use Test::More;\n\nmy $value = subject();\nmy $want = 7;\n\nis(<<CURSOR>>",
+            first: Some("$value, $want, 'test description');"),
+            expected: &["$value, $want, 'test description');"],
+            not_expected: &["$value, $value, 'test description');"],
+        },
+    ];
+
+    for fixture in fixtures {
+        assert_suggestions(fixture)?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_covers_project_and_receiver_facts() -> TestResult {
+    let module_scenario = InlineCompletionScenario::from_fixture("use My::<<CURSOR>>")?;
+    let environment = InlineCompletionEnvironment {
+        available_modules: vec![
+            "Other::Thing".to_string(),
+            "My::App".to_string(),
+            "My::App".to_string(),
+            "My::Util".to_string(),
+            String::new(),
+        ],
+    };
+    let module_completions = module_scenario.completions_with_environment(&environment);
+    let module_texts = completion_texts(&module_completions);
+
+    if module_texts.first().copied() != Some("My::App;") {
+        return Err(format!(
+            "available modules should rank sorted project modules first, got {module_texts:?}"
+        )
+        .into());
+    }
+    if !module_texts.contains(&"My::Util;") || module_texts.contains(&"Other::Thing;") {
+        return Err(format!(
+            "available modules should filter by typed module fragment, got {module_texts:?}"
+        )
+        .into());
+    }
+
+    let dbh_scenario = InlineCompletionScenario::from_fixture(
+        "use DBI;\nmy $dbh = DBI->connect($dsn);\n$dbh->pr<<CURSOR>>",
+    )?;
+    let dbh_completions = dbh_scenario.completions();
+    let dbh_texts = completion_texts(&dbh_completions);
+    if dbh_texts.first().copied() != Some("prepare()") || dbh_texts.contains(&"new()") {
+        return Err(format!(
+            "DBI database handles should suggest DBI methods before generic receivers, got {dbh_texts:?}"
+        )
+        .into());
+    }
+
+    let sth_scenario = InlineCompletionScenario::from_fixture(
+        "use DBI;\nmy $dbh = DBI->connect($dsn);\nmy $sth = $dbh->prepare($sql);\n$sth->fe<<CURSOR>>",
+    )?;
+    let sth_completions = sth_scenario.completions();
+    let sth_texts = completion_texts(&sth_completions);
+    if sth_texts.first().copied() != Some("fetchrow_hashref()") {
+        return Err(format!(
+            "DBI statement handles should suggest statement fetch methods first, got {sth_texts:?}"
+        )
+        .into());
     }
 
     Ok(())
