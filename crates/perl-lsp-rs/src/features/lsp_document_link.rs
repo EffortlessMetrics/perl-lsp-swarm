@@ -171,3 +171,108 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
 
     Ok(links)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::collect_document_links;
+    use anyhow::{Result, anyhow};
+    use lsp_types::Position;
+    use perl_tdd_support::must_some;
+    use std::path::Path;
+    use url::Url;
+
+    fn file_uri(path: &Path) -> Result<Url> {
+        Url::from_file_path(path)
+            .map_err(|()| anyhow!("could not build file URI for {}", path.display()))
+    }
+
+    #[test]
+    fn use_and_require_modules_link_to_metacpan() -> Result<()> {
+        let uri = file_uri(Path::new("/tmp/app/lib/App.pm"))?;
+        let text = "use Local::Thing;\nrequire Remote::Widget;\n";
+
+        let links = collect_document_links(text, &uri).map_err(anyhow::Error::msg)?;
+
+        assert_eq!(links.len(), 2);
+        let use_link = must_some(links.first());
+        assert_eq!(use_link.range.start, Position::new(0, 4));
+        assert_eq!(use_link.range.end, Position::new(0, 16));
+        assert_eq!(
+            use_link.target.as_ref().map(|uri| uri.as_str()),
+            Some("https://metacpan.org/pod/Local::Thing")
+        );
+        assert_eq!(use_link.tooltip.as_deref(), Some("Open Local::Thing on MetaCPAN"));
+
+        let require_link = must_some(links.get(1));
+        assert_eq!(require_link.range.start, Position::new(1, 8));
+        assert_eq!(require_link.range.end, Position::new(1, 22));
+        assert_eq!(
+            require_link.target.as_ref().map(|uri| uri.as_str()),
+            Some("https://metacpan.org/pod/Remote::Widget")
+        );
+        assert_eq!(require_link.tooltip.as_deref(), Some("Open Remote::Widget on MetaCPAN"));
+        Ok(())
+    }
+
+    #[test]
+    fn quoted_require_and_do_paths_resolve_relative_to_document() -> Result<()> {
+        let uri = file_uri(Path::new("/tmp/app/bin/script.pl"))?;
+        let text = "require '../lib/bootstrap.pl';\ndo \"../share/config.pl\";\n";
+
+        let links = collect_document_links(text, &uri).map_err(anyhow::Error::msg)?;
+
+        assert_eq!(links.len(), 2);
+        let require_link = must_some(links.first());
+        assert_eq!(require_link.range.start, Position::new(0, 9));
+        assert_eq!(require_link.range.end, Position::new(0, 28));
+        assert_eq!(
+            require_link.target.as_ref().map(|uri| uri.as_str()),
+            Some("file:///tmp/app/bin/../lib/bootstrap.pl")
+        );
+
+        let do_link = must_some(links.get(1));
+        assert_eq!(do_link.range.start, Position::new(1, 4));
+        assert_eq!(do_link.range.end, Position::new(1, 22));
+        assert_eq!(
+            do_link.target.as_ref().map(|uri| uri.as_str()),
+            Some("file:///tmp/app/bin/../share/config.pl")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn link_ranges_use_utf16_columns_after_wide_characters() -> Result<()> {
+        let uri = file_uri(Path::new("/tmp/app/lib/App.pm"))?;
+        let text = "my $x = '🚀'; use Wide::Module;\n";
+
+        let links = collect_document_links(text, &uri).map_err(anyhow::Error::msg)?;
+
+        assert_eq!(links.len(), 1);
+        let code_link = must_some(links.first());
+        assert_eq!(code_link.range.start, Position::new(0, 18));
+        assert_eq!(code_link.range.end, Position::new(0, 30));
+        assert_eq!(
+            code_link.target.as_ref().map(|uri| uri.as_str()),
+            Some("https://metacpan.org/pod/Wide::Module")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn quoted_module_like_require_is_treated_as_file_path() -> Result<()> {
+        let uri = file_uri(Path::new("/tmp/app/script.pl"))?;
+        let text = "require 'Local::Thing';\n";
+
+        let links = collect_document_links(text, &uri).map_err(anyhow::Error::msg)?;
+
+        assert_eq!(links.len(), 1);
+        let link = must_some(links.first());
+        assert_eq!(link.range.start, Position::new(0, 9));
+        assert_eq!(link.range.end, Position::new(0, 21));
+        assert_eq!(
+            link.target.as_ref().map(|uri| uri.as_str()),
+            Some("file:///tmp/app/Local::Thing")
+        );
+        Ok(())
+    }
+}
