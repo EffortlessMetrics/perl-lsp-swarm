@@ -325,7 +325,7 @@ impl TestRunner {
     #[allow(dead_code)]
     fn visit_children_for_tests(&self, node: &Node, tests: &mut Vec<TestItem>) {
         match &node.kind {
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
                 self.visit_node_for_tests(condition, tests);
                 self.visit_node_for_tests(then_branch, tests);
                 for (cond, body) in elsif_branches {
