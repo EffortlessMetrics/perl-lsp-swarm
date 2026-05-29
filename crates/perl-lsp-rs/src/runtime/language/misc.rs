@@ -1065,6 +1065,10 @@ impl LspServer {
                 let mut inline_values = Vec::new();
 
                 let lines: Vec<&str> = doc.text.lines().collect();
+                if lines.is_empty() {
+                    return Ok(Some(json!([])));
+                }
+
                 let Some(re) = inline_value_regex() else {
                     return Ok(Some(json!([])));
                 };
