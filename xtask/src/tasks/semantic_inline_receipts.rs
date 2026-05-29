@@ -320,14 +320,25 @@ mod tests {
 
         assert!(receipt.all_required_capabilities_registered);
         assert_eq!(receipt.required_capability_count, REQUIRED_SEMANTIC_INLINE_RECEIPTS.len());
-        assert_eq!(
-            receipt.semantic_inline.get("project_module_import").map(|entry| entry.workflow_id),
-            Some("real_workspace_module_import_inline_completion_quality")
-        );
-        assert_eq!(
-            receipt.semantic_inline.get("selected_completion").map(|entry| entry.workflow_id),
-            Some("mojolicious_inline_completion_quality")
-        );
+        for requirement in REQUIRED_SEMANTIC_INLINE_RECEIPTS {
+            let entry = receipt.semantic_inline.get(requirement.capability).ok_or_else(|| {
+                eyre!("missing semantic inline capability {}", requirement.capability)
+            })?;
+            assert_eq!(entry.status, "registered");
+            assert_eq!(entry.workflow_id, requirement.workflow_id);
+            assert_eq!(
+                entry.scenario_file,
+                format!("ux_scenario_{}_inline_completion_quality.rs", requirement.workflow_id)
+            );
+            assert_eq!(
+                entry.user_journey,
+                format!("exercise {} inline completion", requirement.workflow_id)
+            );
+            assert_eq!(
+                entry.expected_outcomes,
+                vec!["inline completion behavior remains covered".to_string()]
+            );
+        }
         assert_eq!(receipt.future_gated.get("next_edit"), Some(&"future_gated"));
         assert_eq!(receipt.future_gated.get("optional_ai_candidate_source"), Some(&"future_gated"));
         Ok(())
