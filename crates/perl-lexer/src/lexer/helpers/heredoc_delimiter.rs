@@ -34,3 +34,52 @@ impl PerlLexer<'_> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_quoted_heredoc_delimiter_collects_text_and_delimiter()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut lexer = PerlLexer::new("'TAG'\nbody");
+        let mut text = String::from("<<");
+
+        let delimiter = lexer
+            .parse_quoted_heredoc_delimiter('\'', &mut text)
+            .ok_or("Expected quoted heredoc delimiter")?;
+
+        assert_eq!(delimiter, "TAG");
+        assert_eq!(text, "<<'TAG'");
+        assert_eq!(lexer.current_char(), Some('\n'));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_quoted_heredoc_delimiter_rejects_newline_before_closing_quote()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut lexer = PerlLexer::new("'TAG\n");
+        let mut text = String::from("<<");
+
+        let delimiter = lexer.parse_quoted_heredoc_delimiter('\'', &mut text);
+
+        assert_eq!(delimiter, None);
+        assert_eq!(text, "<<'TAG");
+        assert_eq!(lexer.current_char(), Some('\n'));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_quoted_heredoc_delimiter_rejects_eof_before_closing_quote()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut lexer = PerlLexer::new("\"TAG");
+        let mut text = String::from("<<");
+
+        let delimiter = lexer.parse_quoted_heredoc_delimiter('"', &mut text);
+
+        assert_eq!(delimiter, None);
+        assert_eq!(text, "<<\"TAG");
+        assert_eq!(lexer.current_char(), None);
+        Ok(())
+    }
+}
