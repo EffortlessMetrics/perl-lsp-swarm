@@ -581,6 +581,30 @@ fn scenarios() -> &'static [Scenario] {
             },
         },
         Scenario {
+            name: "guard_condition_prefers_boolean_named_visible_scalar",
+            source_name: "syntax",
+            source: "my $result = compute();\nmy $is_valid = validate($result);\nreturn unless <<CURSOR>>",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Suggestion {
+                first: Some("$is_valid;"),
+                expected: &["$is_valid;"],
+                not_expected: &["$result;"],
+            },
+        },
+        Scenario {
+            name: "guard_condition_prefers_skip_flag_over_receiver",
+            source_name: "syntax",
+            source: "for my $user (@users) {\n    my $should_skip = should_skip_user($user);\n    next if <<CURSOR>>\n}",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Suggestion {
+                first: Some("$should_skip;"),
+                expected: &["$should_skip;"],
+                not_expected: &["$user;"],
+            },
+        },
+        Scenario {
             name: "self_receiver_prefers_current_package_methods",
             source_name: "receiver",
             source: "package Other;\nsub external {}\n\npackage Demo;\nsub save {}\nsub display_name {}\nsub caller {\n    my $self = shift;\n    $self-><<CURSOR>>\n}\n",
