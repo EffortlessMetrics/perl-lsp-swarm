@@ -123,7 +123,7 @@ mod tests {
     use std::io::Write;
     use std::sync::Arc;
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -143,21 +143,6 @@ mod tests {
                 messages.push(serde_json::from_slice::<Value>(&body)?);
             }
             Ok(messages)
-        }
-
-        fn messages_containing_method(&self, method: &str) -> TestResult<Vec<Value>> {
-            let deadline = Instant::now() + Duration::from_secs(1);
-            loop {
-                let messages = self.messages()?;
-                if messages
-                    .iter()
-                    .any(|message| message.get("method").and_then(Value::as_str) == Some(method))
-                    || Instant::now() >= deadline
-                {
-                    return Ok(messages);
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
         }
     }
 
@@ -181,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn request_apply_workspace_edit_with_metadata_sends_metadata_when_supported() -> TestResult {
+    fn request_apply_workspace_edit_with_metadata_call_presence_observer() -> TestResult {
         let (server, output) = server_with_output_capture();
         {
             let mut caps = server.client_capabilities.lock();
@@ -199,7 +184,8 @@ mod tests {
             "metadata-capable clients should receive workspace/applyEdit"
         );
 
-        let messages = output.messages_containing_method(WORKSPACE_APPLY_EDIT)?;
+        thread::sleep(Duration::from_millis(50));
+        let messages = output.messages()?;
         let request = messages
             .iter()
             .find(|message| {
@@ -222,8 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn request_apply_workspace_edit_with_metadata_returns_none_without_apply_edit_or_metadata_support()
-    -> TestResult {
+    fn request_apply_workspace_edit_with_metadata_boundary_discriminator() -> TestResult {
         let (server, output) = server_with_output_capture();
         server.client_capabilities.lock().workspace_apply_edit_support = true;
         let request_id = server.request_apply_workspace_edit_with_metadata(
@@ -254,6 +239,33 @@ mod tests {
         assert!(
             output.messages()?.is_empty(),
             "no workspace/applyEdit request should be emitted without workspace.applyEdit"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn request_apply_workspace_edit_with_metadata_return_value_discriminator() -> TestResult {
+        let (server, _) = server_with_output_capture();
+        let request_id = server.request_apply_workspace_edit_with_metadata(
+            "Safe delete reset",
+            json!({"changes": {"file:///workspace/main.pl": []}}),
+            true,
+        )?;
+        assert!(request_id.is_none(), "the unsupported-client boundary returns Ok(None)");
+
+        {
+            let mut caps = server.client_capabilities.lock();
+            caps.workspace_apply_edit_support = true;
+            caps.workspace_edit_metadata_support = true;
+        }
+        let request_id = server.request_apply_workspace_edit_with_metadata(
+            "Safe delete reset",
+            json!({"changes": {"file:///workspace/main.pl": []}}),
+            true,
+        )?;
+        assert!(
+            request_id.is_some(),
+            "the supported-client boundary returns Some server request id"
         );
         Ok(())
     }
