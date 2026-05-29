@@ -253,3 +253,44 @@ mod normalize_uri_relative_path {
         assert!(result.contains("bar"), "lost payload: {result}");
     }
 }
+
+// ── classify::uri_key localhost query/fragment and drive-root branches ──
+
+mod uri_key_authority_and_drive_root_edges {
+    use perl_uri::uri_key;
+
+    #[test]
+    fn localhost_file_uri_keeps_query_and_fragment_when_authority_is_removed() {
+        let keyed = uri_key("file://localhost/tmp/module.pm?cache=warm#L12");
+        assert_eq!(keyed, "file:///tmp/module.pm?cache=warm#L12");
+    }
+
+    #[test]
+    fn loopback_file_uri_keeps_fragment_when_authority_is_removed() {
+        let keyed = uri_key("file://127.0.0.1/tmp/module.pm#symbol");
+        assert_eq!(keyed, "file:///tmp/module.pm#symbol");
+    }
+
+    #[test]
+    fn bare_windows_drive_root_normalizes_to_canonical_file_key() {
+        assert_eq!(uri_key(r"C:\"), "file:///c:/");
+        assert_eq!(uri_key("D:/"), "file:///d:/");
+    }
+}
+
+// ── fs::uri_to_fs_path invalid-URL legacy Windows fallback branch ──
+
+#[cfg(not(target_arch = "wasm32"))]
+mod uri_to_fs_path_legacy_parse_fallback_edges {
+    use perl_uri::uri_to_fs_path;
+
+    #[test]
+    fn legacy_drive_pipe_path_is_normalized_after_url_parse_rejects_it() -> Result<(), String> {
+        let path = uri_to_fs_path(r"C|\tmp\legacy.pm").ok_or("expected legacy path")?;
+        let display = path.to_string_lossy();
+        if !display.contains("legacy.pm") {
+            return Err(format!("legacy filename missing from {display}"));
+        }
+        Ok(())
+    }
+}
