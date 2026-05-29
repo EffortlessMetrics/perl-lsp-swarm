@@ -4707,6 +4707,63 @@ mod tests {
     }
 
     #[test]
+    fn candidate_metadata_tiebreak_ranks_are_stable() -> Result<(), Box<dyn std::error::Error>> {
+        let source_ranks: Vec<_> = [
+            InlineCandidateSourceKind::Receiver,
+            InlineCandidateSourceKind::Module,
+            InlineCandidateSourceKind::Syntax,
+            InlineCandidateSourceKind::Test,
+            InlineCandidateSourceKind::Shebang,
+            InlineCandidateSourceKind::ContextualFallback,
+        ]
+        .into_iter()
+        .map(|source| source.stable_rank())
+        .collect();
+        assert_eq!(source_ranks, vec![0, 1, 2, 3, 4, 5]);
+
+        let reason_ranks: Vec<_> = [
+            InlineCandidateReason::CurrentPackageMethod,
+            InlineCandidateReason::DbiReceiverMethod,
+            InlineCandidateReason::EffectiveIncModule,
+            InlineCandidateReason::VisibleLexical,
+            InlineCandidateReason::SourceReceiver,
+            InlineCandidateReason::SourceModule,
+            InlineCandidateReason::SourceSyntax,
+            InlineCandidateReason::SourceTest,
+            InlineCandidateReason::SourceShebang,
+            InlineCandidateReason::SourceContextualFallback,
+        ]
+        .into_iter()
+        .map(|reason| reason.stable_rank())
+        .collect();
+        assert_eq!(reason_ranks, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        let confidence_ranks: Vec<_> = [
+            InlineCandidateConfidence::High,
+            InlineCandidateConfidence::Medium,
+            InlineCandidateConfidence::Low,
+        ]
+        .into_iter()
+        .map(|confidence| confidence.stable_rank())
+        .collect();
+        assert_eq!(confidence_ranks, vec![0, 1, 2]);
+
+        let high_confidence = InlineCandidateMetadata {
+            source: InlineCandidateSourceKind::Receiver,
+            reason: InlineCandidateReason::CurrentPackageMethod,
+            confidence: InlineCandidateConfidence::High,
+        };
+        let low_confidence = InlineCandidateMetadata {
+            source: InlineCandidateSourceKind::ContextualFallback,
+            reason: InlineCandidateReason::SourceContextualFallback,
+            confidence: InlineCandidateConfidence::Low,
+        };
+        assert!(high_confidence.stable_tiebreak() < low_confidence.stable_tiebreak());
+
+        Ok(())
+    }
+
+    #[test]
     fn test_normalize_items_orders_deduplicates_and_limits() {
         let provider = InlineCompletionProvider::new();
         let items = vec![
@@ -4797,6 +4854,51 @@ mod tests {
         assert_eq!(normalized[2].insert_text, "late");
         assert_eq!(normalized[3].insert_text, "third");
         assert_eq!(normalized[4].insert_text, "fourth");
+    }
+
+    #[test]
+    fn test_normalize_items_uses_metadata_tiebreak_after_score_and_sequence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let items = vec![
+            RankedCompletionItem {
+                score: InlineCandidateScore::from_legacy_priority(0),
+                order: 0,
+                metadata: InlineCandidateMetadata {
+                    source: InlineCandidateSourceKind::ContextualFallback,
+                    reason: InlineCandidateReason::SourceContextualFallback,
+                    confidence: InlineCandidateConfidence::Low,
+                },
+                item: InlineCompletionItem {
+                    insert_text: "fallback".into(),
+                    filter_text: None,
+                    range: None,
+                    command: None,
+                },
+            },
+            RankedCompletionItem {
+                score: InlineCandidateScore::from_legacy_priority(0),
+                order: 0,
+                metadata: InlineCandidateMetadata {
+                    source: InlineCandidateSourceKind::Receiver,
+                    reason: InlineCandidateReason::CurrentPackageMethod,
+                    confidence: InlineCandidateConfidence::High,
+                },
+                item: InlineCompletionItem {
+                    insert_text: "save()".into(),
+                    filter_text: None,
+                    range: None,
+                    command: None,
+                },
+            },
+        ];
+
+        let normalized = provider.normalize_items(items);
+
+        assert_eq!(normalized[0].insert_text, "save()");
+        assert_eq!(normalized[1].insert_text, "fallback");
+
+        Ok(())
     }
 
     #[test]
