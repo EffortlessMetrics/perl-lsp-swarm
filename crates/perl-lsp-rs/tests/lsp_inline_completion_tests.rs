@@ -14,7 +14,7 @@ fn setup_server() -> Result<LspServer, Box<dyn std::error::Error>> {
             "processId": 1,
             "capabilities": {}
         })),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer((1) as i64)),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
     };
 
     server.handle_request(init_request);
@@ -56,7 +56,7 @@ fn inline_completion(
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let request = JsonRpcRequest {
         _jsonrpc: "2.0".into(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer((1) as i64)),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
         method: "textDocument/inlineCompletion".into(),
         params: Some(json!({
             "textDocument": { "uri": uri },
@@ -65,6 +65,21 @@ fn inline_completion(
     };
     let response = server.handle_request(request).ok_or("inline completion response")?;
     response.result.ok_or("result field present".into())
+}
+
+fn insert_texts(items: &[serde_json::Value]) -> Result<Vec<&str>, Box<dyn std::error::Error>> {
+    items
+        .iter()
+        .map(|item| item["insertText"].as_str().ok_or("insertText not a string"))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn find_item_by_insert_text<'a>(
+    items: &'a [serde_json::Value],
+    insert_text: &str,
+) -> Option<&'a serde_json::Value> {
+    items.iter().find(|item| item["insertText"].as_str() == Some(insert_text))
 }
 
 #[test]
@@ -290,5 +305,100 @@ fn test_inline_completion_after_comment_keeps_contextual_suggestions()
     assert!(items.iter().any(|item| {
         item["insertText"].as_str().map(|text| text == "return $result;").unwrap_or(false)
     }));
+    Ok(())
+}
+
+#[test]
+fn test_inline_completion_use_fragment_adds_replacement_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///partial-use.pl";
+    open_doc(&server, uri, "use war");
+
+    let character = "use war".encode_utf16().count() as u32;
+    let result = inline_completion(&server, uri, 0, character)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+    let item = find_item_by_insert_text(items, "warnings;")
+        .ok_or("expected warnings completion for partial use fragment")?;
+    let range = item["range"].as_object().ok_or("range object")?;
+
+    assert_eq!(range["start"]["line"].as_u64(), Some(0));
+    assert_eq!(range["start"]["character"].as_u64(), Some(4));
+    assert_eq!(range["end"]["line"].as_u64(), Some(0));
+    assert_eq!(range["end"]["character"].as_u64(), Some(u64::from(character)));
+    assert_eq!(item["filterText"].as_str(), Some("warnings"));
+    Ok(())
+}
+
+#[test]
+fn test_inline_completion_method_fragment_adds_replacement_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///partial-method.pl";
+    let text = "my $obj = Package->ne";
+    open_doc(&server, uri, text);
+
+    let character = text.encode_utf16().count() as u32;
+    let result = inline_completion(&server, uri, 0, character)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+    let item = find_item_by_insert_text(items, "new()")
+        .ok_or("expected new() completion for partial method fragment")?;
+    let range = item["range"].as_object().ok_or("range object")?;
+
+    assert_eq!(range["start"]["line"].as_u64(), Some(0));
+    assert_eq!(
+        range["start"]["character"].as_u64(),
+        Some("my $obj = Package->".encode_utf16().count() as u64)
+    );
+    assert_eq!(range["end"]["line"].as_u64(), Some(0));
+    assert_eq!(range["end"]["character"].as_u64(), Some(u64::from(character)));
+    Ok(())
+}
+
+#[test]
+fn test_inline_completion_rejects_line_comment_context() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///comment.pl";
+    let text = "# Package->";
+    open_doc(&server, uri, text);
+
+    let character = text.encode_utf16().count() as u32;
+    let result = inline_completion(&server, uri, 0, character)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+
+    assert!(items.is_empty(), "comments must not receive inline completions");
+    Ok(())
+}
+
+#[test]
+fn test_inline_completion_rejects_string_literal_context() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = setup_server()?;
+    let uri = "file:///string.pl";
+    let text = r#"my $value = "Package->";"#;
+    open_doc(&server, uri, text);
+
+    let character = r#"my $value = "Package->"#.encode_utf16().count() as u32;
+    let result = inline_completion(&server, uri, 0, character)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+
+    assert!(items.is_empty(), "strings must not receive inline completions");
+    Ok(())
+}
+
+#[test]
+fn test_inline_completion_crlf_multiline_positions() -> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///crlf.pl";
+    let text = "use strict;\r\nmy $obj = Package->";
+    open_doc(&server, uri, text);
+
+    let second_line = "my $obj = Package->";
+    let character = second_line.encode_utf16().count() as u32;
+    let result = inline_completion(&server, uri, 1, character)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+    let inserts = insert_texts(items)?;
+
+    assert_eq!(inserts.first().copied(), Some("new()"));
     Ok(())
 }
