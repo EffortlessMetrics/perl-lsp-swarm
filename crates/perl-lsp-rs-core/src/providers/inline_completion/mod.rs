@@ -78,6 +78,8 @@ pub(crate) enum ExpectedSyntax {
     ReturnExpression,
     GuardCondition,
     LoopBinding,
+    ConditionExpression,
+    DeclarationInitializer,
     TestAssertionArguments,
     ShebangInterpreter,
     SubroutineBody,
@@ -589,7 +591,9 @@ fn syntax_candidate_reason(context: &SemanticInlineContext) -> InlineCandidateRe
     match context.expected_syntax {
         ExpectedSyntax::ReturnExpression
         | ExpectedSyntax::GuardCondition
-        | ExpectedSyntax::LoopBinding => InlineCandidateReason::VisibleLexical,
+        | ExpectedSyntax::LoopBinding
+        | ExpectedSyntax::ConditionExpression
+        | ExpectedSyntax::DeclarationInitializer => InlineCandidateReason::VisibleLexical,
         _ => InlineCandidateReason::SourceSyntax,
     }
 }
@@ -656,6 +660,12 @@ fn syntax_candidate_bonus(item: &InlineCompletionItem, context: &SemanticInlineC
         {
             20
         }
+        ExpectedSyntax::ConditionExpression
+            if item.insert_text.contains(") {") || item.insert_text.contains(") {\n") =>
+        {
+            20
+        }
+        ExpectedSyntax::DeclarationInitializer if item.insert_text.ends_with(';') => 18,
         ExpectedSyntax::LexicalVariableName
             if item.insert_text.starts_with("self =")
                 && context.visible_variables.iter().any(VariableFact::is_scalar_self) =>
@@ -1405,6 +1415,12 @@ impl InlineCompletionProvider {
         if ends_with_keyword(prefix, "return ") {
             return ExpectedSyntax::ReturnExpression;
         }
+        if declaration_initializer_from_prefix(prefix).is_some() {
+            return ExpectedSyntax::DeclarationInitializer;
+        }
+        if condition_expression_keyword(prefix).is_some() {
+            return ExpectedSyntax::ConditionExpression;
+        }
         if is_guard_condition_prefix(prefix) {
             return ExpectedSyntax::GuardCondition;
         }
@@ -1620,6 +1636,53 @@ impl InlineCompletionProvider {
             .iter()
             .find(|variable| variable.is_scalar() && !variable.is_scalar_self())
             .map(VariableFact::as_perl_variable)
+    }
+
+    fn preferred_condition_expression(&self, context: &SemanticInlineContext) -> Option<String> {
+        context
+            .visible_variables
+            .iter()
+            .find(|variable| {
+                variable.is_scalar()
+                    && !variable.is_scalar_self()
+                    && is_preferred_guard_condition_name(variable.name.as_str())
+            })
+            .or_else(|| {
+                context
+                    .visible_variables
+                    .iter()
+                    .find(|variable| variable.is_scalar() && !variable.is_scalar_self())
+            })
+            .map(VariableFact::as_perl_variable)
+    }
+
+    fn preferred_declaration_initializers(
+        &self,
+        declared: &VariableFact,
+        context: &SemanticInlineContext,
+    ) -> Vec<InlineCompletionItem> {
+        let candidates: &[(&str, &str)] = match declared.sigil {
+            VariableSigil::Scalar
+                if matches!(context.lexical_scope, InlineLexicalScope::Subroutine(_)) =>
+            {
+                &[("shift;", "shift"), ("undef;", "undef"), ("0;", "0")]
+            }
+            VariableSigil::Scalar => &[("undef;", "undef"), ("0;", "0"), ("'';", "string")],
+            VariableSigil::Array => &[("();", "empty list"), ("qw();", "qw"), ("sort @_;", "sort")],
+            VariableSigil::Hash => {
+                &[("();", "empty hash"), ("%args;", "args"), ("map { $_ => 1 } @_;", "map")]
+            }
+        };
+
+        candidates
+            .iter()
+            .map(|(insert_text, filter_text)| InlineCompletionItem {
+                insert_text: (*insert_text).to_string(),
+                filter_text: Some((*filter_text).to_string()),
+                range: None,
+                command: None,
+            })
+            .collect()
     }
 
     fn preferred_loop_binding(&self, context: &SemanticInlineContext) -> Option<String> {
@@ -1964,6 +2027,33 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
+        if condition_expression_keyword(prefix).is_some()
+            && let Some(condition) = provider.preferred_condition_expression(semantic_context)
+        {
+            let insert_text = format!("{condition}) {{\n    \n}}");
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text,
+                    filter_text: Some(condition),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if let Some(declared) = declaration_initializer_from_prefix(prefix) {
+            for (priority, item) in provider
+                .preferred_declaration_initializers(&declared, semantic_context)
+                .into_iter()
+                .enumerate()
+            {
+                let priority = u8::try_from(priority).unwrap_or(u8::MAX);
+                sink.push(Self::SOURCE, priority, item);
+            }
+        }
+
         if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
             if let Some(binding) = provider.preferred_loop_binding(semantic_context) {
                 sink.push(
@@ -2089,6 +2179,39 @@ fn is_guard_condition_prefix(prefix: &str) -> bool {
         || ends_with_keyword(prefix, "return if ")
         || ends_with_keyword(prefix, "next if ")
         || ends_with_keyword(prefix, "last if ")
+}
+
+fn condition_expression_keyword(prefix: &str) -> Option<&'static str> {
+    if ends_with_keyword(prefix, "if (") {
+        return Some("if");
+    }
+    if ends_with_keyword(prefix, "unless (") {
+        return Some("unless");
+    }
+    if ends_with_keyword(prefix, "while (") {
+        return Some("while");
+    }
+    None
+}
+
+fn declaration_initializer_from_prefix(prefix: &str) -> Option<VariableFact> {
+    let trimmed = prefix.trim_end();
+    let before_equals = trimmed.strip_suffix('=')?.trim_end();
+    let variable_start = before_equals
+        .char_indices()
+        .rev()
+        .find_map(|(idx, ch)| (!is_replacement_fragment_char(ch)).then_some(idx + ch.len_utf8()))
+        .unwrap_or(0);
+    let variable = &before_equals[variable_start..];
+    let declaration_prefix = before_equals[..variable_start].trim_end();
+    if !matches!(
+        declaration_prefix.split_whitespace().next_back(),
+        Some("my" | "our" | "state" | "local")
+    ) {
+        return None;
+    }
+
+    VariableFact::from_perl_variable(variable)
 }
 
 fn test_statement_filter_text(statement: &str) -> &'static str {
@@ -3314,6 +3437,43 @@ mod tests {
     }
 
     #[test]
+    fn declaration_initializer_in_sub_prefers_shift() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $value = \n}";
+        let completions = provider.get_inline_completions(source, 1, 16);
+
+        let first = completions.items.first().ok_or("expected declaration initializer")?;
+        assert_eq!(first.insert_text, "shift;");
+        assert!(completions.items.iter().any(|item| item.insert_text == "undef;"));
+        Ok(())
+    }
+
+    #[test]
+    fn array_declaration_initializer_suggests_list_shapes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("my @items = ", 0, 12);
+
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+        assert_eq!(insert_texts.first(), Some(&"();"));
+        assert!(insert_texts.contains(&"qw();"));
+        Ok(())
+    }
+
+    #[test]
+    fn condition_expression_uses_visible_boolean_scalar() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $is_ready = probe();\nif (";
+        let completions = provider.get_inline_completions(source, 1, 4);
+
+        let first = completions.items.first().ok_or("expected condition completion")?;
+        assert_eq!(first.insert_text, "$is_ready) {\n    \n}");
+        Ok(())
+    }
+
+    #[test]
     fn test_shebang_completion() {
         let provider = InlineCompletionProvider::new();
         let completions = provider.get_inline_completions("#!/", 0, 3);
@@ -3747,6 +3907,8 @@ mod tests {
             ("package ", ExpectedSyntax::PackageName),
             ("bless ", ExpectedSyntax::BlessArguments),
             ("return ", ExpectedSyntax::ReturnExpression),
+            ("if (", ExpectedSyntax::ConditionExpression),
+            ("my $result = ", ExpectedSyntax::DeclarationInitializer),
             ("for ", ExpectedSyntax::LoopBinding),
             ("ok(", ExpectedSyntax::TestAssertionArguments),
             ("is(", ExpectedSyntax::TestAssertionArguments),
