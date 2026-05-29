@@ -79,6 +79,7 @@ pub(crate) enum ExpectedSyntax {
     GuardCondition,
     LoopBinding,
     TestAssertionArguments,
+    ControlCondition,
     ShebangInterpreter,
     SubroutineBody,
     Unknown,
@@ -664,7 +665,8 @@ fn syntax_candidate_bonus(item: &InlineCompletionItem, context: &SemanticInlineC
         }
         ExpectedSyntax::PackageName
         | ExpectedSyntax::BlessArguments
-        | ExpectedSyntax::LoopBinding => 15,
+        | ExpectedSyntax::LoopBinding
+        | ExpectedSyntax::ControlCondition => 15,
         ExpectedSyntax::SubroutineBody if item.insert_text.starts_with(" {") => 15,
         _ => 0,
     }
@@ -1414,6 +1416,9 @@ impl InlineCompletionProvider {
         if ends_with_keyword(prefix, "ok(") || ends_with_keyword(prefix, "is(") {
             return ExpectedSyntax::TestAssertionArguments;
         }
+        if is_control_condition_prefix(prefix) {
+            return ExpectedSyntax::ControlCondition;
+        }
         if prefix == "#!" || prefix == "#!/" {
             return ExpectedSyntax::ShebangInterpreter;
         }
@@ -1964,6 +1969,21 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
+        if is_control_condition_prefix(prefix)
+            && let Some(condition) = provider.preferred_guard_condition(semantic_context)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: control_condition_insert_text(prefix, condition.as_str()),
+                    filter_text: Some(condition),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
         if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
             if let Some(binding) = provider.preferred_loop_binding(semantic_context) {
                 sink.push(
@@ -2090,6 +2110,23 @@ fn is_guard_condition_prefix(prefix: &str) -> bool {
         || ends_with_keyword(prefix, "next if ")
         || ends_with_keyword(prefix, "last if ")
 }
+
+fn is_control_condition_prefix(prefix: &str) -> bool {
+    CONTROL_CONDITION_KEYWORDS.iter().any(|keyword| {
+        ends_with_keyword(prefix, &format!("{keyword} "))
+            || ends_with_keyword(prefix, &format!("{keyword} ("))
+    })
+}
+
+fn control_condition_insert_text(prefix: &str, condition: &str) -> String {
+    if prefix.ends_with('(') {
+        format!("{condition}) {{\n    \n}}")
+    } else {
+        format!("({condition}) {{\n    \n}}")
+    }
+}
+
+const CONTROL_CONDITION_KEYWORDS: &[&str] = &["if", "elsif", "unless", "while"];
 
 fn test_statement_filter_text(statement: &str) -> &'static str {
     if statement.starts_with("ok(") { "ok" } else { "is" }
@@ -4456,6 +4493,41 @@ mod tests {
         let provider = InlineCompletionProvider::new();
         let completions = provider.get_inline_completions("sufor ", 0, 6);
         assert!(completions.items.iter().all(|i| !i.insert_text.contains("(@items)")));
+    }
+
+    #[test]
+    fn if_condition_uses_visible_boolean_scalar() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $is_ready = check_ready();\nif ";
+        let completions = provider.get_inline_completions(source, 1, 3);
+        let first = completions.items.first().ok_or("expected if condition completion")?;
+
+        assert_eq!(first.insert_text, "($is_ready) {\n    \n}");
+        Ok(())
+    }
+
+    #[test]
+    fn while_open_paren_condition_closes_existing_paren() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $ok = keep_going();\nwhile (";
+        let completions = provider.get_inline_completions(source, 1, 7);
+        let first = completions.items.first().ok_or("expected while condition completion")?;
+
+        assert_eq!(first.insert_text, "$ok) {\n    \n}");
+        Ok(())
+    }
+
+    #[test]
+    fn control_condition_without_visible_scalar_stays_silent() {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("if ", 0, 3);
+
+        assert!(
+            completions.items.is_empty(),
+            "control conditions should not invent placeholder variables: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
     }
 
     #[test]
