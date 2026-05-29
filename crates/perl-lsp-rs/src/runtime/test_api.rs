@@ -497,6 +497,22 @@ impl LspServer {
         cfg.ai_completion.fallback = fallback;
     }
 
+    /// Configure AI completion provider directly for test purposes.
+    pub fn test_configure_ai_completion_provider(
+        &self,
+        enabled: bool,
+        fallback: bool,
+        provider: &str,
+    ) {
+        {
+            let mut cfg = self.config.lock();
+            cfg.ai_completion.enabled = enabled;
+            cfg.ai_completion.fallback = fallback;
+            cfg.ai_completion.provider = provider.to_string();
+        }
+        self.refresh_ai_backend();
+    }
+
     /// Test-only entrypoint for LSP `textDocument/semanticTokens/full`.
     ///
     /// Exercises semantic token generation in tests. Returns the full semantic

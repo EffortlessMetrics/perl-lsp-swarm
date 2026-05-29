@@ -12,6 +12,7 @@
 //! 6. AI enabled, no backend registered, fallback=true -- deterministic fallback
 //! 7. AI enabled, no backend registered, fallback=false -- empty result
 //! 8. AI enabled, backend errors, fallback=true -- deterministic fallback
+//! 9. AI enabled with the local provider -- request-local model completions returned
 //!
 //! Requires the `expose_lsp_test_api` feature to access `LspServer::test_*`
 //! methods.
@@ -39,7 +40,7 @@ fn setup_server() -> Result<LspServer, Box<dyn std::error::Error>> {
             "processId": 1,
             "capabilities": {}
         })),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer((1) as i64)),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
     };
     server.handle_request(init_request);
 
@@ -79,7 +80,7 @@ fn inline_completion(
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let request = JsonRpcRequest {
         _jsonrpc: "2.0".into(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer((1) as i64)),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
         method: "textDocument/inlineCompletion".into(),
         params: Some(json!({
             "textDocument": { "uri": uri },
@@ -362,5 +363,35 @@ fn test_ai_provider_error_with_fallback_returns_deterministic()
         texts.contains(&"strict;"),
         "expected deterministic 'strict;' on provider error fallback, got: {texts:?}",
     );
+    Ok(())
+}
+
+/// Local provider needs no remote API key and should still satisfy the same
+/// inline completion backend path used by remote providers.
+#[test]
+fn test_local_ai_provider_returns_visible_return_variable() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = setup_server()?;
+    server.test_configure_ai_completion_provider(true, false, "local");
+
+    let uri = "file:///test_local_ai.pl";
+    let text = "use strict;
+sub answer {
+    my $answer = compute_answer();
+    return 
+}
+";
+    open_doc(&server, uri, text);
+
+    let result = inline_completion(&server, uri, 3, 11)?;
+    let items =
+        result.get("items").and_then(serde_json::Value::as_array).ok_or("items array present")?;
+    let insert_text = items
+        .first()
+        .and_then(|item| item.get("insertText"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or("first insertText present")?;
+
+    assert_eq!(insert_text, "$answer;");
     Ok(())
 }

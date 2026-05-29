@@ -164,13 +164,13 @@ pub struct ServerConfig {
 pub struct AiCompletionConfig {
     /// Whether AI completions are enabled. Default: false.
     pub enabled: bool,
-    /// Provider type. Currently only "openai_compat" is supported.
+    /// Provider type. Supports "openai_compat" and local providers such as "local".
     pub provider: String,
-    /// API endpoint URL.
+    /// API endpoint URL for OpenAI-compatible providers.
     pub endpoint: String,
     /// Model identifier (e.g., "gpt-4o-mini").
     pub model: String,
-    /// Environment variable name containing the API key.
+    /// Environment variable name containing the API key for remote providers.
     pub api_key_env: String,
     /// Request timeout in milliseconds. Default: 1800.
     pub timeout_ms: u64,
@@ -925,7 +925,7 @@ pub struct ProjectAiCompletionConfig {
     pub enabled: Option<bool>,
     /// Provider type.
     pub provider: Option<String>,
-    /// API endpoint URL.
+    /// API endpoint URL for OpenAI-compatible providers.
     pub endpoint: Option<String>,
     /// Model identifier.
     pub model: Option<String>,

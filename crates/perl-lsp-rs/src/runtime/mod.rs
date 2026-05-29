@@ -380,7 +380,10 @@ unsafe impl Sync for LspServer {}
 // Core accessors and server lifecycle
 // =========================================================================
 
-#[allow(dead_code)]
+fn is_local_ai_provider(provider: &str) -> bool {
+    matches!(provider, "local" | "local_ai" | "local_ngram")
+}
+
 impl LspServer {
     fn resolve_ai_api_key(
         ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
@@ -449,9 +452,9 @@ impl LspServer {
 
     /// Refresh the AI inline-completion backend based on current configuration.
     ///
-    /// When `ai_completion.enabled` is `true` and the API key environment variable
-    /// resolves to a non-empty string, constructs an `OpenAiProvider` and stores it.
-    /// Otherwise clears the backend to `None`, disabling AI completions.
+    /// When `ai_completion.enabled` is `true`, constructs the configured backend.
+    /// Local providers run in-process without an API key; OpenAI-compatible providers
+    /// require a non-empty API key environment variable.
     ///
     /// Called during initialization (after project config is loaded) and on every
     /// `didChangeConfiguration` notification that touches the `aiCompletion` section.
@@ -460,6 +463,21 @@ impl LspServer {
 
         if !ai_config.enabled {
             *self.ai_inline_backend.lock() = None;
+            return;
+        }
+
+        let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
+            ai_config.rate_limit_rps,
+            ai_config.max_inflight,
+        ));
+
+        if is_local_ai_provider(ai_config.provider.as_str()) {
+            let provider = perl_lsp_rs_core::providers::ai::LocalAiProvider::new(
+                perl_lsp_rs_core::providers::ai::LocalAiConfig::default(),
+                limiter,
+            );
+            *self.ai_inline_backend.lock() = Some(Arc::new(provider));
+            tracing::info!(provider = %ai_config.provider, model = %ai_config.model, "local AI inline completion backend configured");
             return;
         }
 
@@ -477,11 +495,6 @@ impl LspServer {
             api_key,
             timeout_ms: ai_config.timeout_ms,
         };
-
-        let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
-            ai_config.rate_limit_rps,
-            ai_config.max_inflight,
-        ));
 
         let provider =
             perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
