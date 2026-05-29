@@ -1,0 +1,3 @@
+use utf8;
+my $emoji = "😀";
+sub λ { return "末尾" }
