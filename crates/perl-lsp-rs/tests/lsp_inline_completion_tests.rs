@@ -292,3 +292,58 @@ fn test_inline_completion_after_comment_keeps_contextual_suggestions()
     }));
     Ok(())
 }
+
+#[test]
+fn test_inline_completion_partial_use_fragment_includes_replacement_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///partial-use.pl";
+    open_doc(&server, uri, "use str");
+
+    let result = inline_completion(&server, uri, 0, 7)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+    let strict = items
+        .iter()
+        .find(|item| item["insertText"].as_str() == Some("strict;"))
+        .ok_or("strict completion item")?;
+
+    assert_eq!(strict["filterText"].as_str().ok_or("filterText not a string")?, "strict");
+    assert_eq!(strict["range"]["start"]["line"].as_u64().ok_or("range start line")?, 0);
+    assert_eq!(strict["range"]["start"]["character"].as_u64().ok_or("range start character")?, 4);
+    assert_eq!(strict["range"]["end"]["line"].as_u64().ok_or("range end line")?, 0);
+    assert_eq!(strict["range"]["end"]["character"].as_u64().ok_or("range end character")?, 7);
+    Ok(())
+}
+
+#[test]
+fn test_inline_completion_suppressed_inside_comment_via_lsp()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///comment.pl";
+    open_doc(&server, uri, "# use ");
+
+    let result = inline_completion(&server, uri, 0, 6)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+
+    assert!(items.is_empty(), "comment text must not produce inline completions");
+    Ok(())
+}
+
+#[test]
+fn test_inline_completion_return_uses_visible_lexical_via_lsp()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = setup_server()?;
+    let uri = "file:///return-context.pl";
+    let text = "sub helper {\n    my $result = compute();\n    return \n}\n";
+    open_doc(&server, uri, text);
+
+    let result = inline_completion(&server, uri, 2, 11)?;
+    let items = result["items"].as_array().ok_or("items array")?;
+    let texts: Vec<&str> = items
+        .iter()
+        .map(|item| item["insertText"].as_str().ok_or("insertText not a string"))
+        .collect::<Result<_, _>>()?;
+
+    assert!(texts.contains(&"$result;"), "return completion should use visible lexical");
+    Ok(())
+}
