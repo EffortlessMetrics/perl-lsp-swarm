@@ -1,0 +1,6 @@
+.git/hooks/pre-commit.pl
+target/debug/build/generated.pm
+node_modules/Dep/lib/Dep.pm
+lib/Real/Module.pm
+templates/page.html.ep
+xs/Native.xs

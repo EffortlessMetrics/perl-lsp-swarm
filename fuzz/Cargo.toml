@@ -34,6 +34,12 @@ path = "../crates/perl-regex"
 [dependencies.perl-pod]
 path = "../crates/perl-pod"
 
+[dependencies.perl-workspace]
+path = "../crates/perl-workspace"
+
+[dependencies.perl-uri]
+path = "../crates/perl-uri"
+
 [[bin]]
 name = "substitution_parsing"
 path = "fuzz_targets/substitution_parsing.rs"
@@ -172,6 +178,13 @@ bench = false
 [[bin]]
 name = "pod_extraction"
 path = "fuzz_targets/pod_extraction.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "workspace_inputs"
+path = "fuzz_targets/workspace_inputs.rs"
 test = false
 doc = false
 bench = false

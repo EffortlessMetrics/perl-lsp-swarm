@@ -1,0 +1,4 @@
+file://localhost/tmp/project/lib/Foo.pm
+file://127.0.0.1/tmp/project/t/basic.t
+file://[::1]/tmp/project/templates/page.tt2
+file://remote.example.com/share/lib/Remote.pm
