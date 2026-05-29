@@ -24,6 +24,21 @@ pub struct StoppedInfo {
     pub thread_id: i64,
 }
 
+/// A stopped event paired with the top stack frame observed immediately after it.
+#[derive(Debug, Clone)]
+// Workflow scenarios use different subsets of this full stopped+frame contract.
+#[allow(dead_code)]
+pub struct StoppedFrameInfo {
+    /// Stopped event metadata.
+    pub stopped: StoppedInfo,
+    /// Top stack frame ID.
+    pub frame_id: i64,
+    /// Top stack frame source path.
+    pub source_path: String,
+    /// Top stack frame line, using DAP's 1-based line numbering.
+    pub line: i64,
+}
+
 /// High-level handle for a DAP workflow test session.
 ///
 /// Wraps `DebugAdapter` with helpers that handle protocol sequencing:
@@ -110,6 +125,53 @@ impl DapWorkflowSession {
         self.expect_success(&resp, "setBreakpoints")
     }
 
+    /// Send `setBreakpoints` and assert the response contains one verified
+    /// breakpoint per requested line.
+    ///
+    /// Returns the DAP-resolved breakpoint lines.  The adapter may move a
+    /// requested line to the nearest executable statement during validation, so
+    /// e2e tests should assert runtime stops against these resolved lines
+    /// instead of hard-coding requested source lines.
+    pub fn set_breakpoints_checked(
+        &mut self,
+        source_path: &str,
+        lines: &[u64],
+    ) -> Result<Vec<i64>, String> {
+        let body =
+            self.set_breakpoints(source_path, lines)?.ok_or("setBreakpoints returned no body")?;
+        let breakpoints = body
+            .get("breakpoints")
+            .and_then(Value::as_array)
+            .ok_or("setBreakpoints body missing `breakpoints` array")?;
+
+        if breakpoints.len() != lines.len() {
+            return Err(format!(
+                "setBreakpoints returned {} breakpoints for {} requested lines: {breakpoints:?}",
+                breakpoints.len(),
+                lines.len()
+            ));
+        }
+
+        let mut resolved_lines = Vec::with_capacity(breakpoints.len());
+        for (index, breakpoint) in breakpoints.iter().enumerate() {
+            let verified = breakpoint
+                .get("verified")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| format!("breakpoint #{index} missing boolean `verified`"))?;
+            if !verified {
+                return Err(format!("breakpoint #{index} was not verified: {breakpoint:?}"));
+            }
+
+            let line = breakpoint
+                .get("line")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| format!("breakpoint #{index} missing numeric `line`"))?;
+            resolved_lines.push(line);
+        }
+
+        Ok(resolved_lines)
+    }
+
     /// Send `configurationDone`.
     pub fn configuration_done(&mut self) -> Result<(), String> {
         let resp = self.request("configurationDone", None);
@@ -163,6 +225,13 @@ impl DapWorkflowSession {
         let frame_line = frame.get("line").and_then(Value::as_i64).unwrap_or(0);
 
         Ok((frame_id, source_path, frame_line))
+    }
+
+    /// Wait for a stopped event and immediately capture the top stack frame.
+    pub fn wait_stopped_with_frame(&mut self) -> Result<StoppedFrameInfo, String> {
+        let stopped = self.wait_stopped()?;
+        let (frame_id, source_path, line) = self.stack_trace(stopped.thread_id)?;
+        Ok(StoppedFrameInfo { stopped, frame_id, source_path, line })
     }
 
     /// Retrieve the `variablesReference` for the `Globals` scope in `frame_id`.
