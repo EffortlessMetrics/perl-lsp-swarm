@@ -62,6 +62,13 @@ struct RangeFixture {
     replaces: &'static str,
 }
 
+struct AcceptedEditFixture {
+    name: &'static str,
+    source: &'static str,
+    expected_first: &'static str,
+    expected_after: &'static str,
+}
+
 #[test]
 fn inline_completion_fixture_corpus_returns_expected_ghost_text() -> TestResult {
     let fixtures = [
@@ -215,6 +222,43 @@ fn inline_completion_fixture_corpus_uses_editor_safe_replacement_ranges() -> Tes
     Ok(())
 }
 
+#[test]
+fn inline_completion_fixture_corpus_applies_accepted_edits_without_parse_regressions() -> TestResult
+{
+    let fixtures = [
+        AcceptedEditFixture {
+            name: "partial_use_replacement",
+            source: "use str<<CURSOR>>\n",
+            expected_first: "strict;",
+            expected_after: "use strict;\n",
+        },
+        AcceptedEditFixture {
+            name: "visible_lexical_return",
+            source: "sub compute {\n    my $result = build();\n    <<CURSOR>>\n}\n",
+            expected_first: "return $result;",
+            expected_after: "sub compute {\n    my $result = build();\n    return $result;\n}\n",
+        },
+        AcceptedEditFixture {
+            name: "self_receiver_method",
+            source: "package Demo;\nsub save {}\nsub caller {\n    my $self = shift;\n    $self-><<CURSOR>>\n}\n",
+            expected_first: "save()",
+            expected_after: "package Demo;\nsub save {}\nsub caller {\n    my $self = shift;\n    $self->save()\n}\n",
+        },
+        AcceptedEditFixture {
+            name: "constructor_shift_style",
+            source: "sub helper {\n    my $self = shift;\n}\n\nsub new<<CURSOR>>\n",
+            expected_first: " {\n    my $class = shift;\n    my $self = bless {}, $class;\n    return $self;\n}",
+            expected_after: "sub helper {\n    my $self = shift;\n}\n\nsub new {\n    my $class = shift;\n    my $self = bless {}, $class;\n    return $self;\n}\n",
+        },
+    ];
+
+    for fixture in fixtures {
+        assert_accepted_edit(fixture)?;
+    }
+
+    Ok(())
+}
+
 fn assert_suggestions(fixture: SuggestionFixture) -> TestResult {
     let scenario = InlineCompletionScenario::from_fixture(fixture.source)?;
     let completions = scenario.completions();
@@ -289,8 +333,89 @@ fn assert_replacement_range(fixture: RangeFixture) -> TestResult {
     Ok(())
 }
 
+fn assert_accepted_edit(fixture: AcceptedEditFixture) -> TestResult {
+    let scenario = InlineCompletionScenario::from_fixture(fixture.source)?;
+    let completions = scenario.completions();
+    let item = completions.items.first().ok_or_else(|| {
+        format!("{}: expected first completion {}, got none", fixture.name, fixture.expected_first)
+    })?;
+
+    if item.insert_text != fixture.expected_first {
+        return Err(format!(
+            "{}: expected first completion {}, got {}",
+            fixture.name, fixture.expected_first, item.insert_text
+        )
+        .into());
+    }
+
+    let accepted = apply_inline_completion_item(&scenario, item)?;
+    if accepted != fixture.expected_after {
+        return Err(format!(
+            "{}: accepted edit produced unexpected text\nexpected:\n{}\nactual:\n{}",
+            fixture.name, fixture.expected_after, accepted
+        )
+        .into());
+    }
+
+    let before = parser_diagnostic_count(scenario.text.as_str());
+    let after = parser_diagnostic_count(accepted.as_str());
+    if after > before {
+        return Err(format!(
+            "{}: accepted edit increased parser diagnostics from {before} to {after}",
+            fixture.name
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
 fn completion_texts(completions: &InlineCompletionList) -> Vec<&str> {
     completions.items.iter().map(|item| item.insert_text.as_str()).collect()
+}
+
+fn apply_inline_completion_item(
+    scenario: &InlineCompletionScenario,
+    item: &perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem,
+) -> Result<String, String> {
+    let cursor =
+        utf16_line_col_to_offset(scenario.text.as_str(), scenario.line, scenario.character);
+    let (start, end) = item
+        .range
+        .as_ref()
+        .map(|range| {
+            let start = utf16_line_col_to_offset(
+                scenario.text.as_str(),
+                range.start.line,
+                range.start.character,
+            );
+            let end = utf16_line_col_to_offset(
+                scenario.text.as_str(),
+                range.end.line,
+                range.end.character,
+            );
+            Ok::<_, String>((start, end))
+        })
+        .transpose()?
+        .unwrap_or((cursor, cursor));
+
+    let mut accepted =
+        String::with_capacity(scenario.text.len() - (end - start) + item.insert_text.len());
+    accepted.push_str(
+        scenario
+            .text
+            .get(..start)
+            .ok_or_else(|| format!("invalid replacement start offset {start}"))?,
+    );
+    accepted.push_str(item.insert_text.as_str());
+    accepted.push_str(
+        scenario.text.get(end..).ok_or_else(|| format!("invalid replacement end offset {end}"))?,
+    );
+    Ok(accepted)
+}
+
+fn parser_diagnostic_count(source: &str) -> usize {
+    perl_parser::Parser::new(source).parse_with_recovery().diagnostics.len()
 }
 
 fn slice_for_range<'a>(text: &'a str, range: &Range) -> Result<&'a str, String> {
