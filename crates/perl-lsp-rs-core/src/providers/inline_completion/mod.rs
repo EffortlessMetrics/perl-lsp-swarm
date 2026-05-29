@@ -17,6 +17,9 @@ const MAX_INLINE_COMPLETION_ITEMS: usize = 5;
 pub struct PreparedInlineCompletionContext {
     /// Prefix on the current line up to the request position.
     pub prefix: String,
+    /// Suffix on the current line after the request position.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub suffix: String,
     /// Full current line with trailing newline removed.
     pub current_line: String,
     /// Closest previous non-empty line, if any.
@@ -967,6 +970,7 @@ impl InlineCompletionProvider {
 
         Some(PreparedInlineCompletionContext {
             prefix: line_context.prefix.to_string(),
+            suffix: line_context.suffix.to_string(),
             current_line: line_context.current_line.to_string(),
             previous_non_empty_line: self
                 .previous_non_empty_line(&lines, line_index)
@@ -989,7 +993,11 @@ impl InlineCompletionProvider {
         let current_line = *lines.get(line_index)?;
         let prefix_end = utf16_line_col_to_offset(current_line, 0, character);
 
-        Some(LineContext { prefix: &current_line[..prefix_end], current_line })
+        Some(LineContext {
+            prefix: &current_line[..prefix_end],
+            suffix: &current_line[prefix_end..],
+            current_line,
+        })
     }
 
     fn normalized_lines<'a>(&self, text: &'a str) -> Vec<&'a str> {
@@ -2136,6 +2144,7 @@ fn hash_key_loop_variable_name(hash_name: &str) -> String {
 
 struct LineContext<'a> {
     prefix: &'a str,
+    suffix: &'a str,
     current_line: &'a str,
 }
 

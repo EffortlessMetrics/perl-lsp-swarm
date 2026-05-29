@@ -8,7 +8,8 @@ use crate::providers::inline_completion::PreparedInlineCompletionContext;
 pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, String) {
     let mut system = String::from(
         "You are a Perl code completion assistant. Complete the code at the cursor position. \
-         Return ONLY the completion text, no explanation, no markdown.",
+         Return ONLY the completion text, no explanation, no markdown. \
+         Do not repeat text that already appears after <CURSOR>.",
     );
 
     // Add context about the current scope
@@ -30,6 +31,7 @@ pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, S
     }
     user.push_str(&context.prefix);
     user.push_str("<CURSOR>");
+    user.push_str(&context.suffix);
 
     (system, user)
 }
@@ -39,10 +41,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn basic_prompt_includes_prefix() {
+    fn basic_prompt_includes_prefix() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = PreparedInlineCompletionContext {
             prefix: "my $x = ".to_string(),
-            current_line: "my $x = ".to_string(),
+            suffix: " + $y".to_string(),
+            current_line: "my $x =  + $y".to_string(),
             previous_non_empty_line: Some("use strict;".to_string()),
             current_function: Some("new".to_string()),
             current_package: Some("MyClass".to_string()),
@@ -54,7 +57,8 @@ mod tests {
         assert!(system.contains("MyClass"));
         assert!(system.contains("new"));
         assert!(user.contains("my $x = "));
-        assert!(user.contains("<CURSOR>"));
+        assert!(user.contains("<CURSOR> + $y"));
         assert!(user.contains("use strict;"));
+        Ok(())
     }
 }

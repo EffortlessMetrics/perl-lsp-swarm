@@ -8,6 +8,8 @@ pub mod openai;
 pub mod prompt;
 pub mod rate_limiter;
 pub mod sse;
+pub mod web_connector;
 
 pub use openai::{OpenAiConfig, OpenAiProvider};
 pub use rate_limiter::RateLimiter;
+pub use web_connector::{WebAiProtocol, WebAiRequestParts};

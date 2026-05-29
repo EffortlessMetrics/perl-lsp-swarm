@@ -3,6 +3,9 @@
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
 use super::sse::SseParser;
+use super::web_connector::{
+    WebAiProtocol, WebAiRequestParts, content_delta_from_sse_data, finish_reason_from_sse_data,
+};
 use crate::providers::inline_completion::{
     BackendError, BackendRequest, InlineCompletionBackend, StreamChunk, StreamControl,
 };
@@ -36,72 +39,27 @@ impl OpenAiProvider {
 
     fn build_request_body(&self, req: &BackendRequest) -> serde_json::Value {
         let (system, user) = build_fim_prompt(&req.context);
+        let parts = WebAiRequestParts {
+            model: self.config.model.clone(),
+            system,
+            user,
+            max_output_tokens: req.max_output_tokens,
+            stream: true,
+        };
 
-        if self.uses_responses_api() {
-            return serde_json::json!({
-                "model": self.config.model,
-                "max_output_tokens": req.max_output_tokens,
-                "stream": true,
-                "instructions": system,
-                "input": user,
-            });
-        }
-
-        serde_json::json!({
-            "model": self.config.model,
-            "max_tokens": req.max_output_tokens,
-            "stream": true,
-            "messages": [
-                { "role": "system", "content": system },
-                { "role": "user", "content": user }
-            ]
-        })
+        parts.to_json_body(self.protocol())
     }
 
-    fn uses_responses_api(&self) -> bool {
-        self.config.endpoint.contains("/responses")
+    fn protocol(&self) -> WebAiProtocol {
+        WebAiProtocol::infer_from_endpoint(&self.config.endpoint)
     }
 
     fn extract_content_delta(data: &str) -> Option<String> {
-        let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
-
-        if let Some(delta) = parsed
-            .get("choices")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("delta"))
-            .and_then(|delta| delta.get("content"))
-            .and_then(serde_json::Value::as_str)
-        {
-            return Some(delta.to_string());
-        }
-
-        let event_type = parsed.get("type").and_then(serde_json::Value::as_str)?;
-        if event_type != "response.output_text.delta" {
-            return None;
-        }
-
-        parsed.get("delta").and_then(serde_json::Value::as_str).map(str::to_string)
+        content_delta_from_sse_data(data)
     }
 
     fn extract_finish_reason(data: &str) -> Option<String> {
-        let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
-
-        if let Some(reason) = parsed
-            .get("choices")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("finish_reason"))
-            .and_then(serde_json::Value::as_str)
-        {
-            return Some(reason.to_string());
-        }
-
-        match parsed.get("type").and_then(serde_json::Value::as_str) {
-            Some("response.completed") => Some("stop".to_string()),
-            Some("response.failed") | Some("response.incomplete") => Some("error".to_string()),
-            _ => None,
-        }
+        finish_reason_from_sse_data(data)
     }
 }
 
@@ -109,6 +67,7 @@ impl OpenAiProvider {
 mod tests {
     use super::{OpenAiConfig, OpenAiProvider};
     use crate::providers::ai::rate_limiter::RateLimiter;
+    use crate::providers::ai::web_connector::WebAiProtocol;
     use std::sync::Arc;
 
     fn provider_with_endpoint(endpoint: &str) -> OpenAiProvider {
@@ -126,10 +85,10 @@ mod tests {
     #[test]
     fn detects_responses_api_endpoint() {
         let provider = provider_with_endpoint("https://api.openai.com/v1/responses");
-        assert!(provider.uses_responses_api());
+        assert_eq!(provider.protocol(), WebAiProtocol::OpenAiResponses);
 
         let provider = provider_with_endpoint("https://api.openai.com/v1/chat/completions");
-        assert!(!provider.uses_responses_api());
+        assert_eq!(provider.protocol(), WebAiProtocol::OpenAiChatCompletions);
     }
 
     #[test]
