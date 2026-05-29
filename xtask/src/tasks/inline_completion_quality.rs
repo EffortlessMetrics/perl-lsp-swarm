@@ -783,7 +783,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn guard_condition_quality_scenarios_are_registered() {
+    fn inline_completion_quality_guard_condition_scenarios_are_registered() {
         let names: Vec<&str> = scenarios().iter().map(|scenario| scenario.name).collect();
 
         assert!(names.contains(&"guard_condition_prefers_boolean_named_visible_scalar"));
@@ -791,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn guard_condition_quality_scenarios_pass() -> Result<()> {
+    fn inline_completion_quality_guard_condition_scenarios_pass() -> Result<()> {
         let provider = InlineCompletionProvider::new();
 
         for name in [
