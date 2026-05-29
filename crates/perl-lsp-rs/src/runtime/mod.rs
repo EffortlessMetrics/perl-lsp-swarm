@@ -376,6 +376,13 @@ unsafe impl Sync for LspServer {}
 // Note: DocumentState, ServerConfig, and normalize_package_separator are
 // imported from crate::lsp::state::{document, config}
 
+fn is_local_ai_provider(provider: &str) -> bool {
+    matches!(
+        provider.trim().to_ascii_lowercase().replace('_', "-").as_str(),
+        "local" | "local-ai" | "local-small"
+    )
+}
+
 // =========================================================================
 // Core accessors and server lifecycle
 // =========================================================================
@@ -460,6 +467,15 @@ impl LspServer {
 
         if !ai_config.enabled {
             *self.ai_inline_backend.lock() = None;
+            return;
+        }
+
+        if is_local_ai_provider(ai_config.provider.as_str()) {
+            let provider_config =
+                perl_lsp_rs_core::providers::ai::LocalAiConfig::for_model(ai_config.model.clone());
+            let provider = perl_lsp_rs_core::providers::ai::LocalAiProvider::new(provider_config);
+            *self.ai_inline_backend.lock() = Some(Arc::new(provider));
+            tracing::info!(model = %ai_config.model, "local AI inline completion backend configured");
             return;
         }
 
@@ -1371,6 +1387,30 @@ mod tests {
             assert_eq!(range.end.line, line as u32);
             assert_eq!(range.end.character, character as u32);
         }
+    }
+
+    #[test]
+    fn local_ai_provider_aliases_are_normalized() {
+        assert!(is_local_ai_provider("local"));
+        assert!(is_local_ai_provider("local_ai"));
+        assert!(is_local_ai_provider("LOCAL-SMALL"));
+        assert!(!is_local_ai_provider("openai_compat"));
+    }
+
+    #[test]
+    fn refresh_ai_backend_installs_local_provider_without_api_key() {
+        let server = LspServer::new();
+        {
+            let mut config = server.config.lock();
+            config.ai_completion.enabled = true;
+            config.ai_completion.provider = "local".to_string();
+            config.ai_completion.model = "perl-local-small".to_string();
+            config.ai_completion.api_key_env = "PERL_LSP_TEST_KEY_DOES_NOT_EXIST".to_string();
+        }
+
+        server.refresh_ai_backend();
+
+        assert!(server.ai_backend().is_some());
     }
 
     #[test]

@@ -164,7 +164,7 @@ pub struct ServerConfig {
 pub struct AiCompletionConfig {
     /// Whether AI completions are enabled. Default: false.
     pub enabled: bool,
-    /// Provider type. Currently only "openai_compat" is supported.
+    /// Provider type. Supported values: "openai_compat" and "local".
     pub provider: String,
     /// API endpoint URL.
     pub endpoint: String,
