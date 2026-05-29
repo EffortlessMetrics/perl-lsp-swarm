@@ -3018,12 +3018,9 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_returns_source_backed_edit
 
     let (helper_line, helper_character) = position_of(util, "helper {")?;
     let blocked_result = server
-        .handle_execute_command(Some(json!({
-            "command": "perl.safeDeleteSymbol",
-            "arguments": [{
-                "textDocument": {"uri": REAL_BASELINE_UTIL_URI},
-                "position": {"line": helper_line, "character": helper_character}
-            }]
+        .safe_delete_symbol_live_pilot(Some(json!({
+            "textDocument": {"uri": REAL_BASELINE_UTIL_URI},
+            "position": {"line": helper_line, "character": helper_character}
         })))?
         .ok_or("missing safe-delete live pilot blocker result")?;
     assert_eq!(
@@ -3050,12 +3047,9 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_returns_source_backed_edit
 
     let (reset_line, reset_character) = position_of(base, "reset {")?;
     let live_result = server
-        .handle_execute_command(Some(json!({
-            "command": "perl.safeDeleteSymbol",
-            "arguments": [{
-                "textDocument": {"uri": REAL_BASELINE_BASE_URI},
-                "position": {"line": reset_line, "character": reset_character}
-            }]
+        .safe_delete_symbol_live_pilot(Some(json!({
+            "textDocument": {"uri": REAL_BASELINE_BASE_URI},
+            "position": {"line": reset_line, "character": reset_character}
         })))?
         .ok_or("missing safe-delete live pilot result")?;
     assert_eq!(live_result.get("provider").and_then(Value::as_str), Some("safe_delete"));
