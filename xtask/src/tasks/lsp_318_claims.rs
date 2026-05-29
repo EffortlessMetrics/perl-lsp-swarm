@@ -914,6 +914,8 @@ fn check_apply_edit_metadata_guard(root: &Path, violations: &mut Vec<Violation>)
         &client_requests,
         &[
             "request_apply_workspace_edit_with_metadata",
+            "request_apply_workspace_edit_with_metadata_sends_metadata_when_supported",
+            "request_apply_workspace_edit_with_metadata_returns_none_without_apply_edit_or_metadata_support",
             "WORKSPACE_APPLY_EDIT",
             "\"metadata\"",
             "\"isRefactoring\"",

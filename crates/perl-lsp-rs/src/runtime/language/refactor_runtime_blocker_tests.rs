@@ -3007,6 +3007,11 @@ fn refactor_runtime_blocker_ux_safe_delete_preview_command_returns_scoped_no_edi
 fn refactor_runtime_blocker_ux_safe_delete_live_pilot_returns_source_backed_edit_only()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();
+    {
+        let mut caps = server.client_capabilities.lock();
+        caps.workspace_apply_edit_support = true;
+        caps.workspace_edit_metadata_support = true;
+    }
     let files = open_semantic_real_workspace(&server)?;
     let util = files.get("lib/RealBaseline/Util.pm").ok_or("missing RealBaseline Util fixture")?;
     let base = files.get("lib/RealBaseline/Base.pm").ok_or("missing RealBaseline Base fixture")?;
@@ -3079,6 +3084,15 @@ fn refactor_runtime_blocker_ux_safe_delete_live_pilot_returns_source_backed_edit
     assert_eq!(live_result.get("live_symbol_delete_enabled").and_then(Value::as_bool), Some(true));
     assert_eq!(live_result.get("edits_applied").and_then(Value::as_bool), Some(false));
     assert_eq!(live_result.get("returned_workspace_edit_count").and_then(Value::as_u64), Some(1));
+    assert_eq!(live_result.get("apply_edit_requested").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        live_result.pointer("/apply_edit_request/label").and_then(Value::as_str),
+        Some("Safe delete reset")
+    );
+    assert_eq!(
+        live_result.pointer("/apply_edit_request/metadata/isRefactoring").and_then(Value::as_bool),
+        Some(true)
+    );
     assert_eq!(
         live_result.get("claim_boundary").and_then(Value::as_str),
         Some(

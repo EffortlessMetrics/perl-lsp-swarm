@@ -114,3 +114,147 @@ impl LspServer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parking_lot::Mutex;
+    use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    #[derive(Clone, Default)]
+    struct OutputCapture {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl OutputCapture {
+        fn messages(&self) -> TestResult<Vec<Value>> {
+            let bytes = self.buffer.lock().clone();
+            let mut framer = ContentLengthFramer::new();
+            framer.push(&bytes);
+
+            let mut messages = Vec::new();
+            while let Some(body) = framer.try_next()? {
+                messages.push(serde_json::from_slice::<Value>(&body)?);
+            }
+            Ok(messages)
+        }
+
+        fn messages_containing_method(&self, method: &str) -> TestResult<Vec<Value>> {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                let messages = self.messages()?;
+                if messages
+                    .iter()
+                    .any(|message| message.get("method").and_then(Value::as_str) == Some(method))
+                    || Instant::now() >= deadline
+                {
+                    return Ok(messages);
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    impl Write for OutputCapture {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.buffer.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn server_with_output_capture() -> (LspServer, OutputCapture) {
+        let output = OutputCapture::default();
+        let server = LspServer::with_output(Arc::new(Mutex::new(
+            Box::new(output.clone()) as Box<dyn Write + Send>
+        )));
+        (server, output)
+    }
+
+    #[test]
+    fn request_apply_workspace_edit_with_metadata_sends_metadata_when_supported() -> TestResult {
+        let (server, output) = server_with_output_capture();
+        {
+            let mut caps = server.client_capabilities.lock();
+            caps.workspace_apply_edit_support = true;
+            caps.workspace_edit_metadata_support = true;
+        }
+
+        let request_id = server.request_apply_workspace_edit_with_metadata(
+            "Safe delete reset",
+            json!({"changes": {"file:///workspace/main.pl": []}}),
+            true,
+        )?;
+        assert!(
+            request_id.is_some(),
+            "metadata-capable clients should receive workspace/applyEdit"
+        );
+
+        let messages = output.messages_containing_method(WORKSPACE_APPLY_EDIT)?;
+        let request = messages
+            .iter()
+            .find(|message| {
+                message.get("method").and_then(Value::as_str) == Some(WORKSPACE_APPLY_EDIT)
+            })
+            .ok_or_else(|| format!("expected workspace/applyEdit request: {messages:?}"))?;
+        assert_eq!(
+            request.pointer("/params/label").and_then(Value::as_str),
+            Some("Safe delete reset")
+        );
+        assert_eq!(
+            request.pointer("/params/metadata/isRefactoring").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(
+            request.pointer("/params/edit/metadata").is_none(),
+            "metadata belongs on ApplyWorkspaceEditParams, not WorkspaceEdit: {request}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn request_apply_workspace_edit_with_metadata_returns_none_without_apply_edit_or_metadata_support()
+    -> TestResult {
+        let (server, output) = server_with_output_capture();
+        server.client_capabilities.lock().workspace_apply_edit_support = true;
+        let request_id = server.request_apply_workspace_edit_with_metadata(
+            "Safe delete reset",
+            json!({"changes": {"file:///workspace/main.pl": []}}),
+            true,
+        )?;
+        assert!(
+            request_id.is_none(),
+            "workspace.applyEdit without metadataSupport must keep the old no-request path"
+        );
+        assert!(
+            output.messages()?.is_empty(),
+            "no workspace/applyEdit request should be emitted without metadataSupport"
+        );
+
+        let (server, output) = server_with_output_capture();
+        server.client_capabilities.lock().workspace_edit_metadata_support = true;
+        let request_id = server.request_apply_workspace_edit_with_metadata(
+            "Safe delete reset",
+            json!({"changes": {"file:///workspace/main.pl": []}}),
+            true,
+        )?;
+        assert!(
+            request_id.is_none(),
+            "metadataSupport without workspace.applyEdit must keep the old no-request path"
+        );
+        assert!(
+            output.messages()?.is_empty(),
+            "no workspace/applyEdit request should be emitted without workspace.applyEdit"
+        );
+        Ok(())
+    }
+}
