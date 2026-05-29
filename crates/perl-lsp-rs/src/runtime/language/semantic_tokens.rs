@@ -429,18 +429,14 @@ impl LspServer {
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
                 if let Some(ref ast) = doc.ast {
-                    let provider = SemanticTokensProvider::new(doc.text.clone());
-                    let all_tokens = provider.extract(ast);
+                    let all_tokens =
+                        crate::semantic_tokens::collect_semantic_tokens(ast, &doc.text, &|off| {
+                            self.offset_to_pos16(doc, off)
+                        });
+                    let encoded =
+                        filter_encoded_semantic_tokens_by_line(all_tokens, start_line, end_line);
 
-                    // Filter tokens to the requested range
-                    let range_tokens: Vec<_> = all_tokens
-                        .into_iter()
-                        .filter(|token| token.line >= start_line && token.line <= end_line)
-                        .collect();
-
-                    let encoded = encode_semantic_tokens(&range_tokens);
-
-                    tracing::debug!(count = range_tokens.len(), "Found semantic tokens in range");
+                    tracing::debug!(count = encoded.len() / 5, "Found semantic tokens in range");
 
                     return Ok(Some(json!({
                         "data": encoded
@@ -453,6 +449,44 @@ impl LspServer {
             "data": []
         })))
     }
+}
+
+fn filter_encoded_semantic_tokens_by_line(
+    tokens: Vec<crate::semantic_tokens::EncodedToken>,
+    start_line: u32,
+    end_line: u32,
+) -> Vec<u32> {
+    let mut absolute_tokens = Vec::new();
+    let mut line = 0u32;
+    let mut start = 0u32;
+
+    for token in tokens {
+        let [delta_line, delta_start, length, token_type, modifiers] = token;
+        if delta_line == 0 {
+            start = start.saturating_add(delta_start);
+        } else {
+            line = line.saturating_add(delta_line);
+            start = delta_start;
+        }
+
+        if line >= start_line && line <= end_line {
+            absolute_tokens.push((line, start, length, token_type, modifiers));
+        }
+    }
+
+    let mut encoded = Vec::with_capacity(absolute_tokens.len() * 5);
+    let mut previous_line = 0u32;
+    let mut previous_start = 0u32;
+    for (line, start, length, token_type, modifiers) in absolute_tokens {
+        let delta_line = line.saturating_sub(previous_line);
+        let delta_start =
+            if delta_line == 0 { start.saturating_sub(previous_start) } else { start };
+        encoded.extend([delta_line, delta_start, length, token_type, modifiers]);
+        previous_line = line;
+        previous_start = start;
+    }
+
+    encoded
 }
 
 fn semantic_token_subroutine_declaration_candidate(
