@@ -816,10 +816,13 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
         JsonReceipt::Present(payload) => {
             let receipt_head_sha =
                 payload.get("head_sha").and_then(Value::as_str).map(ToOwned::to_owned);
-            let mut status = if receipt_head_sha.as_deref() == Some(expected_head) {
-                "present"
-            } else {
+            let producer_status = payload.get("status").and_then(Value::as_str);
+            let mut status = if receipt_head_sha.as_deref() != Some(expected_head) {
                 "stale"
+            } else if matches!(producer_status, Some("error" | "incomplete")) {
+                producer_status.unwrap_or("incomplete")
+            } else {
+                "present"
             }
             .to_string();
             let top_gaps =
