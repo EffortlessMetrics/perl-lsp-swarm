@@ -210,11 +210,7 @@ fn ripr_plus_packet(repo: &Path, options: &RiprPlusOptions) -> Result<Value> {
         .and_then(Value::as_array)
         .ok_or_else(|| eyre!("ripr repo-seams-json output did not include seams[]"))?;
     let suppressions = read_ripr_suppression_rules(repo, &options.suppressions)?;
-    let active_seams = seams
-        .iter()
-        .filter(|seam| !suppression_matches_seam(&suppressions, seam))
-        .collect::<Vec<_>>();
-    let suppressed_count = seams.len().saturating_sub(active_seams.len());
+    let seam_summary = ripr_plus_seam_summary(seams, &suppressions, 10);
     Ok(json!({
         "schema_version": 1,
         "kind": "ripr_plus_baseline",
@@ -222,14 +218,11 @@ fn ripr_plus_packet(repo: &Path, options: &RiprPlusOptions) -> Result<Value> {
         "head": current_head(repo)?,
         "root": options.root,
         "source_format": "ripr check --format repo-seams-json",
-        "unresolved": active_seams.len(),
-        "suppressed": suppressed_count,
+        "unresolved": seam_summary.unresolved,
+        "suppressed": seam_summary.suppressed,
         "new_unresolved": null,
-        "top_files": ripr_plus_top_files(active_seams.iter().copied(), 10),
-        "top_suppressed_files": ripr_plus_top_files(
-            seams.iter().filter(|seam| suppression_matches_seam(&suppressions, seam)),
-            10,
-        ),
+        "top_files": seam_summary.top_files,
+        "top_suppressed_files": seam_summary.top_suppressed_files,
         "suppressions": {
             "path": display_path(&options.suppressions),
             "path_patterns": suppressions.display_patterns,
@@ -243,6 +236,36 @@ fn ripr_plus_packet(repo: &Path, options: &RiprPlusOptions) -> Result<Value> {
             "new_unresolved is null until PR diff comparison is wired in the quality gate."
         ]
     }))
+}
+
+#[derive(Debug)]
+struct RiprPlusSeamSummary {
+    unresolved: usize,
+    suppressed: usize,
+    top_files: Vec<Value>,
+    top_suppressed_files: Vec<Value>,
+}
+
+fn ripr_plus_seam_summary(
+    seams: &[Value],
+    suppressions: &RiprSuppressionRules,
+    limit: usize,
+) -> RiprPlusSeamSummary {
+    let active = seams
+        .iter()
+        .filter(|seam| !suppression_matches_seam(suppressions, seam))
+        .collect::<Vec<_>>();
+    let suppressed = seams
+        .iter()
+        .filter(|seam| suppression_matches_seam(suppressions, seam))
+        .collect::<Vec<_>>();
+
+    RiprPlusSeamSummary {
+        unresolved: active.len(),
+        suppressed: suppressed.len(),
+        top_files: ripr_plus_top_files(active.iter().copied(), limit),
+        top_suppressed_files: ripr_plus_top_files(suppressed.iter().copied(), limit),
+    }
 }
 
 fn ripr_plus_top_files<'a>(seams: impl IntoIterator<Item = &'a Value>, limit: usize) -> Vec<Value> {
@@ -1531,6 +1554,42 @@ mod tests {
                 json!({"name": "crates/perl-parser/src/lib.rs", "count": 2}),
             ]
         );
+    }
+
+    #[test]
+    fn ripr_plus_seam_summary_splits_active_and_suppressed_paths() -> Result<()> {
+        let seams = vec![
+            json!({"file": "crates/perl-parser/src/lib.rs"}),
+            json!({"path": "archive/crates/perl-parser/src/lib.rs"}),
+            json!({"location": {"path": r"docs\project\status\quality.rs"}}),
+            json!({"placement": {"path": "crates/perl-parser/src/lib.rs"}}),
+            json!({"file": ""}),
+        ];
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["archive/**".to_string(), "docs/project/status/**".to_string()],
+            path_patterns: vec![
+                Pattern::new("archive/**")?,
+                Pattern::new("docs/project/status/**")?,
+            ],
+            invalid_patterns: Vec::new(),
+        };
+
+        let summary = ripr_plus_seam_summary(&seams, &suppressions, 10);
+
+        assert_eq!(summary.unresolved, 3);
+        assert_eq!(summary.suppressed, 2);
+        assert_eq!(
+            summary.top_files,
+            vec![json!({"name": "crates/perl-parser/src/lib.rs", "count": 2})]
+        );
+        assert_eq!(
+            summary.top_suppressed_files,
+            vec![
+                json!({"name": "archive/crates/perl-parser/src/lib.rs", "count": 1}),
+                json!({"name": "docs/project/status/quality.rs", "count": 1}),
+            ]
+        );
+        Ok(())
     }
 
     #[test]
