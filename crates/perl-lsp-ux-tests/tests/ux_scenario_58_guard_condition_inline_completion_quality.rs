@@ -119,13 +119,6 @@ fn insert_texts_for(items: &[Value]) -> Vec<String> {
         .collect()
 }
 
-fn assert_excludes_insert(insert_texts: &[String], forbidden: &str, label: &str) {
-    assert!(
-        insert_texts.iter().all(|actual| actual != forbidden),
-        "{label} included forbidden insert `{forbidden}`; actual: {insert_texts:?}"
-    );
-}
-
 #[test]
 fn scenario_58_guard_condition_inline_completion_quality_stdio() -> Result<()> {
     if !binary_available() {
@@ -148,7 +141,10 @@ fn scenario_58_guard_condition_inline_completion_quality_stdio() -> Result<()> {
         return_guard_insert_texts.iter().any(|actual| actual == "$is_valid;"),
         "return guard did not include visible boolean lexical; actual: {return_guard_insert_texts:?}"
     );
-    assert_excludes_insert(&return_guard_insert_texts, "$result;", "return guard");
+    assert!(
+        !return_guard_insert_texts.iter().any(|actual| actual == "$result;"),
+        "return guard included forbidden generic result insert; actual: {return_guard_insert_texts:?}"
+    );
 
     let next_guard_insert_texts =
         wait_for_guard_condition(&harness, NEXT_GUARD_PATH, NEXT_GUARD_SOURCE, "$should_skip;")?;
@@ -156,7 +152,10 @@ fn scenario_58_guard_condition_inline_completion_quality_stdio() -> Result<()> {
         next_guard_insert_texts.iter().any(|actual| actual == "$should_skip;"),
         "next guard did not include visible skip lexical; actual: {next_guard_insert_texts:?}"
     );
-    assert_excludes_insert(&next_guard_insert_texts, "$user;", "next guard");
+    assert!(
+        !next_guard_insert_texts.iter().any(|actual| actual == "$user;"),
+        "next guard included forbidden loop item insert; actual: {next_guard_insert_texts:?}"
+    );
 
     harness.assert_no_crash();
     Ok(())
