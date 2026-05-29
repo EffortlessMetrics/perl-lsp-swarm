@@ -39,35 +39,9 @@ mod workspace;
 
 use cmd::{run_cmd, run_cmd_merged, run_subsystem};
 
-// ---------------------------------------------------------------------------
-// Subsystem selector
-// ---------------------------------------------------------------------------
+mod selector;
 
-/// Which subsystems to regenerate.
-#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
-pub enum StatusSubsystem {
-    Lsp,
-    Tests,
-    Parser,
-    Quality,
-    /// DAP debugger scorecard (launch success, latency, test counts).
-    Dap,
-    Workspace,
-}
-
-impl StatusSubsystem {
-    #[allow(dead_code)]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            StatusSubsystem::Lsp => "lsp",
-            StatusSubsystem::Tests => "tests",
-            StatusSubsystem::Parser => "parser",
-            StatusSubsystem::Quality => "quality",
-            StatusSubsystem::Dap => "dap",
-            StatusSubsystem::Workspace => "workspace",
-        }
-    }
-}
+pub use selector::StatusSubsystem;
 
 /// Replace content between `begin_marker\n...\nend_marker` (inclusive of markers).
 fn replace_block(
