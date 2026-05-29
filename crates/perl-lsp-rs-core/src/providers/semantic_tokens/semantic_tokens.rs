@@ -1102,7 +1102,7 @@ mod tests {
     #[test]
     fn collect_semantic_tokens_emits_label_for_labeled_statement_and_control_reference()
     -> Result<(), Box<dyn std::error::Error>> {
-        let source = "OUTER: while ($x) { last OUTER; }\n";
+        let source = "OUTER: while ($x) {\n    last OUTER;\n}\n";
         let mut parser = Parser::new(source);
         let ast = parser.parse()?;
         let tokens = collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset));
@@ -1124,7 +1124,40 @@ mod tests {
         }
 
         assert!(labels.contains(&(0, 0, 5, 1)));
-        assert!(labels.contains(&(0, 25, 5, 0)));
+        assert!(labels.contains(&(1, 9, 5, 0)));
+        Ok(())
+    }
+
+    #[test]
+    fn statement_label_offsets_rejects_embedded_or_non_label_matches()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let embedded = "MYOUTER: while ($x) {}\n";
+        assert_eq!(statement_label_offsets(embedded, 0, embedded.len(), "OUTER"), None);
+
+        let no_colon = "OUTER while ($x) {}\n";
+        assert_eq!(statement_label_offsets(no_colon, 0, no_colon.len(), "OUTER"), None);
+
+        let whitespace = "OUTER : while ($x) {}\n";
+        assert_eq!(statement_label_offsets(whitespace, 0, whitespace.len(), "OUTER"), Some((0, 5)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn loop_control_label_offsets_skips_embedded_matches() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "last OUTERLY OUTER;\n";
+        assert_eq!(
+            loop_control_label_offsets(source, 0, source.len(), "last", "OUTER"),
+            Some((13, 18))
+        );
+
+        let embedded_only = "last OUTERLY;\n";
+        assert_eq!(
+            loop_control_label_offsets(embedded_only, 0, embedded_only.len(), "last", "OUTER"),
+            None
+        );
+
         Ok(())
     }
 

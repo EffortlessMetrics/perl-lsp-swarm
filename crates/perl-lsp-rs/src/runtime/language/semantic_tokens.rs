@@ -489,6 +489,30 @@ fn filter_encoded_semantic_tokens_by_line(
     encoded
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_encoded_semantic_tokens_by_line_reencodes_retained_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tokens: Vec<crate::semantic_tokens::EncodedToken> =
+            vec![[0, 0, 5, 1, 0], [1, 2, 3, 2, 0], [0, 5, 4, 3, 1], [1, 1, 2, 4, 0]];
+
+        assert_eq!(
+            filter_encoded_semantic_tokens_by_line(tokens.clone(), 1, 1),
+            vec![1, 2, 3, 2, 0, 0, 5, 4, 3, 1]
+        );
+        assert_eq!(
+            filter_encoded_semantic_tokens_by_line(tokens.clone(), 1, 2),
+            vec![1, 2, 3, 2, 0, 0, 5, 4, 3, 1, 1, 1, 2, 4, 0]
+        );
+        assert!(filter_encoded_semantic_tokens_by_line(tokens, 3, 4).is_empty());
+
+        Ok(())
+    }
+}
+
 fn semantic_token_subroutine_declaration_candidate(
     source: &str,
 ) -> Option<crate::semantic_tokens::SemanticTokenShadowCandidate> {
