@@ -8,7 +8,7 @@
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 use perl_parser_core::{NodeKind, Parser};
-use perl_tdd_support::must;
+use perl_tdd_support::{must, must_some};
 
 // ── Helper ──────────────────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ fn test_isa_infix_in_if_condition_parses_cleanly() {
 fn test_isa_infix_produces_binary_node_with_op_isa() {
     let mut parser = Parser::new(r#"$obj isa Foo"#);
     let ast = must(parser.parse());
-    let (left, _right) = find_isa_binary(&ast).expect("should find a Binary node with op=isa");
+    let (left, _right) = must_some(find_isa_binary(&ast));
     // Left operand must be the $obj variable
     assert!(
         matches!(&left.kind, NodeKind::Variable { sigil, name } if sigil == "$" && name == "obj"),
