@@ -34,27 +34,6 @@ fn find_method_attributes(node: &perl_parser_core::Node) -> Vec<String> {
     }
 }
 
-/// Parse `source` and return whether the first Method node has a signature.
-fn method_has_signature(source: &str) -> bool {
-    let mut parser = Parser::new(source);
-    let ast = must(parser.parse());
-    find_method_has_signature(&ast)
-}
-
-fn find_method_has_signature(node: &perl_parser_core::Node) -> bool {
-    match &node.kind {
-        NodeKind::Method { signature, .. } => signature.is_some(),
-        _ => {
-            for child in node.children() {
-                if find_method_has_signature(child) {
-                    return true;
-                }
-            }
-            false
-        }
-    }
-}
-
 // ── Failing cases: method + signature + trailing attribute ───────────────────
 // These tests document the bug: they SHOULD parse cleanly but currently error.
 
