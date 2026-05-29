@@ -1402,7 +1402,7 @@ impl InlineCompletionProvider {
         if ends_with_keyword(prefix, "bless ") {
             return ExpectedSyntax::BlessArguments;
         }
-        if ends_with_keyword(prefix, "return ") {
+        if return_expression_fragment(prefix).is_some() {
             return ExpectedSyntax::ReturnExpression;
         }
         if is_guard_condition_prefix(prefix) {
@@ -1594,6 +1594,27 @@ impl InlineCompletionProvider {
             .find(|variable| variable.is_scalar_self())
             .map(VariableFact::as_perl_variable)
             .or_else(|| context.visible_variables.first().map(VariableFact::as_perl_variable))
+    }
+
+    fn return_variable_items(
+        &self,
+        context: &SemanticInlineContext,
+        fragment: &str,
+    ) -> Vec<InlineCompletionItem> {
+        context
+            .visible_variables
+            .iter()
+            .map(VariableFact::as_perl_variable)
+            .filter(|variable| {
+                completion_matches_fragment(variable.as_str(), &format!("{variable};"), fragment)
+            })
+            .map(|variable| InlineCompletionItem {
+                insert_text: format!("{variable};"),
+                filter_text: Some(variable),
+                range: None,
+                command: None,
+            })
+            .collect()
     }
 
     fn preferred_guard_condition(&self, context: &SemanticInlineContext) -> Option<String> {
@@ -1921,20 +1942,17 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
-        if ends_with_keyword(prefix, "return ") {
-            if let Some(variable) = provider.preferred_return_variable(semantic_context) {
-                sink.push(
-                    Self::SOURCE,
-                    0,
-                    InlineCompletionItem {
-                        insert_text: format!("{variable};"),
-                        filter_text: Some(variable),
-                        range: None,
-                        command: None,
-                    },
-                );
-            } else if provider
-                .is_in_constructor_context(semantic_context.enclosing_sub.as_deref(), prefix)
+        if let Some(fragment) = return_expression_fragment(prefix) {
+            let mut pushed_variable = false;
+            for variable in provider.return_variable_items(semantic_context, fragment) {
+                sink.push(Self::SOURCE, 0, variable);
+                pushed_variable = true;
+            }
+
+            if !pushed_variable
+                && provider
+                    .is_in_constructor_context(semantic_context.enclosing_sub.as_deref(), prefix)
+                && completion_matches_fragment("$self", "$self;", fragment)
             {
                 sink.push(
                     Self::SOURCE,
@@ -2082,6 +2100,16 @@ fn is_preferred_guard_condition_name(name: &str) -> bool {
         || name.starts_with("can_")
         || name.starts_with("should_")
         || name.ends_with("_ok")
+}
+
+fn return_expression_fragment(prefix: &str) -> Option<&str> {
+    let return_index = last_keyword_index(prefix, "return ")?;
+    let fragment = &prefix[return_index + 7..];
+    fragment.chars().all(is_return_expression_fragment_char).then_some(fragment)
+}
+
+fn is_return_expression_fragment_char(ch: char) -> bool {
+    is_identifier_fragment_char(ch) || matches!(ch, '$' | '@' | '%')
 }
 
 fn is_guard_condition_prefix(prefix: &str) -> bool {
@@ -4173,6 +4201,42 @@ mod tests {
 
         assert!(!completions.items.is_empty());
         assert!(completions.items.iter().any(|item| item.insert_text == "return $result;"));
+    }
+
+    #[test]
+    fn return_partial_variable_replaces_typed_fragment() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $result = compute();\n    return $res\n}\n";
+        let character = "    return $res".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$result;")
+            .ok_or("expected partial return variable completion")?;
+        let range = item.range.as_ref().ok_or("partial return must carry a range")?;
+
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, "    return ".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, character);
+        Ok(())
+    }
+
+    #[test]
+    fn return_context_keeps_all_matching_visible_variables_ranked_by_recency()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $result = compute();\n    my $status = check($result);\n    return $\n}\n";
+        let character = "    return $".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 3, character);
+
+        assert_eq!(
+            completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("$status;")
+        );
+        assert!(completions.items.iter().any(|item| item.insert_text == "$result;"));
+        Ok(())
     }
 
     #[test]
