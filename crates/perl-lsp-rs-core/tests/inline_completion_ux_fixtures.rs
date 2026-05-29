@@ -8,7 +8,7 @@ use std::error::Error;
 
 use lsp_types::Range;
 use perl_lsp_rs_core::providers::inline_completion::{
-    InlineCompletionList, InlineCompletionProvider,
+    InlineCompletionEnvironment, InlineCompletionList, InlineCompletionProvider,
 };
 use perl_parser_core::position::{offset_to_utf16_line_col, utf16_line_col_to_offset};
 
@@ -186,6 +186,92 @@ fn inline_completion_fixture_corpus_stays_silent_in_reject_zones() -> TestResult
             )
             .into());
         }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_handles_crlf_context() -> TestResult {
+    let scenario = InlineCompletionScenario::from_fixture(
+        "use Test::More;\r\n\r\nmy $got = compute();\r\nmy $expected = 42;\r\n\r\n<<CURSOR>>",
+    )?;
+    let completions = scenario.completions();
+
+    let first = completions.items.first().ok_or("expected CRLF inline completion")?;
+    if first.insert_text != "is($got, $expected, 'test description');" {
+        return Err(format!(
+            "expected CRLF context to preserve visible test variables, got {:?}",
+            completion_texts(&completions)
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_keeps_utf16_replacement_ranges_after_wide_chars() -> TestResult
+{
+    let scenario = InlineCompletionScenario::from_fixture(r#"my $icon = "🦀"; use str<<CURSOR>>"#)?;
+    let completions = scenario.completions();
+    let item =
+        completions.items.iter().find(|item| item.insert_text == "strict;").ok_or_else(|| {
+            format!(
+                "expected strict completion after UTF-16-wide prefix, got {:?}",
+                completion_texts(&completions)
+            )
+        })?;
+    let range = item.range.as_ref().ok_or("expected UTF-16 replacement range")?;
+    let expected_start = r#"my $icon = "🦀"; use "#.encode_utf16().count() as u32;
+
+    if range.start.character != expected_start || range.end.character != scenario.character {
+        return Err(format!(
+            "expected UTF-16 range {expected_start}..{}, got {}..{}",
+            scenario.character, range.start.character, range.end.character
+        )
+        .into());
+    }
+    let replaced = slice_for_range(scenario.text.as_str(), range)?;
+    if replaced != "str" {
+        return Err(format!("expected UTF-16 range to replace str, got {replaced:?}").into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_ranks_environment_modules_over_builtin_pragmas() -> TestResult {
+    let scenario = InlineCompletionScenario::from_fixture("use My::<<CURSOR>>")?;
+    let environment = InlineCompletionEnvironment {
+        available_modules: vec![
+            "Other::Tool".to_string(),
+            "My::App".to_string(),
+            "My::App::Config".to_string(),
+            "My::Zed".to_string(),
+        ],
+    };
+    let completions = InlineCompletionProvider::new().get_inline_completions_with_environment(
+        scenario.text.as_str(),
+        scenario.line,
+        scenario.character,
+        &environment,
+    );
+
+    let first = completions.items.first().ok_or("expected environment-backed module completion")?;
+    if first.insert_text != "My::App;" {
+        return Err(format!(
+            "expected effective @INC module to rank first, got {:?}",
+            completion_texts(&completions)
+        )
+        .into());
+    }
+    if completions.items.iter().any(|item| item.insert_text == "Other::Tool;") {
+        return Err(format!(
+            "expected module completion to respect typed namespace, got {:?}",
+            completion_texts(&completions)
+        )
+        .into());
     }
 
     Ok(())
