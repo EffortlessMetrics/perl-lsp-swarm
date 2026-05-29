@@ -19,6 +19,7 @@ use perl_lsp_rs_core::providers::completion::collect_module_names_from_roots_wit
 use perl_lsp_rs_core::providers::inline_completion::InlineCompletionEnvironment;
 use perl_lsp_rs_core::providers::normalize_provider_decision_receipt;
 use perl_parser_core::source_file::is_perl_source_uri;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod debug_launch;
@@ -914,6 +915,7 @@ impl LspServer {
 
         let (include_paths, system_inc_paths, include_system_inc) =
             self.module_completion_roots_for_doc(uri, text, cursor_offset);
+        let include_paths = self.inline_module_scan_roots(uri, text, cursor_offset, include_paths);
         let mut available_modules = collect_module_names_from_roots_with_cache(
             fragment,
             &include_paths,
@@ -933,6 +935,22 @@ impl LspServer {
         available_modules.dedup();
 
         InlineCompletionEnvironment { available_modules }
+    }
+
+    fn inline_module_scan_roots(
+        &self,
+        uri: &str,
+        text: &str,
+        cursor_offset: usize,
+        include_paths: Vec<PathBuf>,
+    ) -> Vec<PathBuf> {
+        let Some(context) =
+            self.effective_inc_context_for_doc(Some(uri), Some(text), Some(cursor_offset))
+        else {
+            return include_paths;
+        };
+
+        filter_workspace_root_from_inline_module_scan_roots(&context.root, include_paths)
     }
 
     fn add_workspace_index_inline_modules(
@@ -1621,13 +1639,39 @@ impl LspServer {
     }
 }
 
+fn filter_workspace_root_from_inline_module_scan_roots(
+    workspace_root: &Path,
+    include_paths: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    include_paths
+        .into_iter()
+        .filter(|path| {
+            // The default workspace `.` root is valid for resolution, but
+            // inline import ghost text should not scan the whole project as
+            // if every root-level package path were deliberately reachable.
+            lexical_path_key(&workspace_root.join(path)) != lexical_path_key(workspace_root)
+        })
+        .collect()
+}
+
+fn lexical_path_key(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .replace("/./", "/")
+        .trim_end_matches("/.")
+        .trim_end_matches('/')
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{filter_workspace_root_from_inline_module_scan_roots, lexical_path_key};
     use crate::LspServer;
     use crate::state::ClientCapabilities;
     use serde_json::json;
     use std::collections::HashSet;
     use std::io::Cursor;
+    use std::path::PathBuf;
 
     /// Build a minimal test server with custom capabilities applied.
     fn make_server_with_caps(caps: ClientCapabilities) -> LspServer {
@@ -1635,6 +1679,45 @@ mod tests {
             LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(Vec::<u8>::new()));
         *server.client_capabilities.lock() = caps;
         server
+    }
+
+    #[test]
+    fn lexical_path_key_normalizes_current_dir_components() {
+        assert_eq!(
+            lexical_path_key(std::path::Path::new("workspace/./lib")),
+            lexical_path_key(std::path::Path::new("workspace/lib")),
+            "current-directory components should not change lexical path keys"
+        );
+        assert_ne!(
+            lexical_path_key(std::path::Path::new("workspace/./lib")),
+            lexical_path_key(std::path::Path::new("workspace/t/lib")),
+            "different lexical paths must stay different after current-directory normalization"
+        );
+    }
+
+    #[test]
+    fn inline_module_scan_roots_excludes_workspace_root() {
+        let workspace = PathBuf::from("/workspace");
+        let lib = workspace.join("lib");
+        let local_lib = workspace.join("local").join("lib").join("perl5");
+        let external = PathBuf::from("/opt/perl5/lib");
+
+        let filtered = filter_workspace_root_from_inline_module_scan_roots(
+            &workspace,
+            vec![
+                workspace.clone(),
+                workspace.join("."),
+                lib.clone(),
+                local_lib.clone(),
+                external.clone(),
+            ],
+        );
+
+        assert_eq!(
+            filtered,
+            vec![lib, local_lib, external],
+            "inline module scan roots must drop workspace-root wildcards while preserving explicit include roots"
+        );
     }
 
     /// When the client declares "label.location" in resolveSupport.properties,
