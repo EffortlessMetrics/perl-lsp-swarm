@@ -192,7 +192,7 @@ pub fn categorize_ignore(reason: &str, context: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{categorize_ignore, source_paths};
+    use super::{PACKAGE_NAME, binary_path, categorize_ignore, source_paths};
     use crate::version_sync::{is_pre_release, validate_version_format};
     use std::error::Error;
     use std::fs;
@@ -301,6 +301,21 @@ mod tests {
     }
 
     #[test]
+    fn binary_path_resolves_debug_executable_under_workspace_target() -> Result<(), Box<dyn Error>>
+    {
+        let root = PathBuf::from("/tmp/perl-ci-hygiene-workspace");
+        let path = binary_path(&root);
+
+        let mut expected = root.join("target").join("debug").join(PACKAGE_NAME);
+        if cfg!(windows) {
+            expected.set_extension(std::env::consts::EXE_EXTENSION);
+        }
+
+        assert_eq!(path, expected);
+        Ok(())
+    }
+
+    #[test]
     fn source_paths_include_split_rust_modules() -> Result<(), Box<dyn Error>> {
         let root = unique_temp_repo_dir("source-paths")?;
         let crate_root = root.join("crates").join("perl-ci-hygiene");
@@ -316,6 +331,50 @@ mod tests {
         assert!(contains_path(&paths, Path::new("crates/perl-ci-hygiene/src/main.rs")));
         assert!(contains_path(&paths, Path::new("crates/perl-ci-hygiene/src/process.rs")));
         assert!(contains_path(&paths, Path::new("crates/perl-ci-hygiene/src/commands/mod.rs")));
+
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn source_paths_are_sorted_and_ignore_non_rust_files() -> Result<(), Box<dyn Error>> {
+        let root = unique_temp_repo_dir("source-paths-sorted")?;
+        let crate_root = root.join("crates").join("perl-ci-hygiene");
+        let nested_dir = crate_root.join("src").join("z_nested");
+        fs::create_dir_all(&nested_dir)?;
+        fs::write(crate_root.join("Cargo.toml"), "")?;
+        fs::write(crate_root.join("src").join("lib.rs"), "")?;
+        fs::write(crate_root.join("src").join("README.md"), "not rust")?;
+        fs::write(nested_dir.join("alpha.rs"), "")?;
+        fs::write(nested_dir.join("notes.txt"), "not rust")?;
+
+        let paths = source_paths(&root);
+        let mut sorted = paths.clone();
+        sorted.sort();
+
+        assert_eq!(paths, sorted, "source_paths should be lexicographically sorted");
+        assert!(contains_path(&paths, Path::new("crates/perl-ci-hygiene/Cargo.toml")));
+        assert!(contains_path(&paths, Path::new("crates/perl-ci-hygiene/src/lib.rs")));
+        assert!(contains_path(&paths, Path::new("crates/perl-ci-hygiene/src/z_nested/alpha.rs")));
+        assert!(!contains_path(&paths, Path::new("crates/perl-ci-hygiene/src/README.md")));
+        assert!(!contains_path(&paths, Path::new("crates/perl-ci-hygiene/src/z_nested/notes.txt")));
+
+        fs::remove_dir_all(&root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn source_paths_returns_cargo_toml_when_src_directory_is_missing() -> Result<(), Box<dyn Error>>
+    {
+        let root = unique_temp_repo_dir("source-paths-missing-src")?;
+        let crate_root = root.join("crates").join("perl-ci-hygiene");
+        fs::create_dir_all(&crate_root)?;
+        fs::write(crate_root.join("Cargo.toml"), "")?;
+
+        let paths = source_paths(&root);
+
+        assert_eq!(paths.len(), 1);
+        assert!(contains_path(&paths, Path::new("crates/perl-ci-hygiene/Cargo.toml")));
 
         fs::remove_dir_all(&root)?;
         Ok(())
