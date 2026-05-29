@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use assert_cmd::cargo::cargo_bin_cmd;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 #[test]
@@ -75,6 +75,49 @@ fn semantic_inline_receipts_cli_writes_dashboard_inventory() -> Result<()> {
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("quality_counters map missing"))?;
     assert_eq!(quality_counters.get("available").and_then(Value::as_bool), Some(false));
+
+    Ok(())
+}
+
+#[test]
+fn semantic_inline_receipts_cli_embeds_quality_counters_when_available() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("semantic-inline-receipts.json");
+    let quality_receipt = temp.path().join("inline-completion-quality.json");
+
+    std::fs::write(
+        &quality_receipt,
+        serde_json::to_vec_pretty(&json!({
+            "fixtures_total": 28,
+            "fixtures_passed": 28,
+            "checks": {
+                "hard_zone_rejected": 14,
+                "parse_regressions": 0
+            }
+        }))?,
+    )?;
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "semantic-inline-receipts",
+            "--receipt",
+            &receipt.display().to_string(),
+            "--quality-receipt",
+            &quality_receipt.display().to_string(),
+        ])
+        .assert()
+        .success();
+
+    let receipt_json: Value = serde_json::from_slice(&std::fs::read(&receipt)?)?;
+    let quality_counters = receipt_json
+        .get("quality_counters")
+        .ok_or_else(|| anyhow!("semantic inline receipt omitted quality_counters"))?;
+
+    assert_eq!(quality_counters.get("available").and_then(Value::as_bool), Some(true));
+    assert_eq!(quality_counters.get("fixtures_total").and_then(Value::as_u64), Some(28));
+    assert_eq!(quality_counters.get("fixtures_passed").and_then(Value::as_u64), Some(28));
+    assert_eq!(quality_counters.get("hard_zone_rejections").and_then(Value::as_u64), Some(14));
+    assert_eq!(quality_counters.get("parse_regressions").and_then(Value::as_u64), Some(0));
 
     Ok(())
 }
