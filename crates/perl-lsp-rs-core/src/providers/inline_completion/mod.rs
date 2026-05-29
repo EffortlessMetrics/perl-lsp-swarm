@@ -898,6 +898,14 @@ impl InlineCompletionProvider {
         line: u32,
         character: u32,
     ) -> InlineCompletionList {
+        if let Some(range) = shebang_replacement_range(context.prefix.as_str(), line, character) {
+            for item in &mut list.items {
+                if item.range.is_none() && is_shebang_completion_item(item) {
+                    item.range = Some(range);
+                }
+            }
+        }
+
         let Some(fragment) = replacement_fragment_at_cursor(context.prefix.as_str()) else {
             return list;
         };
@@ -1402,10 +1410,10 @@ impl InlineCompletionProvider {
         if ends_with_keyword(prefix, "bless ") {
             return ExpectedSyntax::BlessArguments;
         }
-        if ends_with_keyword(prefix, "return ") {
+        if return_expression_fragment(prefix).is_some() {
             return ExpectedSyntax::ReturnExpression;
         }
-        if is_guard_condition_prefix(prefix) {
+        if guard_condition_fragment(prefix).is_some() {
             return ExpectedSyntax::GuardCondition;
         }
         if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
@@ -1921,8 +1929,10 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
-        if ends_with_keyword(prefix, "return ") {
-            if let Some(variable) = provider.preferred_return_variable(semantic_context) {
+        if let Some(fragment) = return_expression_fragment(prefix) {
+            if let Some(variable) = provider.preferred_return_variable(semantic_context)
+                && completion_matches_fragment(variable.as_str(), &format!("{variable};"), fragment)
+            {
                 sink.push(
                     Self::SOURCE,
                     0,
@@ -1933,8 +1943,9 @@ impl InlineCandidateSource for SyntaxCandidateSource {
                         command: None,
                     },
                 );
-            } else if provider
-                .is_in_constructor_context(semantic_context.enclosing_sub.as_deref(), prefix)
+            } else if fragment.is_empty()
+                && provider
+                    .is_in_constructor_context(semantic_context.enclosing_sub.as_deref(), prefix)
             {
                 sink.push(
                     Self::SOURCE,
@@ -1949,8 +1960,9 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             }
         }
 
-        if is_guard_condition_prefix(prefix)
+        if let Some(fragment) = guard_condition_fragment(prefix)
             && let Some(condition) = provider.preferred_guard_condition(semantic_context)
+            && completion_matches_fragment(condition.as_str(), &format!("{condition};"), fragment)
         {
             sink.push(
                 Self::SOURCE,
@@ -2036,12 +2048,15 @@ impl InlineCandidateSource for ShebangCandidateSource {
         sink: &mut InlineCandidateSink<'_>,
     ) {
         let prefix = context.prefix.as_str();
-        if prefix == "#!" || prefix == "#!/" {
+        let Some(fragment) = shebang_completion_fragment(prefix) else {
+            return;
+        };
+        if completion_matches_fragment("perl", SHEBANG_PERL_INTERPRETER, fragment) {
             sink.push(
                 Self::SOURCE,
                 0,
                 InlineCompletionItem {
-                    insert_text: "/usr/bin/env perl".into(),
+                    insert_text: SHEBANG_PERL_INTERPRETER.into(),
                     filter_text: Some("perl".into()),
                     range: None,
                     command: None,
@@ -2082,13 +2097,6 @@ fn is_preferred_guard_condition_name(name: &str) -> bool {
         || name.starts_with("can_")
         || name.starts_with("should_")
         || name.ends_with("_ok")
-}
-
-fn is_guard_condition_prefix(prefix: &str) -> bool {
-    ends_with_keyword(prefix, "return unless ")
-        || ends_with_keyword(prefix, "return if ")
-        || ends_with_keyword(prefix, "next if ")
-        || ends_with_keyword(prefix, "last if ")
 }
 
 fn test_statement_filter_text(statement: &str) -> &'static str {
@@ -2805,7 +2813,7 @@ fn cursor_is_inside_line_comment(
 }
 
 fn is_shebang_completion_prefix(prefix: &str, hash_offset: usize) -> bool {
-    hash_offset == 0 && matches!(prefix, "#!" | "#!/")
+    hash_offset == 0 && prefix.starts_with("#!")
 }
 
 fn cursor_is_inside_pod(text: &str, cursor_offset: usize) -> bool {
@@ -2985,6 +2993,58 @@ fn available_module_facts(modules: &[String]) -> Vec<ModuleFact> {
 
 fn completion_matches_fragment(filter_text: &str, insert_text: &str, fragment: &str) -> bool {
     fragment.is_empty() || filter_text.starts_with(fragment) || insert_text.starts_with(fragment)
+}
+
+const SHEBANG_PERL_INTERPRETER: &str = "/usr/bin/env perl";
+
+fn return_expression_fragment(prefix: &str) -> Option<&str> {
+    keyword_tail_fragment(prefix, "return ", is_return_expression_fragment_char)
+}
+
+fn guard_condition_fragment(prefix: &str) -> Option<&str> {
+    ["return unless ", "return if ", "next if ", "last if "].into_iter().find_map(|keyword| {
+        keyword_tail_fragment(prefix, keyword, is_return_expression_fragment_char)
+    })
+}
+
+fn keyword_tail_fragment<'prefix>(
+    prefix: &'prefix str,
+    keyword: &str,
+    is_fragment_char: fn(char) -> bool,
+) -> Option<&'prefix str> {
+    let keyword_index = last_keyword_index(prefix, keyword)?;
+    let fragment = &prefix[keyword_index + keyword.len()..];
+    fragment.chars().all(is_fragment_char).then_some(fragment)
+}
+
+fn is_return_expression_fragment_char(ch: char) -> bool {
+    is_identifier_fragment_char(ch) || matches!(ch, '$' | '@' | '%')
+}
+
+fn shebang_completion_fragment(prefix: &str) -> Option<&str> {
+    prefix.strip_prefix("#!").and_then(|fragment| {
+        (fragment.is_empty()
+            || SHEBANG_PERL_INTERPRETER.starts_with(fragment)
+            || "perl".starts_with(fragment))
+        .then_some(fragment)
+    })
+}
+
+fn is_shebang_completion_item(item: &InlineCompletionItem) -> bool {
+    item.insert_text == SHEBANG_PERL_INTERPRETER
+}
+
+fn shebang_replacement_range(prefix: &str, line: u32, character: u32) -> Option<lsp_types::Range> {
+    let fragment = shebang_completion_fragment(prefix)?;
+    if fragment.is_empty() {
+        return None;
+    }
+
+    let start_character = "#!".encode_utf16().count() as u32;
+    (start_character <= character).then_some(lsp_types::Range {
+        start: lsp_types::Position::new(line, start_character),
+        end: lsp_types::Position::new(line, character),
+    })
 }
 
 fn item_matches_fragment(item: &InlineCompletionItem, fragment: &str) -> bool {
@@ -3322,6 +3382,26 @@ mod tests {
     }
 
     #[test]
+    fn shebang_partial_path_replaces_typed_interpreter() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "#!/usr/bin/env p";
+        let character = source.encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 0, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "/usr/bin/env perl")
+            .ok_or("expected shebang interpreter completion")?;
+        let range = item.range.as_ref().ok_or("shebang completion should replace partial path")?;
+
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, "#!".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 0);
+        assert_eq!(range.end.character, character);
+        Ok(())
+    }
+
+    #[test]
     fn test_after_arrow_with_unicode_prefix_uses_utf16_position() {
         let provider = InlineCompletionProvider::new();
         let source = "my $emoji = \"😀\"; my $obj = Package->";
@@ -3458,6 +3538,27 @@ mod tests {
 
         assert!(insert_texts.contains(&"$is_valid;"));
         assert!(!insert_texts.contains(&"$result;"));
+    }
+
+    #[test]
+    fn guard_condition_partial_variable_replaces_typed_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $is_valid = validate();\n    return unless $is";
+        let character = "    return unless $is".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$is_valid;")
+            .ok_or("expected partial guard variable completion")?;
+        let range = item.range.as_ref().ok_or("partial guard variable should carry a range")?;
+
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, "    return unless ".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, character);
+        Ok(())
     }
 
     #[test]
@@ -4173,6 +4274,26 @@ mod tests {
 
         assert!(!completions.items.is_empty());
         assert!(completions.items.iter().any(|item| item.insert_text == "return $result;"));
+    }
+
+    #[test]
+    fn return_partial_variable_replaces_typed_prefix() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $result = compute();\n    return $res";
+        let character = "    return $res".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$result;")
+            .ok_or("expected partial return variable completion")?;
+        let range = item.range.as_ref().ok_or("partial return variable should carry a range")?;
+
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, "    return ".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, character);
+        Ok(())
     }
 
     #[test]
