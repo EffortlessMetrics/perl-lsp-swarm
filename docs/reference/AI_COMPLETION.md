@@ -76,7 +76,10 @@ back to deterministic rules if `fallback` is true).
 
 ## Supported Providers
 
-The only supported provider type is `openai_compat`, which supports both
+The only supported provider type is `openai_compat`. The provider now uses
+a small web connector boundary around authenticated JSON POST requests, so
+future hosted connectors can reuse the inline-completion prompt and response
+plumbing without duplicating transport code. It supports both
 OpenAI-compatible wire formats:
 
 - **Responses API** (recommended when available)
@@ -92,7 +95,7 @@ The server auto-selects the request/stream format from your configured endpoint:
 - **Azure OpenAI** -- `https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=<version>`
 - **Local servers** -- Any OpenAI-compatible local inference server (e.g. llama.cpp, vLLM, Ollama with OpenAI compatibility layer)
 - **Gemini (OpenAI-compatible)** -- `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` (typically with `model` like `gemini-2.5-pro` or `gemini-2.5-flash`)
-- **Other providers** -- Any service that accepts the same request format and returns SSE `data:` lines with `choices[].delta.content`
+- **Other providers** -- Any service that accepts the same request format and returns SSE `data:` lines with `choices[].delta.content`, or non-streaming JSON shaped like Chat Completions `choices[].message.content` or Responses `output_text` / `output[].content[].text`
 
 For Chat Completions endpoints, the request format uses `"stream": true`,
 `messages` (system + user with fill-in-the-middle context), and the configured

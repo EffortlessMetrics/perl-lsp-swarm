@@ -3,10 +3,11 @@
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
 use super::sse::SseParser;
+use super::web::{UreqWebAiConnector, WebAiConnector, WebAiRequest, WebAiResponse};
 use crate::providers::inline_completion::{
     BackendError, BackendRequest, InlineCompletionBackend, StreamChunk, StreamControl,
 };
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::sync::Arc;
 
 /// Configuration for the OpenAI-compatible provider.
@@ -26,12 +27,26 @@ pub struct OpenAiConfig {
 pub struct OpenAiProvider {
     config: OpenAiConfig,
     limiter: Arc<RateLimiter>,
+    connector: Arc<dyn WebAiConnector>,
 }
 
 impl OpenAiProvider {
     /// Create a new provider with the given config and rate limiter.
     pub fn new(config: OpenAiConfig, limiter: Arc<RateLimiter>) -> Self {
-        Self { config, limiter }
+        Self { config, limiter, connector: Arc::new(UreqWebAiConnector) }
+    }
+
+    /// Create a provider with an injected web connector.
+    ///
+    /// This is used by tests and by future hosted AI connectors that need to
+    /// customize transport behavior while preserving OpenAI-compatible prompt
+    /// and response handling.
+    pub fn new_with_connector(
+        config: OpenAiConfig,
+        limiter: Arc<RateLimiter>,
+        connector: Arc<dyn WebAiConnector>,
+    ) -> Self {
+        Self { config, limiter, connector }
     }
 
     fn build_request_body(&self, req: &BackendRequest) -> serde_json::Value {
@@ -103,13 +118,97 @@ impl OpenAiProvider {
             _ => None,
         }
     }
+
+    fn extract_complete_text(data: &str) -> Option<String> {
+        let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
+
+        if let Some(content) = parsed
+            .get("choices")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("content"))
+            .and_then(serde_json::Value::as_str)
+        {
+            return Some(content.to_string());
+        }
+
+        if let Some(text) = parsed.get("output_text").and_then(serde_json::Value::as_str) {
+            return Some(text.to_string());
+        }
+
+        parsed
+            .get("output")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("content").and_then(serde_json::Value::as_array))
+            .flatten()
+            .filter_map(|content| content.get("text").and_then(serde_json::Value::as_str))
+            .next()
+            .map(str::to_string)
+    }
+
+    fn response_is_json(response: &WebAiResponse) -> bool {
+        response.content_type.as_deref().is_some_and(|content_type| {
+            content_type.to_ascii_lowercase().contains("application/json")
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{OpenAiConfig, OpenAiProvider};
     use crate::providers::ai::rate_limiter::RateLimiter;
+    use crate::providers::ai::web::{WebAiConnector, WebAiRequest, WebAiResponse};
+    use crate::providers::inline_completion::{
+        BackendError, BackendRequest, InlineCompletionBackend, PreparedInlineCompletionContext,
+        StreamControl,
+    };
+    use std::io::Cursor;
     use std::sync::Arc;
+
+    struct StaticJsonConnector {
+        body: String,
+    }
+
+    impl WebAiConnector for StaticJsonConnector {
+        fn post_json(&self, _request: WebAiRequest) -> Result<WebAiResponse, BackendError> {
+            Ok(WebAiResponse {
+                content_type: Some("application/json".to_string()),
+                body: Box::new(Cursor::new(self.body.clone().into_bytes())),
+            })
+        }
+    }
+
+    fn backend_request() -> BackendRequest {
+        BackendRequest {
+            context: PreparedInlineCompletionContext {
+                prefix: "my $x = ".to_string(),
+                current_line: "my $x = ".to_string(),
+                previous_non_empty_line: Some("use strict;".to_string()),
+                current_function: Some("example".to_string()),
+                current_package: Some("My::Package".to_string()),
+                variables: vec!["$self".to_string()],
+                imports: vec!["strict".to_string()],
+            },
+            max_output_tokens: 32,
+            timeout_ms: 1000,
+        }
+    }
+
+    fn provider_with_json_response(body: &str) -> OpenAiProvider {
+        OpenAiProvider::new_with_connector(
+            OpenAiConfig {
+                endpoint: "https://example.test/v1/chat/completions".to_string(),
+                model: "test-model".to_string(),
+                api_key: "test-key".to_string(),
+                timeout_ms: 1000,
+            },
+            Arc::new(RateLimiter::new(1.0, 1)),
+            Arc::new(StaticJsonConnector { body: body.to_string() }),
+        )
+    }
 
     fn provider_with_endpoint(endpoint: &str) -> OpenAiProvider {
         OpenAiProvider::new(
@@ -149,6 +248,27 @@ mod tests {
         let data = r#"{"type":"response.completed"}"#;
         assert_eq!(OpenAiProvider::extract_finish_reason(data), Some("stop".to_string()));
     }
+
+    #[test]
+    fn streams_non_sse_chat_completion_json() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = provider_with_json_response(
+            r#"{"choices":[{"message":{"content":"$self->render"},"finish_reason":"stop"}]}"#,
+        );
+        let mut chunks = Vec::new();
+        provider.stream(&backend_request(), &mut |chunk| {
+            chunks.push((chunk.text, chunk.is_final));
+            StreamControl::Continue
+        })?;
+
+        assert_eq!(chunks, vec![("$self->render".to_string(), true)]);
+        Ok(())
+    }
+
+    #[test]
+    fn extracts_responses_complete_json_text() {
+        let data = r#"{"output":[{"content":[{"type":"output_text","text":"return $value;"}]}]}"#;
+        assert_eq!(OpenAiProvider::extract_complete_text(data), Some("return $value;".to_string()));
+    }
 }
 
 impl InlineCompletionBackend for OpenAiProvider {
@@ -162,28 +282,25 @@ impl InlineCompletionBackend for OpenAiProvider {
         }
 
         let body = self.build_request_body(req);
-        let timeout = std::time::Duration::from_millis(req.timeout_ms);
+        let response = self.connector.post_json(WebAiRequest {
+            endpoint: self.config.endpoint.clone(),
+            bearer_token: self.config.api_key.clone(),
+            body,
+            timeout_ms: req.timeout_ms,
+        })?;
 
-        let config = ureq::Agent::config_builder().timeout_global(Some(timeout)).build();
-        let agent = ureq::Agent::new_with_config(config);
+        if Self::response_is_json(&response) {
+            let mut body = String::new();
+            BufReader::new(response.body)
+                .read_to_string(&mut body)
+                .map_err(|e| BackendError::Transport(e.to_string()))?;
+            if let Some(text) = Self::extract_complete_text(&body) {
+                sink(StreamChunk { text, is_final: true });
+            }
+            return Ok(());
+        }
 
-        let response = agent
-            .post(&self.config.endpoint)
-            .header("Authorization", &format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .send_json(&body)
-            .map_err(|e| {
-                let msg = e.to_string();
-                if msg.contains("timed out") || msg.contains("timeout") {
-                    BackendError::Timeout
-                } else if msg.contains("401") || msg.contains("403") {
-                    BackendError::Auth(msg)
-                } else {
-                    BackendError::Transport(msg)
-                }
-            })?;
-
-        let reader = BufReader::new(response.into_body().into_reader());
+        let reader = BufReader::new(response.body);
         let mut parser = SseParser::new(reader);
         let mut cumulative = String::new();
 
