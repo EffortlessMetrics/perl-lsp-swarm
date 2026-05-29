@@ -198,3 +198,145 @@ fn phase_defer_and_data_section_cover_compile_time_and_tail_constructs() -> Resu
 
     Ok(())
 }
+
+#[test]
+fn c_style_for_loop_preserves_all_clauses_and_continue_block() -> Result<(), String> {
+    let ast = parse_without_errors(
+        "for (my $i = 0; $i < 3; $i++) { next if $i == 1; } continue { $seen++; }",
+    )?;
+    let statements = program_statements(&ast)?;
+    assert_eq!(statements.len(), 1);
+
+    match &statements[0].kind {
+        NodeKind::For { init, condition, update, body, continue_block } => {
+            let init = init.as_ref().ok_or("missing for-loop initializer")?;
+            assert!(matches!(init.kind, NodeKind::VariableDeclaration { .. }));
+
+            let condition = condition.as_ref().ok_or("missing for-loop condition")?;
+            match &condition.kind {
+                NodeKind::Binary { op, .. } => assert_eq!(op, "<"),
+                other => return Err(format!("expected binary condition, got {other:?}")),
+            }
+
+            let update = update.as_ref().ok_or("missing for-loop update")?;
+            match &update.kind {
+                NodeKind::Unary { op, .. } => assert_eq!(op, "++"),
+                other => return Err(format!("expected unary update, got {other:?}")),
+            }
+
+            let body_statements = block_statements(body)?;
+            assert_eq!(body_statements.len(), 1);
+            assert!(matches!(body_statements[0].kind, NodeKind::StatementModifier { .. }));
+
+            let continue_block = continue_block.as_ref().ok_or("missing continue block")?;
+            assert_eq!(block_statements(continue_block)?.len(), 1);
+        }
+        other => return Err(format!("expected For node, got {other:?}")),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tie_untie_goto_and_labels_keep_distinct_statement_nodes() -> Result<(), String> {
+    let ast = parse_without_errors(
+        "tie %cache, 'Tie::IxHash', @seed; untie %cache; goto &dispatch; goto DONE; DONE: return;",
+    )?;
+    let statements = program_statements(&ast)?;
+    assert_eq!(statements.len(), 5);
+
+    let tie_statement = expression_statement(&statements[0])?;
+    match &tie_statement.kind {
+        NodeKind::Tie { variable, package, args } => {
+            assert_eq!(variable_name(variable)?, "%cache");
+            assert!(matches!(package.kind, NodeKind::String { .. }));
+            assert_eq!(args.len(), 1);
+            assert_eq!(variable_name(&args[0])?, "@seed");
+        }
+        other => return Err(format!("expected Tie node, got {other:?}")),
+    }
+
+    let untie_statement = expression_statement(&statements[1])?;
+    match &untie_statement.kind {
+        NodeKind::Untie { variable } => assert_eq!(variable_name(variable)?, "%cache"),
+        other => return Err(format!("expected Untie node, got {other:?}")),
+    }
+
+    assert!(matches!(statements[2].kind, NodeKind::Goto { .. }));
+    match &statements[3].kind {
+        NodeKind::Goto { target } => match &target.kind {
+            NodeKind::Identifier { name } => assert_eq!(name, "DONE"),
+            other => return Err(format!("expected identifier goto target, got {other:?}")),
+        },
+        other => return Err(format!("expected Goto node, got {other:?}")),
+    }
+
+    match &statements[4].kind {
+        NodeKind::LabeledStatement { label, statement } => {
+            assert_eq!(label, "DONE");
+            assert!(matches!(statement.kind, NodeKind::Return { .. }));
+        }
+        other => return Err(format!("expected LabeledStatement node, got {other:?}")),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn diamond_glob_and_ellipsis_literals_remain_distinguishable() -> Result<(), String> {
+    let ast = parse_without_errors(
+        "my $line = <$fh>; my @files = <*.pm>; my $next = <>; sub pending { ... }",
+    )?;
+    let statements = program_statements(&ast)?;
+    assert_eq!(statements.len(), 4);
+
+    let first_initializer = variable_initializer(&statements[0])?;
+    match &first_initializer.kind {
+        NodeKind::Glob { pattern } => assert_eq!(pattern, "$fh"),
+        other => return Err(format!("expected filehandle glob node, got {other:?}")),
+    }
+
+    let second_initializer = variable_initializer(&statements[1])?;
+    match &second_initializer.kind {
+        NodeKind::Glob { pattern } => assert_eq!(pattern, "*.pm"),
+        other => return Err(format!("expected wildcard glob node, got {other:?}")),
+    }
+
+    let third_initializer = variable_initializer(&statements[2])?;
+    assert!(matches!(third_initializer.kind, NodeKind::Diamond));
+
+    match &statements[3].kind {
+        NodeKind::Subroutine { name, body, .. } => {
+            assert_eq!(name.as_deref(), Some("pending"));
+            let body_statements = block_statements(body)?;
+            assert_eq!(body_statements.len(), 1);
+            match &body_statements[0].kind {
+                NodeKind::ExpressionStatement { expression } => {
+                    assert!(matches!(expression.kind, NodeKind::Ellipsis));
+                }
+                other => {
+                    return Err(format!("expected ellipsis expression statement, got {other:?}"));
+                }
+            }
+        }
+        other => return Err(format!("expected Subroutine node, got {other:?}")),
+    }
+
+    Ok(())
+}
+
+fn expression_statement(node: &Node) -> Result<&Node, String> {
+    match &node.kind {
+        NodeKind::ExpressionStatement { expression } => Ok(expression),
+        _ => Ok(node),
+    }
+}
+
+fn variable_initializer(node: &Node) -> Result<&Node, String> {
+    match &node.kind {
+        NodeKind::VariableDeclaration { initializer, .. } => {
+            initializer.as_deref().ok_or("missing variable initializer".to_string())
+        }
+        other => Err(format!("expected VariableDeclaration node, got {other:?}")),
+    }
+}
