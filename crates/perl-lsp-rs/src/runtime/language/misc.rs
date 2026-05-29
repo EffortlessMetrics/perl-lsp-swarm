@@ -1720,6 +1720,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inline_module_scan_roots_preserves_paths_without_context() {
+        let server = LspServer::default();
+        let include_paths = vec![PathBuf::from("/workspace"), PathBuf::from("/workspace/lib")];
+
+        let filtered = server.inline_module_scan_roots(
+            "file:///outside.pl",
+            "use My::",
+            "use My::".len(),
+            include_paths.clone(),
+        );
+
+        assert_eq!(
+            filtered, include_paths,
+            "without a document include context, inline scan roots should remain unchanged"
+        );
+    }
+
+    #[test]
+    fn inline_completion_environment_filters_workspace_root_scan_candidates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::runtime::workspace_folder::WorkspaceFolderState;
+        use perl_lsp_rs_core::providers::inline_completion::InlineCompletionProvider;
+        use tempfile::TempDir;
+        use url::Url;
+
+        let temp = TempDir::new()?;
+        let workspace = temp.path().join("workspace");
+        let lib_module = workspace.join("lib").join("My").join("App.pm");
+        let root_only_module = workspace.join("My").join("RootOnly.pm");
+        std::fs::create_dir_all(lib_module.parent().ok_or("missing lib parent")?)?;
+        std::fs::create_dir_all(root_only_module.parent().ok_or("missing root parent")?)?;
+        std::fs::write(&lib_module, "package My::App;\n1;\n")?;
+        std::fs::write(&root_only_module, "package My::RootOnly;\n1;\n")?;
+
+        let doc_path = workspace.join("script.pl");
+        let doc_text = "use lib 'lib';\nuse My::";
+        std::fs::write(&doc_path, doc_text)?;
+
+        let workspace_uri =
+            Url::from_file_path(&workspace).map_err(|()| "failed workspace URI")?.to_string();
+        let doc_uri =
+            Url::from_file_path(&doc_path).map_err(|()| "failed document URI")?.to_string();
+
+        let server = LspServer::default();
+        let folder = WorkspaceFolderState::new(workspace_uri).with_path(workspace.clone());
+        server.workspace_folders.lock().push(folder);
+        assert_eq!(
+            server.workspace_folders.lock().len(),
+            1,
+            "test setup should register one workspace folder"
+        );
+
+        let provider = InlineCompletionProvider::new();
+        let context = provider.prepare_context(doc_text, 1, 8).ok_or("expected inline context")?;
+        let environment =
+            server.inline_completion_environment_for_context(&doc_uri, doc_text, 1, 8, &context);
+
+        assert!(
+            environment.available_modules.contains(&"My::App".to_string()),
+            "explicit use lib module should be available; got {:?}",
+            environment.available_modules
+        );
+        assert!(
+            !environment.available_modules.contains(&"My::RootOnly".to_string()),
+            "workspace-root-only module must not leak through scan roots; got {:?}",
+            environment.available_modules
+        );
+        Ok(())
+    }
+
     /// When the client declares "label.location" in resolveSupport.properties,
     /// handle_inlay_hint_resolve must include labelDetails in the response for
     /// a parameter hint (kind=2) that has no function data to resolve.
