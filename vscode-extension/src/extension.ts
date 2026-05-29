@@ -2429,7 +2429,7 @@ export async function validateIncludePaths(context: vscode.ExtensionContext): Pr
         const includePaths: string[] = config.get('includePaths', ['lib', 'local/lib/perl5']);
 
         // Origin-aware validation: built-in default include paths (e.g. "lib",
-        // "local/lib/perl5") are optional search hints — used if present,
+        // "local/lib/perl5") are optional search hints: used if present,
         // silently ignored if missing. Only explicitly-configured paths are
         // expectations worth a user-facing warning. Otherwise a fresh project
         // without a lib/ directory looks broken on first run when it is not.
@@ -2452,7 +2452,7 @@ export async function validateIncludePaths(context: vscode.ExtensionContext): Pr
             continue;
         }
         const missingPaths = includePaths.filter(includePath => {
-            // Missing built-in defaults are optional hints — never reported.
+            // Missing built-in defaults are optional hints: never reported.
             if (isDefaultPath(includePath)) {
                 return false;
             }

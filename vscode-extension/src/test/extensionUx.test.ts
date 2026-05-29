@@ -473,6 +473,30 @@ describe('extension UX warnings', () => {
     expect(message).not.toContain('include paths are missing');
   });
 
+  test('create_missing_directories_creates_only_explicit_paths', async () => {
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-create-explicit-only-'));
+    const context = makeContext();
+    mockIncludePathConfig(['lib', 'vendor/lib', 'local/lib/perl5']);
+    setSingleWorkspace(workspaceDir);
+
+    const showWarningMessage = vscode.window.showWarningMessage as jest.Mock;
+    showWarningMessage.mockResolvedValue('Create Missing Directories');
+
+    await validateIncludePaths(context);
+
+    expect(showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('vendor/lib'),
+      'Open Settings',
+      'Create Missing Directories'
+    );
+    expect(fs.existsSync(path.join(workspaceDir, 'vendor/lib'))).toBe(true);
+    expect(fs.existsSync(path.join(workspaceDir, 'lib'))).toBe(false);
+    expect(fs.existsSync(path.join(workspaceDir, 'local/lib/perl5'))).toBe(false);
+    expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Created 1 include directory: vendor/lib.')
+    );
+  });
+
   test('existing_default_path_is_still_used', async () => {
     const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-existing-default-'));
     fs.mkdirSync(path.join(workspaceDir, 'lib'), { recursive: true });
