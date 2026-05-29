@@ -30,6 +30,11 @@ pub fn build_fim_prompt(context: &PreparedInlineCompletionContext) -> (String, S
     }
     user.push_str(&context.prefix);
     user.push_str("<CURSOR>");
+    user.push_str(&context.suffix);
+    if let Some(ref next) = context.next_non_empty_line {
+        user.push('\n');
+        user.push_str(next);
+    }
 
     (system, user)
 }
@@ -42,8 +47,10 @@ mod tests {
     fn basic_prompt_includes_prefix() {
         let ctx = PreparedInlineCompletionContext {
             prefix: "my $x = ".to_string(),
-            current_line: "my $x = ".to_string(),
+            suffix: "fallback();".to_string(),
+            current_line: "my $x = fallback();".to_string(),
             previous_non_empty_line: Some("use strict;".to_string()),
+            next_non_empty_line: Some("return $x;".to_string()),
             current_function: Some("new".to_string()),
             current_package: Some("MyClass".to_string()),
             variables: vec!["$self".to_string()],
@@ -53,8 +60,8 @@ mod tests {
         assert!(system.contains("Perl"));
         assert!(system.contains("MyClass"));
         assert!(system.contains("new"));
-        assert!(user.contains("my $x = "));
-        assert!(user.contains("<CURSOR>"));
+        assert!(user.contains("my $x = <CURSOR>fallback();"));
+        assert!(user.contains("return $x;"));
         assert!(user.contains("use strict;"));
     }
 }

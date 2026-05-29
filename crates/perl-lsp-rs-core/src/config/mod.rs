@@ -219,6 +219,41 @@ impl Default for AiStreamingConfig {
     }
 }
 
+impl AiCompletionConfig {
+    /// Return an endpoint suitable for the configured OpenAI-compatible connector.
+    ///
+    /// Explicit project or client settings always win. When no endpoint is set,
+    /// known web connectors get a stable default so clients only need to provide
+    /// `provider`, `model`, and credentials. Unsupported provider names return
+    /// `None` so the runtime can leave the backend disabled.
+    pub fn effective_endpoint(&self) -> Option<String> {
+        let endpoint = self.endpoint.trim();
+        if !endpoint.is_empty() {
+            return Some(endpoint.to_string());
+        }
+
+        match normalized_ai_provider(self.provider.as_str()).as_str() {
+            "openai" | "openai-compat" | "openai-compatible" => {
+                Some("https://api.openai.com/v1/chat/completions".to_string())
+            }
+            "openai-responses" | "responses" => {
+                Some("https://api.openai.com/v1/responses".to_string())
+            }
+            "gemini" | "google" => Some(
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                    .to_string(),
+            ),
+            "openrouter" => Some("https://openrouter.ai/api/v1/chat/completions".to_string()),
+            "ollama" | "local" => Some("http://127.0.0.1:11434/v1/chat/completions".to_string()),
+            _ => None,
+        }
+    }
+}
+
+fn normalized_ai_provider(provider: &str) -> String {
+    provider.trim().to_ascii_lowercase().replace('_', "-")
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -1424,6 +1459,42 @@ profile = "recommended"
         }));
         assert!(config.perltidy_profile.is_none());
         Ok(())
+    }
+
+    #[test]
+    fn ai_completion_supplies_web_connector_default_endpoints() {
+        let mut config =
+            AiCompletionConfig { provider: "gemini".to_string(), ..AiCompletionConfig::default() };
+        assert_eq!(
+            config.effective_endpoint().as_deref(),
+            Some("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+        );
+
+        config.provider = "openrouter".to_string();
+        assert_eq!(
+            config.effective_endpoint().as_deref(),
+            Some("https://openrouter.ai/api/v1/chat/completions")
+        );
+
+        config.provider = "openai_responses".to_string();
+        assert_eq!(
+            config.effective_endpoint().as_deref(),
+            Some("https://api.openai.com/v1/responses")
+        );
+    }
+
+    #[test]
+    fn ai_completion_preserves_explicit_endpoint() {
+        let config = AiCompletionConfig {
+            provider: "gemini".to_string(),
+            endpoint: " https://proxy.example.test/v1/chat/completions ".to_string(),
+            ..AiCompletionConfig::default()
+        };
+
+        assert_eq!(
+            config.effective_endpoint().as_deref(),
+            Some("https://proxy.example.test/v1/chat/completions")
+        );
     }
 
     #[test]

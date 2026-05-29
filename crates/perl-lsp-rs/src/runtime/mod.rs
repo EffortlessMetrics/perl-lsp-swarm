@@ -402,10 +402,20 @@ impl LspServer {
             return configured;
         }
 
-        // Compatibility fallback: many OpenAI-compatible clients (including Gemini CLI setups)
-        // export provider-specific key names instead of OPENAI_API_KEY.
-        const FALLBACK_API_KEY_ENVS: [&str; 2] = ["GEMINI_API_KEY", "GOOGLE_API_KEY"];
-        FALLBACK_API_KEY_ENVS.iter().find_map(|name| read_env(name))
+        // Compatibility fallback: OpenAI-compatible web connectors often export
+        // provider-specific key names instead of OPENAI_API_KEY.
+        Self::fallback_ai_api_key_envs(ai_config.provider.as_str())
+            .into_iter()
+            .find_map(|name| read_env(name))
+    }
+
+    fn fallback_ai_api_key_envs(provider: &str) -> Vec<&'static str> {
+        match provider.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "gemini" | "google" => vec!["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            "openrouter" => vec!["OPENROUTER_API_KEY"],
+            "ollama" | "local" => vec!["OLLAMA_API_KEY"],
+            _ => vec!["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"],
+        }
     }
 
     /// Active feature profile for this server instance.
@@ -471,8 +481,14 @@ impl LspServer {
             return;
         };
 
+        let Some(endpoint) = ai_config.effective_endpoint() else {
+            tracing::warn!(provider = %ai_config.provider, "AI completion enabled with unsupported provider");
+            *self.ai_inline_backend.lock() = None;
+            return;
+        };
+
         let provider_config = perl_lsp_rs_core::providers::ai::OpenAiConfig {
-            endpoint: ai_config.endpoint.clone(),
+            endpoint: endpoint.clone(),
             model: ai_config.model.clone(),
             api_key,
             timeout_ms: ai_config.timeout_ms,
@@ -487,7 +503,7 @@ impl LspServer {
             perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
         *self.ai_inline_backend.lock() = Some(Arc::new(provider));
 
-        tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+        tracing::info!(endpoint = %endpoint, model = %ai_config.model, "AI inline completion backend configured");
     }
 
     /// Get the subprocess runtime for external tool execution (perltidy, perlcritic).
@@ -1403,6 +1419,25 @@ mod tests {
         assert_eq!(
             LspServer::resolve_ai_api_key_with(&config, read_env).as_deref(),
             Some("gemini-key")
+        );
+    }
+
+    #[test]
+    fn resolve_ai_api_key_uses_openrouter_provider_fallback() {
+        let config = AiCompletionConfig {
+            provider: "openrouter".to_string(),
+            ..AiCompletionConfig::default()
+        };
+        let read_env = |name: &str| match name {
+            "OPENAI_API_KEY" => None,
+            "OPENROUTER_API_KEY" => Some("openrouter-key".to_string()),
+            "GEMINI_API_KEY" => Some("gemini-key".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(
+            LspServer::resolve_ai_api_key_with(&config, read_env).as_deref(),
+            Some("openrouter-key")
         );
     }
 
