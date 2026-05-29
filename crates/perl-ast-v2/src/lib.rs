@@ -307,32 +307,121 @@ mod tests {
     use super::*;
     use perl_position_tracking::{Position, Range};
 
-    #[test]
-    fn test_node_creation() {
-        let mut id_gen = NodeIdGenerator::new();
-        let range = Range::new(Position::new(0, 1, 1), Position::new(5, 1, 6));
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-        let node = Node::new(id_gen.next_id(), NodeKind::Number { value: "42".to_string() }, range);
+    fn test_range() -> Range {
+        Range::new(Position::new(0, 1, 1), Position::new(5, 1, 6))
+    }
 
-        assert_eq!(node.id, 0);
-        assert_eq!(node.to_sexp(), "(number 42)");
+    fn node(id: NodeId, kind: NodeKind) -> Node {
+        Node::new(id, kind, test_range())
     }
 
     #[test]
-    fn test_error_nodes() {
+    fn test_node_creation() -> TestResult {
         let mut id_gen = NodeIdGenerator::new();
-        let range = Range::new(Position::new(0, 1, 1), Position::new(0, 1, 1));
 
-        let error = Node::new(
+        let node = node(id_gen.next_id(), NodeKind::Number { value: "42".to_string() });
+
+        assert_eq!(node.id, 0);
+        assert_eq!(node.to_sexp(), "(number 42)");
+        Ok(())
+    }
+
+    #[test]
+    fn test_error_nodes() -> TestResult {
+        let mut id_gen = NodeIdGenerator::new();
+
+        let error = node(
             id_gen.next_id(),
             NodeKind::Error {
                 message: "Unexpected token".to_string(),
                 expected: vec!["identifier".to_string()],
                 partial: None,
             },
-            range,
         );
 
         assert_eq!(error.to_sexp(), "(ERROR Unexpected token)");
+        Ok(())
+    }
+
+    #[test]
+    fn node_id_generator_default_continues_from_zero() -> TestResult {
+        let mut id_gen = NodeIdGenerator::default();
+
+        assert_eq!(id_gen.next_id(), 0);
+        assert_eq!(id_gen.next_id(), 1);
+        assert_eq!(id_gen.next_id(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn program_and_block_sexps_include_child_nodes_in_order() -> TestResult {
+        let first = node(1, NodeKind::Number { value: "42".to_string() });
+        let second =
+            node(2, NodeKind::Variable { sigil: "$".to_string(), name: "answer".to_string() });
+
+        let program = NodeKind::Program { statements: vec![first.clone(), second.clone()] };
+        let block = NodeKind::Block { statements: vec![first, second] };
+
+        assert_eq!(program.to_sexp(), "(source_file (number 42) (variable $ answer))");
+        assert_eq!(block.to_sexp(), "(block (number 42) (variable $ answer))");
+        Ok(())
+    }
+
+    #[test]
+    fn string_sexp_distinguishes_plain_and_interpolated_values() -> TestResult {
+        let plain = NodeKind::String { value: "literal $name".to_string(), interpolated: false };
+        let interpolated =
+            NodeKind::String { value: "hello $name".to_string(), interpolated: true };
+
+        assert_eq!(plain.to_sexp(), "(string \"literal $name\")");
+        assert_eq!(interpolated.to_sexp(), "(string_interpolated \"hello $name\")");
+        Ok(())
+    }
+
+    #[test]
+    fn binary_sexp_recurses_into_operands() -> TestResult {
+        let left = node(1, NodeKind::Variable { sigil: "$".to_string(), name: "lhs".to_string() });
+        let right = node(2, NodeKind::Number { value: "1".to_string() });
+
+        let binary =
+            NodeKind::Binary { op: "+".to_string(), left: Box::new(left), right: Box::new(right) };
+
+        assert_eq!(binary.to_sexp(), "(binary_+ (variable $ lhs) (number 1))");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_nodes_render_stable_sexps() -> TestResult {
+        let cases = [
+            (NodeKind::ErrorRef { diag_id: 7 }, "(ERROR_REF #7)"),
+            (NodeKind::MissingExpression, "(MISSING_EXPRESSION)"),
+            (NodeKind::MissingStatement, "(MISSING_STATEMENT)"),
+            (NodeKind::MissingIdentifier, "(MISSING_IDENTIFIER)"),
+            (NodeKind::MissingBlock, "(MISSING_BLOCK)"),
+            (NodeKind::Missing(MissingKind::Semicolon), "(MISSING Semicolon)"),
+            (
+                NodeKind::Missing(MissingKind::ClosingDelimiter('}')),
+                "(MISSING ClosingDelimiter('}'))",
+            ),
+        ];
+
+        for (kind, expected) in cases {
+            assert_eq!(kind.to_sexp(), expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fallback_debug_sexp_covers_unhandled_variants() -> TestResult {
+        let operand = node(1, NodeKind::Identifier { name: "flag".to_string() });
+        let unary = NodeKind::Unary { op: "!".to_string(), operand: Box::new(operand) };
+
+        let sexp = unary.to_sexp();
+
+        assert!(sexp.starts_with("(Unary {"));
+        assert!(sexp.contains("op: \"!\""));
+        Ok(())
     }
 }
