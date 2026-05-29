@@ -1402,10 +1402,10 @@ impl InlineCompletionProvider {
         if ends_with_keyword(prefix, "bless ") {
             return ExpectedSyntax::BlessArguments;
         }
-        if ends_with_keyword(prefix, "return ") {
+        if ends_with_keyword(prefix, "return ") || return_expression_fragment(prefix).is_some() {
             return ExpectedSyntax::ReturnExpression;
         }
-        if is_guard_condition_prefix(prefix) {
+        if guard_condition_fragment(prefix).is_some() {
             return ExpectedSyntax::GuardCondition;
         }
         if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
@@ -1588,28 +1588,49 @@ impl InlineCompletionProvider {
     }
 
     fn preferred_return_variable(&self, context: &SemanticInlineContext) -> Option<String> {
+        self.preferred_return_variable_matching(context, "")
+    }
+
+    fn preferred_return_variable_matching(
+        &self,
+        context: &SemanticInlineContext,
+        fragment: &str,
+    ) -> Option<String> {
         context
             .visible_variables
             .iter()
-            .find(|variable| variable.is_scalar_self())
+            .find(|variable| {
+                variable.is_scalar_self() && variable_matches_fragment(variable, fragment)
+            })
+            .or_else(|| {
+                context
+                    .visible_variables
+                    .iter()
+                    .find(|variable| variable_matches_fragment(variable, fragment))
+            })
             .map(VariableFact::as_perl_variable)
-            .or_else(|| context.visible_variables.first().map(VariableFact::as_perl_variable))
     }
 
-    fn preferred_guard_condition(&self, context: &SemanticInlineContext) -> Option<String> {
+    fn preferred_guard_condition_matching(
+        &self,
+        context: &SemanticInlineContext,
+        fragment: &str,
+    ) -> Option<String> {
         context
             .visible_variables
             .iter()
             .find(|variable| {
                 variable.is_scalar()
                     && !variable.is_scalar_self()
+                    && variable_matches_fragment(variable, fragment)
                     && is_preferred_guard_condition_name(variable.name.as_str())
             })
             .or_else(|| {
-                context
-                    .visible_variables
-                    .iter()
-                    .find(|variable| variable.is_scalar() && !variable.is_scalar_self())
+                context.visible_variables.iter().find(|variable| {
+                    variable.is_scalar()
+                        && !variable.is_scalar_self()
+                        && variable_matches_fragment(variable, fragment)
+                })
             })
             .map(VariableFact::as_perl_variable)
     }
@@ -1921,8 +1942,10 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
-        if ends_with_keyword(prefix, "return ") {
-            if let Some(variable) = provider.preferred_return_variable(semantic_context) {
+        if let Some(fragment) = return_expression_fragment(prefix) {
+            if let Some(variable) = provider
+                .preferred_return_variable_matching(semantic_context, fragment.unwrap_or_default())
+            {
                 sink.push(
                     Self::SOURCE,
                     0,
@@ -1933,8 +1956,9 @@ impl InlineCandidateSource for SyntaxCandidateSource {
                         command: None,
                     },
                 );
-            } else if provider
-                .is_in_constructor_context(semantic_context.enclosing_sub.as_deref(), prefix)
+            } else if fragment.is_none()
+                && provider
+                    .is_in_constructor_context(semantic_context.enclosing_sub.as_deref(), prefix)
             {
                 sink.push(
                     Self::SOURCE,
@@ -1949,8 +1973,9 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             }
         }
 
-        if is_guard_condition_prefix(prefix)
-            && let Some(condition) = provider.preferred_guard_condition(semantic_context)
+        if let Some(fragment) = guard_condition_fragment(prefix)
+            && let Some(condition) = provider
+                .preferred_guard_condition_matching(semantic_context, fragment.unwrap_or_default())
         {
             sink.push(
                 Self::SOURCE,
@@ -2084,11 +2109,44 @@ fn is_preferred_guard_condition_name(name: &str) -> bool {
         || name.ends_with("_ok")
 }
 
-fn is_guard_condition_prefix(prefix: &str) -> bool {
-    ends_with_keyword(prefix, "return unless ")
-        || ends_with_keyword(prefix, "return if ")
-        || ends_with_keyword(prefix, "next if ")
-        || ends_with_keyword(prefix, "last if ")
+fn guard_condition_fragment(prefix: &str) -> Option<Option<&str>> {
+    variable_fragment_after_keywords(
+        prefix,
+        &["return unless ", "return if ", "next if ", "last if "],
+    )
+}
+
+fn return_expression_fragment(prefix: &str) -> Option<Option<&str>> {
+    variable_fragment_after_keywords(prefix, &["return "])
+}
+
+fn variable_fragment_after_keywords<'a>(
+    prefix: &'a str,
+    keywords: &[&str],
+) -> Option<Option<&'a str>> {
+    let (keyword_index, keyword) = keywords
+        .iter()
+        .filter_map(|keyword| last_keyword_index(prefix, keyword).map(|index| (index, *keyword)))
+        .max_by_key(|(index, _)| *index)?;
+    let fragment = &prefix[keyword_index + keyword.len()..];
+    if fragment.is_empty() {
+        return Some(None);
+    }
+    if is_variable_completion_fragment(fragment) {
+        return Some(Some(fragment));
+    }
+    None
+}
+
+fn is_variable_completion_fragment(fragment: &str) -> bool {
+    let Some(name) = fragment.strip_prefix('$') else {
+        return false;
+    };
+    name.chars().all(is_identifier_fragment_char)
+}
+
+fn variable_matches_fragment(variable: &VariableFact, fragment: &str) -> bool {
+    fragment.is_empty() || variable.as_perl_variable().starts_with(fragment)
 }
 
 fn test_statement_filter_text(statement: &str) -> &'static str {
@@ -3458,6 +3516,59 @@ mod tests {
 
         assert!(insert_texts.contains(&"$is_valid;"));
         assert!(!insert_texts.contains(&"$result;"));
+    }
+
+    #[test]
+    fn partial_guard_condition_completes_matching_visible_scalar()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $result = compute();\n    my $is_valid = validate($result);\n    return unless $is";
+        let character = "    return unless $is".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 3, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$is_valid;")
+            .ok_or("expected partial guard condition to complete $is_valid")?;
+        let range =
+            item.range.as_ref().ok_or("partial guard condition must carry a replace range")?;
+
+        assert_eq!(range.start.line, 3);
+        assert_eq!(range.start.character, "    return unless ".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 3);
+        assert_eq!(range.end.character, character);
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "$result;"),
+            "partial guard conditions should not offer non-matching variables"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn partial_return_expression_completes_matching_visible_scalar()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "sub helper {\n    my $count = 1;\n    my $result = compute();\n    return $res";
+        let character = "    return $res".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 3, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$result;")
+            .ok_or("expected partial return expression to complete $result")?;
+        let range =
+            item.range.as_ref().ok_or("partial return expression must carry a replace range")?;
+
+        assert_eq!(range.start.line, 3);
+        assert_eq!(range.start.character, "    return ".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 3);
+        assert_eq!(range.end.character, character);
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "$count;"),
+            "partial return expressions should not offer non-matching variables"
+        );
+        Ok(())
     }
 
     #[test]
