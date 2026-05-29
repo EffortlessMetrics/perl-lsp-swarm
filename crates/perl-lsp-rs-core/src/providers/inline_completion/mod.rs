@@ -1402,10 +1402,10 @@ impl InlineCompletionProvider {
         if ends_with_keyword(prefix, "bless ") {
             return ExpectedSyntax::BlessArguments;
         }
-        if ends_with_keyword(prefix, "return ") {
+        if return_expression_fragment(prefix).is_some() {
             return ExpectedSyntax::ReturnExpression;
         }
-        if is_guard_condition_prefix(prefix) {
+        if guard_condition_fragment(prefix).is_some() {
             return ExpectedSyntax::GuardCondition;
         }
         if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
@@ -1921,8 +1921,10 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
-        if ends_with_keyword(prefix, "return ") {
-            if let Some(variable) = provider.preferred_return_variable(semantic_context) {
+        if let Some(fragment) = return_expression_fragment(prefix) {
+            if let Some(variable) = provider.preferred_return_variable(semantic_context)
+                && completion_matches_fragment(variable.as_str(), &format!("{variable};"), fragment)
+            {
                 sink.push(
                     Self::SOURCE,
                     0,
@@ -1935,6 +1937,7 @@ impl InlineCandidateSource for SyntaxCandidateSource {
                 );
             } else if provider
                 .is_in_constructor_context(semantic_context.enclosing_sub.as_deref(), prefix)
+                && completion_matches_fragment("$self", "$self;", fragment)
             {
                 sink.push(
                     Self::SOURCE,
@@ -1949,8 +1952,9 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             }
         }
 
-        if is_guard_condition_prefix(prefix)
+        if let Some(fragment) = guard_condition_fragment(prefix)
             && let Some(condition) = provider.preferred_guard_condition(semantic_context)
+            && completion_matches_fragment(condition.as_str(), &format!("{condition};"), fragment)
         {
             sink.push(
                 Self::SOURCE,
@@ -2084,13 +2088,30 @@ fn is_preferred_guard_condition_name(name: &str) -> bool {
         || name.ends_with("_ok")
 }
 
-fn is_guard_condition_prefix(prefix: &str) -> bool {
-    ends_with_keyword(prefix, "return unless ")
-        || ends_with_keyword(prefix, "return if ")
-        || ends_with_keyword(prefix, "next if ")
-        || ends_with_keyword(prefix, "last if ")
+fn return_expression_fragment(prefix: &str) -> Option<&str> {
+    expression_fragment_after_keyword(prefix, "return ")
 }
 
+fn guard_condition_fragment(prefix: &str) -> Option<&str> {
+    ["return unless ", "return if ", "next if ", "last if "]
+        .into_iter()
+        .find_map(|keyword| expression_fragment_after_keyword(prefix, keyword))
+}
+
+fn expression_fragment_after_keyword<'a>(prefix: &'a str, keyword: &str) -> Option<&'a str> {
+    let keyword_index = last_keyword_index(prefix, keyword)?;
+    let fragment = &prefix[keyword_index + keyword.len()..];
+    if fragment.is_empty() || is_variable_expression_fragment(fragment) {
+        return Some(fragment);
+    }
+
+    None
+}
+
+fn is_variable_expression_fragment(fragment: &str) -> bool {
+    fragment.chars().next().is_some_and(|ch| matches!(ch, '$' | '@' | '%'))
+        && fragment.chars().all(is_replacement_fragment_char)
+}
 fn test_statement_filter_text(statement: &str) -> &'static str {
     if statement.starts_with("ok(") { "ok" } else { "is" }
 }
@@ -3111,6 +3132,50 @@ mod tests {
         assert_eq!(range.end.line, 0);
         assert_eq!(range.end.character, 7);
         assert!(completions.items.iter().all(|item| item.insert_text != "warnings;"));
+        Ok(())
+    }
+
+    #[test]
+    fn return_partial_variable_replaces_typed_prefix() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub compute {
+    my $result = build();
+    return $res
+}";
+        let completions = provider.get_inline_completions(source, 2, 15);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$result;")
+            .ok_or("expected $result; completion for partial return variable")?;
+        let range = item.range.as_ref().ok_or("return variable completion must carry a range")?;
+
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, 11);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, 15);
+        Ok(())
+    }
+
+    #[test]
+    fn guard_partial_variable_replaces_typed_prefix() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub check {
+    my $valid = validate();
+    return unless $va
+}";
+        let completions = provider.get_inline_completions(source, 2, 21);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$valid;")
+            .ok_or("expected $valid; completion for partial guard variable")?;
+        let range = item.range.as_ref().ok_or("guard variable completion must carry a range")?;
+
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, 18);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, 21);
         Ok(())
     }
 
