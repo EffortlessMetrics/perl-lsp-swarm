@@ -123,12 +123,10 @@ fn test_use_module_with_qw_import_unchanged() -> Result<(), String> {
 
 #[test]
 fn test_use_posix_empty_import_unchanged() -> Result<(), String> {
-    let (module, args) = use_node_parts("use POSIX ();")?;
+    let (module, _args) = use_node_parts("use POSIX ();")?;
     assert_eq!(module, "POSIX");
-    // () produces an empty-list arg (represented as an empty string or similar)
     // The key invariant: no error node.
     assert_clean_parse("use POSIX ();");
-    drop(args);
     Ok(())
 }
 
