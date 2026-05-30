@@ -1262,6 +1262,102 @@ mod tests {
     }
 
     #[test]
+    fn next_edit_scaffold_summary_rejects_missing_import_field_drift() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("semantic-inline-next-edit.json");
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["reachable_candidate"]["candidate"]["edit"]["newText"] =
+            json!("use Other::Module;\n");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("wrong missing-import edit text must fail");
+        };
+        assert!(
+            error.to_string().contains("candidate/edit/newText"),
+            "error should identify missing-import edit text drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["accepted_document_text"] =
+            json!("use strict;\nuse warnings;\nmy $value = My::App->new;\n");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("accepted text without inserted import must fail");
+        };
+        assert!(
+            error.to_string().contains("accepted document text"),
+            "error should identify missing accepted import drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["parse_stable"] = json!(false);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("parse-unstable missing-import proof must fail");
+        };
+        assert!(
+            error.to_string().contains("parse_stable"),
+            "error should identify parse-stability drift, got {error}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn next_edit_scaffold_summary_rejects_missing_import_rejection_drift() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("semantic-inline-next-edit.json");
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["duplicate_import"]["rejectionReasons"] = json!([]);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("duplicate import without rejection reason must fail");
+        };
+        assert!(
+            error.to_string().contains("duplicate import"),
+            "error should identify duplicate import rejection drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["unreachable_module"]["rejectionReasons"] =
+            json!([]);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("unreachable module without rejection reason must fail");
+        };
+        assert!(
+            error.to_string().contains("unreachable module"),
+            "error should identify unreachable module rejection drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["default_gate"]["status"] = json!("receipt_only");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("default gate status drift must fail");
+        };
+        assert!(
+            error.to_string().contains("default_gate/status"),
+            "error should identify default gate status drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["explicit_gate"]["status"] = json!("receipt_only");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("explicit gate status drift must fail");
+        };
+        assert!(
+            error.to_string().contains("explicit_gate/status"),
+            "error should identify explicit gate status drift, got {error}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn quality_counter_map_returns_none_when_counter_is_absent() -> Result<()> {
         let quality = json!({
             "fixtures_total": 2,

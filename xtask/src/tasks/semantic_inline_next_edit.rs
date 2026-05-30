@@ -382,4 +382,90 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn missing_import_next_action_validation_rejects_contract_drift() -> Result<()> {
+        let provider = NextEditProvider;
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        receipt.reachable_candidate.candidate = None;
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("missing reachable candidate must fail validation");
+        assert!(
+            error.to_string().contains("prepare a receipt-only candidate"),
+            "error should identify missing reachable candidate, got {error}"
+        );
+
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        let candidate = receipt
+            .reachable_candidate
+            .candidate
+            .as_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("valid receipt omitted candidate"))?;
+        candidate.editor_visible = true;
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("editor-visible reachable candidate must fail validation");
+        assert!(
+            error.to_string().contains("receipt-only contract"),
+            "error should identify reachable candidate contract drift, got {error}"
+        );
+
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        receipt.parse_stable = false;
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("parse-unstable missing-import action must fail validation");
+        assert!(
+            error.to_string().contains("parse state stable"),
+            "error should identify parse-stability drift, got {error}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn missing_import_next_action_validation_rejects_rejection_drift() -> Result<()> {
+        let provider = NextEditProvider;
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        receipt.duplicate_import.rejection_reasons.clear();
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("duplicate import without rejection reason must fail validation");
+        assert!(
+            error.to_string().contains("reject duplicate imports"),
+            "error should identify duplicate-import drift, got {error}"
+        );
+
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        receipt.unreachable_module.rejection_reasons.clear();
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("unreachable module without rejection reason must fail validation");
+        assert!(
+            error.to_string().contains("reject unreachable modules"),
+            "error should identify unreachable-module drift, got {error}"
+        );
+
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        receipt.default_gate.rejection_reasons.clear();
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("default gate without rejection reason must fail validation");
+        assert!(
+            error.to_string().contains("disabled by default"),
+            "error should identify default-gate drift, got {error}"
+        );
+
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        receipt.explicit_gate.rejection_reasons.clear();
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("explicit gate without runtime rejection reason must fail validation");
+        assert!(
+            error.to_string().contains("unregistered runtime provider"),
+            "error should identify explicit-gate drift, got {error}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_succeeds_accepts_valid_documents() -> Result<()> {
+        assert!(parse_succeeds("use strict;\nmy $value = 1;\n"));
+        Ok(())
+    }
 }
