@@ -162,6 +162,94 @@ fn text_document_content_perldoc_strict_returns_text_or_explicit_unavailable_err
         .ok_or_else(|| format!("workspace/textDocumentContent missing result.text: {response}"))?;
     assert!(!text.trim().is_empty(), "perldoc text must not be empty");
     assert!(text.to_ascii_lowercase().contains("strict"), "strict perldoc should mention strict");
+    assert!(text.contains("perldoc://warnings"), "strict virtual perldoc should link to warnings");
+    Ok(())
+}
+
+#[test]
+fn text_document_content_perldoc_warnings_links_back_to_strict_or_unavailable() -> TestResult {
+    let response = text_document_content_response(Some(json!({ "uri": "perldoc://warnings" })))?;
+
+    if response.get("error").is_some() {
+        assert_error_code(&response, INVALID_REQUEST)?;
+        let message = response
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("missing error message in response: {response}"))?;
+        assert!(
+            message.contains("Unsupported URI scheme or content not found"),
+            "perldoc unavailable path should be explicit, got: {message}"
+        );
+        return Ok(());
+    }
+
+    let text = response
+        .pointer("/result/text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("workspace/textDocumentContent missing result.text: {response}"))?;
+    assert!(!text.trim().is_empty(), "perldoc text must not be empty");
+    assert!(
+        text.to_ascii_lowercase().contains("warnings"),
+        "warnings perldoc should mention warnings"
+    );
+    assert!(text.contains("perldoc://strict"), "warnings virtual perldoc should link to strict");
+    Ok(())
+}
+
+#[test]
+fn text_document_content_perldoc_local_module_prefers_workspace_pod() -> TestResult {
+    let (mut harness, _workspace) = LspHarness::with_workspace(&[(
+        "lib/Local/VirtualDoc.pm",
+        r#"package Local::VirtualDoc;
+
+=head1 NAME
+
+Local::VirtualDoc - workspace virtual docs
+
+=head1 SYNOPSIS
+
+use Local::VirtualDoc;
+
+=head1 DESCRIPTION
+
+Local POD served from the workspace module file.
+
+=head2 reset
+
+Reset the local virtual document fixture.
+
+=cut
+
+1;
+"#,
+    )])?;
+
+    let result = harness.request(
+        "workspace/textDocumentContent",
+        json!({ "uri": "perldoc://Local::VirtualDoc" }),
+    )?;
+    let text = result
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("workspace/textDocumentContent missing result.text: {result}"))?;
+
+    assert!(
+        text.contains("Workspace virtual perldoc"),
+        "local module should use workspace POD, got: {text}"
+    );
+    assert!(text.contains("Module: Local::VirtualDoc"), "module heading missing: {text}");
+    assert!(
+        text.contains("Local::VirtualDoc - workspace virtual docs"),
+        "NAME POD missing: {text}"
+    );
+    assert!(
+        text.contains("Local POD served from the workspace module file."),
+        "DESCRIPTION POD missing: {text}"
+    );
+    assert!(
+        text.contains("METHOD reset\nReset the local virtual document fixture."),
+        "head2 method POD missing: {text}"
+    );
     Ok(())
 }
 
