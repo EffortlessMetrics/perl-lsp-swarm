@@ -946,6 +946,86 @@ mod tests {
     }
 
     #[test]
+    fn next_edit_scaffold_summary_treats_missing_receipt_as_unavailable() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("semantic-inline-next-edit.json");
+
+        let summary = read_optional_next_edit_scaffold_summary(&path)?;
+
+        assert!(!summary.available);
+        assert_eq!(summary.schema_version, None);
+        assert_eq!(summary.planned_candidate_families, None);
+        validate_next_edit_scaffold_summary(&summary, &json!({}))?;
+        Ok(())
+    }
+
+    #[test]
+    fn next_edit_scaffold_summary_rejects_malformed_candidate_lists() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("semantic-inline-next-edit.json");
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["planned_candidate_families"] = json!("missing_import");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("next-edit scaffold with scalar planned families must fail");
+        };
+        assert!(
+            error.to_string().contains("planned_candidate_families"),
+            "error should identify scalar planned families, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
+        scaffold["future_gated"] = json!(["runtime_next_edit_provider", false]);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("next-edit scaffold with non-string future gate must fail");
+        };
+        assert!(
+            error.to_string().contains("future_gated"),
+            "error should identify non-string future gate, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn next_edit_scaffold_summary_rejects_missing_required_lists() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("semantic-inline-next-edit.json");
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold
+            .as_object_mut()
+            .ok_or_else(|| eyre!("test scaffold must be an object"))?
+            .remove("planned_candidate_families");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("next-edit scaffold missing planned families must fail");
+        };
+        assert!(
+            error.to_string().contains("planned_candidate_families"),
+            "error should identify missing planned families, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
+        scaffold
+            .as_object_mut()
+            .ok_or_else(|| eyre!("test scaffold must be an object"))?
+            .remove("future_gated");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("next-edit scaffold missing future gates must fail");
+        };
+        assert!(
+            error.to_string().contains("future_gated"),
+            "error should identify missing future gates, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn next_edit_scaffold_summary_rejects_editor_visible_suggestions() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("semantic-inline-next-edit.json");
