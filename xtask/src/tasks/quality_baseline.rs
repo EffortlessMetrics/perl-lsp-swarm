@@ -90,9 +90,7 @@ fn build_receipt(root: &Path, args: &CoverageBaselineArgs) -> Result<JsonValue> 
         .files
         .iter()
         .filter(|file| !file.path.trim().is_empty())
-        .filter(|file| {
-            file.line_found > 0 && percent(file.line_hit, file.line_found) < COVERAGE_TARGET
-        })
+        .filter(|file| project_file_below_target(file))
         .filter_map(file_gap_json)
         .collect::<Vec<_>>();
     let top_project_files = top_project_file_gaps(&lcov, 10);
@@ -395,9 +393,7 @@ fn top_project_file_gaps(lcov: &LcovSummary, limit: usize) -> Vec<JsonValue> {
         .files
         .iter()
         .filter(|file| !file.path.trim().is_empty())
-        .filter(|file| {
-            file.line_found > 0 && percent(file.line_hit, file.line_found) < COVERAGE_TARGET
-        })
+        .filter(|file| project_file_below_target(file))
         .filter_map(|file| {
             let gap = file_gap_json(file)?;
             Some(ProjectFileGap {
@@ -421,6 +417,10 @@ fn top_project_file_gaps(lcov: &LcovSummary, limit: usize) -> Vec<JsonValue> {
     });
     rows.truncate(limit);
     rows.into_iter().map(|row| row.gap).collect()
+}
+
+fn project_file_below_target(file: &FileCoverage) -> bool {
+    file.line_found > 0 && percent(file.line_hit, file.line_found) < COVERAGE_TARGET
 }
 
 #[derive(Debug)]
@@ -794,6 +794,8 @@ SF:crates/perl-covered/src/lib.rs
 DA:1,1
 DA:2,1
 end_of_record
+SF:crates/perl-empty/src/lib.rs
+end_of_record
 ",
         )?;
         let summary = parse_lcov(&lcov)?;
@@ -804,7 +806,57 @@ end_of_record
         assert_eq!(rows[0]["uncovered_line_count"], json!(3));
         assert_eq!(rows[1]["path"], json!("crates/perl-parser/src/lib.rs"));
         assert_eq!(rows[1]["uncovered_line_count"], json!(2));
+        assert!(!rows.iter().any(|row| row["path"] == json!("crates/perl-empty/src/lib.rs")));
         Ok(())
+    }
+
+    #[test]
+    fn top_project_files_skip_zero_line_coverage_files() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let lcov = temp.path().join("lcov.info");
+        fs::write(
+            &lcov,
+            "\
+SF:crates/perl-empty/src/lib.rs
+end_of_record
+",
+        )?;
+        let summary = parse_lcov(&lcov)?;
+
+        assert_eq!(summary.files[0].line_found, 0);
+        assert_eq!(percent(summary.files[0].line_hit, summary.files[0].line_found), 0.0);
+        assert!(!project_file_below_target(&summary.files[0]));
+        assert_eq!(top_project_file_gaps(&summary, 10), Vec::<JsonValue>::new());
+        Ok(())
+    }
+
+    #[test]
+    fn project_file_below_target_requires_executable_lines() {
+        let zero_line_file = FileCoverage {
+            path: "crates/perl-empty/src/lib.rs".to_string(),
+            line_hit: 0,
+            line_found: 0,
+            lines: Vec::new(),
+            uncovered_lines: Vec::new(),
+        };
+        let low_file = FileCoverage {
+            path: "crates/perl-low/src/lib.rs".to_string(),
+            line_hit: 1,
+            line_found: 2,
+            lines: Vec::new(),
+            uncovered_lines: vec![2],
+        };
+        let covered_file = FileCoverage {
+            path: "crates/perl-covered/src/lib.rs".to_string(),
+            line_hit: 2,
+            line_found: 2,
+            lines: Vec::new(),
+            uncovered_lines: Vec::new(),
+        };
+
+        assert!(!project_file_below_target(&zero_line_file));
+        assert!(project_file_below_target(&low_file));
+        assert!(!project_file_below_target(&covered_file));
     }
 
     #[test]
