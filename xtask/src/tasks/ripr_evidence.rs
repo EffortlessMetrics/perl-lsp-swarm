@@ -1253,34 +1253,19 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
 
 fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let range = format!("{base}...{head}");
-    let output = match run_git_output(
-        repo,
-        &["diff", "--name-only", "--diff-filter=ACMR", range.as_str()],
-    ) {
-        Ok(output) => output,
-        Err(err) => {
-            // A shallow clone (Claude Code on the web, default Actions checkout)
-            // has no common history, so `base...head` has no merge base and git
-            // fails with an opaque message. Surface actionable guidance instead
-            // of a raw backtrace; CI is unaffected (ripr.yml uses fetch-depth: 0).
-            if !has_merge_base(repo, base, head) {
-                bail!("{}", merge_base_failure_guidance(base, head, is_shallow_clone(repo)));
-            }
-            return Err(err);
-        }
-    };
+    // A shallow clone (Claude Code on the web, default Actions checkout) has no
+    // common history, so `base...head` has no merge base and git diff fails with
+    // an opaque message. Attach actionable guidance as context while preserving
+    // the underlying git error as the cause; CI is unaffected (ripr.yml uses
+    // fetch-depth: 0).
+    let output = run_git_output(repo, &["diff", "--name-only", "--diff-filter=ACMR", range.as_str()])
+        .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
     Ok(output.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
 }
 
 fn is_shallow_clone(repo: &Path) -> bool {
     run_git_output(repo, &["rev-parse", "--is-shallow-repository"])
         .map(|out| out.trim() == "true")
-        .unwrap_or(false)
-}
-
-fn has_merge_base(repo: &Path, base: &str, head: &str) -> bool {
-    run_git_output(repo, &["merge-base", base, head])
-        .map(|out| !out.trim().is_empty())
         .unwrap_or(false)
 }
 
@@ -2242,11 +2227,12 @@ paths = ["archive/["]
     }
 
     #[test]
-    fn has_merge_base_is_true_for_identical_revisions() -> Result<()> {
+    fn changed_files_succeeds_for_valid_range() -> Result<()> {
+        // The workspace root is a real git repo; `HEAD...HEAD` is a valid range
+        // with an empty symmetric diff, exercising the success path.
         let repo = repo_root()?;
-        // HEAD shares a merge base with itself; a bogus revision does not.
-        assert!(has_merge_base(&repo, "HEAD", "HEAD"));
-        assert!(!has_merge_base(&repo, "ripr-no-such-base-xyz", "HEAD"));
+        let files = changed_files(&repo, "HEAD", "HEAD")?;
+        assert!(files.is_empty(), "HEAD...HEAD has no changed files: {files:?}");
         // Exercise the shallow probe; its value is environment-dependent, so we
         // only assert it returns without error.
         let _ = is_shallow_clone(&repo);
