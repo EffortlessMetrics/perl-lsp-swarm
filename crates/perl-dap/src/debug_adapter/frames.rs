@@ -44,17 +44,16 @@ impl DebugAdapter {
             let output = lines.join("\n");
             let framed_frames =
                 Self::filter_user_visible_frames(Self::parse_stack_frames_from_text(&output));
-            if framed_frames.is_empty() {
-                let output_lines = self.snapshot_recent_output_lines();
-                if output_lines.is_empty() {
-                    Vec::new()
-                } else {
-                    let output = output_lines.join("\n");
-                    Self::filter_user_visible_frames(Self::parse_stack_frames_from_text(&output))
-                }
-            } else {
-                framed_frames
-            }
+            // When the framed `T` response was captured but contained only
+            // internal debugger frames (e.g. `DB::DB` at a top-level
+            // breakpoint), do NOT fall back to the unstructured recent-output
+            // buffer.  That buffer contains context lines from *all* recent
+            // stops (including the implicit first-line pause at the line before
+            // the breakpoint), so parsing it yields the wrong line number.
+            // Returning empty here causes the outer branch to use
+            // `session.stack_frames`, which the output-reader thread already
+            // set to the correct breakpoint line.
+            framed_frames
         } else {
             let output_lines = self.snapshot_recent_output_lines();
             if output_lines.is_empty() {
