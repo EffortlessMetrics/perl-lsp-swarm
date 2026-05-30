@@ -70,3 +70,38 @@ All filed with `swarm-discovered` + `needs-plan-review` + `size/*` (never `build
   `robustness`, `candidate-issue`) so triage is filterable.
 - **Wave-two surfaces (held this run):** workspace-facts (#892/#893/#894/#900/#811-813)
   and editor UX (#917/#916/#932).
+
+---
+
+## Held-lead verification pass (same session)
+
+Verification of the 3 one-step-from-filing leads — **1 filed, 2 held** (verification downgraded 2):
+
+| Lead | Outcome | Why |
+|------|---------|-----|
+| D4 — blockers.yaml stale | **filed #985** | Verified: `partial`/`filed` buckets vs baseline `files_with_errors: 0` |
+| D2 — editor_ux scorecard | **held** | Scout's "64 workflows" unconfirmed; real discrepancy is md `22` vs json `scenario_count 30` — needs-research, not a clean file |
+| R3 — IncrementalParserV2 panic | **held** | No production caller (only its own `#[cfg(test)]` constructs it) → latent, not a live bug |
+
+## Wave 2 (workspace-facts + editor UX)
+
+Both scouts ran in **worktree isolation** (acting on the wave-1 hygiene note). Every claim was orchestrator-verified before any GitHub write.
+
+| Finding | Outcome | Note |
+|---------|---------|------|
+| WF-P1 — `WorkspaceIndex` never wires `PackageGraphIndex` → `method_candidates` empty for hover/def/refs/rename/diag | **comment on #812** | Verified root cause (queries.rs:303 / 573-576; workspace_index.rs has 0 `PackageGraphIndex` refs). Corrects #812's speculated cause. Enrich, not duplicate. |
+| WF-P2 — dynamic `@ISA` (`push @ISA, $var`) silently dropped, no `DynamicBoundary` | **filed #989** | NEW; verified `collect_names_from_node` `_ => Vec::new()` (package_graph_extractor.rs:324) |
+| UX-P1 — activationEvents diverges from contract test | **DISCARDED** | **Hallucination**: package.json activationEvents *exactly* matches the test (no `onStartupFinished`; `perl5` *is* expected). Verification prevented a fabricated filing. |
+| UX-P2 — `disabledFeatures` change → no restart prompt | **comment on #968** | Adjacent to #968's `requiresClientRefresh` finding; one-line fix. (#968 was filed by a *concurrent* discovery session — dedup caught it.) |
+| UX-P3 — Jest has no PR gate | **evidence-for #932** | Also: #931 (merged) added report-only Jest on PRs |
+| UX-P4 — perltidy-missing error names wrong setting (`perltidyConfig` is a `.perltidyrc` path, not the binary) | **held** | Verified but minor: primary "cpan Perl::Tidy" advice is correct; only the parenthetical misleads |
+
+## Concurrent-session note
+A **parallel Issue-Discovery session** is active (e.g. #968 filed ~1 min after this wave, same lane signature). Dedup must run against live state per filing — it caught #968 (UX-P2) and avoided a near-duplicate. Cross-session coordination is a follow-up consideration if the lane runs multi-instance.
+
+## Cumulative session totals
+- Filed: **8** candidate issues — #956, #957, #958, #959, #960, #962 (wave-1) + #985 (held-lead) + #989 (wave-2)
+- Enrichment comments on existing issues: **2** (#812 root cause, #968 sibling instance)
+- Discarded as unverified/hallucinated: UX-P1; held for next pass: D2, R3, UX-P4
+- Scout GitHub mutations: **0** (read-only contract held across all 8 scouts)
+- Verification value: 2 of 3 held-leads downgraded, and 1 of 4 UX packets was a hallucination — reinforces "finding is cheap; being right is expensive: verify before filing."
