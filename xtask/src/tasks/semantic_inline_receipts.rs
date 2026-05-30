@@ -573,6 +573,35 @@ mod tests {
         }
     }
 
+    fn green_quality() -> InlineQualityCounterSummary {
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "module".to_string(),
+            SourceQualityCounterSummary {
+                expected: 2,
+                passed: 2,
+                failed: 0,
+                returned_items: 3,
+                edit_application: QualityCountSummary { total: 2, passed: 2, failed: 0 },
+                parse_regressions: 0,
+                suppression_reasons: BTreeMap::new(),
+            },
+        );
+
+        InlineQualityCounterSummary {
+            source: "target/receipts/inline-completion-quality.json".to_string(),
+            available: true,
+            all_checks_green: Some(true),
+            fixtures_total: Some(2),
+            fixtures_passed: Some(2),
+            edit_application: Some(QualityCountSummary { total: 2, passed: 2, failed: 0 }),
+            hard_zone_rejections: Some(0),
+            suppression_reasons: Some(BTreeMap::new()),
+            parse_regressions: Some(0),
+            sources: Some(sources),
+        }
+    }
+
     #[test]
     fn dashboard_summarizes_required_semantic_inline_capabilities() -> Result<()> {
         let receipt = summarize_matrix(&complete_matrix(), MATRIX_PATH, unavailable_quality())?;
@@ -742,6 +771,28 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_accepts_green_quality_counters() -> Result<()> {
+        let receipt = summarize_matrix(&complete_matrix(), MATRIX_PATH, green_quality())?;
+
+        assert!(receipt.quality_counters.available);
+        assert_eq!(receipt.quality_counters.all_checks_green, Some(true));
+        assert_eq!(
+            receipt.quality_counters.edit_application.as_ref().map(|summary| summary.passed),
+            Some(2)
+        );
+        assert_eq!(
+            receipt
+                .quality_counters
+                .sources
+                .as_ref()
+                .and_then(|sources| sources.get("module"))
+                .map(|source| source.edit_application.passed),
+            Some(2)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn dashboard_rejects_failing_quality_counters() -> Result<()> {
         let quality = InlineQualityCounterSummary {
             source: "target/receipts/inline-completion-quality.json".to_string(),
@@ -762,6 +813,51 @@ mod tests {
         assert!(
             error.to_string().contains("did not pass all fixtures"),
             "error should identify failing quality counters, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dashboard_rejects_parse_regressions() -> Result<()> {
+        let mut quality = green_quality();
+        quality.parse_regressions = Some(1);
+
+        let Err(error) = summarize_matrix(&complete_matrix(), MATRIX_PATH, quality) else {
+            bail!("parse regressions must fail dashboard generation");
+        };
+        assert!(
+            error.to_string().contains("parse regression"),
+            "error should identify parse regressions, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dashboard_rejects_failing_edit_application_count() -> Result<()> {
+        let mut quality = green_quality();
+        quality.edit_application = Some(QualityCountSummary { total: 2, passed: 1, failed: 0 });
+
+        let Err(error) = summarize_matrix(&complete_matrix(), MATRIX_PATH, quality) else {
+            bail!("invalid edit application total must fail dashboard generation");
+        };
+        assert!(
+            error.to_string().contains("/checks/edit_application"),
+            "error should identify edit application counters, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dashboard_rejects_failed_edit_application_count() -> Result<()> {
+        let mut quality = green_quality();
+        quality.edit_application = Some(QualityCountSummary { total: 1, passed: 0, failed: 1 });
+
+        let Err(error) = summarize_matrix(&complete_matrix(), MATRIX_PATH, quality) else {
+            bail!("failed edit application count must fail dashboard generation");
+        };
+        assert!(
+            error.to_string().contains("failed check"),
+            "error should identify failed edit application counters, got {error}"
         );
         Ok(())
     }
@@ -800,6 +896,43 @@ mod tests {
         assert!(
             error.to_string().contains("/sources/module"),
             "error should identify failing source quality counters, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dashboard_rejects_source_expected_count_mismatch() -> Result<()> {
+        let mut quality = green_quality();
+        let sources = quality.sources.as_mut().ok_or_else(|| eyre!("missing source summaries"))?;
+        let source =
+            sources.get_mut("module").ok_or_else(|| eyre!("missing module source summary"))?;
+        source.expected = 3;
+
+        let Err(error) = summarize_matrix(&complete_matrix(), MATRIX_PATH, quality) else {
+            bail!("source count mismatch must fail dashboard generation");
+        };
+        assert!(
+            error.to_string().contains("expected count"),
+            "error should identify source count mismatch, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dashboard_rejects_failed_source_count() -> Result<()> {
+        let mut quality = green_quality();
+        let sources = quality.sources.as_mut().ok_or_else(|| eyre!("missing source summaries"))?;
+        let source =
+            sources.get_mut("module").ok_or_else(|| eyre!("missing module source summary"))?;
+        source.expected = 3;
+        source.failed = 1;
+
+        let Err(error) = summarize_matrix(&complete_matrix(), MATRIX_PATH, quality) else {
+            bail!("failed source count must fail dashboard generation");
+        };
+        assert!(
+            error.to_string().contains("failed source fixture"),
+            "error should identify failed source counters, got {error}"
         );
         Ok(())
     }
