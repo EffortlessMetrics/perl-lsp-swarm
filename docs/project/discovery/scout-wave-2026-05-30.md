@@ -127,3 +127,23 @@ One scout (worktree-isolated). All 4 packets verified, then **consolidated into 
 - Resolved-as-drop after verification: **D2** (editor_ux), **UX-P1** (hallucination); held: R3 (no caller), LSP1 (needs repro), UX-P4 (minor copy)
 - Scout GitHub mutations: **0** across all **9** scouts (6 wave-1 + 2 wave-2 + 1 wave-3)
 - Filed-vs-found discipline: of ~30 candidate packets produced, 9 filed, 2 folded into comments, the rest verified-down to held/dropped.
+
+---
+
+## Wave 4 (robustness deep-pass)
+One scout (worktree-isolated), targeting LSP provider handlers + lexer/heredoc surfaces wave-1 didn't sample. Found **3 reachable server-crash panics** (non-char-boundary byte slicing of Unicode source), each rustc-confirmed; consolidated into **#998**:
+
+| Spot | Path | Reach |
+|------|------|-------|
+| A — `->` trigger slice | `completion.rs:714` (`source[position-2..position]`) | textDocument/completion |
+| B — word-start slice | `completion.rs:730-742` (`rfind().map(\|p\| p+1)`) | textDocument/completion |
+| C — `get_text_around_offset` | `util/mod.rs:419-422` | definition (`navigation.rs:892/1037`) + references (`references.rs:339`) |
+
+Same UTF-8 byte-boundary *class* as #956/#750 but distinct files + a worse failure mode (crash, not wrong-result). Scout also reported solid negative space (lexer `normalize_char_boundary`, semantic_tokens, perl-regex, perl-dap all safe).
+
+## Final cumulative totals
+- Filed: **10** candidate issues — #956, #957, #958, #959, #960, #962, #985, #989, #992, #998
+- Enrichment comments: **2** (#812 root cause, #968 sibling instance)
+- Scouts run: **10** (wave-1 ×6, wave-2 ×2, wave-3 ×1, wave-4 ×1) — **0 GitHub mutations by scouts**
+- Verification stopped: 1 hallucination (UX-P1) + 2 downgraded held-leads (D2, R3) from becoming low-signal issues
+- Surfaces covered: DAP, LSP, parser, CI/ops, robustness (×2), docs/receipts, workspace-facts, UX, test-quality
