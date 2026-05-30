@@ -67,6 +67,11 @@ fn inline_completion(
     response.result.ok_or("result field present".into())
 }
 
+fn inline_insert_text_value(item: &serde_json::Value) -> Option<&str> {
+    let insert_text = item.get("insertText")?;
+    insert_text.as_str().or_else(|| insert_text.get("value").and_then(serde_json::Value::as_str))
+}
+
 #[test]
 fn test_inline_completion_after_arrow() -> Result<(), Box<dyn std::error::Error>> {
     let server = setup_server()?;
@@ -89,7 +94,7 @@ fn test_inline_completion_after_use() -> Result<(), Box<dyn std::error::Error>> 
     assert!(!items.is_empty());
     let mut suggestions = Vec::new();
     for item in items.iter() {
-        let text = item["insertText"].as_str().ok_or("insertText not a string")?;
+        let text = inline_insert_text_value(item).ok_or("insertText missing text value")?;
         suggestions.push(text.to_string());
     }
     assert!(suggestions.contains(&"strict;".to_string()));
@@ -108,7 +113,7 @@ fn test_inline_completion_after_use_preserves_priority_order()
 
     let inserts: Vec<&str> = items
         .iter()
-        .map(|item| item["insertText"].as_str().ok_or("insertText not a string"))
+        .map(|item| inline_insert_text_value(item).ok_or("insertText missing text value"))
         .collect::<Result<_, _>>()?;
 
     assert_eq!(inserts.first().copied(), Some("strict;"));

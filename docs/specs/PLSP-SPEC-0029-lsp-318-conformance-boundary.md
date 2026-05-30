@@ -35,6 +35,8 @@ Current lock points:
 - static clients receive top-level `inlineCompletionProvider`
 - dynamic-capable clients receive `client/registerCapability` for
   `textDocument/inlineCompletion` after `initialized`
+- `InlineCompletionItem.insertText` may use object-form `StringValue` for
+  deterministic snippet-shaped inline items
 - `experimental.inlineCompletionProvider` is not used
 - `experimental.perlInlineCompletionStream` remains a custom extension
 - multi-range formatting is advertised through
@@ -81,6 +83,7 @@ perl-lsp supports selected LSP 3.18 surfaces with capability-honest contracts.
 | --- | --- | --- | --- |
 | Inline completion | `inlineCompletionProvider`, `textDocument/inlineCompletion`, `client/registerCapability` | Static and dynamic modes are mutually exclusive; disabled inline completion removes provider, stream flag, dynamic registration, and runtime handling. | `lsp_inline_completion_registration_tests`, `lsp_ai_inline_completion_tests`, `lsp_streaming_completion_tests`, `lsp_cap_snap` |
 | Inline completion selected context | `selectedCompletionInfo` | Returned items must use the same range and extend selected text, or return empty. | `lsp_inline_completion_registration_tests`, `lsp_inline_completion_tests` |
+| Inline completion `StringValue` insert text | `textDocument/inlineCompletion`, `InlineCompletionItem.insertText` | Deterministic snippet-shaped inline items may emit object-form `StringValue` with `kind: "snippet"` and `value`; simple inline items keep plain string `insertText`. | `lsp_inline_completion_registration_tests`, `lsp_318_negative_claims`, `check-lsp-318-claims` |
 | Multi-range formatting | `documentRangeFormattingProvider.rangesSupport`, `textDocument/rangesFormatting` | Multi-range formatting uses the spec capability shape and routed method; the non-spec plural capability is absent. | `lsp_caps_contract_shapes`, `lsp_disabled_features_tests`, `lsp_formatting_e2e`, `lsp_capabilities_snapshot`, `lsp_cap_snap` |
 | Dynamic text document content | `workspace.textDocumentContent.schemes`, `workspace/textDocumentContent` | `perldoc` scheme is advertised; invalid params and malformed URIs return `InvalidParams`; unsupported schemes return deterministic unavailable errors. | `lsp_text_document_content_tests`, `lsp_cap_snap` |
 | Text document content refresh | `workspace/textDocumentContent/refresh` | Server-originated request IDs are bounded and emitted through the standard server request path. | `lsp_text_document_content_tests` |
@@ -121,7 +124,6 @@ These surfaces are not part of the current claim unless a later PR adds behavior
 capability parsing, wire tests, docs, and negative gates:
 
 - complete LSP 3.18 implementation
-- object-form `StringValue` inline completion insert text
 - `textDocument/semanticTokens/full/delta`
 - semantic-token delta `resultId` state
 - non-spec `WorkspaceEdit.metadata` response fields
@@ -154,8 +156,7 @@ The `lsp_318_negative_claims` test suite is the current guardrail for optional
 - accepts `textDocument/semanticTokens/full/delta` as implemented
 - reintroduces `experimental.inlineCompletionProvider`
 - reintroduces `documentRangesFormattingProvider`
-- emits object-form `StringValue` values for
-  `InlineCompletionItem.insertText` without an intentional implementation
+- removes object-form `StringValue` proof for `InlineCompletionItem.insertText`
 - emits `CompletionList.applyKind` without explicit support
 - emits `CompletionList.itemDefaults.data` without explicit support
 - advertises `CodeAction.documentation` without client support or emits
@@ -285,6 +286,8 @@ including:
   unsupported clients
 - capability-gated `ApplyWorkspaceEditParams.metadata` on server-originated
   `workspace/applyEdit` requests
+- object-form `StringValue` inline completion insert text for deterministic
+  snippet-shaped inline items
 
 It may not claim:
 
@@ -293,7 +296,6 @@ It may not claim:
 - extraction readiness beyond the separate extraction boundary spec
 - editor support beyond current receipts
 - semantic-token delta support
-- object-form `StringValue` inline completion insert text
 - non-spec `WorkspaceEdit.metadata` response fields
 - ungated workspace-edit snippet or apply-edit metadata support
 - optional 3.18 response-shape support without client capability handling

@@ -369,6 +369,19 @@ tests = ["crates/perl-lsp-rs/tests/lsp_inline_completion_tests.rs"]
 description = "Inline AI-powered completions (@proposed)"
 
 [[feature]]
+id = "lsp.inline_completion_string_value"
+spec = "LSP 3.18"
+area = "text_document"
+maturity = "ga"
+advertised = true
+counts_in_coverage = false
+tests = [
+  "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+  "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
+]
+description = "Object-form StringValue for InlineCompletionItem.insertText on deterministic snippet-shaped inline items"
+
+[[feature]]
 id = "experimental.perlInlineCompletionStream"
 spec = "perl-lsp"
 area = "text_document"

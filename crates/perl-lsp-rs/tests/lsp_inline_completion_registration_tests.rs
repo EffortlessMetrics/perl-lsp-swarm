@@ -739,7 +739,7 @@ fn inline_completion_selected_completion_info_multiline_range_returns_empty() ->
 }
 
 #[test]
-fn inline_completion_items_do_not_emit_object_form_string_value() -> TestResult {
+fn inline_completion_items_emit_object_form_string_value_for_snippet_item() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(Some(json!({
         "textDocument": { "inlineCompletion": { "dynamicRegistration": true } }
@@ -748,16 +748,21 @@ fn inline_completion_items_do_not_emit_object_form_string_value() -> TestResult 
     let uri = "file:///inline_insert_text_shape.pl";
     harness.open(uri, "use ")?;
 
-    let result = request_inline_completion(&mut harness, uri, 0, 4)?;
+    let result = request_inline_completion_with_trigger_kind(&mut harness, uri, 0, 4, 1)?;
     let items = result
         .get("items")
         .and_then(Value::as_array)
         .ok_or("inline completion result must contain items array")?;
 
     assert!(!items.is_empty(), "expected deterministic inline completion items");
+    let feature = item_with_insert_text(items, "feature ':5.36';")?;
+    assert_eq!(feature.pointer("/insertText/kind"), Some(&json!("snippet")));
+    assert_eq!(feature.pointer("/insertText/value"), Some(&json!("feature ':5.36';")));
+
+    let strict = item_with_insert_text(items, "strict;")?;
     assert!(
-        items.iter().all(|item| item.get("insertText").is_some_and(Value::is_string)),
-        "object-form StringValue insertText is unclaimed; current inline items must use plain strings"
+        strict.get("insertText").is_some_and(Value::is_string),
+        "simple inline items should keep plain string insertText where no StringValue is needed: {strict}"
     );
     Ok(())
 }
@@ -1115,14 +1120,19 @@ fn request_inline_completion_without_context(
 }
 
 fn item_insert_texts(items: &[Value]) -> Vec<&str> {
-    items.iter().filter_map(|item| item.get("insertText").and_then(Value::as_str)).collect()
+    items.iter().filter_map(inline_insert_text_value).collect()
 }
 
 fn item_with_insert_text<'a>(items: &'a [Value], insert_text: &str) -> Result<&'a Value, String> {
     items
         .iter()
-        .find(|item| item.get("insertText").and_then(Value::as_str) == Some(insert_text))
+        .find(|item| inline_insert_text_value(item) == Some(insert_text))
         .ok_or_else(|| format!("expected inline completion item {insert_text}, got: {items:?}"))
+}
+
+fn inline_insert_text_value(item: &Value) -> Option<&str> {
+    let insert_text = item.get("insertText")?;
+    insert_text.as_str().or_else(|| insert_text.get("value").and_then(Value::as_str))
 }
 
 fn assert_item_range(

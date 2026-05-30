@@ -42,7 +42,7 @@ const SPEC_MARKERS: &[RequiredMarker] = &[
         marker: "This spec may claim that `perl-lsp` has a documented LSP 3.18 selected-surface",
     },
     RequiredMarker {
-        label: "StringValue object-form non-claim",
+        label: "StringValue object-form support boundary",
         marker: "object-form `StringValue` inline completion insert text",
     },
 ];
@@ -70,8 +70,8 @@ const MATRIX_MARKERS: &[RequiredMarker] = &[
 
 const NEGATIVE_TEST_MARKERS: &[RequiredMarker] = &[
     RequiredMarker {
-        label: "StringValue object-form negative receipt",
-        marker: "inline_completion_does_not_emit_object_form_string_value",
+        label: "StringValue object-form positive receipt",
+        marker: "inline_completion_emits_object_form_string_value_with_implementation_proof",
     },
     RequiredMarker {
         label: "unsupported capability snapshot assertions",
@@ -153,6 +153,10 @@ const FEATURE_CATALOG_MARKERS: &[RequiredMarker] = &[
     RequiredMarker {
         label: "inline completion feature catalog row",
         marker: "id = \"lsp.inline_completion\"",
+    },
+    RequiredMarker {
+        label: "inline completion StringValue feature catalog row",
+        marker: "id = \"lsp.inline_completion_string_value\"",
     },
     RequiredMarker {
         label: "multi-range formatting feature catalog row",

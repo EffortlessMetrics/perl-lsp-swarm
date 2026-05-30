@@ -149,7 +149,7 @@ fn semantic_tokens_delta_request_returns_method_not_found() -> TestResult {
 }
 
 #[test]
-fn inline_completion_does_not_emit_object_form_string_value() -> TestResult {
+fn inline_completion_emits_object_form_string_value_with_implementation_proof() -> TestResult {
     let mut harness = LspHarness::new_raw();
     harness.initialize_ready(
         "file:///workspace",
@@ -177,9 +177,21 @@ fn inline_completion_does_not_emit_object_form_string_value() -> TestResult {
         .ok_or_else(|| format!("inline completion response missing items: {result}"))?;
 
     assert!(!items.is_empty(), "test must exercise deterministic inline items: {result}");
+    let feature = items
+        .iter()
+        .find(|item| {
+            item.pointer("/insertText/value").and_then(Value::as_str) == Some("feature ':5.36';")
+        })
+        .ok_or_else(|| format!("expected feature pragma StringValue item: {items:?}"))?;
+    assert_eq!(feature.pointer("/insertText/kind"), Some(&json!("snippet")));
+
+    let strict = items
+        .iter()
+        .find(|item| item.get("insertText").and_then(Value::as_str) == Some("strict;"))
+        .ok_or_else(|| format!("expected strict; plain string item: {items:?}"))?;
     assert!(
-        items.iter().all(|item| item.get("insertText").is_some_and(Value::is_string)),
-        "object-form StringValue insertText remains unclaimed without implementation proof: {items:?}"
+        strict.get("insertText").is_some_and(Value::is_string),
+        "plain inline items must remain plain strings when no StringValue is needed: {strict}"
     );
     Ok(())
 }

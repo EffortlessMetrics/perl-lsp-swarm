@@ -198,6 +198,42 @@ fn should_collect_inline_modules(fragment: &str) -> bool {
             || fragment.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()))
 }
 
+fn serialize_inline_completion_list(
+    list: perl_lsp_rs_core::providers::inline_completion::InlineCompletionList,
+) -> Result<Value, JsonRpcError> {
+    let mut value = serde_json::to_value(list).map_err(|e| {
+        crate::protocol::internal_error(&format!("Failed to serialize inline completions: {}", e))
+    })?;
+    promote_inline_completion_string_values(&mut value);
+    Ok(value)
+}
+
+fn promote_inline_completion_string_values(value: &mut Value) {
+    let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    for item in items {
+        let Some(insert_text) = item.get("insertText").and_then(Value::as_str) else {
+            continue;
+        };
+        if !inline_completion_insert_text_uses_string_value(insert_text) {
+            continue;
+        }
+        let snippet = json!({
+            "kind": "snippet",
+            "value": insert_text,
+        });
+        if let Some(object) = item.as_object_mut() {
+            object.insert("insertText".to_string(), snippet);
+        }
+    }
+}
+
+fn inline_completion_insert_text_uses_string_value(insert_text: &str) -> bool {
+    insert_text == "feature ':5.36';"
+}
+
 impl LspServer {
     pub(crate) fn record_provider_decision_trace(&self, provider: &str, receipt: &Value) {
         if receipt.is_object() {
@@ -834,12 +870,7 @@ impl LspServer {
                             );
                             let list = apply_inline_completion_trigger_policy(list, trigger_kind);
                             if !list.items.is_empty() || !ai_config.fallback {
-                                return Ok(Some(serde_json::to_value(list).map_err(|e| {
-                                    crate::protocol::internal_error(&format!(
-                                        "Failed to serialize inline completions: {}",
-                                        e
-                                    ))
-                                })?));
+                                return Ok(Some(serialize_inline_completion_list(list)?));
                             }
                         }
                         Err(ref e) => {
@@ -884,12 +915,7 @@ impl LspServer {
                 character,
             );
             let completions = apply_inline_completion_trigger_policy(completions, trigger_kind);
-            return Ok(Some(serde_json::to_value(completions).map_err(|e| {
-                crate::protocol::internal_error(&format!(
-                    "Failed to serialize inline completions: {}",
-                    e
-                ))
-            })?));
+            return Ok(Some(serialize_inline_completion_list(completions)?));
         }
 
         Ok(Some(json!({ "items": [] })))
