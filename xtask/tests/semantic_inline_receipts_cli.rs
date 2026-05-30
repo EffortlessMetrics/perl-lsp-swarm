@@ -44,7 +44,7 @@ fn semantic_inline_receipts_cli_writes_dashboard_inventory() -> Result<()> {
         .get("semantic_inline")
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("semantic_inline map missing"))?;
-    assert_eq!(semantic_inline.len(), 10);
+    assert_eq!(semantic_inline.len(), 11);
     assert_eq!(
         semantic_inline
             .get("project_module_import")
@@ -58,6 +58,13 @@ fn semantic_inline_receipts_cli_writes_dashboard_inventory() -> Result<()> {
             .and_then(|entry| entry.get("workflow_id"))
             .and_then(Value::as_str),
         Some("guard_condition_inline_completion_quality")
+    );
+    assert_eq!(
+        semantic_inline
+            .get("gated_multiline_constructor")
+            .and_then(|entry| entry.get("workflow_id"))
+            .and_then(Value::as_str),
+        Some("gated_multiline_constructor_inline_completion_quality")
     );
 
     let future_gated = dashboard
@@ -91,12 +98,47 @@ fn semantic_inline_receipts_cli_embeds_quality_counters_when_available() -> Resu
             "fixtures_total": 28,
             "fixtures_passed": 28,
             "checks": {
+                "edit_application": {
+                    "total": 15,
+                    "passed": 15,
+                    "failed": 0
+                },
                 "hard_zone_rejected": 14,
                 "suppression_reasons": {
                     "hard_zone": 14,
                     "no_visible_context": 1
                 },
                 "parse_regressions": 0
+            },
+            "sources": {
+                "module": {
+                    "expected": 4,
+                    "passed": 4,
+                    "failed": 0,
+                    "returned_items": 6,
+                    "edit_application": {
+                        "total": 4,
+                        "passed": 4,
+                        "failed": 0
+                    },
+                    "parse_regressions": 0,
+                    "suppression_reasons": {}
+                },
+                "hard_zone": {
+                    "expected": 14,
+                    "passed": 14,
+                    "failed": 0,
+                    "returned_items": 0,
+                    "edit_application": {
+                        "total": 0,
+                        "passed": 0,
+                        "failed": 0
+                    },
+                    "parse_regressions": 0,
+                    "suppression_reasons": {
+                        "hard_zone": 14
+                    }
+                }
             }
         }))?,
     )?;
@@ -118,8 +160,30 @@ fn semantic_inline_receipts_cli_embeds_quality_counters_when_available() -> Resu
         .ok_or_else(|| anyhow!("semantic inline receipt omitted quality_counters"))?;
 
     assert_eq!(quality_counters.get("available").and_then(Value::as_bool), Some(true));
+    assert_eq!(quality_counters.get("all_checks_green").and_then(Value::as_bool), Some(true));
     assert_eq!(quality_counters.get("fixtures_total").and_then(Value::as_u64), Some(28));
     assert_eq!(quality_counters.get("fixtures_passed").and_then(Value::as_u64), Some(28));
+    assert_eq!(
+        quality_counters
+            .get("edit_application")
+            .and_then(|edit_application| edit_application.get("total"))
+            .and_then(Value::as_u64),
+        Some(15)
+    );
+    assert_eq!(
+        quality_counters
+            .get("edit_application")
+            .and_then(|edit_application| edit_application.get("passed"))
+            .and_then(Value::as_u64),
+        Some(15)
+    );
+    assert_eq!(
+        quality_counters
+            .get("edit_application")
+            .and_then(|edit_application| edit_application.get("failed"))
+            .and_then(Value::as_u64),
+        Some(0)
+    );
     assert_eq!(quality_counters.get("hard_zone_rejections").and_then(Value::as_u64), Some(14));
     assert_eq!(
         quality_counters
@@ -136,6 +200,32 @@ fn semantic_inline_receipts_cli_embeds_quality_counters_when_available() -> Resu
         Some(1)
     );
     assert_eq!(quality_counters.get("parse_regressions").and_then(Value::as_u64), Some(0));
+    assert_eq!(
+        quality_counters
+            .get("sources")
+            .and_then(|sources| sources.get("module"))
+            .and_then(|source| source.get("returned_items"))
+            .and_then(Value::as_u64),
+        Some(6)
+    );
+    assert_eq!(
+        quality_counters
+            .get("sources")
+            .and_then(|sources| sources.get("module"))
+            .and_then(|source| source.get("edit_application"))
+            .and_then(|edit_application| edit_application.get("passed"))
+            .and_then(Value::as_u64),
+        Some(4)
+    );
+    assert_eq!(
+        quality_counters
+            .get("sources")
+            .and_then(|sources| sources.get("hard_zone"))
+            .and_then(|source| source.get("suppression_reasons"))
+            .and_then(|suppression_reasons| suppression_reasons.get("hard_zone"))
+            .and_then(Value::as_u64),
+        Some(14)
+    );
 
     Ok(())
 }
