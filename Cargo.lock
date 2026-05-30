@@ -3871,6 +3871,7 @@ dependencies = [
  "glob",
  "indicatif",
  "notify",
+ "perl-ast",
  "perl-ci-hygiene",
  "perl-corpus",
  "perl-lsp-rs-core",

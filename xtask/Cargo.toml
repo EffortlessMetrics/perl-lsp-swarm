@@ -23,6 +23,7 @@ serde = { workspace = true }
 serde_json.workspace = true
 anyhow.workspace = true
 # (perl-feature-catalog absorbed into perl-lsp-rs-core::feature_catalog — Wave Final PR B)
+perl-ast = { workspace = true }
 perl-lsp-rs-core = { workspace = true }
 perl-semantic-analyzer = { workspace = true }
 perl-semantic-facts = { workspace = true }

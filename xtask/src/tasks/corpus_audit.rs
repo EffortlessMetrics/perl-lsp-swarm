@@ -20,12 +20,15 @@ mod nodekind_analysis;
 mod report;
 mod timeout_detection;
 
-use corpus::{CorpusFile, parse_corpus_files};
+use corpus::parse_corpus_files;
 use ga_alignment::check_ga_feature_alignment;
 use nodekind_analysis::analyze_nodekind_coverage;
 use report::generate_report;
 use timeout_detection::{ParseOutcome, detect_timeout_risks, parse_with_timeout};
 
+// Re-exports for `update_status::nodekind` and other in-crate consumers.
+pub use corpus::{CorpusFile, parse_corpus_files as parse_corpus_files_pub};
+pub use nodekind_analysis::analyze_nodekind_coverage as analyze_nodekind_coverage_pub;
 pub use report::{AuditReport, FailingFile, ParseOutcomesSummary};
 
 /// Default timeout for parsing individual files
@@ -226,6 +229,17 @@ pub fn run(config: AuditConfig) -> Result<()> {
 
 pub fn run_parse_one(path: PathBuf) -> Result<()> {
     timeout_detection::run_parse_one(path)
+}
+
+/// Public re-export of the internal corpus parse-with-timeout helper.
+///
+/// Used by `update_status::nodekind` to obtain per-variant frequency data
+/// without running the full corpus audit pipeline.
+pub fn parse_corpus_pub(
+    corpus_files: &[CorpusFile],
+    timeout: Duration,
+) -> Result<HashMap<PathBuf, ParseOutcome>> {
+    parse_corpus_with_timeout(corpus_files, timeout)
 }
 
 /// Parse all corpus files with timeout protection
