@@ -345,6 +345,16 @@ const RAW_SNAPSHOT_PATTERNS: &[RawPatternCheck] = &[
     RawPatternCheck { needle: "\"applyKind\"", label: "CompletionList.applyKind JSON snapshot" },
 ];
 
+const MATRIX_TRANSITIONAL_STATUS_PATTERNS: &[RawPatternCheck] = &[
+    RawPatternCheck {
+        needle: "implemented-needs-positive-wire-test",
+        label: "transitional matrix status",
+    },
+    RawPatternCheck { needle: "needs-capability-parser", label: "transitional matrix status" },
+    RawPatternCheck { needle: "needs-compat-test", label: "transitional matrix status" },
+    RawPatternCheck { needle: "planned-needs-negative-gate", label: "transitional matrix status" },
+];
+
 const FEATURE_CATALOG_FORBIDDEN_PATTERNS: &[RawPatternCheck] = &[
     RawPatternCheck {
         needle: "documentRangesFormattingProvider",
@@ -424,6 +434,7 @@ pub fn run() -> Result<()> {
     check_required_markers(&root, CODE_LENS_TEST, CODE_LENS_TEST_MARKERS, &mut violations)?;
     check_required_markers(&root, WINDOW_TEST, WINDOW_TEST_MARKERS, &mut violations)?;
     check_feature_catalog(&root, &mut violations)?;
+    check_matrix_closeout_statuses(&root, &mut violations)?;
     check_capability_snapshots(&root, &mut violations)?;
     check_folding_range_refresh_guard(&root, &mut violations)?;
     check_relative_pattern_guard(&root, &mut violations)?;
@@ -482,6 +493,25 @@ fn check_required_markers(
             });
         }
     }
+    Ok(())
+}
+
+fn check_matrix_closeout_statuses(root: &Path, violations: &mut Vec<Violation>) -> Result<()> {
+    let text = read_required(root, MATRIX_PATH)?;
+    for pattern in MATRIX_TRANSITIONAL_STATUS_PATTERNS {
+        if text.contains(pattern.needle) {
+            violations.push(Violation {
+                rel_path: MATRIX_PATH.to_string(),
+                line: line_number_for(&text, pattern.needle),
+                label: pattern.label,
+                detail: format!(
+                    "matrix closeout must classify every row as implemented, negative-gated, or not-applicable: {:?}",
+                    pattern.needle
+                ),
+            });
+        }
+    }
+
     Ok(())
 }
 
