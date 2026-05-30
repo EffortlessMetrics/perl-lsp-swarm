@@ -1110,4 +1110,125 @@ labels: [self-hosted, linux, x64, em-ci, cx43, rust-small]
         assert_eq!(normalize_runs_on(&v), Some("self_hosted_cx43".to_string()));
         Ok(())
     }
+
+    // ── Coverage: defensive early-return branches ─────────────────────────────
+
+    /// normalize: an unknown plain string passes through unchanged (so it can be
+    /// compared against — and mismatch — a named whitelist token).
+    #[test]
+    fn normalize_unknown_string_passthrough() {
+        let v = Value::String("some-custom-runner".to_string());
+        assert_eq!(normalize_runs_on(&v), Some("some-custom-runner".to_string()));
+    }
+
+    /// normalize: object form without cx53/cx43 labels is unrecognized → None (skip).
+    #[test]
+    fn normalize_object_without_known_labels_returns_none() -> Result<()> {
+        let yaml = "group: generic\nlabels: [self-hosted, linux]\n";
+        let v: Value = serde_yaml_ng::from_str(yaml)?;
+        assert_eq!(normalize_runs_on(&v), None);
+        Ok(())
+    }
+
+    /// normalize: a non-string, non-mapping YAML node (e.g. a sequence) → None.
+    #[test]
+    fn normalize_sequence_returns_none() -> Result<()> {
+        let v: Value = serde_yaml_ng::from_str("[ubuntu-latest, windows-latest]")?;
+        assert_eq!(normalize_runs_on(&v), None);
+        Ok(())
+    }
+
+    /// runner check: lane missing the `runner` field → early return, no panic, no issue.
+    #[test]
+    fn runner_check_skips_lane_without_runner_field() -> Result<()> {
+        let workflows_dir = fixture_path("")?;
+        let lane: toml::Value =
+            toml::from_str("workflow = \".github/workflows/runner_match.yml\"\njob = \"lint\"\n")?;
+        let mut issues = Vec::new();
+        check_runner_label_mismatch(&workflows_dir, &lane, &mut issues)?;
+        assert!(issues.is_empty(), "expected no issues, got: {issues:?}");
+        Ok(())
+    }
+
+    /// runner check: lane missing the `job` field → early return.
+    #[test]
+    fn runner_check_skips_lane_without_job_field() -> Result<()> {
+        let workflows_dir = fixture_path("")?;
+        let lane: toml::Value = toml::from_str(
+            "workflow = \".github/workflows/runner_match.yml\"\nrunner = \"ubuntu_24_04\"\n",
+        )?;
+        let mut issues = Vec::new();
+        check_runner_label_mismatch(&workflows_dir, &lane, &mut issues)?;
+        assert!(issues.is_empty(), "expected no issues, got: {issues:?}");
+        Ok(())
+    }
+
+    /// runner check: `runner = "mixed"` short-circuits even against a differing actual runner.
+    #[test]
+    fn runner_check_mixed_short_circuits() -> Result<()> {
+        let workflows_dir = fixture_path("")?;
+        let lane: toml::Value = toml::from_str(
+            "workflow = \".github/workflows/runner_mismatch.yml\"\njob = \"lint\"\nrunner = \"mixed\"\n",
+        )?;
+        let mut issues = Vec::new();
+        check_runner_label_mismatch(&workflows_dir, &lane, &mut issues)?;
+        assert!(
+            issues.iter().all(|i| i.code != "RUNNER_LABEL_MISMATCH"),
+            "mixed runner must not fire mismatch: {issues:?}"
+        );
+        Ok(())
+    }
+
+    /// runner check: workflow file absent → early return (STALE check covers it).
+    #[test]
+    fn runner_check_skips_missing_workflow_file() -> Result<()> {
+        let workflows_dir = fixture_path("")?;
+        let lane: toml::Value = toml::from_str(
+            "workflow = \".github/workflows/does_not_exist_xyz.yml\"\njob = \"lint\"\nrunner = \"ubuntu_24_04\"\n",
+        )?;
+        let mut issues = Vec::new();
+        check_runner_label_mismatch(&workflows_dir, &lane, &mut issues)?;
+        assert!(issues.is_empty(), "expected no issues for missing file, got: {issues:?}");
+        Ok(())
+    }
+
+    /// stale check: lane missing `job` field → early return, no issue.
+    #[test]
+    fn stale_check_skips_lane_without_job_field() -> Result<()> {
+        let workflows_dir = fixture_path("")?;
+        let lane: toml::Value = toml::from_str("workflow = \".github/workflows/valid_job.yml\"\n")?;
+        let mut issues = Vec::new();
+        check_stale_whitelist_job(&workflows_dir, &lane, &mut issues)?;
+        assert!(issues.is_empty(), "expected no issues, got: {issues:?}");
+        Ok(())
+    }
+
+    /// stale check: workflow file absent → early return (deferred to LANE_WHITELIST_MISSING).
+    #[test]
+    fn stale_check_skips_missing_workflow_file() -> Result<()> {
+        let workflows_dir = fixture_path("")?;
+        let lane: toml::Value = toml::from_str(
+            "workflow = \".github/workflows/does_not_exist_xyz.yml\"\njob = \"whatever\"\n",
+        )?;
+        let mut issues = Vec::new();
+        check_stale_whitelist_job(&workflows_dir, &lane, &mut issues)?;
+        assert!(issues.is_empty(), "expected no issues for missing file, got: {issues:?}");
+        Ok(())
+    }
+
+    /// stale check: workflow with no `jobs:` map → STALE_WHITELIST_JOB fires.
+    #[test]
+    fn stale_check_fires_on_workflow_without_jobs_map() -> Result<()> {
+        let workflows_dir = fixture_path("")?;
+        let lane: toml::Value = toml::from_str(
+            "workflow = \".github/workflows/no_jobs_map.yml\"\njob = \"anything\"\n",
+        )?;
+        let mut issues = Vec::new();
+        check_stale_whitelist_job(&workflows_dir, &lane, &mut issues)?;
+        assert!(
+            issues.iter().any(|i| i.code == "STALE_WHITELIST_JOB"),
+            "expected STALE_WHITELIST_JOB for jobless workflow, got: {issues:?}"
+        );
+        Ok(())
+    }
 }
