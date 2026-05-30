@@ -15,6 +15,23 @@ fn test_internal_pl_sv_yes_hover_from_sigiled_token() {
 }
 
 #[test]
+fn pragma_hover_links_external_and_virtual_perldoc() {
+    let hover = must_some(LspServer::build_pragma_hover("strict"));
+    let value = must_some(hover["contents"]["value"].as_str());
+
+    let expected = "**Pragma: `strict`**\n\n\
+        _Enable strict variable/subroutine/reference checking_\n\n\
+        Restricts unsafe Perl constructs. Enables compile-time errors for undeclared variables \
+        (`vars`), bareword subroutine names (`subs`), and symbolic references (`refs`). Use \
+        `use strict;` to enable all three categories at once, or `use strict 'vars'` for \
+        individual categories.\n\n\
+        **Common usage**: Always include `use strict;` at the top of every Perl file.\n\n\
+        [perldoc strict](https://perldoc.perl.org/strict) | \
+        [Open virtual perldoc](perldoc://strict)";
+    assert_eq!(value, expected);
+}
+
+#[test]
 fn pod_hover_cache_prunes_at_cap_and_evicts_active_document_path()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
@@ -122,6 +139,58 @@ fn missing_module_hover_gives_actionable_next_steps() {
         value.contains("https://metacpan.org/pod/Definitely::Missing::Module"),
         "missing module hover should keep the MetaCPAN link: {value}"
     );
+    assert!(
+        value.contains("perldoc://Definitely::Missing::Module"),
+        "missing module hover should expose the virtual perldoc document: {value}"
+    );
+}
+
+#[test]
+fn resolved_module_hover_links_virtual_perldoc() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("workspace");
+    let lib = root.join("lib").join("Local");
+    std::fs::create_dir_all(&lib)?;
+    std::fs::write(
+        lib.join("Doc.pm"),
+        "package Local::Doc;\n\n=head1 NAME\n\nLocal::Doc\n\n=head1 DESCRIPTION\n\nLocal POD.\n\n=cut\n\n1;\n",
+    )?;
+
+    let workspace_uri =
+        url::Url::from_directory_path(&root).map_err(|_| "failed to create workspace URI")?;
+    *server.workspace_folders.lock() = vec![
+        crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+            .with_path(root.clone()),
+    ];
+    {
+        let mut config = server.workspace_config.lock();
+        config.include_paths = vec!["lib".to_string()];
+        config.use_perl5lib = false;
+        config.use_system_inc = false;
+    }
+
+    let script_uri = url::Url::from_file_path(root.join("main.pl"))
+        .map_err(|_| "failed to create script URI")?;
+    let doc_text = "use Local::Doc;\n";
+    let hover = server.build_module_hover("Local::Doc", doc_text, script_uri.as_str(), Some(5));
+    let value = must_some(hover["contents"]["value"].as_str());
+
+    assert!(
+        value.contains("[Go to module]("),
+        "resolved hover should keep file navigation: {value}"
+    );
+    assert!(
+        value.contains("https://metacpan.org/pod/Local::Doc"),
+        "resolved hover should keep the MetaCPAN link: {value}"
+    );
+    assert!(
+        value.contains("perldoc://Local::Doc"),
+        "resolved hover should expose the virtual perldoc document: {value}"
+    );
+    assert!(value.contains("Local POD"), "resolved hover should keep local POD content: {value}");
+
+    Ok(())
 }
 
 #[test]

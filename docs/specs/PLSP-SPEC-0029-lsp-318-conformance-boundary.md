@@ -95,10 +95,25 @@ perl-lsp supports selected LSP 3.18 surfaces with capability-honest contracts.
 | Completion list apply kind | `textDocument.completion.completionList.applyKindSupport`, `textDocument/completion` | Clients that support apply kind and `itemDefaults.data` receive `CompletionList.applyKind.data = 2` (`ApplyKind.Merge`); unsupported clients, or clients without supported defaults, receive no `applyKind`. | `lsp_completion_tests`, `lsp_318_negative_claims`, `check-lsp-318-claims` |
 | CodeAction documentation | `textDocument.codeAction.documentationSupport`, `codeActionProvider.documentation` | Clients that support code-action documentation receive `CodeActionOptions.documentation` for `quickfix`, `refactor`, and `source.fixAll`; unsupported clients receive no documentation advertisement and individual code-action responses remain unchanged. | `lsp_318_negative_claims`, `check-lsp-318-claims` |
 | CodeAction tag trust boundary | `textDocument.codeAction.tagSupport.valueSet`, `CodeAction.tags` | The server parses support for `CodeActionTag.LLMGenerated`, strips unsupported or malformed tag payloads from code-action and resolve responses, and verifies deterministic code actions remain untagged even for tag-capable clients. Actual generated-action tagging remains unclaimed until a generated-action source exists. | `lsp_318_negative_claims`, `check-lsp-318-claims` |
+| Apply-edit metadata | `workspace.applyEdit`, `workspace.workspaceEdit.metadataSupport`, `workspace/applyEdit` | Server-originated refactoring apply-edit requests may include `ApplyWorkspaceEditParams.metadata.isRefactoring` only when both capabilities are present; ordinary `WorkspaceEdit` responses stay metadata-free. | `lsp_318_negative_claims`, `features.toml`, `check-lsp-318-claims` |
 | Window debug messages | `MessageType.Debug`, `window/logMessage`, `window/showMessage`, `window/showMessageRequest` | Explicit debug message calls serialize type `5`; normal runtime paths continue using the existing non-debug message levels unless a later PR intentionally wires debug policy. | `lsp_window_tests`, `lsp_318_negative_claims`, `check-lsp-318-claims` |
 | Diagnostic markup messages | `textDocument.diagnostic.markupMessageSupport`, `textDocument/diagnostic`, `workspace/diagnostic` | Pull diagnostics may emit `Diagnostic.message` as `MarkupContent` only when support is true; unsupported clients and publish diagnostics remain string-only. | `lsp_diagnostic_enrichment_test`, `lsp_318_negative_claims`, `lsp_schema_validation`, `check-lsp-318-claims` |
 | Lean/e2e watcher behavior | `workspace/didChangeWatchedFiles` dynamic registration | Runtime tuning can suppress file watchers without suppressing inline-completion dynamic registration. | `lsp_registration_tests`, lean UX receipts |
 | RelativePattern watcher registrations | `workspace.didChangeWatchedFiles.relativePatternSupport`, `workspace/didChangeWatchedFiles` dynamic registration | Clients that support relative watcher glob patterns receive `baseUri`/`pattern` objects rooted at workspace folders; unsupported clients and invalid workspace roots keep string glob fallback. | `lsp_registration_tests`, `lsp_318_negative_claims`, `check-lsp-318-claims` |
+
+## Matrix Closeout State
+
+The generated LSP 3.18 matrix is closed for the current support boundary. Every
+row is classified as one of:
+
+- `implemented+tested+documented`
+- `negative-gated+documented`
+- `not-applicable+documented`
+
+Rows must not use transitional statuses such as "needs capability parser" or
+"planned needs negative gate" unless a later PR intentionally reopens the matrix
+with a documented follow-up lane. `cargo xtask check-lsp-318-claims` enforces
+that the checked-in matrix stays in this closed-state vocabulary.
 
 ## Explicitly Unclaimed Surfaces
 
@@ -106,9 +121,9 @@ These surfaces are not part of the current claim unless a later PR adds behavior
 capability parsing, wire tests, docs, and negative gates:
 
 - complete LSP 3.18 implementation
+- object-form `StringValue` inline completion insert text
 - `textDocument/semanticTokens/full/delta`
 - semantic-token delta `resultId` state
-- `ApplyWorkspaceEditParams.metadata`
 - non-spec `WorkspaceEdit.metadata` response fields
 - generated-action `CodeAction.tags` emission
 - `CodeActionTag.LLMGenerated` on deterministic actions
@@ -139,6 +154,8 @@ The `lsp_318_negative_claims` test suite is the current guardrail for optional
 - accepts `textDocument/semanticTokens/full/delta` as implemented
 - reintroduces `experimental.inlineCompletionProvider`
 - reintroduces `documentRangesFormattingProvider`
+- emits object-form `StringValue` values for
+  `InlineCompletionItem.insertText` without an intentional implementation
 - emits `CompletionList.applyKind` without explicit support
 - emits `CompletionList.itemDefaults.data` without explicit support
 - advertises `CodeAction.documentation` without client support or emits
@@ -260,7 +277,14 @@ inline-completion binary smoke commands relevant to the touched editor surface.
 ## Claim Boundaries
 
 This spec may claim that `perl-lsp` has a documented LSP 3.18 selected-surface
-support boundary and negative gates for unimplemented optional surfaces.
+support boundary and negative gates for unimplemented optional surfaces,
+including:
+
+- capability-gated `SnippetTextEdit` workspace edits in
+  `WorkspaceEdit.documentChanges`, with plain `TextEdit` fallback for
+  unsupported clients
+- capability-gated `ApplyWorkspaceEditParams.metadata` on server-originated
+  `workspace/applyEdit` requests
 
 It may not claim:
 
@@ -269,5 +293,7 @@ It may not claim:
 - extraction readiness beyond the separate extraction boundary spec
 - editor support beyond current receipts
 - semantic-token delta support
-- workspace-edit snippet or metadata support
+- object-form `StringValue` inline completion insert text
+- non-spec `WorkspaceEdit.metadata` response fields
+- ungated workspace-edit snippet or apply-edit metadata support
 - optional 3.18 response-shape support without client capability handling
