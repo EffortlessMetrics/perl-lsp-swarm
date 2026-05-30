@@ -3376,6 +3376,68 @@ impl WorkspaceIndex {
         members
     }
 
+    /// Names of all packages explicitly declared in a file.
+    ///
+    /// Returns the bare declared name for each `package` statement or block in
+    /// the file (e.g. `"Foo"`, `"Bar"`, `"Foo::Nested"`).  A file with no
+    /// explicit `package` declaration returns an empty vec — there is no implicit
+    /// `"main"` symbol to surface.  A file containing `package main;` explicitly
+    /// WILL appear in results.
+    ///
+    /// # Arguments
+    ///
+    /// * `uri` - File URI to inspect (normalized via `normalize_uri`)
+    ///
+    /// # Returns
+    ///
+    /// Declared package names in declaration order (AST walk order).
+    pub fn file_packages(&self, uri: &str) -> Vec<String> {
+        let normalized = Self::normalize_uri(uri);
+        let key = DocumentStore::uri_key(&normalized);
+        let files = self.files.read();
+        files
+            .get(&key)
+            .map(|fi| {
+                fi.symbols
+                    .iter()
+                    .filter(|s| s.kind == SymbolKind::Package)
+                    .map(|s| s.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Symbols declared inside a specific package within a file.
+    ///
+    /// Returns all `WorkspaceSymbol` entries whose `container_name` equals
+    /// `package_name` (bare name match, e.g. `"Bar"` or `"Foo::Nested"`).
+    /// Package declaration symbols themselves are excluded (they carry
+    /// `container_name = None`).
+    ///
+    /// # Arguments
+    ///
+    /// * `uri`          - File URI to inspect
+    /// * `package_name` - Bare package name to filter by (e.g. `"Foo::Bar"`)
+    ///
+    /// # Returns
+    ///
+    /// Symbols belonging to the package, in declaration order.
+    pub fn file_package_symbols(&self, uri: &str, package_name: &str) -> Vec<WorkspaceSymbol> {
+        let normalized = Self::normalize_uri(uri);
+        let key = DocumentStore::uri_key(&normalized);
+        let files = self.files.read();
+        files
+            .get(&key)
+            .map(|fi| {
+                fi.symbols
+                    .iter()
+                    .filter(|s| s.container_name.as_deref() == Some(package_name))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Find the definition location for a symbol key during Index/Navigate stages.
     ///
     /// # Arguments
