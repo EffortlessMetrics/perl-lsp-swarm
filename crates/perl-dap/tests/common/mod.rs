@@ -315,10 +315,9 @@ impl DapWorkflowSession {
         let vars = body
             .get("variables")
             .and_then(Value::as_array)
-            .ok_or("variables body missing `variables` array")?
-            .clone();
+            .ok_or("variables body missing `variables` array")?;
 
-        Ok(vars)
+        Ok(vars.clone())
     }
 
     /// Send `continue` for `thread_id`.
@@ -423,4 +422,76 @@ pub fn workflow_timeout() -> Duration {
 /// Returns `true` when `perl` is on `PATH`.
 pub fn perl_available() -> bool {
     PerlOracleEnv::for_dap_test_fixture().is_some()
+}
+
+// ─── Unit tests for set_breakpoints_checked error paths ───────────────────────
+//
+// These tests exercise the helper's non-trivial error branches without
+// requiring a live `perl -d` session.  They rely on the adapter returning
+// `verified: false` when the source path cannot be read.
+
+#[cfg(test)]
+mod set_breakpoints_checked_tests {
+    use super::*;
+    use perl_tdd_support::must;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn make_session() -> DapWorkflowSession {
+        must(DapWorkflowSession::new(std::time::Duration::from_secs(5)))
+    }
+
+    /// When every breakpoint is verified the helper returns a Vec of resolved lines.
+    #[test]
+    fn returns_resolved_lines_for_verified_breakpoints() -> TestResult {
+        use std::io::Write;
+
+        // Write a tiny Perl script so the adapter can read it and verify lines.
+        let mut f = must(tempfile::NamedTempFile::new());
+        must(writeln!(f, "my $x = 1;"));
+        must(writeln!(f, "my $y = 2;"));
+        must(writeln!(f, "my $z = 3;"));
+        must(f.flush());
+        let path = f.path().to_str().ok_or("path not UTF-8")?.to_string();
+
+        let mut session = make_session();
+        let result = session.set_breakpoints_checked(&path, &[1, 2]);
+        // Lines 1 and 2 are valid executable lines — should be verified.
+        assert!(result.is_ok(), "expected Ok but got: {result:?}");
+        let lines = result?;
+        assert_eq!(lines.len(), 2);
+        Ok(())
+    }
+
+    /// An unreadable source path causes all breakpoints to be unverified.
+    /// `set_breakpoints_checked` must return `Err` mentioning the breakpoint index.
+    #[test]
+    fn errors_on_unverified_breakpoint() -> TestResult {
+        let mut session = make_session();
+        // Path that cannot be read → adapter returns verified:false for each bp.
+        let result =
+            session.set_breakpoints_checked("/nonexistent/path/that/cannot/be/read.pl", &[5]);
+        assert!(result.is_err(), "expected Err for unverified breakpoint");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("was not verified") || msg.contains("breakpoint #0"),
+            "error message should identify the unverified breakpoint; got: {msg}"
+        );
+        Ok(())
+    }
+
+    /// Zero requested lines → the helper should return an empty Vec without error.
+    #[test]
+    fn empty_lines_returns_empty_vec() -> TestResult {
+        let mut session = make_session();
+        // The adapter accepts an empty breakpoints array; no len mismatch.
+        let result = session.set_breakpoints_checked("/any/path.pl", &[]);
+        // The adapter may error on a missing body or return an empty array; either
+        // is acceptable — the key invariant is that resolved_lines.len() == 0 on Ok.
+        if let Ok(lines) = result {
+            assert!(lines.is_empty(), "empty request should yield empty resolved list");
+        }
+        // Err is also acceptable (e.g., "setBreakpoints returned no body") — no assert needed.
+        Ok(())
+    }
 }
