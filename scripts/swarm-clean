@@ -82,15 +82,32 @@ branch_merged() {
     git -C "$repo_root" branch --merged "$main_branch" 2>/dev/null | grep -qw "$branch"
 }
 
-# Check if there is an open PR for the given branch.
-branch_has_open_pr() {
+# Determine open-PR status for a branch as a TRI-STATE:
+#   "open"    — an open PR exists for this branch
+#   "none"    — gh queried successfully and reported no open PR
+#   "unknown" — gh is absent or the query failed (status could not be determined)
+#
+# "unknown" must NOT be treated as "none": doing so would let a worktree with a
+# live PR be classified clean-finished and deleted under --apply on machines
+# without gh (minimal containers, non-GitHub CI). The classifier requires an
+# affirmative "none" before a worktree is eligible for deletion.
+branch_pr_status() {
     local branch="$1"
     if ! command -v gh >/dev/null 2>&1; then
-        return 1
+        echo "unknown"
+        return
     fi
     local pr_number
-    pr_number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")"
-    [[ -n "$pr_number" ]]
+    if ! pr_number="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)"; then
+        # gh present but the query itself failed (auth, network, rate limit).
+        echo "unknown"
+        return
+    fi
+    if [[ -n "$pr_number" ]]; then
+        echo "open"
+    else
+        echo "none"
+    fi
 }
 
 # Remove a worktree. Uses git worktree remove (no --force) so git's own dirty-check
@@ -250,19 +267,19 @@ for entry in "${ALL_WTS[@]}"; do
 
     else
         # Neither active nor dirty nor stale-lock.
-        # Check if merged + no open PR → clean-finished.
+        # Eligible for clean-finished ONLY when merged AND we can affirmatively
+        # confirm there is no open PR. PR status is tri-state; "unknown" (gh
+        # absent or query failed) is treated as NOT-safe and falls to ambiguous.
         is_merged=0
-        has_open_pr=0
+        pr_status="unknown"
 
         if branch_merged "$REPO_ROOT" "$wt_branch" 2>/dev/null; then
             is_merged=1
         fi
 
-        if branch_has_open_pr "$wt_branch" 2>/dev/null; then
-            has_open_pr=1
-        fi
+        pr_status="$(branch_pr_status "$wt_branch")"
 
-        if [[ "$is_merged" -eq 1 ]] && [[ "$has_open_pr" -eq 0 ]]; then
+        if [[ "$is_merged" -eq 1 ]] && [[ "$pr_status" == "none" ]]; then
             bucket="clean-finished"
             if [[ "$APPLY" -eq 1 ]]; then
                 action="REMOVE"
@@ -271,12 +288,16 @@ for entry in "${ALL_WTS[@]}"; do
             fi
             COUNT_CLEAN_FINISHED=$((COUNT_CLEAN_FINISHED + 1))
         else
-            # Unmerged, no open PR, not dirty, not locked → ambiguous
+            # Not eligible for deletion → ambiguous (report only, human decides).
             bucket="ambiguous"
-            if [[ "$is_merged" -eq 1 ]]; then
-                action="REPORT-ONLY (merged but open PR exists)"
-            else
+            if [[ "$pr_status" == "open" ]]; then
+                action="REPORT-ONLY (open PR exists)"
+            elif [[ "$pr_status" == "unknown" ]]; then
+                action="REPORT-ONLY (PR status unknown — gh unavailable; not safe to delete)"
+            elif [[ "$is_merged" -eq 0 ]]; then
                 action="REPORT-ONLY (unmerged, no PR — human decides)"
+            else
+                action="REPORT-ONLY (human decides)"
             fi
             COUNT_AMBIGUOUS=$((COUNT_AMBIGUOUS + 1))
         fi

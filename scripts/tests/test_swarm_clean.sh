@@ -91,12 +91,54 @@ merge_branch_into_main() {
     git -C "$FIXTURE_REPO" merge -q --no-ff -m "merge $branch" "$branch" 2>/dev/null || true
 }
 
-run_clean_dryrun() {
-    REPO_ROOT="$FIXTURE_REPO" bash "$IMPL" 2>&1
+# Create a stub `gh` on a dedicated dir and echo that dir. The stub reports NO
+# open PR (empty output, exit 0) so clean-finished classification is exercised
+# deterministically regardless of whether real gh is installed in the test env.
+make_gh_stub_nopr() {
+    local stub_dir="$FIXTURE_DIR/ghstub-nopr"
+    mkdir -p "$stub_dir"
+    cat > "$stub_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+# Stub gh: always reports no open PR. `gh pr list ... --jq '.[0].number'`
+# yields empty string on an empty array, which is what real gh does.
+exit 0
+STUB
+    chmod +x "$stub_dir/gh"
+    echo "$stub_dir"
 }
 
+# Run dry-run with a gh stub that affirmatively reports "no PR" (pr_status=none).
+run_clean_dryrun() {
+    local stub_dir; stub_dir="$(make_gh_stub_nopr)"
+    PATH="$stub_dir:$PATH" REPO_ROOT="$FIXTURE_REPO" bash "$IMPL" 2>&1
+}
+
+# Run --apply with a gh stub that affirmatively reports "no PR" (pr_status=none).
 run_clean_apply() {
-    REPO_ROOT="$FIXTURE_REPO" bash "$IMPL" --apply 2>&1
+    local stub_dir; stub_dir="$(make_gh_stub_nopr)"
+    PATH="$stub_dir:$PATH" REPO_ROOT="$FIXTURE_REPO" bash "$IMPL" --apply 2>&1
+}
+
+# Create a stub `gh` that FAILS (exit non-zero), simulating gh being unable to
+# determine PR status (not authenticated, no network, rate limited). This drives
+# pr_status to "unknown" — the same safety-critical outcome as gh being absent.
+make_gh_stub_failing() {
+    local stub_dir="$FIXTURE_DIR/ghstub-fail"
+    mkdir -p "$stub_dir"
+    cat > "$stub_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "gh: simulated failure (no auth/network)" >&2
+exit 1
+STUB
+    chmod +x "$stub_dir/gh"
+    echo "$stub_dir"
+}
+
+# Run --apply where gh cannot determine PR status (pr_status=unknown) — the
+# gh-unavailable safety case. A merged, clean worktree must NOT be deleted here.
+run_clean_apply_gh_unknown() {
+    local stub_dir; stub_dir="$(make_gh_stub_failing)"
+    PATH="$stub_dir:$PATH" REPO_ROOT="$FIXTURE_REPO" bash "$IMPL" --apply 2>&1
 }
 
 teardown() {
@@ -393,6 +435,56 @@ test_locked_dead_pid_output_is_ambiguous() {
     fi
 }
 
+# ── P0 regression: gh unavailable → PR status unknown → never deleted ────────────────────
+#
+# Guards the factory-droid P0 (#925): a merged, clean, unlocked worktree that
+# MIGHT still have an open PR must NOT be deleted when gh cannot determine PR
+# status (absent / unauthenticated / offline). "unknown" must fall to ambiguous,
+# never clean-finished.
+
+# Test 13: merged+clean worktree with gh failing → NOT deleted under --apply.
+test_gh_unknown_merged_clean_not_deleted() {
+    make_fixture_repo
+    local wt_path
+    wt_path="$(make_fixture_worktree "gh-unknown-apply-branch")"
+    merge_branch_into_main "gh-unknown-apply-branch"
+
+    local output exit_code=0
+    output="$(run_clean_apply_gh_unknown)" || exit_code=$?
+
+    local still_exists=0
+    [[ -d "$wt_path" ]] && still_exists=1
+
+    teardown
+
+    if [[ "$still_exists" -eq 1 ]]; then
+        pass "(P0) merged+clean worktree NOT deleted when gh PR status is unknown"
+    else
+        fail "(P0) SAFETY VIOLATION: merged+clean worktree deleted under --apply with gh unavailable"
+    fi
+}
+
+# Test 14: merged+clean worktree with gh failing → classified 'ambiguous', not clean-finished.
+test_gh_unknown_classified_ambiguous() {
+    make_fixture_repo
+    local wt_path
+    wt_path="$(make_fixture_worktree "gh-unknown-class-branch")"
+    merge_branch_into_main "gh-unknown-class-branch"
+
+    local output exit_code=0
+    output="$(run_clean_apply_gh_unknown)" || exit_code=$?
+
+    teardown
+
+    local line
+    line="$(echo "$output" | grep "gh-unknown-class-branch" || true)"
+    if echo "$line" | grep -q "ambiguous" && ! echo "$line" | grep -q "clean-finished"; then
+        pass "(P0) gh-unknown merged worktree classified 'ambiguous', not clean-finished"
+    else
+        fail "(P0) gh-unknown merged worktree misclassified — line: ${line:-<none>}"
+    fi
+}
+
 # ── Run all tests ───────────────────────────────────────────────────────────────────────────────────
 
 echo "=== swarm-clean test suite ==="
@@ -410,6 +502,8 @@ test_ambiguous_worktree_never_deleted
 test_summary_section_appears
 test_locked_dead_pid_classified_as_ambiguous
 test_locked_dead_pid_output_is_ambiguous
+test_gh_unknown_merged_clean_not_deleted
+test_gh_unknown_classified_ambiguous
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
