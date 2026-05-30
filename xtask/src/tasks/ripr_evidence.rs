@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+static RIPR_BIN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 const DEFAULT_ROOT: &str = ".";
 const DEFAULT_BASE: &str = "origin/master";
 const DEFAULT_HEAD: &str = "HEAD";
@@ -1554,24 +1557,34 @@ fn run_git_output(repo: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn run_ripr(args: &[String]) -> Result<String> {
-    let binary = match env::var("RIPR_BIN") {
-        Ok(value) if !value.trim().is_empty() => value,
-        Ok(_) => bail!("RIPR_BIN is set but empty"),
-        Err(_) => "ripr".to_string(),
-    };
+    let binary = ripr_binary()?;
     run_output(&binary, args)
 }
 
 fn run_ripr_with_timeout(args: &[String], timeout_seconds: Option<u64>) -> Result<String> {
+    let binary = ripr_binary()?;
+    match timeout_seconds {
+        Some(seconds) => run_output_with_timeout(&binary, args, Duration::from_secs(seconds)),
+        None => run_output(&binary, args),
+    }
+}
+
+fn ripr_binary() -> Result<String> {
+    #[cfg(test)]
+    {
+        let guard =
+            RIPR_BIN_OVERRIDE.lock().map_err(|_| eyre!("RIPR_BIN test override lock poisoned"))?;
+        if let Some(binary) = guard.as_ref() {
+            return Ok(binary.clone());
+        }
+    }
+
     let binary = match env::var("RIPR_BIN") {
         Ok(value) if !value.trim().is_empty() => value,
         Ok(_) => bail!("RIPR_BIN is set but empty"),
         Err(_) => "ripr".to_string(),
     };
-    match timeout_seconds {
-        Some(seconds) => run_output_with_timeout(&binary, args, Duration::from_secs(seconds)),
-        None => run_output(&binary, args),
-    }
+    Ok(binary)
 }
 
 fn run_output(cmd: &str, args: &[String]) -> Result<String> {
@@ -2153,6 +2166,62 @@ mod tests {
     }
 
     #[test]
+    fn ripr_plus_packet_invokes_badge_counts_and_seam_inventory_sources() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            r#"schema_version = 1
+policy = "ripr-suppressions"
+owner = "EffortlessMetrics"
+status = "advisory"
+updated = "2026-05-28"
+
+[[suppress]]
+id = "ripr-suppress-archive"
+kind = "generated_or_non_production_surface"
+paths = ["archive/**"]
+reason = "Archived source is not active workspace behavior."
+"#,
+        )?;
+        let ripr = write_fake_ripr_binary(repo)?;
+        let _override = override_ripr_bin(&ripr)?;
+        let options = RiprPlusOptions {
+            root: ".".to_string(),
+            suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+        };
+
+        let packet = ripr_plus_packet(repo, &options)?;
+
+        assert_eq!(packet["head"], json!(current_head(repo)?));
+        assert_eq!(packet["basis"], json!("canonical_actionable_gap"));
+        assert_eq!(packet["unresolved"], json!(9));
+        assert_eq!(packet["active_unresolved"], json!(9));
+        assert_eq!(packet["suppressed_unresolved"], json!(4));
+        assert_eq!(packet.pointer("/counts/unsuppressed_exposure_gaps"), Some(&json!(7)));
+        assert_eq!(packet.pointer("/reason_counts/no_assertion_detected"), Some(&json!(7)));
+        assert_eq!(
+            packet.pointer("/top_files/0/name"),
+            Some(&json!("xtask/src/tasks/ripr_evidence.rs"))
+        );
+        assert_eq!(packet.pointer("/top_suppressed_files/0/name"), Some(&json!("archive/old.rs")));
+        assert_eq!(packet.pointer("/top_active_gap_kinds/0/name"), Some(&json!("receipt parsing")));
+        let clusters = packet
+            .get("recommended_first_clusters")
+            .and_then(Value::as_array)
+            .ok_or_else(|| eyre!("missing recommended_first_clusters"))?;
+        assert!(
+            clusters.iter().any(|cluster| {
+                cluster.get("name").and_then(Value::as_str) == Some("proof-infrastructure")
+            }),
+            "xtask seam inventory must recommend the proof-infrastructure cluster: {clusters:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn ripr_plus_packet_from_raw_rejects_invalid_badge_json() {
         let options = RiprPlusOptions {
             root: ".".to_string(),
@@ -2721,6 +2790,82 @@ paths = ["archive/["]
             .context("git command returned non-UTF8 output")?
             .trim()
             .to_string())
+    }
+
+    struct RiprBinOverrideGuard;
+
+    impl Drop for RiprBinOverrideGuard {
+        fn drop(&mut self) {
+            if let Ok(mut guard) = RIPR_BIN_OVERRIDE.lock() {
+                *guard = None;
+            }
+        }
+    }
+
+    fn override_ripr_bin(binary: &Path) -> Result<RiprBinOverrideGuard> {
+        let mut guard =
+            RIPR_BIN_OVERRIDE.lock().map_err(|_| eyre!("RIPR_BIN test override lock poisoned"))?;
+        *guard = Some(binary.display().to_string());
+        Ok(RiprBinOverrideGuard)
+    }
+
+    fn write_fake_ripr_binary(dir: &Path) -> Result<PathBuf> {
+        let badge_json = r#"{"basis":"canonical_actionable_gap","counts":{"unsuppressed_exposure_gaps":7,"unsuppressed_test_efficiency_findings":2,"suppressed_exposure_gaps":1,"suppressed_test_efficiency_findings":3},"reason_counts":{"no_assertion_detected":7}}"#;
+        let seams_json = r#"{"seams":[{"file":"xtask/src/tasks/ripr_evidence.rs","gap_kind":"receipt parsing"},{"file":"archive/old.rs","gap_kind":"archived"}]}"#;
+
+        #[cfg(windows)]
+        {
+            let path = dir.join("ripr.cmd");
+            write_text(
+                &path,
+                &format!(
+                    r#"@echo off
+echo %* | findstr /C:"repo-badge-json" >NUL
+if %ERRORLEVEL%==0 (
+  echo {badge_json}
+  exit /b 0
+)
+echo %* | findstr /C:"repo-seams-json" >NUL
+if %ERRORLEVEL%==0 (
+  echo {seams_json}
+  exit /b 0
+)
+echo unexpected ripr args: %* 1>&2
+exit /b 2
+"#
+                ),
+            )?;
+            Ok(path)
+        }
+
+        #[cfg(not(windows))]
+        {
+            let path = dir.join("ripr");
+            write_text(
+                &path,
+                &format!(
+                    r#"#!/bin/sh
+case "$*" in
+  *repo-badge-json*)
+    printf '%s\n' '{badge_json}'
+    ;;
+  *repo-seams-json*)
+    printf '%s\n' '{seams_json}'
+    ;;
+  *)
+    echo "unexpected ripr args: $*" >&2
+    exit 2
+    ;;
+esac
+"#
+                ),
+            )?;
+            let mut permissions = fs::metadata(&path)?.permissions();
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions)?;
+            Ok(path)
+        }
     }
 
     #[test]
