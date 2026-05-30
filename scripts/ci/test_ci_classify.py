@@ -138,6 +138,25 @@ class TestInfraIssue(unittest.TestCase):
         )
         self.assertEqual(cls, CLASS_INFRA_ISSUE)
 
+    def test_quarantine_beats_timed_out_for_coverage_gate(self) -> None:
+        """Quarantined coverage gate that times out → coverage_artifact, not infra_issue.
+
+        A quarantined gate cannot meaningfully be 'retried' — the quarantine is the
+        authoritative policy signal.  Routing as infra_issue would incorrectly suggest
+        a retry is safe.
+        """
+        cls, _ = classify_one(
+            _check("security_audit", "timed_out", quarantine=True)
+        )
+        self.assertEqual(cls, CLASS_COVERAGE_ARTIFACT)
+
+    def test_quarantine_beats_cancelled_for_non_coverage_gate(self) -> None:
+        """Quarantined non-coverage gate that is cancelled → expected_path_skip, not infra_issue."""
+        cls, _ = classify_one(
+            _check("some-quarantined-gate", "cancelled", quarantine=True)
+        )
+        self.assertEqual(cls, CLASS_EXPECTED_PATH_SKIP)
+
 
 class TestPolicyMismatch(unittest.TestCase):
     """Spec requirement: policy_mismatch — mechanical-correctness gate, quarantine=false."""
@@ -176,33 +195,28 @@ class TestPolicyMismatch(unittest.TestCase):
 
 
 class TestExpectedPathSkip(unittest.TestCase):
-    """Spec requirement: expected_path_skip — quarantine=true or required=false."""
-
-    def test_quarantined_security_audit(self) -> None:
-        """security_audit is quarantined per debt-ledger.yaml."""
-        cls, rationale = classify_one(
-            _check("security_audit", "failure", quarantine=True)
-        )
-        self.assertEqual(cls, CLASS_EXPECTED_PATH_SKIP)
-        self.assertIn("quarantine=true", rationale)
+    """Spec requirement: expected_path_skip — quarantine=true or required=false for non-coverage gates."""
 
     def test_windows_required_false(self) -> None:
-        """Windows Required with required=false is policy-sanctioned skip."""
+        """Windows Required with required=false is policy-sanctioned path skip."""
         cls, rationale = classify_one(
             _check("Windows Required", "failure", required=False, quarantine=False)
         )
         self.assertEqual(cls, CLASS_EXPECTED_PATH_SKIP)
         self.assertIn("required=false", rationale)
 
-    def test_quarantined_mutation(self) -> None:
-        cls, _ = classify_one(
-            _check("mutation", "failure", quarantine=True)
+    def test_quarantined_non_coverage_gate(self) -> None:
+        """A quarantined gate that is not a measurement/quality gate → expected_path_skip."""
+        cls, rationale = classify_one(
+            _check("some-experimental-check", "failure", quarantine=True)
         )
         self.assertEqual(cls, CLASS_EXPECTED_PATH_SKIP)
+        self.assertIn("quarantine=true", rationale)
 
-    def test_quarantined_fuzz(self) -> None:
+    def test_quarantined_product_gate_is_expected_path_skip(self) -> None:
+        """A quarantined product gate must never reach product_defect — expected_path_skip wins."""
         cls, _ = classify_one(
-            _check("fuzz", "failure", quarantine=True)
+            _check("CI Gate shard (lsp)", "failure", quarantine=True)
         )
         self.assertEqual(cls, CLASS_EXPECTED_PATH_SKIP)
 
@@ -241,7 +255,7 @@ class TestReviewGate(unittest.TestCase):
 
 
 class TestCoverageArtifact(unittest.TestCase):
-    """coverage_artifact — quarantine=false but coverage/baseline-related."""
+    """coverage_artifact — measurement/quality gate whose threshold or tooling drifted."""
 
     def test_coverage_skipped(self) -> None:
         cls, _ = classify_one(
@@ -249,15 +263,55 @@ class TestCoverageArtifact(unittest.TestCase):
         )
         self.assertEqual(cls, CLASS_COVERAGE_ARTIFACT)
 
-    def test_mutation_keyword(self) -> None:
-        cls, _ = classify_one(
-            _check("mutation-subset", "failure", quarantine=False, required=False)
-        )
-        self.assertEqual(cls, CLASS_EXPECTED_PATH_SKIP)
-
     def test_coverage_keyword_skipped(self) -> None:
         cls, _ = classify_one(
             {"name": "coverage-drift", "conclusion": "neutral"}
+        )
+        self.assertEqual(cls, CLASS_COVERAGE_ARTIFACT)
+
+    def test_spec_acceptance_3_security_audit_quarantined(self) -> None:
+        """Spec acceptance test 3: security_audit quarantine=true → coverage_artifact.
+
+        Rationale per issue #907: security_audit is quarantined because cargo-audit
+        breaks on CVSS 4.0 — environmental tooling issue, not a product regression.
+        Routing: log & ignore; do not block merge.
+        """
+        cls, rationale = classify_one(
+            _check("security_audit", "failure", quarantine=True)
+        )
+        self.assertEqual(cls, CLASS_COVERAGE_ARTIFACT)
+        self.assertIn("measurement/quality gate", rationale)
+
+    def test_spec_acceptance_8_parser_corpus_ratchet_required_false(self) -> None:
+        """Spec acceptance test 8: parser_corpus_ratchet required=false → coverage_artifact.
+
+        Rationale per issue #907: corpus ratchet with required=false indicates baseline
+        drift, not a product regression.  Routing: log & ignore; do not block merge.
+        """
+        cls, rationale = classify_one(
+            _check("parser_corpus_ratchet", "failure", required=False)
+        )
+        self.assertEqual(cls, CLASS_COVERAGE_ARTIFACT)
+        self.assertIn("measurement/quality gate", rationale)
+
+    def test_mutation_subset_required_false_is_coverage_artifact(self) -> None:
+        """mutation-subset with required=false → coverage_artifact (measurement gate)."""
+        cls, _ = classify_one(
+            _check("mutation-subset", "failure", quarantine=False, required=False)
+        )
+        self.assertEqual(cls, CLASS_COVERAGE_ARTIFACT)
+
+    def test_quarantined_mutation_is_coverage_artifact(self) -> None:
+        """mutation quarantined → coverage_artifact, not expected_path_skip."""
+        cls, _ = classify_one(
+            _check("mutation", "failure", quarantine=True)
+        )
+        self.assertEqual(cls, CLASS_COVERAGE_ARTIFACT)
+
+    def test_quarantined_fuzz_is_coverage_artifact(self) -> None:
+        """fuzz quarantined → coverage_artifact, not expected_path_skip."""
+        cls, _ = classify_one(
+            _check("fuzz", "failure", quarantine=True)
         )
         self.assertEqual(cls, CLASS_COVERAGE_ARTIFACT)
 
@@ -424,6 +478,19 @@ class TestFixtures(unittest.TestCase):
                 f"Expected review_gate for {check.get('name')!r}, got {cls!r}",
             )
 
+    def test_coverage_artifact_fixture(self) -> None:
+        """Spec acceptance tests 3 and 8: coverage/quality gates are coverage_artifact."""
+        checks = self._load_fixture("coverage_artifact.json")
+        failing = filter_failing(checks)
+        self.assertGreater(len(failing), 0)
+        for check in failing:
+            cls, _ = classify_one(check)
+            self.assertEqual(
+                cls,
+                CLASS_COVERAGE_ARTIFACT,
+                f"Expected coverage_artifact for {check.get('name')!r}, got {cls!r}",
+            )
+
     def test_mixed_fixture_has_expected_classes(self) -> None:
         checks = self._load_fixture("mixed.json")
         failing = filter_failing(checks)
@@ -433,8 +500,8 @@ class TestFixtures(unittest.TestCase):
         self.assertEqual(classes.get("CI Gate shard (lsp)"), CLASS_PRODUCT_DEFECT)
         # cancelled → infra
         self.assertEqual(classes.get("CI Gate shard (corpus)"), CLASS_INFRA_ISSUE)
-        # quarantine=true → expected_path_skip
-        self.assertEqual(classes.get("security_audit"), CLASS_EXPECTED_PATH_SKIP)
+        # security_audit quarantine=true → coverage_artifact (measurement gate, not path skip)
+        self.assertEqual(classes.get("security_audit"), CLASS_COVERAGE_ARTIFACT)
         # draft → review_gate
         self.assertEqual(classes.get("draft-pr-check"), CLASS_REVIEW_GATE)
         # unknown

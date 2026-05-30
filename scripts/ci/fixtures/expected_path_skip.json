@@ -1,21 +1,16 @@
 [
   {
-    "name": "security_audit",
-    "conclusion": "failure",
-    "required": true,
-    "quarantine": true,
-    "comment": "cargo-audit broken install — debt-ledger.yaml: cargo-audit-broken-install-2026-04-26"
-  },
-  {
     "name": "Windows Required",
     "conclusion": "failure",
     "required": false,
-    "quarantine": false
+    "quarantine": false,
+    "comment": "diff does not touch windows-relevant paths — windows-scope output required=false"
   },
   {
-    "name": "mutation",
+    "name": "some-quarantined-integration-test",
     "conclusion": "failure",
     "required": true,
-    "quarantine": true
+    "quarantine": true,
+    "comment": "quarantined in gate-policy.yaml — not a coverage/measurement gate"
   }
 ]

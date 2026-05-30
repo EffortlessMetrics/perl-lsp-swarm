@@ -100,6 +100,9 @@ POLICY_GATE_NAMES: frozenset[str] = frozenset(
 
 # Substrings of check names whose failure implies a unit/LSP/corpus product
 # defect (product_defect) when quarantine=false and required=true.
+# NOTE: security_audit, parser_corpus_ratchet, cpan_corpus_ratchet are
+# intentionally EXCLUDED here — they are measurement/quality gates (coverage_artifact
+# per spec acceptance tests 3 and 8), not product defect indicators.
 PRODUCT_GATE_SUBSTRINGS: tuple[str, ...] = (
     "CI Gate shard",
     "CI Gate (Merge-Blocking)",
@@ -111,9 +114,23 @@ PRODUCT_GATE_SUBSTRINGS: tuple[str, ...] = (
     "Detect Flaky Tests",
     "lsp_smoke",
     "common_corpus_clean",
+)
+
+# Gate name substrings that identify measurement/quality gates.  Failures of
+# these gates that carry quarantine=true or required=false are coverage_artifact
+# (environmental drift, broken tooling) rather than expected_path_skip (policy-
+# sanctioned skip) or product_defect.
+# Source: issue #907 taxonomy table + acceptance tests 3 and 8.
+COVERAGE_GATE_SUBSTRINGS: tuple[str, ...] = (
     "security_audit",
     "parser_corpus_ratchet",
     "cpan_corpus_ratchet",
+    "mutation",
+    "fuzz",
+    "benchmarks",
+    "published_crate_count",
+    "coverage",
+    "baseline",
 )
 
 # Names that are review-gate signals (draft / superseded-SHA skip).
@@ -174,24 +191,35 @@ def classify_one(check: dict[str, Any]) -> tuple[str, str]:
             )
         # If neither sub-condition triggered, fall through to normal checks.
 
-    # 2. infra_issue — conclusion=cancelled or timed_out
+    # 2. coverage_artifact / expected_path_skip — quarantine=true or required=false
+    #    are policy signals that SUPERSEDE the physical failure mode (infra_issue).
+    #    A quarantined gate that also times out is still policy-sanctioned; routing
+    #    it as infra_issue would cause incorrect retry of a deliberately-suppressed gate.
+    #
+    #    Discriminate between the two skip flavours:
+    #    - coverage_artifact: the gate is a measurement/quality tool whose threshold
+    #      drifted or tooling broke (e.g. security_audit broken by CVSS 4.0).
+    #    - expected_path_skip: the gate is intentionally not exercised (windows path
+    #      filter, quarantined test with #[ignored], etc.).
+    if quarantine or not required:
+        if _name_matches_coverage_gate(name):
+            return (
+                CLASS_COVERAGE_ARTIFACT,
+                f"{name!r} is a measurement/quality gate; "
+                f"{'quarantine=true' if quarantine else 'required=false'} — "
+                "environmental drift or broken tooling, not a product regression",
+            )
+        return (
+            CLASS_EXPECTED_PATH_SKIP,
+            f"{'quarantine=true' if quarantine else 'required=false'} in gate-policy "
+            "— policy-sanctioned non-blocking skip",
+        )
+
+    # 3. infra_issue — conclusion=cancelled or timed_out (only for non-quarantined gates)
     if conclusion in INFRA_CONCLUSIONS:
         return (
             CLASS_INFRA_ISSUE,
             f"conclusion={conclusion!r} — concurrency kill or timeout boundary hit",
-        )
-
-    # 3. expected_path_skip — quarantine=true by gate-policy (or required=false
-    #    for windows-scope checks)
-    if quarantine:
-        return (
-            CLASS_EXPECTED_PATH_SKIP,
-            "quarantine=true in gate-policy — policy-sanctioned non-blocking failure",
-        )
-    if not required:
-        return (
-            CLASS_EXPECTED_PATH_SKIP,
-            "required=false — optional check; not merge-blocking",
         )
 
     # 4. coverage_artifact — conclusion=skipped or neutral when NOT quarantined:
@@ -249,6 +277,17 @@ def _name_matches_product_gate(name: str) -> bool:
     """Return True if the check name maps to a core product gate."""
     lower = name.lower()
     return any(sub.lower() in lower for sub in PRODUCT_GATE_SUBSTRINGS)
+
+
+def _name_matches_coverage_gate(name: str) -> bool:
+    """Return True if the check name maps to a measurement/quality gate.
+
+    Coverage gates are distinct from product gates: their failures indicate
+    environmental drift (threshold changes, broken tooling) rather than
+    product regressions.  Spec source: issue #907 taxonomy + acceptance tests 3 and 8.
+    """
+    lower = name.lower()
+    return any(sub.lower() in lower for sub in COVERAGE_GATE_SUBSTRINGS)
 
 
 # ---------------------------------------------------------------------------
