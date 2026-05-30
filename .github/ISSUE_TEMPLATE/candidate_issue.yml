@@ -1,0 +1,83 @@
+name: Candidate issue (Bug Scout Desk)
+description: An evidence-backed candidate from the Issue Discovery / Bug Scout Desk lane (upstream of plan review).
+title: "<surface>: <one-line finding>"
+labels: ["needs-plan-review", "swarm-discovered"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Candidate issue — not builder-ready.** The plan-review desk verifies and scopes this.
+        See [`docs/reference/ISSUE_DISCOVERY_DOCTRINE.md`](../../docs/reference/ISSUE_DISCOVERY_DOCTRINE.md).
+
+        File only with source evidence: the surface (`file:line`), a minimal example, why current behavior is
+        wrong/risky, how to verify, and why it is not already covered. Dedup by **failure mode**, not by shared file.
+  - type: textarea
+    id: finding
+    attributes:
+      label: Finding
+      description: One sentence.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: "Source `<file:line>`; Test/fixture; Receipt/CI/docs; Related issues/PRs."
+      value: |
+        - Source:
+        - Test / fixture:
+        - Receipt / CI / docs:
+        - Related issues / PRs:
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who sees it (user / maintainer / CI / tooling) and how.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction / sequence
+      description: Perl snippet, LSP/DAP request sequence, command, or workflow.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: root
+    attributes:
+      label: Suspected root area
+      description: File / function / boundary.
+    validations:
+      required: true
+  - type: textarea
+    id: dedup
+    attributes:
+      label: Why this is not already covered
+      description: Searched terms (with owner/repo) + what you found. A bare GitHub search with no owner/repo returns 0 — that is not "no results."
+    validations:
+      required: true
+  - type: dropdown
+    id: confidence
+    attributes:
+      label: Confidence
+      options:
+        - high
+        - medium
+        - low
+    validations:
+      required: true
+  - type: dropdown
+    id: next
+    attributes:
+      label: Suggested next workflow
+      options:
+        - needs-plan-review
+        - needs-repro
+        - needs-architecture-review
+        - direct-small-builder
+        - discard-if-disproven
+    validations:
+      required: true
