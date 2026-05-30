@@ -105,3 +105,25 @@ A **parallel Issue-Discovery session** is active (e.g. #968 filed ~1 min after t
 - Discarded as unverified/hallucinated: UX-P1; held for next pass: D2, R3, UX-P4
 - Scout GitHub mutations: **0** (read-only contract held across all 8 scouts)
 - Verification value: 2 of 3 held-leads downgraded, and 1 of 4 UX packets was a hallucination — reinforces "finding is cheap; being right is expensive: verify before filing."
+
+---
+
+## D2 resolved (verification follow-up)
+D2 (editor_ux scorecard) is **dropped, not filed**: the scout's "64 fixture workflows" matches nothing (json has 3 harnesses at 29/28/17, `scenario_count: 30`; md denominator is `declared_scenario_count = 22`, measured 2026-04-26). The one concrete contradiction — `editor_ux.md` diagnostics p50 53ms vs quality.md "<50ms" — is already in #960. The remaining "22 vs 30" is a generator-semantics nuance, not a clean defect.
+
+## Wave 3 (test-quality)
+One scout (worktree-isolated). All 4 packets verified, then **consolidated into a single test-hardening issue (#992)** rather than filed separately:
+
+| Packet | Spot | Verified |
+|--------|------|----------|
+| A | `start_line > 0 \|\| start_char > 0` — lsp_type_definition_tests.rs:72,109; lsp_implementation_tests.rs:88 | ✓ |
+| B | `is_array() \|\| is_null()` shape-only — lsp_type_definition_tests.rs:53,146,174,207,296 (file self-documents at :58/:404; strong companions :302/:410) | ✓ |
+| C | `success_count > 0` — performance_stress_edge_cases.rs:377-378 | ✓ |
+| D | `is_some()` presence-only — lsp_streaming_completion_tests.rs:140-147 (strong companion :154) | ✓ |
+
+## Cumulative session totals (updated)
+- Filed: **9** candidate issues — #956, #957, #958, #959, #960, #962, #985, #989, #992
+- Enrichment comments: **2** (#812 root cause, #968 sibling instance)
+- Resolved-as-drop after verification: **D2** (editor_ux), **UX-P1** (hallucination); held: R3 (no caller), LSP1 (needs repro), UX-P4 (minor copy)
+- Scout GitHub mutations: **0** across all **9** scouts (6 wave-1 + 2 wave-2 + 1 wave-3)
+- Filed-vs-found discipline: of ~30 candidate packets produced, 9 filed, 2 folded into comments, the rest verified-down to held/dropped.
