@@ -331,17 +331,25 @@ grants `builder-ready` on filing — that label is earned through review.
 
 ---
 
-## Proposed tooling (not yet implemented)
+## Tooling
 
-The following `cargo xtask issue-plan` subcommands are **proposed**, not built.
-They are listed here so the lane has a roadmap; do not reference them as if they
-exist. Each ships **report-only first** (instrument before enforcement), mirroring
-the file-policy rollout posture (`policy/non-rust-allowlist.toml` is `advisory`
-until its checker lands).
+`cargo xtask issue-plan` hosts the desk's tooling. Everything ships
+**report-only first** (instrument before enforcement), mirroring the file-policy
+rollout posture (`policy/non-rust-allowlist.toml` is `advisory` until its checker
+lands).
 
-| Proposed command | Purpose |
-|------------------|---------|
-| `cargo xtask issue-plan audit` | Flag `builder-ready` issues missing acceptance tests, `#0000` references, stale `needs-plan-review` after a linked PR merged, issues with no reproduction or root area |
+### Available
+
+| Command | Purpose |
+|---------|---------|
+| `cargo xtask issue-plan audit` | Report-only. Flags `builder-ready` issues whose body is missing a required work-order section (acceptance, reproduction, root area, non-goals, dependencies, risk, verification), `builder-ready` on a closed issue, stale routing-label contradictions (`needs-plan-review` co-present with a later `builder-ready`/`plan-reviewed` sign-off), and `#0000` placeholder references. Reads a `--fixture` JSON array or live `gh issue list`. Always exits 0; writes `target/receipts/issue-plan-audit.json`. |
+
+### Proposed (not yet implemented)
+
+Do not reference these as if they exist.
+
+| Command | Purpose |
+|---------|---------|
 | `cargo xtask issue-plan promote <n> --to builder-ready` | Validate required fields before *suggesting* labels (no GitHub mutation at first) |
 | `cargo xtask issue-plan dedupe --label <l>` | Report overlap by shared files, failure mode, and acceptance tests with a distinct/sequence/split/merge/duplicate recommendation |
 | `cargo xtask issue-plan stale` | Report issues mentioning files removed from `main`, issues whose acceptance tests already exist, or whose linked PR merged |
