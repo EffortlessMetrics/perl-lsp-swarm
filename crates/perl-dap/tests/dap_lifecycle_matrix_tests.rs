@@ -163,10 +163,7 @@ fn test_lifecycle_full_ordered_sequence() -> TestResult {
         let vars_ref = var.get("variablesReference").and_then(|v| v.as_i64()).unwrap_or(-1);
 
         assert!(!name.is_empty(), "locals variable must have non-empty `name`: {var:?}");
-        assert!(
-            !value.is_empty(),
-            "locals variable `{name}` must have non-empty `value`: {var:?}"
-        );
+        assert!(!value.is_empty(), "locals variable `{name}` must have non-empty `value`: {var:?}");
         assert!(
             vars_ref >= 0,
             "locals variable `{name}` must have numeric `variablesReference`: {var:?}"
@@ -257,12 +254,38 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
 
 // ─── Test 3: scopes returns Locals AND Globals ─────────────────────────────────
 
-/// Validates that `scopes` returns BOTH Locals and Globals scopes.
+/// Validates that `scopes` returns BOTH Locals and Globals scopes, and that the
+/// Locals scope contains a REAL named lexical variable from the user script.
 ///
 /// The DAP spec requires a `scopes` response for each frame; editors typically
 /// render Locals and Globals as separate expandable trees.  This test asserts
 /// that both scope references are positive and distinct, indicating non-empty,
 /// separate scope buckets.
+///
+/// Fixture layout (lifecycle_scopes.pl):
+///   Line 1: use strict;
+///   Line 2: use warnings;
+///   Line 3: (blank)
+///   Line 4: our $global = 42;   <- first executable; perl -d pauses here implicitly
+///   Line 5: my $x = 10;         <- after configurationDone `c`, stops here first
+///   Line 6: my $y = $x + 5;     <- SCOPES_BP_LINE: $x=10 has already executed
+///   Line 7: print "$y\n";
+///
+/// The breakpoint is set at line 6 (not the shared BP_LINE=5) because line 5 is
+/// the first stop after configurationDone and `my $x = 10` has not yet executed
+/// at that point.  Stopping at line 6 guarantees `$x` is in scope with a real
+/// value, so the Locals assertion cannot pass on placeholder fallback.
+///
+/// **Known adapter bug (production, requires separate fix):**
+/// As of this writing the adapter's `variables(locals_ref)` handler returns
+/// locals from the Perl debugger's internal frame (DB object: `$self` and `@_`)
+/// instead of the user script's lexical scope (`$x`, `$y`).  This applies to ALL
+/// fixtures, not just this one.  The assertion below (`$x` must appear by name)
+/// is intentionally NOT weakened: it correctly fails while the adapter bug is
+/// present, serving as a regression guard once the locals-frame-filtering bug is
+/// fixed.  Route the production fix separately as a scout/builder task targeting
+/// `DebugAdapter::handle_variables` (the frame-filter logic that selects which
+/// `perl -d` frame to parse for lexical locals).
 #[test]
 fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
     if !perl_available() {
@@ -270,9 +293,21 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
         return Ok(());
     }
 
+    // Breakpoint line for THIS fixture only — one line past the first lexical
+    // assignment so that `my $x = 10` has already executed when we stop.
+    const SCOPES_BP_LINE: u64 = 6;
+
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_scopes.pl");
     // Script with an explicit `our` global so the Globals scope has at least one entry.
+    // Line layout (1-based):
+    //   1: use strict;
+    //   2: use warnings;
+    //   3: (blank)
+    //   4: our $global = 42;
+    //   5: my $x = 10;
+    //   6: my $y = $x + 5;   <- SCOPES_BP_LINE
+    //   7: print "$y\n";
     let content = "use strict;\nuse warnings;\n\nour $global = 42;\nmy $x = 10;\nmy $y = $x + 5;\nprint \"$y\\n\";\n";
     write(&script, content)?;
     let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
@@ -281,11 +316,21 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
     let mut session = DapWorkflowSession::new(timeout)?;
 
     session.launch(&script_str)?;
-    session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
+    let resolved = session.set_breakpoints_checked(&script_str, &[SCOPES_BP_LINE])?;
+    let resolved_line =
+        resolved.first().copied().ok_or("set_breakpoints_checked returned empty resolved lines")?;
     session.configuration_done()?;
 
     let frame_info = session.wait_stopped_with_frame()?;
     assert_eq!(frame_info.reason, "breakpoint");
+
+    // Verify we stopped at the expected line (adapter-resolved SCOPES_BP_LINE).
+    assert_eq!(
+        frame_info.line, resolved_line,
+        "stopped frame line must equal adapter-resolved SCOPES_BP_LINE \
+         (resolved={resolved_line}, SCOPES_BP_LINE={SCOPES_BP_LINE}), got {}",
+        frame_info.line
+    );
 
     // Locals scope: must be present and positive.
     let locals_ref = session.scopes_locals_ref(frame_info.frame_id)?;
@@ -310,11 +355,26 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
          (locals={locals_ref}, globals={globals_ref})"
     );
 
-    // Locals must be non-empty at BP_LINE.
+    // Locals must contain the real lexical `$x` (assigned at line 5).
+    // This assertion CANNOT pass on placeholder fallback — it checks that the
+    // adapter parsed actual lexical locals, not a generic placeholder list.
     let locals = session.variables(locals_ref)?;
     assert!(
         !locals.is_empty(),
-        "Locals scope variables must be non-empty at BP_LINE={BP_LINE}"
+        "Locals scope variables must be non-empty when stopped at SCOPES_BP_LINE={SCOPES_BP_LINE} \
+         (locals_ref={locals_ref}, frame_id={})",
+        frame_info.frame_id
+    );
+
+    // Find `$x` by name in the locals list.  The adapter must report the real
+    // lexical variable — not merely a placeholder entry.
+    let x_var = locals.iter().find(|v| {
+        v.get("name").and_then(|n| n.as_str()).map(|n| n == "$x" || n == "x").unwrap_or(false)
+    });
+    assert!(
+        x_var.is_some(),
+        "Locals must contain `$x` (assigned at line 5) when stopped at \
+         SCOPES_BP_LINE={SCOPES_BP_LINE}; got locals={locals:?}"
     );
 
     // Globals must be non-empty (our $global = 42 is in scope).
@@ -350,7 +410,9 @@ fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
 #[test]
 fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
     if !perl_available() {
-        eprintln!("Skipping test_lifecycle_continue_leads_to_terminated_event - perl not available");
+        eprintln!(
+            "Skipping test_lifecycle_continue_leads_to_terminated_event - perl not available"
+        );
         return Ok(());
     }
 
@@ -433,10 +495,7 @@ fn test_lifecycle_variables_non_empty_at_stop() -> TestResult {
         let value = var.get("value").and_then(|v| v.as_str()).unwrap_or("");
         let vars_ref = var.get("variablesReference").and_then(|v| v.as_i64()).unwrap_or(-1);
 
-        assert!(
-            !name.is_empty(),
-            "each variable must have non-empty `name` field: {var:?}"
-        );
+        assert!(!name.is_empty(), "each variable must have non-empty `name` field: {var:?}");
         assert!(
             !value.is_empty(),
             "each variable `{name}` must have non-empty `value` field: {var:?}"
