@@ -2068,4 +2068,72 @@ profile = "recommended"
             "cache must survive when useSystemInc value does not change",
         );
     }
+
+    /// JSON `null` for `apiKeyPrefix` must clear the prefix to `None` (raw key, no scheme).
+    /// Empty string was already covered by `server_config_update_from_value_applies_formatting_and_ai_settings`;
+    /// this guards the `Value::Null` code path which follows a distinct branch in `as_str()`.
+    #[test]
+    fn update_from_value_clears_api_key_prefix_on_null() {
+        let mut config = ServerConfig::default();
+        // Default is Some("Bearer") — must be cleared by explicit null.
+        assert_eq!(config.ai_completion.api_key_prefix, Some("Bearer".to_string()));
+
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": { "apiKeyPrefix": null }
+        }));
+        assert_eq!(
+            config.ai_completion.api_key_prefix,
+            None,
+            "explicit JSON null must produce None (raw key, no scheme)",
+        );
+    }
+
+    /// A non-empty `apiKeyPrefix` value (e.g. `"Token"`) must be stored as `Some`.
+    #[test]
+    fn update_from_value_stores_non_empty_api_key_prefix() {
+        let mut config = ServerConfig::default();
+
+        config.update_from_value(&serde_json::json!({
+            "aiCompletion": { "apiKeyPrefix": "Token" }
+        }));
+        assert_eq!(
+            config.ai_completion.api_key_prefix,
+            Some("Token".to_string()),
+            "non-empty apiKeyPrefix must be stored as Some",
+        );
+    }
+
+    /// `ProjectConfig::apply_to_server_config` must thread `api_key_header` and
+    /// `api_key_prefix` into `ServerConfig`. An empty `api_key_prefix` in the TOML
+    /// struct must clear the prefix to `None` (raw key path).
+    #[test]
+    fn project_config_applies_ai_auth_header_and_prefix() {
+        let mut config = ServerConfig::default();
+        let mut project = ProjectConfig::default();
+        project.ai_completion.api_key_header = Some("x-api-key".to_string());
+        project.ai_completion.api_key_prefix = Some(String::new()); // empty = clear prefix
+
+        project.apply_to_server_config(&mut config);
+
+        assert_eq!(
+            config.ai_completion.api_key_header,
+            "x-api-key",
+            "api_key_header must be applied from project config",
+        );
+        assert_eq!(
+            config.ai_completion.api_key_prefix,
+            None,
+            "empty api_key_prefix in TOML must produce None (raw key)",
+        );
+
+        // Non-empty prefix round-trip.
+        let mut project2 = ProjectConfig::default();
+        project2.ai_completion.api_key_header = Some("Authorization".to_string());
+        project2.ai_completion.api_key_prefix = Some("Token".to_string());
+
+        project2.apply_to_server_config(&mut config);
+
+        assert_eq!(config.ai_completion.api_key_header, "Authorization");
+        assert_eq!(config.ai_completion.api_key_prefix, Some("Token".to_string()));
+    }
 }
