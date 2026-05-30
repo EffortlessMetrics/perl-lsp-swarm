@@ -1009,6 +1009,60 @@ mod tests {
         Ok(())
     }
 
+    /// Single-job fallback: stale job reference to a single-job workflow —
+    /// the runner mismatch should still fire (the sole surviving job has a
+    /// different runner than declared in the whitelist).
+    #[test]
+    fn runner_mismatch_fires_via_single_job_fallback() -> Result<()> {
+        let workflows_dir = fixture_path("")?;
+        // stale_job.yml has exactly one job: "actual-job" (runs-on: ubuntu-latest).
+        // We reference a non-existent job "old-job" with declared runner
+        // "ubuntu_24_04" — the fallback picks up "actual-job" and detects mismatch.
+        let lane: toml::Value = toml::from_str(
+            r#"
+            workflow = ".github/workflows/stale_job.yml"
+            job = "old-job"
+            runner = "ubuntu_24_04"
+            "#,
+        )?;
+        let mut issues = Vec::new();
+        check_runner_label_mismatch(&workflows_dir, &lane, &mut issues)?;
+        assert!(
+            issues.iter().any(|i| i.code == "RUNNER_LABEL_MISMATCH"),
+            "expected RUNNER_LABEL_MISMATCH via single-job fallback, got: {issues:?}"
+        );
+        Ok(())
+    }
+
+    /// Multi-job stale reference: stale job in a workflow with multiple jobs —
+    /// runner check is SKIPPED to avoid false positives. Only STALE_WHITELIST_JOB fires.
+    #[test]
+    fn runner_mismatch_skipped_for_stale_ref_in_multi_job_workflow() -> Result<()> {
+        // Use the real ci.yml (many jobs) with a nonexistent job reference.
+        let real_workflows_dir = {
+            let root = project_root()?;
+            root.join(".github").join("workflows")
+        };
+        if !real_workflows_dir.join("ci.yml").exists() {
+            // Skip if not in the full project tree.
+            return Ok(());
+        }
+        let lane: toml::Value = toml::from_str(
+            r#"
+            workflow = ".github/workflows/ci.yml"
+            job = "nonexistent-job-xyz"
+            runner = "ubuntu_24_04"
+            "#,
+        )?;
+        let mut issues = Vec::new();
+        check_runner_label_mismatch(&real_workflows_dir, &lane, &mut issues)?;
+        assert!(
+            issues.iter().all(|i| i.code != "RUNNER_LABEL_MISMATCH"),
+            "unexpected RUNNER_LABEL_MISMATCH for stale ref in multi-job workflow: {issues:?}"
+        );
+        Ok(())
+    }
+
     // ── normalize_runs_on unit tests ──────────────────────────────────────────
 
     #[test]
