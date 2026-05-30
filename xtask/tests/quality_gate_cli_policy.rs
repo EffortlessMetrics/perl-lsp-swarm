@@ -177,6 +177,74 @@ fn quality_gate_final_enforce_blocks_missing_receipts() -> TestResult {
 }
 
 #[test]
+fn quality_gate_final_exception_policy_action_uses_final_mode_commands() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let paths = FixturePaths::new(dir.path());
+    let head = current_head(&root)?;
+
+    write_coverage_receipt(&paths.coverage, &head, 97.2, 95.4, "workspace")?;
+    write_final_codecov(&paths.codecov)?;
+    write_ripr_plus_receipt(&paths.ripr, &head, 0)?;
+    write_ripr_pr_receipt(&paths.ripr_pr, &head, 0)?;
+    write_empty_review_guidance_receipt(&paths.review, &head)?;
+
+    let output = final_quality_gate_command(&root, &paths)?.output()?;
+    assert!(!output.status.success(), "final enforcement must fail without exception policy");
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&paths.receipt)?)?;
+    let action = next_action(&payload, "quality_exception_policy_not_current")?;
+    assert_eq!(action.get("reason").and_then(Value::as_str), Some("missing"));
+    assert_repair_contract(action)?;
+    assert_action_commands_use_quality_gate_mode(action, "enforce")?;
+    for field in ["verify", "receipt"] {
+        let command = action.get(field).and_then(Value::as_str).ok_or("missing command")?;
+        assert!(
+            command.contains("--ripr-receipt") && command.contains("--ripr-pr-receipt"),
+            "final exception policy {field} command must include full final proof inputs: {command}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn quality_gate_final_invalid_exception_action_uses_final_mode_commands() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let paths = FixturePaths::new(dir.path());
+    let head = current_head(&root)?;
+
+    write_coverage_receipt(&paths.coverage, &head, 97.2, 95.4, "workspace")?;
+    write_final_codecov(&paths.codecov)?;
+    write_ripr_plus_receipt(&paths.ripr, &head, 0)?;
+    write_ripr_pr_receipt(&paths.ripr_pr, &head, 0)?;
+    write_empty_review_guidance_receipt(&paths.review, &head)?;
+    write_invalid_exception_policy(&paths.exceptions)?;
+
+    let output = final_quality_gate_command(&root, &paths)?.output()?;
+    assert!(!output.status.success(), "final enforcement must fail on invalid exception policy");
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&paths.receipt)?)?;
+    let action = next_action(&payload, "quality_exception_invalid")?;
+    assert_eq!(action.get("id").and_then(Value::as_str), Some("ripr-total-burndown"));
+    assert_repair_contract(action)?;
+    assert_action_commands_use_quality_gate_mode(action, "enforce")?;
+    for field in ["verify", "receipt"] {
+        let command = action.get(field).and_then(Value::as_str).ok_or("missing command")?;
+        assert!(
+            command.contains("--coverage-receipt")
+                && command.contains("--ripr-receipt")
+                && command.contains("--ripr-pr-receipt")
+                && command.contains("--review-receipt"),
+            "final invalid exception {field} command must include full final proof inputs: {command}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn quality_gate_final_enforce_blocks_invalid_receipts() -> TestResult {
     let root = repo_root()?;
     let dir = tempdir()?;
@@ -519,6 +587,34 @@ expires = "2099-12-31"
     )
 }
 
+fn write_invalid_exception_policy(path: &Path) -> TestResult {
+    write_text(
+        path,
+        r##"schema_version = 1
+policy = "quality-gate-exceptions"
+owner = "EffortlessMetrics"
+status = "active"
+updated = "2026-05-28"
+due_review = "fail"
+
+[requirements]
+required_active = ["ripr-total-burndown"]
+
+[[exception]]
+id = "ripr-total-burndown"
+kind = "permanent_bypass"
+owner = "proof-lane"
+reason = "transition burn-down remains active"
+final_target = "repo-wide ripr+ unresolved total = 0"
+evidence = "target/receipts/quality/ripr-plus.json"
+removal_criteria = "remove when RIPR+ total is zero"
+created = "2026-05-28"
+review_after = "2099-01-01"
+expires = "2099-12-31"
+"##,
+    )
+}
+
 fn next_action<'a>(receipt: &'a Value, kind: &str) -> TestResult<&'a Value> {
     receipt
         .get("next_actions")
@@ -538,6 +634,26 @@ fn assert_repair_contract(action: &Value) -> TestResult {
         assert!(!value.trim().is_empty(), "action {field} must be non-empty: {action}");
         if matches!(field, "verify" | "receipt") {
             assert!(value.starts_with("rtk "), "action {field} must use rtk: {value}");
+        }
+    }
+    Ok(())
+}
+
+fn assert_action_commands_use_quality_gate_mode(action: &Value, mode: &str) -> TestResult {
+    for field in ["verify", "receipt"] {
+        let command = action
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("action missing {field}: {action}"))?;
+        assert!(
+            command.contains(&format!("quality-gate --mode {mode} ")),
+            "action {field} must use active quality-gate mode `{mode}`: {command}"
+        );
+        for other_mode in ["enforce-patch-coverage", "enforce-new-ripr"] {
+            assert!(
+                !command.contains(&format!("--mode {other_mode}")),
+                "action {field} must not use unrelated mode `{other_mode}`: {command}"
+            );
         }
     }
     Ok(())
