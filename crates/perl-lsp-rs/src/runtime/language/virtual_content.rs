@@ -7,6 +7,8 @@ use super::super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_lsp_rs_core::config::WorkspaceConfig;
+use std::collections::BTreeSet;
+use std::fs;
 use std::path::Path;
 
 impl LspServer {
@@ -85,15 +87,17 @@ impl LspServer {
         }
 
         let path = self.resolve_module_path(module_name, None)?;
-        let pod = match perl_pod::extract_pod_from_file(&path) {
-            Ok(pod) => pod,
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
             Err(error) => {
-                tracing::warn!(module = module_name, path = %path.display(), %error, "Failed to extract local POD");
+                tracing::warn!(module = module_name, path = %path.display(), %error, "Failed to read local POD");
                 return None;
             }
         };
+        let pod = perl_pod::extract_pod(&source);
+        let related_links = workspace_pod_related_perldoc_uris(module_name, &source);
 
-        format_workspace_pod_virtual_content(module_name, &path, &pod)
+        format_workspace_pod_virtual_content(module_name, &path, &pod, &related_links)
     }
 }
 
@@ -111,6 +115,7 @@ fn format_workspace_pod_virtual_content(
     module_name: &str,
     path: &Path,
     pod: &perl_pod::PodDoc,
+    related_links: &[String],
 ) -> Option<String> {
     if pod.is_empty() {
         return None;
@@ -120,6 +125,12 @@ fn format_workspace_pod_virtual_content(
         "Workspace virtual perldoc\nModule: {module_name}\nSource: {}",
         path.display()
     )];
+
+    if !related_links.is_empty() {
+        let links =
+            related_links.iter().map(|uri| format!("- {uri}")).collect::<Vec<_>>().join("\n");
+        sections.push(format!("Related virtual perldoc:\n{links}"));
+    }
 
     if let Some(name) = &pod.name {
         sections.push(format!("NAME\n{name}"));
@@ -140,6 +151,73 @@ fn format_workspace_pod_virtual_content(
     }
 
     Some(sections.join("\n\n"))
+}
+
+fn workspace_pod_related_perldoc_uris(module_name: &str, source: &str) -> Vec<String> {
+    let mut modules = BTreeSet::new();
+    let mut in_pod = false;
+
+    for line in source.lines() {
+        if starts_pod_block(line) {
+            in_pod = true;
+        }
+
+        if !in_pod {
+            continue;
+        }
+
+        if line.starts_with("=cut") {
+            in_pod = false;
+            continue;
+        }
+
+        collect_simple_pod_module_links(line, module_name, &mut modules);
+    }
+
+    modules.into_iter().map(|module| format!("perldoc://{module}")).collect()
+}
+
+fn starts_pod_block(line: &str) -> bool {
+    line.starts_with("=head")
+        || line.starts_with("=pod")
+        || line.starts_with("=over")
+        || line.starts_with("=begin")
+        || line.starts_with("=for")
+        || line.starts_with("=encoding")
+        || line.starts_with("=item")
+}
+
+fn collect_simple_pod_module_links(
+    line: &str,
+    current_module: &str,
+    modules: &mut BTreeSet<String>,
+) {
+    let mut rest = line;
+    while let Some(start) = rest.find("L<") {
+        let after_open = &rest[start + 2..];
+        let Some(end) = after_open.find('>') else {
+            break;
+        };
+        let target = after_open[..end].trim();
+        if is_simple_pod_module_target(target) && target != current_module {
+            modules.insert(target.to_string());
+        }
+        rest = &after_open[end + 1..];
+    }
+}
+
+fn is_simple_pod_module_target(target: &str) -> bool {
+    target.contains("::") && target.split("::").all(is_perl_module_segment)
+}
+
+fn is_perl_module_segment(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 /// Fetch Perl documentation using perldoc
@@ -382,14 +460,43 @@ mod tests {
         };
         pod.methods.insert("reset".to_string(), "Reset local state.".to_string());
 
-        let content =
-            format_workspace_pod_virtual_content("Local::Doc", Path::new("lib/Local/Doc.pm"), &pod)
-                .ok_or("expected workspace POD content")?;
+        let content = format_workspace_pod_virtual_content(
+            "Local::Doc",
+            Path::new("lib/Local/Doc.pm"),
+            &pod,
+            &[],
+        )
+        .ok_or("expected workspace POD content")?;
 
         assert!(content.contains("Workspace virtual perldoc"));
         assert!(content.contains("Module: Local::Doc"));
         assert!(content.contains("Local::Doc - local docs"));
         assert!(content.contains("METHOD reset\nReset local state."));
         Ok(())
+    }
+
+    #[test]
+    fn parser_workspace_pod_related_perldoc_links_are_sorted_and_filtered() {
+        let source = r#"package Local::Doc;
+
+=head1 NAME
+
+Local::Doc - local docs
+
+=head1 DESCRIPTION
+
+See L<Zoo::Last>, L<Alpha::First>, L<Zoo::Last>, and L<Local::Doc>.
+Ignore L</reset>, L<display|Beta::Skipped>, L<https://example.invalid>, and L<NotAModule>.
+
+=cut
+
+my $non_pod = 'L<Code::Reference>';
+
+1;
+"#;
+
+        let links = workspace_pod_related_perldoc_uris("Local::Doc", source);
+
+        assert_eq!(links, vec!["perldoc://Alpha::First", "perldoc://Zoo::Last"]);
     }
 }
