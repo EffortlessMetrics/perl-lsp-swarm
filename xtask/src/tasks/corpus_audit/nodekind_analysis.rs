@@ -178,12 +178,42 @@ fn get_all_nodekinds() -> HashSet<String> {
 
 fn recovery_kind_allowlist() -> HashMap<&'static str, &'static str> {
     let mut allowlist = HashMap::new();
-    for &kind in perl_parser::ast::NodeKind::RECOVERY_KIND_NAMES {
-        allowlist.insert(
-            kind,
-            "Synthetic recovery node emitted by parse_with_recovery() on malformed input, not expected in strict clean-corpus parses.",
-        );
-    }
+    // Variants that ARE emitted by the parser (via inline recovery or parse_with_recovery):
+    allowlist.insert(
+        "Error",
+        "Emitted by recover_from_error() during inline error recovery in parse_program() \
+         and parse_block(). Appears in corpus via parser.parse() on malformed files.",
+    );
+    allowlist.insert(
+        "MissingExpression",
+        "Emitted by recover_missing_infix_rhs() when RHS of a binary operator is absent \
+         (e.g. `my $x =` or `1 +`). Appears in corpus via parser.parse() on malformed files.",
+    );
+    allowlist.insert(
+        "UnknownRest",
+        "Emitted when the lexer token-budget is exceeded to preserve already-parsed content. \
+         Appears in corpus on pathologically large or deeply-nested files.",
+    );
+    // Variants that are DEFINED but NEVER emitted by any current parser code path
+    // (deprecation candidates, see issue #915):
+    allowlist.insert(
+        "MissingStatement",
+        "DEPRECATION CANDIDATE (#915): defined in NodeKind but never constructed by any \
+         parser code path. Empirically verified: no malformed Perl snippet triggers this \
+         node. The parser uses Error nodes for statement-level failures instead.",
+    );
+    allowlist.insert(
+        "MissingIdentifier",
+        "DEPRECATION CANDIDATE (#915): defined in NodeKind but never constructed by any \
+         parser code path. Empirically verified: malformed declarations like `my $;` or \
+         `our %;` parse without errors rather than emitting MissingIdentifier.",
+    );
+    allowlist.insert(
+        "MissingBlock",
+        "DEPRECATION CANDIDATE (#915): defined in NodeKind but never constructed by any \
+         parser code path. Empirically verified: missing-block cases like `if (1);` or \
+         `while (1);` emit Error nodes rather than MissingBlock.",
+    );
     allowlist
 }
 
