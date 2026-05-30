@@ -33,7 +33,7 @@ fi
 pass() { printf 'PASS %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
 fail() { printf 'FAIL %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 
-# ── Fixture infrastructure ────────────────────────────────────────────────────
+# ── Fixture infrastructure ───────────────────────────────────────────────────────────────────────────────
 #
 # IMPORTANT: make_fixture_repo sets globals FIXTURE_DIR and FIXTURE_REPO.
 # Do NOT call make_fixture_repo inside $() — that runs it in a subshell
@@ -175,7 +175,7 @@ test_dirty_worktree_action_is_not_remove() {
     fi
 }
 
-# ── Spec invariant (b): clean merged worktree is 'clean-finished' ────────────
+# ── Spec invariant (b): clean merged worktree is 'clean-finished' ────────────────────────
 
 # Test 4 (spec invariant b): clean merged worktree classified as clean-finished.
 test_clean_merged_classified_as_clean_finished() {
@@ -240,7 +240,7 @@ test_clean_finished_removed_under_apply() {
     fi
 }
 
-# ── Dry-run safety: nothing deleted without --apply ──────────────────────────
+# ── Dry-run safety: nothing deleted without --apply ────────────────────────────────────────
 
 # Test 7: Dry-run (no --apply) never deletes any worktree.
 test_dryrun_never_deletes() {
@@ -264,7 +264,7 @@ test_dryrun_never_deletes() {
     fi
 }
 
-# ── Unmerged worktree stays ambiguous ────────────────────────────────────────
+# ── Unmerged worktree stays ambiguous ────────────────────────────────────────────────────────────────────
 
 # Test 8: Unmerged clean worktree classified as ambiguous.
 test_unmerged_clean_classified_as_ambiguous() {
@@ -321,7 +321,7 @@ test_ambiguous_worktree_never_deleted() {
     fi
 }
 
-# ── Summary section ───────────────────────────────────────────────────────────
+# ── Summary section ────────────────────────────────────────────────────────────────────────────────────
 
 # Test 10: Summary section appears in output.
 test_summary_section_appears() {
@@ -339,7 +339,61 @@ test_summary_section_appears() {
     fi
 }
 
-# ── Run all tests ─────────────────────────────────────────────────────────────
+# ── AT-2: locked worktree with dead PID → ambiguous, never deleted ───────────────────────
+
+# Test 11 (spec AT-2): locked worktree with a non-existent pid is ambiguous, never deleted.
+# This is the "stale lock after crash" scenario: harness crashed, lock file survived,
+# but the pid in the lock reason no longer exists in /proc.
+test_locked_dead_pid_classified_as_ambiguous() {
+    make_fixture_repo
+    local wt_path
+    wt_path="$(make_fixture_worktree "locked-dead-pid-branch")"
+
+    # Lock the worktree with a pid that is guaranteed to not exist (PID 0 is the
+    # idle/swapper process on Linux and is never a user process; it will not be found
+    # in /proc under normal circumstances).
+    git -C "$FIXTURE_REPO" worktree lock \
+        --reason "claude agent locked-dead-pid-branch (pid 0 start 0)" \
+        "$wt_path" 2>/dev/null
+
+    local output exit_code=0
+    output="$(run_clean_apply)" || exit_code=$?
+
+    local still_exists=0
+    [[ -d "$wt_path" ]] && still_exists=1
+
+    teardown
+
+    if [[ "$still_exists" -eq 1 ]]; then
+        pass "(AT-2) locked-with-dead-pid worktree NOT deleted under --apply"
+    else
+        fail "(AT-2) SAFETY VIOLATION: locked-with-dead-pid worktree was deleted under --apply"
+    fi
+}
+
+# Test 12 (spec AT-2 classification): locked+dead-pid output contains 'ambiguous'.
+test_locked_dead_pid_output_is_ambiguous() {
+    make_fixture_repo
+    local wt_path
+    wt_path="$(make_fixture_worktree "locked-dead-pid-class-branch")"
+
+    git -C "$FIXTURE_REPO" worktree lock \
+        --reason "claude agent locked-dead-pid-class-branch (pid 0 start 0)" \
+        "$wt_path" 2>/dev/null
+
+    local output exit_code=0
+    output="$(run_clean_dryrun)" || exit_code=$?
+
+    teardown
+
+    if echo "$output" | grep "locked-dead-pid-class-branch" | grep -q "ambiguous"; then
+        pass "(AT-2) locked+dead-pid worktree classified as 'ambiguous' in output"
+    else
+        fail "(AT-2) locked+dead-pid worktree not classified as ambiguous — output: ${output:0:400}"
+    fi
+}
+
+# ── Run all tests ───────────────────────────────────────────────────────────────────────────────────
 
 echo "=== swarm-clean test suite ==="
 echo ""
@@ -354,6 +408,8 @@ test_dryrun_never_deletes
 test_unmerged_clean_classified_as_ambiguous
 test_ambiguous_worktree_never_deleted
 test_summary_section_appears
+test_locked_dead_pid_classified_as_ambiguous
+test_locked_dead_pid_output_is_ambiguous
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="

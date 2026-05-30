@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Allow REPO_ROOT override for testing.
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
-# ── Argument parsing ──────────────────────────────────────────────────────────
+# ── Argument parsing ───────────────────────────────────────────────────────────────────────────────
 
 APPLY=0
 CLEAN_TMP=0
@@ -47,7 +47,7 @@ for arg in "$@"; do
     esac
 done
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────────────────────
 
 # Check if a PID is alive in /proc.
 pid_alive() {
@@ -93,26 +93,30 @@ branch_has_open_pr() {
     [[ -n "$pr_number" ]]
 }
 
-# Remove a worktree. Prefers cleanup-worktrees.sh or git worktree remove.
+# Remove a worktree. Uses git worktree remove (no --force) so git's own dirty-check
+# remains as a second safety net even though we've already classified the worktree clean.
+# Never falls back to raw rm -rf (spec requirement).
 remove_worktree() {
     local wt_path="$1" branch="$2"
 
-    # Prefer git worktree remove (safe, registered-aware).
-    if git -C "$REPO_ROOT" worktree remove --force "$wt_path" 2>/dev/null; then
+    # git worktree remove (without --force) lets git validate the worktree is clean
+    # before removing it. This is belt-and-suspenders: the classifier already confirmed
+    # clean status, but we keep git's own safety check active.
+    if git -C "$REPO_ROOT" worktree remove "$wt_path" 2>/dev/null; then
         # Also clean up the local branch if it still exists.
         git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
+        # Prune metadata for any already-gone paths.
+        git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
         return 0
     fi
 
-    # Fallback: raw rm + branch delete.
-    rm -rf "$wt_path"
-    git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
-
-    # Prune the git metadata.
-    git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
+    # Removal failed — git refused (worktree may have become dirty or re-locked
+    # between classification and removal, which is the correct safe behaviour).
+    echo "    -> WARNING: git worktree remove refused for $wt_path — leaving in place" >&2
+    return 1
 }
 
-# ── Classify and report ───────────────────────────────────────────────────────
+# ── Classify and report ───────────────────────────────────────────────────────────────────────────────
 
 echo "=== swarm-clean $([ "$APPLY" -eq 1 ] && echo "(APPLY MODE)" || echo "(DRY-RUN — pass --apply to delete)") ==="
 echo ""
@@ -200,7 +204,7 @@ for entry in "${ALL_WTS[@]}"; do
         continue
     fi
 
-    # ── Step 1: Check dirty status ────────────────────────────────────────────
+    # ── Step 1: Check dirty status ────────────────────────────────────────────────────────────────────────────
     dirty_status=""
     is_dirty=0
     if [[ -d "$wt_path" ]]; then
@@ -208,7 +212,7 @@ for entry in "${ALL_WTS[@]}"; do
         [[ -n "$dirty_status" ]] && is_dirty=1
     fi
 
-    # ── Step 2: Check lock and PID ────────────────────────────────────────────
+    # ── Step 2: Check lock and PID ────────────────────────────────────────────────────────────────────────────
     lock_pid=""
     pid_status="n/a"
     if [[ "$is_locked" -eq 1 ]]; then
@@ -220,7 +224,7 @@ for entry in "${ALL_WTS[@]}"; do
         fi
     fi
 
-    # ── Classify into exactly one bucket ─────────────────────────────────────
+    # ── Classify into exactly one bucket ───────────────────────────────────────────────────────────────────────────
 
     bucket=""
     action=""
@@ -280,7 +284,7 @@ for entry in "${ALL_WTS[@]}"; do
 
     printf "%-55s %-30s %-15s %s\n" "$local_name" "${wt_branch:0:29}" "$bucket" "$action"
 
-    # ── Execute removal for clean-finished under --apply ─────────────────────
+    # ── Execute removal for clean-finished under --apply ─────────────────────────────────────────────
     if [[ "$bucket" == "clean-finished" ]] && [[ "$APPLY" -eq 1 ]]; then
         if remove_worktree "$wt_path" "$wt_branch"; then
             COUNT_REMOVED=$((COUNT_REMOVED + 1))
@@ -298,7 +302,7 @@ echo "  clean-finished: ${COUNT_CLEAN_FINISHED}  ($([ "$APPLY" -eq 1 ] && echo "
 echo "  dirty:          ${COUNT_DIRTY}  (report only)"
 echo "  ambiguous:      ${COUNT_AMBIGUOUS}  (report only, human decides)"
 
-# ── /tmp target cleanup — delegate to clean-tmp-targets.sh ───────────────────
+# ── /tmp target cleanup — delegate to clean-tmp-targets.sh ─────────────────────────────────────────────
 
 if [[ "$CLEAN_TMP" -eq 1 ]]; then
     echo ""
