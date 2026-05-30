@@ -910,7 +910,13 @@ my $value = 42;
 #[test]
 fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn std::error::Error>> {
     let server = common::start_lsp_server();
-    let request_timeout = Duration::from_secs(3);
+    // willSaveWaitUntil runs the on-save formatter, which shells out to perltidy
+    // via an OsSubprocessRuntime with a 10s subprocess timeout. On runners where
+    // perltidy is present (e.g. CI's perl-equipped CX lane) a cold/loaded spawn can
+    // take several seconds, so the client timeout must comfortably exceed the
+    // server-side 10s formatter timeout — otherwise the request times out before the
+    // server responds. (Runners without perltidy return [] near-instantly.)
+    let request_timeout = Duration::from_secs(15);
     let init_timeout = common::timeout_scaler::TimeoutProfile::Initialization.timeout();
 
     let uri = "file:///tmp/lsp_smoke_e2e_will_save_wait_until.pl";
