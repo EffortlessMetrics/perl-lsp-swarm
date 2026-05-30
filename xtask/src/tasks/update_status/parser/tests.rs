@@ -104,6 +104,12 @@ fn test_parser_nodekind_row_renders() -> Result<()> {
         nodekind_never_seen: 4,
         nodekind_allowlisted_never_seen: 4,
         nodekind_actionable_never_seen: 0,
+        nodekind_allowlisted_names: vec![
+            "Error".to_string(),
+            "MissingBlock".to_string(),
+            "MissingExpression".to_string(),
+            "MissingIdentifier".to_string(),
+        ],
         ga_covered: 12,
         ga_total: 12,
     };
@@ -124,6 +130,19 @@ fn test_parser_nodekind_row_renders() -> Result<()> {
     assert!(result.contains("94.2"), "nodekind row missing 94.2%");
     assert!(result.contains("0 actionable never-seen"), "nodekind row missing actionable count");
     assert!(result.contains("4 recovery-only allowlisted"), "nodekind row missing allowlist count");
+    assert!(result.contains("Error"), "nodekind row should show allowlisted name Error");
+    assert!(
+        result.contains("MissingBlock"),
+        "nodekind row should show allowlisted name MissingBlock"
+    );
+    assert!(
+        result.contains("MissingExpression"),
+        "nodekind row should show allowlisted name MissingExpression"
+    );
+    assert!(
+        result.contains("MissingIdentifier"),
+        "nodekind row should show allowlisted name MissingIdentifier"
+    );
     assert!(
         result.contains("insufficient_data"),
         "strict-clean no-receipt row should report insufficient_data"
@@ -147,22 +166,29 @@ fn test_nodekind_gap_note_distinguishes_actionable_and_allowlisted() {
         nodekind_never_seen: 4,
         nodekind_allowlisted_never_seen: 4,
         nodekind_actionable_never_seen: 0,
+        nodekind_allowlisted_names: vec![
+            "Error".to_string(),
+            "MissingBlock".to_string(),
+            "MissingExpression".to_string(),
+            "MissingIdentifier".to_string(),
+        ],
         ga_covered: 12,
         ga_total: 12,
     };
 
     assert_eq!(
         format_nodekind_gap_note(&summary),
-        "0 actionable never-seen; 4 recovery-only allowlisted"
+        "0 actionable never-seen; 4 recovery-only allowlisted (Error, MissingBlock, MissingExpression, MissingIdentifier)"
     );
 
     summary.nodekind_never_seen = 3;
     summary.nodekind_allowlisted_never_seen = 1;
     summary.nodekind_actionable_never_seen = 2;
+    summary.nodekind_allowlisted_names = vec!["MissingStatement".to_string()];
 
     assert_eq!(
         format_nodekind_gap_note(&summary),
-        "2 actionable never-seen; 1 recovery-only allowlisted; 3 total never-seen"
+        "2 actionable never-seen; 1 recovery-only allowlisted (MissingStatement); 3 total never-seen"
     );
 }
 

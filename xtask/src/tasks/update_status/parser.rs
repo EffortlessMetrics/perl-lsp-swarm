@@ -227,14 +227,16 @@ fn format_nodekind_gap_note(summary: &super::super::corpus_audit::StatusSummary)
     ) {
         (0, 0, 0) => "0 never-seen node kinds".to_string(),
         (0, allowlisted, _) => {
-            format!("0 actionable never-seen; {allowlisted} recovery-only allowlisted")
+            let names = summary.nodekind_allowlisted_names.join(", ");
+            format!("0 actionable never-seen; {allowlisted} recovery-only allowlisted ({names})")
         }
         (actionable, 0, total) => {
             format!("{actionable} actionable never-seen; {total} total never-seen")
         }
         (actionable, allowlisted, total) => {
+            let names = summary.nodekind_allowlisted_names.join(", ");
             format!(
-                "{actionable} actionable never-seen; {allowlisted} recovery-only allowlisted; {total} total never-seen"
+                "{actionable} actionable never-seen; {allowlisted} recovery-only allowlisted ({names}); {total} total never-seen"
             )
         }
     }

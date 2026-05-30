@@ -17,7 +17,7 @@
 | Metric | Value | Notes | Source |
 | --- | --- | --- |
 <!-- BEGIN: PARSER_NODEKIND_ROW -->
-| **Node-kind coverage** | 66/69 (95.7%) | 0 actionable never-seen; 3 recovery-only allowlisted | `corpus_audit` |
+| **Node-kind coverage** | 66/69 (95.7%) | 0 actionable never-seen; 3 recovery-only allowlisted (MissingBlock, MissingIdentifier, MissingStatement) | `corpus_audit` |
 <!-- END: PARSER_NODEKIND_ROW -->
 <!-- BEGIN: PARSER_RELIABILITY_ROW -->
 | **Reliability** | Ubuntu: 48 unread / CPAN: 6 unread / Project: 0 timeout, 0 panic, 0 unread | -- | `.ci/*-baseline.json` |

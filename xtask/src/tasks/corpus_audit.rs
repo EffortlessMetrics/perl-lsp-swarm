@@ -85,6 +85,8 @@ pub struct StatusSummary {
     pub nodekind_never_seen: usize,
     pub nodekind_allowlisted_never_seen: usize,
     pub nodekind_actionable_never_seen: usize,
+    /// Names of never-seen NodeKinds that are intentionally allowlisted.
+    pub nodekind_allowlisted_names: Vec<String>,
     pub ga_covered: usize,
     pub ga_total: usize,
 }
@@ -137,6 +139,12 @@ pub fn compute_status_summary(corpus_path: &Path, timeout: Duration) -> Result<S
         nodekind_never_seen: nodekind_stats.never_seen.len(),
         nodekind_allowlisted_never_seen: nodekind_stats.allowlisted_never_seen.len(),
         nodekind_actionable_never_seen: nodekind_stats.actionable_never_seen.len(),
+        nodekind_allowlisted_names: {
+            let mut names: Vec<String> =
+                nodekind_stats.allowlisted_never_seen.iter().map(|e| e.name.clone()).collect();
+            names.sort();
+            names
+        },
         ga_covered: ga_coverage.covered_count,
         ga_total: ga_coverage.total_count,
     })
