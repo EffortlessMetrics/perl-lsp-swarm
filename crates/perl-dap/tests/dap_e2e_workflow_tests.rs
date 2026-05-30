@@ -155,42 +155,51 @@ fn test_e2e_multi_breakpoint_sequence() -> TestResult {
     let mut session = DapWorkflowSession::new(timeout)?;
 
     session.launch(&script_str)?;
-    session.set_breakpoints(&script_str, &[BP_LINE_2, BP_LINE_3])?;
-    session.configuration_done()?;
 
-    // First stop — must be at BP_LINE_2.
-    let first_stop = session.wait_stopped()?;
-    assert_eq!(
-        first_stop.reason, "breakpoint",
-        "first stop reason must be `breakpoint`, got `{}`",
-        first_stop.reason
+    // Use set_breakpoints_checked so we assert on DAP-resolved lines rather
+    // than hard-coded BP_LINE_* constants.  The Perl debugger can intermittently
+    // report adjacent lines, so comparing against its own resolved values
+    // eliminates the line-echo race condition that made this test flaky.
+    let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2, BP_LINE_3])?;
+    let first_expected = resolved[0];
+    let second_expected = resolved[1];
+    // Sanity: second breakpoint must come after the first in source order.
+    assert!(
+        second_expected > first_expected,
+        "second resolved breakpoint line ({second_expected}) must be > first ({first_expected})"
     );
 
-    // Verify the stack frame line — the stopped event doesn't carry a line
-    // number, but stackTrace always does.
-    let (_, _, first_line) = session.stack_trace(first_stop.thread_id)?;
+    session.configuration_done()?;
+
+    // First stop: wait for stopped event and immediately capture the top frame.
+    let first_frame = session.wait_stopped_with_frame()?;
     assert_eq!(
-        first_line, BP_LINE_2 as i64,
-        "first breakpoint must be at line {BP_LINE_2}, stack frame reports {first_line}"
+        first_frame.stopped.reason, "breakpoint",
+        "first stop reason must be `breakpoint`, got `{}`",
+        first_frame.stopped.reason
+    );
+    assert_eq!(
+        first_frame.line, first_expected,
+        "first breakpoint must be at resolved line {first_expected}, stack frame reports {}",
+        first_frame.line
     );
 
     // Continue to second breakpoint.
-    session.continue_exec(first_stop.thread_id)?;
-    let second_stop = session.wait_stopped()?;
+    session.continue_exec(first_frame.stopped.thread_id)?;
+    let second_frame = session.wait_stopped_with_frame()?;
     assert_eq!(
-        second_stop.reason, "breakpoint",
+        second_frame.stopped.reason, "breakpoint",
         "second stop reason must be `breakpoint`, got `{}`",
-        second_stop.reason
+        second_frame.stopped.reason
     );
-
-    let (_, _, second_line) = session.stack_trace(second_stop.thread_id)?;
     assert_eq!(
-        second_line, BP_LINE_3 as i64,
-        "second breakpoint must be at line {BP_LINE_3}, stack frame reports {second_line}"
+        second_frame.line, second_expected,
+        "second breakpoint must be at resolved line {second_expected}, stack frame reports {}",
+        second_frame.line
     );
 
     // Continue to script exit.
-    session.continue_exec(second_stop.thread_id)?;
+    session.continue_exec(second_frame.stopped.thread_id)?;
     let _ = session.drain_until_event("terminated");
     session.disconnect()?;
 
