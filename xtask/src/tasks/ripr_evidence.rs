@@ -1805,6 +1805,7 @@ mod tests {
             json!({"classification": ["StaticUnknown", "NoStaticPath"]}),
             json!({"evidence_record": {"kind": "ReceiptParsing"}}),
             json!({"location": {"reason": "BoundaryPredicate"}}),
+            json!({"kind": false}),
             json!({"kind": ""}),
             json!({}),
         ];
@@ -1819,6 +1820,74 @@ mod tests {
                 json!({"name": "staticunknown,nostaticpath", "count": 1}),
             ]
         );
+    }
+
+    #[test]
+    fn ripr_plus_recommended_clusters_group_files_and_gap_kinds() {
+        let top_files = vec![
+            json!({"name": "xtask/src/tasks/ripr_evidence.rs", "count": 5}),
+            json!({"name": "crates/perl-lsp-quality/src/lib.rs", "count": 4}),
+            json!({"name": "crates/perl-config/src/lib.rs", "count": 3}),
+            json!({"name": "crates/perl-diagnostics/src/error.rs", "count": 2}),
+            json!({"name": "crates/perl-parser/src/lib.rs", "count": 1}),
+            json!({"count": 99}),
+        ];
+        let top_gap_kinds = vec![
+            json!({"name": "receipt_missing", "count": 8}),
+            json!({"name": "config_parse", "count": 7}),
+            json!({"name": "error_variant", "count": 6}),
+            json!({"name": "boundary_predicate", "count": 5}),
+            json!({"name": "call_presence", "count": 4}),
+            json!({"count": 99}),
+        ];
+
+        let rows = ripr_plus_recommended_first_clusters(&top_files, &top_gap_kinds, 10);
+
+        assert_eq!(rows[0].pointer("/name"), Some(&json!("ci-report-formatting")));
+        assert_eq!(rows[0].pointer("/score"), Some(&json!(12)));
+        assert_eq!(rows[0].pointer("/active_file_count"), Some(&json!(4)));
+        assert_eq!(rows[0].pointer("/gap_kind_count"), Some(&json!(8)));
+        assert!(rows.iter().any(|row| {
+            row.pointer("/name") == Some(&json!("proof-infrastructure"))
+                && row.pointer("/example_files/0")
+                    == Some(&json!("xtask/src/tasks/ripr_evidence.rs"))
+        }));
+        assert!(rows.iter().any(|row| {
+            row.pointer("/name") == Some(&json!("boundary-predicates"))
+                && row.pointer("/example_gap_kinds/0") == Some(&json!("boundary_predicate"))
+        }));
+        assert!(rows.iter().any(|row| row.pointer("/name") == Some(&json!("config-parsing"))));
+        assert!(rows.iter().any(|row| row.pointer("/name") == Some(&json!("error-variants"))));
+        assert!(
+            rows.iter().any(|row| row.pointer("/name") == Some(&json!("active-ripr-inventory")))
+        );
+    }
+
+    #[test]
+    fn ripr_plus_cluster_mapping_covers_inventory_buckets() {
+        assert_eq!(
+            ripr_plus_cluster_for_path("xtask/src/tasks/ripr_evidence.rs").0,
+            "proof-infrastructure"
+        );
+        assert_eq!(
+            ripr_plus_cluster_for_path("crates/perl-lsp-quality/src/lib.rs").0,
+            "ci-report-formatting"
+        );
+        assert_eq!(ripr_plus_cluster_for_path("crates/perl-config/src/lib.rs").0, "config-parsing");
+        assert_eq!(
+            ripr_plus_cluster_for_path("crates/perl-diagnostics/src/error.rs").0,
+            "error-variants"
+        );
+        assert_eq!(
+            ripr_plus_cluster_for_path("crates/perl-parser/src/lib.rs").0,
+            "active-ripr-inventory"
+        );
+
+        assert_eq!(ripr_plus_cluster_for_gap_kind("receipt_missing").0, "ci-report-formatting");
+        assert_eq!(ripr_plus_cluster_for_gap_kind("config_parse").0, "config-parsing");
+        assert_eq!(ripr_plus_cluster_for_gap_kind("error_variant").0, "error-variants");
+        assert_eq!(ripr_plus_cluster_for_gap_kind("boundary_predicate").0, "boundary-predicates");
+        assert_eq!(ripr_plus_cluster_for_gap_kind("call_presence").0, "active-ripr-inventory");
     }
 
     #[test]
