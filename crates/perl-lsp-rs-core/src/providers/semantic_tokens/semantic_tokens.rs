@@ -531,7 +531,9 @@ pub fn collect_semantic_tokens(
                     | "return" | "next" | "last" | "redo" | "goto" | "eval" | "given" | "when"
                     | "default" | "break" | "continue" | "unless" | "no" | "BEGIN" | "END"
                     | "CHECK" | "INIT" | "UNITCHECK" | "class" | "method" | "try" | "catch"
-                    | "finally" | "await" => "keyword",
+                    | "finally" | "await"
+                    // Infix operator keywords (perlop) — `isa` added for Perl 5.32+ (issue #778)
+                    | "isa" | "cmp" => "keyword",
                     _ => continue,
                 }
             }
@@ -749,6 +751,26 @@ pub fn collect_semantic_tokens(
                 return true;
             }
             NodeKind::LabeledStatement { label, .. } => {
+                // INTENTIONAL DIVERGENCE from NodeKind::declares_symbol():
+                // LabeledStatement has declares_symbol() == false in perl-ast classification
+                // because Perl labels (e.g. `OUTER:`) are jump targets, not symbol declarations —
+                // they do not bind a name into any scope or symbol table.
+                //
+                // However, this provider intentionally emits the declaration modifier (bit 0) on
+                // the label name for editor UX: labels read as declared identifiers in the
+                // outline/highlight, helping users visually distinguish label definitions from
+                // uses (LoopControl references). This is a presentation decision, not a semantic
+                // claim about symbol binding.
+                //
+                // This divergence is documented and deliberate, not accidental drift.
+                // A drift-guard test in tests/semantic_tokens_classification_alignment.rs
+                // records this as the known exception and asserts that the other declaration-
+                // modifier carriers (Package, Subroutine, Method, Class) do satisfy
+                // declares_symbol().
+                //
+                // TODO(builder-9-followup): Consider dropping the declaration modifier from
+                // labels in a dedicated follow-up; that would be a user-visible behavior
+                // change requiring editor-side validation.
                 let Some(fallback_end) = node.location.start.checked_add(label.len()) else {
                     return true;
                 };
