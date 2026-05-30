@@ -390,6 +390,30 @@ mod tests {
     }
 
     #[test]
+    fn parser_fetch_workspace_perldoc_ignores_missing_workspace_module() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("workspace");
+        fs::create_dir_all(root.join("lib"))?;
+
+        let server = LspServer::new();
+        let workspace_uri =
+            url::Url::from_directory_path(&root).map_err(|_| "failed to create workspace URI")?;
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+                .with_path(root),
+        ];
+        {
+            let mut config = server.workspace_config.lock();
+            config.include_paths = vec!["lib".to_string()];
+            config.use_perl5lib = false;
+            config.use_system_inc = false;
+        }
+
+        assert!(server.fetch_workspace_perldoc("Local::Missing").is_none());
+        Ok(())
+    }
+
+    #[test]
     fn parser_workspace_text_document_content_returns_local_pod() -> TestResult {
         let temp = tempfile::tempdir()?;
         let root = temp.path().join("workspace");
@@ -476,6 +500,32 @@ mod tests {
     }
 
     #[test]
+    fn parser_formats_workspace_pod_virtual_content_with_related_links() -> TestResult {
+        let pod = perl_pod::PodDoc {
+            name: Some("Local::Doc - local docs".to_string()),
+            synopsis: None,
+            description: None,
+            methods: std::collections::HashMap::new(),
+        };
+
+        let content = format_workspace_pod_virtual_content(
+            "Local::Doc",
+            Path::new("lib/Local/Doc.pm"),
+            &pod,
+            &["perldoc://Alpha::First".to_string(), "perldoc://Zoo::Last".to_string()],
+        )
+        .ok_or("expected workspace POD content")?;
+
+        assert!(
+            content.contains(
+                "Related virtual perldoc:\n- perldoc://Alpha::First\n- perldoc://Zoo::Last"
+            )
+        );
+        assert!(content.contains("NAME\nLocal::Doc - local docs"));
+        Ok(())
+    }
+
+    #[test]
     fn parser_workspace_pod_related_perldoc_links_are_sorted_and_filtered() {
         let source = r#"package Local::Doc;
 
@@ -498,5 +548,27 @@ my $non_pod = 'L<Code::Reference>';
         let links = workspace_pod_related_perldoc_uris("Local::Doc", source);
 
         assert_eq!(links, vec!["perldoc://Alpha::First", "perldoc://Zoo::Last"]);
+    }
+
+    #[test]
+    fn parser_workspace_pod_related_perldoc_links_ignore_malformed_and_empty_targets() {
+        let source = r#"package Local::Doc;
+
+=head1 DESCRIPTION
+
+Malformed links do not leak: L<Broken::Target
+Empty module segments do not leak: L<Broken::>.
+The next line still scans after the malformed line: L<Alpha::First>.
+
+=cut
+
+Plain code after cut does not leak: L<Code::Reference>.
+
+1;
+"#;
+
+        let links = workspace_pod_related_perldoc_uris("Local::Doc", source);
+
+        assert_eq!(links, vec!["perldoc://Alpha::First"]);
     }
 }
