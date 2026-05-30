@@ -29,10 +29,8 @@ fn loc(start: usize, end: usize) -> SourceLocation {
 /// VarDecl node       → [0, 10)
 /// Program            → [0, 11)
 fn build_my_x_ast() -> Node {
-    let variable = Node::new(
-        NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
-        loc(3, 5),
-    );
+    let variable =
+        Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }, loc(3, 5));
     let number = Node::new(NodeKind::Number { value: "1".to_string() }, loc(8, 9));
     let decl = Node::new(
         NodeKind::VariableDeclaration {
@@ -112,7 +110,9 @@ fn test_half_open_at_number_end_resolves_to_parent_not_number() -> TestResult {
 
     match result {
         None => {
-            return Err("Expected Some(VarDecl) but got None — VarDecl spans [0, 10) so 9 is inside".into());
+            return Err(
+                "Expected Some(VarDecl) but got None — VarDecl spans [0, 10) so 9 is inside".into(),
+            );
         }
         Some(found) => {
             assert_ne!(

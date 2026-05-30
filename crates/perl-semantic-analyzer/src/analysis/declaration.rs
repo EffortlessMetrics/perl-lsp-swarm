@@ -1157,7 +1157,6 @@ impl<'a> DeclarationProvider<'a> {
         self.get_constant_name_range(decl)
     }
 
-
     /// Build a lookup map from raw node pointers back to safe references.
     ///
     /// This map is the bridge that makes `ParentMap` safe to use: callers
@@ -1182,7 +1181,6 @@ impl<'a> DeclarationProvider<'a> {
             Self::build_node_lookup(child, map);
         }
     }
-
 
     /// Extracts the source code text for a given AST node.
     ///
