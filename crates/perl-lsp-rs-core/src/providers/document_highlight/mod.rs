@@ -186,7 +186,6 @@ impl DocumentHighlightProvider {
         None
     }
 
-
     /// Check if a node represents a symbol we can highlight
     fn is_symbol_node(&self, node: &Node) -> bool {
         matches!(

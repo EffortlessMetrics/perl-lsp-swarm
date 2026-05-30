@@ -265,7 +265,9 @@ impl TypeDefinitionProvider {
 
         // Recurse into children using canonical children() iterator.
         for child in node.children() {
-            if let Some(result) = self.extract_has_type_constraint_name(child, target_start, target_end) {
+            if let Some(result) =
+                self.extract_has_type_constraint_name(child, target_start, target_end)
+            {
                 return Some(result);
             }
         }
@@ -314,7 +316,9 @@ impl TypeDefinitionProvider {
 
         // Recurse into children using canonical children() iterator.
         for child in node.children() {
-            if let Some(result) = self.extract_has_type_constraint_name_from_node(child, target_start, target_end) {
+            if let Some(result) =
+                self.extract_has_type_constraint_name_from_node(child, target_start, target_end)
+            {
                 return Some(result);
             }
         }
