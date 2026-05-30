@@ -104,7 +104,9 @@ impl DebugAdapter {
                         //   1. Gets the current frame's CV via `$DB::sub` (set by perl5db.pl
                         //      to the sub name when stopped inside a subroutine, undef at
                         //      file scope) or `B::main_cv()` for the file-scope frame.
-                        //   2. Walks the pad name list and value list in parallel.
+                        //   2. Walks the pad name list and value list in parallel,
+                        //      using `$va[-1]` (the last/innermost pad) so recursive
+                        //      calls show the current-innermost frame, not the outermost.
                         //   3. Emits one `$name = value` line per lexical variable,
                         //      which is the same format the `V` command would produce for
                         //      package variables — fully compatible with `parse_scope_variables_from_lines`.
@@ -119,7 +121,7 @@ impl DebugAdapter {
                                 "my $pl=$cv->PADLIST; ",
                                 "my @nm=$pl->NAMES->ARRAY; ",
                                 "my @va=$pl->ARRAY; ",
-                                "my @pds=(@va>1)?$va[1]->ARRAY:(); ",
+                                "my @pds=(@va>1)?$va[-1]->ARRAY:(); ",
                                 "my $o=''; ",
                                 "for my $i (0..$#nm) { ",
                                 "  my $n=$nm[$i]; ",
