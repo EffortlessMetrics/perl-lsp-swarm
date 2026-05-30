@@ -540,15 +540,17 @@ mod tests {
     fn missing_import_receipt_rejects_unreachable_and_duplicate_modules()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = NextEditProvider;
-        let source = "use strict;\nuse warnings;\nuse My::App;\nmy $value = My::App->new;\n";
+        let source_with_import =
+            "use strict;\nuse warnings;\nuse My::App;\nmy $value = My::App->new;\n";
+        let source_without_import = "use strict;\nuse warnings;\nmy $value = My::Missing->new;\n";
         let duplicate = MissingImportNextEditRequest::receipt_only(
-            source,
+            source_with_import,
             "My::App",
             vec!["My::App".to_string()],
             vec!["My::App".to_string()],
         );
         let unreachable = MissingImportNextEditRequest::receipt_only(
-            source,
+            source_without_import,
             "My::Missing",
             vec!["My::App".to_string()],
             vec![],
@@ -556,16 +558,70 @@ mod tests {
 
         let duplicate_proof = provider.prove_missing_import(&duplicate);
         assert!(duplicate_proof.candidate.is_none());
-        assert!(
-            duplicate_proof.rejection_reasons.contains(&NextEditRejectionReason::DuplicateImport)
+        assert_eq!(
+            duplicate_proof.rejection_reasons,
+            vec![NextEditRejectionReason::DuplicateImport]
         );
 
         let unreachable_proof = provider.prove_missing_import(&unreachable);
         assert!(unreachable_proof.candidate.is_none());
-        assert!(
-            unreachable_proof
-                .rejection_reasons
-                .contains(&NextEditRejectionReason::UnreachableModule)
+        assert_eq!(
+            unreachable_proof.rejection_reasons,
+            vec![NextEditRejectionReason::UnreachableModule]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_import_receipt_rejects_invalid_module_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = NextEditProvider;
+        let request = MissingImportNextEditRequest::receipt_only(
+            "use strict;\nmy $value = My::App->new;\n",
+            "My::App; system",
+            vec!["My::App; system".to_string()],
+            vec![],
+        );
+
+        let proof = provider.prove_missing_import(&request);
+
+        assert!(proof.candidate.is_none());
+        assert_eq!(proof.rejection_reasons, vec![NextEditRejectionReason::InvalidModuleName]);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_import_receipt_rejects_unsafe_insertion_points()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = NextEditProvider;
+        let request = MissingImportNextEditRequest::receipt_only(
+            "__DATA__\nMy::App\n",
+            "My::App",
+            vec!["My::App".to_string()],
+            vec![],
+        );
+
+        let proof = provider.prove_missing_import(&request);
+
+        assert!(proof.candidate.is_none());
+        assert_eq!(proof.rejection_reasons, vec![NextEditRejectionReason::UnsafeInsertionPoint]);
+        Ok(())
+    }
+
+    #[test]
+    fn next_edit_text_edit_rejects_invalid_ranges() -> Result<(), Box<dyn std::error::Error>> {
+        let source = "use utf8;\nmy $sigil = 'lambda: λ';\n";
+        let reversed = NextEditTextEdit::new(8, 4, "use strict;\n");
+        let too_long = NextEditTextEdit::new(0, source.len() + 1, "use strict;\n");
+        let lambda_mid_byte = source.find('λ').ok_or("lambda fixture missing")? + 1;
+        let non_boundary = NextEditTextEdit::new(lambda_mid_byte, lambda_mid_byte, "x");
+
+        assert_eq!(reversed.apply_to(source), None);
+        assert_eq!(too_long.apply_to(source), None);
+        assert_eq!(non_boundary.apply_to(source), None);
+        assert_eq!(
+            NextEditTextEdit::new(0, 0, "use strict;\n").apply_to(source),
+            Some("use strict;\nuse utf8;\nmy $sigil = 'lambda: λ';\n".to_string())
         );
         Ok(())
     }
@@ -585,16 +641,15 @@ mod tests {
         let disabled = provider.prove_missing_import(&request);
         assert_eq!(disabled.status, NextEditStatus::Disabled);
         assert!(disabled.candidate.is_none());
-        assert!(disabled.rejection_reasons.contains(&NextEditRejectionReason::GateDisabled));
+        assert_eq!(disabled.rejection_reasons, vec![NextEditRejectionReason::GateDisabled]);
 
         request.gate = NextEditFeatureGate::explicit_enabled();
         let runtime = provider.prove_missing_import(&request);
         assert_eq!(runtime.status, NextEditStatus::RuntimeProviderNotRegistered);
         assert!(runtime.candidate.is_none());
-        assert!(
-            runtime
-                .rejection_reasons
-                .contains(&NextEditRejectionReason::RuntimeProviderNotRegistered)
+        assert_eq!(
+            runtime.rejection_reasons,
+            vec![NextEditRejectionReason::RuntimeProviderNotRegistered]
         );
         Ok(())
     }
