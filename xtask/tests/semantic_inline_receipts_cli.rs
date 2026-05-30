@@ -8,11 +8,15 @@ fn semantic_inline_receipts_cli_writes_dashboard_inventory() -> Result<()> {
     let temp = TempDir::new()?;
     let receipt = temp.path().join("semantic-inline-receipts.json");
     let missing_quality_receipt = temp.path().join("missing-inline-quality.json");
+    let missing_next_edit_receipt = temp.path().join("missing-next-edit.json");
     let receipt_arg =
         receipt.to_str().ok_or_else(|| anyhow!("invalid semantic inline receipt path"))?;
     let quality_arg = missing_quality_receipt
         .to_str()
         .ok_or_else(|| anyhow!("invalid inline quality receipt path"))?;
+    let next_edit_arg = missing_next_edit_receipt
+        .to_str()
+        .ok_or_else(|| anyhow!("invalid next-edit receipt path"))?;
 
     cargo_bin_cmd!("xtask")
         .args([
@@ -21,6 +25,8 @@ fn semantic_inline_receipts_cli_writes_dashboard_inventory() -> Result<()> {
             receipt_arg,
             "--quality-receipt",
             quality_arg,
+            "--next-edit-receipt",
+            next_edit_arg,
         ])
         .assert()
         .success();
@@ -82,6 +88,11 @@ fn semantic_inline_receipts_cli_writes_dashboard_inventory() -> Result<()> {
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow!("quality_counters map missing"))?;
     assert_eq!(quality_counters.get("available").and_then(Value::as_bool), Some(false));
+    let next_edit_scaffold = dashboard
+        .get("next_edit_scaffold")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("next_edit_scaffold map missing"))?;
+    assert_eq!(next_edit_scaffold.get("available").and_then(Value::as_bool), Some(false));
 
     Ok(())
 }
@@ -91,6 +102,7 @@ fn semantic_inline_receipts_cli_embeds_quality_counters_when_available() -> Resu
     let temp = TempDir::new()?;
     let receipt = temp.path().join("semantic-inline-receipts.json");
     let quality_receipt = temp.path().join("inline-completion-quality.json");
+    let next_edit_receipt = temp.path().join("semantic-inline-next-edit.json");
 
     std::fs::write(
         &quality_receipt,
@@ -144,12 +156,19 @@ fn semantic_inline_receipts_cli_embeds_quality_counters_when_available() -> Resu
     )?;
 
     cargo_bin_cmd!("xtask")
+        .args(["semantic-inline-next-edit", "--receipt", &next_edit_receipt.display().to_string()])
+        .assert()
+        .success();
+
+    cargo_bin_cmd!("xtask")
         .args([
             "semantic-inline-receipts",
             "--receipt",
             &receipt.display().to_string(),
             "--quality-receipt",
             &quality_receipt.display().to_string(),
+            "--next-edit-receipt",
+            &next_edit_receipt.display().to_string(),
         ])
         .assert()
         .success();
@@ -225,6 +244,27 @@ fn semantic_inline_receipts_cli_embeds_quality_counters_when_available() -> Resu
             .and_then(|suppression_reasons| suppression_reasons.get("hard_zone"))
             .and_then(Value::as_u64),
         Some(14)
+    );
+    let next_edit_scaffold = receipt_json
+        .get("next_edit_scaffold")
+        .ok_or_else(|| anyhow!("semantic inline receipt omitted next_edit_scaffold"))?;
+    assert_eq!(next_edit_scaffold.get("available").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        next_edit_scaffold.get("schema_version").and_then(Value::as_str),
+        Some("semantic-inline-next-edit.v1")
+    );
+    assert_eq!(next_edit_scaffold.get("enabled_by_default").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        next_edit_scaffold.get("runtime_provider_registered").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        next_edit_scaffold.get("ai_candidate_source_enabled").and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        next_edit_scaffold.get("explicit_gate_status").and_then(Value::as_str),
+        Some("runtime_provider_not_registered")
     );
 
     Ok(())
