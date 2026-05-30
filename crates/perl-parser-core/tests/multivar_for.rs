@@ -51,11 +51,12 @@ fn test_for_my_two_vars_parses_without_error() -> Result<(), Box<dyn std::error:
 
 #[test]
 fn test_for_my_two_vars_contains_loop_vars() -> Result<(), Box<dyn std::error::Error>> {
-    // Both $x and $y must appear in the sexp
+    // Both $x and $y must appear in the sexp as variable nodes.
     // Sexp format: (my_declaration ((variable $ x) (variable $ y)))
     let sexp = sexp_clean("for my ($x, $y) (@list) { }");
-    assert!(sexp.contains("x"), "Expected 'x' in sexp: {}", sexp);
-    assert!(sexp.contains("y"), "Expected 'y' in sexp: {}", sexp);
+    // Check for specific variable node form to avoid false matches via "foreach"
+    assert!(sexp.contains("variable $ x"), "Expected 'variable $ x' in sexp: {}", sexp,);
+    assert!(sexp.contains("variable $ y"), "Expected 'variable $ y' in sexp: {}", sexp,);
     // Must be a list declaration (parenthesized vars), not two separate Foreach nodes
     assert!(sexp.contains("my_declaration"), "Expected my_declaration in sexp: {}", sexp,);
     Ok(())
@@ -66,10 +67,10 @@ fn test_for_my_three_vars_parses_without_error() -> Result<(), Box<dyn std::erro
     // for my ($a, $b, $c) (some_func()) { }
     let sexp = sexp_clean("for my ($a, $b, $c) (some_func()) { }");
     assert!(count_foreach_in_sexp(&sexp) >= 1, "Expected foreach node, got: {}", sexp);
-    // All three variable names must appear
-    assert!(sexp.contains(" a"), "Expected 'a' in sexp: {}", sexp);
-    assert!(sexp.contains(" b"), "Expected 'b' in sexp: {}", sexp);
-    assert!(sexp.contains(" c"), "Expected 'c' in sexp: {}", sexp);
+    // All three variable nodes must appear in sexp
+    assert!(sexp.contains("variable $ a"), "Expected 'variable $ a' in sexp: {}", sexp);
+    assert!(sexp.contains("variable $ b"), "Expected 'variable $ b' in sexp: {}", sexp);
+    assert!(sexp.contains("variable $ c"), "Expected 'variable $ c' in sexp: {}", sexp);
     Ok(())
 }
 
@@ -78,8 +79,8 @@ fn test_foreach_my_two_vars_parses_without_error() -> Result<(), Box<dyn std::er
     // foreach my ($k, $v) (%h) { }
     let sexp = sexp_clean("foreach my ($k, $v) (%h) { }");
     assert!(count_foreach_in_sexp(&sexp) >= 1, "Expected foreach node, got: {}", sexp);
-    assert!(sexp.contains("k"), "Expected 'k' in sexp: {}", sexp);
-    assert!(sexp.contains("v"), "Expected 'v' in sexp: {}", sexp);
+    assert!(sexp.contains("variable $ k"), "Expected 'variable $ k' in sexp: {}", sexp,);
+    assert!(sexp.contains("variable $ v"), "Expected 'variable $ v' in sexp: {}", sexp,);
     Ok(())
 }
 
@@ -129,6 +130,6 @@ fn test_regression_c_style_for() -> Result<(), Box<dyn std::error::Error>> {
 fn test_regression_for_implicit_topic() -> Result<(), Box<dyn std::error::Error>> {
     // for (@list) {}  — implicit $_ foreach
     let sexp = sexp_clean("for (@list) {}");
-    assert!(count_foreach_in_sexp(&sexp) >= 1, "Expected foreach (implicit) node, got: {}", sexp);
+    assert!(count_foreach_in_sexp(&sexp) >= 1, "Expected foreach (implicit) node, got: {}", sexp,);
     Ok(())
 }
