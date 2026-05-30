@@ -83,6 +83,7 @@ pub(crate) enum ExpectedSyntax {
     BlessArguments,
     ReturnExpression,
     GuardCondition,
+    ConditionExpression,
     LoopBinding,
     TestAssertionArguments,
     ShebangInterpreter,
@@ -595,6 +596,7 @@ fn syntax_candidate_reason(context: &SemanticInlineContext) -> InlineCandidateRe
     match context.expected_syntax {
         ExpectedSyntax::ReturnExpression
         | ExpectedSyntax::GuardCondition
+        | ExpectedSyntax::ConditionExpression
         | ExpectedSyntax::LoopBinding => InlineCandidateReason::VisibleLexical,
         _ => InlineCandidateReason::SourceSyntax,
     }
@@ -662,6 +664,7 @@ fn syntax_candidate_bonus(item: &InlineCompletionItem, context: &SemanticInlineC
         {
             20
         }
+        ExpectedSyntax::ConditionExpression if item.insert_text.ends_with(") {\n    \n}") => 20,
         ExpectedSyntax::LexicalVariableName
             if item.insert_text.starts_with("self =")
                 && context.visible_variables.iter().any(VariableFact::is_scalar_self) =>
@@ -1393,7 +1396,10 @@ impl InlineCompletionProvider {
         if prefix.trim().is_empty() {
             return ExpectedSyntax::EmptyStatement;
         }
-        if prefix.trim_end() == "use" || use_completion_fragment(prefix).is_some() {
+        if prefix.trim_end() == "use"
+            || prefix.trim_end() == "require"
+            || module_statement_fragment(prefix).is_some()
+        {
             return ExpectedSyntax::UseModule;
         }
         if method_arrow_fragment(prefix).is_some() {
@@ -1413,6 +1419,9 @@ impl InlineCompletionProvider {
         }
         if is_guard_condition_prefix(prefix) {
             return ExpectedSyntax::GuardCondition;
+        }
+        if condition_expression_prefix(prefix).is_some() {
+            return ExpectedSyntax::ConditionExpression;
         }
         if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
             return ExpectedSyntax::LoopBinding;
@@ -1786,7 +1795,7 @@ impl InlineCandidateSource for ModuleCandidateSource {
             return;
         }
 
-        let Some(fragment) = use_completion_fragment(context.prefix.as_str()) else {
+        let Some(fragment) = module_statement_fragment(context.prefix.as_str()) else {
             return;
         };
         if !should_suggest_available_module(fragment) {
@@ -1968,6 +1977,19 @@ impl InlineCandidateSource for SyntaxCandidateSource {
                     command: None,
                 },
             );
+        } else if condition_expression_prefix(prefix).is_some()
+            && let Some(condition) = provider.preferred_guard_condition(semantic_context)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: condition_expression_insert_text(prefix, condition.as_str()),
+                    filter_text: Some(condition),
+                    range: None,
+                    command: None,
+                },
+            );
         }
 
         if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
@@ -2095,6 +2117,27 @@ fn is_guard_condition_prefix(prefix: &str) -> bool {
         || ends_with_keyword(prefix, "return if ")
         || ends_with_keyword(prefix, "next if ")
         || ends_with_keyword(prefix, "last if ")
+}
+
+fn condition_expression_prefix(prefix: &str) -> Option<&'static str> {
+    if ends_with_keyword(prefix, "if (") || ends_with_keyword(prefix, "if ") {
+        return Some("if");
+    }
+    if ends_with_keyword(prefix, "unless (") || ends_with_keyword(prefix, "unless ") {
+        return Some("unless");
+    }
+    if ends_with_keyword(prefix, "while (") || ends_with_keyword(prefix, "while ") {
+        return Some("while");
+    }
+    None
+}
+
+fn condition_expression_insert_text(prefix: &str, condition: &str) -> String {
+    if prefix.ends_with('(') {
+        format!("{condition}) {{\n    \n}}")
+    } else {
+        format!("({condition}) {{\n    \n}}")
+    }
 }
 
 fn test_statement_filter_text(statement: &str) -> &'static str {
@@ -2969,6 +3012,20 @@ fn method_arrow_fragment(prefix: &str) -> Option<&str> {
 fn use_completion_fragment(prefix: &str) -> Option<&str> {
     let use_index = last_keyword_index(prefix, "use ")?;
     let fragment = &prefix[use_index + 4..];
+    module_fragment(fragment)
+}
+
+fn require_completion_fragment(prefix: &str) -> Option<&str> {
+    let require_index = last_keyword_index(prefix, "require ")?;
+    let fragment = &prefix[require_index + 8..];
+    module_fragment(fragment)
+}
+
+fn module_statement_fragment(prefix: &str) -> Option<&str> {
+    use_completion_fragment(prefix).or_else(|| require_completion_fragment(prefix))
+}
+
+fn module_fragment(fragment: &str) -> Option<&str> {
     fragment.chars().all(is_module_fragment_char).then_some(fragment)
 }
 
@@ -3098,6 +3155,32 @@ mod tests {
         assert_eq!(range.end.line, 0);
         assert_eq!(range.end.character, 8);
         assert!(completions.items.iter().all(|item| item.insert_text != "Other::Tool;"));
+        Ok(())
+    }
+
+    #[test]
+    fn require_namespace_suggests_available_module_from_environment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let environment = InlineCompletionEnvironment {
+            available_modules: vec!["My::App".to_string(), "Other::Tool".to_string()],
+        };
+        let completions =
+            provider.get_inline_completions_with_environment("require My::", 0, 12, &environment);
+
+        let module = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "My::App;")
+            .ok_or("expected require module inline completion")?;
+        assert_eq!(module.filter_text.as_deref(), Some("My::App"));
+        let range =
+            module.range.as_ref().ok_or("require completion should replace typed prefix")?;
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 8);
+        assert_eq!(range.end.line, 0);
+        assert_eq!(range.end.character, 12);
+        assert!(completions.items.iter().all(|item| item.insert_text != "strict;"));
         Ok(())
     }
 
@@ -3549,6 +3632,34 @@ mod tests {
             completions.items.first().map(|item| item.insert_text.as_str()),
             Some("$status_ok;")
         );
+    }
+
+    #[test]
+    fn guard_condition_does_not_emit_condition_expression_block()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $ready = is_ready();\n    return if ";
+        let character = "    return if ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        // The guard completion ($ready;) must be present.
+        let guard_present = completions.items.iter().any(|item| item.insert_text == "$ready;");
+        if !guard_present {
+            return Err("expected guard completion '$ready;' to be present".into());
+        }
+
+        // No item should contain a block opener — guard contexts do not emit condition blocks.
+        let block_item = completions.items.iter().find(|item| item.insert_text.contains("{\n"));
+        if let Some(offender) = block_item {
+            return Err(format!(
+                "guard context must not emit a condition-expression block, \
+                 but found insert_text={:?}",
+                offender.insert_text
+            )
+            .into());
+        }
+
+        Ok(())
     }
 
     #[test]
@@ -4462,6 +4573,41 @@ mod tests {
         let provider = InlineCompletionProvider::new();
         let completions = provider.get_inline_completions("sufor ", 0, 6);
         assert!(completions.items.iter().all(|i| !i.insert_text.contains("(@items)")));
+    }
+
+    #[test]
+    fn if_condition_uses_visible_boolean_scalar() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $is_ready = check_ready();\nif ";
+        let completions = provider.get_inline_completions(source, 1, 3);
+        let first = completions.items.first().ok_or("expected if condition completion")?;
+
+        assert_eq!(first.insert_text, "($is_ready) {\n    \n}");
+        Ok(())
+    }
+
+    #[test]
+    fn while_open_paren_condition_closes_existing_paren() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $ok = keep_going();\nwhile (";
+        let completions = provider.get_inline_completions(source, 1, 7);
+        let first = completions.items.first().ok_or("expected while condition completion")?;
+
+        assert_eq!(first.insert_text, "$ok) {\n    \n}");
+        Ok(())
+    }
+
+    #[test]
+    fn control_condition_without_visible_scalar_stays_silent() {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("if ", 0, 3);
+
+        assert!(
+            completions.items.is_empty(),
+            "control conditions should not invent placeholder variables: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
     }
 
     #[test]
