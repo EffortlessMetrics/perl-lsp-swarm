@@ -83,8 +83,8 @@ pub fn selection_chain(
     offset: usize,
     to_pos16: &impl Fn(usize) -> (u32, u32),
 ) -> Value {
-    // Find leaf node at offset using the comprehensive traversal
-    let leaf = find_deepest_node_at_offset(ast, offset).unwrap_or(ast);
+    // Find leaf node at offset using the canonical half-open [start, end) traversal.
+    let leaf = ast.find_deepest_containing_offset(offset).unwrap_or(ast);
     let mut node_lookup = FxHashMap::default();
     build_node_lookup(ast, &mut node_lookup);
 
@@ -174,30 +174,6 @@ pub fn selection_chain(
 // ---------------------------------------------------------------------------
 // Tree traversal helpers (using Node::children() for full coverage)
 // ---------------------------------------------------------------------------
-
-/// Find the deepest AST node whose span contains `offset`.
-///
-/// Uses `Node::children()` which covers all `NodeKind` variants, unlike the
-/// legacy `get_node_children` helper that only handles a subset.
-///
-/// **Note**: Some parser node locations do not encompass their initializers
-/// (e.g. `VariableDeclaration` spans only `my $var` but its `String` child
-/// can extend beyond).  We therefore always recurse into children even when
-/// the parent span does not strictly contain the offset.
-fn find_deepest_node_at_offset(node: &Node, offset: usize) -> Option<&Node> {
-    // Always check children first -- a child might contain the offset even
-    // when the parent's recorded span does not fully encompass it.
-    for child in node.children() {
-        if let Some(found) = find_deepest_node_at_offset(child, offset) {
-            return Some(found);
-        }
-    }
-    // Only claim *this* node if the offset is within its own span.
-    if offset >= node.location.start && offset <= node.location.end {
-        return Some(node);
-    }
-    None
-}
 
 fn build_node_lookup<'a>(node: &'a Node, map: &mut FxHashMap<*const Node, &'a Node>) {
     map.insert(node as *const Node, node);

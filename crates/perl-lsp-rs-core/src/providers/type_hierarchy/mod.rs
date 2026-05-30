@@ -210,11 +210,9 @@ impl TypeHierarchyProvider {
                 }
             }
             _ => {
-                // Recurse into other nodes
-                if let Some(children) = self.get_children(node) {
-                    for child in children {
-                        self.index_hierarchy_recursive(child, index, current_package);
-                    }
+                // Recurse into other nodes using the canonical children() iterator.
+                for child in node.children() {
+                    self.index_hierarchy_recursive(child, index, current_package);
                 }
             }
         }
@@ -502,44 +500,8 @@ impl TypeHierarchyProvider {
     // Helper methods
 
     fn find_node_at_offset<'a>(&self, node: &'a Node, offset: usize) -> Option<&'a Node> {
-        if offset >= node.location.start && offset < node.location.end {
-            // First check children
-            if let Some(children) = self.get_children(node) {
-                for child in children {
-                    if let Some(found) = self.find_node_at_offset(child, offset) {
-                        return Some(found);
-                    }
-                }
-            }
-            // Return this node if no child contains the offset
-            Some(node)
-        } else {
-            None
-        }
-    }
-
-    fn get_children<'a>(&self, node: &'a Node) -> Option<Vec<&'a Node>> {
-        match &node.kind {
-            NodeKind::Program { statements } => Some(statements.iter().collect()),
-            NodeKind::Block { statements } => Some(statements.iter().collect()),
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
-                let mut children = vec![condition.as_ref(), then_branch.as_ref()];
-                for branch in elsif_branches {
-                    children.push(&branch.0);
-                    children.push(&branch.1);
-                }
-                if let Some(else_b) = else_branch {
-                    children.push(else_b.as_ref());
-                }
-                Some(children)
-            }
-            NodeKind::Package { block, .. } => block.as_ref().map(|b| vec![b.as_ref()]),
-            NodeKind::Class { body, .. } => Some(vec![body.as_ref()]),
-            NodeKind::Subroutine { body, .. } => Some(vec![body.as_ref()]),
-            NodeKind::Assignment { lhs, rhs, .. } => Some(vec![lhs.as_ref(), rhs.as_ref()]),
-            NodeKind::ExpressionStatement { expression } => Some(vec![expression.as_ref()]),
-            _ => None,
-        }
+        // Delegate to canonical half-open [start, end) lookup — covers all NodeKind variants.
+        node.find_deepest_containing_offset(offset)
     }
 
     fn is_package_identifier(&self, _ast: &Node, _offset: usize, _name: &str) -> bool {

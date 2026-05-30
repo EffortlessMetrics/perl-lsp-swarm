@@ -108,20 +108,8 @@ pub fn find_references_single_file(ast: &Node, offset: usize) -> Option<Vec<(usi
 }
 
 fn find_node_at_offset(node: &Node, offset: usize) -> Option<&Node> {
-    if offset < node.location.start || offset > node.location.end {
-        return None;
-    }
-
-    // Check children first for more specific match
-    let children = get_node_children(node);
-    for child in children {
-        if let Some(found) = find_node_at_offset(child, offset) {
-            return Some(found);
-        }
-    }
-
-    // If no child contains the offset, return this node
-    Some(node)
+    // Delegate to the canonical half-open [start, end) offset lookup.
+    node.find_deepest_containing_offset(offset)
 }
 
 fn get_node_children(node: &Node) -> Vec<&Node> {

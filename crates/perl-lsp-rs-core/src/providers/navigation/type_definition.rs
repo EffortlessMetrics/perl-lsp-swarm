@@ -263,13 +263,13 @@ impl TypeDefinitionProvider {
             _ => {}
         }
 
-        let mut found = None;
-        self.visit_children(node, |child| {
-            if found.is_none() {
-                found = self.extract_has_type_constraint_name(child, target_start, target_end);
+        // Recurse into children using canonical children() iterator.
+        for child in node.children() {
+            if let Some(result) = self.extract_has_type_constraint_name(child, target_start, target_end) {
+                return Some(result);
             }
-        });
-        found
+        }
+        None
     }
 
     /// Search a node for the `isa => Type` value that encloses the cursor.
@@ -312,17 +312,13 @@ impl TypeDefinitionProvider {
             _ => {}
         }
 
-        let mut found = None;
-        self.visit_children(node, |child| {
-            if found.is_none() {
-                found = self.extract_has_type_constraint_name_from_node(
-                    child,
-                    target_start,
-                    target_end,
-                );
+        // Recurse into children using canonical children() iterator.
+        for child in node.children() {
+            if let Some(result) = self.extract_has_type_constraint_name_from_node(child, target_start, target_end) {
+                return Some(result);
             }
-        });
-        found
+        }
+        None
     }
 
     /// Return `true` when a function call looks like a type declaration.
@@ -467,10 +463,10 @@ impl TypeDefinitionProvider {
             _ => {}
         }
 
-        // Recurse into children based on node type
-        self.visit_children(node, |child| {
+        // Recurse into children using canonical children() iterator.
+        for child in node.children() {
             self.find_package_in_node(child, package_name, uri, source_text, locations);
-        });
+        }
     }
 
     /// Recursively find type declarations by matching the declared name.
@@ -492,9 +488,10 @@ impl TypeDefinitionProvider {
             _ => {}
         }
 
-        self.visit_children(node, |child| {
+        // Recurse into children using canonical children() iterator.
+        for child in node.children() {
             self.find_custom_type_in_node(child, type_name, uri, source_text, locations);
-        });
+        }
     }
 
     /// Convert the current node range into an LSP `LocationLink` and push it.
@@ -562,95 +559,6 @@ impl TypeDefinitionProvider {
         }
     }
 
-    /// Helper to visit children of a node
-    #[cfg(feature = "lsp-compat")]
-    fn visit_children<F>(&self, node: &Node, mut f: F)
-    where
-        F: FnMut(&Node),
-    {
-        match &node.kind {
-            NodeKind::Program { statements } | NodeKind::Block { statements } => {
-                for stmt in statements {
-                    f(stmt);
-                }
-            }
-            NodeKind::Package { block: Some(b), .. } => {
-                f(b);
-            }
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                f(variable);
-                if let Some(init) = initializer {
-                    f(init);
-                }
-            }
-            NodeKind::Assignment { lhs, rhs, .. } => {
-                f(lhs);
-                f(rhs);
-            }
-            NodeKind::Binary { left, right, .. } => {
-                f(left);
-                f(right);
-            }
-            NodeKind::MethodCall { object, args, .. } => {
-                f(object);
-                for arg in args {
-                    f(arg);
-                }
-            }
-            NodeKind::FunctionCall { args, .. } => {
-                for arg in args {
-                    f(arg);
-                }
-            }
-            NodeKind::HashLiteral { pairs } => {
-                for (key, value) in pairs {
-                    f(key);
-                    f(value);
-                }
-            }
-            NodeKind::Subroutine { body, .. } => {
-                f(body);
-            }
-            NodeKind::ExpressionStatement { expression } => {
-                f(expression);
-            }
-            NodeKind::If { condition, then_branch, else_branch, .. } => {
-                f(condition);
-                f(then_branch);
-                if let Some(else_b) = else_branch {
-                    f(else_b);
-                }
-            }
-            NodeKind::While { condition, body, .. } => {
-                f(condition);
-                f(body);
-            }
-            NodeKind::For { init, condition, update, body, .. } => {
-                if let Some(i) = init {
-                    f(i);
-                }
-                if let Some(c) = condition {
-                    f(c);
-                }
-                if let Some(upd) = update {
-                    f(upd);
-                }
-                f(body);
-            }
-            NodeKind::Foreach { variable, list, body, continue_block } => {
-                f(variable);
-                f(list);
-                f(body);
-                if let Some(cb) = continue_block {
-                    f(cb);
-                }
-            }
-            _ => {
-                // Other node types don't have children we need to traverse
-            }
-        }
-    }
-
     /// Find node at the given position
     #[cfg(feature = "lsp-compat")]
     fn find_node_at_position(
@@ -671,32 +579,15 @@ impl TypeDefinitionProvider {
         self.find_node_at_offset(node, offset)
     }
 
-    /// Find the most specific node containing the given offset
+    /// Find the most specific node containing the given offset.
+    ///
+    /// Thin clone wrapper over the canonical `Node::find_deepest_containing_offset`
+    /// so that the return type stays `Option<Node>` (cloned), keeping the 4 existing
+    /// tests at lines ~750/763/776/789 unmodified.  Uses half-open `[start, end)`
+    /// semantics matching the canonical API.
     #[cfg(feature = "lsp-compat")]
     fn find_node_at_offset(&self, node: &Node, offset: usize) -> Option<Node> {
-        // Check if offset is within this node's range
-        if offset < node.location.start || offset > node.location.end {
-            return None;
-        }
-
-        // Check children first for more specific match
-        let mut best_match = None;
-        self.visit_children(node, |child| {
-            if let Some(found) = self.find_node_at_offset(child, offset) {
-                // Prefer the smallest (most specific) node
-                if best_match.is_none()
-                    || found.location.end - found.location.start
-                        < best_match
-                            .as_ref()
-                            .map_or(usize::MAX, |n: &Node| n.location.end - n.location.start)
-                {
-                    best_match = Some(found);
-                }
-            }
-        });
-
-        // If we found a child, return it; otherwise return this node
-        best_match.or_else(|| Some(node.clone()))
+        node.find_deepest_containing_offset(offset).cloned()
     }
 }
 

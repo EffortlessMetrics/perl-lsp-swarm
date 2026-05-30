@@ -1399,7 +1399,9 @@ impl Node {
 
     /// Returns `true` when this node's source span contains `offset`.
     ///
-    /// The start position is inclusive and the end position is exclusive.
+    /// Uses half-open interval semantics: start is inclusive, end is exclusive.
+    /// This matches the canonical LSP contract — a cursor at position `end` is
+    /// *after* the last character of the node, not inside it.
     #[inline]
     pub fn contains_offset(&self, offset: usize) -> bool {
         self.location.start <= offset && offset < self.location.end

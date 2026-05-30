@@ -305,7 +305,8 @@ impl<'a> DeclarationProvider<'a> {
             map.insert(node as *const _, p);
         }
 
-        for child in Self::get_children_static(node) {
+        // Use canonical children() which covers all NodeKind variants via for_each_child().
+        for child in node.children() {
             // SAFETY: `child` is a child reference of `node`, both living in the same
             // `Arc<Node>` allocation.  The same invariant from above applies.
             Self::build_parent_map(child, map, Some(node as *const _));
@@ -323,8 +324,8 @@ impl<'a> DeclarationProvider<'a> {
             return None;
         }
 
-        // Find the node at the cursor position
-        let node = self.find_node_at_offset(&self.ast, offset)?;
+        // Find the node at the cursor position using canonical half-open [start, end) lookup.
+        let node = self.ast.find_deepest_containing_offset(offset)?;
 
         // Check what kind of node we're on
         match &node.kind {
@@ -390,7 +391,7 @@ impl<'a> DeclarationProvider<'a> {
             }
 
             // Check siblings before this node in the current scope
-            for child in self.get_children(parent) {
+            for child in parent.children() {
                 // Stop when we reach or pass the usage node
                 if child.location.start >= usage.location.start {
                     break;
@@ -636,7 +637,7 @@ impl<'a> DeclarationProvider<'a> {
             labels.push(node);
         }
 
-        for child in self.get_children(node) {
+        for child in node.children() {
             self.collect_label_declarations(child, label_name, labels);
         }
     }
@@ -778,7 +779,7 @@ impl<'a> DeclarationProvider<'a> {
             };
 
             // Check siblings before this node for package declarations
-            for child in self.get_children(parent) {
+            for child in parent.children() {
                 if child.location.start >= node.location.start {
                     break;
                 }
@@ -811,19 +812,6 @@ impl<'a> DeclarationProvider<'a> {
 
     // Helper methods
 
-    fn find_node_at_offset<'b>(&'b self, node: &'b Node, offset: usize) -> Option<&'b Node> {
-        if offset >= node.location.start && offset <= node.location.end {
-            // Check children first for more specific match
-            for child in self.get_children(node) {
-                if let Some(found) = self.find_node_at_offset(child, offset) {
-                    return Some(found);
-                }
-            }
-            return Some(node);
-        }
-        None
-    }
-
     fn collect_subroutine_declarations<'b>(
         &'b self,
         node: &'b Node,
@@ -838,7 +826,7 @@ impl<'a> DeclarationProvider<'a> {
             }
         }
 
-        for child in self.get_children(node) {
+        for child in node.children() {
             self.collect_subroutine_declarations(child, sub_name, subs);
         }
     }
@@ -861,7 +849,7 @@ impl<'a> DeclarationProvider<'a> {
             }
         }
 
-        for child in self.get_children(node) {
+        for child in node.children() {
             self.collect_package_declarations(child, pkg_name, packages);
         }
     }
@@ -917,7 +905,7 @@ impl<'a> DeclarationProvider<'a> {
             }
         }
 
-        for child in self.get_children(node) {
+        for child in node.children() {
             self.collect_constant_declarations(child, const_name, constants);
         }
     }
@@ -1169,9 +1157,6 @@ impl<'a> DeclarationProvider<'a> {
         self.get_constant_name_range(decl)
     }
 
-    fn get_children<'b>(&self, node: &'b Node) -> Vec<&'b Node> {
-        Self::get_children_static(node)
-    }
 
     /// Build a lookup map from raw node pointers back to safe references.
     ///
@@ -1192,87 +1177,12 @@ impl<'a> DeclarationProvider<'a> {
         // side of this pair — it is the only route through which the pointer
         // is ever turned back into usable data.
         map.insert(node as *const Node, node);
-        for child in Self::get_children_static(node) {
+        // Use canonical children() which covers all NodeKind variants via for_each_child().
+        for child in node.children() {
             Self::build_node_lookup(child, map);
         }
     }
 
-    fn get_children_static(node: &Node) -> Vec<&Node> {
-        match &node.kind {
-            NodeKind::Program { statements } => statements.iter().collect(),
-            NodeKind::Block { statements } => statements.iter().collect(),
-            NodeKind::If { condition, then_branch, else_branch, .. } => {
-                let mut children = vec![condition.as_ref(), then_branch.as_ref()];
-                if let Some(else_b) = else_branch {
-                    children.push(else_b.as_ref());
-                }
-                children
-            }
-            NodeKind::Binary { left, right, .. } => vec![left.as_ref(), right.as_ref()],
-            NodeKind::Unary { operand, .. } => vec![operand.as_ref()],
-            NodeKind::Return { value } => {
-                if let Some(value) = value {
-                    vec![value.as_ref()]
-                } else {
-                    vec![]
-                }
-            }
-            NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                let mut children = vec![variable.as_ref()];
-                if let Some(init) = initializer {
-                    children.push(init.as_ref());
-                }
-                children
-            }
-            NodeKind::Method { signature, body, .. } => {
-                let mut children = vec![body.as_ref()];
-                if let Some(sig) = signature {
-                    children.push(sig.as_ref());
-                }
-                children
-            }
-            NodeKind::Subroutine { signature, body, .. } => {
-                let mut children = vec![body.as_ref()];
-                if let Some(sig) = signature {
-                    children.push(sig.as_ref());
-                }
-                children
-            }
-            NodeKind::FunctionCall { args, .. } => args.iter().collect(),
-            NodeKind::MethodCall { object, args, .. } => {
-                let mut children = vec![object.as_ref()];
-                children.extend(args.iter());
-                children
-            }
-            NodeKind::IndirectCall { object, args, .. } => {
-                let mut children = vec![object.as_ref()];
-                children.extend(args.iter());
-                children
-            }
-            NodeKind::While { condition, body, .. } => {
-                vec![condition.as_ref(), body.as_ref()]
-            }
-            NodeKind::For { init, condition, update, body, .. } => {
-                let mut children = Vec::new();
-                if let Some(i) = init {
-                    children.push(i.as_ref());
-                }
-                if let Some(c) = condition {
-                    children.push(c.as_ref());
-                }
-                if let Some(u) = update {
-                    children.push(u.as_ref());
-                }
-                children.push(body.as_ref());
-                children
-            }
-            NodeKind::Foreach { variable, list, body, .. } => {
-                vec![variable.as_ref(), list.as_ref(), body.as_ref()]
-            }
-            NodeKind::ExpressionStatement { expression } => vec![expression.as_ref()],
-            _ => vec![],
-        }
-    }
 
     /// Extracts the source code text for a given AST node.
     ///
@@ -2100,20 +2010,8 @@ pub fn current_package_at(ast: &Node, offset: usize) -> &str {
 /// }
 /// ```
 pub fn find_node_at_offset(node: &Node, offset: usize) -> Option<&Node> {
-    if offset < node.location.start || offset > node.location.end {
-        return None;
-    }
-
-    // Check children first for more specific match
-    let children = get_node_children(node);
-    for child in children {
-        if let Some(found) = find_node_at_offset(child, offset) {
-            return Some(found);
-        }
-    }
-
-    // If no child contains the offset, return this node
-    Some(node)
+    // Delegate to canonical half-open [start, end) offset lookup.
+    node.find_deepest_containing_offset(offset)
 }
 
 /// Returns direct child nodes for a given AST node.
