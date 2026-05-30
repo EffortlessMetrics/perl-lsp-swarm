@@ -6,9 +6,9 @@
 
 use std::error::Error;
 
-use lsp_types::Range;
+use lsp_types::{Position, Range};
 use perl_lsp_rs_core::providers::inline_completion::{
-    InlineCompletionList, InlineCompletionProvider,
+    InlineCompletionItem, InlineCompletionList, InlineCompletionProvider,
 };
 use perl_parser_core::position::{offset_to_utf16_line_col, utf16_line_col_to_offset};
 
@@ -259,6 +259,26 @@ fn inline_completion_fixture_corpus_applies_accepted_edits_without_parse_regress
     Ok(())
 }
 
+#[test]
+fn inline_completion_fixture_corpus_rejects_invalid_accepted_edit_ranges() -> TestResult {
+    let scenario = InlineCompletionScenario::from_fixture("use str<<CURSOR>>\n")?;
+    let item = InlineCompletionItem {
+        insert_text: "strict;".to_string(),
+        filter_text: Some("strict".to_string()),
+        range: Some(Range { start: Position::new(0, 4), end: Position::new(0, 1) }),
+        command: None,
+    };
+
+    let Err(error) = apply_inline_completion_item(&scenario, &item) else {
+        return Err("invalid replacement range should be rejected".into());
+    };
+    if !error.contains("invalid replacement range 4..1") {
+        return Err(format!("unexpected invalid-range error: {error}").into());
+    }
+
+    Ok(())
+}
+
 fn assert_suggestions(fixture: SuggestionFixture) -> TestResult {
     let scenario = InlineCompletionScenario::from_fixture(fixture.source)?;
     let completions = scenario.completions();
@@ -376,7 +396,7 @@ fn completion_texts(completions: &InlineCompletionList) -> Vec<&str> {
 
 fn apply_inline_completion_item(
     scenario: &InlineCompletionScenario,
-    item: &perl_lsp_rs_core::providers::inline_completion::InlineCompletionItem,
+    item: &InlineCompletionItem,
 ) -> Result<String, String> {
     let cursor =
         utf16_line_col_to_offset(scenario.text.as_str(), scenario.line, scenario.character);
@@ -398,6 +418,9 @@ fn apply_inline_completion_item(
         })
         .transpose()?
         .unwrap_or((cursor, cursor));
+    if end < start {
+        return Err(format!("invalid replacement range {start}..{end}"));
+    }
 
     let mut accepted =
         String::with_capacity(scenario.text.len() - (end - start) + item.insert_text.len());
