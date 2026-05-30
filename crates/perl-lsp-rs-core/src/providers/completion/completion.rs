@@ -699,8 +699,9 @@ impl CompletionProvider {
             let Some(c) = first_char else {
                 return true; // cursor right after `require ` — valid module context
             };
-            // Block digit (version numbers), quote (string-literal paths), path/sigil chars
-            !matches!(c, '0'..='9' | '\'' | '"' | '`' | '.' | '/' | '\\')
+            // Block digit (version numbers) and path/sigil chars.
+            // Quoted forms like `require "Foo/` are allowed so completion fires inside them.
+            !matches!(c, '0'..='9' | '`' | '.' | '/' | '\\')
         } else {
             false
         }

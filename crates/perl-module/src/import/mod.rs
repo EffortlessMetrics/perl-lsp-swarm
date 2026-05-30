@@ -146,6 +146,23 @@ impl<'a> ModuleImportHead<'a> {
     pub fn require_form(&self) -> Option<RequireForm> {
         self.require_form
     }
+
+    /// Returns the module name for resolution purposes.
+    ///
+    /// For `require "Foo/Bar.pm"` (FilePath form with `.pm` extension), converts
+    /// the file-path token to canonical module-name format (`Foo::Bar`).
+    ///
+    /// All other forms (`.pl`, extensionless, bare `ModuleName`, `use` statements)
+    /// return the token unchanged. Does NOT mutate `token`, `token_start`, or
+    /// `token_end` — the original offsets and raw token remain valid.
+    #[must_use]
+    pub fn token_as_module_name(&self) -> String {
+        if self.require_form == Some(RequireForm::FilePath) && self.token.ends_with(".pm") {
+            crate::path::module_path_to_name(self.token)
+        } else {
+            self.token.to_owned()
+        }
+    }
 }
 
 /// Parse the leading import token of a single Perl source line.
