@@ -18,7 +18,7 @@ use crate::workspace::workspace_index::FileFactShard;
 use perl_position_tracking::WireRange;
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EdgeFact, EntityFact, FileId, ImportSpec, OccurrenceFact,
-    Provenance, UseLibFact,
+    Provenance,
 };
 use perl_symbol::surface::facts::{SymbolDeclSemanticFacts, SymbolRefSemanticFacts};
 use std::collections::hash_map::DefaultHasher;
@@ -37,30 +37,26 @@ use std::hash::{Hash, Hasher};
 /// * `decl_facts` — Declaration facts from `symbol_decls_to_semantic_facts`.
 /// * `ref_facts` — Reference facts from `symbol_refs_to_semantic_facts`.
 /// * `imports` — Import specifications extracted from the file.
-/// * `use_lib_facts` — `use lib`/`no lib` path facts extracted from the file.
-///   These are stored by the caller in [`ImportExportIndex`] via
-///   `add_file_use_lib`; the parameter is accepted here so that call sites
-///   are forced to extract and pass use-lib facts alongside the other
-///   semantic products.
 /// * `dynamic_boundaries` — Dynamic boundary occurrences (eval, symbolic deref, etc.).
 ///
 /// # Returns
 ///
 /// A fully populated `FileFactShard` with real byte spans, `ExactAst`
 /// provenance, and per-category hashes.
+///
+/// # Note on `use lib` facts
+///
+/// `use lib`/`no lib` path facts are stored in [`ImportExportIndex`] via
+/// `add_file_use_lib` at the indexing call site (in `WorkspaceIndex::index_file`),
+/// not in the returned shard.  Query via `SemanticQueries::use_lib_paths`.
 pub fn build_canonical_fact_shard(
     uri: &str,
     content_hash: u64,
     decl_facts: &SymbolDeclSemanticFacts,
     ref_facts: &SymbolRefSemanticFacts,
     imports: &[ImportSpec],
-    use_lib_facts: &[UseLibFact],
     dynamic_boundaries: &[OccurrenceFact],
 ) -> FileFactShard {
-    // use_lib_facts are stored by the caller in ImportExportIndex.
-    // Accept the parameter here so all call sites pass use-lib facts alongside
-    // other semantic products, establishing a consistent extraction pipeline.
-    let _ = use_lib_facts;
     let file_id = hash_uri_to_file_id(uri);
 
     // ── Merge anchors ──
@@ -287,7 +283,6 @@ mod tests {
             &sample_ref_facts(),
             &[],
             &[],
-            &[],
         );
 
         // All anchors from the adapters carry ExactAst provenance.
@@ -317,7 +312,6 @@ mod tests {
             &sample_ref_facts(),
             &[],
             &[],
-            &[],
         );
 
         // Declaration anchor has real byte spans (10..20).
@@ -342,7 +336,6 @@ mod tests {
             12345,
             &sample_decl_facts(),
             &sample_ref_facts(),
-            &[],
             &[],
             &[],
         );
@@ -371,7 +364,6 @@ mod tests {
             12345,
             &sample_decl_facts(),
             &sample_ref_facts(),
-            &[],
             &[],
             &[],
         );
@@ -407,7 +399,6 @@ mod tests {
             &sample_decl_facts(),
             &sample_ref_facts(),
             &[],
-            &[],
             std::slice::from_ref(&boundary),
         );
 
@@ -438,7 +429,6 @@ mod tests {
             &sample_ref_facts(),
             &[import],
             &[],
-            &[],
         );
 
         // Should have decl anchors + ref anchors + 1 import anchor.
@@ -460,24 +450,10 @@ mod tests {
         let decl_facts = sample_decl_facts();
         let ref_facts = sample_ref_facts();
 
-        let shard1 = build_canonical_fact_shard(
-            "file:///test.pl",
-            12345,
-            &decl_facts,
-            &ref_facts,
-            &[],
-            &[],
-            &[],
-        );
-        let shard2 = build_canonical_fact_shard(
-            "file:///test.pl",
-            12345,
-            &decl_facts,
-            &ref_facts,
-            &[],
-            &[],
-            &[],
-        );
+        let shard1 =
+            build_canonical_fact_shard("file:///test.pl", 12345, &decl_facts, &ref_facts, &[], &[]);
+        let shard2 =
+            build_canonical_fact_shard("file:///test.pl", 12345, &decl_facts, &ref_facts, &[], &[]);
 
         assert_eq!(shard1.anchors_hash, shard2.anchors_hash);
         assert_eq!(shard1.entities_hash, shard2.entities_hash);
@@ -494,7 +470,6 @@ mod tests {
             12345,
             &sample_decl_facts(),
             &sample_ref_facts(),
-            &[],
             &[],
             &[],
         );
@@ -806,15 +781,8 @@ mod tests {
             }],
         };
 
-        let shard = build_canonical_fact_shard(
-            "file:///test.pl",
-            12345,
-            &decl_facts,
-            &ref_facts,
-            &[],
-            &[],
-            &[],
-        );
+        let shard =
+            build_canonical_fact_shard("file:///test.pl", 12345, &decl_facts, &ref_facts, &[], &[]);
 
         assert_eq!(shard.edges.len(), 2);
         assert!(shard.edges.iter().any(|e| e.kind == EdgeKind::Defines));

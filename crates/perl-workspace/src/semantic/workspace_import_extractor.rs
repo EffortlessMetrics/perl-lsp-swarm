@@ -665,11 +665,7 @@ fn looks_like_constant_name(s: &str) -> bool {
 }
 
 fn confidence_for_symbols(symbols: &ImportSymbols) -> Confidence {
-    if matches!(symbols, ImportSymbols::Dynamic) {
-        Confidence::Low
-    } else {
-        Confidence::High
-    }
+    if matches!(symbols, ImportSymbols::Dynamic) { Confidence::Low } else { Confidence::High }
 }
 
 #[cfg(test)]
@@ -719,8 +715,8 @@ mod tests {
     }
 
     #[test]
-    fn standalone_class_dynamic_import_produces_manual_import(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn standalone_class_dynamic_import_produces_manual_import()
+    -> Result<(), Box<dyn std::error::Error>> {
         let specs = parse_and_extract("Foo->import(@names);");
         let spec = specs
             .iter()
@@ -733,8 +729,8 @@ mod tests {
     }
 
     #[test]
-    fn require_then_import_pair_produces_require_then_import(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn require_then_import_pair_produces_require_then_import()
+    -> Result<(), Box<dyn std::error::Error>> {
         let code = "require Foo::Bar;\nFoo::Bar->import(qw(alpha beta));";
         let specs = parse_and_extract(code);
         let spec =
@@ -771,8 +767,8 @@ mod tests {
     }
 
     #[test]
-    fn standalone_explicit_class_import_not_emitted_as_dynamic(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn standalone_explicit_class_import_not_emitted_as_dynamic()
+    -> Result<(), Box<dyn std::error::Error>> {
         // `Foo->import('bar')` — static arg list should NOT produce a Dynamic spec.
         let specs = parse_and_extract("Foo->import('bar');");
         let dynamic_specs: Vec<_> =

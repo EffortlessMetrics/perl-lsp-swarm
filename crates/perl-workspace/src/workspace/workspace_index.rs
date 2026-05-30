@@ -1730,6 +1730,8 @@ impl WorkspaceIndex {
         let file_id = Self::hash_uri_to_file_id(&uri_str);
         let import_specs =
             crate::semantic::workspace_import_extractor::extract_import_specs(&ast, file_id);
+        let use_lib_facts =
+            crate::semantic::workspace_import_extractor::extract_use_lib_facts(&ast, file_id);
 
         // Update the index, refresh the global symbol cache, and replace this file's
         // contribution in the global reference index.
@@ -1766,14 +1768,17 @@ impl WorkspaceIndex {
             self.replace_fact_shard_incremental(&key, fact_shard);
         }
 
-        // Update the import/export index with the freshly extracted import specs.
-        // Stale entries for this URI are removed first (incremental re-indexing).
-        // This is done after the main write lock block to follow the established
-        // lock ordering (shards → reference_index → import_export_index).
+        // Update the import/export index with the freshly extracted import specs
+        // and use-lib facts.  Stale entries for this URI are removed first
+        // (incremental re-indexing).  This is done after the main write lock
+        // block to follow the established lock ordering
+        // (shards → reference_index → import_export_index).
         {
             let mut ie_idx = self.semantic_import_export_index.write();
             ie_idx.remove_file_imports(&uri_str);
             ie_idx.add_file_imports(&uri_str, file_id, import_specs);
+            ie_idx.remove_file_use_lib(&uri_str);
+            ie_idx.add_file_use_lib(&uri_str, file_id, use_lib_facts);
         }
 
         Ok(())
@@ -1815,6 +1820,7 @@ impl WorkspaceIndex {
                 let mut ie_idx = self.semantic_import_export_index.write();
                 ie_idx.remove_file_imports(&uri_str);
                 ie_idx.remove_module_exports(&uri_str);
+                ie_idx.remove_file_use_lib(&uri_str);
             }
 
             // Incrementally remove symbols and re-insert any shadowed names.
@@ -2522,7 +2528,6 @@ impl WorkspaceIndex {
             content_hash,
             &decl_facts,
             &ref_facts,
-            &[],
             &[],
             &dynamic_boundaries,
         );
@@ -3908,13 +3913,17 @@ impl IndexVisitor {
                 if method == "import" {
                     if let NodeKind::Identifier { name: module_name } = &object.kind {
                         for symbol in extract_manual_import_symbols(args) {
-                            file_index.references.entry(symbol).or_default().push(SymbolReference {
-                                uri: self.uri.clone(),
-                                range: self.node_to_range(node),
-                                kind: ReferenceKind::Import,
-                            });
+                            file_index.references.entry(symbol).or_default().push(
+                                SymbolReference {
+                                    uri: self.uri.clone(),
+                                    range: self.node_to_range(node),
+                                    kind: ReferenceKind::Import,
+                                },
+                            );
                         }
-                        file_index.dependencies.insert(normalize_dependency_module_name(module_name));
+                        file_index
+                            .dependencies
+                            .insert(normalize_dependency_module_name(module_name));
                     }
                 }
 
