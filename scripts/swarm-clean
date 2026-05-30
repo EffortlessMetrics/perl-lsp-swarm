@@ -171,9 +171,7 @@ COUNT_DIRTY=0
 COUNT_AMBIGUOUS=0
 COUNT_REMOVED=0
 
-# Current worktree path — never classify ourselves for deletion.
-CURRENT_WT="$(git rev-parse --absolute-git-dir 2>/dev/null | sed 's|/\.git.*||' || echo "")"
-# Also get the current branch.
+# Current branch — never classify ourselves for deletion.
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 
 printf "%-55s %-30s %-15s %s\n" "WORKTREE" "BRANCH" "BUCKET" "ACTION"
