@@ -240,13 +240,20 @@ impl AstBreakpointValidator {
 
         match &node.kind {
             NodeKind::Program { statements } => {
-                // Get all nodes that overlap with the line range
+                // Get all breakpoint-eligible nodes that overlap with the line range.
+                // `safe_for_breakpoint()` is a variant-level filter that excludes
+                // DataSection (__DATA__/__END__ headers), Format declarations, and
+                // recovery/error nodes — none of which a debugger can stop on.
                 let nodes_in_range: Vec<_> = statements
                     .iter()
-                    .filter(|s| s.location.start < end && s.location.end > start)
+                    .filter(|s| {
+                        s.location.start < end
+                            && s.location.end > start
+                            && s.kind.safe_for_breakpoint()
+                    })
                     .collect();
 
-                // If no AST nodes in range, it's a blank/comment line
+                // If no breakpoint-eligible AST nodes in range, it's a blank/comment line
                 nodes_in_range.is_empty()
             }
             // Any other node type means there's executable code

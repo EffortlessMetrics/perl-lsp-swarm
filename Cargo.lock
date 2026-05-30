@@ -1518,6 +1518,7 @@ dependencies = [
  "criterion",
  "nix",
  "once_cell",
+ "perl-ast",
  "perl-lexer",
  "perl-lsp-rs-core",
  "perl-module",

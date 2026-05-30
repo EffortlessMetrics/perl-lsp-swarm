@@ -51,6 +51,7 @@ tracing.workspace = true
 clap = { workspace = true }
 
 # Inlined satellite dependencies (Wave H collapse)
+perl-ast = { workspace = true }
 perl-parser = { workspace = true }
 perl-parser-core = { workspace = true }
 thiserror.workspace = true
@@ -227,6 +228,11 @@ path = "tests/breakpoint_edge_case_tests.rs"
 [[test]]
 name = "breakpoint_extended_unit_tests"
 path = "tests/breakpoint_extended_unit_tests.rs"
+
+[[test]]
+name = "breakpoint_classification_alignment_tests"
+path = "tests/breakpoint_classification_alignment_tests.rs"
+# AC:#914 Alignment: validator decisions agree with NodeKind::safe_for_breakpoint()
 
 [[test]]
 name = "eval_extended_unit_tests"
