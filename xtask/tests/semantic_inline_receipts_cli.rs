@@ -276,12 +276,10 @@ fn semantic_inline_receipts_cli_rejects_missing_next_edit_candidate_families() -
     let receipt = temp.path().join("semantic-inline-receipts.json");
     let missing_quality_receipt = temp.path().join("missing-inline-quality.json");
     let next_edit_receipt = temp.path().join("semantic-inline-next-edit.json");
-    let mut next_edit = valid_next_edit_receipt_json();
-    next_edit
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("next-edit scaffold fixture must be an object"))?
-        .remove("planned_candidate_families");
-    std::fs::write(&next_edit_receipt, serde_json::to_vec_pretty(&next_edit)?)?;
+    std::fs::write(
+        &next_edit_receipt,
+        serde_json::to_vec_pretty(&next_edit_receipt_without_candidate_families_json())?,
+    )?;
 
     let output = cargo_bin_cmd!("xtask")
         .args([
@@ -400,6 +398,34 @@ fn valid_next_edit_receipt_json() -> Value {
             "call_site_update",
             "rename_occurrence"
         ],
+        "future_gated": [
+            "runtime_next_edit_provider",
+            "editor_visible_next_edit_suggestions",
+            "missing_import_next_action",
+            "optional_ai_candidate_source"
+        ]
+    })
+}
+
+fn next_edit_receipt_without_candidate_families_json() -> Value {
+    json!({
+        "schema_version": "semantic-inline-next-edit.v1",
+        "provider_action": "next_edit_scaffold",
+        "enabled_by_default": false,
+        "runtime_provider_registered": false,
+        "ai_candidate_source_enabled": false,
+        "default_response": {
+            "status": "disabled",
+            "suggestions": []
+        },
+        "receipt_only_response": {
+            "status": "receipt_only",
+            "suggestions": []
+        },
+        "explicit_gate_response": {
+            "status": "runtime_provider_not_registered",
+            "suggestions": []
+        },
         "future_gated": [
             "runtime_next_edit_provider",
             "editor_visible_next_edit_suggestions",
