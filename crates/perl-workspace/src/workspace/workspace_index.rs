@@ -2515,13 +2515,14 @@ impl WorkspaceIndex {
             );
 
         // Build the canonical fact shard.
-        // Import specs (for `use`, `require`, `ClassName->import()`) are
-        // populated separately via ImportExportIndex — not passed here.
+        // Import specs (for `use`, `require`, `ClassName->import()`) and
+        // use-lib facts are populated separately via ImportExportIndex — not passed here.
         let mut shard = crate::semantic::facts::build_canonical_fact_shard(
             uri,
             content_hash,
             &decl_facts,
             &ref_facts,
+            &[],
             &[],
             &dynamic_boundaries,
         );

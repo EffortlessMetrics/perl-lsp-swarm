@@ -39,7 +39,7 @@
 
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::{
-    AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance,
+    AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance, UseLibFact,
 };
 
 /// Walk the AST and return one [`ImportSpec`] per import site.
@@ -52,6 +52,107 @@ pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
     let mut out = Vec::new();
     walk(ast, file_id, &mut out);
     out
+}
+
+/// Walk the AST and return one [`UseLibFact`] per static `use lib`/`no lib` entry.
+///
+/// Dynamic args (`use lib $var`, `use lib @dirs`) are skipped — no fact is emitted.
+/// `is_active` is `true` for `use lib` entries and `false` for `no lib` entries.
+///
+/// FindBin-style interpolation (arg contains `FindBin`, `Bin/`, or `RealBin/`)
+/// produces `Provenance::PragmaInference`; plain quoted strings produce
+/// `Provenance::ExactAst`.
+pub fn extract_use_lib_facts(ast: &Node, file_id: FileId) -> Vec<UseLibFact> {
+    let mut out = Vec::new();
+    walk_use_lib(ast, file_id, &mut out);
+    out
+}
+
+// ── UseLibFact walker ────────────────────────────────────────────────────────
+
+fn walk_use_lib(node: &Node, file_id: FileId, out: &mut Vec<UseLibFact>) {
+    match &node.kind {
+        NodeKind::Use { module, args, .. } if module == "lib" => {
+            collect_use_lib_facts(args, true, file_id, node, out);
+        }
+        NodeKind::No { module, args, .. } if module == "lib" => {
+            collect_use_lib_facts(args, false, file_id, node, out);
+        }
+        _ => {}
+    }
+
+    for child in node.children() {
+        walk_use_lib(child, file_id, out);
+    }
+}
+
+/// Inspect the argument list of a `use lib` / `no lib` statement and push a
+/// [`UseLibFact`] for each static (quoted-string or `qw(...)`) argument.
+///
+/// Dynamic arguments (variables `$var`, arrays `@arr`, and anything else that
+/// is not a static string literal or `qw(...)` list) are silently skipped.
+fn collect_use_lib_facts(
+    args: &[String],
+    is_active: bool,
+    file_id: FileId,
+    node: &Node,
+    out: &mut Vec<UseLibFact>,
+) {
+    let anchor_id = anchor_from_node(node);
+
+    for arg in args {
+        let trimmed = arg.trim();
+
+        // qw(...) list — emit one fact per word.
+        if let Some(inner) = parse_qw_content(trimmed) {
+            for word in inner.split_whitespace() {
+                out.push(UseLibFact::new(
+                    word.to_string(),
+                    is_active,
+                    file_id,
+                    Some(anchor_id),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ));
+            }
+            continue;
+        }
+
+        // Quoted string literal (single or double quoted).
+        if is_quoted_string(trimmed) {
+            let path = unquote(trimmed).to_string();
+            let provenance = if is_findbin_pattern(&path) {
+                Provenance::PragmaInference
+            } else {
+                Provenance::ExactAst
+            };
+            out.push(UseLibFact::new(
+                path,
+                is_active,
+                file_id,
+                Some(anchor_id),
+                provenance,
+                Confidence::High,
+            ));
+            continue;
+        }
+
+        // Dynamic argument ($var, @arr, or anything else) — skip, emit nothing.
+    }
+}
+
+/// Returns `true` when `s` looks like a FindBin-style path fragment.
+///
+/// Detects patterns like `$FindBin::Bin/lib`, `$Bin/lib`, `$RealBin/lib`
+/// that are commonly used to build include paths relative to the script.
+fn is_findbin_pattern(s: &str) -> bool {
+    s.contains("FindBin") || s.contains("Bin/") || s.contains("RealBin/")
+}
+
+/// Returns `true` when `s` is a single-quoted or double-quoted string literal.
+fn is_quoted_string(s: &str) -> bool {
+    (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
+        || (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
 }
 
 // ── AST walker ──────────────────────────────────────────────────────────────
@@ -564,7 +665,11 @@ fn looks_like_constant_name(s: &str) -> bool {
 }
 
 fn confidence_for_symbols(symbols: &ImportSymbols) -> Confidence {
-    if matches!(symbols, ImportSymbols::Dynamic) { Confidence::Low } else { Confidence::High }
+    if matches!(symbols, ImportSymbols::Dynamic) {
+        Confidence::Low
+    } else {
+        Confidence::High
+    }
 }
 
 #[cfg(test)]
@@ -614,8 +719,8 @@ mod tests {
     }
 
     #[test]
-    fn standalone_class_dynamic_import_produces_manual_import()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn standalone_class_dynamic_import_produces_manual_import(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let specs = parse_and_extract("Foo->import(@names);");
         let spec = specs
             .iter()
@@ -628,8 +733,8 @@ mod tests {
     }
 
     #[test]
-    fn require_then_import_pair_produces_require_then_import()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn require_then_import_pair_produces_require_then_import(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let code = "require Foo::Bar;\nFoo::Bar->import(qw(alpha beta));";
         let specs = parse_and_extract(code);
         let spec =
@@ -666,8 +771,8 @@ mod tests {
     }
 
     #[test]
-    fn standalone_explicit_class_import_not_emitted_as_dynamic()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn standalone_explicit_class_import_not_emitted_as_dynamic(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // `Foo->import('bar')` — static arg list should NOT produce a Dynamic spec.
         let specs = parse_and_extract("Foo->import('bar');");
         let dynamic_specs: Vec<_> =

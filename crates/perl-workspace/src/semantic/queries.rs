@@ -31,7 +31,7 @@ use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, DefinitionCandidate, DefinitionRank, DefinitionRankReason,
     EntityFact, EntityId, EntityKind, FileId, OccurrenceFact, OccurrenceKind, PlanBlocker,
     PlanBlockerReason, PlanWarning, PlannedEdit, PlannedEditCategory, Provenance, RenamePlan,
-    SafeDeletePlan, ScopeId, ValueShape, VisibleSymbol, VisibleSymbolSource,
+    SafeDeletePlan, ScopeId, UseLibFact, ValueShape, VisibleSymbol, VisibleSymbolSource,
 };
 
 use super::imports::ImportExportIndex;
@@ -131,6 +131,18 @@ pub trait SemanticQueries {
         byte_offset: u32,
         scope_id: Option<ScopeId>,
     ) -> Vec<VisibleSymbol>;
+
+    /// Return include-path entries declared by `use lib`/`no lib` in the given
+    /// file, in source order.
+    ///
+    /// Entries with `is_active = false` were cancelled by `no lib`. Facts are
+    /// per-statement, not net state — callers compute the effective `@INC` by
+    /// walking the returned slice in order.
+    ///
+    /// Path strings are the literal unquoted values as written in source.
+    /// Callers must resolve them relative to the file's directory for filesystem
+    /// lookup; this function returns raw fact data only.
+    fn use_lib_paths(&self, file_id: FileId) -> Vec<UseLibFact>;
 
     /// Return method candidates for a receiver type and method name.
     ///
@@ -563,6 +575,10 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
             ),
             None => Vec::new(),
         }
+    }
+
+    fn use_lib_paths(&self, file_id: FileId) -> Vec<UseLibFact> {
+        self.import_export_index.get_use_lib_for_file(file_id).to_vec()
     }
 
     fn method_candidates(
