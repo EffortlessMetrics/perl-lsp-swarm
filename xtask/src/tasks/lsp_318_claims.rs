@@ -1045,6 +1045,15 @@ fn line_number_for_pointer(text: &str, pointer: &str) -> usize {
 mod tests {
     use super::*;
 
+    fn write_matrix_fixture(root: &Path, text: &str) -> Result<()> {
+        let path = root.join(MATRIX_PATH);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, text)?;
+        Ok(())
+    }
+
     #[test]
     fn line_number_for_reports_first_matching_line() {
         let text = "one\ntwo marker\nthree marker\n";
@@ -1060,5 +1069,39 @@ mod tests {
     fn pointer_line_uses_last_path_segment() {
         let text = "{\n  \"semanticTokensProvider\": {\n    \"delta\": true\n  }\n}\n";
         assert_eq!(line_number_for_pointer(text, "/semanticTokensProvider/full/delta"), 3);
+    }
+
+    #[test]
+    fn matrix_closeout_status_check_accepts_closed_statuses() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_matrix_fixture(
+            temp.path(),
+            "| Feature | Status |\n| --- | --- |\n| Inline completion | implemented+tested+documented |\n| Notebook | not-applicable+documented |\n| Delta | negative-gated+documented |\n",
+        )?;
+
+        let mut violations = Vec::new();
+        check_matrix_closeout_statuses(temp.path(), &mut violations)?;
+
+        assert!(violations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn matrix_closeout_status_check_rejects_transitional_statuses() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_matrix_fixture(
+            temp.path(),
+            "| Feature | Status |\n| --- | --- |\n| Folding refresh | implemented-needs-positive-wire-test |\n",
+        )?;
+
+        let mut violations = Vec::new();
+        check_matrix_closeout_statuses(temp.path(), &mut violations)?;
+
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].rel_path, MATRIX_PATH);
+        assert_eq!(violations[0].line, 3);
+        assert_eq!(violations[0].label, "transitional matrix status");
+        assert!(violations[0].detail.contains("implemented-needs-positive-wire-test"));
+        Ok(())
     }
 }
