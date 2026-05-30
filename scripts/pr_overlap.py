@@ -96,7 +96,7 @@ _THRESHOLD_SYMS_DUP   = 0.5
 # Regex patterns for auto-detecting test files.
 _TEST_FILE_PATTERNS = [
     re.compile(r"^tests/"),          # tests/** prefix
-    re.compile(r"_test\.rs$"),       # Rust test suffix
+    re.compile(r"_tests?\.rs$"),     # Rust test suffix (_test.rs or _tests.rs)
     re.compile(r"/tests/"),          # nested tests/ directory
     re.compile(r"^test_.*\.py$"),    # Python test prefix
     re.compile(r"/test_.*\.py$"),    # nested Python test prefix

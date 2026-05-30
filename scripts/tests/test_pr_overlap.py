@@ -541,6 +541,81 @@ class TestThresholdBoundaries(unittest.TestCase):
         self.assertAlmostEqual(result["jaccard_files"], 0.5)
         self.assertEqual(result["class"], "sequence-both")
 
+    def test_likely_duplicate_at_exact_boundary(self) -> None:
+        """
+        Construct a case where jf=0.8, jt=0.5, js=0.5 exactly — the minimum
+        values that satisfy the likely-duplicate predicate.  All three must be
+        at-or-above their respective thresholds simultaneously.
+        """
+        # jf = 4/5 = 0.8 : A has {f1..f4}, B has {f1..f4, f5}
+        # jt = 1/2 = 0.5 : A has {t1, t2}, B has {t1}  → |∩|=1, |∪|=2
+        # js = 1/2 = 0.5 : A has {S1, S2}, B has {S1}   → |∩|=1, |∪|=2
+        result = self._make_pair(
+            files_a=["f1.rs", "f2.rs", "f3.rs", "f4.rs"],
+            files_b=["f1.rs", "f2.rs", "f3.rs", "f4.rs", "f5.rs"],
+            tests_a=["t1.rs", "t2.rs"],
+            tests_b=["t1.rs"],
+            syms_a=["S1", "S2"],
+            syms_b=["S1"],
+        )
+        self.assertAlmostEqual(result["jaccard_files"], 0.8)
+        self.assertAlmostEqual(result["jaccard_tests"], 0.5)
+        self.assertAlmostEqual(result["jaccard_syms"],  0.5)
+        self.assertEqual(result["class"], "likely-duplicate")
+
+
+# ---------------------------------------------------------------------------
+# 3-way cluster
+# ---------------------------------------------------------------------------
+
+class TestThreeWayCluster(unittest.TestCase):
+    """
+    With 3 PRs we get 3 pairs. Verify that generate_report produces independent
+    pairwise results and that the mixed-class scenario is handled correctly:
+    A-B = likely-duplicate, A-C = sequence-both, B-C = isolated.
+    """
+
+    def test_mixed_three_way_cluster(self) -> None:
+        """Three-way cluster with distinct classes across the three pairs."""
+        prs = [
+            {
+                "id": "A",
+                "files": ["parser.rs", "tests/parser_test.rs"],
+                "tests": ["tests/parser_test.rs"],
+                "symbols": ["Parser::parse", "Ast::new"],
+            },
+            {
+                # B is a near-duplicate of A (same files/tests/symbols)
+                "id": "B",
+                "files": ["parser.rs", "tests/parser_test.rs"],
+                "tests": ["tests/parser_test.rs"],
+                "symbols": ["Parser::parse", "Ast::new"],
+            },
+            {
+                # C touches an entirely different file — isolated from both A and B
+                "id": "C",
+                "files": ["crates/perl-dap/src/server.rs"],
+                "tests": [],
+                "symbols": ["DapServer::run"],
+            },
+        ]
+        results = generate_report(prs)
+        self.assertEqual(len(results), 3)
+
+        by_pair = {(r["id_a"], r["id_b"]): r["class"] for r in results}
+        self.assertEqual(by_pair[("A", "B")], "likely-duplicate")
+        self.assertEqual(by_pair[("A", "C")], "isolated")
+        self.assertEqual(by_pair[("B", "C")], "isolated")
+
+    def test_tests_rs_suffix_detected(self) -> None:
+        """
+        Files ending in _tests.rs (plural, e.g. ``src/parser_tests.rs``) are
+        auto-detected as test files.  The issue spec lists this alongside the
+        _test.rs suffix convention.
+        """
+        self.assertTrue(_is_test_file("src/parser_tests.rs"))
+        self.assertTrue(_is_test_file("crates/perl-parser/src/parser_tests.rs"))
+
 
 if __name__ == "__main__":
     unittest.main()
