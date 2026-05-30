@@ -2911,10 +2911,7 @@ esac
         // Explicit labels are non-empty, so the env fallback path is not taken.
         // Duplicates across the two sources collapse; output is folded and sorted.
         let merged = merged_labels(&["Zeta".to_string()], Some("alpha, Zeta; BETA"));
-        assert_eq!(
-            merged,
-            vec!["alpha".to_string(), "beta".to_string(), "zeta".to_string()]
-        );
+        assert_eq!(merged, vec!["alpha".to_string(), "beta".to_string(), "zeta".to_string()]);
     }
 
     #[test]
