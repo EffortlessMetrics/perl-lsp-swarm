@@ -62,7 +62,7 @@ pub fn normalize_uri(uri: &str) -> String {
         // Canonicalize local file authorities without filesystem round-trips:
         // on Windows, `/tmp/...` is root-relative and cannot reliably convert
         // back through `Url::from_file_path`, but it is already a valid URI key.
-        if url.scheme() == "file" && crate::classify::is_local_file_authority(url.host_str()) {
+        if should_canonicalize_local_file_authority(&url) {
             return crate::classify::uri_key(trimmed);
         }
 
@@ -87,6 +87,11 @@ pub fn normalize_uri(uri: &str) -> String {
 
     // Final fallback: return as-is for special URIs like untitled:
     trimmed.to_string()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn should_canonicalize_local_file_authority(url: &Url) -> bool {
+    url.scheme() == "file" && crate::classify::is_local_file_authority(url.host_str())
 }
 
 /// Normalize a URI to a consistent form (wasm32 version - no filesystem).
@@ -120,9 +125,7 @@ mod tests {
 
         for (input, expected_branch, expected_normalized) in cases {
             let url = Url::parse(input)?;
-            let branch_matches =
-                url.scheme() == "file" && crate::classify::is_local_file_authority(url.host_str());
-            assert_eq!(branch_matches, expected_branch);
+            assert_eq!(should_canonicalize_local_file_authority(&url), expected_branch);
             assert_eq!(normalize_uri(input), expected_normalized);
         }
 
