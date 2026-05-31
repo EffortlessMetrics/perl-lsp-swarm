@@ -59,15 +59,11 @@ pub fn normalize_uri(uri: &str) -> String {
 
     // Try to parse as URL first
     if let Ok(url) = Url::parse(trimmed) {
-        // Canonicalize local file URIs through filesystem conversion so legacy
-        // forms like `file://C:/...` normalize to `file:///c:/...` on Windows
-        // and `file:///tmp/...` on Unix while preserving non-local authorities.
-        if url.scheme() == "file"
-            && crate::classify::is_local_file_authority(url.host_str())
-            && let Some(fs_path) = crate::uri_to_fs_path(trimmed)
-            && let Ok(normalized) = crate::fs_path_to_uri(&fs_path)
-        {
-            return normalized;
+        // Canonicalize local file authorities without filesystem round-trips:
+        // on Windows, `/tmp/...` is root-relative and cannot reliably convert
+        // back through `Url::from_file_path`, but it is already a valid URI key.
+        if url.scheme() == "file" && crate::classify::is_local_file_authority(url.host_str()) {
+            return crate::classify::uri_key(trimmed);
         }
 
         // Already a valid non-file URI, return as-is.
