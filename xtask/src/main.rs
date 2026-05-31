@@ -192,6 +192,25 @@ enum Commands {
         /// Optional deterministic quality receipt to summarize when present.
         #[arg(long, default_value = "target/receipts/inline-completion-quality.json")]
         quality_receipt: PathBuf,
+        /// Optional next-edit scaffold receipt to validate and summarize when present.
+        #[arg(long, default_value = "target/receipts/semantic-inline-next-edit.json")]
+        next_edit_receipt: PathBuf,
+    },
+
+    /// Emit a semantic inline-completion next-edit scaffold receipt.
+    #[command(name = "semantic-inline-next-edit")]
+    SemanticInlineNextEdit {
+        /// Receipt JSON path to write.
+        #[arg(long, default_value = "target/receipts/semantic-inline-next-edit.json")]
+        receipt: PathBuf,
+    },
+
+    /// Emit a supported-editor inline-completion smoke receipt bundle.
+    #[command(name = "supported-editor-inline-smoke")]
+    SupportedEditorInlineSmoke {
+        /// Receipt JSON path to write.
+        #[arg(long, default_value = "target/receipts/supported-editor-inline-smoke.json")]
+        receipt: PathBuf,
     },
 
     /// Regenerate public Shields endpoint JSON for README badges.
@@ -2750,8 +2769,12 @@ fn main() -> Result<()> {
         },
         Commands::InlineCompletionSmoke { binary } => inline_completion_smoke::run(binary),
         Commands::InlineCompletionQuality { receipt } => inline_completion_quality::run(receipt),
-        Commands::SemanticInlineReceipts { receipt, quality_receipt } => {
-            semantic_inline_receipts::run(receipt, quality_receipt)
+        Commands::SemanticInlineReceipts { receipt, quality_receipt, next_edit_receipt } => {
+            semantic_inline_receipts::run(receipt, quality_receipt, next_edit_receipt)
+        }
+        Commands::SemanticInlineNextEdit { receipt } => semantic_inline_next_edit::run(receipt),
+        Commands::SupportedEditorInlineSmoke { receipt } => {
+            supported_editor_inline_smoke::run(receipt)
         }
         Commands::Badges { check } => badges::run(check),
         Commands::CoverageBaseline {
