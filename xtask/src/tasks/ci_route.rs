@@ -318,21 +318,20 @@ fn coverage_proof_pack_receipts(selector: &[String]) -> Result<Vec<CoverageProof
     let manifest = coverage_pack_manifest()?;
     let packs_by_id: BTreeMap<&str, &CoveragePack> =
         manifest.pack.iter().map(|pack| (pack.id.as_str(), pack)).collect();
-    let mut receipts = Vec::new();
-
-    for pack_id in selector {
-        let Some(pack) = packs_by_id.get(pack_id.as_str()) else {
-            bail!("coverage pack `{pack_id}` is missing from .ci/coverage-packs.toml");
-        };
-        receipts.push(CoverageProofPackReceipt {
-            id: pack.id.clone(),
-            files: pack.files.clone(),
-            commands: pack.commands.clone(),
-            coverage_filters: pack.coverage_filters.clone(),
-        });
-    }
-
-    Ok(receipts)
+    selector
+        .iter()
+        .map(|pack_id| {
+            let Some(pack) = packs_by_id.get(pack_id.as_str()) else {
+                bail!("coverage pack `{pack_id}` is missing from .ci/coverage-packs.toml");
+            };
+            Ok(CoverageProofPackReceipt {
+                id: pack.id.clone(),
+                files: pack.files.clone(),
+                commands: pack.commands.clone(),
+                coverage_filters: pack.coverage_filters.clone(),
+            })
+        })
+        .collect()
 }
 
 fn coverage_pack_manifest() -> Result<CoveragePackManifest> {
@@ -540,22 +539,48 @@ mod tests {
     }
 
     #[test]
+    fn coverage_proof_pack_receipts_reports_unknown_selector() -> Result<()> {
+        let selector = vec!["patch-coverage-missing-pack".to_string()];
+        let Err(error) = coverage_proof_pack_receipts(&selector) else {
+            bail!("unknown coverage selector should fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            "coverage pack `patch-coverage-missing-pack` is missing from .ci/coverage-packs.toml"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn coverage_pack_manifest_lists_every_route_selector() -> Result<()> {
         let manifest = coverage_pack_manifest()?;
-        let manifest_ids: BTreeSet<&str> =
-            manifest.pack.iter().map(|pack| pack.id.as_str()).collect();
+        let manifest_ids: Vec<&str> = manifest.pack.iter().map(|pack| pack.id.as_str()).collect();
 
-        for selector in [
-            "patch-coverage-xtask-supported-editor-inline-smoke",
+        assert_eq!(
+            manifest_ids,
+            vec![
+                "patch-coverage-xtask-supported-editor-inline-smoke",
+                "patch-coverage-xtask-semantic-inline",
+                "patch-coverage-inline-core",
+                "patch-coverage-ux-scenario",
+                "patch-coverage-ci-policy",
+                "patch-coverage-ci-route",
+                "patch-coverage-rust-focused",
+            ]
+        );
+        let route_selectors = [
             "patch-coverage-xtask-semantic-inline",
+            "patch-coverage-xtask-supported-editor-inline-smoke",
             "patch-coverage-inline-core",
             "patch-coverage-ux-scenario",
             "patch-coverage-ci-policy",
             "patch-coverage-ci-route",
             "patch-coverage-rust-focused",
-        ] {
-            assert!(manifest_ids.contains(selector), "coverage manifest missing `{selector}`");
-        }
+        ];
+        let proof_packs = coverage_proof_pack_receipts(
+            &route_selectors.iter().map(|selector| (*selector).to_string()).collect::<Vec<_>>(),
+        )?;
+        assert_eq!(proof_packs.len(), route_selectors.len());
         Ok(())
     }
 

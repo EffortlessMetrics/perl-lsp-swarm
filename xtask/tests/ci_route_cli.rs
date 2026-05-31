@@ -60,7 +60,11 @@ fn ci_route_cli_writes_supported_editor_proof_pack_receipt() -> Result<()> {
 
 #[test]
 fn coverage_pack_manifest_declares_supported_editor_pack() -> Result<()> {
-    let manifest_path = repo_root()?.join(".ci/coverage-packs.toml");
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
     let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
     let packs = manifest
         .get("pack")
@@ -73,28 +77,34 @@ fn coverage_pack_manifest_declares_supported_editor_pack() -> Result<()> {
                 == Some("patch-coverage-xtask-supported-editor-inline-smoke")
         })
         .ok_or_else(|| anyhow!("missing supported-editor coverage pack"))?;
-
-    assert!(toml_array_contains(
-        pack,
-        "files",
-        "xtask/src/tasks/supported_editor_inline_smoke.rs"
-    )?);
-    assert!(toml_array_contains(pack, "commands", "supported_editor_inline_smoke")?);
-    assert!(toml_array_contains(pack, "coverage_filters", "supported_editor_inline_smoke")?);
-    Ok(())
-}
-
-fn toml_array_contains(pack: &toml::Value, key: &str, needle: &str) -> Result<bool> {
-    let values = pack
-        .get(key)
+    let files = pack
+        .get("files")
         .and_then(toml::Value::as_array)
-        .ok_or_else(|| anyhow!("coverage pack `{key}` must be an array"))?;
-    Ok(values.iter().filter_map(toml::Value::as_str).any(|value| value.contains(needle)))
-}
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+    let coverage_filters = pack
+        .get("coverage_filters")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack filters must be an array"))?;
 
-fn repo_root() -> Result<PathBuf> {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "xtask/src/tasks/supported_editor_inline_smoke.rs" })
+    );
+    assert!(commands.iter().filter_map(toml::Value::as_str).any(|value| {
+        value
+            == "cargo test -p xtask --bin xtask --profile agent --locked supported_editor_inline_smoke -- --nocapture"
+    }));
+    assert!(
+        coverage_filters
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "supported_editor_inline_smoke" })
+    );
+    Ok(())
 }
