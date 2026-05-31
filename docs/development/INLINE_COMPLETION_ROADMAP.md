@@ -132,13 +132,38 @@ The pipeline must keep protocol concerns separate from candidate quality:
 Returned ranges must be editor-safe:
 
 - start at the current token or partial expression;
-- stay single-line unless a later explicit multiline contract is added;
+- stay single-line by default, with multiline ghost text allowed only under the
+  explicit policy below;
 - replace the typed prefix rather than duplicating it;
 - use LSP UTF-16 positions on the wire;
 - avoid fighting text typed after the request started.
 
 Bad ranges make ghost text feel like an editor bug. Range correctness should
 land before semantic expansion.
+
+### Multiline Ghost-Text Boundaries
+
+Multiline ghost text is future-gated. The current trusted contract remains
+single-line completion unless a later PR adds a narrow, fixture-backed exception.
+
+Any multiline exception must follow these rules:
+
+- automatic trigger stays single-line unless the case is explicitly whitelisted,
+  high-confidence, parse-safe, and backed by a real editor UX receipt;
+- invoked trigger may return richer multiline text only when the candidate has a
+  compatible replacement range, passes parse-safety, and has both positive and
+  negative fixtures;
+- multiline items must not conflict with `selectedCompletionInfo` or an open
+  completion popup;
+- hard reject zones remain silent regardless of trigger mode;
+- unsupported Perl object systems or constructor idioms should stay silent
+  instead of emitting a generic block.
+
+Good first candidates for future multiline work are narrow and idiomatic, such
+as an invoked-only constructor body in a file that already proves the local
+constructor style. Broad block generation, snippet-like scaffolds, and AI-backed
+multiline suggestions remain out of scope until deterministic receipts make the
+case safe.
 
 ### `selectedCompletionInfo`
 
@@ -365,22 +390,41 @@ Current semantic inline UX receipt inventory:
 | `loop_binding_inline_completion_quality` | `ux_scenario_57_loop_binding_inline_completion_quality.rs` | Visible collection loop bindings, hash key iteration, array preference, and safe singular naming. |
 | `guard_condition_inline_completion_quality` | `ux_scenario_58_guard_condition_inline_completion_quality.rs` | Guard-condition continuations use visible scalar facts without unrelated result or receiver guesses. |
 | `real_workspace_module_import_inline_completion_quality` | `ux_scenario_59_real_workspace_module_import_inline_completion_quality.rs` | Effective `@INC`-aware module-import ghost text, `no lib` suppression, and workspace-root wildcard suppression. |
+| `gated_multiline_constructor_inline_completion_quality` | `ux_scenario_60_gated_multiline_constructor_inline_completion_quality.rs` | Invoked-only multiline constructor ghost text, automatic-trigger suppression, selected-completion conflict suppression, and accepted-edit parse safety. |
+| `package_boundary_receiver_inline_completion_quality` | `ux_scenario_61_package_boundary_receiver_inline_completion_quality.rs` | `$self->` current-package method suggestions stay preferred in a multi-file package-boundary workspace without sibling-package or generic constructor leaks. |
 
 The machine-readable dashboard for this inventory is:
 
 ```bash
-cargo xtask semantic-inline-receipts --receipt target/receipts/semantic-inline-receipts.json
+cargo xtask semantic-inline-next-edit \
+  --receipt target/receipts/semantic-inline-next-edit.json
+cargo xtask semantic-inline-receipts \
+  --receipt target/receipts/semantic-inline-receipts.json \
+  --next-edit-receipt target/receipts/semantic-inline-next-edit.json
 ```
 
-That dashboard aggregates the registered semantic inline UX workflows and keeps
-next-edit and optional AI explicitly future-gated. It is an inventory receipt;
-it does not run the UX scenarios or promote support status by itself.
+That dashboard aggregates the registered semantic inline UX workflows, validates
+the next-edit scaffold receipt when present, and keeps next-edit runtime behavior
+and optional AI explicitly future-gated. It is an inventory receipt; it does not
+run the UX scenarios or promote support status by itself.
+
+The next-edit scaffold now includes receipt-only proofs for the first two
+deterministic next-action families:
+
+- missing-import next actions, using effective-`@INC` reachability and duplicate
+  import rejection;
+- test assertion body next actions, using Test::More/Test2 imports and visible
+  `$got`/`$expected`-style lexicals.
+
+These receipts remain non-runtime and non-editor-visible. They prove candidate
+preparation, gate rejection, accepted edit application, and parse stability
+without registering an LSP next-edit provider.
 
 Still future or deliberately gated:
 
 - broader real-project UX receipts for inline quality beyond the current module
-  import receipt and existing inventory;
-- next-edit suggestions;
+  import and package-boundary receiver receipts;
+- runtime/editor-visible next-edit suggestions;
 - optional AI candidate boundaries.
 
 ## High-Value Perl Wins
