@@ -150,6 +150,7 @@ struct MissingImportNextActionSummary {
     default_gate_disabled: bool,
     explicit_gate_runtime_unregistered: bool,
     parse_stable: bool,
+    line_endings_preserved: bool,
 }
 
 pub fn run(receipt: PathBuf, quality_receipt: PathBuf, next_edit_receipt: PathBuf) -> Result<()> {
@@ -399,6 +400,10 @@ fn missing_import_next_action_summary(scaffold: &Value) -> Result<MissingImportN
             .and_then(Value::as_str)
             == Some("runtime_provider_not_registered"),
         parse_stable: action.get("parse_stable").and_then(Value::as_bool).unwrap_or(false),
+        line_endings_preserved: action
+            .get("line_endings_preserved")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -464,6 +469,23 @@ fn require_missing_import_next_action(scaffold: &Value) -> Result<()> {
         "missing_import_next_action/parse_stable",
         true,
     )?;
+    require_next_edit_bool(
+        action.get("line_endings_preserved").and_then(Value::as_bool),
+        "missing_import_next_action/line_endings_preserved",
+        true,
+    )?;
+    let crlf_accepted_text =
+        action.get("crlf_accepted_document_text").and_then(Value::as_str).ok_or_else(|| {
+            eyre!("next-edit scaffold receipt missing missing_import crlf_accepted_document_text")
+        })?;
+    if !crlf_accepted_text.contains("use My::App;\r\nmy $value = My::App->new;") {
+        bail!(
+            "missing-import next action CRLF accepted document text did not preserve line endings"
+        );
+    }
+    if crlf_accepted_text.contains("use My::App;\nmy $value = My::App->new;") {
+        bail!("missing-import next action CRLF accepted document text mixed LF line endings");
+    }
     Ok(())
 }
 
@@ -886,6 +908,15 @@ mod tests {
         json!({ "workflows": workflows })
     }
 
+    fn next_edit_scaffold_summary_error(
+        path: &Path,
+        expectation: &'static str,
+    ) -> color_eyre::Report {
+        let result = read_optional_next_edit_scaffold_summary(path);
+        assert!(result.is_err(), "{expectation}");
+        result.err().unwrap_or_else(|| eyre!("{expectation}"))
+    }
+
     fn unavailable_quality() -> InlineQualityCounterSummary {
         InlineQualityCounterSummary {
             source: "target/receipts/inline-completion-quality.json".to_string(),
@@ -989,7 +1020,9 @@ mod tests {
                 "rejectionReasons": ["runtime_provider_not_registered"]
             },
             "accepted_document_text": "use strict;\nuse warnings;\nuse My::App;\nmy $value = My::App->new;\n",
-            "parse_stable": true
+            "crlf_accepted_document_text": "package Demo;\r\nuse strict;\r\nuse My::App;\r\nmy $value = My::App->new;\r\n",
+            "parse_stable": true,
+            "line_endings_preserved": true
         })
     }
 
@@ -1270,9 +1303,8 @@ mod tests {
         scaffold["missing_import_next_action"]["reachable_candidate"]["candidate"]["edit"]["newText"] =
             json!("use Other::Module;\n");
         fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
-        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
-            bail!("wrong missing-import edit text must fail");
-        };
+        let error =
+            next_edit_scaffold_summary_error(&path, "wrong missing-import edit text must fail");
         assert!(
             error.to_string().contains("candidate/edit/newText"),
             "error should identify missing-import edit text drift, got {error}"
@@ -1282,9 +1314,10 @@ mod tests {
         scaffold["missing_import_next_action"]["accepted_document_text"] =
             json!("use strict;\nuse warnings;\nmy $value = My::App->new;\n");
         fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
-        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
-            bail!("accepted text without inserted import must fail");
-        };
+        let error = next_edit_scaffold_summary_error(
+            &path,
+            "accepted text without inserted import must fail",
+        );
         assert!(
             error.to_string().contains("accepted document text"),
             "error should identify missing accepted import drift, got {error}"
@@ -1293,12 +1326,44 @@ mod tests {
         let mut scaffold = valid_next_edit_scaffold_json();
         scaffold["missing_import_next_action"]["parse_stable"] = json!(false);
         fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
-        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
-            bail!("parse-unstable missing-import proof must fail");
-        };
+        let error = next_edit_scaffold_summary_error(
+            &path,
+            "parse-unstable missing-import proof must fail",
+        );
         assert!(
             error.to_string().contains("parse_stable"),
             "error should identify parse-stability drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["line_endings_preserved"] = json!(false);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(&path, "line-ending drift must fail");
+        assert!(
+            error.to_string().contains("line_endings_preserved")
+                || error.to_string().contains("line endings"),
+            "error should identify line-ending drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["crlf_accepted_document_text"] = Value::Null;
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(&path, "missing CRLF accepted text must fail");
+        assert!(
+            error.to_string().contains("crlf_accepted_document_text"),
+            "error should identify missing CRLF accepted text, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["crlf_accepted_document_text"] = json!(
+            "package Demo;\r\nuse strict;\r\nuse My::App;\r\nmy $value = My::App->new;\r\nuse My::App;\nmy $value = My::App->new;\r\n"
+        );
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error =
+            next_edit_scaffold_summary_error(&path, "mixed-line-ending accepted text must fail");
+        assert!(
+            error.to_string().contains("line endings"),
+            "error should identify CRLF text drift, got {error}"
         );
 
         Ok(())
