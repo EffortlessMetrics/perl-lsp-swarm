@@ -72,6 +72,15 @@ impl LspServer {
                                 )
                             }
                         } else if let Some(module_name) =
+                            Self::find_require_module_at_offset(&doc.text, offset)
+                        {
+                            HoverExtracted::UseModule(
+                                module_name,
+                                doc.text.clone(),
+                                uri.to_string(),
+                                offset,
+                            )
+                        } else if let Some(module_name) =
                             Self::find_with_module_at_offset(ast, offset)
                         {
                             // Check for `with 'Role'` / `extends 'Parent'` at this offset
@@ -887,6 +896,16 @@ impl LspServer {
                 }
             }
             _ => {}
+        }
+
+        None
+    }
+
+    /// Find a static `require Module::Name` reference whose module token spans `offset`.
+    fn find_require_module_at_offset(text: &str, offset: usize) -> Option<String> {
+        let reference = perl_module::reference::find_module_reference(text, offset)?;
+        if reference.kind == perl_module::reference::ModuleReferenceKind::Require {
+            return Some(reference.canonical_module_name());
         }
 
         None
