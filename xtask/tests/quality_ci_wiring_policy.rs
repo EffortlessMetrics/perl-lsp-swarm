@@ -135,6 +135,7 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "coverage-pack-commands.sh",
         "coverage-route-selected-packs.txt",
         "changed-file routing selected no coverage proof packs",
+        "cargo llvm-cov report --profile agent --lcov --output-path target/lcov.info",
         "--scope routed-coverage-packs",
     ] {
         assert!(justfile.contains(required), "coverage-proof-routed missing `{required}`");
