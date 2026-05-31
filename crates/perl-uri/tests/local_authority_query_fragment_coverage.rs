@@ -6,20 +6,20 @@ use perl_uri::uri_to_fs_path;
 
 #[test]
 fn local_file_authority_predicate_inputs_are_explicit() -> Result<(), Box<dyn std::error::Error>> {
-    let local_file = Url::parse("file://127.0.0.1/tmp/module.pm?rev=42#L10")?;
-    assert_eq!(local_file.scheme(), "file");
-    assert_eq!(local_file.host_str(), Some("127.0.0.1"));
-    assert_eq!(normalize_uri(local_file.as_str()), "file:///tmp/module.pm?rev=42#L10");
+    let url = Url::parse("file://127.0.0.1/tmp/module.pm?rev=42#L10")?;
+    assert_eq!(url.scheme(), "file");
+    assert_eq!(url.host_str(), Some("127.0.0.1"));
+    assert_eq!(normalize_uri(url.as_str()), "file:///tmp/module.pm?rev=42#L10");
 
-    let non_local_file = Url::parse("file://example.com/tmp/module.pm?rev=42#L10")?;
-    assert_eq!(non_local_file.scheme(), "file");
-    assert_eq!(non_local_file.host_str(), Some("example.com"));
-    assert_eq!(normalize_uri(non_local_file.as_str()), non_local_file.as_str());
+    let url = Url::parse("file://example.com/tmp/module.pm?rev=42#L10")?;
+    assert_eq!(url.scheme(), "file");
+    assert_eq!(url.host_str(), Some("example.com"));
+    assert_eq!(normalize_uri(url.as_str()), url.as_str());
 
-    let non_file_local_host = Url::parse("https://localhost/tmp/module.pm?rev=42#L10")?;
-    assert_eq!(non_file_local_host.scheme(), "https");
-    assert_eq!(non_file_local_host.host_str(), Some("localhost"));
-    assert_eq!(normalize_uri(non_file_local_host.as_str()), non_file_local_host.as_str());
+    let url = Url::parse("https://localhost/tmp/module.pm?rev=42#L10")?;
+    assert_eq!(url.scheme(), "https");
+    assert_eq!(url.host_str(), Some("localhost"));
+    assert_eq!(normalize_uri(url.as_str()), url.as_str());
 
     Ok(())
 }
