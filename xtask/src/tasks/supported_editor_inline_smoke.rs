@@ -320,7 +320,7 @@ mod tests {
     }];
 
     #[test]
-    fn receipt_records_supported_editor_routes() -> Result<()> {
+    fn semantic_inline_receipts_record_supported_editor_routes() -> Result<()> {
         let temp = TempDir::new()?;
         write_fixture_files(temp.path(), ROUTES)?;
 
@@ -385,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_json_keeps_claim_boundary() -> Result<()> {
+    fn semantic_inline_receipts_json_keeps_claim_boundary() -> Result<()> {
         let temp = TempDir::new()?;
         write_fixture_files(temp.path(), ROUTES)?;
         let receipt = summarize_supported_editor_routes(temp.path(), ROUTES)?;
