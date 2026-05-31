@@ -105,3 +105,27 @@ pub fn normalize_uri(uri: &str) -> String {
     // On wasm32, just try to parse as URL or return as-is
     if let Ok(url) = Url::parse(trimmed) { url.to_string() } else { trimmed.to_string() }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_file_authority_predicate_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+        let cases = [
+            ("file://127.0.0.1/tmp/module.pm", true, "file:///tmp/module.pm"),
+            ("file://example.com/tmp/module.pm", false, "file://example.com/tmp/module.pm"),
+            ("https://localhost/tmp/module.pm", false, "https://localhost/tmp/module.pm"),
+        ];
+
+        for (input, expected_branch, expected_normalized) in cases {
+            let url = Url::parse(input)?;
+            let branch_matches =
+                url.scheme() == "file" && crate::classify::is_local_file_authority(url.host_str());
+            assert_eq!(branch_matches, expected_branch);
+            assert_eq!(normalize_uri(input), expected_normalized);
+        }
+
+        Ok(())
+    }
+}
