@@ -4315,12 +4315,21 @@ mod tests {
     #[test]
     fn constructor_return_context_still_prefers_self() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
-        let source = "sub new {\n    my $class = shift;\n    my $self = bless {}, $class;\n    my $result = $self;\n    return \n}\n";
-        let character = "    return ".encode_utf16().count() as u32;
-        let completions = provider.get_inline_completions(source, 4, character);
-        let first = completions.items.first().ok_or("expected constructor return completion")?;
 
-        assert_eq!(first.insert_text, "$self;");
+        for constructor in ["new", "BUILD"] {
+            let source = format!(
+                "sub {constructor} {{\n    my $class = shift;\n    my $self = bless {{}}, $class;\n    my $result = $self;\n    return \n}}\n"
+            );
+            let character = "    return ".encode_utf16().count() as u32;
+            let completions = provider.get_inline_completions(&source, 4, character);
+            let first =
+                completions.items.first().ok_or("expected constructor return completion")?;
+
+            assert_eq!(
+                first.insert_text, "$self;",
+                "{constructor} should keep preferring the constructed receiver"
+            );
+        }
         Ok(())
     }
 
