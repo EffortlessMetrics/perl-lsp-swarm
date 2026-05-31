@@ -1997,10 +1997,11 @@ coverage-proof-routed base='origin/main' head='HEAD':
     #!/usr/bin/env bash
     set -euo pipefail
     coverage_target="${CARGO_TARGET_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/perl-lsp-swarm-coverage-target}"
+    route_target="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/perl-lsp-swarm-coverage-route-target"
     mkdir -p target/receipts/quality
     mkdir -p "$coverage_target"
-    export CARGO_TARGET_DIR="$coverage_target"
-    cargo xtask ci route \
+    mkdir -p "$route_target"
+    CARGO_TARGET_DIR="$route_target" cargo xtask ci route \
         --base "{{base}}" \
         --head "{{head}}" \
         --receipt target/receipts/quality/ci-route.json \
@@ -2017,6 +2018,7 @@ coverage-proof-routed base='origin/main' head='HEAD':
         "$HOME/.cargo/bin/rustup" run nightly cargo install cargo-llvm-cov --locked
     fi
     echo "coverage target: $coverage_target"
+    export CARGO_TARGET_DIR="$coverage_target"
     "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov clean --workspace
     coverage_env="$coverage_target/llvm-cov-env.sh"
     "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov show-env --sh > "$coverage_env"
