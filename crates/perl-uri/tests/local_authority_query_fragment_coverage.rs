@@ -41,6 +41,24 @@ fn normalize_uri_loopback_authority_preserves_query_and_fragment()
     Ok(())
 }
 
+#[test]
+fn normalize_uri_local_file_authority_predicate_boundaries()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(
+        normalize_uri("file://localhost/tmp/module.pm?rev=42#L10"),
+        "file:///tmp/module.pm?rev=42#L10"
+    );
+    assert_eq!(
+        normalize_uri("file://example.com/tmp/module.pm?rev=42#L10"),
+        "file://example.com/tmp/module.pm?rev=42#L10"
+    );
+    assert_eq!(
+        normalize_uri("https://localhost/tmp/module.pm?rev=42#L10"),
+        "https://localhost/tmp/module.pm?rev=42#L10"
+    );
+    Ok(())
+}
+
 #[cfg(windows)]
 #[test]
 fn uri_to_fs_path_accepts_bare_windows_drive_path() -> Result<(), Box<dyn std::error::Error>> {
