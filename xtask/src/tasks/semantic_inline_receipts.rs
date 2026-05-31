@@ -1355,6 +1355,16 @@ mod tests {
         );
 
         let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["crlf_accepted_document_text"] =
+            json!("package Demo;\r\nuse strict;\r\nuse My::App;\nmy $value = My::App->new;\r\n");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(&path, "LF-only CRLF accepted text must fail");
+        assert!(
+            error.to_string().contains("preserve line endings"),
+            "error should identify CRLF preservation drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
         scaffold["missing_import_next_action"]["crlf_accepted_document_text"] = json!(
             "package Demo;\r\nuse strict;\r\nuse My::App;\r\nmy $value = My::App->new;\r\nuse My::App;\nmy $value = My::App->new;\r\n"
         );
@@ -1362,8 +1372,8 @@ mod tests {
         let error =
             next_edit_scaffold_summary_error(&path, "mixed-line-ending accepted text must fail");
         assert!(
-            error.to_string().contains("line endings"),
-            "error should identify CRLF text drift, got {error}"
+            error.to_string().contains("mixed LF line endings"),
+            "error should identify mixed LF line endings, got {error}"
         );
 
         Ok(())
