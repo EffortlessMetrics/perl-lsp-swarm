@@ -28,6 +28,61 @@ The proof lane is in transition from measurement to enforcement:
 This is the current merge contract. A PR with pending, failed, missing, skipped
 unexpectedly, or stale required proof contexts is not merge-ready.
 
+## Active RIPR+ Inventory
+
+The repo-wide RIPR+ baseline is generated with:
+
+```bash
+rtk cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+rtk cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+```
+
+The receipt is the burn-down inventory source. It keeps the existing
+compatibility fields (`unresolved`, `suppressed`, `top_files`) and also reports
+the explicit queue-shaping fields:
+
+- `active_unresolved`
+- `suppressed_unresolved`
+- `top_active_files`
+- `top_active_gap_kinds`
+- `top_suppressed_files`
+- `top_suppressed_gap_kinds`
+- `suppressions.reasons`
+- `recommended_first_clusters`
+
+This inventory is measurement only. It separates active proof debt from
+suppressed archive/generated/non-production surfaces and recommends reviewable
+clusters for future burn-down PRs. It does not start parser, semantic, lexer, or
+LSP behavior burn-down by itself.
+
+## Project Coverage Burn-Down Inventory
+
+The workspace coverage baseline is generated with:
+
+```bash
+rtk cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-base origin/HEAD --scope workspace-lib-xtask-quality
+rtk cargo xtask coverage-baseline --lcov target/lcov.info --receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --patch-base origin/HEAD --scope workspace-lib-xtask-quality --check
+```
+
+The receipt keeps patch-gate fields for enforcement and also reports the
+project burn-down queue:
+
+- `coverage.project`
+- `project_burndown.target`
+- `project_burndown.current`
+- `project_burndown.remaining_percentage_points`
+- `project_burndown.status`
+- `project_files_below_target`
+- `top_project_files`
+- `recommended_project_clusters`
+
+This inventory is queue-shaping only while project coverage remains
+transitional. Use it to split future coverage PRs by behavior surface:
+proof infrastructure, CLI/report generation, provider decisions,
+scheduler/cancellation, config parsing, serialization/deserialization, and
+error handling. Do not treat the inventory as permission to chase generated code
+or add constructor-only line coverage tests.
+
 ## Transitional Targets
 
 - project coverage is visible in coverage receipts as `coverage.project`, but
