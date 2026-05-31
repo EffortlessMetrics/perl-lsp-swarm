@@ -194,6 +194,63 @@ fn resolved_module_hover_links_virtual_perldoc() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+fn require_module_hover_links_virtual_perldoc() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let temp = tempfile::tempdir()?;
+    let script = temp.path().join("require_hover.pl");
+    let uri = url::Url::from_file_path(&script).map_err(|_| "failed to create script URI")?;
+    let uri = uri.to_string();
+    let text = "require Local::Doc;\n";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": text
+        }
+    }))?;
+
+    let hover = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?);
+    let value = must_some(hover["contents"]["value"].as_str());
+
+    assert!(
+        value.contains("perldoc://Local::Doc"),
+        "static require hover should expose the virtual perldoc document: {value}"
+    );
+    assert!(
+        value.contains("https://metacpan.org/pod/Local::Doc"),
+        "static require hover should keep the MetaCPAN link: {value}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn require_module_scan_accepts_only_static_module_tokens() {
+    let text = "require Local::Doc;\n";
+    let token_offset = must_some(text.find("Local")) + 2;
+
+    assert_eq!(
+        LspServer::find_require_module_at_offset(text, token_offset).as_deref(),
+        Some("Local::Doc")
+    );
+    assert_eq!(LspServer::find_require_module_at_offset(text, 0), None);
+    assert_eq!(LspServer::find_require_module_at_offset("require $module;\n", 10), None);
+    assert_eq!(LspServer::find_require_module_at_offset("require 'Local/Doc.pm';\n", 10), None);
+}
+
+#[test]
+fn require_module_scan_normalizes_utf8_offsets() {
+    let text = "é\nrequire Local::Doc;\n";
+
+    assert_eq!(LspServer::normalize_hover_text_offset(text, 1), 0);
+}
+
+#[test]
 fn missing_module_search_paths_reports_empty_configuration() {
     let paths = LspServer::format_missing_module_search_paths(&[]);
 
