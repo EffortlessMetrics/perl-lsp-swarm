@@ -470,9 +470,10 @@ jobs:
           mkdir -p target/receipts/quality
           base_ref="$BASE_REF"
           git fetch --no-tags --depth=200 origin "$base_ref" || true
-          cargo xtask ci route \
+          python3 scripts/ci/route-codecov-packs.py \
             --base "origin/$base_ref" \
             --head HEAD \
+            --manifest .ci/coverage-packs.toml \
             --receipt target/receipts/quality/ci-route.json \
             --summary target/receipts/quality/ci-route.md
           coverage_required="$(python3 -c 'import json; from pathlib import Path; route = json.loads(Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8")); print("true" if route.get("coverage_proof_packs") else "false")')"
