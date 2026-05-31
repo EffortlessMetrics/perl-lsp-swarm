@@ -910,20 +910,39 @@ impl LspServer {
         let cursor_in_line = cursor.saturating_sub(line_start);
 
         let head = perl_module::import::parse_module_import_head(line)?;
-        if head.kind != perl_module::import::ModuleImportKind::Require
-            || head.require_form() != Some(perl_module::import::RequireForm::ModuleName)
-            || cursor_in_line < head.token_start
-            || cursor_in_line > head.token_end
-        {
+        if !Self::is_static_require_module(head.kind, head.require_form()) {
+            return None;
+        }
+        if !Self::cursor_spans_module_token(cursor_in_line, head.token_start, head.token_end) {
             return None;
         }
 
         let span = perl_module::token_parser::parse_module_token(line, head.token_start)?;
-        if span.end != head.token_end {
+        if !Self::module_token_span_matches_head(span.end, head.token_end) {
             return None;
         }
 
         Some(perl_module::name::normalize_package_separator(head.token).into_owned())
+    }
+
+    fn is_static_require_module(
+        kind: perl_module::import::ModuleImportKind,
+        require_form: Option<perl_module::import::RequireForm>,
+    ) -> bool {
+        kind == perl_module::import::ModuleImportKind::Require
+            && require_form == Some(perl_module::import::RequireForm::ModuleName)
+    }
+
+    fn cursor_spans_module_token(
+        cursor_in_line: usize,
+        token_start: usize,
+        token_end: usize,
+    ) -> bool {
+        cursor_in_line >= token_start && cursor_in_line <= token_end
+    }
+
+    fn module_token_span_matches_head(span_end: usize, token_end: usize) -> bool {
+        span_end == token_end
     }
 
     fn normalize_hover_text_offset(text: &str, offset: usize) -> usize {

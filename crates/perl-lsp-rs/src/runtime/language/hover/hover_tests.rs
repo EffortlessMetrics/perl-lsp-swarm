@@ -230,17 +230,86 @@ fn require_module_hover_links_virtual_perldoc() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn require_module_scan_accepts_only_static_module_tokens() {
+fn require_module_scan_respects_static_module_token_boundaries() {
     let text = "require Local::Doc;\n";
-    let token_offset = must_some(text.find("Local")) + 2;
+    let token_start = must_some(text.find("Local"));
+    let token_end = must_some(text.find(';'));
+    let head = must_some(perl_module::import::parse_module_import_head(text));
+    let span = must_some(perl_module::token_parser::parse_module_token(text, head.token_start));
 
+    assert_eq!(head.kind, perl_module::import::ModuleImportKind::Require);
+    assert_eq!(head.require_form(), Some(perl_module::import::RequireForm::ModuleName));
+    assert_eq!(head.token_start, token_start);
+    assert_eq!(head.token_end, token_end);
+    assert_eq!(span.end, head.token_end);
+
+    assert_eq!(LspServer::find_require_module_at_offset(text, token_start.saturating_sub(1)), None);
     assert_eq!(
-        LspServer::find_require_module_at_offset(text, token_offset).as_deref(),
+        LspServer::find_require_module_at_offset(text, token_start).as_deref(),
         Some("Local::Doc")
     );
-    assert_eq!(LspServer::find_require_module_at_offset(text, 0), None);
+    assert_eq!(
+        LspServer::find_require_module_at_offset(text, token_start + 2).as_deref(),
+        Some("Local::Doc")
+    );
+    assert_eq!(
+        LspServer::find_require_module_at_offset(text, token_end).as_deref(),
+        Some("Local::Doc")
+    );
+    assert_eq!(LspServer::find_require_module_at_offset(text, token_end + 1), None);
+}
+
+#[test]
+fn require_module_scan_rejects_non_require_and_non_module_require_forms() {
+    assert_eq!(LspServer::find_require_module_at_offset("use Local::Doc;\n", 5), None);
     assert_eq!(LspServer::find_require_module_at_offset("require $module;\n", 10), None);
     assert_eq!(LspServer::find_require_module_at_offset("require 'Local/Doc.pm';\n", 10), None);
+}
+
+#[test]
+fn require_module_scan_rejects_non_module_suffixes() {
+    let text = "require Local::Doc-extra;\n";
+    let token_offset = must_some(text.find("Local")) + 2;
+
+    assert_eq!(LspServer::find_require_module_at_offset(text, token_offset), None);
+}
+
+#[test]
+fn require_module_scan_has_explicit_boundary_discriminators() {
+    let text = "require Local::Doc;\n";
+    let head = must_some(perl_module::import::parse_module_import_head(text));
+    let span = must_some(perl_module::token_parser::parse_module_token(text, 8));
+
+    assert_eq!(head.kind, perl_module::import::ModuleImportKind::Require);
+    assert_eq!(head.require_form(), Some(perl_module::import::RequireForm::ModuleName));
+    assert_eq!(span.end, 18);
+    assert_eq!(head.token_start, 8);
+    assert_eq!(head.token_end, 18);
+    assert_eq!(LspServer::find_require_module_at_offset(text, 7), None);
+    assert_eq!(LspServer::find_require_module_at_offset(text, 8).as_deref(), Some("Local::Doc"));
+    assert_eq!(LspServer::find_require_module_at_offset(text, 18).as_deref(), Some("Local::Doc"));
+    assert_eq!(LspServer::find_require_module_at_offset(text, 19), None);
+}
+
+#[test]
+fn require_module_boundary_predicates_are_explicit() {
+    assert!(LspServer::is_static_require_module(
+        perl_module::import::ModuleImportKind::Require,
+        Some(perl_module::import::RequireForm::ModuleName)
+    ));
+    assert!(!LspServer::is_static_require_module(perl_module::import::ModuleImportKind::Use, None));
+    assert!(!LspServer::is_static_require_module(
+        perl_module::import::ModuleImportKind::Require,
+        Some(perl_module::import::RequireForm::FilePath)
+    ));
+
+    assert!(!LspServer::cursor_spans_module_token(7, 8, 18));
+    assert!(LspServer::cursor_spans_module_token(8, 8, 18));
+    assert!(LspServer::cursor_spans_module_token(18, 8, 18));
+    assert!(!LspServer::cursor_spans_module_token(19, 8, 18));
+
+    assert!(LspServer::module_token_span_matches_head(18, 18));
+    assert!(!LspServer::module_token_span_matches_head(10, 18));
 }
 
 #[test]
