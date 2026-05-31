@@ -2173,13 +2173,13 @@ fn line_has_done_testing_call(line: &str) -> bool {
 
 fn done_testing_call_boundaries(line: &str, start: usize) -> bool {
     let before_ok =
-        line[..start].chars().next_back().map_or(true, |ch| !is_perl_qualified_identifier_char(ch));
+        line[..start].chars().next_back().is_none_or(|ch| !is_perl_qualified_identifier_char(ch));
     if !before_ok {
         return false;
     }
 
     let after = &line[start + "done_testing".len()..];
-    let after_ok = after.chars().next().map_or(true, |ch| !is_perl_qualified_identifier_char(ch));
+    let after_ok = after.chars().next().is_none_or(|ch| !is_perl_qualified_identifier_char(ch));
     after_ok && after.trim_start().starts_with('(')
 }
 
