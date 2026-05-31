@@ -490,6 +490,7 @@ fn write_receipt(path: &Path, receipt: &SemanticInlineNextEditReceipt) -> Result
 mod tests {
     use super::*;
     use perl_lsp_rs_core::providers::inline_completion::NextEditSuggestion;
+    use perl_tdd_support::{must_err, must_some};
     use serde_json::Value;
     use tempfile::TempDir;
 
@@ -760,33 +761,41 @@ mod tests {
         let provider = NextEditProvider;
         let mut receipt = test_assertion_next_action_receipt(&provider)?;
         receipt.test_more_candidate.candidate = None;
-        let Err(error) = validate_test_assertion_next_action(&receipt) else {
-            bail!("missing Test::More candidate must fail validation");
-        };
+        let error = must_err(validate_test_assertion_next_action(&receipt));
         assert!(
             error.to_string().contains("Test::More assertion proof"),
             "error should identify missing Test::More candidate, got {error}"
         );
 
         let mut receipt = test_assertion_next_action_receipt(&provider)?;
-        let candidate =
-            receipt.test_more_candidate.candidate.as_mut().ok_or_else(|| {
-                color_eyre::eyre::eyre!("valid receipt omitted Test::More candidate")
-            })?;
+        receipt.test2_candidate.candidate = None;
+        let error = must_err(validate_test_assertion_next_action(&receipt));
+        assert!(
+            error.to_string().contains("Test2 assertion proof"),
+            "error should identify missing Test2 candidate, got {error}"
+        );
+
+        let mut receipt = test_assertion_next_action_receipt(&provider)?;
+        let candidate = must_some(receipt.test_more_candidate.candidate.as_mut());
         candidate.editor_visible = true;
-        let Err(error) = validate_test_assertion_next_action(&receipt) else {
-            bail!("editor-visible Test::More candidate must fail validation");
-        };
+        let error = must_err(validate_test_assertion_next_action(&receipt));
         assert!(
             error.to_string().contains("receipt-only contract"),
             "error should identify Test::More candidate contract drift, got {error}"
         );
 
         let mut receipt = test_assertion_next_action_receipt(&provider)?;
+        let candidate = must_some(receipt.test2_candidate.candidate.as_mut());
+        candidate.editor_visible = true;
+        let error = must_err(validate_test_assertion_next_action(&receipt));
+        assert!(
+            error.to_string().contains("receipt-only contract"),
+            "error should identify Test2 candidate contract drift, got {error}"
+        );
+
+        let mut receipt = test_assertion_next_action_receipt(&provider)?;
         receipt.parse_stable = false;
-        let Err(error) = validate_test_assertion_next_action(&receipt) else {
-            bail!("parse-unstable test assertion action must fail validation");
-        };
+        let error = must_err(validate_test_assertion_next_action(&receipt));
         assert!(
             error.to_string().contains("parse state stable"),
             "error should identify parse-stability drift, got {error}"
@@ -800,9 +809,7 @@ mod tests {
         let provider = NextEditProvider;
         let mut receipt = test_assertion_next_action_receipt(&provider)?;
         receipt.non_test_file.rejection_reasons.clear();
-        let Err(error) = validate_test_assertion_next_action(&receipt) else {
-            bail!("non-test file without rejection reason must fail validation");
-        };
+        let error = must_err(validate_test_assertion_next_action(&receipt));
         assert!(
             error.to_string().contains("reject non-test files"),
             "error should identify non-test rejection drift, got {error}"
@@ -810,9 +817,7 @@ mod tests {
 
         let mut receipt = test_assertion_next_action_receipt(&provider)?;
         receipt.unsupported_framework.rejection_reasons.clear();
-        let Err(error) = validate_test_assertion_next_action(&receipt) else {
-            bail!("unsupported framework without rejection reason must fail validation");
-        };
+        let error = must_err(validate_test_assertion_next_action(&receipt));
         assert!(
             error.to_string().contains("reject unsupported test frameworks"),
             "error should identify framework rejection drift, got {error}"
@@ -820,9 +825,7 @@ mod tests {
 
         let mut receipt = test_assertion_next_action_receipt(&provider)?;
         receipt.missing_variables.rejection_reasons.clear();
-        let Err(error) = validate_test_assertion_next_action(&receipt) else {
-            bail!("missing variables without rejection reason must fail validation");
-        };
+        let error = must_err(validate_test_assertion_next_action(&receipt));
         assert!(
             error.to_string().contains("reject missing assertion variables"),
             "error should identify missing-variable rejection drift, got {error}"
@@ -830,9 +833,7 @@ mod tests {
 
         let mut receipt = test_assertion_next_action_receipt(&provider)?;
         receipt.default_gate.rejection_reasons.clear();
-        let Err(error) = validate_test_assertion_next_action(&receipt) else {
-            bail!("default gate without rejection reason must fail validation");
-        };
+        let error = must_err(validate_test_assertion_next_action(&receipt));
         assert!(
             error.to_string().contains("disabled by default"),
             "error should identify default-gate drift, got {error}"
@@ -840,9 +841,7 @@ mod tests {
 
         let mut receipt = test_assertion_next_action_receipt(&provider)?;
         receipt.explicit_gate.rejection_reasons.clear();
-        let Err(error) = validate_test_assertion_next_action(&receipt) else {
-            bail!("explicit gate without runtime rejection reason must fail validation");
-        };
+        let error = must_err(validate_test_assertion_next_action(&receipt));
         assert!(
             error.to_string().contains("unregistered runtime provider"),
             "error should identify explicit-gate drift, got {error}"
