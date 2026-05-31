@@ -390,22 +390,41 @@ Current semantic inline UX receipt inventory:
 | `loop_binding_inline_completion_quality` | `ux_scenario_57_loop_binding_inline_completion_quality.rs` | Visible collection loop bindings, hash key iteration, array preference, and safe singular naming. |
 | `guard_condition_inline_completion_quality` | `ux_scenario_58_guard_condition_inline_completion_quality.rs` | Guard-condition continuations use visible scalar facts without unrelated result or receiver guesses. |
 | `real_workspace_module_import_inline_completion_quality` | `ux_scenario_59_real_workspace_module_import_inline_completion_quality.rs` | Effective `@INC`-aware module-import ghost text, `no lib` suppression, and workspace-root wildcard suppression. |
+| `gated_multiline_constructor_inline_completion_quality` | `ux_scenario_60_gated_multiline_constructor_inline_completion_quality.rs` | Invoked-only multiline constructor ghost text, automatic-trigger suppression, selected-completion conflict suppression, and accepted-edit parse safety. |
+| `package_boundary_receiver_inline_completion_quality` | `ux_scenario_61_package_boundary_receiver_inline_completion_quality.rs` | `$self->` current-package method suggestions stay preferred in a multi-file package-boundary workspace without sibling-package or generic constructor leaks. |
 
 The machine-readable dashboard for this inventory is:
 
 ```bash
-cargo xtask semantic-inline-receipts --receipt target/receipts/semantic-inline-receipts.json
+cargo xtask semantic-inline-next-edit \
+  --receipt target/receipts/semantic-inline-next-edit.json
+cargo xtask semantic-inline-receipts \
+  --receipt target/receipts/semantic-inline-receipts.json \
+  --next-edit-receipt target/receipts/semantic-inline-next-edit.json
 ```
 
-That dashboard aggregates the registered semantic inline UX workflows and keeps
-next-edit and optional AI explicitly future-gated. It is an inventory receipt;
-it does not run the UX scenarios or promote support status by itself.
+That dashboard aggregates the registered semantic inline UX workflows, validates
+the next-edit scaffold receipt when present, and keeps next-edit runtime behavior
+and optional AI explicitly future-gated. It is an inventory receipt; it does not
+run the UX scenarios or promote support status by itself.
+
+The next-edit scaffold now includes receipt-only proofs for the first two
+deterministic next-action families:
+
+- missing-import next actions, using effective-`@INC` reachability and duplicate
+  import rejection;
+- test assertion body next actions, using Test::More/Test2 imports and visible
+  `$got`/`$expected`-style lexicals.
+
+These receipts remain non-runtime and non-editor-visible. They prove candidate
+preparation, gate rejection, accepted edit application, and parse stability
+without registering an LSP next-edit provider.
 
 Still future or deliberately gated:
 
 - broader real-project UX receipts for inline quality beyond the current module
-  import receipt and existing inventory;
-- next-edit suggestions;
+  import and package-boundary receiver receipts;
+- runtime/editor-visible next-edit suggestions;
 - optional AI candidate boundaries.
 
 ## High-Value Perl Wins
