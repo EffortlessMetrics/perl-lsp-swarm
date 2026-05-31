@@ -348,19 +348,30 @@ Helper docs are served from the linked workspace module.
         "source workspace POD should not expose self or non-simple links: {source_text}"
     );
 
-    let dependency = harness.request(
-        "workspace/textDocumentContent",
-        json!({ "uri": "perldoc://Local::Dependency" }),
-    )?;
-    let dependency_text = dependency.get("text").and_then(Value::as_str).ok_or_else(|| {
-        format!("workspace/textDocumentContent missing dependency result.text: {dependency}")
-    })?;
+    for (module, name, description) in [
+        (
+            "Local::Dependency",
+            "Local::Dependency - dependency docs",
+            "Dependency docs are served from the linked workspace module.",
+        ),
+        (
+            "Local::Helper",
+            "Local::Helper - helper docs",
+            "Helper docs are served from the linked workspace module.",
+        ),
+    ] {
+        let result = harness.request(
+            "workspace/textDocumentContent",
+            json!({ "uri": format!("perldoc://{module}") }),
+        )?;
+        let text = result.get("text").and_then(Value::as_str).ok_or_else(|| {
+            format!("workspace/textDocumentContent missing linked result.text: {result}")
+        })?;
 
-    assert!(dependency_text.contains("Module: Local::Dependency"));
-    assert!(dependency_text.contains("Local::Dependency - dependency docs"));
-    assert!(
-        dependency_text.contains("Dependency docs are served from the linked workspace module.")
-    );
+        assert!(text.contains(&format!("Module: {module}")));
+        assert!(text.contains(name));
+        assert!(text.contains(description));
+    }
 
     Ok(())
 }
