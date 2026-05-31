@@ -10,8 +10,9 @@ on:
         type: choice
         options:
           - auto
-          - cx53
           - cx43
+          - cpx42
+          - cx53
           - github
   pull_request:
     branches: [main]
@@ -106,7 +107,7 @@ jobs:
           fi
 
           case "${FORCE_TARGET:-auto}" in
-            cx53|cx43|github)
+            cx43|cpx42|cx53|github)
               emit "$FORCE_TARGET" "workflow_dispatch_force_target" "false" "true"
               exit 0
               ;;
@@ -138,7 +139,8 @@ jobs:
 
           idle_runner_count() {
             local runner_label="$1"
-            jq --arg runner_label "$runner_label" '
+            local capacity_label="$2"
+            jq --arg runner_label "$runner_label" --arg capacity_label "$capacity_label" '
               [ .runners[]?
                 | select(.status == "online")
                 | select(.busy == false)
@@ -146,36 +148,48 @@ jobs:
                 | select(
                     ($have | index("em-ci")) and
                     ($have | index($runner_label)) and
-                    ($have | index("rust-small")) and
+                    ($have | index($capacity_label)) and
                     ($have | index("trusted-pr"))
                   )
               ] | length
             ' "$response"
           }
 
-          idle_cx53="$(idle_runner_count "cx53")"
-          idle_cx43="$(idle_runner_count "cx43")"
+          idle_cx43="$(idle_runner_count "cx43" "rust-medium")"
+          idle_cpx42="$(idle_runner_count "cpx42" "rust-medium")"
+          idle_cx53="$(idle_runner_count "cx53" "rust-large")"
 
-          echo "idle_cx53=${idle_cx53:-0}"
           echo "idle_cx43=${idle_cx43:-0}"
+          echo "idle_cpx42=${idle_cpx42:-0}"
+          echo "idle_cx53=${idle_cx53:-0}"
 
-          if [ "${idle_cx53:-0}" -gt 0 ]; then
-            emit "cx53" "cx53_idle" "false" "false"
-          elif [ "${idle_cx43:-0}" -gt 0 ]; then
+          if [ "${idle_cx43:-0}" -gt 0 ]; then
             emit "cx43" "cx43_idle" "false" "false"
+          elif [ "${idle_cpx42:-0}" -gt 0 ]; then
+            emit "cpx42" "cpx42_idle" "false" "false"
+          elif [ "${idle_cx53:-0}" -gt 0 ]; then
+            emit "cx53" "cx53_idle" "false" "false"
           else
             emit "github" "no_idle_runner" "false" "true"
           fi
 
   rust-small-cx53:
-    name: Perl LSP Rust Small on CX53
+    name: Perl LSP Rust Small on CX53 fallback
     needs: route-rust-small
     if: >-
       needs.route-rust-small.result == 'success' &&
-      needs.route-rust-small.outputs.target == 'cx53'
+      needs.route-rust-small.outputs.target == 'cx53' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       group: em-ci-small
-      labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]
+      labels:
+        - self-hosted
+        - linux
+        - x64
+        - em-ci
+        - cx53
+        - rust-large
+        - trusted-pr
     timeout-minutes: 60
     env:
       CARGO_HOME: /mnt/ci-cache/cargo-home
@@ -256,10 +270,18 @@ jobs:
     needs: route-rust-small
     if: >-
       needs.route-rust-small.result == 'success' &&
-      needs.route-rust-small.outputs.target == 'cx43'
+      needs.route-rust-small.outputs.target == 'cx43' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       group: em-ci-small
-      labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
+      labels:
+        - self-hosted
+        - linux
+        - x64
+        - em-ci
+        - cx43
+        - rust-medium
+        - trusted-pr
     timeout-minutes: 75
     env:
       CARGO_HOME: /mnt/ci-cache/cargo-home
@@ -335,6 +357,80 @@ jobs:
           rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
           df -h /mnt/ci-scratch /mnt/docker /mnt/ci-cache || true
 
+  rust-small-cpx42:
+    name: Perl LSP Rust Small on CPX42
+    needs: route-rust-small
+    if: >-
+      needs.route-rust-small.result == 'success' &&
+      needs.route-rust-small.outputs.target == 'cpx42' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on:
+      group: em-ci-small
+      labels:
+        - self-hosted
+        - linux
+        - x64
+        - em-ci
+        - cpx42
+        - rust-medium
+        - rust-16gb
+        - trusted-pr
+    timeout-minutes: 75
+    env:
+      CARGO_HOME: /mnt/ci-cache/cargo-home
+      SCCACHE_DIR: /mnt/ci-cache/sccache
+      SCCACHE_CACHE_SIZE: 30G
+      CARGO_BUILD_JOBS: "6"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/${{ github.run_id }}-${{ github.run_attempt }}
+      RUST_TEST_THREADS: "2"
+      TMPDIR: /mnt/ci-scratch/tmp/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Prepare CPX42 workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci-disk-guard /mnt/ci-scratch 80
+          ci-disk-guard /mnt/ci-cache 15
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
+          df -h /mnt/ci-scratch /mnt/ci-cache || true
+          free -h || true
+          rustc --version
+          cargo --version
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --version || true
+            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run Rust small lane
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked
+          cargo check --workspace --locked
+          cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
+          cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+          sccache --show-stats || true
+
+      - name: Cleanup and final stats
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          find "$TMPDIR" "$CARGO_TARGET_DIR" -mindepth 1 -delete 2>/dev/null || true
+          rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
+          df -h /mnt/ci-scratch /mnt/ci-cache || true
+          free -h || true
+
   rust-small-github:
     name: Perl LSP Rust Small on GitHub Hosted
     needs: route-rust-small
@@ -375,8 +471,9 @@ jobs:
     name: Perl LSP Rust Small Result
     needs:
       - route-rust-small
-      - rust-small-cx53
       - rust-small-cx43
+      - rust-small-cpx42
+      - rust-small-cx53
       - rust-small-github
     if: always()
     runs-on: ubuntu-latest
@@ -390,8 +487,9 @@ jobs:
           ROUTER_REASON: ${{ needs.route-rust-small.outputs.reason }}
           ROUTER_ERROR: ${{ needs.route-rust-small.outputs.error }}
           ROUTER_FALLBACK_ALLOWED: ${{ needs.route-rust-small.outputs.fallback_allowed }}
-          CX53_RESULT: ${{ needs.rust-small-cx53.result }}
           CX43_RESULT: ${{ needs.rust-small-cx43.result }}
+          CPX42_RESULT: ${{ needs.rust-small-cpx42.result }}
+          CX53_RESULT: ${{ needs.rust-small-cx53.result }}
           GITHUB_RESULT: ${{ needs.rust-small-github.result }}
         run: |
           set -euo pipefail
@@ -401,8 +499,9 @@ jobs:
           echo "router_reason=${ROUTER_REASON:-}"
           echo "router_error=${ROUTER_ERROR:-}"
           echo "router_fallback_allowed=${ROUTER_FALLBACK_ALLOWED:-}"
-          echo "cx53_result=${CX53_RESULT:-}"
           echo "cx43_result=${CX43_RESULT:-}"
+          echo "cpx42_result=${CPX42_RESULT:-}"
+          echo "cx53_result=${CX53_RESULT:-}"
           echo "github_result=${GITHUB_RESULT:-}"
 
           {
@@ -413,8 +512,9 @@ jobs:
             echo "- router_reason: \`${ROUTER_REASON:-}\`"
             echo "- router_error: \`${ROUTER_ERROR:-}\`"
             echo "- router_fallback_allowed: \`${ROUTER_FALLBACK_ALLOWED:-}\`"
-            echo "- cx53_result: \`${CX53_RESULT:-}\`"
             echo "- cx43_result: \`${CX43_RESULT:-}\`"
+            echo "- cpx42_result: \`${CPX42_RESULT:-}\`"
+            echo "- cx53_result: \`${CX53_RESULT:-}\`"
             echo "- github_result: \`${GITHUB_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -424,24 +524,34 @@ jobs:
           fi
 
           case "${ROUTER_TARGET:-}" in
+            cx43)
+              test "$CX43_RESULT" = "success"
+              test "$CPX42_RESULT" = "skipped"
+              test "$CX53_RESULT" = "skipped"
+              test "$GITHUB_RESULT" = "skipped"
+              ;;
+            cpx42)
+              test "$CPX42_RESULT" = "success"
+              test "$CX43_RESULT" = "skipped"
+              test "$CX53_RESULT" = "skipped"
+              test "$GITHUB_RESULT" = "skipped"
+              ;;
             cx53)
               test "$CX53_RESULT" = "success"
               test "$CX43_RESULT" = "skipped"
-              test "$GITHUB_RESULT" = "skipped"
-              ;;
-            cx43)
-              test "$CX43_RESULT" = "success"
-              test "$CX53_RESULT" = "skipped"
+              test "$CPX42_RESULT" = "skipped"
               test "$GITHUB_RESULT" = "skipped"
               ;;
             github)
               test "$GITHUB_RESULT" = "success"
-              test "$CX53_RESULT" = "skipped"
               test "$CX43_RESULT" = "skipped"
+              test "$CPX42_RESULT" = "skipped"
+              test "$CX53_RESULT" = "skipped"
               ;;
             none)
-              test "$CX53_RESULT" = "skipped"
               test "$CX43_RESULT" = "skipped"
+              test "$CPX42_RESULT" = "skipped"
+              test "$CX53_RESULT" = "skipped"
               test "$GITHUB_RESULT" = "skipped"
               echo "::error::No runner route available (reason: ${ROUTER_REASON:-unknown}). Re-run later or use workflow_dispatch force_target=github."
               exit 1

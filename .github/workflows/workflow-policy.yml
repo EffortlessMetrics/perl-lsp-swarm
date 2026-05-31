@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'xtask/src/tasks/workflow_policy_lint.rs'
+      - 'scripts/check-no-bare-self-hosted.sh'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
       - '.ci/receipts/schemas/workflow-policy.schema.json'
@@ -14,6 +15,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'xtask/src/tasks/workflow_policy_lint.rs'
+      - 'scripts/check-no-bare-self-hosted.sh'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
       - '.ci/receipts/schemas/workflow-policy.schema.json'
@@ -31,6 +33,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: stable
+      - name: Check self-hosted runner routing
+        run: scripts/check-no-bare-self-hosted.sh
+
       - name: Run workflow policy lint
         # `--check-lane-whitelist` enables the policy/ci-lane-whitelist.toml
         # gate (was opt-in per PR #8154). All currently-flagged workflows
