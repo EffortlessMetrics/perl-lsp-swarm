@@ -4475,6 +4475,15 @@ mod tests {
     }
 
     #[test]
+    fn test_done_testing_detector_skips_escaped_quote_mention_before_real_call()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let line = r#"my $escaped = "escaped \" done_testing(); still string"; done_testing();"#;
+
+        assert!(line_has_done_testing_call(line));
+        Ok(())
+    }
+
+    #[test]
     fn test_blank_line_after_comment_still_has_contextual_suggestions() {
         let provider = InlineCompletionProvider::new();
         let source = "use Test::More;\n\nsub helper {\n    my $result = 1;\n    # explain next step\n    \n}\n";
