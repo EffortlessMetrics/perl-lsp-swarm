@@ -1948,8 +1948,10 @@ coverage-proof base='origin/main':
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask inline_completion_quality --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask semantic_inline_receipts --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask semantic_inline_next_edit --locked
+    "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --bin xtask ci_route --locked
     "$HOME/.cargo/bin/rustup" run nightly cargo test -p xtask --locked \
         --test codecov_patch_gate_policy \
+        --test ci_route_cli \
         --test quality_ci_wiring_policy \
         --test quality_gate_cli_policy \
         --test quality_gate_exception_policy \
