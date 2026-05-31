@@ -903,12 +903,35 @@ impl LspServer {
 
     /// Find a static `require Module::Name` reference whose module token spans `offset`.
     fn find_require_module_at_offset(text: &str, offset: usize) -> Option<String> {
-        let reference = perl_module::reference::find_module_reference(text, offset)?;
-        if reference.kind == perl_module::reference::ModuleReferenceKind::Require {
-            return Some(reference.canonical_module_name());
+        let cursor = Self::normalize_hover_text_offset(text, offset);
+        let line_start = text[..cursor].rfind('\n').map_or(0, |idx| idx + 1);
+        let line_end = text[cursor..].find('\n').map_or(text.len(), |idx| cursor + idx);
+        let line = &text[line_start..line_end];
+        let cursor_in_line = cursor.saturating_sub(line_start);
+
+        let head = perl_module::import::parse_module_import_head(line)?;
+        if head.kind != perl_module::import::ModuleImportKind::Require
+            || head.require_form() != Some(perl_module::import::RequireForm::ModuleName)
+            || cursor_in_line < head.token_start
+            || cursor_in_line > head.token_end
+        {
+            return None;
         }
 
-        None
+        let span = perl_module::token_parser::parse_module_token(line, head.token_start)?;
+        if span.end != head.token_end {
+            return None;
+        }
+
+        Some(perl_module::name::normalize_package_separator(head.token).into_owned())
+    }
+
+    fn normalize_hover_text_offset(text: &str, offset: usize) -> usize {
+        let mut normalized = offset.min(text.len());
+        while normalized > 0 && !text.is_char_boundary(normalized) {
+            normalized -= 1;
+        }
+        normalized
     }
 
     /// Walk the AST to find a `with 'Role'` or `extends 'Parent'` name at `offset`.
