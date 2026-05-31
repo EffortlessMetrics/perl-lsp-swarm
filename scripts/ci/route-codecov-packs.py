@@ -59,16 +59,39 @@ def pack_matches(pack: dict[str, object], paths: list[str]) -> bool:
     )
 
 
+def is_lcov_source_path(path: str) -> bool:
+    if not path.endswith(".rs"):
+        return False
+    if path.startswith("xtask/tests/") or "/tests/" in path:
+        return False
+    return path.startswith("xtask/src/") or path.startswith("crates/")
+
+
+def pack_matches_lcov_source(pack: dict[str, object], paths: list[str]) -> bool:
+    patterns = pack.get("files") or []
+    if not isinstance(patterns, list):
+        return False
+    return any(
+        is_lcov_source_path(path)
+        and isinstance(pattern, str)
+        and matches_pattern(path, pattern)
+        for path in paths
+        for pattern in patterns
+    )
+
+
 def selected_packs(packs: list[dict[str, object]], paths: list[str]) -> list[dict[str, object]]:
     fallback = next((pack for pack in packs if pack.get("id") == FALLBACK_PACK_ID), None)
     selected = [
         pack
         for pack in packs
-        if pack.get("id") != FALLBACK_PACK_ID and pack_matches(pack, paths)
+        if pack.get("id") != FALLBACK_PACK_ID
+        and pack_matches(pack, paths)
+        and pack_matches_lcov_source(pack, paths)
     ]
     if selected:
         return selected
-    if fallback is not None and any(path.endswith(".rs") for path in paths):
+    if fallback is not None and any(is_lcov_source_path(path) for path in paths):
         return [fallback]
     return []
 
