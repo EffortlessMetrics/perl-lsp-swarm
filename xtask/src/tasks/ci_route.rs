@@ -488,6 +488,58 @@ mod tests {
     }
 
     #[test]
+    fn coverage_proof_pack_receipts_materializes_each_selected_pack() -> Result<()> {
+        let selector = vec![
+            "patch-coverage-xtask-semantic-inline".to_string(),
+            "patch-coverage-xtask-supported-editor-inline-smoke".to_string(),
+        ];
+        let packs = coverage_proof_pack_receipts(&selector)?;
+
+        let pack_ids: Vec<&str> = packs.iter().map(|pack| pack.id.as_str()).collect();
+        assert_eq!(
+            pack_ids,
+            vec![
+                "patch-coverage-xtask-semantic-inline",
+                "patch-coverage-xtask-supported-editor-inline-smoke"
+            ]
+        );
+
+        let semantic_pack = packs.first().ok_or_else(|| eyre!("missing semantic coverage pack"))?;
+        assert_eq!(
+            semantic_pack.files,
+            vec![
+                "xtask/src/tasks/semantic_inline_receipts.rs",
+                "xtask/src/tasks/semantic_inline_next_edit.rs",
+                "xtask/tests/semantic_inline_receipts_cli.rs",
+                "xtask/tests/semantic_inline_next_edit_cli.rs",
+            ]
+        );
+        assert_eq!(
+            semantic_pack.coverage_filters,
+            vec!["semantic_inline_receipts", "semantic_inline_next_edit"]
+        );
+
+        let supported_editor_pack =
+            packs.get(1).ok_or_else(|| eyre!("missing supported-editor coverage pack"))?;
+        assert_eq!(
+            supported_editor_pack.files,
+            vec![
+                "xtask/src/tasks/supported_editor_inline_smoke.rs",
+                "xtask/tests/supported_editor_inline_smoke_cli.rs",
+            ]
+        );
+        assert_eq!(
+            supported_editor_pack.coverage_filters,
+            vec!["supported_editor_inline_smoke", "semantic_inline_receipts"]
+        );
+        assert!(supported_editor_pack.commands.iter().any(|command| {
+            command
+                == "cargo test -p xtask --test supported_editor_inline_smoke_cli --profile agent --locked -- --nocapture"
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn coverage_pack_manifest_lists_every_route_selector() -> Result<()> {
         let manifest = coverage_pack_manifest()?;
         let manifest_ids: BTreeSet<&str> =
