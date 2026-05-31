@@ -2027,7 +2027,7 @@ coverage-proof-routed base='origin/main' head='HEAD':
     source "$coverage_env"
     python3 -c 'import json, shlex; from pathlib import Path; route = json.loads(Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8")); packs = route.get("coverage_proof_packs") or []; commands = []; seen = set(); pack_ids = []; exec("for pack in packs:\n    pack_ids.append(str(pack.get(\"id\", \"<unknown>\")))\n    for command in pack.get(\"commands\") or []:\n        if command not in seen:\n            seen.add(command)\n            commands.append(command)"); Path("target/receipts/quality/coverage-route-selected-packs.txt").write_text(", ".join(pack_ids) + "\n", encoding="utf-8"); body = "#!/usr/bin/env bash\nset -euo pipefail\n" + "".join("echo " + shlex.quote(">>> routed coverage: " + command) + "\n" + command + "\n" for command in commands); Path("target/receipts/quality/coverage-pack-commands.sh").write_text(body, encoding="utf-8")'
     bash target/receipts/quality/coverage-pack-commands.sh
-    "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --lcov --output-path target/lcov.info \
+    "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --profile agent --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/'
     cargo xtask coverage-baseline \
         --lcov target/lcov.info \
