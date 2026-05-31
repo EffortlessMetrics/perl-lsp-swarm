@@ -4854,6 +4854,18 @@ mod tests {
     }
 
     #[test]
+    fn different_package_receiver_does_not_suggest_current_package_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Demo::Widget;\nsub save {}\nOther::Widget->sa";
+        let character = "Other::Widget->sa".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert!(completions.items.iter().all(|item| item.insert_text != "save()"));
+        Ok(())
+    }
+
+    #[test]
     fn candidate_metadata_explains_semantic_sources() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
 
