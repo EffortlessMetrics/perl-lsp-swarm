@@ -338,12 +338,15 @@ fn coverage_pack_manifest() -> Result<CoveragePackManifest> {
     parse_coverage_pack_manifest(COVERAGE_PACKS_TOML)
 }
 
-fn parse_coverage_pack_manifest(manifest_toml: &str) -> Result<CoveragePackManifest> {
-    let manifest: CoveragePackManifest = toml::from_str(manifest_toml)?;
+fn parse_coverage_pack_manifest(contents: &str) -> Result<CoveragePackManifest> {
+    let manifest: CoveragePackManifest = toml::from_str(contents)?;
     let mut ids = BTreeSet::new();
     for pack in &manifest.pack {
         if pack.id.trim().is_empty() {
             bail!("coverage pack id must not be empty");
+        }
+        if pack.files.is_empty() {
+            bail!("coverage pack `{}` must list at least one file", pack.id);
         }
         if pack.commands.is_empty() {
             bail!("coverage pack `{}` must list at least one command", pack.id);
@@ -556,6 +559,106 @@ mod tests {
     }
 
     #[test]
+    fn ci_route_coverage_pack_manifest_rejects_empty_pack_id() -> Result<()> {
+        let Err(error) = parse_coverage_pack_manifest(
+            r#"
+                [[pack]]
+                id = " "
+                files = ["xtask/src/tasks/ci_route.rs"]
+                commands = ["cargo test -p xtask ci_route"]
+                coverage_filters = ["ci_route"]
+            "#,
+        ) else {
+            bail!("empty coverage pack id should fail");
+        };
+        assert_eq!(error.to_string(), "coverage pack id must not be empty");
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_coverage_pack_manifest_rejects_empty_file_list() -> Result<()> {
+        let Err(error) = parse_coverage_pack_manifest(
+            r#"
+                [[pack]]
+                id = "patch-coverage-ci-route"
+                files = []
+                commands = ["cargo test -p xtask ci_route"]
+                coverage_filters = ["ci_route"]
+            "#,
+        ) else {
+            bail!("coverage pack without files should fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            "coverage pack `patch-coverage-ci-route` must list at least one file"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_coverage_pack_manifest_rejects_empty_command_list() -> Result<()> {
+        let Err(error) = parse_coverage_pack_manifest(
+            r#"
+                [[pack]]
+                id = "patch-coverage-ci-route"
+                files = ["xtask/src/tasks/ci_route.rs"]
+                commands = []
+                coverage_filters = ["ci_route"]
+            "#,
+        ) else {
+            bail!("coverage pack without commands should fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            "coverage pack `patch-coverage-ci-route` must list at least one command"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_coverage_pack_manifest_rejects_empty_coverage_filter_list() -> Result<()> {
+        let Err(error) = parse_coverage_pack_manifest(
+            r#"
+                [[pack]]
+                id = "patch-coverage-ci-route"
+                files = ["xtask/src/tasks/ci_route.rs"]
+                commands = ["cargo test -p xtask ci_route"]
+                coverage_filters = []
+            "#,
+        ) else {
+            bail!("coverage pack without filters should fail");
+        };
+        assert_eq!(
+            error.to_string(),
+            "coverage pack `patch-coverage-ci-route` must list at least one coverage filter"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_coverage_pack_manifest_rejects_duplicate_pack_id() -> Result<()> {
+        let Err(error) = parse_coverage_pack_manifest(
+            r#"
+                [[pack]]
+                id = "patch-coverage-ci-route"
+                files = ["xtask/src/tasks/ci_route.rs"]
+                commands = ["cargo test -p xtask ci_route"]
+                coverage_filters = ["ci_route"]
+
+                [[pack]]
+                id = "patch-coverage-ci-route"
+                files = ["xtask/tests/ci_route_cli.rs"]
+                commands = ["cargo test -p xtask --test ci_route_cli"]
+                coverage_filters = ["ci_route_cli"]
+            "#,
+        ) else {
+            bail!("duplicate coverage pack id should fail");
+        };
+        assert_eq!(error.to_string(), "duplicate coverage pack id `patch-coverage-ci-route`");
+        Ok(())
+    }
+
+    #[test]
     fn ci_route_coverage_pack_manifest_lists_every_route_selector() -> Result<()> {
         let manifest = coverage_pack_manifest()?;
         let manifest_ids: Vec<&str> = manifest.pack.iter().map(|pack| pack.id.as_str()).collect();
@@ -585,70 +688,6 @@ mod tests {
             &route_selectors.iter().map(|selector| (*selector).to_string()).collect::<Vec<_>>(),
         )?;
         assert_eq!(proof_packs.len(), route_selectors.len());
-        Ok(())
-    }
-
-    #[test]
-    fn ci_route_coverage_pack_manifest_rejects_invalid_pack_entries() -> Result<()> {
-        let cases = [
-            (
-                "empty id",
-                r#"
-                    [[pack]]
-                    id = ""
-                    files = ["xtask/src/tasks/ci_route.rs"]
-                    commands = ["cargo test -p xtask ci_route"]
-                    coverage_filters = ["ci_route"]
-                "#,
-                "coverage pack id must not be empty",
-            ),
-            (
-                "empty command list",
-                r#"
-                    [[pack]]
-                    id = "patch-coverage-ci-route"
-                    files = ["xtask/src/tasks/ci_route.rs"]
-                    commands = []
-                    coverage_filters = ["ci_route"]
-                "#,
-                "coverage pack `patch-coverage-ci-route` must list at least one command",
-            ),
-            (
-                "empty coverage filters",
-                r#"
-                    [[pack]]
-                    id = "patch-coverage-ci-route"
-                    files = ["xtask/src/tasks/ci_route.rs"]
-                    commands = ["cargo test -p xtask ci_route"]
-                    coverage_filters = []
-                "#,
-                "coverage pack `patch-coverage-ci-route` must list at least one coverage filter",
-            ),
-            (
-                "duplicate id",
-                r#"
-                    [[pack]]
-                    id = "patch-coverage-ci-route"
-                    files = ["xtask/src/tasks/ci_route.rs"]
-                    commands = ["cargo test -p xtask ci_route"]
-                    coverage_filters = ["ci_route"]
-
-                    [[pack]]
-                    id = "patch-coverage-ci-route"
-                    files = ["xtask/tests/ci_route_cli.rs"]
-                    commands = ["cargo test -p xtask --test ci_route_cli"]
-                    coverage_filters = ["ci_route_cli"]
-                "#,
-                "duplicate coverage pack id `patch-coverage-ci-route`",
-            ),
-        ];
-
-        for (name, manifest_toml, expected_message) in cases {
-            let Err(error) = parse_coverage_pack_manifest(manifest_toml) else {
-                bail!("{name} manifest should fail validation");
-            };
-            assert_eq!(error.to_string(), expected_message, "{name}");
-        }
         Ok(())
     }
 
