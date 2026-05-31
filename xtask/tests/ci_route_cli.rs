@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use assert_cmd::cargo::cargo_bin_cmd;
 use serde_json::Value;
+use std::{fs, path::PathBuf};
 use tempfile::TempDir;
 
 #[test]
@@ -55,4 +56,45 @@ fn ci_route_cli_writes_supported_editor_proof_pack_receipt() -> Result<()> {
         Some("supported-editor smoke receipt change")
     );
     Ok(())
+}
+
+#[test]
+fn coverage_pack_manifest_declares_supported_editor_pack() -> Result<()> {
+    let manifest_path = repo_root()?.join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str)
+                == Some("patch-coverage-xtask-supported-editor-inline-smoke")
+        })
+        .ok_or_else(|| anyhow!("missing supported-editor coverage pack"))?;
+
+    assert!(toml_array_contains(
+        pack,
+        "files",
+        "xtask/src/tasks/supported_editor_inline_smoke.rs"
+    )?);
+    assert!(toml_array_contains(pack, "commands", "supported_editor_inline_smoke")?);
+    assert!(toml_array_contains(pack, "coverage_filters", "supported_editor_inline_smoke")?);
+    Ok(())
+}
+
+fn toml_array_contains(pack: &toml::Value, key: &str, needle: &str) -> Result<bool> {
+    let values = pack
+        .get(key)
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack `{key}` must be an array"))?;
+    Ok(values.iter().filter_map(toml::Value::as_str).any(|value| value.contains(needle)))
+}
+
+fn repo_root() -> Result<PathBuf> {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))
 }
