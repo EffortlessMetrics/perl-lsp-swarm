@@ -1,4 +1,7 @@
-use perl_uri::{is_special_scheme, uri_extension, uri_key};
+use perl_uri::{is_special_scheme, normalize_uri, uri_extension, uri_key};
+
+#[cfg(windows)]
+use perl_uri::uri_to_fs_path;
 
 #[test]
 fn localhost_file_authority_preserves_query_and_fragment() -> Result<(), Box<dyn std::error::Error>>
@@ -21,6 +24,28 @@ fn loopback_file_authorities_preserve_query_and_fragment() -> Result<(), Box<dyn
         uri_key("file://[::1]/tmp/script.pl?debug=1#main"),
         "file:///tmp/script.pl?debug=1#main"
     );
+    Ok(())
+}
+
+#[test]
+fn normalize_uri_loopback_authority_preserves_query_and_fragment()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(
+        normalize_uri("file://127.0.0.1/tmp/module.pm?rev=42#L10"),
+        "file:///tmp/module.pm?rev=42#L10"
+    );
+    assert_eq!(
+        normalize_uri("file://[::1]/tmp/module.pm?rev=42#L10"),
+        "file:///tmp/module.pm?rev=42#L10"
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn uri_to_fs_path_accepts_bare_windows_drive_path() -> Result<(), Box<dyn std::error::Error>> {
+    let path = uri_to_fs_path(r"C:\Users\dev\module.pm").ok_or("expected Some")?;
+    assert!(path.to_string_lossy().ends_with("module.pm"));
     Ok(())
 }
 
