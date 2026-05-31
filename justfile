@@ -1997,15 +1997,17 @@ coverage-proof-routed base='origin/main' head='HEAD':
     #!/usr/bin/env bash
     set -euo pipefail
     coverage_target="${CARGO_TARGET_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/perl-lsp-swarm-coverage-target}"
-    route_target="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/perl-lsp-swarm-coverage-route-target"
     mkdir -p target/receipts/quality
     mkdir -p "$coverage_target"
-    mkdir -p "$route_target"
-    CARGO_TARGET_DIR="$route_target" cargo xtask ci route \
-        --base "{{base}}" \
-        --head "{{head}}" \
-        --receipt target/receipts/quality/ci-route.json \
-        --summary target/receipts/quality/ci-route.md
+    if [[ -f target/receipts/quality/ci-route.json ]] && python3 -c 'import json, sys; from pathlib import Path; receipt = json.loads(Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8")); sys.exit(0 if receipt.get("base") == "{{base}}" and receipt.get("head") == "{{head}}" else 1)'; then
+        echo "using existing coverage route receipt for {{base}}...{{head}}"
+    else
+        cargo xtask ci route \
+            --base "{{base}}" \
+            --head "{{head}}" \
+            --receipt target/receipts/quality/ci-route.json \
+            --summary target/receipts/quality/ci-route.md
+    fi
     pack_count="$(python3 -c 'import json; from pathlib import Path; route = json.loads(Path("target/receipts/quality/ci-route.json").read_text(encoding="utf-8")); print(len(route.get("coverage_proof_packs") or []))')"
     if [[ "$pack_count" == "0" ]]; then
         printf '# Patch Coverage Proof\n\n- decision: `skipped-by-policy`\n- reason: changed-file routing selected no coverage proof packs\n' \
