@@ -34,6 +34,17 @@ fn ci_route_cli_writes_supported_editor_proof_pack_receipt() -> Result<()> {
         route.pointer("/coverage_pack_selector/0").and_then(Value::as_str),
         Some("patch-coverage-xtask-supported-editor-inline-smoke")
     );
+    assert_eq!(
+        route.pointer("/coverage_proof_packs/0/id").and_then(Value::as_str),
+        Some("patch-coverage-xtask-supported-editor-inline-smoke")
+    );
+    assert!(
+        route.pointer("/coverage_proof_packs/0/commands").and_then(Value::as_array).is_some_and(
+            |commands| commands.iter().any(|command| {
+                command.as_str().is_some_and(|text| text.contains("supported_editor_inline_smoke"))
+            })
+        )
+    );
     assert!(route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| {
         packs.iter().any(|pack| {
             pack.get("id").and_then(Value::as_str) == Some("xtask-supported-editor-inline-smoke")
