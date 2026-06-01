@@ -430,4 +430,37 @@ mod tests {
             "raw relative paths are accepted for resolver callers that have not URI-normalized yet"
         );
     }
+
+    #[test]
+    fn open_document_uri_match_accepts_path_bounded_suffix() {
+        assert!(
+            open_document_uri_matches_relative_path(
+                "file:///workspace/local/lib/Foo/Bar.pm",
+                "Foo/Bar.pm"
+            ),
+            "open document URIs may contain editor or workspace prefixes before the module path"
+        );
+    }
+
+    #[test]
+    fn open_document_uri_match_rejects_unbounded_suffix() {
+        assert!(
+            !open_document_uri_matches_relative_path(
+                "file:///workspace/local/lib/MyFoo/Bar.pm",
+                "Foo/Bar.pm"
+            ),
+            "the preceding URI segment must end before the module path starts"
+        );
+    }
+
+    #[test]
+    fn open_document_uri_match_normalizes_windows_separators() {
+        assert!(
+            open_document_uri_matches_relative_path(
+                "file:///workspace\\local\\lib\\Foo\\Bar.pm",
+                "Foo\\Bar.pm"
+            ),
+            "path-boundary matching should not depend on slash direction"
+        );
+    }
 }
