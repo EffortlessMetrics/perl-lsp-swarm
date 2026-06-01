@@ -151,6 +151,11 @@ const RIPR_SUMMARY_PACK: ProofPack = ProofPack {
     commands: &["python -m unittest scripts/ci/test_ripr_summary.py"],
 };
 
+const LEARNED_ESTIMATE_PACK: ProofPack = ProofPack {
+    id: "learned-estimate-focused",
+    commands: &["python -m unittest scripts/ci/test_learned_estimate.py"],
+};
+
 const GENERAL_RUST_PACK: ProofPack = ProofPack {
     id: "rust-focused",
     commands: &["cargo check --workspace --all-targets --profile agent --locked"],
@@ -333,6 +338,13 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         route.add_surface("ripr-summary");
         route.add_pack(RIPR_SUMMARY_PACK);
         route.add_coverage_pack("patch-coverage-ripr-summary");
+        return;
+    }
+
+    if file == "scripts/ci/learned_estimate.py" || file == "scripts/ci/test_learned_estimate.py" {
+        route.add_surface("learned-estimate");
+        route.add_pack(LEARNED_ESTIMATE_PACK);
+        route.add_coverage_pack("patch-coverage-learned-estimate");
         return;
     }
 
@@ -843,6 +855,31 @@ mod tests {
     }
 
     #[test]
+    fn ci_route_receipt_maps_learned_estimate_script_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/learned_estimate.py".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["learned-estimate"]);
+        assert!(proof_pack_ids(&receipt).contains(&"learned-estimate-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "learned-estimate-focused"
+                && pack.commands.iter().any(|command| {
+                    command == "python -m unittest scripts/ci/test_learned_estimate.py"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-learned-estimate").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn ci_route_coverage_proof_pack_receipts_materializes_each_selected_pack() -> Result<()> {
         let selector = vec![
             "patch-coverage-xtask-semantic-inline".to_string(),
@@ -1023,6 +1060,7 @@ mod tests {
                 "patch-coverage-ci-route",
                 "patch-coverage-ci-actuals",
                 "patch-coverage-ripr-summary",
+                "patch-coverage-learned-estimate",
                 "patch-coverage-rust-focused",
             ]
         );
@@ -1035,6 +1073,7 @@ mod tests {
             "patch-coverage-ci-route",
             "patch-coverage-ci-actuals",
             "patch-coverage-ripr-summary",
+            "patch-coverage-learned-estimate",
             "patch-coverage-rust-focused",
         ];
         let changed_files = vec![
@@ -1070,6 +1109,10 @@ mod tests {
         );
         assert_eq!(
             skipped.get("patch-coverage-ripr-summary").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-learned-estimate").map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
         assert_eq!(
