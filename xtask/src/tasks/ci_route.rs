@@ -110,6 +110,19 @@ const INLINE_CORE_PACK: ProofPack = ProofPack {
     id: "inline-core",
     commands: &[
         "cargo test -p perl-lsp-rs-core --lib --profile agent --locked inline_completion -- --nocapture",
+    ],
+};
+
+const INLINE_UX_FIXTURES_PACK: ProofPack = ProofPack {
+    id: "inline-ux-fixtures",
+    commands: &[
+        "cargo test -p perl-lsp-rs-core --test inline_completion_ux_fixtures --profile agent --locked -- --nocapture",
+    ],
+};
+
+const XTASK_INLINE_COMPLETION_QUALITY_PACK: ProofPack = ProofPack {
+    id: "xtask-inline-completion-quality",
+    commands: &[
         "cargo run -p xtask --profile agent --locked -- inline-completion-quality --receipt target/receipts/inline-completion-quality.json",
     ],
 };
@@ -166,6 +179,92 @@ const LEARNED_ESTIMATE_PACK: ProofPack = ProofPack {
 const RISK_PACKS_VALIDATOR_PACK: ProofPack = ProofPack {
     id: "risk-packs-validator-focused",
     commands: &["python -m unittest scripts/ci/test_validate_risk_packs.py"],
+};
+
+const GATE_LANE_MAPPING_PACK: ProofPack = ProofPack {
+    id: "gate-lane-mapping-focused",
+    commands: &["python -m unittest scripts/ci/test_validate_gate_lane_mapping.py"],
+};
+
+const TRUST_LANES_VALIDATOR_PACK: ProofPack = ProofPack {
+    id: "trust-lanes-validator-focused",
+    commands: &["python -m unittest scripts/ci/test_validate_trust_lanes.py"],
+};
+
+const RECEIPTS_JUNIT_PACK: ProofPack = ProofPack {
+    id: "receipts-junit-focused",
+    commands: &["python -m unittest scripts/ci/test_receipts_to_junit.py"],
+};
+
+const CORE_PACKAGE_VALIDATOR_PACK: ProofPack = ProofPack {
+    id: "core-package-validator-focused",
+    commands: &["python -m unittest scripts/ci/test_check_perl_lsp_rs_core_package.py"],
+};
+
+const AGGREGATE_LANE_HISTORY_PACK: ProofPack = ProofPack {
+    id: "aggregate-lane-history-focused",
+    commands: &["python -m unittest scripts/ci/test_aggregate_lane_history.py"],
+};
+
+const PR_PLAN_PACK: ProofPack = ProofPack {
+    id: "pr-plan-focused",
+    commands: &["python -m unittest scripts/ci/test_pr_plan.py"],
+};
+
+const PR_OVERLAP_PACK: ProofPack =
+    ProofPack { id: "pr-overlap-focused", commands: &["python scripts/tests/test_pr_overlap.py"] };
+
+const CONTROL_PLANE_LOCK_PACK: ProofPack = ProofPack {
+    id: "control-plane-lock-focused",
+    commands: &["bash scripts/test-control-plane-lock.sh"],
+};
+
+const AGENT_PREFLIGHT_PACK: ProofPack = ProofPack {
+    id: "agent-preflight-focused",
+    commands: &["bash scripts/test-agent-preflight.sh"],
+};
+
+const COVERAGE_BASELINE_SCRIPT_PACK: ProofPack = ProofPack {
+    id: "coverage-baseline-script-focused",
+    commands: &["bash scripts/tests/test-check-coverage-baseline.sh"],
+};
+
+const UPDATE_COVERAGE_BASELINE_SCRIPT_PACK: ProofPack = ProofPack {
+    id: "update-coverage-baseline-script-focused",
+    commands: &["bash scripts/tests/test-update-coverage-baseline.sh"],
+};
+
+const GENERATE_RECEIPT_SCRIPT_PACK: ProofPack = ProofPack {
+    id: "generate-receipt-script-focused",
+    commands: &["bash scripts/tests/test-generate-receipt.sh"],
+};
+
+const QUICK_RECEIPTS_WRAPPER_PACK: ProofPack = ProofPack {
+    id: "quick-receipts-wrapper-focused",
+    commands: &["bash scripts/tests/test-quick-receipts-wrapper.sh"],
+};
+
+const GENERATE_BADGES_WRAPPER_PACK: ProofPack = ProofPack {
+    id: "generate-badges-wrapper-focused",
+    commands: &["bash scripts/tests/test-generate-badges-wrapper.sh"],
+};
+
+const CLEAN_TMP_TARGETS_PACK: ProofPack = ProofPack {
+    id: "clean-tmp-targets-focused",
+    commands: &["bash scripts/tests/test-clean-tmp-targets.sh"],
+};
+
+const SWARM_CLEANUP_PACK: ProofPack = ProofPack {
+    id: "swarm-cleanup-focused",
+    commands: &[
+        "bash scripts/tests/test_swarm_clean.sh",
+        "bash scripts/tests/test_swarm_doctor.sh",
+    ],
+};
+
+const PRE_MERGE_CHECK_PACK: ProofPack = ProofPack {
+    id: "pre-merge-check-focused",
+    commands: &["bash scripts/tests/test-pre-merge-check.sh"],
 };
 
 const GENERAL_RUST_PACK: ProofPack = ProofPack {
@@ -296,13 +395,24 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         return;
     }
 
-    if file.starts_with("crates/perl-lsp-rs-core/src/providers/inline_completion/")
-        || file == "crates/perl-lsp-rs-core/tests/inline_completion_ux_fixtures.rs"
-        || file == "xtask/src/tasks/inline_completion_quality.rs"
-    {
+    if file.starts_with("crates/perl-lsp-rs-core/src/providers/inline_completion/") {
         route.add_surface("inline-core");
         route.add_pack(INLINE_CORE_PACK);
-        route.add_coverage_pack("patch-coverage-inline-core");
+        route.add_coverage_pack("patch-coverage-inline-provider-core");
+        return;
+    }
+
+    if file == "crates/perl-lsp-rs-core/tests/inline_completion_ux_fixtures.rs" {
+        route.add_surface("inline-ux-fixtures");
+        route.add_pack(INLINE_UX_FIXTURES_PACK);
+        route.add_coverage_pack("patch-coverage-inline-ux-fixtures");
+        return;
+    }
+
+    if file == "xtask/src/tasks/inline_completion_quality.rs" {
+        route.add_surface("xtask-inline-completion-quality");
+        route.add_pack(XTASK_INLINE_COMPLETION_QUALITY_PACK);
+        route.add_coverage_pack("patch-coverage-xtask-inline-quality");
         return;
     }
 
@@ -376,6 +486,146 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         route.add_surface("risk-packs-validator");
         route.add_pack(RISK_PACKS_VALIDATOR_PACK);
         route.add_coverage_pack("patch-coverage-risk-packs-validator");
+        return;
+    }
+
+    if file == "scripts/ci/validate_gate_lane_mapping.py"
+        || file == "scripts/ci/test_validate_gate_lane_mapping.py"
+    {
+        route.add_surface("gate-lane-mapping");
+        route.add_pack(GATE_LANE_MAPPING_PACK);
+        route.add_coverage_pack("patch-coverage-gate-lane-mapping");
+        return;
+    }
+
+    if file == "scripts/ci/validate_trust_lanes.py"
+        || file == "scripts/ci/test_validate_trust_lanes.py"
+    {
+        route.add_surface("trust-lanes-validator");
+        route.add_pack(TRUST_LANES_VALIDATOR_PACK);
+        route.add_coverage_pack("patch-coverage-trust-lanes-validator");
+        return;
+    }
+
+    if file == "scripts/ci/receipts-to-junit.py" || file == "scripts/ci/test_receipts_to_junit.py" {
+        route.add_surface("receipts-junit");
+        route.add_pack(RECEIPTS_JUNIT_PACK);
+        route.add_coverage_pack("patch-coverage-receipts-junit");
+        return;
+    }
+
+    if file == "scripts/ci/check_perl_lsp_rs_core_package.py"
+        || file == "scripts/ci/test_check_perl_lsp_rs_core_package.py"
+    {
+        route.add_surface("core-package-validator");
+        route.add_pack(CORE_PACKAGE_VALIDATOR_PACK);
+        route.add_coverage_pack("patch-coverage-core-package-validator");
+        return;
+    }
+
+    if file == "scripts/ci/aggregate_lane_history.py"
+        || file == "scripts/ci/test_aggregate_lane_history.py"
+    {
+        route.add_surface("aggregate-lane-history");
+        route.add_pack(AGGREGATE_LANE_HISTORY_PACK);
+        route.add_coverage_pack("patch-coverage-aggregate-lane-history");
+        return;
+    }
+
+    if file == "scripts/ci/pr_plan.py" || file == "scripts/ci/test_pr_plan.py" {
+        route.add_surface("pr-plan");
+        route.add_pack(PR_PLAN_PACK);
+        route.add_coverage_pack("patch-coverage-pr-plan");
+        return;
+    }
+
+    if file == "scripts/pr_overlap.py" || file == "scripts/tests/test_pr_overlap.py" {
+        route.add_surface("pr-overlap");
+        route.add_pack(PR_OVERLAP_PACK);
+        route.add_coverage_pack("patch-coverage-pr-overlap");
+        return;
+    }
+
+    if file == "scripts/control-plane-lock.sh" || file == "scripts/test-control-plane-lock.sh" {
+        route.add_surface("control-plane-lock");
+        route.add_pack(CONTROL_PLANE_LOCK_PACK);
+        route.add_coverage_pack("patch-coverage-control-plane-lock");
+        return;
+    }
+
+    if file == "scripts/agent-preflight.sh" || file == "scripts/test-agent-preflight.sh" {
+        route.add_surface("agent-preflight");
+        route.add_pack(AGENT_PREFLIGHT_PACK);
+        route.add_coverage_pack("patch-coverage-agent-preflight");
+        return;
+    }
+
+    if file == "scripts/check-coverage-baseline.sh"
+        || file == "scripts/tests/test-check-coverage-baseline.sh"
+    {
+        route.add_surface("coverage-baseline-script");
+        route.add_pack(COVERAGE_BASELINE_SCRIPT_PACK);
+        route.add_coverage_pack("patch-coverage-baseline-script");
+        return;
+    }
+
+    if file == "scripts/update-coverage-baseline.sh"
+        || file == "scripts/tests/test-update-coverage-baseline.sh"
+    {
+        route.add_surface("update-coverage-baseline-script");
+        route.add_pack(UPDATE_COVERAGE_BASELINE_SCRIPT_PACK);
+        route.add_coverage_pack("patch-coverage-update-baseline-script");
+        return;
+    }
+
+    if file == "scripts/generate-receipt.sh" || file == "scripts/tests/test-generate-receipt.sh" {
+        route.add_surface("generate-receipt-script");
+        route.add_pack(GENERATE_RECEIPT_SCRIPT_PACK);
+        route.add_coverage_pack("patch-coverage-generate-receipt-script");
+        return;
+    }
+
+    if file == "scripts/quick-receipts.sh" || file == "scripts/tests/test-quick-receipts-wrapper.sh"
+    {
+        route.add_surface("quick-receipts-wrapper");
+        route.add_pack(QUICK_RECEIPTS_WRAPPER_PACK);
+        route.add_coverage_pack("patch-coverage-quick-receipts-wrapper");
+        return;
+    }
+
+    if file == "scripts/generate-badges.sh"
+        || file == "scripts/tests/test-generate-badges-wrapper.sh"
+    {
+        route.add_surface("generate-badges-wrapper");
+        route.add_pack(GENERATE_BADGES_WRAPPER_PACK);
+        route.add_coverage_pack("patch-coverage-generate-badges-wrapper");
+        return;
+    }
+
+    if file == "scripts/clean-tmp-targets.sh" || file == "scripts/tests/test-clean-tmp-targets.sh" {
+        route.add_surface("clean-tmp-targets");
+        route.add_pack(CLEAN_TMP_TARGETS_PACK);
+        route.add_coverage_pack("patch-coverage-clean-tmp-targets");
+        return;
+    }
+
+    if matches!(
+        file,
+        "scripts/swarm-clean"
+            | "scripts/swarm-doctor"
+            | "scripts/tests/test_swarm_clean.sh"
+            | "scripts/tests/test_swarm_doctor.sh"
+    ) {
+        route.add_surface("swarm-cleanup");
+        route.add_pack(SWARM_CLEANUP_PACK);
+        route.add_coverage_pack("patch-coverage-swarm-cleanup");
+        return;
+    }
+
+    if file == "scripts/pre-merge-check.sh" || file == "scripts/tests/test-pre-merge-check.sh" {
+        route.add_surface("pre-merge-check");
+        route.add_pack(PRE_MERGE_CHECK_PACK);
+        route.add_coverage_pack("patch-coverage-pre-merge-check");
         return;
     }
 
@@ -939,6 +1189,449 @@ mod tests {
     }
 
     #[test]
+    fn ci_route_receipt_maps_gate_lane_mapping_script_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/validate_gate_lane_mapping.py".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["gate-lane-mapping"]);
+        assert!(proof_pack_ids(&receipt).contains(&"gate-lane-mapping-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "gate-lane-mapping-focused"
+                && pack.commands.iter().any(|command| {
+                    command == "python -m unittest scripts/ci/test_validate_gate_lane_mapping.py"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-gate-lane-mapping").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_trust_lanes_script_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/validate_trust_lanes.py".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["trust-lanes-validator"]);
+        assert!(proof_pack_ids(&receipt).contains(&"trust-lanes-validator-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "trust-lanes-validator-focused"
+                && pack.commands.iter().any(|command| {
+                    command == "python -m unittest scripts/ci/test_validate_trust_lanes.py"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-trust-lanes-validator")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_receipts_junit_script_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/receipts-to-junit.py".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["receipts-junit"]);
+        assert!(proof_pack_ids(&receipt).contains(&"receipts-junit-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "receipts-junit-focused"
+                && pack.commands.iter().any(|command| {
+                    command == "python -m unittest scripts/ci/test_receipts_to_junit.py"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-receipts-junit").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_core_package_validator_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/check_perl_lsp_rs_core_package.py".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["core-package-validator"]);
+        assert!(proof_pack_ids(&receipt).contains(&"core-package-validator-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "core-package-validator-focused"
+                && pack.commands.iter().any(|command| {
+                    command
+                        == "python -m unittest scripts/ci/test_check_perl_lsp_rs_core_package.py"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-core-package-validator")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_aggregate_lane_history_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/ci/aggregate_lane_history.py".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["aggregate-lane-history"]);
+        assert!(proof_pack_ids(&receipt).contains(&"aggregate-lane-history-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "aggregate-lane-history-focused"
+                && pack.commands.iter().any(|command| {
+                    command == "python -m unittest scripts/ci/test_aggregate_lane_history.py"
+                })
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-aggregate-lane-history")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_pr_plan_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt =
+            route_receipt("origin/main", "HEAD", vec!["scripts/ci/pr_plan.py".to_string()])?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["pr-plan"]);
+        assert!(proof_pack_ids(&receipt).contains(&"pr-plan-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "pr-plan-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "python -m unittest scripts/ci/test_pr_plan.py")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-pr-plan").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_clean_tmp_targets_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt =
+            route_receipt("origin/main", "HEAD", vec!["scripts/clean-tmp-targets.sh".to_string()])?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["clean-tmp-targets"]);
+        assert!(proof_pack_ids(&receipt).contains(&"clean-tmp-targets-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "clean-tmp-targets-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/tests/test-clean-tmp-targets.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-clean-tmp-targets").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_swarm_cleanup_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec![
+                "scripts/swarm-clean".to_string(),
+                "scripts/tests/test_swarm_doctor.sh".to_string(),
+            ],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["swarm-cleanup"]);
+        assert!(proof_pack_ids(&receipt).contains(&"swarm-cleanup-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "swarm-cleanup-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/tests/test_swarm_clean.sh")
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/tests/test_swarm_doctor.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-swarm-cleanup").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_pre_merge_check_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt =
+            route_receipt("origin/main", "HEAD", vec!["scripts/pre-merge-check.sh".to_string()])?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["pre-merge-check"]);
+        assert!(proof_pack_ids(&receipt).contains(&"pre-merge-check-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "pre-merge-check-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/tests/test-pre-merge-check.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-pre-merge-check").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_pr_overlap_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt =
+            route_receipt("origin/main", "HEAD", vec!["scripts/pr_overlap.py".to_string()])?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["pr-overlap"]);
+        assert!(proof_pack_ids(&receipt).contains(&"pr-overlap-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "pr-overlap-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "python scripts/tests/test_pr_overlap.py")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-pr-overlap").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_control_plane_lock_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/control-plane-lock.sh".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["control-plane-lock"]);
+        assert!(proof_pack_ids(&receipt).contains(&"control-plane-lock-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "control-plane-lock-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/test-control-plane-lock.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-control-plane-lock").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_agent_preflight_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt =
+            route_receipt("origin/main", "HEAD", vec!["scripts/agent-preflight.sh".to_string()])?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["agent-preflight"]);
+        assert!(proof_pack_ids(&receipt).contains(&"agent-preflight-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "agent-preflight-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/test-agent-preflight.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-agent-preflight").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_coverage_baseline_script_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/check-coverage-baseline.sh".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["coverage-baseline-script"]);
+        assert!(proof_pack_ids(&receipt).contains(&"coverage-baseline-script-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "coverage-baseline-script-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/tests/test-check-coverage-baseline.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-baseline-script").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_update_coverage_baseline_script_to_focused_non_lcov_pack() -> Result<()>
+    {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["scripts/update-coverage-baseline.sh".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["update-coverage-baseline-script"]);
+        assert!(proof_pack_ids(&receipt).contains(&"update-coverage-baseline-script-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "update-coverage-baseline-script-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/tests/test-update-coverage-baseline.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-update-baseline-script")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_generate_receipt_script_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt =
+            route_receipt("origin/main", "HEAD", vec!["scripts/generate-receipt.sh".to_string()])?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["generate-receipt-script"]);
+        assert!(proof_pack_ids(&receipt).contains(&"generate-receipt-script-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "generate-receipt-script-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/tests/test-generate-receipt.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-generate-receipt-script")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_quick_receipts_wrapper_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt =
+            route_receipt("origin/main", "HEAD", vec!["scripts/quick-receipts.sh".to_string()])?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["quick-receipts-wrapper"]);
+        assert!(proof_pack_ids(&receipt).contains(&"quick-receipts-wrapper-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "quick-receipts-wrapper-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/tests/test-quick-receipts-wrapper.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-quick-receipts-wrapper")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_generate_badges_wrapper_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt =
+            route_receipt("origin/main", "HEAD", vec!["scripts/generate-badges.sh".to_string()])?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["generate-badges-wrapper"]);
+        assert!(proof_pack_ids(&receipt).contains(&"generate-badges-wrapper-focused"));
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "generate-badges-wrapper-focused"
+                && pack
+                    .commands
+                    .iter()
+                    .any(|command| command == "bash scripts/tests/test-generate-badges-wrapper.sh")
+        }));
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-generate-badges-wrapper")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn ci_route_receipt_maps_completion_provider_to_focused_pack() -> Result<()> {
         let receipt = route_receipt(
             "origin/main",
@@ -1140,7 +1833,9 @@ mod tests {
             vec![
                 "patch-coverage-xtask-supported-editor-inline-smoke",
                 "patch-coverage-xtask-semantic-inline",
-                "patch-coverage-inline-core",
+                "patch-coverage-inline-provider-core",
+                "patch-coverage-inline-ux-fixtures",
+                "patch-coverage-xtask-inline-quality",
                 "patch-coverage-completion-core",
                 "patch-coverage-ux-scenario",
                 "patch-coverage-ci-policy",
@@ -1149,13 +1844,32 @@ mod tests {
                 "patch-coverage-ripr-summary",
                 "patch-coverage-learned-estimate",
                 "patch-coverage-risk-packs-validator",
+                "patch-coverage-gate-lane-mapping",
+                "patch-coverage-trust-lanes-validator",
+                "patch-coverage-receipts-junit",
+                "patch-coverage-core-package-validator",
+                "patch-coverage-aggregate-lane-history",
+                "patch-coverage-pr-plan",
+                "patch-coverage-pr-overlap",
+                "patch-coverage-control-plane-lock",
+                "patch-coverage-agent-preflight",
+                "patch-coverage-baseline-script",
+                "patch-coverage-update-baseline-script",
+                "patch-coverage-generate-receipt-script",
+                "patch-coverage-quick-receipts-wrapper",
+                "patch-coverage-generate-badges-wrapper",
+                "patch-coverage-clean-tmp-targets",
+                "patch-coverage-swarm-cleanup",
+                "patch-coverage-pre-merge-check",
                 "patch-coverage-rust-focused",
             ]
         );
         let route_selectors = [
             "patch-coverage-xtask-semantic-inline",
             "patch-coverage-xtask-supported-editor-inline-smoke",
-            "patch-coverage-inline-core",
+            "patch-coverage-inline-provider-core",
+            "patch-coverage-inline-ux-fixtures",
+            "patch-coverage-xtask-inline-quality",
             "patch-coverage-completion-core",
             "patch-coverage-ux-scenario",
             "patch-coverage-ci-policy",
@@ -1164,12 +1878,31 @@ mod tests {
             "patch-coverage-ripr-summary",
             "patch-coverage-learned-estimate",
             "patch-coverage-risk-packs-validator",
+            "patch-coverage-gate-lane-mapping",
+            "patch-coverage-trust-lanes-validator",
+            "patch-coverage-receipts-junit",
+            "patch-coverage-core-package-validator",
+            "patch-coverage-aggregate-lane-history",
+            "patch-coverage-pr-plan",
+            "patch-coverage-pr-overlap",
+            "patch-coverage-control-plane-lock",
+            "patch-coverage-agent-preflight",
+            "patch-coverage-baseline-script",
+            "patch-coverage-update-baseline-script",
+            "patch-coverage-generate-receipt-script",
+            "patch-coverage-quick-receipts-wrapper",
+            "patch-coverage-generate-badges-wrapper",
+            "patch-coverage-clean-tmp-targets",
+            "patch-coverage-swarm-cleanup",
+            "patch-coverage-pre-merge-check",
             "patch-coverage-rust-focused",
         ];
         let changed_files = vec![
             "xtask/src/tasks/semantic_inline_receipts.rs".to_string(),
             "xtask/src/tasks/supported_editor_inline_smoke.rs".to_string(),
             "crates/perl-lsp-rs-core/src/providers/inline_completion/engine.rs".to_string(),
+            "crates/perl-lsp-rs-core/tests/inline_completion_ux_fixtures.rs".to_string(),
+            "xtask/src/tasks/inline_completion_quality.rs".to_string(),
             "crates/perl-lsp-rs-core/src/providers/completion/completion/import_map/used_modules.rs"
                 .to_string(),
             "crates/perl-parser/src/lib.rs".to_string(),
@@ -1183,10 +1916,14 @@ mod tests {
             vec![
                 "patch-coverage-xtask-semantic-inline",
                 "patch-coverage-xtask-supported-editor-inline-smoke",
-                "patch-coverage-inline-core",
+                "patch-coverage-inline-provider-core",
                 "patch-coverage-completion-core",
                 "patch-coverage-rust-focused",
             ]
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-xtask-inline-quality").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
         assert_eq!(
             skipped.get("patch-coverage-ci-policy").map(String::as_str),
@@ -1213,33 +1950,99 @@ mod tests {
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
         assert_eq!(
+            skipped.get("patch-coverage-gate-lane-mapping").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-trust-lanes-validator").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-receipts-junit").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-core-package-validator").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-aggregate-lane-history").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-pr-plan").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-pr-overlap").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-control-plane-lock").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-agent-preflight").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-baseline-script").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-update-baseline-script").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-generate-receipt-script").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-quick-receipts-wrapper").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-generate-badges-wrapper").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-clean-tmp-targets").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-swarm-cleanup").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
+            skipped.get("patch-coverage-pre-merge-check").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
             skipped.get("patch-coverage-ux-scenario").map(String::as_str),
             Some(NON_SOURCE_LCOV_COVERAGE_SKIP_REASON)
         );
-        let inline_core_pack = proof_packs
+        assert_eq!(
+            skipped.get("patch-coverage-inline-ux-fixtures").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        let inline_provider_pack = proof_packs
             .iter()
-            .find(|pack| pack.id == "patch-coverage-inline-core")
-            .ok_or_else(|| eyre!("missing inline core coverage pack"))?;
+            .find(|pack| pack.id == "patch-coverage-inline-provider-core")
+            .ok_or_else(|| eyre!("missing inline provider coverage pack"))?;
         assert!(
-            inline_core_pack
+            inline_provider_pack
                 .files
                 .iter()
                 .any(|file| { file == "crates/perl-lsp-rs-core/src/providers/inline_completion/" })
         );
-        assert!(inline_core_pack.files.iter().any(|file| {
-            file == "crates/perl-lsp-rs-core/tests/inline_completion_ux_fixtures.rs"
-        }));
         assert!(
-            inline_core_pack
-                .files
-                .iter()
-                .any(|file| { file == "xtask/src/tasks/inline_completion_quality.rs" })
-        );
-        assert!(
-            inline_core_pack
+            !inline_provider_pack
                 .commands
                 .iter()
                 .any(|command| { command.contains("inline-completion-quality") })
+        );
+        assert!(
+            !proof_packs.iter().any(|pack| { pack.id == "patch-coverage-xtask-inline-quality" })
         );
         let completion_core_pack = proof_packs
             .iter()
@@ -1261,7 +2064,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_route_receipt_maps_inline_completion_receipt_files_to_inline_core() -> Result<()> {
+    fn ci_route_receipt_splits_inline_completion_receipt_files_by_surface() -> Result<()> {
         let receipt = route_receipt(
             "origin/main",
             "HEAD",
@@ -1272,21 +2075,85 @@ mod tests {
             ],
         )?;
 
-        assert_eq!(receipt.changed_surfaces, vec!["inline-core"]);
+        assert_eq!(
+            receipt.changed_surfaces,
+            vec!["inline-core", "inline-ux-fixtures", "xtask-inline-completion-quality"]
+        );
         assert!(proof_pack_ids(&receipt).contains(&"inline-core"));
+        assert!(proof_pack_ids(&receipt).contains(&"inline-ux-fixtures"));
+        assert!(proof_pack_ids(&receipt).contains(&"xtask-inline-completion-quality"));
         assert!(!proof_pack_ids(&receipt).contains(&"rust-focused"));
-        assert_eq!(receipt.coverage_pack_selector, vec!["patch-coverage-inline-core"]);
+        assert_eq!(receipt.coverage_pack_selector, vec!["patch-coverage-inline-provider-core"]);
         assert_eq!(
             receipt.coverage_proof_packs.iter().map(|pack| pack.id.as_str()).collect::<Vec<_>>(),
-            vec!["patch-coverage-inline-core"]
+            vec!["patch-coverage-inline-provider-core"]
         );
-        assert!(
+        assert_eq!(
+            receipt.skipped_by_policy.get("patch-coverage-inline-ux-fixtures").map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert_eq!(
             receipt
+                .skipped_by_policy
+                .get("patch-coverage-xtask-inline-quality")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "xtask-inline-completion-quality"
+                && pack.commands.iter().any(|command| command.contains("inline-completion-quality"))
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_inline_provider_to_provider_coverage_pack_only() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["inline-core"]);
+        assert_eq!(receipt.coverage_pack_selector, vec!["patch-coverage-inline-provider-core"]);
+        assert!(receipt.coverage_proof_packs.iter().flat_map(|pack| pack.commands.iter()).any(
+            |command| {
+                command
+                    == "cargo test -p perl-lsp-rs-core --lib --profile agent --locked inline_completion -- --nocapture"
+            }
+        ));
+        assert!(
+            !receipt
                 .coverage_proof_packs
                 .iter()
                 .flat_map(|pack| pack.commands.iter())
                 .any(|command| command.contains("inline-completion-quality"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_inline_quality_to_focused_non_lcov_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/src/tasks/inline_completion_quality.rs".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["xtask-inline-completion-quality"]);
+        assert!(receipt.coverage_pack_selector.is_empty());
+        assert!(receipt.coverage_proof_packs.is_empty());
+        assert_eq!(
+            receipt
+                .skipped_by_policy
+                .get("patch-coverage-xtask-inline-quality")
+                .map(String::as_str),
+            Some(NON_LCOV_COVERAGE_SKIP_REASON)
+        );
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "xtask-inline-completion-quality"
+                && pack.commands.iter().any(|command| command.contains("inline-completion-quality"))
+        }));
         Ok(())
     }
 

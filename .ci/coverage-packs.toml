@@ -38,18 +38,40 @@ coverage_filters = [
 ]
 
 [[pack]]
-id = "patch-coverage-inline-core"
+id = "patch-coverage-inline-provider-core"
 files = [
   "crates/perl-lsp-rs-core/src/providers/inline_completion/",
-  "crates/perl-lsp-rs-core/tests/inline_completion_ux_fixtures.rs",
-  "xtask/src/tasks/inline_completion_quality.rs",
 ]
 commands = [
   "cargo test -p perl-lsp-rs-core --lib --profile agent --locked inline_completion -- --nocapture",
-  "cargo run -p xtask --profile agent --locked -- inline-completion-quality --receipt target/receipts/inline-completion-quality.json",
 ]
 coverage_filters = [
   "inline_completion",
+]
+
+[[pack]]
+id = "patch-coverage-inline-ux-fixtures"
+lcov = false
+files = [
+  "crates/perl-lsp-rs-core/tests/inline_completion_ux_fixtures.rs",
+]
+commands = [
+  "cargo test -p perl-lsp-rs-core --test inline_completion_ux_fixtures --profile agent --locked -- --nocapture",
+]
+coverage_filters = [
+  "inline_completion_ux_fixtures",
+]
+
+[[pack]]
+id = "patch-coverage-xtask-inline-quality"
+lcov = false
+files = [
+  "xtask/src/tasks/inline_completion_quality.rs",
+]
+commands = [
+  "cargo run -p xtask --profile agent --locked -- inline-completion-quality --receipt target/receipts/inline-completion-quality.json",
+]
+coverage_filters = [
   "inline_completion_quality",
 ]
 
@@ -179,6 +201,247 @@ commands = [
 ]
 coverage_filters = [
   "validate_risk_packs",
+]
+
+[[pack]]
+id = "patch-coverage-gate-lane-mapping"
+lcov = false
+files = [
+  "scripts/ci/validate_gate_lane_mapping.py",
+  "scripts/ci/test_validate_gate_lane_mapping.py",
+]
+commands = [
+  "python -m unittest scripts/ci/test_validate_gate_lane_mapping.py",
+]
+coverage_filters = [
+  "validate_gate_lane_mapping",
+]
+
+[[pack]]
+id = "patch-coverage-trust-lanes-validator"
+lcov = false
+files = [
+  "scripts/ci/validate_trust_lanes.py",
+  "scripts/ci/test_validate_trust_lanes.py",
+]
+commands = [
+  "python -m unittest scripts/ci/test_validate_trust_lanes.py",
+]
+coverage_filters = [
+  "validate_trust_lanes",
+]
+
+[[pack]]
+id = "patch-coverage-receipts-junit"
+lcov = false
+files = [
+  "scripts/ci/receipts-to-junit.py",
+  "scripts/ci/test_receipts_to_junit.py",
+]
+commands = [
+  "python -m unittest scripts/ci/test_receipts_to_junit.py",
+]
+coverage_filters = [
+  "receipts_to_junit",
+]
+
+[[pack]]
+id = "patch-coverage-core-package-validator"
+lcov = false
+files = [
+  "scripts/ci/check_perl_lsp_rs_core_package.py",
+  "scripts/ci/test_check_perl_lsp_rs_core_package.py",
+]
+commands = [
+  "python -m unittest scripts/ci/test_check_perl_lsp_rs_core_package.py",
+]
+coverage_filters = [
+  "check_perl_lsp_rs_core_package",
+]
+
+[[pack]]
+id = "patch-coverage-aggregate-lane-history"
+lcov = false
+files = [
+  "scripts/ci/aggregate_lane_history.py",
+  "scripts/ci/test_aggregate_lane_history.py",
+]
+commands = [
+  "python -m unittest scripts/ci/test_aggregate_lane_history.py",
+]
+coverage_filters = [
+  "aggregate_lane_history",
+]
+
+[[pack]]
+id = "patch-coverage-pr-plan"
+lcov = false
+files = [
+  "scripts/ci/pr_plan.py",
+  "scripts/ci/test_pr_plan.py",
+]
+commands = [
+  "python -m unittest scripts/ci/test_pr_plan.py",
+]
+coverage_filters = [
+  "pr_plan",
+]
+
+[[pack]]
+id = "patch-coverage-pr-overlap"
+lcov = false
+files = [
+  "scripts/pr_overlap.py",
+  "scripts/tests/test_pr_overlap.py",
+]
+commands = [
+  "python scripts/tests/test_pr_overlap.py",
+]
+coverage_filters = [
+  "pr_overlap",
+]
+
+[[pack]]
+id = "patch-coverage-control-plane-lock"
+lcov = false
+files = [
+  "scripts/control-plane-lock.sh",
+  "scripts/test-control-plane-lock.sh",
+]
+commands = [
+  "bash scripts/test-control-plane-lock.sh",
+]
+coverage_filters = [
+  "control-plane-lock",
+]
+
+[[pack]]
+id = "patch-coverage-agent-preflight"
+lcov = false
+files = [
+  "scripts/agent-preflight.sh",
+  "scripts/test-agent-preflight.sh",
+]
+commands = [
+  "bash scripts/test-agent-preflight.sh",
+]
+coverage_filters = [
+  "agent-preflight",
+]
+
+[[pack]]
+id = "patch-coverage-baseline-script"
+lcov = false
+files = [
+  "scripts/check-coverage-baseline.sh",
+  "scripts/tests/test-check-coverage-baseline.sh",
+]
+commands = [
+  "bash scripts/tests/test-check-coverage-baseline.sh",
+]
+coverage_filters = [
+  "check-coverage-baseline",
+]
+
+[[pack]]
+id = "patch-coverage-update-baseline-script"
+lcov = false
+files = [
+  "scripts/update-coverage-baseline.sh",
+  "scripts/tests/test-update-coverage-baseline.sh",
+]
+commands = [
+  "bash scripts/tests/test-update-coverage-baseline.sh",
+]
+coverage_filters = [
+  "update-coverage-baseline",
+]
+
+[[pack]]
+id = "patch-coverage-generate-receipt-script"
+lcov = false
+files = [
+  "scripts/generate-receipt.sh",
+  "scripts/tests/test-generate-receipt.sh",
+]
+commands = [
+  "bash scripts/tests/test-generate-receipt.sh",
+]
+coverage_filters = [
+  "generate-receipt",
+]
+
+[[pack]]
+id = "patch-coverage-quick-receipts-wrapper"
+lcov = false
+files = [
+  "scripts/quick-receipts.sh",
+  "scripts/tests/test-quick-receipts-wrapper.sh",
+]
+commands = [
+  "bash scripts/tests/test-quick-receipts-wrapper.sh",
+]
+coverage_filters = [
+  "quick-receipts",
+]
+
+[[pack]]
+id = "patch-coverage-generate-badges-wrapper"
+lcov = false
+files = [
+  "scripts/generate-badges.sh",
+  "scripts/tests/test-generate-badges-wrapper.sh",
+]
+commands = [
+  "bash scripts/tests/test-generate-badges-wrapper.sh",
+]
+coverage_filters = [
+  "generate-badges",
+]
+
+[[pack]]
+id = "patch-coverage-clean-tmp-targets"
+lcov = false
+files = [
+  "scripts/clean-tmp-targets.sh",
+  "scripts/tests/test-clean-tmp-targets.sh",
+]
+commands = [
+  "bash scripts/tests/test-clean-tmp-targets.sh",
+]
+coverage_filters = [
+  "clean-tmp-targets",
+]
+
+[[pack]]
+id = "patch-coverage-swarm-cleanup"
+lcov = false
+files = [
+  "scripts/swarm-clean",
+  "scripts/swarm-doctor",
+  "scripts/tests/test_swarm_clean.sh",
+  "scripts/tests/test_swarm_doctor.sh",
+]
+commands = [
+  "bash scripts/tests/test_swarm_clean.sh",
+  "bash scripts/tests/test_swarm_doctor.sh",
+]
+coverage_filters = [
+  "swarm-cleanup",
+]
+
+[[pack]]
+id = "patch-coverage-pre-merge-check"
+lcov = false
+files = [
+  "scripts/pre-merge-check.sh",
+  "scripts/tests/test-pre-merge-check.sh",
+]
+commands = [
+  "bash scripts/tests/test-pre-merge-check.sh",
+]
+coverage_filters = [
+  "pre-merge-check",
 ]
 
 [[pack]]

@@ -1536,9 +1536,11 @@ impl InlineCompletionProvider {
 
         if prefix.is_empty() {
             let mut pushed_test_assertion = false;
+            let mut suppress_return_candidate = false;
             if semantic_context.file_role == FileRole::Test
                 && let Some(assertion) = self.preferred_test_statement(semantic_context)
             {
+                suppress_return_candidate = assertion.starts_with("is(");
                 sink.push(
                     InlineCandidateSourceKind::ContextualFallback,
                     0,
@@ -1552,7 +1554,9 @@ impl InlineCompletionProvider {
                 pushed_test_assertion = true;
             }
 
-            if let Some(variable) = self.preferred_return_variable(semantic_context) {
+            if !suppress_return_candidate
+                && let Some(variable) = self.preferred_return_variable(semantic_context)
+            {
                 sink.push(
                     InlineCandidateSourceKind::ContextualFallback,
                     0,
@@ -2048,6 +2052,29 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
+        if let Some((assigned_sigil, assigned_name)) = lexical_assignment_rhs_prefix(prefix)
+            && let Some(variable) = semantic_context
+                .visible_variables
+                .iter()
+                .find(|variable| {
+                    variable.sigil == assigned_sigil
+                        && !variable.is_scalar_self()
+                        && variable.name != assigned_name
+                })
+                .map(VariableFact::as_perl_variable)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: format!("{variable};"),
+                    filter_text: Some(variable),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
         if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
             if let Some(binding) = provider.preferred_loop_binding(semantic_context) {
                 sink.push(
@@ -2201,7 +2228,9 @@ fn is_guard_condition_prefix(prefix: &str) -> bool {
     ends_with_keyword(prefix, "return unless ")
         || ends_with_keyword(prefix, "return if ")
         || ends_with_keyword(prefix, "next if ")
+        || ends_with_keyword(prefix, "next unless ")
         || ends_with_keyword(prefix, "last if ")
+        || ends_with_keyword(prefix, "last unless ")
 }
 
 fn condition_expression_prefix(prefix: &str) -> Option<&'static str> {
@@ -2223,6 +2252,27 @@ fn condition_expression_insert_text(prefix: &str, condition: &str) -> String {
     } else {
         format!("({condition}) {{\n    \n}}")
     }
+}
+
+fn lexical_assignment_rhs_prefix(prefix: &str) -> Option<(VariableSigil, &str)> {
+    let lhs = prefix.trim_end().strip_suffix('=')?.trim_end();
+    let (variable_start, sigil) = lhs
+        .char_indices()
+        .rev()
+        .find_map(|(idx, ch)| VariableSigil::from_char(ch).map(|sigil| (idx, sigil)))?;
+    let declaration = lhs[..variable_start].trim_end();
+    let variable_name = &lhs[variable_start + 1..];
+
+    match declaration.split_whitespace().last() {
+        Some("my") => {}
+        _ => return None,
+    }
+
+    if variable_name.is_empty() || !variable_name.chars().all(is_identifier_fragment_char) {
+        return None;
+    }
+
+    Some((sigil, variable_name))
 }
 
 fn test_statement_filter_text(statement: &str) -> &'static str {
@@ -3443,6 +3493,55 @@ mod tests {
     }
 
     #[test]
+    fn lexical_assignment_rhs_uses_visible_source_scalar() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub copy {\n    my $result = compute();\n    my $copy = ";
+        let line = 2;
+        let character = "    my $copy = ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, line, character);
+
+        assert_eq!(
+            completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("$result;")
+        );
+        assert!(completions.items.iter().all(|item| item.insert_text != "$copy;"));
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_assignment_rhs_uses_matching_aggregate_sigil()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let array_source = "sub copy {\n    my @users = fetch_users();\n    my @copy = ";
+        let array_line = 2;
+        let array_character = "    my @copy = ".encode_utf16().count() as u32;
+        let array_completions =
+            provider.get_inline_completions(array_source, array_line, array_character);
+
+        assert_eq!(
+            array_completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("@users;")
+        );
+        assert!(array_completions.items.iter().all(|item| item.insert_text != "@copy;"));
+        assert!(array_completions.items.iter().all(|item| item.insert_text != "$users;"));
+
+        let hash_source = "sub copy {\n    my %users_by_id = load_users();\n    my %copy = ";
+        let hash_line = 2;
+        let hash_character = "    my %copy = ".encode_utf16().count() as u32;
+        let hash_completions =
+            provider.get_inline_completions(hash_source, hash_line, hash_character);
+
+        assert_eq!(
+            hash_completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("%users_by_id;")
+        );
+        assert!(hash_completions.items.iter().all(|item| item.insert_text != "%copy;"));
+        assert!(hash_completions.items.iter().all(|item| item.insert_text != "$users_by_id;"));
+        Ok(())
+    }
+
+    #[test]
     fn method_arrow_partial_token_replaces_only_method_fragment()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
@@ -3777,6 +3876,32 @@ mod tests {
     }
 
     #[test]
+    fn loop_guard_condition_handles_next_unless_with_visible_scalar() {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $should_skip = should_skip();\n    next unless ";
+        let character = "    next unless ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert_eq!(
+            completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("$should_skip;")
+        );
+    }
+
+    #[test]
+    fn loop_guard_condition_handles_last_unless_with_visible_scalar() {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    my $has_more = iterator_has_more();\n    last unless ";
+        let character = "    last unless ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert_eq!(
+            completions.items.first().map(|item| item.insert_text.as_str()),
+            Some("$has_more;")
+        );
+    }
+
+    #[test]
     fn guard_condition_does_not_emit_condition_expression_block()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
@@ -4010,6 +4135,26 @@ mod tests {
             let semantic = provider.semantic_context_for_prepared_context(&prepared);
             assert_eq!(semantic.expected_syntax, expected, "prefix {source:?}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_assignment_rhs_prefix_requires_my_declaration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            lexical_assignment_rhs_prefix("my $copy = "),
+            Some((VariableSigil::Scalar, "copy"))
+        );
+        assert_eq!(
+            lexical_assignment_rhs_prefix("my @copy = "),
+            Some((VariableSigil::Array, "copy"))
+        );
+        assert_eq!(
+            lexical_assignment_rhs_prefix("my %copy = "),
+            Some((VariableSigil::Hash, "copy"))
+        );
+        assert_eq!(lexical_assignment_rhs_prefix("dummy $copy = "), None);
+        assert_eq!(lexical_assignment_rhs_prefix("myself $copy = "), None);
         Ok(())
     }
 
@@ -5408,6 +5553,50 @@ mod tests {
 
         assert_eq!(normalized[0].insert_text, "is($got, $expected, 'test description');");
         assert_eq!(normalized[1].insert_text, "return $got;");
+        Ok(())
+    }
+
+    #[test]
+    fn test_assertion_context_suppresses_generic_return_candidate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Test::More;\nmy $got = compute();\nmy $expected = 42;\n\n";
+
+        let completions = provider.get_inline_completions(source, 4, 0);
+
+        assert!(
+            completions
+                .items
+                .iter()
+                .any(|item| item.insert_text == "is($got, $expected, 'test description');")
+        );
+        assert!(
+            completions.items.iter().all(|item| !item.insert_text.starts_with("return ")),
+            "test assertion slots should not include generic return candidates: {:?}",
+            completions.items
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ok_assertion_context_keeps_generic_return_candidate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Test::More;\nmy $got = compute();\n\n";
+
+        let completions = provider.get_inline_completions(source, 3, 0);
+
+        assert!(
+            completions
+                .items
+                .iter()
+                .any(|item| item.insert_text == "ok($got, 'test description');")
+        );
+        assert!(
+            completions.items.iter().any(|item| item.insert_text == "return $got;"),
+            "weaker ok(...) assertion slots should keep generic return fallback: {:?}",
+            completions.items
+        );
         Ok(())
     }
 
