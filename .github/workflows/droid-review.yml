@@ -23,7 +23,7 @@ env:
 jobs:
   droid-review:
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, perl-lsp, droid]
     # Advisory lane: do not break PR signal on external-AI-review failures.
     # See docs/ci/perl-lsp-rollout-plan.md PR 14.
     continue-on-error: true
@@ -58,7 +58,7 @@ jobs:
           }
           JSON
       - name: Run Droid Auto Review
-        uses: Factory-AI/droid-action@main
+        uses: Factory-AI/droid-action@8ea31f351ee6636ebef918ccb64682f477af7184 # pinned from main on 2026-06-01
         env:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           ANTHROPIC_AUTH_TOKEN: ""
