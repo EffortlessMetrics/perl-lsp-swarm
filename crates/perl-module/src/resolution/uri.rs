@@ -130,7 +130,7 @@ pub enum ModuleUriResolution {
 /// Resolve a module name to a `file://` URI using deterministic precedence.
 ///
 /// Search order:
-/// 1. Open document URIs (`ends_with` match on relative module path)
+/// 1. Open document URIs (path-boundary match on relative module path)
 /// 2. Workspace folders + `include_paths` (path-safe filesystem checks)
 /// 3. System `@INC` paths (when `use_system_inc` is true)
 #[must_use]
@@ -209,7 +209,7 @@ pub fn resolve_module_uri_with_effective_inc(
     let relative_path = module_name_to_path(module_name);
 
     for uri in open_document_uris {
-        if uri.ends_with(&relative_path) {
+        if open_document_uri_matches_relative_path(uri, &relative_path) {
             return ModuleUriResolution::Resolved(uri.clone());
         }
     }
@@ -269,6 +269,21 @@ pub fn resolve_module_uri_with_effective_inc(
     }
 
     ModuleUriResolution::NotFound
+}
+
+fn open_document_uri_matches_relative_path(uri: &str, relative_path: &str) -> bool {
+    if relative_path.is_empty() {
+        return false;
+    }
+
+    let normalized_uri = uri.replace('\\', "/");
+    let normalized_relative_path = relative_path.replace('\\', "/");
+    if normalized_uri == normalized_relative_path {
+        return true;
+    }
+
+    let bounded_suffix = format!("/{normalized_relative_path}");
+    normalized_uri.ends_with(&bounded_suffix)
 }
 
 fn normalize_inc_path_string(input: &str) -> Option<PathBuf> {
