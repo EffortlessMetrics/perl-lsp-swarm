@@ -796,6 +796,258 @@ fn coverage_pack_manifest_declares_agent_preflight_pack_owns_preflight_helper() 
 }
 
 #[test]
+fn coverage_pack_manifest_declares_preflight_pack_owns_preflight_wrapper() -> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str) == Some("patch-coverage-preflight-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing preflight wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files.iter().filter_map(toml::Value::as_str).any(|value| value == "scripts/preflight.sh")
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "bash scripts/tests/test-preflight-wrapper.sh")
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_pack_manifest_declares_install_githooks_pack_owns_githooks_wrapper() -> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str)
+                == Some("patch-coverage-install-githooks-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing install-githooks wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "scripts/install-githooks.sh" })
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "bash scripts/tests/test-install-githooks-wrapper.sh" })
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_pack_manifest_declares_e2e_gate_pack_owns_e2e_wrapper() -> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str) == Some("patch-coverage-e2e-gate-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing e2e-gate wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "scripts/e2e-gate.sh" })
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "bash scripts/tests/test-e2e-gate-wrapper.sh" })
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_pack_manifest_declares_execute_gate_pack_owns_execute_wrapper() -> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str)
+                == Some("patch-coverage-execute-gate-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing execute-gate wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "scripts/execute-gate.sh" })
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "bash scripts/tests/test-execute-gate-wrapper.sh" })
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_pack_manifest_declares_run_gates_pack_owns_run_gates_wrapper() -> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str) == Some("patch-coverage-run-gates-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing run-gates wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "scripts/run-gates.sh" })
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "bash scripts/tests/test-run-gates-wrapper.sh" })
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_pack_manifest_declares_gate_local_pack_owns_gate_local_wrapper() -> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str)
+                == Some("patch-coverage-gate-local-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing gate-local wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "scripts/gate-local.sh" })
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| { value == "bash scripts/tests/test-gate-local-wrapper.sh" })
+    );
+    Ok(())
+}
+
+#[test]
 fn coverage_pack_manifest_declares_coverage_baseline_pack_owns_baseline_helper() -> Result<()> {
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1006,6 +1258,49 @@ fn coverage_pack_manifest_declares_generate_badges_pack_owns_badges_wrapper() ->
             .iter()
             .filter_map(toml::Value::as_str)
             .any(|value| value == "bash scripts/tests/test-generate-badges-wrapper.sh")
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_pack_manifest_declares_ignored_test_count_pack_owns_count_wrapper() -> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str)
+                == Some("patch-coverage-ignored-test-count-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing ignored-test-count wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "scripts/ignored-test-count.sh")
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "bash scripts/tests/test-ignored-test-count-wrapper.sh")
     );
     Ok(())
 }
@@ -2318,6 +2613,370 @@ fn ci_route_cli_maps_agent_preflight_script_to_preflight_proof_pack() -> Result<
 }
 
 #[test]
+fn ci_route_cli_maps_preflight_wrapper_to_preflight_proof_pack() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/preflight.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("preflight-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str) == Some("preflight-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str() == Some("bash scripts/tests/test-preflight-wrapper.sh")
+                        })
+                    })
+            })),
+        "preflight wrapper changes must run the focused preflight proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "preflight wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route
+            .pointer("/skipped_by_policy/patch-coverage-preflight-wrapper")
+            .and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-preflight-wrapper.sh"));
+    assert!(
+        summary.contains("`patch-coverage-preflight-wrapper`: non-LCOV CI policy/routing surface")
+    );
+    Ok(())
+}
+
+#[test]
+fn ci_route_cli_maps_install_githooks_wrapper_to_githooks_proof_pack() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/install-githooks.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("install-githooks-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str) == Some("install-githooks-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str()
+                                == Some("bash scripts/tests/test-install-githooks-wrapper.sh")
+                        })
+                    })
+            })),
+        "install-githooks wrapper changes must run the focused githooks proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "install-githooks wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route
+            .pointer("/skipped_by_policy/patch-coverage-install-githooks-wrapper")
+            .and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-install-githooks-wrapper.sh"));
+    assert!(
+        summary.contains(
+            "`patch-coverage-install-githooks-wrapper`: non-LCOV CI policy/routing surface"
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn ci_route_cli_maps_e2e_gate_wrapper_to_e2e_proof_pack() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/e2e-gate.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("e2e-gate-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str) == Some("e2e-gate-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str() == Some("bash scripts/tests/test-e2e-gate-wrapper.sh")
+                        })
+                    })
+            })),
+        "e2e-gate wrapper changes must run the focused e2e proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "e2e-gate wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route.pointer("/skipped_by_policy/patch-coverage-e2e-gate-wrapper").and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-e2e-gate-wrapper.sh"));
+    assert!(
+        summary.contains("`patch-coverage-e2e-gate-wrapper`: non-LCOV CI policy/routing surface")
+    );
+    Ok(())
+}
+
+#[test]
+fn ci_route_cli_maps_execute_gate_wrapper_to_execute_gate_proof_pack() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/execute-gate.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("execute-gate-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str) == Some("execute-gate-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str()
+                                == Some("bash scripts/tests/test-execute-gate-wrapper.sh")
+                        })
+                    })
+            })),
+        "execute-gate wrapper changes must run the focused execute-gate proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "execute-gate wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route
+            .pointer("/skipped_by_policy/patch-coverage-execute-gate-wrapper")
+            .and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-execute-gate-wrapper.sh"));
+    assert!(
+        summary
+            .contains("`patch-coverage-execute-gate-wrapper`: non-LCOV CI policy/routing surface")
+    );
+    Ok(())
+}
+
+#[test]
+fn ci_route_cli_maps_run_gates_wrapper_to_run_gates_proof_pack() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/run-gates.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("run-gates-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str) == Some("run-gates-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str() == Some("bash scripts/tests/test-run-gates-wrapper.sh")
+                        })
+                    })
+            })),
+        "run-gates wrapper changes must run the focused run-gates proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "run-gates wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route
+            .pointer("/skipped_by_policy/patch-coverage-run-gates-wrapper")
+            .and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-run-gates-wrapper.sh"));
+    assert!(
+        summary.contains("`patch-coverage-run-gates-wrapper`: non-LCOV CI policy/routing surface")
+    );
+    Ok(())
+}
+
+#[test]
+fn ci_route_cli_maps_gate_local_wrapper_to_gate_local_proof_pack() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/gate-local.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("gate-local-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str) == Some("gate-local-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str()
+                                == Some("bash scripts/tests/test-gate-local-wrapper.sh")
+                        })
+                    })
+            })),
+        "gate-local wrapper changes must run the focused gate-local proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "gate-local wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route
+            .pointer("/skipped_by_policy/patch-coverage-gate-local-wrapper")
+            .and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-gate-local-wrapper.sh"));
+    assert!(
+        summary.contains("`patch-coverage-gate-local-wrapper`: non-LCOV CI policy/routing surface")
+    );
+    Ok(())
+}
+
+#[test]
 fn ci_route_cli_maps_coverage_baseline_script_to_baseline_proof_pack() -> Result<()> {
     let temp = TempDir::new()?;
     let receipt = temp.path().join("ci-route.json");
@@ -2625,6 +3284,67 @@ fn ci_route_cli_maps_generate_badges_wrapper_to_badges_proof_pack() -> Result<()
             "`patch-coverage-generate-badges-wrapper`: non-LCOV CI policy/routing surface"
         )
     );
+    Ok(())
+}
+
+#[test]
+fn ci_route_cli_maps_ignored_test_count_wrapper_to_count_proof_pack() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/ignored-test-count.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("ignored-test-count-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str) == Some("ignored-test-count-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str()
+                                == Some("bash scripts/tests/test-ignored-test-count-wrapper.sh")
+                        })
+                    })
+            })),
+        "ignored test count wrapper changes must run the focused count proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "ignored-test-count wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route
+            .pointer("/skipped_by_policy/patch-coverage-ignored-test-count-wrapper")
+            .and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-ignored-test-count-wrapper.sh"));
+    assert!(summary.contains(
+        "`patch-coverage-ignored-test-count-wrapper`: non-LCOV CI policy/routing surface"
+    ));
     Ok(())
 }
 
