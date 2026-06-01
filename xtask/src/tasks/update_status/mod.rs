@@ -20,9 +20,9 @@ use std::path::PathBuf;
 use color_eyre::eyre::{Context, Result, eyre};
 use regex::Regex;
 
-use crate::tasks::metrics::parser_accuracy::{
-    refresh_default_artifact_for_status, status_receipt_equivalent_ignoring_commit,
-    status_receipt_files_from_target,
+use crate::tasks::metrics::parser_accuracy::refresh_default_artifact_for_status;
+use crate::tasks::metrics::parser_accuracy::status_receipts::{
+    status_receipt_equivalent_ignoring_commit, status_receipt_files_from_target,
 };
 use crate::utils::project_root;
 
