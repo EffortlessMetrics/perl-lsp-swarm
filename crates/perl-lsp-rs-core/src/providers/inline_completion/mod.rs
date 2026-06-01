@@ -3786,20 +3786,10 @@ mod tests {
 
         // The guard completion ($ready;) must be present.
         let guard_present = completions.items.iter().any(|item| item.insert_text == "$ready;");
-        if !guard_present {
-            return Err("expected guard completion '$ready;' to be present".into());
-        }
+        assert!(guard_present);
 
-        // No item should contain a block opener — guard contexts do not emit condition blocks.
-        let block_item = completions.items.iter().find(|item| item.insert_text.contains("{\n"));
-        if let Some(offender) = block_item {
-            return Err(format!(
-                "guard context must not emit a condition-expression block, \
-                 but found insert_text={:?}",
-                offender.insert_text
-            )
-            .into());
-        }
+        // Guard contexts do not emit condition blocks.
+        assert!(completions.items.iter().all(|item| !item.insert_text.contains("{\n")));
 
         Ok(())
     }
@@ -4936,15 +4926,13 @@ mod tests {
     }
 
     #[test]
-    fn control_condition_without_visible_scalar_stays_silent() {
+    fn control_condition_without_visible_scalar_stays_silent()
+    -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let completions = provider.get_inline_completions("if ", 0, 3);
 
-        assert!(
-            completions.items.is_empty(),
-            "control conditions should not invent placeholder variables: {:?}",
-            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
-        );
+        assert_eq!(completions.items.len(), 0);
+        Ok(())
     }
 
     #[test]
