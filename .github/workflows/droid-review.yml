@@ -1,4 +1,4 @@
-name: Droid Auto Review
+name: Droid PR Review
 
 # External AI reviewer. Advisory: see policy/ci-lane-whitelist.toml entry
 # `droid_auto_review` and docs/ci/labels.md `ai-review`. The job runs on
@@ -11,10 +11,10 @@ name: Droid Auto Review
 
 on:
   pull_request:
-    types: [opened, ready_for_review, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: droid-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
@@ -28,7 +28,7 @@ jobs:
     # See docs/ci/perl-lsp-rollout-plan.md PR 14.
     continue-on-error: true
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
       issues: write
       id-token: write
@@ -37,41 +37,35 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 1
-      - name: Configure MiniMax BYOK for Factory Droid
+          fetch-depth: 0
+      - name: Configure MiniMax M3 for Droid BYOK
         shell: bash
         run: |
           mkdir -p "$HOME/.factory"
-          cat > "$HOME/.factory/settings.local.json" <<JSON
+
+          cat > "$HOME/.factory/settings.json" <<'JSON'
           {
             "customModels": [
               {
-                "displayName": "MiniMax-M2.7",
-                "model": "MiniMax-M2.7",
+                "model": "MiniMax-M3",
+                "displayName": "MiniMax-M3",
                 "baseUrl": "https://api.minimax.io/anthropic",
                 "apiKey": "${MINIMAX_API_KEY}",
                 "provider": "anthropic",
-                "maxOutputTokens": 64000,
-                "noImageSupport": true,
-                "extraArgs": {
-                  "temperature": 1
-                }
+                "maxOutputTokens": 64000
               }
             ]
           }
           JSON
-      - name: Run Droid Auto Review with MiniMax M2.7 BYOK
-        uses: EffortlessMetrics/droid-action-safe@7c1377ccbacddc95560d1570547a5baa51de01ec # based on Factory-AI/droid-action v5; raw debug artifact upload disabled
+      - name: Run Droid Auto Review
+        uses: Factory-AI/droid-action@main
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          ANTHROPIC_AUTH_TOKEN: ""
+          ANTHROPIC_BASE_URL: ""
         with:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
-          upload_debug_artifacts: false
           automatic_review: true
+          review_model: custom:MiniMax-M3-0
           automatic_security_review: true
-          review_depth: shallow
-          review_model: "custom:MiniMax-M2.7-0"
-          security_model: "custom:MiniMax-M2.7-0"
-          security_severity_threshold: high
-          security_block_on_critical: true
-          security_block_on_high: false
-          include_suggestions: true
-          show_full_output: false
+          security_model: custom:MiniMax-M3-0
