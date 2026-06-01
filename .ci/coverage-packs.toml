@@ -330,6 +330,20 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-preflight-wrapper"
+lcov = false
+files = [
+  "scripts/preflight.sh",
+  "scripts/tests/test-preflight-wrapper.sh",
+]
+commands = [
+  "bash scripts/tests/test-preflight-wrapper.sh",
+]
+coverage_filters = [
+  "preflight-wrapper",
+]
+
+[[pack]]
 id = "patch-coverage-baseline-script"
 lcov = false
 files = [
@@ -397,6 +411,20 @@ commands = [
 ]
 coverage_filters = [
   "generate-badges",
+]
+
+[[pack]]
+id = "patch-coverage-ignored-test-count-wrapper"
+lcov = false
+files = [
+  "scripts/ignored-test-count.sh",
+  "scripts/tests/test-ignored-test-count-wrapper.sh",
+]
+commands = [
+  "bash scripts/tests/test-ignored-test-count-wrapper.sh",
+]
+coverage_filters = [
+  "ignored-test-count",
 ]
 
 [[pack]]

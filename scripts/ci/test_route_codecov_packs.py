@@ -273,6 +273,34 @@ class RouteCodecovPacksTests(unittest.TestCase):
             [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
         )
 
+    def test_preflight_wrapper_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-preflight-wrapper",
+                "lcov": False,
+                "files": [
+                    "scripts/preflight.sh",
+                    "scripts/tests/test-preflight-wrapper.sh",
+                ],
+                "commands": ["bash scripts/tests/test-preflight-wrapper.sh"],
+                "coverage_filters": ["preflight-wrapper"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/preflight.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-preflight-wrapper"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
     def test_coverage_baseline_script_change_is_non_lcov_focused_proof(self) -> None:
         packs = [
             {
@@ -410,6 +438,34 @@ class RouteCodecovPacksTests(unittest.TestCase):
         self.assertEqual([], router.selected_packs(packs, paths))
         self.assertEqual(
             ["patch-coverage-generate-badges-wrapper"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
+    def test_ignored_test_count_wrapper_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-ignored-test-count-wrapper",
+                "lcov": False,
+                "files": [
+                    "scripts/ignored-test-count.sh",
+                    "scripts/tests/test-ignored-test-count-wrapper.sh",
+                ],
+                "commands": ["bash scripts/tests/test-ignored-test-count-wrapper.sh"],
+                "coverage_filters": ["ignored-test-count"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/ignored-test-count.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-ignored-test-count-wrapper"],
             [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
         )
 
