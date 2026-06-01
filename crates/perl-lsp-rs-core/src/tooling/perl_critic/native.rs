@@ -11,13 +11,26 @@ use super::{Severity, insertion_range};
 use crate::providers::diagnostics::unreachable_code::check_unreachable_code;
 use perl_parser_core::Node;
 use perl_parser_core::NodeKind;
+#[cfg(test)]
 use perl_parser_core::position::{Position, Range};
 use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::scope_analyzer::{IssueKind, ScopeAnalyzer, ScopeIssue};
 
+mod format_strings;
+mod naming;
 mod native_contract;
 mod native_registry;
 mod native_suppressions;
+mod pod_sections;
+mod source_utils;
+
+use format_strings::{count_format_specifiers, unquote_string};
+use naming::{
+    bareword_filehandle_lexical_name, numbered_duplicate_name, parameter_shadow_name,
+    prefixed_unused_name, shadowed_lexical_name,
+};
+use pod_sections::{MissingPodSection, missing_pod_sections};
+use source_utils::{full_line_range_for_byte_span, has_use_statement, range_for_byte_span};
 
 pub use native_contract::{
     CriticCategory, CriticContext, CriticFinding, CriticFix, CriticRelatedInformation, CriticRule,
@@ -854,13 +867,6 @@ impl CriticRule for ProhibitLeadingZerosRule {
     fn check(&self, ctx: &CriticContext<'_>, out: &mut Vec<CriticFinding>) {
         collect_leading_zeros_findings(self, ctx.source, ctx.ast, out);
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MissingPodSection {
-    name: &'static str,
-    range_start: usize,
-    range_end: usize,
 }
 
 fn unused_lexical_finding(
@@ -1765,12 +1771,6 @@ fn is_dollar_at_variable(node: &Node) -> bool {
     )
 }
 
-fn full_line_range_for_byte_span(source: &str, start: usize, end: usize) -> Range {
-    let line_start = source[..start].rfind('\n').map_or(0, |pos| pos + 1);
-    let line_end = source[end..].find('\n').map_or(source.len(), |pos| end + pos + 1);
-    range_for_byte_span(source, line_start, line_end)
-}
-
 fn push_printf_format_arity_finding(
     rule: &PrintfFormatArityRule,
     source: &str,
@@ -2176,94 +2176,6 @@ fn assignment_comparison_fix(source: &str, start: usize, end: usize) -> Option<C
     })
 }
 
-fn count_format_specifiers(format: &str) -> usize {
-    let bytes = format.as_bytes();
-    let mut count = 0;
-    let mut index = 0;
-
-    while index < bytes.len() {
-        if bytes[index] != b'%' {
-            index += 1;
-            continue;
-        }
-
-        index += 1;
-        if index >= bytes.len() {
-            break;
-        }
-        if bytes[index] == b'%' {
-            index += 1;
-            continue;
-        }
-
-        while index < bytes.len() && matches!(bytes[index], b'-' | b'+' | b' ' | b'0' | b'#') {
-            index += 1;
-        }
-        while index < bytes.len() && bytes[index].is_ascii_digit() {
-            index += 1;
-        }
-        if index < bytes.len() && bytes[index] == b'*' {
-            index += 1;
-        }
-        if index < bytes.len() && bytes[index] == b'.' {
-            index += 1;
-            while index < bytes.len() && bytes[index].is_ascii_digit() {
-                index += 1;
-            }
-            if index < bytes.len() && bytes[index] == b'*' {
-                index += 1;
-            }
-        }
-        if index < bytes.len()
-            && matches!(bytes[index], b'h' | b'l' | b'L' | b'q' | b'v' | b'z' | b't')
-        {
-            index += 1;
-            if index < bytes.len() && matches!(bytes[index], b'h' | b'l') {
-                index += 1;
-            }
-        }
-        if index < bytes.len()
-            && matches!(
-                bytes[index],
-                b's' | b'd'
-                    | b'i'
-                    | b'u'
-                    | b'o'
-                    | b'x'
-                    | b'X'
-                    | b'e'
-                    | b'E'
-                    | b'f'
-                    | b'F'
-                    | b'g'
-                    | b'G'
-                    | b'c'
-                    | b'p'
-                    | b'n'
-                    | b'b'
-            )
-        {
-            count += 1;
-        }
-        index += 1;
-    }
-
-    count
-}
-
-fn unquote_string(raw: &str) -> &str {
-    if raw.len() >= 2 {
-        let bytes = raw.as_bytes();
-        let first = bytes[0];
-        let last = bytes[raw.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return &raw[1..raw.len() - 1];
-        }
-    }
-
-    raw
-}
-
 fn duplicate_my_fix(source: &str, variable_start: usize) -> Option<CriticFix> {
     let (start, end) = duplicate_my_span(source, variable_start)?;
 
@@ -2289,134 +2201,6 @@ fn duplicate_my_span(source: &str, variable_start: usize) -> Option<(usize, usiz
     } else {
         None
     }
-}
-
-fn shadowed_lexical_name(name: &str) -> String {
-    let (sigil, base_name) = split_sigil(name);
-    format!("{sigil}inner_{base_name}")
-}
-
-fn numbered_duplicate_name(name: &str) -> String {
-    let (sigil, base_name) = split_sigil(name);
-    format!("{sigil}{base_name}_2")
-}
-
-fn parameter_shadow_name(name: &str) -> String {
-    let (sigil, base_name) = split_sigil(name);
-    format!("{sigil}p_{base_name}")
-}
-
-fn prefixed_unused_name(name: &str) -> String {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(sigil @ ('$' | '@' | '%' | '&' | '*')) => {
-            let rest = chars.as_str();
-            format!("{sigil}_{rest}")
-        }
-        _ => format!("_{name}"),
-    }
-}
-
-fn bareword_filehandle_lexical_name(name: &str) -> String {
-    format!("${}_fh", name.to_lowercase())
-}
-
-fn split_sigil(name: &str) -> (&str, &str) {
-    let bare = name.trim_start_matches(['$', '@', '%', '&', '*']);
-    let sigil_len = name.len() - bare.len();
-    (&name[..sigil_len], bare)
-}
-
-fn has_use_statement(content: &str, feature: &str) -> bool {
-    content.lines().any(|line| has_use_statement_line(line, feature))
-}
-
-fn has_use_statement_line(line: &str, feature: &str) -> bool {
-    let code_portion = line.split('#').next().unwrap_or_default();
-    let mut tokens = code_portion.split_whitespace();
-    let Some(first) = tokens.next() else {
-        return false;
-    };
-    if first != "use" {
-        return false;
-    }
-    let Some(module) = tokens.next() else {
-        return false;
-    };
-    module.trim_end_matches(';') == feature
-}
-
-fn missing_pod_sections(source: &str) -> Vec<MissingPodSection> {
-    const REQUIRED: &[&str] = &["NAME", "DESCRIPTION"];
-
-    let mut has_pod = false;
-    let mut sections = Vec::new();
-    let mut first_pod_span = None;
-    let mut byte_offset = 0;
-
-    for line in source.split_inclusive('\n') {
-        let line_without_newline = line.trim_end_matches(['\r', '\n']);
-        let trimmed = line_without_newline.trim_start();
-
-        if let Some(section) = trimmed.strip_prefix("=head1") {
-            has_pod = true;
-            first_pod_span.get_or_insert((byte_offset, byte_offset + line_without_newline.len()));
-
-            let section_name = section
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .trim_end_matches(|ch: char| !ch.is_alphanumeric())
-                .to_ascii_uppercase();
-            if !section_name.is_empty() {
-                sections.push(section_name);
-            }
-        } else if trimmed.starts_with("=pod")
-            || trimmed.starts_with("=over")
-            || trimmed.starts_with("=item")
-            || trimmed.starts_with("=begin")
-        {
-            has_pod = true;
-            first_pod_span.get_or_insert((byte_offset, byte_offset + line_without_newline.len()));
-        }
-
-        byte_offset += line.len();
-    }
-
-    if !has_pod {
-        return Vec::new();
-    }
-
-    let (range_start, range_end) = first_pod_span.unwrap_or((0, source.len().min(1)));
-
-    REQUIRED
-        .iter()
-        .filter(|required| !sections.iter().any(|section| section == **required))
-        .map(|name| MissingPodSection { name, range_start, range_end })
-        .collect()
-}
-
-fn range_for_byte_span(content: &str, start: usize, end: usize) -> Range {
-    let start = start.min(content.len());
-    let end = end.min(content.len()).max(start);
-    let start_position = position_for_byte_offset(content, start);
-    let end_position = position_for_byte_offset(content, end);
-
-    Range { start: start_position, end: end_position }
-}
-
-fn position_for_byte_offset(content: &str, offset: usize) -> Position {
-    let offset = offset.min(content.len());
-    let prefix = &content[..offset];
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
-    let line_start = prefix.rfind('\n').map_or(0, |idx| idx + 1);
-    let column = content[line_start..offset].chars().count();
-
-    Position { byte: offset, line: usize_to_u32(line), column: usize_to_u32(column) }
-}
-
-fn usize_to_u32(value: usize) -> u32 {
-    value.min(u32::MAX as usize) as u32
 }
 
 fn collect_leading_zeros_findings(
@@ -2535,7 +2319,6 @@ fn empty_program_node() -> Node {
 mod tests {
     use super::*;
     use perl_parser::Parser;
-    use perl_parser_core::position::{Position, Range};
 
     struct DummyRule;
 
