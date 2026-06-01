@@ -27,6 +27,7 @@ jobs:
     # Advisory lane: do not break PR signal on external-AI-review failures.
     # See docs/ci/perl-lsp-rollout-plan.md PR 14.
     continue-on-error: true
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
@@ -96,6 +97,7 @@ jobs:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
           upload_debug_artifacts: false
           automatic_review: true
+          review_depth: shallow
           review_model: custom:MiniMax-M3-0
           automatic_security_review: true
           security_model: custom:MiniMax-M3-0
