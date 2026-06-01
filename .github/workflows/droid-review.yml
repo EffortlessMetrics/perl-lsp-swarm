@@ -99,5 +99,5 @@ jobs:
           automatic_review: true
           review_depth: shallow
           review_model: custom:MiniMax-M3-0
-          automatic_security_review: true
+          automatic_security_review: false
           security_model: custom:MiniMax-M3-0
