@@ -273,6 +273,90 @@ class RouteCodecovPacksTests(unittest.TestCase):
             [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
         )
 
+    def test_coverage_baseline_script_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-baseline-script",
+                "lcov": False,
+                "files": [
+                    "scripts/check-coverage-baseline.sh",
+                    "scripts/tests/test-check-coverage-baseline.sh",
+                ],
+                "commands": ["bash scripts/tests/test-check-coverage-baseline.sh"],
+                "coverage_filters": ["check-coverage-baseline"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/check-coverage-baseline.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-baseline-script"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
+    def test_update_coverage_baseline_script_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-update-baseline-script",
+                "lcov": False,
+                "files": [
+                    "scripts/update-coverage-baseline.sh",
+                    "scripts/tests/test-update-coverage-baseline.sh",
+                ],
+                "commands": ["bash scripts/tests/test-update-coverage-baseline.sh"],
+                "coverage_filters": ["update-coverage-baseline"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/update-coverage-baseline.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-update-baseline-script"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
+    def test_generate_receipt_script_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-generate-receipt-script",
+                "lcov": False,
+                "files": [
+                    "scripts/generate-receipt.sh",
+                    "scripts/tests/test-generate-receipt.sh",
+                ],
+                "commands": ["bash scripts/tests/test-generate-receipt.sh"],
+                "coverage_filters": ["generate-receipt"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/generate-receipt.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-generate-receipt-script"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -330,6 +330,48 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-baseline-script"
+lcov = false
+files = [
+  "scripts/check-coverage-baseline.sh",
+  "scripts/tests/test-check-coverage-baseline.sh",
+]
+commands = [
+  "bash scripts/tests/test-check-coverage-baseline.sh",
+]
+coverage_filters = [
+  "check-coverage-baseline",
+]
+
+[[pack]]
+id = "patch-coverage-update-baseline-script"
+lcov = false
+files = [
+  "scripts/update-coverage-baseline.sh",
+  "scripts/tests/test-update-coverage-baseline.sh",
+]
+commands = [
+  "bash scripts/tests/test-update-coverage-baseline.sh",
+]
+coverage_filters = [
+  "update-coverage-baseline",
+]
+
+[[pack]]
+id = "patch-coverage-generate-receipt-script"
+lcov = false
+files = [
+  "scripts/generate-receipt.sh",
+  "scripts/tests/test-generate-receipt.sh",
+]
+commands = [
+  "bash scripts/tests/test-generate-receipt.sh",
+]
+coverage_filters = [
+  "generate-receipt",
+]
+
+[[pack]]
 id = "patch-coverage-clean-tmp-targets"
 lcov = false
 files = [
