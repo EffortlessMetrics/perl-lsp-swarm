@@ -57,6 +57,29 @@ jobs:
             ]
           }
           JSON
+      - name: Install GitHub CLI for self-hosted Droid
+        shell: bash
+        env:
+          GH_CLI_VERSION: "2.93.0"
+          GH_CLI_SHA256: 02d1290eba130e0b896f3709ffff22e1c75a51475ddb70476a85abc6b5807af0
+        run: |
+          if command -v gh >/dev/null 2>&1; then
+            gh --version
+            exit 0
+          fi
+
+          archive="gh_${GH_CLI_VERSION}_linux_amd64.tar.gz"
+          install_dir="${RUNNER_TEMP}/gh-cli"
+          mkdir -p "${install_dir}"
+
+          curl -fsSL \
+            "https://github.com/cli/cli/releases/download/v${GH_CLI_VERSION}/${archive}" \
+            -o "${RUNNER_TEMP}/${archive}"
+          printf '%s  %s\n' "${GH_CLI_SHA256}" "${RUNNER_TEMP}/${archive}" | sha256sum -c -
+
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${install_dir}"
+          echo "${install_dir}/gh_${GH_CLI_VERSION}_linux_amd64/bin" >> "${GITHUB_PATH}"
+          "${install_dir}/gh_${GH_CLI_VERSION}_linux_amd64/bin/gh" --version
       - name: Run Droid Auto Review
         uses: Factory-AI/droid-action@8ea31f351ee6636ebef918ccb64682f477af7184 # pinned from main on 2026-06-01
         env:
