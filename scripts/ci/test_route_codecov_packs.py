@@ -189,6 +189,62 @@ class RouteCodecovPacksTests(unittest.TestCase):
             [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
         )
 
+    def test_pr_overlap_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-pr-overlap",
+                "lcov": False,
+                "files": [
+                    "scripts/pr_overlap.py",
+                    "scripts/tests/test_pr_overlap.py",
+                ],
+                "commands": ["python scripts/tests/test_pr_overlap.py"],
+                "coverage_filters": ["pr_overlap"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/pr_overlap.py"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-pr-overlap"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
+    def test_control_plane_lock_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-control-plane-lock",
+                "lcov": False,
+                "files": [
+                    "scripts/control-plane-lock.sh",
+                    "scripts/test-control-plane-lock.sh",
+                ],
+                "commands": ["bash scripts/test-control-plane-lock.sh"],
+                "coverage_filters": ["control-plane-lock"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/control-plane-lock.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-control-plane-lock"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
