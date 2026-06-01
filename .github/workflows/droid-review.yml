@@ -42,6 +42,8 @@ jobs:
       - name: Configure MiniMax M3 for Droid BYOK
         shell: bash
         run: |
+          set -euo pipefail
+
           droid_home="${RUNNER_TEMP}/droid-home"
           mkdir -p "${droid_home}/.factory"
 
@@ -69,6 +71,8 @@ jobs:
           GH_CLI_VERSION: "2.93.0"
           GH_CLI_SHA256: 02d1290eba130e0b896f3709ffff22e1c75a51475ddb70476a85abc6b5807af0
         run: |
+          set -euo pipefail
+
           if command -v gh >/dev/null 2>&1; then
             gh --version
             exit 0
@@ -100,4 +104,3 @@ jobs:
           review_depth: shallow
           review_model: custom:MiniMax-M3-0
           automatic_security_review: false
-          security_model: custom:MiniMax-M3-0
