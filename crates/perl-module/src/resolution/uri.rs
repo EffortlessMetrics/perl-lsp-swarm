@@ -352,7 +352,7 @@ fn full_path_for_root(
 
 #[cfg(test)]
 mod tests {
-    use super::{IncRootKind, build_effective_inc_roots};
+    use super::{IncRootKind, build_effective_inc_roots, open_document_uri_matches_relative_path};
     use std::path::PathBuf;
 
     #[test]
@@ -413,5 +413,21 @@ mod tests {
         assert_eq!(disabled[0].kind, IncRootKind::WorkspaceRelative);
         assert_eq!(disabled[0].source, "workspace-include-paths");
         assert_eq!(disabled[1].kind, IncRootKind::WorkspaceRelative);
+    }
+
+    #[test]
+    fn open_document_uri_match_rejects_empty_relative_path() {
+        assert!(
+            !open_document_uri_matches_relative_path("file:///workspace/lib/Foo.pm", ""),
+            "empty relative paths must never match an open document"
+        );
+    }
+
+    #[test]
+    fn open_document_uri_match_accepts_exact_relative_path() {
+        assert!(
+            open_document_uri_matches_relative_path("Foo/Bar.pm", "Foo/Bar.pm"),
+            "raw relative paths are accepted for resolver callers that have not URI-normalized yet"
+        );
     }
 }
