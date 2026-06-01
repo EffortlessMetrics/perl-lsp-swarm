@@ -278,12 +278,9 @@ fn open_document_uri_matches_relative_path(uri: &str, relative_path: &str) -> bo
 
     let normalized_uri = uri.replace('\\', "/");
     let normalized_relative_path = relative_path.replace('\\', "/");
-    if normalized_uri == normalized_relative_path {
-        return true;
-    }
-
-    let bounded_suffix = format!("/{normalized_relative_path}");
-    normalized_uri.ends_with(&bounded_suffix)
+    normalized_uri
+        .strip_suffix(&normalized_relative_path)
+        .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('/'))
 }
 
 fn normalize_inc_path_string(input: &str) -> Option<PathBuf> {
@@ -425,10 +422,15 @@ mod tests {
 
     #[test]
     fn open_document_uri_match_accepts_exact_relative_path() {
-        assert!(
-            open_document_uri_matches_relative_path("Foo/Bar.pm", "Foo/Bar.pm"),
-            "raw relative paths are accepted for resolver callers that have not URI-normalized yet"
-        );
+        let cases = [("Foo/Bar.pm", "Foo/Bar.pm", true), ("Other/Bar.pm", "Foo/Bar.pm", false)];
+
+        for (normalized_uri, normalized_relative_path, expected) in cases {
+            assert_eq!(
+                open_document_uri_matches_relative_path(normalized_uri, normalized_relative_path),
+                expected,
+                "exact relative path equality should decide raw relative inputs"
+            );
+        }
     }
 
     #[test]
