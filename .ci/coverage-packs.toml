@@ -344,6 +344,62 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-install-githooks-wrapper"
+lcov = false
+files = [
+  "scripts/install-githooks.sh",
+  "scripts/tests/test-install-githooks-wrapper.sh",
+]
+commands = [
+  "bash scripts/tests/test-install-githooks-wrapper.sh",
+]
+coverage_filters = [
+  "install-githooks-wrapper",
+]
+
+[[pack]]
+id = "patch-coverage-e2e-gate-wrapper"
+lcov = false
+files = [
+  "scripts/e2e-gate.sh",
+  "scripts/tests/test-e2e-gate-wrapper.sh",
+]
+commands = [
+  "bash scripts/tests/test-e2e-gate-wrapper.sh",
+]
+coverage_filters = [
+  "e2e-gate-wrapper",
+]
+
+[[pack]]
+id = "patch-coverage-execute-gate-wrapper"
+lcov = false
+files = [
+  "scripts/execute-gate.sh",
+  "scripts/tests/test-execute-gate-wrapper.sh",
+]
+commands = [
+  "bash scripts/tests/test-execute-gate-wrapper.sh",
+]
+coverage_filters = [
+  "execute-gate-wrapper",
+]
+
+[[pack]]
+id = "patch-coverage-run-gates-wrapper"
+lcov = false
+files = [
+  "scripts/run-gates.sh",
+  "scripts/tests/test-run-gates-wrapper.sh",
+]
+commands = [
+  "bash scripts/tests/test-run-gates-wrapper.sh",
+]
+coverage_filters = [
+  "run-gates-wrapper",
+]
+
+[[pack]]
 id = "patch-coverage-baseline-script"
 lcov = false
 files = [
