@@ -43,7 +43,7 @@ jobs:
         run: |
           mkdir -p "$HOME/.factory"
 
-          cat > "$HOME/.factory/settings.json" <<'JSON'
+          cat > "$HOME/.factory/settings.json" <<JSON
           {
             "customModels": [
               {
