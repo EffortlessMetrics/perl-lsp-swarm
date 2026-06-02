@@ -10,10 +10,7 @@ permissions:
 
 jobs:
   triage:
-    runs-on:
-      group: em-ci-nano
-      labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
-    timeout-minutes: 15
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 

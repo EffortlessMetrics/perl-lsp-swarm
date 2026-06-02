@@ -28,9 +28,7 @@ permissions:
 jobs:
   aggregate:
     name: Aggregate ci-actuals into ci-lane-history.json
-    runs-on:
-      group: em-ci-nano
-      labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
