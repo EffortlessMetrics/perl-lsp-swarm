@@ -3227,17 +3227,13 @@ mod tests {
             quality,
             unavailable_next_edit_scaffold(),
         );
-        Ok(match result {
-            Ok(_) => String::new(),
-            Err(error) => error.to_string(),
-        })
+        Ok(result.map(|_| String::new()).unwrap_or_else(|error| error.to_string()))
     }
 
     fn hard_zone_quality_counter_error(quality: InlineQualityCounterSummary) -> Result<String> {
-        Ok(match validate_hard_zone_quality_counter_summary(&quality) {
-            Ok(()) => String::new(),
-            Err(error) => error.to_string(),
-        })
+        Ok(validate_hard_zone_quality_counter_summary(&quality)
+            .map(|()| String::new())
+            .unwrap_or_else(|error| error.to_string()))
     }
 
     #[test]
