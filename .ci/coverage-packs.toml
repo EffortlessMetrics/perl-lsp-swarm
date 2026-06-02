@@ -346,6 +346,34 @@ coverage_filters = [
 ]
 
 [[pack]]
+id = "patch-coverage-doc-claims-shim"
+lcov = false
+files = [
+  "scripts/check-doc-claims.py",
+  "scripts/tests/test-check-doc-claims-shim.py",
+]
+commands = [
+  "python scripts/tests/test-check-doc-claims-shim.py",
+]
+coverage_filters = [
+  "doc-claims-shim",
+]
+
+[[pack]]
+id = "patch-coverage-features-invariants-shim"
+lcov = false
+files = [
+  "scripts/check_features_invariants.py",
+  "scripts/tests/test-check-features-invariants-shim.py",
+]
+commands = [
+  "python scripts/tests/test-check-features-invariants-shim.py",
+]
+coverage_filters = [
+  "features-invariants-shim",
+]
+
+[[pack]]
 id = "patch-coverage-preflight-wrapper"
 lcov = false
 files = [
