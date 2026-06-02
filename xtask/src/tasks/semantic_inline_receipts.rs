@@ -3220,22 +3220,54 @@ mod tests {
         Ok(())
     }
 
+    fn semantic_inline_dashboard_error(quality: InlineQualityCounterSummary) -> Result<String> {
+        let result = summarize_matrix(
+            &complete_matrix(),
+            MATRIX_PATH,
+            quality,
+            unavailable_next_edit_scaffold(),
+        );
+        Ok(match result {
+            Ok(_) => String::new(),
+            Err(error) => error.to_string(),
+        })
+    }
+
     #[test]
     fn semantic_inline_dashboard_rejects_missing_hard_zone_quality_counter() -> Result<()> {
         let mut quality = green_quality();
         quality.hard_zone_rejections = None;
 
-        let Err(error) = summarize_matrix(
-            &complete_matrix(),
-            MATRIX_PATH,
-            quality,
-            unavailable_next_edit_scaffold(),
-        ) else {
-            bail!("missing hard-zone rejection counter must fail dashboard generation");
-        };
+        let error = semantic_inline_dashboard_error(quality)?;
         assert!(
-            error.to_string().contains("hard_zone_rejected"),
+            error.contains("hard_zone_rejected"),
             "error should identify the missing hard-zone counter, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_inline_dashboard_rejects_missing_hard_zone_suppression_map() -> Result<()> {
+        let mut quality = green_quality();
+        quality.suppression_reasons = None;
+
+        let error = semantic_inline_dashboard_error(quality)?;
+        assert!(
+            error.contains("/checks/suppression_reasons"),
+            "error should identify missing hard-zone suppression map, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_inline_dashboard_rejects_missing_hard_zone_suppression_reason() -> Result<()> {
+        let mut quality = green_quality();
+        quality.suppression_reasons = Some(BTreeMap::new());
+
+        let error = semantic_inline_dashboard_error(quality)?;
+        assert!(
+            error.contains("/checks/suppression_reasons/hard_zone"),
+            "error should identify missing hard-zone suppression reason, got {error}"
         );
         Ok(())
     }
@@ -3256,16 +3288,9 @@ mod tests {
         hard_zone.passed = 0;
         hard_zone.suppression_reasons.insert("hard_zone".to_string(), 0);
 
-        let Err(error) = summarize_matrix(
-            &complete_matrix(),
-            MATRIX_PATH,
-            quality,
-            unavailable_next_edit_scaffold(),
-        ) else {
-            bail!("zero hard-zone rejection counter must fail dashboard generation");
-        };
+        let error = semantic_inline_dashboard_error(quality)?;
         assert!(
-            error.to_string().contains("at least one hard-zone rejection"),
+            error.contains("at least one hard-zone rejection"),
             "error should identify the missing hard-zone proof, got {error}"
         );
         Ok(())
@@ -3280,17 +3305,9 @@ mod tests {
             .ok_or_else(|| eyre!("missing suppression reasons"))?;
         suppression_reasons.insert("hard_zone".to_string(), 1);
 
-        let Err(error) = summarize_matrix(
-            &complete_matrix(),
-            MATRIX_PATH,
-            quality,
-            unavailable_next_edit_scaffold(),
-        ) else {
-            bail!("mismatched hard-zone suppression count must fail dashboard generation");
-        };
+        let error = semantic_inline_dashboard_error(quality)?;
         assert!(
-            error.to_string().contains("suppression count")
-                && error.to_string().contains("rejection count"),
+            error.contains("suppression count") && error.contains("rejection count"),
             "error should identify hard-zone suppression drift, got {error}"
         );
         Ok(())
@@ -3302,17 +3319,27 @@ mod tests {
         let sources = quality.sources.as_mut().ok_or_else(|| eyre!("missing sources"))?;
         sources.remove("hard_zone");
 
-        let Err(error) = summarize_matrix(
-            &complete_matrix(),
-            MATRIX_PATH,
-            quality,
-            unavailable_next_edit_scaffold(),
-        ) else {
-            bail!("missing hard-zone source summary must fail dashboard generation");
-        };
+        let error = semantic_inline_dashboard_error(quality)?;
         assert!(
-            error.to_string().contains("/sources/hard_zone"),
+            error.contains("/sources/hard_zone"),
             "error should identify missing hard-zone source summary, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_inline_dashboard_rejects_hard_zone_source_expected_mismatch() -> Result<()> {
+        let mut quality = green_quality();
+        let sources = quality.sources.as_mut().ok_or_else(|| eyre!("missing sources"))?;
+        let hard_zone =
+            sources.get_mut("hard_zone").ok_or_else(|| eyre!("missing hard_zone source"))?;
+        hard_zone.expected = 1;
+        hard_zone.passed = 1;
+
+        let error = semantic_inline_dashboard_error(quality)?;
+        assert!(
+            error.contains("expected count") && error.contains("hard-zone rejection count"),
+            "error should identify hard-zone source count drift, got {error}"
         );
         Ok(())
     }
@@ -3325,17 +3352,43 @@ mod tests {
             sources.get_mut("hard_zone").ok_or_else(|| eyre!("missing hard_zone source"))?;
         hard_zone.returned_items = 1;
 
-        let Err(error) = summarize_matrix(
-            &complete_matrix(),
-            MATRIX_PATH,
-            quality,
-            unavailable_next_edit_scaffold(),
-        ) else {
-            bail!("hard-zone returned items must fail dashboard generation");
-        };
+        let error = semantic_inline_dashboard_error(quality)?;
         assert!(
-            error.to_string().contains("hard-zone source must stay silent"),
+            error.contains("hard-zone source must stay silent"),
             "error should identify hard-zone returned-item drift, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_inline_dashboard_rejects_missing_hard_zone_source_suppression() -> Result<()> {
+        let mut quality = green_quality();
+        let sources = quality.sources.as_mut().ok_or_else(|| eyre!("missing sources"))?;
+        let hard_zone =
+            sources.get_mut("hard_zone").ok_or_else(|| eyre!("missing hard_zone source"))?;
+        hard_zone.suppression_reasons = BTreeMap::new();
+
+        let error = semantic_inline_dashboard_error(quality)?;
+        assert!(
+            error.contains("/sources/hard_zone/suppression_reasons/hard_zone"),
+            "error should identify missing hard-zone source suppression, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_inline_dashboard_rejects_hard_zone_source_suppression_mismatch() -> Result<()> {
+        let mut quality = green_quality();
+        let sources = quality.sources.as_mut().ok_or_else(|| eyre!("missing sources"))?;
+        let hard_zone =
+            sources.get_mut("hard_zone").ok_or_else(|| eyre!("missing hard_zone source"))?;
+        hard_zone.suppression_reasons.insert("hard_zone".to_string(), 1);
+
+        let error = semantic_inline_dashboard_error(quality)?;
+        assert!(
+            error.contains("/sources/hard_zone suppression count")
+                && error.contains("hard-zone rejection count"),
+            "error should identify hard-zone source suppression drift, got {error}"
         );
         Ok(())
     }
