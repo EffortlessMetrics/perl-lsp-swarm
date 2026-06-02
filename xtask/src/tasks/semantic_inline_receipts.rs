@@ -3233,6 +3233,48 @@ mod tests {
         })
     }
 
+    fn hard_zone_quality_counter_error(quality: InlineQualityCounterSummary) -> Result<String> {
+        Ok(match validate_hard_zone_quality_counter_summary(&quality) {
+            Ok(()) => String::new(),
+            Err(error) => error.to_string(),
+        })
+    }
+
+    #[test]
+    fn hard_zone_quality_counter_summary_accepts_matching_receipt() -> Result<()> {
+        validate_hard_zone_quality_counter_summary(&green_quality())
+    }
+
+    #[test]
+    fn hard_zone_quality_counter_summary_rejects_missing_counter() -> Result<()> {
+        let mut quality = green_quality();
+        quality.hard_zone_rejections = None;
+
+        let error = hard_zone_quality_counter_error(quality)?;
+        assert!(
+            error.contains("hard_zone_rejected"),
+            "error should identify the missing hard-zone counter, got {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hard_zone_quality_counter_summary_rejects_source_suppression_drift() -> Result<()> {
+        let mut quality = green_quality();
+        let sources = quality.sources.as_mut().ok_or_else(|| eyre!("missing sources"))?;
+        let hard_zone =
+            sources.get_mut("hard_zone").ok_or_else(|| eyre!("missing hard_zone source"))?;
+        hard_zone.suppression_reasons.insert("hard_zone".to_string(), 1);
+
+        let error = hard_zone_quality_counter_error(quality)?;
+        assert!(
+            error.contains("/sources/hard_zone suppression count")
+                && error.contains("hard-zone rejection count"),
+            "error should identify hard-zone source suppression drift, got {error}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn semantic_inline_dashboard_rejects_missing_hard_zone_quality_counter() -> Result<()> {
         let mut quality = green_quality();
