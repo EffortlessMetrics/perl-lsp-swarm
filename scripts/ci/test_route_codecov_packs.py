@@ -581,6 +581,90 @@ class RouteCodecovPacksTests(unittest.TestCase):
             [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
         )
 
+    def test_devex_targeted_checks_wrapper_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-devex-targeted-checks-wrapper",
+                "lcov": False,
+                "files": [
+                    "scripts/devex-targeted-checks.sh",
+                    "scripts/tests/test-devex-targeted-checks-wrapper.sh",
+                ],
+                "commands": ["bash scripts/tests/test-devex-targeted-checks-wrapper.sh"],
+                "coverage_filters": ["devex-targeted-checks-wrapper"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/devex-targeted-checks.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-devex-targeted-checks-wrapper"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
+    def test_lsp_cancellation_wrapper_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-lsp-cancellation-wrapper",
+                "lcov": False,
+                "files": [
+                    "scripts/test-lsp-cancellation.sh",
+                    "scripts/tests/test-lsp-cancellation-wrapper.sh",
+                ],
+                "commands": ["bash scripts/tests/test-lsp-cancellation-wrapper.sh"],
+                "coverage_filters": ["lsp-cancellation-wrapper"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/test-lsp-cancellation.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-lsp-cancellation-wrapper"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
+    def test_test_capped_wrapper_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-test-capped-wrapper",
+                "lcov": False,
+                "files": [
+                    "scripts/test-capped.sh",
+                    "scripts/tests/test-test-capped-wrapper.sh",
+                ],
+                "commands": ["bash scripts/tests/test-test-capped-wrapper.sh"],
+                "coverage_filters": ["test-capped-wrapper"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/test-capped.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-test-capped-wrapper"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
     def test_coverage_baseline_script_change_is_non_lcov_focused_proof(self) -> None:
         packs = [
             {
