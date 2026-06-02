@@ -1723,6 +1723,60 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let path = temp.path().join("semantic-inline-next-edit.json");
         let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold
+            .as_object_mut()
+            .ok_or_else(|| eyre!("test scaffold must be an object"))?
+            .remove("optional_ai_candidate_boundary");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("next-edit scaffold without optional AI boundary must fail");
+        };
+        assert!(
+            error.to_string().contains("optional_ai_candidate_boundary"),
+            "error should identify missing optional AI boundary, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
+        scaffold["optional_ai_candidate_boundary"]["enabled_by_default"] = json!(true);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("next-edit scaffold with enabled AI boundary must fail");
+        };
+        assert!(
+            error.to_string().contains("optional_ai_candidate_boundary/enabled_by_default"),
+            "error should identify optional AI default drift, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
+        scaffold["optional_ai_candidate_boundary"]["ai_candidate_source_enabled"] = json!(true);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("next-edit scaffold with enabled AI candidate source must fail");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("optional_ai_candidate_boundary/ai_candidate_source_enabled"),
+            "error should identify optional AI source drift, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
+        scaffold["optional_ai_candidate_boundary"]["default_response_suggestions_empty"] =
+            json!(false);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+
+        let Err(error) = read_optional_next_edit_scaffold_summary(&path) else {
+            bail!("next-edit scaffold with default AI suggestion drift must fail");
+        };
+        assert!(
+            error.to_string().contains("default_response_suggestions_empty"),
+            "error should identify default AI suggestion drift, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
         scaffold["optional_ai_candidate_boundary"]["rejects_ai_enabled_policy"] = json!(false);
         fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
 
@@ -1744,6 +1798,48 @@ mod tests {
         assert!(
             error.to_string().contains("rejects_missing_parse_safety"),
             "error should identify optional AI parse-safety drift, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
+        scaffold["optional_ai_candidate_boundary"]["rejects_missing_editor_safe_range"] =
+            json!(false);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error =
+            next_edit_scaffold_summary_error(&path, "missing editor-safe range drift must fail");
+        assert!(
+            error.to_string().contains("rejects_missing_editor_safe_range"),
+            "error should identify optional AI editor-safe range drift, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
+        scaffold["optional_ai_candidate_boundary"]["rejects_missing_selected_completion_compatibility"] =
+            json!(false);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error =
+            next_edit_scaffold_summary_error(&path, "selected completion boundary drift must fail");
+        assert!(
+            error.to_string().contains("rejects_missing_selected_completion_compatibility"),
+            "error should identify optional AI selected-completion drift, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
+        scaffold["optional_ai_candidate_boundary"]["rejects_nondeterministic_sources"] =
+            json!(false);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error =
+            next_edit_scaffold_summary_error(&path, "nondeterministic source drift must fail");
+        assert!(
+            error.to_string().contains("rejects_nondeterministic_sources"),
+            "error should identify optional AI source-determinism drift, got {error}"
+        );
+
+        scaffold = valid_next_edit_scaffold_json();
+        scaffold["optional_ai_candidate_boundary"]["deterministic_sources_only"] = json!(false);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(&path, "deterministic source drift must fail");
+        assert!(
+            error.to_string().contains("deterministic_sources_only"),
+            "error should identify optional AI deterministic-source drift, got {error}"
         );
 
         Ok(())
