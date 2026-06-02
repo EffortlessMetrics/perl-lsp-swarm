@@ -176,6 +176,13 @@ struct MissingImportNextActionSummary {
     reachable_candidate_reason: Option<String>,
     duplicate_import_rejected: bool,
     unreachable_module_rejected: bool,
+    project_shape_candidate_prepared: bool,
+    project_shape_candidate_editor_visible: bool,
+    project_shape_candidate_reason: Option<String>,
+    project_shape_duplicate_rejected: bool,
+    project_shape_root_only_rejected: bool,
+    project_shape_cancelled_lib_rejected: bool,
+    project_shape_parse_stable: bool,
     default_gate_disabled: bool,
     explicit_gate_runtime_unregistered: bool,
     rejection_reasons: BTreeMap<String, u64>,
@@ -488,6 +495,10 @@ fn missing_import_next_action_summary(scaffold: &Value) -> Result<MissingImportN
         .get("missing_import_next_action")
         .ok_or_else(|| eyre!("next-edit scaffold receipt missing missing_import_next_action"))?;
     let reachable_candidate = action.pointer("/reachable_candidate/candidate");
+    let project_shape = action
+        .get("project_shape")
+        .ok_or_else(|| eyre!("next-edit scaffold receipt missing missing_import project_shape"))?;
+    let project_candidate = project_shape.pointer("/project_candidate/candidate");
     Ok(MissingImportNextActionSummary {
         reachable_candidate_prepared: reachable_candidate.is_some(),
         reachable_candidate_editor_visible: reachable_candidate
@@ -505,6 +516,31 @@ fn missing_import_next_action_summary(scaffold: &Value) -> Result<MissingImportN
             "/unreachable_module/rejectionReasons",
             "unreachable_module",
         )?,
+        project_shape_candidate_prepared: project_candidate.is_some(),
+        project_shape_candidate_editor_visible: project_candidate
+            .and_then(|candidate| candidate.get("editorVisible"))
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        project_shape_candidate_reason: candidate_reason(project_candidate),
+        project_shape_duplicate_rejected: rejection_reason_present(
+            project_shape,
+            "/duplicate_project_import/rejectionReasons",
+            "duplicate_import",
+        )?,
+        project_shape_root_only_rejected: rejection_reason_present(
+            project_shape,
+            "/root_only_module/rejectionReasons",
+            "unreachable_module",
+        )?,
+        project_shape_cancelled_lib_rejected: rejection_reason_present(
+            project_shape,
+            "/cancelled_lib_module/rejectionReasons",
+            "unreachable_module",
+        )?,
+        project_shape_parse_stable: project_shape
+            .get("parse_stable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         default_gate_disabled: action.pointer("/default_gate/status").and_then(Value::as_str)
             == Some("disabled"),
         explicit_gate_runtime_unregistered: action
@@ -516,6 +552,9 @@ fn missing_import_next_action_summary(scaffold: &Value) -> Result<MissingImportN
             &[
                 "/duplicate_import/rejectionReasons",
                 "/unreachable_module/rejectionReasons",
+                "/project_shape/duplicate_project_import/rejectionReasons",
+                "/project_shape/root_only_module/rejectionReasons",
+                "/project_shape/cancelled_lib_module/rejectionReasons",
                 "/default_gate/rejectionReasons",
                 "/explicit_gate/rejectionReasons",
             ],
@@ -793,6 +832,66 @@ fn require_missing_import_next_action(scaffold: &Value) -> Result<()> {
     )? {
         bail!("missing-import next action did not reject unreachable module");
     }
+    let project_shape = action
+        .get("project_shape")
+        .ok_or_else(|| eyre!("next-edit scaffold receipt missing missing_import project_shape"))?;
+    require_next_edit_value(
+        project_shape.pointer("/project_candidate/status").and_then(Value::as_str),
+        "missing_import_next_action/project_shape/project_candidate/status",
+        "receipt_only",
+    )?;
+    require_next_edit_value(
+        project_shape.pointer("/project_candidate/candidate/family").and_then(Value::as_str),
+        "missing_import_next_action/project_shape/project_candidate/candidate/family",
+        "missing_import",
+    )?;
+    require_next_edit_value(
+        project_shape.pointer("/project_candidate/candidate/module").and_then(Value::as_str),
+        "missing_import_next_action/project_shape/project_candidate/candidate/module",
+        "My::App",
+    )?;
+    require_next_edit_bool(
+        project_shape
+            .pointer("/project_candidate/candidate/editorVisible")
+            .and_then(Value::as_bool),
+        "missing_import_next_action/project_shape/project_candidate/candidate/editorVisible",
+        false,
+    )?;
+    if !rejection_reason_present(
+        project_shape,
+        "/duplicate_project_import/rejectionReasons",
+        "duplicate_import",
+    )? {
+        bail!("project-shaped missing-import next action did not reject duplicate import");
+    }
+    if !rejection_reason_present(
+        project_shape,
+        "/root_only_module/rejectionReasons",
+        "unreachable_module",
+    )? {
+        bail!("project-shaped missing-import next action did not reject root-only module");
+    }
+    if !rejection_reason_present(
+        project_shape,
+        "/cancelled_lib_module/rejectionReasons",
+        "unreachable_module",
+    )? {
+        bail!("project-shaped missing-import next action did not reject no-lib-cancelled module");
+    }
+    let project_accepted_text =
+        project_shape.get("accepted_document_text").and_then(Value::as_str).ok_or_else(|| {
+            eyre!(
+                "next-edit scaffold receipt missing project missing_import accepted_document_text"
+            )
+        })?;
+    if !project_accepted_text.contains("use lib 'lib';\nuse My::App;\nmy $app = My::App->new;") {
+        bail!("project-shaped missing-import accepted document text did not import after use lib");
+    }
+    require_next_edit_bool(
+        project_shape.get("parse_stable").and_then(Value::as_bool),
+        "missing_import_next_action/project_shape/parse_stable",
+        true,
+    )?;
     require_next_edit_value(
         action.pointer("/default_gate/status").and_then(Value::as_str),
         "missing_import_next_action/default_gate/status",
@@ -1760,6 +1859,38 @@ mod tests {
                 "status": "receipt_only",
                 "rejectionReasons": ["unreachable_module"]
             },
+            "project_shape": {
+                "claim_boundary": "receipt-only project-shaped missing-import next-action proof",
+                "project_candidate": {
+                    "status": "receipt_only",
+                    "candidate": {
+                        "family": "missing_import",
+                        "module": "My::App",
+                        "reason": "reachable_module_from_effective_inc",
+                        "edit": {
+                            "startByte": 62,
+                            "endByte": 62,
+                            "newText": "use My::App;\n"
+                        },
+                        "editorVisible": false
+                    },
+                    "rejectionReasons": []
+                },
+                "duplicate_project_import": {
+                    "status": "receipt_only",
+                    "rejectionReasons": ["duplicate_import"]
+                },
+                "root_only_module": {
+                    "status": "receipt_only",
+                    "rejectionReasons": ["unreachable_module"]
+                },
+                "cancelled_lib_module": {
+                    "status": "receipt_only",
+                    "rejectionReasons": ["unreachable_module"]
+                },
+                "accepted_document_text": "package App::Script;\nuse strict;\nuse warnings;\nuse lib 'lib';\nuse My::App;\nmy $app = My::App->new;\n",
+                "parse_stable": true
+            },
             "default_gate": {
                 "status": "disabled",
                 "rejectionReasons": ["gate_disabled"]
@@ -2064,8 +2195,8 @@ mod tests {
             missing_import.reachable_candidate_reason.as_deref(),
             Some("reachable_module_from_effective_inc")
         );
-        assert_eq!(missing_import.rejection_reasons.get("duplicate_import").copied(), Some(1));
-        assert_eq!(missing_import.rejection_reasons.get("unreachable_module").copied(), Some(1));
+        assert_eq!(missing_import.rejection_reasons.get("duplicate_import").copied(), Some(2));
+        assert_eq!(missing_import.rejection_reasons.get("unreachable_module").copied(), Some(3));
         assert_eq!(missing_import.rejection_reasons.get("gate_disabled").copied(), Some(1));
         assert_eq!(
             missing_import.rejection_reasons.get("runtime_provider_not_registered").copied(),
