@@ -32,7 +32,9 @@ permissions:
 jobs:
   validate:
     name: Validate CI policy ledgers
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: em-ci-nano
+      labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
     timeout-minutes: 5
     steps:
       - name: Checkout

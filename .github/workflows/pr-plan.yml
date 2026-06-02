@@ -31,7 +31,9 @@ permissions:
 jobs:
   plan:
     name: Forecast LEM and lanes
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: em-ci-nano
+      labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
     timeout-minutes: 5
     if: github.event.pull_request.draft != true
     steps:
