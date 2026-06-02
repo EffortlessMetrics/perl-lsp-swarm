@@ -45,9 +45,11 @@ jobs:
           set -euo pipefail
 
           droid_home="${RUNNER_TEMP}/droid-home"
+          config_path="${droid_home}/.factory/settings.local.json"
+          umask 077
           mkdir -p "${droid_home}/.factory"
 
-          cat > "${droid_home}/.factory/settings.local.json" <<JSON
+          cat > "${config_path}" <<JSON
           {
             "customModels": [
               {
@@ -65,6 +67,66 @@ jobs:
             ]
           }
           JSON
+          chmod 600 "${config_path}"
+      - name: Smoke test Droid Factory config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          config_path="${RUNNER_TEMP}/droid-home/.factory/settings.local.json"
+          if [ ! -s "${config_path}" ]; then
+            echo "::error::Droid Factory config is missing or empty at ${config_path}"
+            exit 1
+          fi
+
+          mode="$(stat -c '%a' "${config_path}")"
+          if [ "${mode}" != "600" ]; then
+            echo "::error::Droid Factory config permissions must be 600, got ${mode}"
+            exit 1
+          fi
+
+          python3 - "${config_path}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          def fail(message: str) -> None:
+              print(f"::error::{message}", file=sys.stderr)
+              raise SystemExit(1)
+
+          config_path = Path(sys.argv[1])
+          try:
+              config = json.loads(config_path.read_text(encoding="utf-8"))
+          except json.JSONDecodeError as error:
+              fail(f"Droid Factory config is not valid JSON: {error}")
+
+          models = config.get("customModels")
+          if not isinstance(models, list) or len(models) != 1:
+              fail("Droid Factory config must define exactly one custom model")
+
+          model = models[0]
+          expected = {
+              "displayName": "MiniMax-M3",
+              "model": "MiniMax-M3",
+              "baseUrl": "https://api.minimax.io/anthropic",
+              "provider": "anthropic",
+              "maxOutputTokens": 64000,
+              "noImageSupport": True,
+          }
+          for key, expected_value in expected.items():
+              if model.get(key) != expected_value:
+                  fail(f"Droid Factory config field {key!r} does not match expected value")
+
+          api_key = model.get("apiKey")
+          if not isinstance(api_key, str) or not api_key.strip():
+              fail("Droid Factory config is missing the MiniMax API key")
+
+          extra_args = model.get("extraArgs")
+          if not isinstance(extra_args, dict) or extra_args.get("temperature") != 1:
+              fail("Droid Factory config must set extraArgs.temperature to 1")
+
+          print("Droid Factory config smoke passed")
+          PY
       - name: Install GitHub CLI for self-hosted Droid
         shell: bash
         env:

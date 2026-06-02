@@ -46,10 +46,13 @@ fn droid_review_uses_temp_factory_home_for_m3_custom_model() -> Result<()> {
 
     for required in [
         "droid_home=\"${RUNNER_TEMP}/droid-home\"",
+        "config_path=\"${droid_home}/.factory/settings.local.json\"",
+        "umask 077",
         "mkdir -p \"${droid_home}/.factory\"",
         "\"displayName\": \"MiniMax-M3\"",
         "\"model\": \"MiniMax-M3\"",
         "\"baseUrl\": \"https://api.minimax.io/anthropic\"",
+        "chmod 600 \"${config_path}\"",
         "review_model: custom:MiniMax-M3-0",
         "HOME: ${{ runner.temp }}/droid-home",
     ] {
@@ -58,6 +61,49 @@ fn droid_review_uses_temp_factory_home_for_m3_custom_model() -> Result<()> {
     assert!(
         !content.contains("MiniMax-M2.7"),
         "Droid PR Review must not regress to the legacy MiniMax M2.7 model"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn droid_review_smoke_tests_factory_config_before_action() -> Result<()> {
+    let (_content, workflow) = droid_review_workflow()?;
+    let job = mapping_value(mapping_value(&workflow, "jobs")?, "droid-review")?;
+    let step_names = step_names(job)?;
+    let configure_index = step_index(&step_names, "Configure MiniMax M3 for Droid BYOK")?;
+    let smoke_index = step_index(&step_names, "Smoke test Droid Factory config")?;
+    let action_index = step_index(&step_names, "Run Droid Auto Review")?;
+
+    assert!(
+        configure_index < smoke_index && smoke_index < action_index,
+        "Droid Factory config smoke must run after config generation and before the Droid action"
+    );
+
+    let smoke_step = named_step(job, "Smoke test Droid Factory config")?;
+    let smoke_run = scalar_string(mapping_value(smoke_step, "run")?)?;
+    for required in [
+        "config_path=\"${RUNNER_TEMP}/droid-home/.factory/settings.local.json\"",
+        "Droid Factory config is missing or empty",
+        "stat -c '%a' \"${config_path}\"",
+        "Droid Factory config permissions must be 600",
+        "python3 - \"${config_path}\"",
+        "json.loads",
+        "\"displayName\": \"MiniMax-M3\"",
+        "\"model\": \"MiniMax-M3\"",
+        "\"baseUrl\": \"https://api.minimax.io/anthropic\"",
+        "\"provider\": \"anthropic\"",
+        "\"maxOutputTokens\": 64000",
+        "\"noImageSupport\": True",
+        "Droid Factory config is missing the MiniMax API key",
+        "extra_args.get(\"temperature\") != 1",
+    ] {
+        assert!(smoke_run.contains(required), "Droid config smoke missing `{required}`");
+    }
+
+    assert!(
+        !smoke_run.contains("print(config)") && !smoke_run.contains("print(model)"),
+        "Droid config smoke must not dump secret-bearing config"
     );
 
     Ok(())
@@ -262,6 +308,20 @@ fn sequence_strings(value: &Value) -> Result<Vec<&str>> {
 
 fn sequence_values(value: &Value) -> Result<&[Value]> {
     value.as_sequence().map(Vec::as_slice).ok_or_else(|| anyhow!("expected YAML sequence"))
+}
+
+fn step_names(job: &Value) -> Result<Vec<String>> {
+    sequence_values(mapping_value(job, "steps")?)?
+        .iter()
+        .map(|step| mapping_value(step, "name").and_then(scalar_string).map(ToOwned::to_owned))
+        .collect()
+}
+
+fn step_index(step_names: &[String], name: &str) -> Result<usize> {
+    step_names
+        .iter()
+        .position(|step_name| step_name == name)
+        .ok_or_else(|| anyhow!("missing workflow step `{name}`"))
 }
 
 fn named_step<'a>(job: &'a Value, name: &str) -> Result<&'a Value> {
