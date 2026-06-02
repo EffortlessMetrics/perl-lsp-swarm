@@ -237,6 +237,9 @@ pub struct MissingImportNextEditRequest {
     pub document_text: String,
     /// Module that a diagnostic or future intent engine wants to import.
     pub module: String,
+    /// Byte offset of the unresolved module occurrence that triggered this
+    /// candidate.
+    pub target_byte: usize,
     /// Modules reachable from this file's effective include context.
     pub reachable_modules: Vec<String>,
     /// Modules already imported in the current document.
@@ -254,9 +257,32 @@ impl MissingImportNextEditRequest {
         reachable_modules: Vec<String>,
         existing_imports: Vec<String>,
     ) -> Self {
+        let document_text = document_text.into();
+        let module = module.into();
+        let target_byte = document_text.find(&module).unwrap_or(document_text.len());
+        Self::receipt_only_at(
+            document_text,
+            module,
+            target_byte,
+            reachable_modules,
+            existing_imports,
+        )
+    }
+
+    /// Construct a receipt-only missing-import request with an explicit trigger
+    /// byte.
+    #[must_use]
+    pub fn receipt_only_at(
+        document_text: impl Into<String>,
+        module: impl Into<String>,
+        target_byte: usize,
+        reachable_modules: Vec<String>,
+        existing_imports: Vec<String>,
+    ) -> Self {
         Self {
             document_text: document_text.into(),
             module: module.into(),
+            target_byte,
             reachable_modules,
             existing_imports,
             gate: NextEditFeatureGate::receipt_only(),
@@ -611,7 +637,16 @@ impl NextEditProvider {
         }
         let insertion_offset = import_insertion_offset(&request.document_text);
         if insertion_offset.is_none() {
-            rejection_reasons.push(NextEditRejectionReason::UnsafeInsertionPoint);
+            push_rejection_once(
+                &mut rejection_reasons,
+                NextEditRejectionReason::UnsafeInsertionPoint,
+            );
+        }
+        if !is_safe_missing_import_target(&request.document_text, request.target_byte) {
+            push_rejection_once(
+                &mut rejection_reasons,
+                NextEditRejectionReason::UnsafeInsertionPoint,
+            );
         }
 
         if !rejection_reasons.is_empty() {
@@ -923,6 +958,15 @@ fn document_imports_module(document_text: &str, module: &str) -> bool {
     })
 }
 
+fn push_rejection_once(
+    rejection_reasons: &mut Vec<NextEditRejectionReason>,
+    reason: NextEditRejectionReason,
+) {
+    if !rejection_reasons.contains(&reason) {
+        rejection_reasons.push(reason);
+    }
+}
+
 fn import_insertion_offset(document_text: &str) -> Option<usize> {
     if document_text.trim_start().starts_with("__DATA__")
         || document_text.trim_start().starts_with("=pod")
@@ -989,6 +1033,21 @@ fn is_safe_next_edit_insertion(document_text: &str, insertion_byte: usize) -> bo
         return false;
     }
     !is_inside_pod(prefix)
+}
+
+fn is_safe_missing_import_target(document_text: &str, target_byte: usize) -> bool {
+    if !is_safe_next_edit_insertion(document_text, target_byte) {
+        return false;
+    }
+    let line_start = document_text[..target_byte].rfind('\n').map_or(0, |index| index + 1);
+    let prefix = &document_text[line_start..target_byte];
+    let trimmed = prefix.trim_start();
+    if trimmed.starts_with('#') || prefix.contains('#') {
+        return false;
+    }
+    let single_quotes = prefix.chars().filter(|ch| *ch == '\'').count();
+    let double_quotes = prefix.chars().filter(|ch| *ch == '"').count();
+    single_quotes % 2 == 0 && double_quotes % 2 == 0
 }
 
 enum RenameOccurrenceSearch {
@@ -1326,6 +1385,37 @@ mod tests {
 
         assert!(proof.candidate.is_none());
         assert_eq!(proof.rejection_reasons, vec![NextEditRejectionReason::UnsafeInsertionPoint]);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_import_receipt_rejects_comment_pod_and_data_targets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = NextEditProvider;
+
+        for source in [
+            "use strict;\n# My::App->new\n",
+            "use strict;\n=pod\nMy::App->new\n=cut\n",
+            "use strict;\n__DATA__\nMy::App->new\n",
+        ] {
+            let target_byte = source.find("My::App").ok_or("fixture missing module target")?;
+            let request = MissingImportNextEditRequest::receipt_only_at(
+                source,
+                "My::App",
+                target_byte,
+                vec!["My::App".to_string()],
+                vec!["strict".to_string()],
+            );
+
+            let proof = provider.prove_missing_import(&request);
+
+            assert!(proof.candidate.is_none(), "unsafe target must not prepare a candidate");
+            assert!(
+                proof.rejection_reasons.contains(&NextEditRejectionReason::UnsafeInsertionPoint),
+                "unsafe target should be rejected, got {:?}",
+                proof.rejection_reasons
+            );
+        }
         Ok(())
     }
 
