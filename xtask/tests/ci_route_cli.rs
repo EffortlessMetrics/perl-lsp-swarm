@@ -1418,6 +1418,155 @@ fn coverage_pack_manifest_declares_test_capped_pack_owns_test_capped_wrapper() -
 }
 
 #[test]
+fn coverage_pack_manifest_declares_test_e2e_capped_pack_owns_test_e2e_capped_wrapper() -> Result<()>
+{
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str)
+                == Some("patch-coverage-test-e2e-capped-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing test-e2e-capped wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "scripts/test-e2e-capped.sh")
+    );
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "scripts/tests/test-test-e2e-capped-wrapper.sh")
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "bash scripts/tests/test-test-e2e-capped-wrapper.sh")
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_pack_manifest_declares_build_timing_pack_owns_build_timing_wrapper() -> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str)
+                == Some("patch-coverage-build-timing-receipt-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing build-timing receipt wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "scripts/build-timing-receipt.sh")
+    );
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "scripts/tests/test-build-timing-receipt-wrapper.sh")
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "bash scripts/tests/test-build-timing-receipt-wrapper.sh")
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_pack_manifest_declares_compare_build_timing_pack_owns_compare_build_timing_wrapper()
+-> Result<()> {
+    let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("xtask manifest path has no parent"))?
+        .join(".ci/coverage-packs.toml");
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(manifest_path)?)?;
+    let packs = manifest
+        .get("pack")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack manifest must contain pack array"))?;
+    let pack = packs
+        .iter()
+        .find(|pack| {
+            pack.get("id").and_then(toml::Value::as_str)
+                == Some("patch-coverage-compare-build-timing-wrapper")
+        })
+        .ok_or_else(|| anyhow!("missing compare build timing wrapper coverage pack"))?;
+    let files = pack
+        .get("files")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack files must be an array"))?;
+    let commands = pack
+        .get("commands")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| anyhow!("coverage pack commands must be an array"))?;
+
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "scripts/compare-build-timing.sh")
+    );
+    assert!(
+        files
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "scripts/tests/test-compare-build-timing-wrapper.sh")
+    );
+    assert!(
+        commands
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .any(|value| value == "bash scripts/tests/test-compare-build-timing-wrapper.sh")
+    );
+    Ok(())
+}
+
+#[test]
 fn coverage_pack_manifest_declares_coverage_baseline_pack_owns_baseline_helper() -> Result<()> {
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -3840,6 +3989,194 @@ fn ci_route_cli_maps_test_capped_wrapper_to_test_capped_proof_pack() -> Result<(
         summary
             .contains("`patch-coverage-test-capped-wrapper`: non-LCOV CI policy/routing surface")
     );
+    Ok(())
+}
+
+#[test]
+fn ci_route_cli_maps_test_e2e_capped_wrapper_to_test_e2e_capped_proof_pack() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/test-e2e-capped.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("test-e2e-capped-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str) == Some("test-e2e-capped-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str()
+                                == Some("bash scripts/tests/test-test-e2e-capped-wrapper.sh")
+                        })
+                    })
+            })),
+        "test-e2e-capped wrapper changes must run focused proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "test-e2e-capped wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route
+            .pointer("/skipped_by_policy/patch-coverage-test-e2e-capped-wrapper")
+            .and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-test-e2e-capped-wrapper.sh"));
+    assert!(
+        summary.contains(
+            "`patch-coverage-test-e2e-capped-wrapper`: non-LCOV CI policy/routing surface"
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn ci_route_cli_maps_build_timing_wrapper_to_build_timing_proof_pack() -> Result<()> {
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/build-timing-receipt.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("build-timing-receipt-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str)
+                    == Some("build-timing-receipt-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str()
+                                == Some("bash scripts/tests/test-build-timing-receipt-wrapper.sh")
+                        })
+                    })
+            })),
+        "build-timing receipt wrapper changes must run focused proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "build-timing receipt wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route
+            .pointer("/skipped_by_policy/patch-coverage-build-timing-receipt-wrapper")
+            .and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-build-timing-receipt-wrapper.sh"));
+    assert!(summary.contains(
+        "`patch-coverage-build-timing-receipt-wrapper`: non-LCOV CI policy/routing surface"
+    ));
+    Ok(())
+}
+
+#[test]
+fn ci_route_cli_maps_compare_build_timing_wrapper_to_compare_build_timing_proof_pack() -> Result<()>
+{
+    let temp = TempDir::new()?;
+    let receipt = temp.path().join("ci-route.json");
+    let summary = temp.path().join("ci-route.md");
+
+    cargo_bin_cmd!("xtask")
+        .args([
+            "ci",
+            "route",
+            "--base",
+            "origin/main",
+            "--head",
+            "HEAD",
+            "--receipt",
+            receipt.to_str().ok_or_else(|| anyhow!("invalid ci route receipt path"))?,
+            "--summary",
+            summary.to_str().ok_or_else(|| anyhow!("invalid ci route summary path"))?,
+            "--changed-file",
+            "scripts/compare-build-timing.sh",
+        ])
+        .assert()
+        .success();
+
+    let route: Value = serde_json::from_str(&std::fs::read_to_string(receipt)?)?;
+    assert_eq!(
+        route.pointer("/changed_surfaces/0").and_then(Value::as_str),
+        Some("compare-build-timing-wrapper")
+    );
+    assert!(
+        route.get("required_proof_packs").and_then(Value::as_array).is_some_and(|packs| packs
+            .iter()
+            .any(|pack| {
+                pack.get("id").and_then(Value::as_str)
+                    == Some("compare-build-timing-wrapper-focused")
+                    && pack.get("commands").and_then(Value::as_array).is_some_and(|commands| {
+                        commands.iter().any(|command| {
+                            command.as_str()
+                                == Some("bash scripts/tests/test-compare-build-timing-wrapper.sh")
+                        })
+                    })
+            })),
+        "compare-build-timing wrapper changes must run focused proof"
+    );
+    assert!(
+        route.get("coverage_pack_selector").and_then(Value::as_array).is_some_and(Vec::is_empty),
+        "compare-build-timing wrapper proof pack is non-LCOV and must not be uploaded as Codecov coverage"
+    );
+    assert_eq!(
+        route
+            .pointer("/skipped_by_policy/patch-coverage-compare-build-timing-wrapper")
+            .and_then(Value::as_str),
+        Some("non-LCOV CI policy/routing surface; covered by focused CI gates")
+    );
+    let summary = fs::read_to_string(summary)?;
+    assert!(summary.contains("bash scripts/tests/test-compare-build-timing-wrapper.sh"));
+    assert!(summary.contains(
+        "`patch-coverage-compare-build-timing-wrapper`: non-LCOV CI policy/routing surface"
+    ));
     Ok(())
 }
 

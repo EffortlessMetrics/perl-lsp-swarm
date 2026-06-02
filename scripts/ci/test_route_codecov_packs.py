@@ -665,6 +665,90 @@ class RouteCodecovPacksTests(unittest.TestCase):
             [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
         )
 
+    def test_test_e2e_capped_wrapper_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-test-e2e-capped-wrapper",
+                "lcov": False,
+                "files": [
+                    "scripts/test-e2e-capped.sh",
+                    "scripts/tests/test-test-e2e-capped-wrapper.sh",
+                ],
+                "commands": ["bash scripts/tests/test-test-e2e-capped-wrapper.sh"],
+                "coverage_filters": ["test-e2e-capped-wrapper"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/test-e2e-capped.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-test-e2e-capped-wrapper"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
+    def test_build_timing_receipt_wrapper_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-build-timing-receipt-wrapper",
+                "lcov": False,
+                "files": [
+                    "scripts/build-timing-receipt.sh",
+                    "scripts/tests/test-build-timing-receipt-wrapper.sh",
+                ],
+                "commands": ["bash scripts/tests/test-build-timing-receipt-wrapper.sh"],
+                "coverage_filters": ["build-timing-receipt-wrapper"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/build-timing-receipt.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-build-timing-receipt-wrapper"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
+    def test_compare_build_timing_wrapper_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-compare-build-timing-wrapper",
+                "lcov": False,
+                "files": [
+                    "scripts/compare-build-timing.sh",
+                    "scripts/tests/test-compare-build-timing-wrapper.sh",
+                ],
+                "commands": ["bash scripts/tests/test-compare-build-timing-wrapper.sh"],
+                "coverage_filters": ["compare-build-timing-wrapper"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/compare-build-timing.sh"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-compare-build-timing-wrapper"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
     def test_coverage_baseline_script_change_is_non_lcov_focused_proof(self) -> None:
         packs = [
             {
