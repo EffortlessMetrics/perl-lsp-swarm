@@ -108,9 +108,12 @@ pub struct ExportSymbolExtractor;
 impl ExportSymbolExtractor {
     /// Extract export information from an AST.
     ///
-    /// Returns `None` if the module does not use Exporter.
-    /// Returns `Some(ExportInfo)` with empty sets if the module uses Exporter
-    /// but does not define any export arrays.
+    /// Returns `None` only when the module has neither Exporter inheritance
+    /// (`use Exporter;`, `use parent 'Exporter';`, `use base 'Exporter';`,
+    /// or `@ISA = qw(Exporter ...);`) nor a custom `sub import { ... }` definition.
+    /// Returns `Some(ExportInfo)` with empty sets otherwise; modules whose only
+    /// signal is a custom `sub import` get `custom_import: true` and
+    /// `confidence: Low` on the returned info.
     pub fn extract(ast: &Node) -> Option<ExportInfo> {
         let detector = Self::detect_exporter_inheritance(ast).or_else(|| {
             if Self::detect_custom_import(ast) {
