@@ -59,7 +59,14 @@ fn arb_anchor_id() -> impl Strategy<Value = Option<AnchorId>> {
 fn arb_export_info() -> impl Strategy<Value = ExportInfo> {
     (arb_symbol_set(), arb_symbol_set(), arb_export_tags(), arb_module_name(), arb_anchor_id())
         .prop_map(|(default_export, optional_export, export_tags, module_name, anchor_id)| {
-            ExportInfo { default_export, optional_export, export_tags, module_name, anchor_id }
+            ExportInfo {
+                default_export,
+                optional_export,
+                export_tags,
+                module_name,
+                anchor_id,
+                ..Default::default()
+            }
         })
 }
 

@@ -1,6 +1,6 @@
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::export_analyzer::ExportSymbolExtractor;
-use perl_semantic_facts::Provenance;
+use perl_semantic_facts::{Confidence, Provenance};
 use std::error::Error;
 
 fn extract_export_set(code: &str) -> Result<perl_semantic_facts::ExportSet, Box<dyn Error>> {
@@ -135,5 +135,40 @@ our %EXPORT_TAGS = (all => [qw(foo bar baz)]);
         .ok_or_else(|| "all tag must exist".to_string())?;
     assert_eq!(all.members, vec!["bar".to_string(), "baz".to_string(), "foo".to_string()]);
 
+    Ok(())
+}
+
+#[test]
+fn custom_import_sub_produces_unknown_exports() -> Result<(), Box<dyn Error>> {
+    let set = extract_export_set(
+        r#"
+package CustomExporter;
+sub import { my ($pkg, @args) = @_; my $caller = caller(0);
+  foreach my $name (@args) { no strict 'refs'; *{"${caller}::${name}"} = \&$name; } }
+sub func1 { "exported" }
+1;
+"#,
+    )?;
+    assert!(set.default_exports.is_empty());
+    assert!(set.optional_exports.is_empty());
+    assert!(set.tags.is_empty());
+    assert_eq!(set.confidence, Confidence::Low);
+    assert_eq!(set.provenance, Provenance::ImportExportInference);
+    Ok(())
+}
+
+#[test]
+fn regression_exporter_not_confused_with_custom_import() -> Result<(), Box<dyn Error>> {
+    let set = extract_export_set(
+        r#"
+package HybridModule;
+use Exporter;
+our @EXPORT = qw(exported);
+sub import { my ($pkg, @args) = @_; $pkg->SUPER::import(@args); }
+1;
+"#,
+    )?;
+    assert_eq!(set.default_exports, vec!["exported".to_string()]);
+    assert_eq!(set.confidence, Confidence::High);
     Ok(())
 }

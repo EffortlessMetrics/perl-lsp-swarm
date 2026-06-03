@@ -8,6 +8,7 @@
 //! - SemanticAnalyzer::infer_type for operators and builtins
 //! - SemanticModel API surface
 //! - Cross-package qualified references
+#![allow(clippy::print_stderr)]
 //! - SymbolTable find_symbol with scope chains
 //! - SymbolExtractor with/without source
 //! - Type inference engine: subroutine inference, constraint violations, builtins

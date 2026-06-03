@@ -43,6 +43,9 @@ pub struct ExportInfo {
     pub module_name: Option<String>,
     /// Anchor ID derived from the first export declaration's byte span.
     pub anchor_id: Option<AnchorId>,
+    /// True when the module was detected via a custom `sub import` (not Exporter).
+    /// When true, export sets are empty and confidence is Low.
+    pub custom_import: bool,
 }
 
 impl ExportInfo {
@@ -72,7 +75,7 @@ impl ExportInfo {
             optional_exports,
             tags,
             provenance: Provenance::ImportExportInference,
-            confidence: Confidence::High,
+            confidence: if self.custom_import { Confidence::Low } else { Confidence::High },
             module_name: self.module_name.clone(),
             anchor_id: self.anchor_id,
         }
@@ -90,6 +93,9 @@ pub enum ExporterDetector {
     UseBaseExporter,
     /// Detected via `our @ISA = qw(Exporter ...);` or bare `@ISA = qw(Exporter ...);`
     OurIsaExporter,
+    /// Detected via a custom `sub import { ... }` (no Exporter inheritance).
+    /// Export lists are unknown; confidence is Low.
+    CustomImport,
 }
 
 /// Export symbol extractor for Exporter-based Perl modules.
@@ -106,13 +112,22 @@ impl ExportSymbolExtractor {
     /// Returns `Some(ExportInfo)` with empty sets if the module uses Exporter
     /// but does not define any export arrays.
     pub fn extract(ast: &Node) -> Option<ExportInfo> {
-        let detector = Self::detect_exporter_inheritance(ast)?;
+        let detector = Self::detect_exporter_inheritance(ast).or_else(|| {
+            if Self::detect_custom_import(ast) {
+                Some(ExporterDetector::CustomImport)
+            } else {
+                None
+            }
+        })?;
+
+        let custom_import = matches!(detector, ExporterDetector::CustomImport);
 
         let mut info = ExportInfo {
             // Extract the package name from the AST.
             module_name: Self::find_package_name(ast),
             // Derive anchor_id from the first export declaration's byte span.
             anchor_id: Self::find_first_export_anchor(ast),
+            custom_import,
             ..Default::default()
         };
 
@@ -131,6 +146,23 @@ impl ExportSymbolExtractor {
     /// 4. `our @ISA = qw(Exporter ...);` or bare `@ISA = qw(Exporter ...);`
     fn detect_exporter_inheritance(ast: &Node) -> Option<ExporterDetector> {
         Self::walk_for_exporter_detection(ast)
+    }
+
+    /// Detect if the AST contains a custom `sub import { ... }` definition.
+    ///
+    /// Returns `true` when the module defines its own `import` subroutine,
+    /// indicating dynamic export behaviour that cannot be statically analysed.
+    fn detect_custom_import(ast: &Node) -> bool {
+        match &ast.kind {
+            NodeKind::Subroutine { name: Some(n), .. } if n == "import" => return true,
+            _ => {}
+        }
+        for child in ast.children() {
+            if Self::detect_custom_import(child) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Walk the AST to find the first `package` declaration and return its name.
@@ -318,10 +350,12 @@ impl ExportSymbolExtractor {
 
     /// Walk AST and extract export arrays.
     ///
-    /// The `_detector` parameter is accepted but unused (marked with underscore prefix).
-    /// It is kept in the signature for API symmetry with the detection phase and to allow
-    /// future pattern-specific extraction logic without changing the interface.
-    fn walk_and_extract_exports(ast: &Node, _detector: &ExporterDetector, info: &mut ExportInfo) {
+    /// Short-circuits immediately for `CustomImport` — static export lists are
+    /// not available when the module uses a custom `sub import`.
+    fn walk_and_extract_exports(ast: &Node, detector: &ExporterDetector, info: &mut ExportInfo) {
+        if matches!(detector, ExporterDetector::CustomImport) {
+            return;
+        }
         match &ast.kind {
             // `our @EXPORT = qw(...)` (declared form)
             NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
@@ -345,7 +379,7 @@ impl ExportSymbolExtractor {
                 }
 
                 // Continue walking for nested declarations
-                Self::walk_and_extract_exports(init, _detector, info);
+                Self::walk_and_extract_exports(init, detector, info);
             }
             // `@EXPORT = qw(...)` (bare assignment without `our`)
             NodeKind::Assignment { lhs, rhs, .. } => {
@@ -368,12 +402,12 @@ impl ExportSymbolExtractor {
                     }
                 }
                 // Walk into rhs for nested assignments
-                Self::walk_and_extract_exports(rhs, _detector, info);
+                Self::walk_and_extract_exports(rhs, detector, info);
             }
             _ => {
                 // Walk children
                 for child in ast.children() {
-                    Self::walk_and_extract_exports(child, _detector, info);
+                    Self::walk_and_extract_exports(child, detector, info);
                 }
             }
         }
