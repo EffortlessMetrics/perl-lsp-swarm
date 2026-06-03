@@ -714,6 +714,125 @@ mod tests {
         extract_import_specs(&ast, FileId(1))
     }
 
+    fn parse_and_extract_use_lib(
+        code: &str,
+    ) -> Result<Vec<UseLibFact>, Box<dyn std::error::Error>> {
+        let mut parser = Parser::new(code);
+        let ast =
+            parser.parse().map_err(|error| format!("parse failed for {code:?}: {error:?}"))?;
+        Ok(extract_use_lib_facts(&ast, FileId(2)))
+    }
+
+    #[test]
+    fn use_lib_extractor_returns_empty_vec_without_lib_statement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("use strict;")?;
+
+        assert!(facts.is_empty(), "non-lib imports must not emit UseLibFact values");
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_collects_active_and_inactive_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("use lib 'active'; no lib 'inactive';")?;
+
+        assert_eq!(
+            facts,
+            vec![
+                UseLibFact::new(
+                    "active".to_string(),
+                    true,
+                    FileId(2),
+                    Some(AnchorId(0)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+                UseLibFact::new(
+                    "inactive".to_string(),
+                    false,
+                    FileId(2),
+                    Some(AnchorId(18)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_walks_ast_children_for_later_statement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("use strict; use lib 'later';")?;
+        let fact = facts.first().ok_or("expected UseLibFact from later child")?;
+
+        assert_eq!(fact.path, "later");
+        assert_eq!(fact.file_id, FileId(2));
+        assert_eq!(fact.anchor_id, Some(AnchorId(12)));
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_assigns_anchor_to_collected_fact() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let facts = parse_and_extract_use_lib("use lib 'anchored';")?;
+        let fact = facts.first().ok_or("expected anchored UseLibFact")?;
+
+        assert_eq!(fact.path, "anchored");
+        assert_eq!(fact.anchor_id, Some(AnchorId(0)));
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_emits_qw_words_with_static_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("use lib qw(lib vendor);")?;
+
+        assert_eq!(
+            facts,
+            vec![
+                UseLibFact::new(
+                    "lib".to_string(),
+                    true,
+                    FileId(2),
+                    Some(AnchorId(0)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+                UseLibFact::new(
+                    "vendor".to_string(),
+                    true,
+                    FileId(2),
+                    Some(AnchorId(0)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_emits_literal_with_static_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("no lib 'old';")?;
+        let fact = facts.first().ok_or("expected literal UseLibFact")?;
+
+        assert_eq!(
+            fact,
+            &UseLibFact::new(
+                "old".to_string(),
+                false,
+                FileId(2),
+                Some(AnchorId(0)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )
+        );
+        Ok(())
+    }
+
     #[test]
     fn use_bare_module_produces_use_default() -> Result<(), Box<dyn std::error::Error>> {
         let specs = parse_and_extract("use strict;");
