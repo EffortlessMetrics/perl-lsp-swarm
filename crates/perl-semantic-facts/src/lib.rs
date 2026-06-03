@@ -272,7 +272,7 @@ pub struct UseLibFact {
     pub file_id: FileId,
     /// Anchor of the `use lib`/`no lib` statement.
     pub anchor_id: Option<AnchorId>,
-    /// `ExactAst` for plain quoted strings; `PragmaInference` for FindBin patterns.
+    /// `ExactAst` for static literal entries; dynamic args are not emitted.
     pub provenance: Provenance,
     /// `High` for static string literals. Dynamic args are never emitted.
     pub confidence: Confidence,
