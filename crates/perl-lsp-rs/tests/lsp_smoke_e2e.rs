@@ -923,7 +923,7 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
     let source = "use strict;\nuse warnings;\n\nmy $x=42;my $y=99;\nsub foo{return 1;}\n";
 
     // ── Step 1: Initialize ──────────────────────────────────────────────
-    let init_response = send_request_with_timeout(
+    let init_response_result = send_request_with_timeout(
         &server,
         101,
         "initialize",
@@ -939,7 +939,12 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
             }
         }),
         init_timeout,
-    )?;
+    );
+    assert!(
+        init_response_result.is_ok(),
+        "initialize response should arrive before timeout: {init_response_result:#?}"
+    );
+    let init_response = init_response_result?;
     assert!(init_response.get("error").is_none(), "initialize returned error: {init_response:#}");
 
     // Gap 2 fix: assert server advertises willSaveWaitUntil capability.
@@ -978,7 +983,7 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
     );
 
     // ── Step 3: Send willSaveWaitUntil request ──────────────────────────
-    let will_save_response = send_request_with_timeout(
+    let will_save_response_result = send_request_with_timeout(
         &server,
         102,
         "textDocument/willSaveWaitUntil",
@@ -987,7 +992,12 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
             "reason": 1  // TextDocumentSaveReason.Manual
         }),
         request_timeout,
-    )?;
+    );
+    assert!(
+        will_save_response_result.is_ok(),
+        "willSaveWaitUntil response should arrive before timeout: {will_save_response_result:#?}"
+    );
+    let will_save_response = will_save_response_result?;
 
     // ── Step 4: Verify response envelope ────────────────────────────────
     assert!(
@@ -1001,6 +1011,10 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
 
     // Gap 1 fix: LSP spec allows TextEdit[] | null; treat null as no-edits.
     // This implementation always returns an array, but be robust to spec-compliant nulls.
+    assert!(
+        matches!(result, serde_json::Value::Null | serde_json::Value::Array(_)),
+        "willSaveWaitUntil result should be TextEdit[] or null, got: {result}"
+    );
     let edits: &[serde_json::Value] = match result {
         serde_json::Value::Null => &[],
         serde_json::Value::Array(arr) => arr.as_slice(),
@@ -1044,7 +1058,7 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
     }
 
     // ── Step 5: Verify server is still responsive ────────────────────────
-    let hover_response = send_request_with_timeout(
+    let hover_response_result = send_request_with_timeout(
         &server,
         103,
         "textDocument/hover",
@@ -1053,7 +1067,12 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
             "position": { "line": 3, "character": 5 }
         }),
         request_timeout,
-    )?;
+    );
+    assert!(
+        hover_response_result.is_ok(),
+        "hover response should arrive after willSaveWaitUntil: {hover_response_result:#?}"
+    );
+    let hover_response = hover_response_result?;
     assert!(
         hover_response.get("error").is_none(),
         "server should remain responsive after willSaveWaitUntil: {hover_response:#}"
