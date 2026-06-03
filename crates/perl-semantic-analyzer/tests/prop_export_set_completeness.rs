@@ -12,7 +12,7 @@
 //! all input symbols.
 
 use perl_semantic_analyzer::analysis::export_analyzer::ExportInfo;
-use perl_semantic_facts::AnchorId;
+use perl_semantic_facts::{AnchorId, Confidence};
 use proptest::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -65,7 +65,7 @@ fn arb_export_info() -> impl Strategy<Value = ExportInfo> {
                 export_tags,
                 module_name,
                 anchor_id,
-                custom_import: false,
+                ..ExportInfo::default()
             }
         })
 }
@@ -91,6 +91,16 @@ fn assert_sorted_and_deduped(items: &[String], label: &str) -> Result<(), TestCa
 // Property tests
 // ---------------------------------------------------------------------------
 
+#[test]
+fn export_info_default_custom_import_keeps_high_confidence() {
+    let info =
+        ExportInfo { module_name: Some("Static::Exporter".to_string()), ..ExportInfo::default() };
+
+    let export_set = info.to_export_set();
+
+    assert_eq!(export_set.confidence, Confidence::High);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 256,
@@ -107,6 +117,13 @@ proptest! {
         info in arb_export_info(),
     ) {
         let export_set = info.to_export_set();
+
+        // Generated ExportInfo values model static Exporter-style facts, not dynamic custom import.
+        prop_assert_eq!(
+            export_set.confidence,
+            Confidence::High,
+            "generated ExportInfo should keep static-export confidence",
+        );
 
         // -- default_exports: sorted, deduplicated, and complete --
         assert_sorted_and_deduped(&export_set.default_exports, "default_exports")?;
