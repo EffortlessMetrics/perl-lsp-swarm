@@ -1,6 +1,6 @@
 mod common;
 
-use perl_semantic_facts::{EntityKind, OccurrenceKind};
+use perl_semantic_facts::EntityKind;
 use std::path::PathBuf;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -43,7 +43,35 @@ fn harness_use_lib_script_my_thing_package_exists() -> Result<()> {
     Ok(())
 }
 
-/// (c) Assert use_lib_script fixture loads exactly 2 shards (one .pm + one .pl).
+/// (c) Load the use_lib_script fixture and assert the exported subroutine exists.
+#[test]
+fn harness_use_lib_script_exported_subroutine_exists() -> Result<()> {
+    let root = use_lib_script_root();
+    let (_index, shards) = common::load_fixture_workspace(&root)?;
+
+    common::assert_entity_exists(&shards, "MyThing::greet", EntityKind::Subroutine)?;
+
+    Ok(())
+}
+
+/// (d) Assert missing fixture roots fail instead of silently producing no shards.
+#[test]
+fn harness_missing_fixture_root_is_error() -> Result<()> {
+    let missing = use_lib_script_root().join("missing");
+    let Err(err) = common::load_fixture_workspace(&missing) else {
+        return Err("missing fixture root should be rejected".into());
+    };
+
+    let message = err.to_string();
+    assert!(
+        message.contains("contains no .pm or .pl files"),
+        "unexpected missing fixture error: {message}"
+    );
+
+    Ok(())
+}
+
+/// (e) Assert use_lib_script fixture loads exactly 2 shards (one .pm + one .pl).
 #[test]
 fn harness_use_lib_script_shard_count_is_two() -> Result<()> {
     let root = use_lib_script_root();
@@ -54,26 +82,6 @@ fn harness_use_lib_script_shard_count_is_two() -> Result<()> {
         2,
         "use_lib_script fixture should produce exactly 2 shards (MyThing.pm + main.pl), got {}",
         shards.len()
-    );
-
-    Ok(())
-}
-
-/// (d) Assert the `use lib` pragma produces an Import occurrence.
-///
-/// NOTE: If `use lib` does NOT yield an `OccurrenceKind::Import` in the shard,
-/// this test is marked `#[ignore]` pending issue #894 (use lib import tracking).
-/// The other three tests in this file remain unconditionally green.
-#[test]
-#[ignore = "use lib does not currently yield OccurrenceKind::Import — tracked in issue #894"]
-fn harness_use_lib_import_occurrence_present() -> Result<()> {
-    let root = use_lib_script_root();
-    let (_index, shards) = common::load_fixture_workspace(&root)?;
-
-    let kinds = common::occurrence_kinds(&shards);
-    assert!(
-        kinds.contains(&OccurrenceKind::Import),
-        "expected OccurrenceKind::Import from `use lib` pragma; actual kinds: {kinds:?}"
     );
 
     Ok(())

@@ -1,3 +1,5 @@
+// Shared fixture helpers are imported per test binary, so some helpers are
+// intentionally unused in each binary under `-D warnings`.
 #![allow(dead_code)]
 //! Shared test harness for multi-file workspace fixture tests.
 //!
@@ -27,6 +29,9 @@ pub fn load_fixture_workspace(root: &Path) -> Result<(WorkspaceIndex, Vec<FileFa
         .map(|entry| entry.into_path())
         .collect();
     paths.sort();
+    if paths.is_empty() {
+        return Err(format!("fixture root {} contains no .pm or .pl files", root.display()).into());
+    }
 
     let index = WorkspaceIndex::new();
     let mut shards = Vec::new();
