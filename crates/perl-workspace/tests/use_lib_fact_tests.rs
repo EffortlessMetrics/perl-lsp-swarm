@@ -221,6 +221,60 @@ fn test_use_lib_single_quoted_bin_segment_is_exact_ast() -> Result<(), Box<dyn s
 // ── Storage round-trip tests ──────────────────────────────────────────────────
 
 #[test]
+fn test_use_lib_q_quote_operator_variants_emit_facts() -> Result<(), Box<dyn std::error::Error>> {
+    let cases = [
+        ("use lib q{brace};", "brace"),
+        ("use lib q[bracket];", "bracket"),
+        ("use lib q(parent);", "parent"),
+        ("use lib q<angle>;", "angle"),
+    ];
+
+    for (code, expected_path) in cases {
+        let facts = parse_and_extract_use_lib(code);
+        assert_eq!(facts.len(), 1, "{code} should emit one UseLibFact");
+        let fact = facts.first().ok_or("no fact")?;
+        assert_eq!(fact.path, expected_path);
+        assert!(fact.is_active);
+        assert_eq!(fact.provenance, Provenance::ExactAst);
+        assert_eq!(fact.confidence, Confidence::High);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_use_lib_q_quote_operator_dollar_is_static() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib("use lib q{lib/$x};");
+
+    assert_eq!(facts.len(), 1, "q{{}} never interpolates and should emit a fact");
+    let fact = facts.first().ok_or("no fact")?;
+    assert_eq!(fact.path, "lib/$x");
+    assert_eq!(fact.provenance, Provenance::ExactAst);
+    assert_eq!(fact.confidence, Confidence::High);
+    Ok(())
+}
+
+#[test]
+fn test_use_lib_qq_quote_operator_no_interp_emits_fact() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib("use lib qq{plainlib};");
+
+    assert_eq!(facts.len(), 1);
+    let fact = facts.first().ok_or("no fact")?;
+    assert_eq!(fact.path, "plainlib");
+    assert_eq!(fact.provenance, Provenance::ExactAst);
+    assert_eq!(fact.confidence, Confidence::High);
+    Ok(())
+}
+
+#[test]
+fn test_use_lib_qq_quote_operator_with_interp_skipped() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib("use lib qq{lib/$x}; use lib qq{@dirs};");
+
+    assert!(facts.is_empty(), "qq{{}} interpolates and should skip sigil-bearing paths");
+    Ok(())
+}
+
+#[test]
 fn test_import_export_index_use_lib_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     let mut index = ImportExportIndex::new();
     let file_id = FileId(42);

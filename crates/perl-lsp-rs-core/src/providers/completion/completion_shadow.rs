@@ -856,17 +856,21 @@ mod tests {
         assert!(queries.use_lib_paths(FileId(999)).is_empty());
 
         let file_id = FileId(7);
-        let mut parser = Parser::new("use lib 'lib'; use lib \"plain\"; use lib \"$dynamic\"; 1;");
+        let mut parser = Parser::new(
+            "use lib 'lib'; use lib \"plain\"; use lib q{quoteop}; use lib qq{qqplain}; use lib qq{$dynamic}; use lib \"$dynamic\"; 1;",
+        );
         let ast = parser.parse().map_err(|error| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("parse failed: {error:?}"))
         })?;
         let facts = extract_use_lib_facts(&ast, file_id);
-        assert_eq!(facts.len(), 2);
+        assert_eq!(facts.len(), 4);
         assert_eq!(facts[0].path, "lib");
         assert!(facts[0].is_active);
         assert_eq!(facts[1].path, "plain");
         assert_eq!(facts[1].provenance, Provenance::ExactAst);
         assert_eq!(facts[1].confidence, Confidence::High);
+        assert_eq!(facts[2].path, "quoteop");
+        assert_eq!(facts[3].path, "qqplain");
 
         let mut no_lib_parser = Parser::new("no lib 'old'; 1;");
         let no_lib_ast = no_lib_parser.parse().map_err(|error| {

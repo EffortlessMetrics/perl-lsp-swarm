@@ -57,9 +57,10 @@ pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
 /// Walk the AST and return one [`UseLibFact`] per static `use lib`/`no lib` entry.
 ///
 /// Dynamic args (`use lib $var`, `use lib @dirs`) are skipped — no fact is emitted.
-/// Double-quoted strings that contain `$`, `@`, or `%` are treated as dynamic
-/// (they interpolate at runtime) and are also skipped.  Single-quoted strings and
-/// double-quoted strings that contain no interpolation sigils produce a
+/// Double-quoted strings and `qq` quote operators that contain `$`, `@`, or `%`
+/// are treated as dynamic (they interpolate at runtime) and are also skipped.
+/// Single-quoted strings, `q` quote operators, and interpolating strings that
+/// contain no interpolation sigils produce a
 /// `Provenance::ExactAst` / `Confidence::High` fact.
 ///
 /// `is_active` is `true` for `use lib` entries and `false` for `no lib` entries.
@@ -119,36 +120,22 @@ fn collect_use_lib_facts(
             continue;
         }
 
-        // Quoted string literal (single or double quoted).
-        if is_quoted_string(trimmed) {
-            // Double-quoted strings interpolate `$var`, `@arr`, `%hash` — treat
-            // them as dynamic and emit no fact when any interpolation sigil is
-            // present in the body.
-            if trimmed.starts_with('"') {
-                let body = unquote(trimmed);
-                if body.contains('$') || body.contains('@') || body.contains('%') {
-                    continue;
-                }
-                out.push(UseLibFact::new(
-                    body.to_string(),
-                    is_active,
-                    file_id,
-                    Some(anchor_id),
-                    Provenance::ExactAst,
-                    Confidence::High,
-                ));
-            } else {
-                // Single-quoted string — never interpolates; always a literal fact.
-                let path = unquote(trimmed).to_string();
-                out.push(UseLibFact::new(
-                    path,
-                    is_active,
-                    file_id,
-                    Some(anchor_id),
-                    Provenance::ExactAst,
-                    Confidence::High,
-                ));
+        if let Some(literal) = parse_use_lib_literal(trimmed) {
+            if literal.interpolates
+                && (literal.body.contains('$')
+                    || literal.body.contains('@')
+                    || literal.body.contains('%'))
+            {
+                continue;
             }
+            out.push(UseLibFact::new(
+                literal.body.to_string(),
+                is_active,
+                file_id,
+                Some(anchor_id),
+                Provenance::ExactAst,
+                Confidence::High,
+            ));
             continue;
         }
 
@@ -156,10 +143,25 @@ fn collect_use_lib_facts(
     }
 }
 
-/// Returns `true` when `s` is a single-quoted or double-quoted string literal.
-fn is_quoted_string(s: &str) -> bool {
-    (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
-        || (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
+struct UseLibLiteral<'a> {
+    body: &'a str,
+    interpolates: bool,
+}
+
+fn parse_use_lib_literal(s: &str) -> Option<UseLibLiteral<'_>> {
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        return Some(UseLibLiteral { body: unquote(s), interpolates: true });
+    }
+    if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        return Some(UseLibLiteral { body: unquote(s), interpolates: false });
+    }
+    if let Some(body) = parse_quote_operator_content(s, "qq") {
+        return Some(UseLibLiteral { body, interpolates: true });
+    }
+    if let Some(body) = parse_quote_operator_content(s, "q") {
+        return Some(UseLibLiteral { body, interpolates: false });
+    }
+    None
 }
 
 // ── AST walker ──────────────────────────────────────────────────────────────
@@ -631,9 +633,32 @@ fn is_version_pragma(module: &str) -> bool {
 }
 
 fn parse_qw_content(s: &str) -> Option<&str> {
-    let rest = s.strip_prefix("qw")?;
-    let inner = rest.strip_prefix('(')?.strip_suffix(')')?;
-    Some(inner)
+    parse_quote_operator_content(s, "qw")
+}
+
+fn parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> Option<&'a str> {
+    let rest = s.strip_prefix(operator)?;
+    let mut chars = rest.chars();
+    let open = chars.next()?;
+    if open.is_ascii_alphanumeric() || open == '_' {
+        return None;
+    }
+    let close = match open {
+        '(' => ')',
+        '{' => '}',
+        '[' => ']',
+        '<' => '>',
+        other => other,
+    };
+    if !rest.ends_with(close) {
+        return None;
+    }
+    let start = open.len_utf8();
+    let end = rest.len().checked_sub(close.len_utf8())?;
+    if end < start {
+        return None;
+    }
+    Some(&rest[start..end])
 }
 
 fn unquote(s: &str) -> &str {
