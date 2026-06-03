@@ -467,7 +467,7 @@ mod tests {
     use perl_semantic_facts::{
         AnchorId, Confidence, DefinitionCandidate, DefinitionRank, DefinitionRankReason,
         EntityFact, EntityId, EntityKind, FileId, OccurrenceFact, Provenance, RenamePlan,
-        SafeDeletePlan, ScopeId, VisibleSymbol,
+        SafeDeletePlan, ScopeId, UseLibFact, VisibleSymbol,
     };
     use perl_workspace::semantic::queries::{DynamicCallableEvidence, SemanticQueries};
     use perl_workspace::semantic_shadow_compare::ShadowCompareVerdict;
@@ -518,6 +518,10 @@ mod tests {
 
         fn safe_delete_plan(&self, entity_id: EntityId) -> SafeDeletePlan {
             SafeDeletePlan::new(entity_id, String::new(), vec![], vec![])
+        }
+
+        fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
+            Vec::new()
         }
 
         fn dynamic_boundary_at(

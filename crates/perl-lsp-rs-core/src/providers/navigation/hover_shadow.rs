@@ -812,8 +812,8 @@ mod tests {
         AnchorId, Confidence, DefinitionCandidate, DefinitionRank, DefinitionRankReason,
         EntityFact, EntityId, EntityKind, FileId, OccurrenceFact, OccurrenceId, OccurrenceKind,
         Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFallbackState,
-        ProviderSurface, RenamePlan, SafeDeletePlan, ScopeId, VisibleSymbol, VisibleSymbolContext,
-        VisibleSymbolSource,
+        ProviderSurface, RenamePlan, SafeDeletePlan, ScopeId, UseLibFact, VisibleSymbol,
+        VisibleSymbolContext, VisibleSymbolSource,
     };
     use perl_workspace::semantic::queries::{
         DynamicCallableEvidence, QueryContext, SemanticQueries,
@@ -867,6 +867,10 @@ mod tests {
 
         fn safe_delete_plan(&self, entity_id: EntityId) -> SafeDeletePlan {
             SafeDeletePlan::new(entity_id, String::new(), vec![], vec![])
+        }
+
+        fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
+            Vec::new()
         }
 
         fn dynamic_boundary_at(
@@ -934,6 +938,10 @@ mod tests {
 
         fn safe_delete_plan(&self, entity_id: EntityId) -> SafeDeletePlan {
             SafeDeletePlan::new(entity_id, String::new(), vec![], vec![])
+        }
+
+        fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
+            Vec::new()
         }
 
         fn dynamic_boundary_at(
