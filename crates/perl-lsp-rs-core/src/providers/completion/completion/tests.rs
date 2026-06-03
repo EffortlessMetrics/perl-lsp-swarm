@@ -53,6 +53,51 @@ proc
 }
 
 #[test]
+fn dash_trigger_after_multibyte_receiver_keeps_char_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "# 我-";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    let context = provider.analyze_context(code, code.len());
+
+    assert_eq!(context.prefix, "我->");
+    assert_eq!(context.prefix_start, 2);
+    assert_eq!(context.trigger_character, Some('-'));
+    Ok(())
+}
+
+#[test]
+fn word_prefix_after_multibyte_delimiter_keeps_char_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "# ”my_func";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    let context = provider.analyze_context(code, code.len());
+
+    assert_eq!(context.prefix, "my_func");
+    assert_eq!(&code[context.prefix_start..], "my_func");
+    Ok(())
+}
+
+#[test]
+fn object_pad_constructor_receiver_after_multibyte_delimiter_keeps_char_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = "# ”Point->new(";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    let package = provider.object_pad_constructor_package(code, code.len());
+
+    assert_eq!(package.as_deref(), Some("Point"));
+    Ok(())
+}
+
+#[test]
 fn test_use_constant_completion_from_visible_symbol_table() {
     let code = r#"
 package My::Config;
@@ -4223,6 +4268,22 @@ fn collect_used_module_names_includes_qw_list() {
 }
 
 #[test]
+fn collect_used_module_names_includes_block_package_use() {
+    let code = "package My::App {\n    use Foo::Thing;\n    use strict;\n}\n";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let modules = super::import_map::collect_used_module_names(&ast);
+    assert!(
+        modules.contains("Foo::Thing"),
+        "`use Foo::Thing` inside a block-form package should include Foo::Thing; got {modules:?}"
+    );
+    assert!(
+        !modules.contains("strict"),
+        "lowercase pragmas inside block-form packages must stay excluded; got {modules:?}"
+    );
+}
+
+#[test]
 fn collect_used_module_names_excludes_lowercase_pragmas() {
     let code = "use strict;\nuse warnings;\nuse feature 'say';\n";
     let mut parser = Parser::new(code);
@@ -4363,6 +4424,41 @@ sub do_things {
             completions.iter().map(|c| &c.label).collect::<Vec<_>>()
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn baseline_block_package_imported_package_fallback_hit() -> Result<(), Box<dyn std::error::Error>>
+{
+    let index = build_baseline_workspace()?;
+
+    // Modern block-form package syntax nests the `use Foo;` statement under
+    // NodeKind::Package.block. The bounded fallback should still treat Foo as
+    // visible for an Unknown receiver inside that package.
+    let code = r#"package My::Block {
+    use Foo;
+
+    sub do_things {
+        my ($obj) = @_;
+        $obj->"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let bark = must_some(completions.iter().find(|c| c.label == "bark"));
+    let detail = must_some(bark.detail.as_deref());
+    assert!(
+        detail.contains("receiver: unknown, low confidence"),
+        "block-package imported `bark` should carry low-confidence fallback detail; got {detail:?}"
+    );
+
+    assert!(
+        !completions.iter().any(|c| c.label == "quack"),
+        "unrelated `quack` must not leak for block-package imports; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
 
     Ok(())
 }
@@ -4704,4 +4800,129 @@ fn test_use_completion_namespaced_prefix_directed() -> Result<(), Box<dyn std::e
     );
 
     Ok(())
+}
+
+// ── Special variable completion tests (issue #788) ─────────────────────────
+
+/// Special scalar variables are offered when the user types `$` and each has
+/// a documentation string.
+#[test]
+fn test_special_scalar_vars_offered_with_docs() {
+    let code = "$";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // Core special vars that MUST appear
+    for label in ["$_", "$!", "$/", "$@", "$?", "$$", "$0", "$1"] {
+        let item = completions.iter().find(|c| c.label == label);
+        assert!(item.is_some(), "expected {label} in scalar completions");
+        // Each special variable must carry documentation
+        let doc = item.and_then(|c| c.documentation.as_deref());
+        assert!(doc.is_some_and(|d| !d.is_empty()), "{label} must have non-empty documentation");
+    }
+
+    // Extended capture-group vars $2..$9 must also be present
+    for label in ["$2", "$3", "$4", "$5", "$6", "$7", "$8", "$9"] {
+        assert!(
+            completions.iter().any(|c| c.label == label),
+            "expected {label} (capture group var) in scalar completions"
+        );
+    }
+
+    // Additional perlvar special scalars
+    for label in ["$;", "$\"", "$|", "$^X", "$^I", "$^F"] {
+        assert!(
+            completions.iter().any(|c| c.label == label),
+            "expected {label} in scalar completions"
+        );
+    }
+}
+
+/// Special array variables are offered when the user types `@`.
+#[test]
+fn test_special_array_vars_offered() {
+    let code = "@";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    for label in ["@_", "@ARGV", "@INC", "@ISA", "@EXPORT", "@EXPORT_OK"] {
+        let item = completions.iter().find(|c| c.label == label);
+        assert!(item.is_some(), "expected {label} in array completions");
+        let doc = item.and_then(|c| c.documentation.as_deref());
+        assert!(doc.is_some_and(|d| !d.is_empty()), "{label} must have non-empty documentation");
+    }
+}
+
+/// Special hash variables are offered when the user types `%`.
+#[test]
+fn test_special_hash_vars_offered() {
+    let code = "%";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    for label in ["%ENV", "%INC", "%SIG"] {
+        let item = completions.iter().find(|c| c.label == label);
+        assert!(item.is_some(), "expected {label} in hash completions");
+        let doc = item.and_then(|c| c.documentation.as_deref());
+        assert!(doc.is_some_and(|d| !d.is_empty()), "{label} must have non-empty documentation");
+    }
+}
+
+/// Prefix filtering works: typing `$E` should NOT return `$_` but SHOULD return
+/// `$ENV_` style vars if any; typing `$_` should only match topic-variable `$_`.
+#[test]
+fn test_special_var_prefix_filtering() {
+    // "$_" prefix — only the topic variable should match from special vars
+    let code = "$_";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.iter().any(|c| c.label == "$_"),
+        "typing '$_' should still offer $_ as a completion"
+    );
+    // $. (current line) should NOT match because $. does not start with $_
+    assert!(!completions.iter().any(|c| c.label == "$."), "$. must not appear when prefix is '$_'");
+}
+
+/// Regression: lexical variables and builtins still appear alongside special vars.
+#[test]
+fn test_special_vars_do_not_displace_lexical_or_builtins() {
+    let code = r#"my $xyzzy = 1; $x"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // Lexical var declared above must appear
+    assert!(
+        completions.iter().any(|c| c.label == "$xyzzy"),
+        "lexical $xyzzy must appear alongside special vars"
+    );
+}
+
+/// The expanded special-variable list has at least 40 entries across all sigils.
+#[test]
+fn test_special_var_count_at_least_40() {
+    let mut total = 0usize;
+
+    for (code, pos) in [("$", 1usize), ("@", 1), ("%", 1)] {
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = CompletionProvider::new(&ast);
+        let completions = provider.get_completions(code, pos);
+        // Count only items that have "special variable" detail (not lexical vars)
+        total +=
+            completions.iter().filter(|c| c.detail.as_deref() == Some("special variable")).count();
+    }
+
+    assert!(total >= 40, "expected at least 40 special variables across all sigils, got {total}");
 }
