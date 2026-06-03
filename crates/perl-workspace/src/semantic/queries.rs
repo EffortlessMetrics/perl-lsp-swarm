@@ -5249,7 +5249,6 @@ mod latency_benchmarks {
     // ── Benchmark tests ──
 
     #[test]
-    #[allow(clippy::print_stderr)]
     fn benchmark_symbol_at_latency() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
@@ -5261,12 +5260,6 @@ mod latency_benchmarks {
             LatencyThresholds::SYMBOL_AT_MICROS,
         );
 
-        // Log the measurement for visibility.
-        eprintln!(
-            "symbol_at: p95={} µs, threshold={} µs, exceeded={}",
-            measurement.p95_micros, measurement.threshold_micros, measurement.exceeded
-        );
-
         // The test verifies the measurement was collected, not that it passes
         // the threshold (CI environments vary). Threshold violations are
         // flagged in the scorecard report.
@@ -5276,7 +5269,6 @@ mod latency_benchmarks {
     }
 
     #[test]
-    #[allow(clippy::print_stderr)]
     fn benchmark_definitions_latency() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
@@ -5288,18 +5280,12 @@ mod latency_benchmarks {
             LatencyThresholds::DEFINITIONS_MICROS,
         );
 
-        eprintln!(
-            "definitions: p95={} µs, threshold={} µs, exceeded={}",
-            measurement.p95_micros, measurement.threshold_micros, measurement.exceeded
-        );
-
         assert_eq!(measurement.sample_count, SAMPLE_COUNT);
         assert_eq!(measurement.query_name, "definitions");
         Ok(())
     }
 
     #[test]
-    #[allow(clippy::print_stderr)]
     fn benchmark_references_latency() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
@@ -5311,18 +5297,12 @@ mod latency_benchmarks {
             LatencyThresholds::REFERENCES_MICROS,
         );
 
-        eprintln!(
-            "references: p95={} µs, threshold={} µs, exceeded={}",
-            measurement.p95_micros, measurement.threshold_micros, measurement.exceeded
-        );
-
         assert_eq!(measurement.sample_count, SAMPLE_COUNT);
         assert_eq!(measurement.query_name, "references");
         Ok(())
     }
 
     #[test]
-    #[allow(clippy::print_stderr)]
     fn benchmark_visible_symbols_at_latency() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
@@ -5332,11 +5312,6 @@ mod latency_benchmarks {
             "visible_symbols_at",
             &mut samples,
             LatencyThresholds::VISIBLE_SYMBOLS_AT_MICROS,
-        );
-
-        eprintln!(
-            "visible_symbols_at: p95={} µs, threshold={} µs, exceeded={}",
-            measurement.p95_micros, measurement.threshold_micros, measurement.exceeded
         );
 
         assert_eq!(measurement.sample_count, SAMPLE_COUNT);
@@ -5350,7 +5325,6 @@ mod latency_benchmarks {
     ///
     /// Validates: Requirements 19.1, 19.2, 19.3, 19.4, 19.5, 11.7
     #[test]
-    #[allow(clippy::print_stderr)]
     fn scorecard_latency_integration() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
@@ -5415,23 +5389,6 @@ mod latency_benchmarks {
             assert!(m.exceeded, "violation query {} should be exceeded", violation.query_name);
             assert_eq!(violation.p95_micros, m.p95_micros);
             assert_eq!(violation.threshold_micros, m.threshold_micros);
-        }
-
-        // Log summary for visibility.
-        eprintln!("=== Scorecard Latency Report ===");
-        for (name, m) in &report.latency {
-            eprintln!(
-                "  {}: p95={} µs (threshold={} µs) {}",
-                name,
-                m.p95_micros,
-                m.threshold_micros,
-                if m.exceeded { "⚠ EXCEEDED" } else { "✓" }
-            );
-        }
-        if report.latency_violations.is_empty() {
-            eprintln!("  No threshold violations.");
-        } else {
-            eprintln!("  {} threshold violation(s) flagged.", report.latency_violations.len());
         }
 
         Ok(())
