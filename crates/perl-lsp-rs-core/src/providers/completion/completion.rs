@@ -708,7 +708,7 @@ impl CompletionProvider {
             // Quoted forms like `require "Foo/` are allowed so completion fires inside them.
             match c {
                 '0'..='9' | '`' | '.' | '/' | '\\' | '$' | '@' | '%' => false,
-                '\'' | '"' => Self::is_open_quoted_require_module_context(rest, c),
+                '\'' | '"' => Self::is_open_quoted_require_module_context(&rest[c.len_utf8()..], c),
                 _ => true,
             }
         } else {
@@ -716,11 +716,7 @@ impl CompletionProvider {
         }
     }
 
-    fn is_open_quoted_require_module_context(rest: &str, quote: char) -> bool {
-        let Some(inner) = rest.strip_prefix(quote) else {
-            return false;
-        };
-
+    fn is_open_quoted_require_module_context(inner: &str, quote: char) -> bool {
         if inner.contains(quote) {
             return false;
         }
@@ -729,13 +725,12 @@ impl CompletionProvider {
             return true;
         }
 
-        let Some(first) = inner.chars().next() else {
-            return true;
-        };
+        let starts_with_blocked = matches!(
+            inner.as_bytes().first(),
+            Some(b'.' | b'/' | b'\\' | b'$' | b'@' | b'%' | b'`')
+        );
 
-        !matches!(first, '.' | '/' | '\\' | '$' | '@' | '%' | '`')
-            && !inner.contains('.')
-            && !inner.contains(':')
+        !starts_with_blocked && !inner.contains('.') && !inner.contains(':')
     }
 
     /// Analyze the context at the cursor position

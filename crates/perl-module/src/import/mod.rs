@@ -494,6 +494,24 @@ fn collect_literal_import_entries(
     false
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_as_module_name_keeps_non_pm_require_tokens() -> Result<(), String> {
+        let bare = parse_module_import_head("require Local::Util;")
+            .ok_or_else(|| "expected bare require head".to_string())?;
+        assert_eq!(bare.token_as_module_name(), "Local::Util");
+
+        let script = parse_module_import_head(r#"require "script.pl";"#)
+            .ok_or_else(|| "expected quoted script require head".to_string())?;
+        assert_eq!(script.token_as_module_name(), "script.pl");
+
+        Ok(())
+    }
+}
+
 /// Parse a line of the form `Module::Name->import(literal list);`.
 ///
 /// Returns `Some(Vec<String>)` of symbol names when the line matches the
