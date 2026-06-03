@@ -5249,6 +5249,7 @@ mod latency_benchmarks {
     // ── Benchmark tests ──
 
     #[test]
+    #[allow(clippy::print_stderr)]
     fn benchmark_symbol_at_latency() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
@@ -5275,6 +5276,7 @@ mod latency_benchmarks {
     }
 
     #[test]
+    #[allow(clippy::print_stderr)]
     fn benchmark_definitions_latency() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
@@ -5297,6 +5299,7 @@ mod latency_benchmarks {
     }
 
     #[test]
+    #[allow(clippy::print_stderr)]
     fn benchmark_references_latency() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
@@ -5319,6 +5322,7 @@ mod latency_benchmarks {
     }
 
     #[test]
+    #[allow(clippy::print_stderr)]
     fn benchmark_visible_symbols_at_latency() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
@@ -5346,6 +5350,7 @@ mod latency_benchmarks {
     ///
     /// Validates: Requirements 19.1, 19.2, 19.3, 19.4, 19.5, 11.7
     #[test]
+    #[allow(clippy::print_stderr)]
     fn scorecard_latency_integration() -> Result<(), Box<dyn std::error::Error>> {
         let (shards, ref_index, ie_index) = build_synthetic_workspace();
         let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);

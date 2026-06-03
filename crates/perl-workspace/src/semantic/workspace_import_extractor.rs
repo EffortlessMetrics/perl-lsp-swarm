@@ -57,11 +57,12 @@ pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
 /// Walk the AST and return one [`UseLibFact`] per static `use lib`/`no lib` entry.
 ///
 /// Dynamic args (`use lib $var`, `use lib @dirs`) are skipped — no fact is emitted.
-/// `is_active` is `true` for `use lib` entries and `false` for `no lib` entries.
+/// Double-quoted strings that contain `$`, `@`, or `%` are treated as dynamic
+/// (they interpolate at runtime) and are also skipped.  Single-quoted strings and
+/// double-quoted strings that contain no interpolation sigils produce a
+/// `Provenance::ExactAst` / `Confidence::High` fact.
 ///
-/// FindBin-style interpolation (arg contains `FindBin`, `Bin/`, or `RealBin/`)
-/// produces `Provenance::PragmaInference`; plain quoted strings produce
-/// `Provenance::ExactAst`.
+/// `is_active` is `true` for `use lib` entries and `false` for `no lib` entries.
 pub fn extract_use_lib_facts(ast: &Node, file_id: FileId) -> Vec<UseLibFact> {
     let mut out = Vec::new();
     walk_use_lib(ast, file_id, &mut out);
@@ -120,33 +121,39 @@ fn collect_use_lib_facts(
 
         // Quoted string literal (single or double quoted).
         if is_quoted_string(trimmed) {
-            let path = unquote(trimmed).to_string();
-            let provenance = if is_findbin_pattern(&path) {
-                Provenance::PragmaInference
+            // Double-quoted strings interpolate `$var`, `@arr`, `%hash` — treat
+            // them as dynamic and emit no fact when any interpolation sigil is
+            // present in the body.
+            if trimmed.starts_with('"') {
+                let body = unquote(trimmed);
+                if body.contains('$') || body.contains('@') || body.contains('%') {
+                    continue;
+                }
+                out.push(UseLibFact::new(
+                    body.to_string(),
+                    is_active,
+                    file_id,
+                    Some(anchor_id),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ));
             } else {
-                Provenance::ExactAst
-            };
-            out.push(UseLibFact::new(
-                path,
-                is_active,
-                file_id,
-                Some(anchor_id),
-                provenance,
-                Confidence::High,
-            ));
+                // Single-quoted string — never interpolates; always a literal fact.
+                let path = unquote(trimmed).to_string();
+                out.push(UseLibFact::new(
+                    path,
+                    is_active,
+                    file_id,
+                    Some(anchor_id),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ));
+            }
             continue;
         }
 
         // Dynamic argument ($var, @arr, or anything else) — skip, emit nothing.
     }
-}
-
-/// Returns `true` when `s` looks like a FindBin-style path fragment.
-///
-/// Detects patterns like `$FindBin::Bin/lib`, `$Bin/lib`, `$RealBin/lib`
-/// that are commonly used to build include paths relative to the script.
-fn is_findbin_pattern(s: &str) -> bool {
-    s.contains("FindBin") || s.contains("Bin/") || s.contains("RealBin/")
 }
 
 /// Returns `true` when `s` is a single-quoted or double-quoted string literal.

@@ -128,14 +128,93 @@ fn test_use_lib_qw_list_emits_one_fact_per_word() -> Result<(), Box<dyn std::err
 
 // ── Double-quoted string tests ────────────────────────────────────────────────
 
+/// Double-quoted string with no interpolation sigils → literal fact (ExactAst/High).
 #[test]
-fn test_use_lib_double_quoted_string() -> Result<(), Box<dyn std::error::Error>> {
+fn test_use_lib_double_quoted_no_interp_emits_fact() -> Result<(), Box<dyn std::error::Error>> {
     let facts = parse_and_extract_use_lib(r#"use lib "../lib";"#);
 
     assert_eq!(facts.len(), 1);
     let fact = facts.first().ok_or("no fact")?;
     assert_eq!(fact.path, "../lib");
     assert!(fact.is_active);
+    assert_eq!(fact.provenance, Provenance::ExactAst);
+    assert_eq!(fact.confidence, Confidence::High);
+    Ok(())
+}
+
+/// Double-quoted string with a plain literal name (no sigils) → ExactAst fact.
+#[test]
+fn test_use_lib_double_quoted_plain_literal_emits_fact() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib(r#"use lib "plainlib";"#);
+
+    assert_eq!(facts.len(), 1, "double-quoted literal without sigils should emit a fact");
+    let fact = facts.first().ok_or("no fact")?;
+    assert_eq!(fact.path, "plainlib");
+    assert_eq!(fact.provenance, Provenance::ExactAst);
+    assert_eq!(fact.confidence, Confidence::High);
+    Ok(())
+}
+
+/// `use lib "$var"` — double-quoted with `$` → dynamic, no fact emitted.
+#[test]
+fn test_use_lib_double_quoted_dollar_var_skipped() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib(r#"use lib "$var";"#);
+    assert!(facts.is_empty(), r#"use lib "$var" (double-quoted $) should emit no fact"#);
+    Ok(())
+}
+
+/// `use lib "lib/$x"` — double-quoted with embedded `$` → dynamic, no fact emitted.
+#[test]
+fn test_use_lib_double_quoted_embedded_dollar_skipped() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib(r#"use lib "lib/$x";"#);
+    assert!(facts.is_empty(), r#"use lib "lib/$x" (embedded $) should emit no fact"#);
+    Ok(())
+}
+
+/// `use lib "@dirs"` — double-quoted with `@` → dynamic, no fact emitted.
+#[test]
+fn test_use_lib_double_quoted_array_skipped() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib(r#"use lib "@dirs";"#);
+    assert!(facts.is_empty(), r#"use lib "@dirs" (double-quoted @) should emit no fact"#);
+    Ok(())
+}
+
+/// `use lib "$FindBin::Bin/lib"` — FindBin idiom is double-quoted with `$` → skipped as dynamic.
+#[test]
+fn test_use_lib_findbin_double_quoted_skipped() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib(r#"use lib "$FindBin::Bin/lib";"#);
+    assert!(
+        facts.is_empty(),
+        r#"use lib "$FindBin::Bin/lib" (double-quoted $FindBin) should emit no fact — dynamic"#
+    );
+    Ok(())
+}
+
+/// `use lib "$Bin/lib"` — another FindBin idiom → skipped as dynamic.
+#[test]
+fn test_use_lib_bin_var_double_quoted_skipped() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib(r#"use lib "$Bin/lib";"#);
+    assert!(
+        facts.is_empty(),
+        r#"use lib "$Bin/lib" (double-quoted $Bin) should emit no fact — dynamic"#
+    );
+    Ok(())
+}
+
+/// `use lib 'lib/Bin/Util'` — single-quoted path that happens to contain `Bin/`
+/// → must NOT be misclassified; emits ExactAst fact.
+#[test]
+fn test_use_lib_single_quoted_bin_segment_is_exact_ast() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = parse_and_extract_use_lib("use lib 'lib/Bin/Util';");
+    assert_eq!(facts.len(), 1, "single-quoted literal with Bin/ segment should emit a fact");
+    let fact = facts.first().ok_or("no fact")?;
+    assert_eq!(fact.path, "lib/Bin/Util");
+    assert_eq!(
+        fact.provenance,
+        Provenance::ExactAst,
+        "single-quoted path containing Bin/ must be ExactAst, not PragmaInference"
+    );
+    assert_eq!(fact.confidence, Confidence::High);
     Ok(())
 }
 
@@ -260,7 +339,7 @@ fn test_workspace_index_wires_use_lib_into_query() -> Result<(), Box<dyn std::er
     let uri = "file:///test_use_lib_wiring.pl";
     let code = "use lib 'lib';\nuse lib '../vendor';\nuse lib $dynamic;\n1;\n";
 
-    index.index_file_str(uri, code).map_err(|e| e)?;
+    index.index_file_str(uri, code)?;
 
     let result = index
         .with_semantic_queries_for_uri(uri, |file_id, queries| queries.use_lib_paths(file_id))
@@ -291,7 +370,7 @@ fn test_workspace_index_remove_file_clears_use_lib() -> Result<(), Box<dyn std::
     let uri = "file:///test_use_lib_remove.pl";
     let code = "use lib 'lib';\n1;\n";
 
-    index.index_file_str(uri, code).map_err(|e| e)?;
+    index.index_file_str(uri, code)?;
 
     // Verify facts are present after indexing.
     let before = index
@@ -317,7 +396,7 @@ fn test_workspace_index_reindex_replaces_use_lib_facts() -> Result<(), Box<dyn s
     let uri = "file:///test_use_lib_reindex.pl";
 
     // First index: single path.
-    index.index_file_str(uri, "use lib 'old_path';\n1;\n").map_err(|e| e)?;
+    index.index_file_str(uri, "use lib 'old_path';\n1;\n")?;
 
     let v1 = index
         .with_semantic_queries_for_uri(uri, |file_id, queries| queries.use_lib_paths(file_id))
@@ -326,7 +405,7 @@ fn test_workspace_index_reindex_replaces_use_lib_facts() -> Result<(), Box<dyn s
     assert_eq!(v1.first().ok_or("no fact")?.path, "old_path");
 
     // Re-index with different path.
-    index.index_file_str(uri, "use lib 'new_path';\n1;\n").map_err(|e| e)?;
+    index.index_file_str(uri, "use lib 'new_path';\n1;\n")?;
 
     let v2 = index
         .with_semantic_queries_for_uri(uri, |file_id, queries| queries.use_lib_paths(file_id))
