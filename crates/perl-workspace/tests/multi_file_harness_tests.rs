@@ -71,7 +71,25 @@ fn harness_missing_fixture_root_is_error() -> Result<()> {
     Ok(())
 }
 
-/// (e) Assert use_lib_script fixture loads exactly 2 shards (one .pm + one .pl).
+/// (e) Assert the entity helper rejects a matching name with the wrong kind.
+#[test]
+fn harness_assert_entity_exists_rejects_wrong_kind() -> Result<()> {
+    let root = use_lib_script_root();
+    let (_index, shards) = common::load_fixture_workspace(&root)?;
+    let Err(err) = common::assert_entity_exists(&shards, "MyThing::greet", EntityKind::Package)
+    else {
+        return Err("MyThing::greet should not be accepted as a package entity".into());
+    };
+
+    let message = err.to_string();
+    assert!(message.contains("MyThing::greet"), "missing entity name in error: {message}");
+    assert!(message.contains("Package"), "missing requested kind in error: {message}");
+    assert!(message.contains("Subroutine:MyThing::greet"), "missing available kind in error: {message}");
+
+    Ok(())
+}
+
+/// (f) Assert use_lib_script fixture loads exactly 2 shards (one .pm + one .pl).
 #[test]
 fn harness_use_lib_script_shard_count_is_two() -> Result<()> {
     let root = use_lib_script_root();
