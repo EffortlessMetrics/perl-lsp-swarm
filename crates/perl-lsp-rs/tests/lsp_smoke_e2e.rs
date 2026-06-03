@@ -250,7 +250,7 @@ print $answer;
 #[test]
 fn lsp_smoke_e2e_stdio_flow() -> Result<(), Box<dyn std::error::Error>> {
     let server = common::start_lsp_server();
-    let timeout = Duration::from_secs(2);
+    let timeout = common::timeout_scaler::TimeoutProfile::Standard.timeout();
     let init_timeout = common::timeout_scaler::TimeoutProfile::Initialization.timeout();
 
     let uri = unique_test_uri("stdio-flow");
