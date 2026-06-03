@@ -27,7 +27,7 @@ use perl_lsp_rs_core::providers::navigation::safe_delete_shadow::{
 ))]
 use perl_semantic_facts::{
     AnchorId, DefinitionCandidate, EntityFact, EntityId, FileId, OccurrenceFact, PlannedEdit,
-    PlannedEditCategory, RenamePlan, SafeDeletePlan, ScopeId, VisibleSymbol,
+    PlannedEditCategory, RenamePlan, SafeDeletePlan, ScopeId, UseLibFact, VisibleSymbol,
 };
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_semantic_facts::{Confidence, EntityKind, PlanBlocker, PlanBlockerReason, Provenance};
@@ -1376,6 +1376,10 @@ impl SemanticQueries for RefactorFixtureQueries {
         _byte_offset: u32,
         _scope_id: Option<ScopeId>,
     ) -> Vec<VisibleSymbol> {
+        Vec::new()
+    }
+
+    fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
         Vec::new()
     }
 
