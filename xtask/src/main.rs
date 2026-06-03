@@ -192,6 +192,9 @@ enum Commands {
         /// Optional deterministic quality receipt to summarize when present.
         #[arg(long, default_value = "target/receipts/inline-completion-quality.json")]
         quality_receipt: PathBuf,
+        /// Optional next-edit scaffold receipt to validate and summarize when present.
+        #[arg(long, default_value = "target/receipts/semantic-inline-next-edit.json")]
+        next_edit_receipt: PathBuf,
     },
 
     /// Emit a semantic inline-completion next-edit scaffold receipt.
@@ -2510,6 +2513,29 @@ enum NativeToolingCommand {
 enum CiSubcommand {
     /// Run local/CI parity diagnostic: toolchain pin, components, git state, fmt drift, Perl, binary.
     Doctor,
+
+    /// Emit an advisory changed-file proof-pack route receipt.
+    Route {
+        /// Git base ref used for changed-file detection.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Git head ref used for changed-file detection.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+
+        /// Output path for the route receipt.
+        #[arg(long, default_value = "target/receipts/ci-route.json")]
+        receipt: PathBuf,
+
+        /// Output path for the Markdown route summary.
+        #[arg(long, default_value = "target/receipts/ci-route.md")]
+        summary: PathBuf,
+
+        /// Explicit changed file path. Repeat for tests or disconnected runs; when omitted, git diff is used.
+        #[arg(long = "changed-file")]
+        changed_file: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2715,6 +2741,15 @@ fn main() -> Result<()> {
         Commands::Ci { command } => match command {
             None => ci::run(),
             Some(CiSubcommand::Doctor) => ci_doctor::run(),
+            Some(CiSubcommand::Route { base, head, receipt, summary, changed_file }) => {
+                ci_route::run(ci_route::CiRouteArgs {
+                    base,
+                    head,
+                    receipt,
+                    summary,
+                    changed_files: changed_file,
+                })
+            }
         },
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckLintPolicy => check_lint_policy::run(),
@@ -2766,8 +2801,8 @@ fn main() -> Result<()> {
         },
         Commands::InlineCompletionSmoke { binary } => inline_completion_smoke::run(binary),
         Commands::InlineCompletionQuality { receipt } => inline_completion_quality::run(receipt),
-        Commands::SemanticInlineReceipts { receipt, quality_receipt } => {
-            semantic_inline_receipts::run(receipt, quality_receipt)
+        Commands::SemanticInlineReceipts { receipt, quality_receipt, next_edit_receipt } => {
+            semantic_inline_receipts::run(receipt, quality_receipt, next_edit_receipt)
         }
         Commands::SemanticInlineNextEdit { receipt } => semantic_inline_next_edit::run(receipt),
         Commands::SupportedEditorInlineSmoke { receipt } => {
