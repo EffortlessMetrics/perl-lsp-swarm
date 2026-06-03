@@ -857,34 +857,31 @@ mod tests {
 
         let file_id = FileId(7);
         let mut parser = Parser::new(
-            "use lib 'lib'; use lib \"plain\"; use lib q{quoteop}; use lib qq{qqplain}; use lib qq{$dynamic}; use lib \"$dynamic\"; 1;",
+            "use lib 'lib'; use lib \"plain\"; use lib q{quoteop}; use lib q[bracket]; use lib q<angle>; use lib q!bang!; use lib qq{qqplain}; use lib qq{$dynamic}; use lib \"$dynamic\"; 1;",
         );
-        let ast = parser.parse().map_err(|error| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("parse failed: {error:?}"))
-        })?;
+        let ast = parser.parse()?;
         let facts = extract_use_lib_facts(&ast, file_id);
-        assert_eq!(facts.len(), 4);
+        assert_eq!(facts.len(), 7);
         assert_eq!(facts[0].path, "lib");
         assert!(facts[0].is_active);
         assert_eq!(facts[1].path, "plain");
         assert_eq!(facts[1].provenance, Provenance::ExactAst);
         assert_eq!(facts[1].confidence, Confidence::High);
         assert_eq!(facts[2].path, "quoteop");
-        assert_eq!(facts[3].path, "qqplain");
+        assert_eq!(facts[3].path, "bracket");
+        assert_eq!(facts[4].path, "angle");
+        assert_eq!(facts[5].path, "bang");
+        assert_eq!(facts[6].path, "qqplain");
 
         let mut no_lib_parser = Parser::new("no lib 'old'; 1;");
-        let no_lib_ast = no_lib_parser.parse().map_err(|error| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("parse failed: {error:?}"))
-        })?;
+        let no_lib_ast = no_lib_parser.parse()?;
         let no_lib_facts = extract_use_lib_facts(&no_lib_ast, file_id);
         assert_eq!(no_lib_facts.len(), 1);
         assert_eq!(no_lib_facts[0].path, "old");
         assert!(!no_lib_facts[0].is_active);
 
         let mut qw_parser = Parser::new("use lib qw(old vendor); 1;");
-        let qw_ast = qw_parser.parse().map_err(|error| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("parse failed: {error:?}"))
-        })?;
+        let qw_ast = qw_parser.parse()?;
         let qw_facts = extract_use_lib_facts(&qw_ast, file_id);
         assert_eq!(qw_facts.len(), 2);
         assert_eq!(qw_facts[0].path, "old");
@@ -934,11 +931,7 @@ mod tests {
         assert!(reindexed[1].is_active);
 
         workspace.remove_file(uri);
-        let removed = workspace
-            .with_semantic_queries_for_uri(uri, |indexed_file_id, semantic_queries| {
-                semantic_queries.use_lib_paths(indexed_file_id)
-            });
-        assert!(removed.is_none());
+        assert!(workspace.file_id_for_uri(uri).is_none());
 
         Ok(())
     }
