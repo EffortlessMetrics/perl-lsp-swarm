@@ -42,6 +42,9 @@ struct MissingImportNextActionReceipt {
     duplicate_import: MissingImportNextEditProof,
     unreachable_module: MissingImportNextEditProof,
     project_shape: ProjectMissingImportNextActionReceipt,
+    comment_target: MissingImportNextEditProof,
+    pod_target: MissingImportNextEditProof,
+    data_target: MissingImportNextEditProof,
     default_gate: MissingImportNextEditProof,
     explicit_gate: MissingImportNextEditProof,
     accepted_document_text: String,
@@ -211,6 +214,32 @@ fn missing_import_next_action_receipt(
         vec!["strict".to_string(), "warnings".to_string()],
     ));
     let project_shape = project_missing_import_next_action_receipt(provider)?;
+    let comment_source = "use strict;\n# My::App->new\n";
+    let comment_target =
+        provider.prove_missing_import(&MissingImportNextEditRequest::receipt_only_at(
+            comment_source,
+            "My::App",
+            find_required(comment_source, "My::App")?,
+            vec!["My::App".to_string()],
+            vec!["strict".to_string()],
+        ));
+    let pod_source = "use strict;\n=pod\nMy::App->new\n=cut\n";
+    let pod_target = provider.prove_missing_import(&MissingImportNextEditRequest::receipt_only_at(
+        pod_source,
+        "My::App",
+        find_required(pod_source, "My::App")?,
+        vec!["My::App".to_string()],
+        vec!["strict".to_string()],
+    ));
+    let data_source = "use strict;\n__DATA__\nMy::App->new\n";
+    let data_target =
+        provider.prove_missing_import(&MissingImportNextEditRequest::receipt_only_at(
+            data_source,
+            "My::App",
+            find_required(data_source, "My::App")?,
+            vec!["My::App".to_string()],
+            vec!["strict".to_string()],
+        ));
 
     let mut default_gate = MissingImportNextEditRequest::receipt_only(
         source,
@@ -279,6 +308,9 @@ fn missing_import_next_action_receipt(
         duplicate_import: duplicate,
         unreachable_module: unreachable,
         project_shape,
+        comment_target,
+        pod_target,
+        data_target,
         default_gate,
         explicit_gate,
         accepted_document_text,
@@ -340,7 +372,7 @@ fn project_missing_import_next_action_receipt(
     }
 
     let receipt = ProjectMissingImportNextActionReceipt {
-        claim_boundary: "receipt-only project-shaped missing-import next-action proof; effective @INC inputs are explicit and no runtime LSP method, editor-visible provider, source mirror, release action, or AI behavior is enabled",
+        claim_boundary: "receipt-only project-shaped missing-import next-action proof; effective @INC reachability is precomputed and passed explicitly, and no runtime LSP method, editor-visible provider, source mirror, release action, or AI behavior is enabled",
         project_candidate,
         duplicate_project_import,
         root_only_module,
@@ -839,6 +871,10 @@ fn parse_succeeds(source: &str) -> bool {
     parser.parse().is_ok()
 }
 
+fn find_required(source: &str, needle: &str) -> Result<usize> {
+    source.find(needle).ok_or_else(|| color_eyre::eyre::eyre!("fixture omitted `{needle}`"))
+}
+
 fn validate_missing_import_next_action(receipt: &MissingImportNextActionReceipt) -> Result<()> {
     let Some(candidate) = receipt.reachable_candidate.candidate.as_ref() else {
         bail!("reachable missing-import proof must prepare a receipt-only candidate");
@@ -869,6 +905,18 @@ fn validate_missing_import_next_action(receipt: &MissingImportNextActionReceipt)
         bail!("unreachable missing-import proof must reject unreachable modules");
     }
     validate_project_missing_import_next_action(&receipt.project_shape)?;
+    validate_project_missing_import_next_action(&receipt.project_shape)?;
+    for (name, proof) in [
+        ("comment target", &receipt.comment_target),
+        ("POD target", &receipt.pod_target),
+        ("data target", &receipt.data_target),
+    ] {
+        if proof.candidate.is_some()
+            || !proof.rejection_reasons.contains(&NextEditRejectionReason::UnsafeInsertionPoint)
+        {
+            bail!("missing-import next action must reject {name} contexts");
+        }
+    }
     if receipt.default_gate.status != NextEditStatus::Disabled
         || receipt.default_gate.candidate.is_some()
         || !receipt.default_gate.rejection_reasons.contains(&NextEditRejectionReason::GateDisabled)
@@ -929,7 +977,9 @@ fn validate_project_missing_import_next_action(
             .rejection_reasons
             .contains(&NextEditRejectionReason::UnreachableModule)
     {
-        bail!("project-shaped missing-import proof must reject root-only workspace modules");
+        bail!(
+            "project-shaped missing-import proof must reject modules omitted from the effective @INC reachability input"
+        );
     }
     if receipt.cancelled_lib_module.candidate.is_some()
         || !receipt
@@ -937,7 +987,9 @@ fn validate_project_missing_import_next_action(
             .rejection_reasons
             .contains(&NextEditRejectionReason::UnreachableModule)
     {
-        bail!("project-shaped missing-import proof must respect no-lib-cancelled reachability");
+        bail!(
+            "project-shaped missing-import proof must reject modules removed from the effective @INC reachability input"
+        );
     }
     if !receipt.parse_stable {
         bail!("project-shaped missing-import proof must keep local parse state stable");
@@ -1165,6 +1217,18 @@ mod tests {
                 .and_then(Value::as_str),
             Some("unreachable_module")
         );
+        for field in ["comment_target", "pod_target", "data_target"] {
+            assert_eq!(
+                value
+                    .pointer(&format!("/missing_import_next_action/{field}/rejectionReasons/0"))
+                    .and_then(Value::as_str),
+                Some("unsafe_insertion_point")
+            );
+            assert!(
+                value.pointer(&format!("/missing_import_next_action/{field}/candidate")).is_none(),
+                "{field} must not produce a candidate"
+            );
+        }
         assert_eq!(
             value
                 .pointer("/missing_import_next_action/default_gate/status")
@@ -1499,20 +1563,22 @@ mod tests {
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.project_shape.root_only_module.rejection_reasons.clear();
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("project root-only module without rejection reason must fail validation");
+        let error = validate_missing_import_next_action(&receipt).expect_err(
+            "project effective-INC omitted module without rejection reason must fail validation",
+        );
         assert!(
-            error.to_string().contains("root-only"),
-            "error should identify root-only project module drift, got {error}"
+            error.to_string().contains("effective @INC"),
+            "error should identify effective-INC project module drift, got {error}"
         );
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.project_shape.cancelled_lib_module.rejection_reasons.clear();
-        let error = validate_missing_import_next_action(&receipt)
-            .expect_err("project cancelled lib without rejection reason must fail validation");
+        let error = validate_missing_import_next_action(&receipt).expect_err(
+            "project effective-INC removed module without rejection reason must fail validation",
+        );
         assert!(
-            error.to_string().contains("no-lib-cancelled"),
-            "error should identify no-lib project drift, got {error}"
+            error.to_string().contains("effective @INC"),
+            "error should identify effective-INC removed module drift, got {error}"
         );
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;

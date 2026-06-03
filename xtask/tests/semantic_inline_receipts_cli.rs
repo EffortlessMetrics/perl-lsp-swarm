@@ -371,6 +371,16 @@ fn semantic_inline_receipts_cli_embeds_quality_counters_when_available() -> Resu
             .and_then(Value::as_bool),
         Some(true)
     );
+    for field in ["comment_target_rejected", "pod_target_rejected", "data_target_rejected"] {
+        assert_eq!(
+            next_edit_scaffold
+                .get("missing_import_next_action")
+                .and_then(|action| action.get(field))
+                .and_then(Value::as_bool),
+            Some(true),
+            "{field} must be summarized"
+        );
+    }
     assert_eq!(
         next_edit_scaffold
             .get("missing_import_next_action")
@@ -447,6 +457,14 @@ fn semantic_inline_receipts_cli_embeds_quality_counters_when_available() -> Resu
             .get("missing_import_next_action")
             .and_then(|action| action.get("rejection_reasons"))
             .and_then(|reasons| reasons.get("unreachable_module"))
+            .and_then(Value::as_u64),
+        Some(3)
+    );
+    assert_eq!(
+        next_edit_scaffold
+            .get("missing_import_next_action")
+            .and_then(|action| action.get("rejection_reasons"))
+            .and_then(|reasons| reasons.get("unsafe_insertion_point"))
             .and_then(Value::as_u64),
         Some(3)
     );
@@ -1171,7 +1189,7 @@ fn valid_missing_import_next_action_json() -> Value {
             "rejectionReasons": ["unreachable_module"]
         },
         "project_shape": {
-            "claim_boundary": "receipt-only project-shaped missing-import next-action proof",
+            "claim_boundary": "receipt-only project-shaped missing-import next-action proof; effective @INC reachability is precomputed and passed explicitly",
             "project_candidate": {
                 "status": "receipt_only",
                 "candidate": {
@@ -1201,6 +1219,18 @@ fn valid_missing_import_next_action_json() -> Value {
             },
             "accepted_document_text": "package App::Script;\nuse strict;\nuse warnings;\nuse lib 'lib';\nuse My::App;\nmy $app = My::App->new;\n",
             "parse_stable": true
+        },
+        "comment_target": {
+            "status": "receipt_only",
+            "rejectionReasons": ["unsafe_insertion_point"]
+        },
+        "pod_target": {
+            "status": "receipt_only",
+            "rejectionReasons": ["unsafe_insertion_point"]
+        },
+        "data_target": {
+            "status": "receipt_only",
+            "rejectionReasons": ["unsafe_insertion_point"]
         },
         "default_gate": {
             "status": "disabled",

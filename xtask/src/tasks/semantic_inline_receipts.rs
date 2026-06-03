@@ -183,6 +183,9 @@ struct MissingImportNextActionSummary {
     project_shape_root_only_rejected: bool,
     project_shape_cancelled_lib_rejected: bool,
     project_shape_parse_stable: bool,
+    comment_target_rejected: bool,
+    pod_target_rejected: bool,
+    data_target_rejected: bool,
     default_gate_disabled: bool,
     explicit_gate_runtime_unregistered: bool,
     rejection_reasons: BTreeMap<String, u64>,
@@ -541,6 +544,21 @@ fn missing_import_next_action_summary(scaffold: &Value) -> Result<MissingImportN
             .get("parse_stable")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        comment_target_rejected: rejection_reason_present(
+            action,
+            "/comment_target/rejectionReasons",
+            "unsafe_insertion_point",
+        )?,
+        pod_target_rejected: rejection_reason_present(
+            action,
+            "/pod_target/rejectionReasons",
+            "unsafe_insertion_point",
+        )?,
+        data_target_rejected: rejection_reason_present(
+            action,
+            "/data_target/rejectionReasons",
+            "unsafe_insertion_point",
+        )?,
         default_gate_disabled: action.pointer("/default_gate/status").and_then(Value::as_str)
             == Some("disabled"),
         explicit_gate_runtime_unregistered: action
@@ -555,6 +573,9 @@ fn missing_import_next_action_summary(scaffold: &Value) -> Result<MissingImportN
                 "/project_shape/duplicate_project_import/rejectionReasons",
                 "/project_shape/root_only_module/rejectionReasons",
                 "/project_shape/cancelled_lib_module/rejectionReasons",
+                "/comment_target/rejectionReasons",
+                "/pod_target/rejectionReasons",
+                "/data_target/rejectionReasons",
                 "/default_gate/rejectionReasons",
                 "/explicit_gate/rejectionReasons",
             ],
@@ -869,14 +890,18 @@ fn require_missing_import_next_action(scaffold: &Value) -> Result<()> {
         "/root_only_module/rejectionReasons",
         "unreachable_module",
     )? {
-        bail!("project-shaped missing-import next action did not reject root-only module");
+        bail!(
+            "project-shaped missing-import next action did not reject effective-INC omitted module"
+        );
     }
     if !rejection_reason_present(
         project_shape,
         "/cancelled_lib_module/rejectionReasons",
         "unreachable_module",
     )? {
-        bail!("project-shaped missing-import next action did not reject no-lib-cancelled module");
+        bail!(
+            "project-shaped missing-import next action did not reject effective-INC removed module"
+        );
     }
     let project_accepted_text =
         project_shape.get("accepted_document_text").and_then(Value::as_str).ok_or_else(|| {
@@ -892,6 +917,15 @@ fn require_missing_import_next_action(scaffold: &Value) -> Result<()> {
         "missing_import_next_action/project_shape/parse_stable",
         true,
     )?;
+    for (name, path) in [
+        ("comment target", "/comment_target/rejectionReasons"),
+        ("POD target", "/pod_target/rejectionReasons"),
+        ("data target", "/data_target/rejectionReasons"),
+    ] {
+        if !rejection_reason_present(action, path, "unsafe_insertion_point")? {
+            bail!("missing-import next action did not reject {name}");
+        }
+    }
     require_next_edit_value(
         action.pointer("/default_gate/status").and_then(Value::as_str),
         "missing_import_next_action/default_gate/status",
@@ -1860,7 +1894,7 @@ mod tests {
                 "rejectionReasons": ["unreachable_module"]
             },
             "project_shape": {
-                "claim_boundary": "receipt-only project-shaped missing-import next-action proof",
+                "claim_boundary": "receipt-only project-shaped missing-import next-action proof; effective @INC reachability is precomputed and passed explicitly",
                 "project_candidate": {
                     "status": "receipt_only",
                     "candidate": {
@@ -1890,6 +1924,18 @@ mod tests {
                 },
                 "accepted_document_text": "package App::Script;\nuse strict;\nuse warnings;\nuse lib 'lib';\nuse My::App;\nmy $app = My::App->new;\n",
                 "parse_stable": true
+            },
+            "comment_target": {
+                "status": "receipt_only",
+                "rejectionReasons": ["unsafe_insertion_point"]
+            },
+            "pod_target": {
+                "status": "receipt_only",
+                "rejectionReasons": ["unsafe_insertion_point"]
+            },
+            "data_target": {
+                "status": "receipt_only",
+                "rejectionReasons": ["unsafe_insertion_point"]
             },
             "default_gate": {
                 "status": "disabled",
@@ -2197,6 +2243,13 @@ mod tests {
         );
         assert_eq!(missing_import.rejection_reasons.get("duplicate_import").copied(), Some(2));
         assert_eq!(missing_import.rejection_reasons.get("unreachable_module").copied(), Some(3));
+        assert!(missing_import.comment_target_rejected);
+        assert!(missing_import.pod_target_rejected);
+        assert!(missing_import.data_target_rejected);
+        assert_eq!(
+            missing_import.rejection_reasons.get("unsafe_insertion_point").copied(),
+            Some(3)
+        );
         assert_eq!(missing_import.rejection_reasons.get("gate_disabled").copied(), Some(1));
         assert_eq!(
             missing_import.rejection_reasons.get("runtime_provider_not_registered").copied(),
@@ -2641,6 +2694,24 @@ mod tests {
             error.to_string().contains("unreachable module"),
             "error should identify unreachable module rejection drift, got {error}"
         );
+
+        for (field, label) in [
+            ("comment_target", "comment target"),
+            ("pod_target", "POD target"),
+            ("data_target", "data target"),
+        ] {
+            let mut scaffold = valid_next_edit_scaffold_json();
+            scaffold["missing_import_next_action"][field]["rejectionReasons"] = json!([]);
+            fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+            let error = next_edit_scaffold_summary_error(
+                &path,
+                "unsafe missing-import target without rejection reason must fail",
+            );
+            assert!(
+                error.to_string().contains(label),
+                "error should identify {label} rejection drift, got {error}"
+            );
+        }
 
         let mut scaffold = valid_next_edit_scaffold_json();
         scaffold["missing_import_next_action"]["default_gate"]["status"] = json!("receipt_only");
