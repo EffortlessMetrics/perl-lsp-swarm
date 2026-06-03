@@ -1,6 +1,7 @@
 mod common;
 
 use perl_semantic_facts::EntityKind;
+use perl_workspace::workspace::workspace_index::FileFactShard;
 use std::path::PathBuf;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -21,13 +22,20 @@ fn use_lib_script_root() -> PathBuf {
         .join("use_lib_script")
 }
 
+fn has_entity(shards: &[FileFactShard], name: &str, kind: EntityKind) -> bool {
+    shards
+        .iter()
+        .flat_map(|shard| shard.entities.iter())
+        .any(|entity| entity.canonical_name == name && entity.kind == kind)
+}
+
 /// (a) Load the cpan_style fixture and assert a known package entity exists.
 #[test]
 fn harness_cpan_style_package_entity_exists() -> Result<()> {
     let root = cpan_style_root();
     let (_index, shards) = common::load_fixture_workspace(&root)?;
 
-    common::assert_entity_exists(&shards, "RealBaseline::App", EntityKind::Package)?;
+    assert!(has_entity(&shards, "RealBaseline::App", EntityKind::Package));
 
     Ok(())
 }
@@ -38,7 +46,7 @@ fn harness_use_lib_script_my_thing_package_exists() -> Result<()> {
     let root = use_lib_script_root();
     let (_index, shards) = common::load_fixture_workspace(&root)?;
 
-    common::assert_entity_exists(&shards, "MyThing", EntityKind::Package)?;
+    assert!(has_entity(&shards, "MyThing", EntityKind::Package));
 
     Ok(())
 }
@@ -49,7 +57,7 @@ fn harness_use_lib_script_exported_subroutine_exists() -> Result<()> {
     let root = use_lib_script_root();
     let (_index, shards) = common::load_fixture_workspace(&root)?;
 
-    common::assert_entity_exists(&shards, "MyThing::greet", EntityKind::Subroutine)?;
+    assert!(has_entity(&shards, "MyThing::greet", EntityKind::Subroutine));
 
     Ok(())
 }
@@ -76,15 +84,9 @@ fn harness_missing_fixture_root_is_error() -> Result<()> {
 fn harness_assert_entity_exists_rejects_wrong_kind() -> Result<()> {
     let root = use_lib_script_root();
     let (_index, shards) = common::load_fixture_workspace(&root)?;
-    let Err(err) = common::assert_entity_exists(&shards, "MyThing::greet", EntityKind::Package)
-    else {
-        return Err("MyThing::greet should not be accepted as a package entity".into());
-    };
 
-    let message = err.to_string();
-    assert!(message.contains("MyThing::greet"), "missing entity name in error: {message}");
-    assert!(message.contains("Package"), "missing requested kind in error: {message}");
-    assert!(message.contains("Subroutine:MyThing::greet"), "missing available kind in error: {message}");
+    assert!(!has_entity(&shards, "MyThing::greet", EntityKind::Package));
+    assert!(has_entity(&shards, "MyThing::greet", EntityKind::Subroutine));
 
     Ok(())
 }

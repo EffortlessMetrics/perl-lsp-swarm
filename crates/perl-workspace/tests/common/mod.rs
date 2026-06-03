@@ -106,29 +106,3 @@ pub fn edge_count_by_kind(shards: &[FileFactShard]) -> BTreeMap<EdgeKind, usize>
     }
     map
 }
-
-/// Assert that a `FileFactShard` slice contains at least one entity with the
-/// given `name` and `kind`.
-///
-/// Returns `Err` with a descriptive message listing all entity names and kinds
-/// found when the assertion fails.  Callers propagate with `?`.
-pub fn assert_entity_exists(shards: &[FileFactShard], name: &str, kind: EntityKind) -> Result<()> {
-    let found = shards
-        .iter()
-        .flat_map(|s| s.entities.iter())
-        .any(|e| e.canonical_name == name && e.kind == kind);
-
-    if !found {
-        let all: Vec<_> = shards
-            .iter()
-            .flat_map(|s| s.entities.iter())
-            .map(|e| format!("{:?}:{}", e.kind, e.canonical_name))
-            .collect();
-        return Err(format!(
-            "assert_entity_exists: entity name={name:?} kind={kind:?} not found.\nAll entities: {all:#?}"
-        )
-        .into());
-    }
-
-    Ok(())
-}
