@@ -2664,6 +2664,84 @@ mod tests {
             "error should identify mixed LF line endings, got {error}"
         );
 
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["project_shape"]["project_candidate"]["status"] =
+            json!("disabled");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(
+            &path,
+            "wrong project-shaped missing-import status must fail",
+        );
+        assert!(
+            error.to_string().contains("project_candidate/status"),
+            "error should identify project-shaped status drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["project_shape"]["project_candidate"]["candidate"]
+            ["family"] = json!("test_assertion_body");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(
+            &path,
+            "wrong project-shaped missing-import family must fail",
+        );
+        assert!(
+            error.to_string().contains("project_candidate/candidate/family"),
+            "error should identify project-shaped family drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["project_shape"]["project_candidate"]["candidate"]
+            ["module"] = json!("Other::Module");
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(
+            &path,
+            "wrong project-shaped missing-import module must fail",
+        );
+        assert!(
+            error.to_string().contains("project_candidate/candidate/module"),
+            "error should identify project-shaped module drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["project_shape"]["project_candidate"]["candidate"]
+            ["editorVisible"] = json!(true);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(
+            &path,
+            "editor-visible project-shaped missing-import candidate must fail",
+        );
+        assert!(
+            error.to_string().contains("project_candidate/candidate/editorVisible"),
+            "error should identify project-shaped editor-visible drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["project_shape"]["accepted_document_text"] = json!(
+            "package App::Script;\nuse strict;\nuse warnings;\nuse lib 'lib';\nmy $app = My::App->new;\n"
+        );
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(
+            &path,
+            "project-shaped accepted text without import must fail",
+        );
+        assert!(
+            error.to_string().contains("accepted document text"),
+            "error should identify project-shaped accepted-text drift, got {error}"
+        );
+
+        let mut scaffold = valid_next_edit_scaffold_json();
+        scaffold["missing_import_next_action"]["project_shape"]["parse_stable"] = json!(false);
+        fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+        let error = next_edit_scaffold_summary_error(
+            &path,
+            "project-shaped parse-unstable proof must fail",
+        );
+        assert!(
+            error.to_string().contains("project_shape/parse_stable"),
+            "error should identify project-shaped parse-stability drift, got {error}"
+        );
+
         Ok(())
     }
 
@@ -2694,6 +2772,25 @@ mod tests {
             error.to_string().contains("unreachable module"),
             "error should identify unreachable module rejection drift, got {error}"
         );
+
+        for (field, label) in [
+            ("duplicate_project_import", "duplicate import"),
+            ("root_only_module", "effective-INC omitted"),
+            ("cancelled_lib_module", "effective-INC removed"),
+        ] {
+            let mut scaffold = valid_next_edit_scaffold_json();
+            scaffold["missing_import_next_action"]["project_shape"][field]["rejectionReasons"] =
+                json!([]);
+            fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+            let error = next_edit_scaffold_summary_error(
+                &path,
+                "project-shaped missing-import rejection drift must fail",
+            );
+            assert!(
+                error.to_string().contains(label),
+                "error should identify {label} project rejection drift, got {error}"
+            );
+        }
 
         for (field, label) in [
             ("comment_target", "comment target"),

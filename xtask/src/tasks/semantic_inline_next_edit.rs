@@ -1529,6 +1529,39 @@ mod tests {
         );
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
+        let candidate =
+            receipt.project_shape.project_candidate.candidate.as_mut().ok_or_else(|| {
+                color_eyre::eyre::eyre!("valid project receipt omitted candidate")
+            })?;
+        candidate.editor_visible = true;
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("editor-visible project-shaped candidate must fail validation");
+        assert!(
+            error.to_string().contains("receipt-only contract"),
+            "error should identify project-shaped candidate contract drift, got {error}"
+        );
+
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        receipt.project_shape.accepted_document_text =
+            "package App::Script;\nuse strict;\nuse warnings;\nuse lib 'lib';\nmy $app = My::App->new;\n"
+                .to_string();
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("project-shaped accepted text without import must fail validation");
+        assert!(
+            error.to_string().contains("accepted text"),
+            "error should identify project-shaped accepted-text drift, got {error}"
+        );
+
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        receipt.project_shape.parse_stable = false;
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("parse-unstable project-shaped action must fail validation");
+        assert!(
+            error.to_string().contains("parse state stable"),
+            "error should identify project-shaped parse-stability drift, got {error}"
+        );
+
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
         receipt.line_endings_preserved = false;
         let error = validate_missing_import_next_action(&receipt)
             .expect_err("line-ending drift must fail validation");
@@ -1559,6 +1592,15 @@ mod tests {
         assert!(
             error.to_string().contains("reject unreachable modules"),
             "error should identify unreachable-module drift, got {error}"
+        );
+
+        let mut receipt = missing_import_next_action_receipt(&provider)?;
+        receipt.project_shape.duplicate_project_import.rejection_reasons.clear();
+        let error = validate_missing_import_next_action(&receipt)
+            .expect_err("project duplicate import without rejection reason must fail validation");
+        assert!(
+            error.to_string().contains("reject duplicate imports"),
+            "error should identify project duplicate-import drift, got {error}"
         );
 
         let mut receipt = missing_import_next_action_receipt(&provider)?;
