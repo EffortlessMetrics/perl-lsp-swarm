@@ -8,6 +8,7 @@ CI minute.
 
 > Companion docs: [lem-budgeting.md](lem-budgeting.md),
 > [verification-ladder.md](verification-ladder.md),
+> [upstream-tooling-substrate.md](upstream-tooling-substrate.md),
 > [labels.md](labels.md),
 > [perl-lsp-rollout-plan.md](perl-lsp-rollout-plan.md).
 > Anchors into the existing system: [../reference/CI_ARCHITECTURE.md](../reference/CI_ARCHITECTURE.md),

@@ -124,6 +124,7 @@ Decision records, project status, and planning documents.
 - [Latency Caps SLO Spec](specs/LATENCY_CAPS_SLO_SPEC.md)
 - [Native Formatter and Critic Replacement Contract](specs/NATIVE_FORMATTER_CRITIC_REPLACEMENT.md)
 - [Release Candidate Baseline](specs/RELEASE_CANDIDATE_BASELINE.md)
+- [Upstream Tooling Substrate](ci/upstream-tooling-substrate.md) — wrapped engine-room tools behind the repo `xtask` contract
 
 ### Historical Analyses
 Long-form historical writing plus the supporting research notes that fed it.

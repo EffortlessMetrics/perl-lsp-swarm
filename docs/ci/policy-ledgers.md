@@ -4,7 +4,8 @@ Index of the machine-readable CI policy files under [`policy/`](../../policy/).
 
 > See [cost-and-verification-policy.md](cost-and-verification-policy.md) for the
 > operating thesis, [perl-lsp-rollout-plan.md](perl-lsp-rollout-plan.md) for the
-> rollout sequence.
+> rollout sequence, and [upstream-tooling-substrate.md](upstream-tooling-substrate.md)
+> for the wrapped engine-room tooling contract.
 
 ---
 
