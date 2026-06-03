@@ -1041,13 +1041,30 @@ fn is_safe_missing_import_target(document_text: &str, target_byte: usize) -> boo
     }
     let line_start = document_text[..target_byte].rfind('\n').map_or(0, |index| index + 1);
     let prefix = &document_text[line_start..target_byte];
-    let trimmed = prefix.trim_start();
-    if trimmed.starts_with('#') || prefix.contains('#') {
-        return false;
+    has_safe_target_line_prefix(prefix)
+}
+
+fn has_safe_target_line_prefix(prefix: &str) -> bool {
+    let mut single_quoted = false;
+    let mut double_quoted = false;
+    let mut escaped = false;
+
+    for ch in prefix.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if single_quoted || double_quoted => escaped = true,
+            '\'' if !double_quoted => single_quoted = !single_quoted,
+            '"' if !single_quoted => double_quoted = !double_quoted,
+            '#' if !single_quoted && !double_quoted => return false,
+            _ => {}
+        }
     }
-    let single_quotes = prefix.chars().filter(|ch| *ch == '\'').count();
-    let double_quotes = prefix.chars().filter(|ch| *ch == '"').count();
-    single_quotes % 2 == 0 && double_quotes % 2 == 0
+
+    !single_quoted && !double_quoted
 }
 
 enum RenameOccurrenceSearch {
@@ -1288,6 +1305,28 @@ mod tests {
         assert_eq!(candidate.edit.new_text, "use My::App;\n");
         let edited = candidate.edit.apply_to(source).ok_or("edit did not apply")?;
         assert_eq!(edited, "use strict;\nuse warnings;\nuse My::App;\nmy $value = My::App->new;\n");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_import_receipt_allows_quoted_hash_before_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = NextEditProvider;
+        let source = "use strict;\nmy $fragment = \"#anchor\"; my $value = My::App->new;\n";
+        let target_byte = source.find("My::App").ok_or("fixture missing module target")?;
+        let request = MissingImportNextEditRequest::receipt_only_at(
+            source,
+            "My::App",
+            target_byte,
+            vec!["My::App".to_string()],
+            vec!["strict".to_string()],
+        );
+
+        let proof = provider.prove_missing_import(&request);
+
+        assert!(proof.rejection_reasons.is_empty());
+        let candidate = proof.candidate.ok_or("missing import candidate not prepared")?;
+        assert_eq!(candidate.module, "My::App");
         Ok(())
     }
 
