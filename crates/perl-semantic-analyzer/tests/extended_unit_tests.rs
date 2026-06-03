@@ -8,13 +8,15 @@
 //! - SemanticAnalyzer::infer_type for operators and builtins
 //! - SemanticModel API surface
 //! - Cross-package qualified references
-#![allow(clippy::print_stderr)]
 //! - SymbolTable find_symbol with scope chains
 //! - SymbolExtractor with/without source
 //! - Type inference engine: subroutine inference, constraint violations, builtins
 //! - TypeEnvironment nested scoping
 //! - WorkspaceIndex edge cases
 //! - PerlType Subroutine construction
+
+// Legacy diagnostics coverage intentionally exercises stderr output in this test binary.
+#![allow(clippy::print_stderr)]
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::declaration::{

@@ -1,5 +1,7 @@
 //! Performance test for symbol extraction
 //! Run with: cargo test -p perl-semantic-analyzer --test symbol_perf_test -- --nocapture
+
+// Performance smoke output is useful when this test is run with --nocapture.
 #![allow(clippy::print_stdout)]
 
 use perl_semantic_analyzer::{Parser, symbol::SymbolExtractor};
