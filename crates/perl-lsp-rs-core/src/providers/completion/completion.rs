@@ -698,17 +698,44 @@ impl CompletionProvider {
             //   require v5.10;         (v-string version — starts with 'v' but no ::)
             // Allow empty (cursor right after `require `) or any identifier-start char
             // (both uppercase like `require POSIX` and lowercase like `require autodie`).
-            // Block only: digit, quote chars, path separators (. / \), sigils ($ @ %), backtick.
+            // Block only: digit, file-path starts (. / \), sigils ($ @ %), backtick,
+            // and quoted forms that are already closed or look like explicit file paths.
             let first_char = rest.chars().next();
             let Some(c) = first_char else {
                 return true; // cursor right after `require ` — valid module context
             };
             // Block digit (version numbers) and path/sigil chars.
             // Quoted forms like `require "Foo/` are allowed so completion fires inside them.
-            !matches!(c, '0'..='9' | '`' | '.' | '/' | '\\')
+            match c {
+                '0'..='9' | '`' | '.' | '/' | '\\' | '$' | '@' | '%' => false,
+                '\'' | '"' => Self::is_open_quoted_require_module_context(rest, c),
+                _ => true,
+            }
         } else {
             false
         }
+    }
+
+    fn is_open_quoted_require_module_context(rest: &str, quote: char) -> bool {
+        let Some(inner) = rest.strip_prefix(quote) else {
+            return false;
+        };
+
+        if inner.contains(quote) {
+            return false;
+        }
+
+        if inner.is_empty() {
+            return true;
+        }
+
+        let Some(first) = inner.chars().next() else {
+            return true;
+        };
+
+        !matches!(first, '.' | '/' | '\\' | '$' | '@' | '%' | '`')
+            && !inner.contains('.')
+            && !inner.contains(':')
     }
 
     /// Analyze the context at the cursor position
