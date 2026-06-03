@@ -511,7 +511,7 @@ mod tests {
     use super::*;
     use perl_semantic_facts::{
         AnchorId, Confidence, DefinitionCandidate, EntityFact, EntityId, FileId, OccurrenceFact,
-        OccurrenceId, OccurrenceKind, Provenance, RenamePlan, SafeDeletePlan, ScopeId, UseLibFact,
+        OccurrenceId, OccurrenceKind, Provenance, RenamePlan, SafeDeletePlan, ScopeId,
         VisibleSymbol, VisibleSymbolSource,
     };
     use perl_workspace::semantic::queries::{
@@ -562,10 +562,6 @@ mod tests {
 
         fn safe_delete_plan(&self, entity_id: EntityId) -> SafeDeletePlan {
             SafeDeletePlan::new(entity_id, String::new(), vec![], vec![])
-        }
-
-        fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
-            Vec::new()
         }
 
         fn dynamic_boundary_at(
@@ -639,10 +635,6 @@ mod tests {
 
         fn safe_delete_plan(&self, entity_id: EntityId) -> SafeDeletePlan {
             SafeDeletePlan::new(entity_id, String::new(), vec![], vec![])
-        }
-
-        fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
-            Vec::new()
         }
 
         fn dynamic_boundary_at(
@@ -742,10 +734,6 @@ mod tests {
             SafeDeletePlan::new(entity_id, String::new(), vec![], vec![])
         }
 
-        fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
-            Vec::new()
-        }
-
         fn dynamic_boundary_at(
             &self,
             _file_id: FileId,
@@ -815,10 +803,6 @@ mod tests {
 
         fn safe_delete_plan(&self, entity_id: EntityId) -> SafeDeletePlan {
             SafeDeletePlan::new(entity_id, String::new(), vec![], vec![])
-        }
-
-        fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
-            Vec::new()
         }
 
         fn dynamic_boundary_at(
@@ -943,9 +927,6 @@ mod tests {
             }
             fn safe_delete_plan(&self, id: EntityId) -> SafeDeletePlan {
                 SafeDeletePlan::new(id, String::new(), vec![], vec![])
-            }
-            fn use_lib_paths(&self, _: FileId) -> Vec<UseLibFact> {
-                Vec::new()
             }
             fn dynamic_boundary_at(
                 &self,
@@ -1255,9 +1236,6 @@ mod tests {
             }
             fn safe_delete_plan(&self, id: EntityId) -> SafeDeletePlan {
                 SafeDeletePlan::new(id, String::new(), vec![], vec![])
-            }
-            fn use_lib_paths(&self, _: FileId) -> Vec<UseLibFact> {
-                Vec::new()
             }
             fn dynamic_boundary_at(
                 &self,

@@ -1398,10 +1398,10 @@ impl WorkspaceIndex {
     ) -> Option<(Location, String)> {
         let mut candidates: Vec<(Location, String)> = Vec::new();
         for file_index in files.values() {
-            if let Some(filter) = uri_filter {
-                if file_index.symbols.first().is_some_and(|symbol| symbol.uri != filter) {
-                    continue;
-                }
+            if let Some(filter) = uri_filter
+                && file_index.symbols.first().is_some_and(|symbol| symbol.uri != filter)
+            {
+                continue;
             }
 
             for symbol in &file_index.symbols {
@@ -3910,21 +3910,17 @@ impl IndexVisitor {
                     kind: ReferenceKind::Usage,
                 });
 
-                if method == "import" {
-                    if let NodeKind::Identifier { name: module_name } = &object.kind {
-                        for symbol in extract_manual_import_symbols(args) {
-                            file_index.references.entry(symbol).or_default().push(
-                                SymbolReference {
-                                    uri: self.uri.clone(),
-                                    range: self.node_to_range(node),
-                                    kind: ReferenceKind::Import,
-                                },
-                            );
-                        }
-                        file_index
-                            .dependencies
-                            .insert(normalize_dependency_module_name(module_name));
+                if method == "import"
+                    && let NodeKind::Identifier { name: module_name } = &object.kind
+                {
+                    for symbol in extract_manual_import_symbols(args) {
+                        file_index.references.entry(symbol).or_default().push(SymbolReference {
+                            uri: self.uri.clone(),
+                            range: self.node_to_range(node),
+                            kind: ReferenceKind::Import,
+                        });
                     }
+                    file_index.dependencies.insert(normalize_dependency_module_name(module_name));
                 }
 
                 // Visit arguments
@@ -4458,10 +4454,10 @@ fn extract_constant_names_from_use_args(args: &[String]) -> Vec<String> {
             if arg == "{" || arg == "}" || arg == "," || arg == "=>" {
                 continue;
             }
-            if let Some(candidate) = normalize_constant_name(arg) {
-                if iter.peek().map(|s| s.as_str()) == Some("=>") {
-                    push_unique(&mut names, &mut seen, candidate);
-                }
+            if let Some(candidate) = normalize_constant_name(arg)
+                && iter.peek().map(|s| s.as_str()) == Some("=>")
+            {
+                push_unique(&mut names, &mut seen, candidate);
             }
         }
         return names;

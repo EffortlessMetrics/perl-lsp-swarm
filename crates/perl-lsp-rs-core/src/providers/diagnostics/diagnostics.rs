@@ -11,7 +11,7 @@ use perl_semantic_analyzer::scope_analyzer::ScopeAnalyzer;
 use perl_semantic_analyzer::symbol::SymbolExtractor;
 use perl_semantic_facts::{
     DefinitionCandidate, EntityFact, EntityId, FileId, OccurrenceFact, RenamePlan, SafeDeletePlan,
-    ScopeId, UseLibFact, VisibleSymbol,
+    ScopeId, VisibleSymbol,
 };
 use perl_workspace::semantic::queries::{DynamicCallableEvidence, QueryContext, SemanticQueries};
 
@@ -106,10 +106,6 @@ impl SemanticQueries for NullSemanticQueries {
         _symbol: &str,
     ) -> Option<DynamicCallableEvidence> {
         None
-    }
-
-    fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
-        Vec::new()
     }
 }
 

@@ -142,7 +142,9 @@ pub trait SemanticQueries {
     /// Path strings are the literal unquoted values as written in source.
     /// Callers must resolve them relative to the file's directory for filesystem
     /// lookup; this function returns raw fact data only.
-    fn use_lib_paths(&self, file_id: FileId) -> Vec<UseLibFact>;
+    fn use_lib_paths(&self, _file_id: FileId) -> Vec<UseLibFact> {
+        Vec::new()
+    }
 
     /// Return method candidates for a receiver type and method name.
     ///
@@ -664,13 +666,14 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
 
         // ── Collect definition occurrences ──
         let bare = bare_name(&old_name);
-        if let Some((info, shard)) = self.find_entity_with_shard(entity_id) {
-            if is_definition_kind(info.kind) {
-                if let Some(anchor_id) = info.anchor_id {
-                    match shard
-                        .anchors
-                        .iter()
-                        .find(|anchor| anchor.id == anchor_id && anchor.file_id == shard.file_id)
+        if let Some((info, shard)) = self.find_entity_with_shard(entity_id)
+            && is_definition_kind(info.kind)
+            && let Some(anchor_id) = info.anchor_id
+        {
+            match shard
+                .anchors
+                .iter()
+                .find(|anchor| anchor.id == anchor_id && anchor.file_id == shard.file_id)
             {
                 Some(anchor)
                     if is_high_confidence_source_backed(info.provenance, info.confidence)
@@ -694,16 +697,14 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
                         || anchor.provenance == Provenance::DynamicBoundary,
                     "Definition anchor",
                 )),
-                        None => blockers.push(PlanBlocker::new(
-                            PlanBlockerReason::UnclassifiedOccurrence,
-                            Some(anchor_id),
-                            format!(
-                                "Definition anchor for '{}' was not found in the owning fact shard.",
-                                bare
-                            ),
-                        )),
-                    }
-                }
+                None => blockers.push(PlanBlocker::new(
+                    PlanBlockerReason::UnclassifiedOccurrence,
+                    Some(anchor_id),
+                    format!(
+                        "Definition anchor for '{}' was not found in the owning fact shard.",
+                        bare
+                    ),
+                )),
             }
         }
         for shard in self.fact_shards.values() {
