@@ -5043,6 +5043,7 @@ mod tests {
 /// The benchmarks also wire latency measurements into scorecard reporting
 /// (Req 19.5, 11.7) and flag any threshold violations.
 #[cfg(test)]
+#[allow(clippy::print_stderr)]
 mod latency_benchmarks {
     use super::*;
     use crate::semantic::imports::ImportExportIndex;
