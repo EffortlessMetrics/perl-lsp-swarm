@@ -276,16 +276,14 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
 /// at that point.  Stopping at line 6 guarantees `$x` is in scope with a real
 /// value, so the Locals assertion cannot pass on placeholder fallback.
 ///
-/// **Known adapter bug (production, requires separate fix):**
-/// As of this writing the adapter's `variables(locals_ref)` handler returns
-/// locals from the Perl debugger's internal frame (DB object: `$self` and `@_`)
-/// instead of the user script's lexical scope (`$x`, `$y`).  This applies to ALL
-/// fixtures, not just this one.  The assertion below (`$x` must appear by name)
-/// is intentionally NOT weakened: it correctly fails while the adapter bug is
-/// present, serving as a regression guard once the locals-frame-filtering bug is
-/// fixed.  Route the production fix separately as a scout/builder task targeting
-/// `DebugAdapter::handle_variables` (the frame-filter logic that selects which
-/// `perl -d` frame to parse for lexical locals).
+/// **Regression guard for #997 (B-module PADLIST locals fix):**
+/// Prior to #997, the adapter's `variables(locals_ref)` handler returned locals
+/// from the Perl debugger's internal frame (DB object: `$self` and `@_`) instead
+/// of the user script's lexical scope (`$x`, `$y`).  The fix in #997 replaces the
+/// broken `V <frame_id> .` approach with a B-module eval that walks the current
+/// pad via `PADLIST`/`main_cv`.  The assertion below (`$x` must appear by name)
+/// is a regression guard: it will catch any future revert of the PADLIST walk that
+/// re-exposes the internal-frame bug.
 #[test]
 fn test_lifecycle_scopes_locals_and_globals() -> TestResult {
     if !perl_available() {
