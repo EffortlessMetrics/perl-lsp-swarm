@@ -714,6 +714,30 @@ our @EXPORT = qw(not_exported);
     }
 
     #[test]
+    fn test_custom_import_uses_low_confidence_unknown_exports() -> Result<(), String> {
+        let code = r#"
+package CustomExporter;
+sub import {}
+our @EXPORT = qw(static_symbol);
+1;
+"#;
+        let info = parse_and_extract(code).ok_or("Expected custom import ExportInfo")?;
+
+        assert!(info.custom_import, "custom import modules should be marked dynamic");
+        assert!(
+            info.default_export.is_empty(),
+            "static-looking @EXPORT should not be claimed for custom import modules"
+        );
+
+        let export_set = info.to_export_set();
+        assert_eq!(export_set.confidence, Confidence::Low);
+        assert!(export_set.default_exports.is_empty());
+        assert!(export_set.optional_exports.is_empty());
+        assert!(export_set.tags.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn test_empty_export_arrays() {
         let code = r#"
 package MyModule;
