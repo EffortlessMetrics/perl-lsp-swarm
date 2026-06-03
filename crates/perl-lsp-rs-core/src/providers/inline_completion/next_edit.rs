@@ -1312,21 +1312,26 @@ mod tests {
     fn missing_import_receipt_allows_quoted_hash_before_target()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = NextEditProvider;
-        let source = "use strict;\nmy $fragment = \"#anchor\"; my $value = My::App->new;\n";
-        let target_byte = source.find("My::App").ok_or("fixture missing module target")?;
-        let request = MissingImportNextEditRequest::receipt_only_at(
-            source,
-            "My::App",
-            target_byte,
-            vec!["My::App".to_string()],
-            vec!["strict".to_string()],
-        );
 
-        let proof = provider.prove_missing_import(&request);
+        for source in [
+            "use strict;\nmy $fragment = \"#anchor\"; my $value = My::App->new;\n",
+            "use strict;\nmy $fragment = \"\\\"#anchor\"; my $value = My::App->new;\n",
+        ] {
+            let target_byte = source.find("My::App").ok_or("fixture missing module target")?;
+            let request = MissingImportNextEditRequest::receipt_only_at(
+                source,
+                "My::App",
+                target_byte,
+                vec!["My::App".to_string()],
+                vec!["strict".to_string()],
+            );
 
-        assert!(proof.rejection_reasons.is_empty());
-        let candidate = proof.candidate.ok_or("missing import candidate not prepared")?;
-        assert_eq!(candidate.module, "My::App");
+            let proof = provider.prove_missing_import(&request);
+
+            assert!(proof.rejection_reasons.is_empty());
+            let candidate = proof.candidate.ok_or("missing import candidate not prepared")?;
+            assert_eq!(candidate.module, "My::App");
+        }
         Ok(())
     }
 

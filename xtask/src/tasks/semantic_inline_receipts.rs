@@ -2560,6 +2560,24 @@ mod tests {
             "error should identify unreachable module rejection drift, got {error}"
         );
 
+        for (field, label) in [
+            ("comment_target", "comment target"),
+            ("pod_target", "POD target"),
+            ("data_target", "data target"),
+        ] {
+            let mut scaffold = valid_next_edit_scaffold_json();
+            scaffold["missing_import_next_action"][field]["rejectionReasons"] = json!([]);
+            fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
+            let error = next_edit_scaffold_summary_error(
+                &path,
+                "unsafe missing-import target without rejection reason must fail",
+            );
+            assert!(
+                error.to_string().contains(label),
+                "error should identify {label} rejection drift, got {error}"
+            );
+        }
+
         let mut scaffold = valid_next_edit_scaffold_json();
         scaffold["missing_import_next_action"]["default_gate"]["status"] = json!("receipt_only");
         fs::write(&path, serde_json::to_vec_pretty(&scaffold)?)?;
