@@ -845,7 +845,8 @@ fn test_e2e_locals_scope_returns_user_lexicals_not_db_internals() -> TestResult 
         .iter()
         .find(|v| v.get("name").and_then(Value::as_str) == Some("$x"))
         .ok_or("$x not found in locals")?;
-    let x_value = x_var.get("value").and_then(Value::as_str).unwrap_or("");
+    let x_value =
+        x_var.get("value").and_then(Value::as_str).ok_or("$x value missing or not a string")?;
     assert_eq!(
         x_value, "10",
         "$x value must be '10', got '{x_value}'. \
