@@ -65,7 +65,7 @@ fn arb_export_info() -> impl Strategy<Value = ExportInfo> {
                 export_tags,
                 module_name,
                 anchor_id,
-                ..Default::default()
+                custom_import: false,
             }
         })
 }
