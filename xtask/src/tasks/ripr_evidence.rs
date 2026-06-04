@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+static RIPR_BIN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 const DEFAULT_ROOT: &str = ".";
 const DEFAULT_BASE: &str = "origin/master";
 const DEFAULT_HEAD: &str = "HEAD";
@@ -26,6 +29,7 @@ const ANNOTATIONS_TXT: &str = "target/ripr/review/annotations.txt";
 const PR_SUMMARY_MD: &str = "target/ripr/pr/summary.md";
 const IMPACTED_JSON: &str = "target/xtask/impacted-evidence/latest.json";
 const IMPACTED_MD: &str = "target/xtask/impacted-evidence/latest.md";
+const DEFAULT_RIPR_SUPPRESSIONS: &str = "policy/ripr-suppressions.toml";
 
 pub fn ripr_pr(root: &str, base: &str, head: &str, check: bool) -> Result<()> {
     let repo = repo_root()?;
@@ -196,52 +200,96 @@ struct RiprPlusOptions {
 
 fn ripr_plus_packet(repo: &Path, options: &RiprPlusOptions) -> Result<Value> {
     let root = command_root_arg(repo, &options.root)?;
-    let raw = run_ripr(&[
+    // Fetch repo-badge-json for the canonical actionable-gap counts (authoritative headline).
+    let badge_raw = run_ripr(&[
+        "check".to_string(),
+        "--root".to_string(),
+        root.clone(),
+        "--format".to_string(),
+        "repo-badge-json".to_string(),
+    ])?;
+    // Fetch repo-seams-json for the triage inventory (top_files / top_gap_kinds / clusters).
+    let seams_raw = run_ripr(&[
         "check".to_string(),
         "--root".to_string(),
         root,
         "--format".to_string(),
         "repo-seams-json".to_string(),
     ])?;
-    let value: Value =
-        serde_json::from_str(&raw).context("ripr repo-seams-json was invalid JSON")?;
-    let seams = value
+    let suppressions = read_ripr_suppression_rules(repo, &options.suppressions)?;
+    ripr_plus_packet_from_raw(options, &current_head(repo)?, &suppressions, &badge_raw, &seams_raw)
+}
+
+/// Parse both `repo-badge-json` and `repo-seams-json` output and build the
+/// RIPR+ baseline receipt. Kept separate from the git/ripr I/O above so the
+/// parsing and canonical-gap accounting are exercised by unit tests.
+fn ripr_plus_packet_from_raw(
+    options: &RiprPlusOptions,
+    head: &str,
+    suppressions: &RiprSuppressionRules,
+    badge_raw: &str,
+    seams_raw: &str,
+) -> Result<Value> {
+    let badge: Value =
+        serde_json::from_str(badge_raw).context("ripr repo-badge-json was invalid JSON")?;
+    let seams_value: Value =
+        serde_json::from_str(seams_raw).context("ripr repo-seams-json was invalid JSON")?;
+    let seams = seams_value
         .get("seams")
         .and_then(Value::as_array)
         .ok_or_else(|| eyre!("ripr repo-seams-json output did not include seams[]"))?;
-    let suppressions = read_ripr_suppression_rules(repo, &options.suppressions)?;
-    let seam_summary = ripr_plus_seam_summary(seams, &suppressions, 10);
-    Ok(ripr_plus_receipt_packet(options, &current_head(repo)?, &suppressions, seam_summary))
+    let seam_summary = ripr_plus_seam_summary(seams, suppressions, 10);
+    Ok(ripr_plus_receipt_packet(options, head, suppressions, &badge, seam_summary))
 }
 
 fn ripr_plus_receipt_packet(
     options: &RiprPlusOptions,
     head: &str,
     suppressions: &RiprSuppressionRules,
+    badge: &Value,
     seam_summary: RiprPlusSeamSummary,
 ) -> Value {
+    // Canonical counts: authoritative headline from repo-badge-json.
+    let counts = badge.get("counts");
+    let count = |key: &str| counts.and_then(|v| v.get(key)).and_then(Value::as_u64).unwrap_or(0);
+    let active_unresolved =
+        count("unsuppressed_exposure_gaps") + count("unsuppressed_test_efficiency_findings");
+    let suppressed_unresolved =
+        count("suppressed_exposure_gaps") + count("suppressed_test_efficiency_findings");
+    let basis = badge
+        .get("basis")
+        .and_then(Value::as_str)
+        .unwrap_or("canonical_actionable_gap")
+        .to_string();
+
+    // Triage inventory: from the seam summary (repo-seams-json).
     let top_active_files = seam_summary.top_files;
     let top_suppressed_files = seam_summary.top_suppressed_files;
     let top_active_gap_kinds = seam_summary.top_gap_kinds;
     let top_suppressed_gap_kinds = seam_summary.top_suppressed_gap_kinds;
+
     json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "ripr_plus_baseline",
         "mode": "advisory",
         "head": head,
         "root": options.root,
-        "source_format": "ripr check --format repo-seams-json",
-        "unresolved": seam_summary.unresolved,
-        "active_unresolved": seam_summary.unresolved,
-        "suppressed": seam_summary.suppressed,
-        "suppressed_unresolved": seam_summary.suppressed,
+        "source_format": "ripr check --format repo-badge-json (counts) + repo-seams-json (triage inventory)",
+        "basis": basis,
+        "unresolved": active_unresolved,
+        "active_unresolved": active_unresolved,
+        "suppressed_unresolved": suppressed_unresolved,
         "new_unresolved": null,
+        "counts": counts.cloned().unwrap_or_else(|| json!({})),
+        "reason_counts": badge.get("reason_counts").cloned().unwrap_or_else(|| json!({})),
         "top_files": top_active_files.clone(),
         "top_active_files": top_active_files,
         "top_suppressed_files": top_suppressed_files,
+        "top_gap_kinds": top_active_gap_kinds.clone(),
         "top_active_gap_kinds": top_active_gap_kinds,
         "top_suppressed_gap_kinds": top_suppressed_gap_kinds,
         "recommended_first_clusters": seam_summary.recommended_first_clusters,
+        "suppression_rule_count": suppressions.display_patterns.len(),
         "suppressions": {
             "path": display_path(&options.suppressions),
             "path_patterns": suppressions.display_patterns.clone(),
@@ -251,9 +299,9 @@ fn ripr_plus_receipt_packet(
         "decision": "advisory",
         "claim_boundary": [
             "Measurement only; this receipt does not enforce ripr+ zero.",
-            "unresolved is the repo-seam count from RIPR repo-seams-json.",
-            "active_unresolved and suppressed_unresolved split live debt from documented non-production suppressions.",
-            "Suppressed non-production surfaces are excluded from unresolved and reported separately.",
+            "unresolved is the canonical_actionable_gap count from RIPR repo-badge-json: unsuppressed exposure gaps plus actionable test-efficiency findings.",
+            "active_unresolved equals unresolved; suppressed_unresolved is suppressed_exposure_gaps + suppressed_test_efficiency_findings from repo-badge-json.",
+            "top_files, top_gap_kinds, and recommended_first_clusters are triage aids derived from the seam inventory (repo-seams-json), not the headline count.",
             "new_unresolved is null until PR diff comparison is wired in the quality gate."
         ]
     })
@@ -261,7 +309,14 @@ fn ripr_plus_receipt_packet(
 
 #[derive(Debug)]
 struct RiprPlusSeamSummary {
+    /// Raw seam count of active (unsuppressed) seams in the inventory.
+    /// Not used for the headline `unresolved` count in the receipt — that
+    /// comes from `repo-badge-json` (canonical actionable gap basis). Kept
+    /// here so that `ripr_plus_seam_summary` tests can assert the seam split.
+    #[allow(dead_code)]
     unresolved: usize,
+    /// Raw seam count of suppressed seams in the inventory. Same note as above.
+    #[allow(dead_code)]
     suppressed: usize,
     top_files: Vec<Value>,
     top_suppressed_files: Vec<Value>,
@@ -585,6 +640,7 @@ fn suppression_matches_seam(rules: &RiprSuppressionRules, seam: &Value) -> bool 
     let Some(path) = ripr_plus_seam_path(seam) else {
         return false;
     };
+    let path = normalize_suppression_match_path(&path);
     rules.path_patterns.iter().any(|pattern| pattern.matches(&path))
 }
 
@@ -606,7 +662,15 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let check_json = run_ripr_check(repo, options)?;
     let check_value: Value =
         serde_json::from_str(&check_json).context("ripr check output was not valid JSON")?;
-    let packet = pr_evidence_packet(options, &changed_files, &check_value, &base_sha, &head_sha);
+    let suppressions = read_ripr_suppression_rules(repo, Path::new(DEFAULT_RIPR_SUPPRESSIONS))?;
+    let packet = pr_evidence_packet(
+        options,
+        &changed_files,
+        &check_value,
+        &base_sha,
+        &head_sha,
+        &suppressions,
+    );
     validate_pr_evidence_packet(&packet, options, changed_files.len(), true, &base_sha, &head_sha)?;
     write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&packet)?)?;
     write_text(&repo.join(PR_EVIDENCE_MD), &render_pr_evidence_markdown(&packet))?;
@@ -651,17 +715,120 @@ fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<String> {
     ])
 }
 
+#[derive(Debug, Default)]
+struct RiprPrSummaryCounts {
+    weakly_exposed: usize,
+    reachable_unrevealed: usize,
+    no_static_path: usize,
+    suppressed_by_policy: usize,
+}
+
+fn ripr_pr_summary_counts(
+    check_value: &Value,
+    check_summary: Option<&Map<String, Value>>,
+    suppressions: &RiprSuppressionRules,
+) -> RiprPrSummaryCounts {
+    let summary_counts = RiprPrSummaryCounts {
+        weakly_exposed: count_field(check_summary, "weakly_exposed"),
+        reachable_unrevealed: count_field(check_summary, "reachable_unrevealed"),
+        no_static_path: count_field(check_summary, "no_static_path"),
+        suppressed_by_policy: 0,
+    };
+    let Some(findings) = check_value.get("findings").and_then(Value::as_array) else {
+        return summary_counts;
+    };
+
+    let mut suppressed = RiprPrSummaryCounts::default();
+    let mut unsuppressed_from_findings = RiprPrSummaryCounts::default();
+    for finding in findings {
+        let classification = finding.get("classification").and_then(Value::as_str);
+        if !matches!(
+            classification,
+            Some("weakly_exposed" | "reachable_unrevealed" | "no_static_path")
+        ) {
+            continue;
+        }
+        let counts = if suppression_matches_finding(suppressions, finding) {
+            suppressed.suppressed_by_policy += 1;
+            &mut suppressed
+        } else {
+            &mut unsuppressed_from_findings
+        };
+        match classification {
+            Some("weakly_exposed") => counts.weakly_exposed += 1,
+            Some("reachable_unrevealed") => counts.reachable_unrevealed += 1,
+            Some("no_static_path") => counts.no_static_path += 1,
+            _ => {}
+        }
+    }
+    if check_summary.is_some() {
+        return RiprPrSummaryCounts {
+            weakly_exposed: summary_counts.weakly_exposed.saturating_sub(suppressed.weakly_exposed),
+            reachable_unrevealed: summary_counts
+                .reachable_unrevealed
+                .saturating_sub(suppressed.reachable_unrevealed),
+            no_static_path: summary_counts.no_static_path.saturating_sub(suppressed.no_static_path),
+            suppressed_by_policy: suppressed.suppressed_by_policy,
+        };
+    }
+    RiprPrSummaryCounts {
+        suppressed_by_policy: suppressed.suppressed_by_policy,
+        ..unsuppressed_from_findings
+    }
+}
+
+fn suppression_matches_finding(rules: &RiprSuppressionRules, finding: &Value) -> bool {
+    let Some(path) = ripr_finding_path(finding) else {
+        return false;
+    };
+    let path = normalize_suppression_match_path(&path);
+    rules.path_patterns.iter().zip(rules.display_patterns.iter()).any(|(pattern, pattern_text)| {
+        pattern.matches(&path) || suppression_directory_pattern_matches(pattern_text, &path)
+    })
+}
+
+fn suppression_directory_pattern_matches(pattern: &str, path: &str) -> bool {
+    let Some(prefix) = pattern.strip_suffix("/**").or_else(|| pattern.strip_suffix("/*")) else {
+        return false;
+    };
+    let prefix = prefix.trim_end_matches('/');
+    path == prefix || path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn ripr_finding_path(finding: &Value) -> Option<String> {
+    finding
+        .get("probe")
+        .and_then(|probe| {
+            ["path", "file"].into_iter().find_map(|key| probe.get(key).and_then(Value::as_str))
+        })
+        .map(normalize_path_text)
+        .or_else(|| ripr_plus_seam_path(finding))
+        .filter(|path| !path.trim().is_empty())
+}
+
+fn normalize_suppression_match_path(path: &str) -> String {
+    let normalized = normalize_path_text(path);
+    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
+    ["crates/", "docs/", "archive/", "xtask/", "scripts/", "policy/", ".ci/"]
+        .into_iter()
+        .filter_map(|anchor| normalized.find(anchor))
+        .min()
+        .map_or_else(|| normalized.to_string(), |index| normalized[index..].to_string())
+}
+
 fn pr_evidence_packet(
     options: &PrEvidenceOptions,
     changed_files: &[String],
     check_value: &Value,
     base_sha: &str,
     head_sha: &str,
+    suppressions: &RiprSuppressionRules,
 ) -> Value {
     let check_summary = check_value.get("summary").and_then(Value::as_object);
-    let weakly_exposed = count_field(check_summary, "weakly_exposed");
-    let reachable_unrevealed = count_field(check_summary, "reachable_unrevealed");
-    let no_static_path = count_field(check_summary, "no_static_path");
+    let summary = ripr_pr_summary_counts(check_value, check_summary, suppressions);
+    let weakly_exposed = summary.weakly_exposed;
+    let reachable_unrevealed = summary.reachable_unrevealed;
+    let no_static_path = summary.no_static_path;
     let severe_gaps =
         weakly_exposed.saturating_add(reachable_unrevealed).saturating_add(no_static_path);
     let ripr_severe_gap = severe_gaps > 0;
@@ -696,7 +863,9 @@ fn pr_evidence_packet(
             "severe_gaps": severe_gaps,
             "requires_targeted_mutation": ripr_severe_gap,
             "ripr_severe_gap": ripr_severe_gap,
-            "routing_reason": if ripr_severe_gap { json!("ripr severe gap") } else { Value::Null }
+            "routing_reason": if ripr_severe_gap { json!("ripr severe gap") } else { Value::Null },
+            "suppressed_by_policy": summary.suppressed_by_policy,
+            "suppression_patterns": suppressions.display_patterns.clone(),
         },
         "artifacts": [
             {
@@ -828,6 +997,10 @@ fn render_pr_evidence_markdown(packet: &Value) -> String {
         count_field(summary, "reachable_unrevealed")
     ));
     out.push_str(&format!("- no_static_path: {}\n", count_field(summary, "no_static_path")));
+    out.push_str(&format!(
+        "- suppressed_by_policy: {}\n",
+        count_field(summary, "suppressed_by_policy")
+    ));
     out.push_str(&format!("- severe gaps: {}\n\n", count_field(summary, "severe_gaps")));
     out.push_str("## Targeted Mutation\n\n");
     out.push_str(&format!(
@@ -870,7 +1043,9 @@ fn write_review_comments(repo: &Path, options: &ReviewCommentsOptions) -> Result
     verify_revision(repo, &options.base)?;
     verify_revision(repo, &options.head)?;
     let root = command_root_arg(repo, &options.root)?;
-    if let Err(err) = run_ripr_review_comments(repo, options, &root) {
+    if current_pr_evidence_has_no_severe_gaps(repo, options)? {
+        write_clean_review_comments(repo, options, &root)?;
+    } else if let Err(err) = run_ripr_review_comments(repo, options, &root) {
         write_error_review_comments(repo, options, &root, &err.to_string())?;
     }
     stamp_review_comments_receipt(repo, options)?;
@@ -914,6 +1089,32 @@ fn run_ripr_review_comments(
         options.timeout_seconds,
     )
     .map(|_| ())
+}
+
+fn current_pr_evidence_has_no_severe_gaps(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+) -> Result<bool> {
+    let path = repo.join(PR_EVIDENCE_JSON);
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    let Ok(packet) = serde_json::from_str::<Value>(&text) else {
+        return Ok(false);
+    };
+    if packet.get("base").and_then(Value::as_str) != Some(options.base.as_str())
+        || packet.get("head").and_then(Value::as_str) != Some(options.head.as_str())
+    {
+        return Ok(false);
+    }
+    let base_sha = revision_sha(repo, &options.base)?;
+    let head_sha = revision_sha(repo, &options.head)?;
+    if packet.get("base_sha").and_then(Value::as_str) != Some(base_sha.as_str())
+        || packet.get("head_sha").and_then(Value::as_str) != Some(head_sha.as_str())
+    {
+        return Ok(false);
+    }
+    Ok(packet.pointer("/summary/severe_gaps").and_then(Value::as_u64) == Some(0))
 }
 
 fn validate_review_comments(
@@ -967,6 +1168,49 @@ fn stamp_review_comments_receipt(repo: &Path, options: &ReviewCommentsOptions) -
     object.insert("base_sha".to_string(), json!(revision_sha(repo, &options.base)?));
     object.insert("head_sha".to_string(), json!(revision_sha(repo, &options.head)?));
     write_text(&path, &format_json(&packet)?)
+}
+
+fn write_clean_review_comments(
+    repo: &Path,
+    options: &ReviewCommentsOptions,
+    root: &str,
+) -> Result<()> {
+    let packet = json!({
+        "schema_version": "0.1",
+        "tool": "ripr",
+        "status": "advisory",
+        "root": normalize_path_text(root),
+        "base": options.base,
+        "head": options.head,
+        "mode": "pr_evidence_clean",
+        "rendering_limits": {
+            "max_inline_comments": 0,
+            "max_summary_items": 0
+        },
+        "summary": {
+            "comments": 0,
+            "summary_only": 0,
+            "suppressed": 0,
+            "unchanged_tests": true,
+            "source": "pr_evidence",
+            "skip_reason": "pr_evidence_zero_severe_gaps"
+        },
+        "comments": [],
+        "summary_only": [],
+        "suppressed": [],
+        "warnings": [],
+        "limits_note": "Review guidance generation skipped because diff-scoped PR evidence reported zero severe gaps."
+    });
+    write_text(&repo.join(REVIEW_COMMENTS_JSON), &format_json(&packet)?)?;
+    write_text(&repo.join(REVIEW_COMMENTS_MD), &render_clean_review_comments_markdown(&packet))
+}
+
+fn render_clean_review_comments_markdown(packet: &Value) -> String {
+    format!(
+        "# RIPR PR Guidance\n\n- status: advisory\n- base: `{}`\n- head: `{}`\n- line annotations: 0\n- summary-only recommendations: 0\n- suppressed recommendations: 0\n\nNo review guidance was generated because diff-scoped PR evidence reported zero severe gaps.\n",
+        string_field(packet, "base", DEFAULT_BASE),
+        string_field(packet, "head", DEFAULT_HEAD)
+    )
 }
 
 fn write_error_review_comments(
@@ -1485,9 +1729,40 @@ fn verify_revision(repo: &Path, rev: &str) -> Result<()> {
 
 fn changed_files(repo: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let range = format!("{base}...{head}");
+    // A shallow clone (Claude Code on the web, default Actions checkout) has no
+    // common history, so `base...head` has no merge base and git diff fails with
+    // an opaque message. Attach actionable guidance as context while preserving
+    // the underlying git error as the cause; CI is unaffected (ripr.yml uses
+    // fetch-depth: 0).
     let output =
-        run_git_output(repo, &["diff", "--name-only", "--diff-filter=ACMR", range.as_str()])?;
+        run_git_output(repo, &["diff", "--name-only", "--diff-filter=ACMR", range.as_str()])
+            .with_context(|| merge_base_failure_guidance(base, head, is_shallow_clone(repo)))?;
     Ok(output.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
+}
+
+fn is_shallow_clone(repo: &Path) -> bool {
+    run_git_output(repo, &["rev-parse", "--is-shallow-repository"])
+        .map(|out| out.trim() == "true")
+        .unwrap_or(false)
+}
+
+fn merge_base_failure_guidance(base: &str, head: &str, shallow: bool) -> String {
+    let mut message =
+        format!("cannot compute diff range `{base}...{head}`: no merge base between them.");
+    if shallow {
+        message.push_str(&format!(
+            " This checkout is a shallow clone, so `{base}` and `{head}` share no common history. \
+             Deepen the clone before running diff-scoped RIPR locally, e.g. \
+             `git fetch --unshallow` or `git fetch --deepen=200 origin {base}`. \
+             CI is unaffected: the RIPR workflow checks out with fetch-depth: 0."
+        ));
+    } else {
+        message.push_str(&format!(
+            " Ensure `{base}` is fetched and shares history with `{head}`, \
+             e.g. `git fetch origin {base}`."
+        ));
+    }
+    message
 }
 
 fn write_pr_diff(repo: &Path, base: &str, head: &str) -> Result<()> {
@@ -1503,24 +1778,34 @@ fn run_git_output(repo: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn run_ripr(args: &[String]) -> Result<String> {
-    let binary = match env::var("RIPR_BIN") {
-        Ok(value) if !value.trim().is_empty() => value,
-        Ok(_) => bail!("RIPR_BIN is set but empty"),
-        Err(_) => "ripr".to_string(),
-    };
+    let binary = ripr_binary()?;
     run_output(&binary, args)
 }
 
 fn run_ripr_with_timeout(args: &[String], timeout_seconds: Option<u64>) -> Result<String> {
+    let binary = ripr_binary()?;
+    match timeout_seconds {
+        Some(seconds) => run_output_with_timeout(&binary, args, Duration::from_secs(seconds)),
+        None => run_output(&binary, args),
+    }
+}
+
+fn ripr_binary() -> Result<String> {
+    #[cfg(test)]
+    {
+        let guard =
+            RIPR_BIN_OVERRIDE.lock().map_err(|_| eyre!("RIPR_BIN test override lock poisoned"))?;
+        if let Some(binary) = guard.as_ref() {
+            return Ok(binary.clone());
+        }
+    }
+
     let binary = match env::var("RIPR_BIN") {
         Ok(value) if !value.trim().is_empty() => value,
         Ok(_) => bail!("RIPR_BIN is set but empty"),
         Err(_) => "ripr".to_string(),
     };
-    match timeout_seconds {
-        Some(seconds) => run_output_with_timeout(&binary, args, Duration::from_secs(seconds)),
-        None => run_output(&binary, args),
-    }
+    Ok(binary)
 }
 
 fn run_output(cmd: &str, args: &[String]) -> Result<String> {
@@ -1949,10 +2234,21 @@ mod tests {
                 "paths": ["archive/**"],
             })],
         };
+        // Badge supplies the canonical counts; seam summary supplies the triage inventory.
+        let badge = json!({
+            "basis": "canonical_actionable_gap",
+            "counts": {
+                "unsuppressed_exposure_gaps": 2,
+                "unsuppressed_test_efficiency_findings": 0,
+                "suppressed_exposure_gaps": 1,
+                "suppressed_test_efficiency_findings": 0
+            }
+        });
         let packet = ripr_plus_receipt_packet(
             &options,
             "head-sha",
             &suppressions,
+            &badge,
             RiprPlusSeamSummary {
                 unresolved: 2,
                 suppressed: 1,
@@ -1974,10 +2270,13 @@ mod tests {
 
         assert_eq!(packet["head"], json!("head-sha"));
         assert_eq!(packet["root"], json!("."));
+        // Canonical counts from badge: 2 unsuppressed exposure gaps.
         assert_eq!(packet["unresolved"], json!(2));
         assert_eq!(packet["active_unresolved"], json!(2));
-        assert_eq!(packet["suppressed"], json!(1));
         assert_eq!(packet["suppressed_unresolved"], json!(1));
+        assert_eq!(packet["basis"], json!("canonical_actionable_gap"));
+        assert_eq!(packet["schema_version"], json!(2));
+        // Triage inventory from seam summary.
         assert_eq!(
             packet.pointer("/top_files/0/name"),
             Some(&json!("xtask/src/tasks/ripr_evidence.rs"))
@@ -2007,6 +2306,191 @@ mod tests {
     }
 
     #[test]
+    fn ripr_plus_receipt_counts_canonical_gaps_not_raw_seam_inventory() {
+        // Regression guard for the 120k-vs-2.7k over-count: the receipt must
+        // count canonical_actionable_gap findings from repo-badge-json, never
+        // the raw analyzed_seams inventory. A seam that already has a
+        // discriminating test is an analyzed seam but not an actionable gap.
+        let options = RiprPlusOptions {
+            root: ".".to_string(),
+            suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+        };
+        let suppressions = RiprSuppressionRules::default();
+        let badge = json!({
+            "basis": "canonical_actionable_gap",
+            "counts": {
+                "unsuppressed_exposure_gaps": 2722,
+                "unsuppressed_test_efficiency_findings": 0,
+                "suppressed_exposure_gaps": 0,
+                "suppressed_test_efficiency_findings": 0,
+                "analyzed_seams": 120408,
+                "analyzed_gap_records": 90255
+            },
+            "reason_counts": { "smoke_oracle_only": 0, "no_assertion_detected": 0 }
+        });
+        let seam_summary = RiprPlusSeamSummary {
+            unresolved: 120408,
+            suppressed: 0,
+            top_files: vec![],
+            top_suppressed_files: vec![],
+            top_gap_kinds: vec![],
+            top_suppressed_gap_kinds: vec![],
+            recommended_first_clusters: vec![],
+        };
+
+        let packet =
+            ripr_plus_receipt_packet(&options, "head-sha", &suppressions, &badge, seam_summary);
+
+        // unresolved is the actionable-gap count, not the 120_408 raw seam inventory.
+        assert_eq!(packet["unresolved"], json!(2722));
+        assert_ne!(packet["unresolved"], json!(120_408));
+        assert_eq!(packet["basis"], json!("canonical_actionable_gap"));
+        assert_eq!(
+            packet["source_format"],
+            json!(
+                "ripr check --format repo-badge-json (counts) + repo-seams-json (triage inventory)"
+            )
+        );
+        assert_eq!(packet.pointer("/counts/analyzed_seams"), Some(&json!(120_408)));
+        assert_eq!(packet.pointer("/reason_counts/smoke_oracle_only"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn ripr_plus_packet_from_raw_parses_and_builds_receipt() -> Result<()> {
+        let options = RiprPlusOptions {
+            root: ".".to_string(),
+            suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+        };
+        let badge_raw = json!({
+            "basis": "canonical_actionable_gap",
+            "counts": {
+                "unsuppressed_exposure_gaps": 2722,
+                "unsuppressed_test_efficiency_findings": 0,
+                "analyzed_seams": 120408
+            }
+        })
+        .to_string();
+        let seams_raw = json!({"seams": []}).to_string();
+
+        let packet = ripr_plus_packet_from_raw(
+            &options,
+            "head-sha",
+            &RiprSuppressionRules::default(),
+            &badge_raw,
+            &seams_raw,
+        )?;
+
+        assert_eq!(packet["unresolved"], json!(2722));
+        assert_eq!(packet["head"], json!("head-sha"));
+        assert_eq!(packet["basis"], json!("canonical_actionable_gap"));
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_plus_packet_invokes_badge_counts_and_seam_inventory_sources() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("policy"))?;
+        fs::write(
+            repo.join("policy/ripr-suppressions.toml"),
+            r#"schema_version = 1
+policy = "ripr-suppressions"
+owner = "EffortlessMetrics"
+status = "advisory"
+updated = "2026-05-28"
+
+[[suppress]]
+id = "ripr-suppress-archive"
+kind = "generated_or_non_production_surface"
+paths = ["archive/**"]
+reason = "Archived source is not active workspace behavior."
+"#,
+        )?;
+        let ripr = write_fake_ripr_binary(repo)?;
+        let _override = override_ripr_bin(&ripr)?;
+        let options = RiprPlusOptions {
+            root: ".".to_string(),
+            suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+        };
+
+        let packet = ripr_plus_packet(repo, &options)?;
+
+        assert_eq!(packet["head"], json!(current_head(repo)?));
+        assert_eq!(packet["basis"], json!("canonical_actionable_gap"));
+        assert_eq!(packet["unresolved"], json!(9));
+        assert_eq!(packet["active_unresolved"], json!(9));
+        assert_eq!(packet["suppressed_unresolved"], json!(4));
+        assert_eq!(packet.pointer("/counts/unsuppressed_exposure_gaps"), Some(&json!(7)));
+        assert_eq!(packet.pointer("/reason_counts/no_assertion_detected"), Some(&json!(7)));
+        assert_eq!(
+            packet.pointer("/top_files/0/name"),
+            Some(&json!("xtask/src/tasks/ripr_evidence.rs"))
+        );
+        assert_eq!(packet.pointer("/top_suppressed_files/0/name"), Some(&json!("archive/old.rs")));
+        assert_eq!(packet.pointer("/top_active_gap_kinds/0/name"), Some(&json!("receipt parsing")));
+        let clusters = packet
+            .get("recommended_first_clusters")
+            .and_then(Value::as_array)
+            .ok_or_else(|| eyre!("missing recommended_first_clusters"))?;
+        assert!(
+            clusters.iter().any(|cluster| {
+                cluster.get("name").and_then(Value::as_str) == Some("proof-infrastructure")
+            }),
+            "xtask seam inventory must recommend the proof-infrastructure cluster: {clusters:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_plus_packet_from_raw_rejects_invalid_badge_json() {
+        let options = RiprPlusOptions {
+            root: ".".to_string(),
+            suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+        };
+        let result = ripr_plus_packet_from_raw(
+            &options,
+            "head-sha",
+            &RiprSuppressionRules::default(),
+            "this is not json",
+            r#"{"seams":[]}"#,
+        );
+        assert!(result.is_err(), "invalid repo-badge-json must be rejected");
+    }
+
+    #[test]
+    fn ripr_plus_packet_from_raw_rejects_invalid_seams_json() {
+        let options = RiprPlusOptions {
+            root: ".".to_string(),
+            suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+        };
+        let result = ripr_plus_packet_from_raw(
+            &options,
+            "head-sha",
+            &RiprSuppressionRules::default(),
+            r#"{"basis":"canonical_actionable_gap","counts":{}}"#,
+            "this is not json",
+        );
+        assert!(result.is_err(), "invalid repo-seams-json must be rejected");
+    }
+
+    #[test]
+    fn ripr_plus_packet_from_raw_rejects_missing_seams_array() {
+        let options = RiprPlusOptions {
+            root: ".".to_string(),
+            suppressions: PathBuf::from("policy/ripr-suppressions.toml"),
+        };
+        let result = ripr_plus_packet_from_raw(
+            &options,
+            "head-sha",
+            &RiprSuppressionRules::default(),
+            r#"{"basis":"canonical_actionable_gap","counts":{}}"#,
+            r#"{"not_seams": []}"#,
+        );
+        assert!(result.is_err(), "seams-json without seams[] key must be rejected");
+    }
+
+    #[test]
     fn ripr_plus_suppression_rules_match_non_production_paths() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
@@ -2028,6 +2512,12 @@ reason = "Archived source is not active workspace behavior."
 [[suppress]]
 id = "ripr-suppress-generated-status-docs"
 paths = ["docs/project/status/**"]
+
+[[suppress]]
+id = "ripr-suppress-ux-receipt-tests"
+kind = "test_receipt_surface"
+paths = ["crates/perl-lsp-ux-tests/tests/**"]
+reason = "UX receipt tests are proof inputs."
 "#,
         )?;
 
@@ -2040,6 +2530,10 @@ paths = ["docs/project/status/**"]
         assert!(suppression_matches_seam(
             &rules,
             &json!({"location": {"path": r"docs\project\status\quality.rs"}})
+        ));
+        assert!(suppression_matches_finding(
+            &rules,
+            &json!({"probe": {"file": r".\crates/perl-lsp-ux-tests/tests/ux_scenario_62_project_test_assertion_inline_completion_quality.rs"}})
         ));
         assert!(!suppression_matches_seam(
             &rules,
@@ -2157,11 +2651,198 @@ paths = ["archive/["]
             &check_value,
             "base-sha",
             "head-sha",
+            &RiprSuppressionRules::default(),
         );
 
         assert_eq!(packet["base_sha"], json!("base-sha"));
         assert_eq!(packet["head_sha"], json!("head-sha"));
         validate_pr_evidence_packet(&packet, &options, 1, true, "base-sha", "head-sha")?;
+        Ok(())
+    }
+
+    #[test]
+    fn pr_evidence_packet_suppresses_non_production_test_receipt_findings() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+        };
+        let check_value = json!({
+            "summary": {
+                "weakly_exposed": 1,
+                "reachable_unrevealed": 1,
+                "no_static_path": 0
+            },
+            "findings": [
+                {
+                    "classification": "reachable_unrevealed",
+                    "probe": {
+                        "file": r".\crates/perl-lsp-ux-tests/tests/ux_scenario_62_project_test_assertion_inline_completion_quality.rs"
+                    }
+                },
+                {
+                    "classification": "weakly_exposed",
+                    "probe": {
+                        "file": "crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs"
+                    }
+                }
+            ]
+        });
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-lsp-ux-tests/tests/**".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+
+        let packet = pr_evidence_packet(
+            &options,
+            &[
+                "crates/perl-lsp-ux-tests/tests/ux_scenario_62_project_test_assertion_inline_completion_quality.rs".to_string(),
+                "crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs".to_string(),
+            ],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+        );
+
+        assert_eq!(packet.pointer("/summary/weakly_exposed"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(1)));
+        assert_eq!(
+            packet.pointer("/summary/suppression_patterns/0"),
+            Some(&json!("crates/perl-lsp-ux-tests/tests/**"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_matches_windows_probe_paths_under_receipt_test_directory() -> Result<()> {
+        let rules = RiprSuppressionRules {
+            display_patterns: vec![
+                "crates/perl-lsp-ux-tests/tests/*".to_string(),
+                "crates/perl-lsp-ux-tests/tests/**".to_string(),
+            ],
+            path_patterns: vec![
+                Pattern::new("crates/perl-lsp-ux-tests/tests/*")?,
+                Pattern::new("crates/perl-lsp-ux-tests/tests/**")?,
+            ],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+        let finding = json!({
+            "classification": "reachable_unrevealed",
+            "probe": {
+                "file": r".\crates/perl-lsp-ux-tests/tests/ux_scenario_62_project_test_assertion_inline_completion_quality.rs"
+            }
+        });
+
+        assert!(suppression_matches_finding(&rules, &finding));
+        Ok(())
+    }
+
+    #[test]
+    fn suppression_matches_absolute_probe_paths_under_receipt_test_directory() -> Result<()> {
+        let rules = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-lsp-ux-tests/tests/**".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+        let finding = json!({
+            "classification": "weakly_exposed",
+            "probe": {
+                "file": "//?/H:/Code/Rust3/perl-lsp-swarm\\crates/perl-lsp-ux-tests/tests/ux_scenario_62_project_test_assertion_inline_completion_quality.rs"
+            }
+        });
+
+        assert!(suppression_matches_finding(&rules, &finding));
+        Ok(())
+    }
+
+    #[test]
+    fn write_review_comments_skips_ripr_when_current_pr_evidence_has_no_severe_gaps() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        let ripr = write_fake_ripr_binary(repo)?;
+        let _override = override_ripr_bin(&ripr)?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            timeout_seconds: Some(1),
+        };
+        let pr_options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+        };
+        let head = revision_sha(repo, "HEAD")?;
+        let pr_packet = pr_evidence_packet(
+            &pr_options,
+            &["crates/perl-lsp-ux-tests/tests/ux_scenario_62_project_test_assertion_inline_completion_quality.rs".to_string()],
+            &json!({
+                "summary": {
+                    "weakly_exposed": 0,
+                    "reachable_unrevealed": 0,
+                    "no_static_path": 0
+                }
+            }),
+            &head,
+            &head,
+            &RiprSuppressionRules::default(),
+        );
+        write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&pr_packet)?)?;
+
+        write_review_comments(repo, &options)?;
+
+        let packet: Value =
+            serde_json::from_str(&fs::read_to_string(repo.join(REVIEW_COMMENTS_JSON))?)?;
+        let markdown = fs::read_to_string(repo.join(REVIEW_COMMENTS_MD))?;
+        assert_eq!(packet["status"], json!("advisory"));
+        assert_eq!(packet["mode"], json!("pr_evidence_clean"));
+        assert_eq!(
+            packet.pointer("/summary/skip_reason"),
+            Some(&json!("pr_evidence_zero_severe_gaps"))
+        );
+        assert!(
+            packet.get("comments").and_then(Value::as_array).is_some_and(|items| items.is_empty())
+        );
+        assert_eq!(packet["head_sha"], json!(head));
+        assert!(markdown.contains("zero severe gaps"), "{markdown}");
+        Ok(())
+    }
+
+    #[test]
+    fn current_pr_evidence_has_no_severe_gaps_rejects_stale_receipt() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        init_git_repo(repo)?;
+        fs::create_dir_all(repo.join("target/ripr/pr"))?;
+        fs::write(
+            repo.join(PR_EVIDENCE_JSON),
+            format_json(&json!({
+                "base": "HEAD",
+                "base_sha": "stale-base",
+                "head": "HEAD",
+                "head_sha": "stale-head",
+                "summary": {
+                    "severe_gaps": 0
+                }
+            }))?,
+        )?;
+        let options = ReviewCommentsOptions {
+            root: ".".to_string(),
+            base: "HEAD".to_string(),
+            head: "HEAD".to_string(),
+            timeout_seconds: None,
+        };
+
+        assert!(!current_pr_evidence_has_no_severe_gaps(repo, &options)?);
         Ok(())
     }
 
@@ -2334,6 +3015,7 @@ paths = ["archive/["]
             }),
             &head,
             &head,
+            &RiprSuppressionRules::default(),
         );
         write_text(&repo.join(PR_EVIDENCE_JSON), &format_json(&pr_packet)?)?;
         write_text(&repo.join(PR_EVIDENCE_MD), &render_pr_evidence_markdown(&pr_packet))?;
@@ -2529,11 +3211,178 @@ paths = ["archive/["]
             .to_string())
     }
 
+    struct RiprBinOverrideGuard;
+
+    impl Drop for RiprBinOverrideGuard {
+        fn drop(&mut self) {
+            if let Ok(mut guard) = RIPR_BIN_OVERRIDE.lock() {
+                *guard = None;
+            }
+        }
+    }
+
+    fn override_ripr_bin(binary: &Path) -> Result<RiprBinOverrideGuard> {
+        let mut guard =
+            RIPR_BIN_OVERRIDE.lock().map_err(|_| eyre!("RIPR_BIN test override lock poisoned"))?;
+        *guard = Some(binary.display().to_string());
+        Ok(RiprBinOverrideGuard)
+    }
+
+    fn write_fake_ripr_binary(dir: &Path) -> Result<PathBuf> {
+        let badge_json = r#"{"basis":"canonical_actionable_gap","counts":{"unsuppressed_exposure_gaps":7,"unsuppressed_test_efficiency_findings":2,"suppressed_exposure_gaps":1,"suppressed_test_efficiency_findings":3},"reason_counts":{"no_assertion_detected":7}}"#;
+        let seams_json = r#"{"seams":[{"file":"xtask/src/tasks/ripr_evidence.rs","gap_kind":"receipt parsing"},{"file":"archive/old.rs","gap_kind":"archived"}]}"#;
+
+        #[cfg(windows)]
+        {
+            let path = dir.join("ripr.cmd");
+            write_text(
+                &path,
+                &format!(
+                    r#"@echo off
+echo %* | findstr /C:"repo-badge-json" >NUL
+if %ERRORLEVEL%==0 (
+  echo {badge_json}
+  exit /b 0
+)
+echo %* | findstr /C:"repo-seams-json" >NUL
+if %ERRORLEVEL%==0 (
+  echo {seams_json}
+  exit /b 0
+)
+echo unexpected ripr args: %* 1>&2
+exit /b 2
+"#
+                ),
+            )?;
+            Ok(path)
+        }
+
+        #[cfg(not(windows))]
+        {
+            let path = dir.join("ripr");
+            write_text(
+                &path,
+                &format!(
+                    r#"#!/bin/sh
+case "$*" in
+  *repo-badge-json*)
+    printf '%s\n' '{badge_json}'
+    ;;
+  *repo-seams-json*)
+    printf '%s\n' '{seams_json}'
+    ;;
+  *)
+    echo "unexpected ripr args: $*" >&2
+    exit 2
+    ;;
+esac
+"#
+                ),
+            )?;
+            let mut permissions = fs::metadata(&path)?.permissions();
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions)?;
+            Ok(path)
+        }
+    }
+
     #[test]
     fn run_git_reports_failure_status() -> Result<()> {
         let temp = tempfile::tempdir()?;
 
         assert!(run_git(temp.path(), &["definitely-not-a-git-command"]).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn merge_base_guidance_points_to_unshallow_for_shallow_clone() {
+        let message = merge_base_failure_guidance("origin/main", "HEAD", true);
+        assert!(message.contains("origin/main...HEAD"), "range echoed: {message}");
+        assert!(message.contains("no merge base"), "diagnosis: {message}");
+        assert!(message.contains("shallow clone"), "shallow cause: {message}");
+        assert!(message.contains("git fetch --unshallow"), "remedy: {message}");
+        assert!(message.contains("fetch-depth: 0"), "CI note: {message}");
+    }
+
+    #[test]
+    fn merge_base_guidance_suggests_fetch_for_non_shallow() {
+        let message = merge_base_failure_guidance("origin/master", "HEAD", false);
+        assert!(message.contains("no merge base"), "diagnosis: {message}");
+        assert!(!message.contains("shallow"), "must not blame shallow: {message}");
+        assert!(message.contains("git fetch origin origin/master"), "fetch remedy: {message}");
+    }
+
+    #[test]
+    fn changed_files_reports_missing_merge_base_with_guidance() -> Result<()> {
+        // The workspace root is a real git repo; a bogus base has no merge base
+        // with HEAD, so changed_files must bail with the actionable guidance
+        // instead of propagating a raw git failure.
+        let repo = repo_root()?;
+        match changed_files(&repo, "ripr-no-such-base-xyz", "HEAD") {
+            Ok(files) => Err(eyre!("expected missing-merge-base error, got {files:?}")),
+            Err(err) => {
+                let message = format!("{err:#}");
+                assert!(message.contains("no merge base"), "guidance surfaced: {message}");
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn changed_files_succeeds_for_valid_range() -> Result<()> {
+        // The workspace root is a real git repo; `HEAD...HEAD` is a valid range
+        // with an empty symmetric diff, exercising the success path.
+        let repo = repo_root()?;
+        let files = changed_files(&repo, "HEAD", "HEAD")?;
+        assert!(files.is_empty(), "HEAD...HEAD has no changed files: {files:?}");
+        // Exercise the shallow probe; its value is environment-dependent, so we
+        // only assert it returns without error.
+        let _ = is_shallow_clone(&repo);
+        Ok(())
+    }
+
+    #[test]
+    fn split_labels_splits_on_comma_semicolon_and_newline_with_trim() {
+        let labels = split_labels(" mutation , needs-ci-fix ;size/M\nsize/L ");
+        assert_eq!(labels, vec!["mutation", "needs-ci-fix", "size/M", "size/L"]);
+    }
+
+    #[test]
+    fn split_labels_drops_empty_and_whitespace_only_segments() {
+        // Trailing/leading separators and blank segments must not yield empty
+        // labels, otherwise downstream routing would match a "" label.
+        let labels = split_labels(",, mutation ;; \n ; ,");
+        assert_eq!(labels, vec!["mutation"]);
+        assert!(split_labels("   ").is_empty());
+        assert!(split_labels("").is_empty());
+    }
+
+    #[test]
+    fn normalize_labels_lowercases_dedupes_and_sorts() {
+        let input = vec!["Mutation".to_string(), "mutation".to_string(), "  CI  ".to_string()];
+        let normalized = normalize_labels(&input);
+        // case-folded, de-duplicated across cases, trimmed, and sorted.
+        assert_eq!(normalized, vec!["ci".to_string(), "mutation".to_string()]);
+    }
+
+    #[test]
+    fn normalize_labels_filters_blank_after_trim() {
+        let input = vec!["   ".to_string(), "\t".to_string(), "keep".to_string()];
+        assert_eq!(normalize_labels(&input), vec!["keep".to_string()]);
+    }
+
+    #[test]
+    fn merged_labels_unions_explicit_and_csv_then_normalizes() {
+        // Explicit labels are non-empty, so the env fallback path is not taken.
+        // Duplicates across the two sources collapse; output is folded and sorted.
+        let merged = merged_labels(&["Zeta".to_string()], Some("alpha, Zeta; BETA"));
+        assert_eq!(merged, vec!["alpha".to_string(), "beta".to_string(), "zeta".to_string()]);
+    }
+
+    #[test]
+    fn merged_labels_accepts_csv_only_without_explicit_labels() {
+        let merged = merged_labels(&[], Some("needs-ci-fix,needs-ci-fix"));
+        assert_eq!(merged, vec!["needs-ci-fix".to_string()]);
     }
 }
