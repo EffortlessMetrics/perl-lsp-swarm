@@ -113,6 +113,89 @@ fn quality_gate_cli_passes_when_new_ripr_receipts_are_current_and_zero() -> Test
 }
 
 #[test]
+fn quality_gate_cli_new_ripr_exception_policy_action_uses_new_ripr_mode_commands() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let missing_policy = dir.path().join("missing-quality-gate-exceptions.toml");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    write_ripr_pr_receipt(&ripr_pr, &head, 0)?;
+    write_empty_review_guidance_receipt(&review, &head)?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .arg("--exception-policy")
+            .arg(&missing_policy)
+            .output()?;
+    assert!(!output.status.success(), "missing exception policy must fail new-RIPR mode");
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    let action = next_action(&payload, "quality_exception_policy_not_current")?;
+    assert_eq!(action.get("reason").and_then(Value::as_str), Some("missing"));
+    assert_blocking_actions_have_repair_contract(&payload)?;
+    assert_action_commands_use_quality_gate_mode(action, "enforce-new-ripr")?;
+    for field in ["verify", "receipt"] {
+        let command = action.get(field).and_then(Value::as_str).ok_or("missing command")?;
+        assert!(
+            command.contains("--ripr-receipt")
+                && command.contains("--ripr-pr-receipt")
+                && command.contains("--review-receipt"),
+            "new-RIPR exception policy {field} command must include RIPR proof inputs: {command}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn quality_gate_cli_new_ripr_invalid_exception_action_uses_new_ripr_mode_commands() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let policy = dir.path().join("quality-gate-exceptions.toml");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    write_ripr_pr_receipt(&ripr_pr, &head, 0)?;
+    write_empty_review_guidance_receipt(&review, &head)?;
+    write_invalid_exception_policy(&policy)?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .arg("--exception-policy")
+            .arg(&policy)
+            .output()?;
+    assert!(!output.status.success(), "invalid exception policy must fail new-RIPR mode");
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    let action = next_action(&payload, "quality_exception_invalid")?;
+    assert_eq!(action.get("id").and_then(Value::as_str), Some("ripr-total-burndown"));
+    assert_blocking_actions_have_repair_contract(&payload)?;
+    assert_action_commands_use_quality_gate_mode(action, "enforce-new-ripr")?;
+    for field in ["verify", "receipt"] {
+        let command = action.get(field).and_then(Value::as_str).ok_or("missing command")?;
+        assert!(
+            command.contains("--ripr-receipt")
+                && command.contains("--ripr-pr-receipt")
+                && command.contains("--review-receipt"),
+            "new-RIPR invalid exception {field} command must include RIPR proof inputs: {command}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn quality_gate_cli_check_blocks_stale_new_ripr_gate_json_receipt() -> TestResult {
     let root = repo_root()?;
     let dir = tempdir()?;
@@ -250,6 +333,48 @@ fn quality_gate_cli_blocks_new_ripr_when_required_receipts_are_missing() -> Test
         }),
         "review guidance failure must explain why the receipt is required: {review_action}"
     );
+
+    Ok(())
+}
+
+#[test]
+fn quality_gate_cli_blocks_new_ripr_when_required_receipts_are_invalid() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+
+    fs::write(&ripr, "{not-json")?;
+    fs::write(&ripr_pr, "{not-json")?;
+    fs::write(&review, "{not-json")?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(!output.status.success(), "invalid required RIPR receipts must fail");
+    assert_failure_stderr_points_to_receipt_and_summary(
+        &String::from_utf8(output.stderr)?,
+        &receipt,
+        &summary,
+    )?;
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    assert_eq!(payload.pointer("/ripr_plus/status").and_then(Value::as_str), Some("invalid"));
+    assert_eq!(payload.pointer("/ripr_pr/status").and_then(Value::as_str), Some("invalid"));
+    assert_eq!(payload.pointer("/review_guidance/status").and_then(Value::as_str), Some("invalid"));
+
+    for kind in [
+        "ripr_receipt_not_current",
+        "ripr_pr_receipt_not_current",
+        "ripr_review_receipt_not_current",
+    ] {
+        let action = next_action(&payload, kind)?;
+        assert_eq!(action.get("reason").and_then(Value::as_str), Some("invalid"));
+    }
+    assert_blocking_actions_have_repair_contract(&payload)?;
 
     Ok(())
 }
@@ -486,6 +611,26 @@ fn assert_failure_stderr_points_to_receipt_and_summary(
     Ok(())
 }
 
+fn assert_action_commands_use_quality_gate_mode(action: &Value, mode: &str) -> TestResult {
+    for field in ["verify", "receipt"] {
+        let command = action
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("action missing {field}: {action}"))?;
+        assert!(
+            command.contains(&format!("quality-gate --mode {mode} ")),
+            "action {field} must use active quality-gate mode `{mode}`: {command}"
+        );
+        for other_mode in ["enforce-patch-coverage", "enforce"] {
+            assert!(
+                !command.contains(&format!("--mode {other_mode} ")),
+                "action {field} must not use unrelated mode `{other_mode}`: {command}"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn repo_root() -> TestResult<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -512,6 +657,38 @@ fn write_ripr_plus_receipt(path: &Path, head: &str) -> TestResult {
             "top_files": []
         }),
     )
+}
+
+fn write_invalid_exception_policy(path: &Path) -> TestResult {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        path,
+        r##"schema_version = 1
+policy = "quality-gate-exceptions"
+owner = "EffortlessMetrics"
+status = "active"
+updated = "2026-05-28"
+due_review = "fail"
+
+[requirements]
+required_active = ["ripr-total-burndown"]
+
+[[exception]]
+id = "ripr-total-burndown"
+kind = "permanent_bypass"
+owner = "proof-lane"
+reason = "transition burn-down remains active"
+final_target = "repo-wide ripr+ unresolved total = 0"
+evidence = "target/receipts/quality/ripr-plus.json"
+removal_criteria = "remove when RIPR+ total is zero"
+created = "2026-05-28"
+review_after = "2099-01-01"
+expires = "2099-12-31"
+"##,
+    )?;
+    Ok(())
 }
 
 fn write_ripr_pr_receipt(path: &Path, head: &str, severe_gaps: u64) -> TestResult {
