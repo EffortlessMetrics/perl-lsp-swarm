@@ -912,6 +912,46 @@ sub test_nested {
     }
 
     #[test]
+    fn visit_children_for_tests_walks_if_with_keyword_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let runner = TestRunner::new("is($got, $want);".to_string(), "file:///suite.t".to_string());
+        let string = |value: &str, start| {
+            node(
+                NodeKind::String { value: value.to_string(), interpolated: false },
+                start,
+                start + value.len() + 2,
+            )
+        };
+        let call = |name: &str, start| {
+            node(
+                NodeKind::FunctionCall {
+                    name: name.to_string(),
+                    args: vec![string("case", start + name.len() + 1)],
+                },
+                start,
+                start + name.len() + 8,
+            )
+        };
+        let node = node(
+            NodeKind::If {
+                condition: Box::new(node(NodeKind::Number { value: "1".to_string() }, 0, 1)),
+                then_branch: Box::new(call("is", 2)),
+                elsif_branches: vec![],
+                else_branch: Some(Box::new(call("ok", 12))),
+                keyword: Some("unless".to_string()),
+            },
+            0,
+            20,
+        );
+        let mut tests = Vec::new();
+
+        runner.visit_children_for_tests(&node, &mut tests);
+
+        assert_eq!(tests.len(), 2);
+        Ok(())
+    }
+
+    #[test]
     fn assertion_discovery_uses_string_description_or_call_name()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = "ok($value, 'truthy');

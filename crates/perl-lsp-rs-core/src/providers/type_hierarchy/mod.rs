@@ -1078,4 +1078,35 @@ our @ISA = ('B', 'C');
             "Diamond MRO must be A, B, C, D with D appearing exactly once"
         );
     }
+
+    #[test]
+    fn get_children_includes_if_branches_with_keyword_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = TypeHierarchyProvider::new();
+        let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
+        let ident = |name: &str, start| {
+            Node::new(
+                NodeKind::Identifier { name: name.to_string() },
+                loc(start, start + name.len()),
+            )
+        };
+        let node = Node::new(
+            NodeKind::If {
+                condition: Box::new(ident("cond", 1)),
+                then_branch: Box::new(ident("then_branch", 7)),
+                elsif_branches: vec![(
+                    Box::new(ident("elsif_cond", 20)),
+                    Box::new(ident("elsif_branch", 32)),
+                )],
+                else_branch: Some(Box::new(ident("else_branch", 46))),
+                keyword: Some("unless".to_string()),
+            },
+            loc(0, 57),
+        );
+
+        let children = provider.get_children(&node).ok_or("If nodes should expose children")?;
+
+        assert_eq!(children.len(), 5);
+        Ok(())
+    }
 }

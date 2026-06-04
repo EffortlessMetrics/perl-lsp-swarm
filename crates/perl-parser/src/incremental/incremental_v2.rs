@@ -1287,6 +1287,42 @@ mod tests {
     }
 
     #[test]
+    fn clone_with_shifted_positions_preserves_if_keyword_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parser = IncrementalParserV2::new();
+        let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
+        let number =
+            |start| Node::new(NodeKind::Number { value: "1".to_string() }, loc(start, start + 1));
+        let block = |start, end| {
+            Node::new(NodeKind::Block { statements: vec![number(start + 1)] }, loc(start, end))
+        };
+        let node = Node::new(
+            NodeKind::If {
+                condition: Box::new(number(1)),
+                then_branch: Box::new(block(4, 10)),
+                elsif_branches: vec![(Box::new(number(12)), Box::new(block(14, 20)))],
+                else_branch: Some(Box::new(block(22, 28))),
+                keyword: Some("unless".to_string()),
+            },
+            loc(0, 29),
+        );
+
+        let shifted = parser.clone_with_shifted_positions(&node, 3);
+
+        assert_eq!(shifted.location.start, 3);
+        match shifted.kind {
+            NodeKind::If { keyword, else_branch, .. } => {
+                assert_eq!(keyword.as_deref(), Some("unless"));
+                assert!(else_branch.is_some());
+            }
+            other => {
+                return Err(format!("expected If node, got {}", other.kind_name()).into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_performance_timing_detailed() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
 

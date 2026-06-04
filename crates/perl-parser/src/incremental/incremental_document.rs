@@ -1301,6 +1301,61 @@ mod tests {
         Ok(())
     }
 
+    fn loc(start: usize, end: usize) -> perl_parser_core::ast::SourceLocation {
+        perl_parser_core::ast::SourceLocation { start, end }
+    }
+
+    fn number(start: usize, value: &str) -> Node {
+        Node::new(NodeKind::Number { value: value.to_string() }, loc(start, start + value.len()))
+    }
+
+    fn block(statements: Vec<Node>, start: usize, end: usize) -> Node {
+        Node::new(NodeKind::Block { statements }, loc(start, end))
+    }
+
+    fn if_tree() -> Node {
+        Node::new(
+            NodeKind::If {
+                condition: Box::new(number(1, "1")),
+                then_branch: Box::new(block(vec![number(6, "2")], 5, 9)),
+                elsif_branches: vec![(
+                    Box::new(number(12, "3")),
+                    Box::new(block(vec![number(17, "4")], 16, 20)),
+                )],
+                else_branch: Some(Box::new(block(vec![number(25, "5")], 24, 28))),
+                keyword: Some("unless".to_string()),
+            },
+            loc(0, 29),
+        )
+    }
+
+    #[test]
+    fn if_keyword_metadata_does_not_block_incremental_traversal_helpers() -> ParseResult<()> {
+        let mut doc = IncrementalDocument::new("1".to_string())?;
+        doc.root = Arc::new(if_tree());
+
+        assert_eq!(doc.count_nodes(&doc.root), 9);
+        assert_eq!(doc.find_node_at_position(6).map(|node| node.location.start), Some(6));
+
+        let shifted = doc.adjust_node_position(&doc.root, 2).ok_or_else(|| {
+            perl_parser_core::error::ParseError::SyntaxError {
+                message: "If tree should shift by a positive delta".to_string(),
+                location: 0,
+            }
+        })?;
+        assert_eq!(shifted.location.start, 2);
+
+        let reusable = Arc::new(number(25, "9"));
+        let mut target = if_tree();
+        assert!(doc.insert_reusable(&mut target, &reusable));
+
+        let mut token_target = if_tree();
+        let edit = IncrementalEdit::new(1, 2, "7".to_string());
+        assert!(doc.update_token_in_children(&mut token_target, " 7", &edit));
+
+        Ok(())
+    }
+
     #[test]
     fn test_cache_priority_preservation() -> ParseResult<()> {
         let source = r#"

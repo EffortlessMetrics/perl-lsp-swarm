@@ -263,3 +263,33 @@ fn unless_block_parses_cleanly() {
 fn until_block_parses_cleanly() {
     cpan_test_helpers::assert_clean_parse(r#"until ($done) { work() }"#);
 }
+
+#[test]
+fn orphaned_else_recovery_has_no_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
+    let node = first_stmt(r#"else { recover() }"#);
+    match &node.kind {
+        NodeKind::If { keyword, .. } => {
+            assert_eq!(keyword.as_deref(), None);
+        }
+        other => {
+            return Err(format!("expected recovered If node, got {}", other.kind_name()).into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn orphaned_elsif_recovery_has_no_keyword_tag() -> Result<(), Box<dyn std::error::Error>> {
+    let node = first_stmt(r#"elsif ($x) { recover() } else { fallback() }"#);
+    match &node.kind {
+        NodeKind::If { keyword, elsif_branches, else_branch, .. } => {
+            assert_eq!(keyword.as_deref(), None);
+            assert!(elsif_branches.is_empty());
+            assert!(else_branch.is_some());
+        }
+        other => {
+            return Err(format!("expected recovered If node, got {}", other.kind_name()).into());
+        }
+    }
+    Ok(())
+}

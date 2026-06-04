@@ -239,3 +239,65 @@ fn collect_variables_inner(node: &Node, vars: &mut HashSet<String>, locals: &mut
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loc(start: usize, end: usize) -> SourceLocation {
+        SourceLocation { start, end }
+    }
+
+    fn var(name: &str, start: usize) -> Node {
+        Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: name.to_string() },
+            loc(start, start + name.len() + 1),
+        )
+    }
+
+    fn block(statements: Vec<Node>, start: usize, end: usize) -> Node {
+        Node::new(NodeKind::Block { statements }, loc(start, end))
+    }
+
+    #[test]
+    fn collect_variables_visits_if_and_while_children() {
+        let if_node = Node::new(
+            NodeKind::If {
+                condition: Box::new(var("cond", 1)),
+                then_branch: Box::new(block(vec![var("then_value", 10)], 9, 25)),
+                elsif_branches: vec![(
+                    Box::new(var("elsif_cond", 30)),
+                    Box::new(block(vec![var("elsif_value", 44)], 43, 60)),
+                )],
+                else_branch: Some(Box::new(block(vec![var("else_value", 66)], 65, 80))),
+                keyword: Some("unless".to_string()),
+            },
+            loc(0, 81),
+        );
+        let while_node = Node::new(
+            NodeKind::While {
+                condition: Box::new(var("loop_cond", 90)),
+                body: Box::new(block(vec![var("loop_value", 106)], 105, 122)),
+                continue_block: None,
+                keyword: Some("until".to_string()),
+            },
+            loc(89, 123),
+        );
+        let root = block(vec![if_node, while_node], 0, 123);
+
+        let mut vars = HashSet::new();
+        collect_variables(&root, &mut vars);
+
+        for name in [
+            "cond",
+            "then_value",
+            "elsif_cond",
+            "elsif_value",
+            "else_value",
+            "loop_cond",
+            "loop_value",
+        ] {
+            assert!(vars.contains(name), "expected traversal to collect {name}");
+        }
+    }
+}
