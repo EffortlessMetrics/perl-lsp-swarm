@@ -178,3 +178,41 @@ pub fn collect_document_links(text: &str, uri: &Url) -> Result<Vec<DocumentLink>
 
     Ok(links)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{collect_document_links, line_start_offsets};
+    use lsp_types::Position;
+    use url::Url;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn line_start_offsets_preserve_crlf_byte_starts() {
+        let text = "# before\r\nuse Foo::Bar;\r\nrequire Baz::Qux;\r\n";
+
+        assert_eq!(line_start_offsets(text), vec![0, 10, 25, 44]);
+    }
+
+    #[test]
+    fn collect_document_links_uses_crlf_line_starts_for_module_ranges() -> TestResult {
+        let uri = Url::parse("file:///workspace/main.pl")?;
+        let text = "# before\r\nuse Foo::Bar;\r\nrequire Baz::Qux;\r\n";
+
+        let links = collect_document_links(text, &uri)?;
+        let foo = links
+            .iter()
+            .find(|link| link.tooltip.as_deref() == Some("Open Foo::Bar on MetaCPAN"))
+            .ok_or("missing Foo::Bar document link")?;
+        let baz = links
+            .iter()
+            .find(|link| link.tooltip.as_deref() == Some("Open Baz::Qux on MetaCPAN"))
+            .ok_or("missing Baz::Qux document link")?;
+
+        assert_eq!(foo.range.start, Position::new(1, 4));
+        assert_eq!(foo.range.end, Position::new(1, 12));
+        assert_eq!(baz.range.start, Position::new(2, 8));
+        assert_eq!(baz.range.end, Position::new(2, 16));
+        Ok(())
+    }
+}
