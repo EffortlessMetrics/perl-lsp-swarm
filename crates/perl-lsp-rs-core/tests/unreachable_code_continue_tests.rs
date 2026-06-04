@@ -153,7 +153,8 @@ fn redo_stmt(start: usize, end: usize) -> Node {
 fn while_loop(body: Node) -> Node {
     Node::new(
         NodeKind::While {
-            condition: Box::new(Node::new(NodeKind::Number { value: "1".to_string() , .. }, loc(7, 8))),
+            keyword: None,
+            condition: Box::new(Node::new(NodeKind::Number { value: "1".to_string() }, loc(7, 8))),
             body: Box::new(body),
             continue_block: None,
         },
@@ -164,7 +165,8 @@ fn while_loop(body: Node) -> Node {
 fn while_loop_with_continue(body: Node, continue_body: Node) -> Node {
     Node::new(
         NodeKind::While {
-            condition: Box::new(Node::new(NodeKind::Number { value: "1".to_string() , .. }, loc(7, 8))),
+            keyword: None,
+            condition: Box::new(Node::new(NodeKind::Number { value: "1".to_string() }, loc(7, 8))),
             body: Box::new(body),
             continue_block: Some(Box::new(continue_body)),
         },

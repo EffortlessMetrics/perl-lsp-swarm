@@ -149,9 +149,10 @@ mod tests {
             ),
             Node::new(
                 NodeKind::If {
+                    keyword: None,
                     condition: Box::new(leaf_number(27)),
                     then_branch: Box::new(Node::new(
-                        NodeKind::Block { statements: vec![] , .. },
+                        NodeKind::Block { statements: vec![] },
                         loc(28),
                     )),
                     elsif_branches: vec![(
@@ -174,8 +175,9 @@ mod tests {
             ),
             Node::new(
                 NodeKind::While {
+                    keyword: None,
                     condition: Box::new(leaf_number(33)),
-                    body: Box::new(Node::new(NodeKind::Block { statements: vec![] , .. }, loc(34))),
+                    body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(34))),
                     continue_block: Some(Box::new(Node::new(
                         NodeKind::Block { statements: vec![] },
                         loc(35),

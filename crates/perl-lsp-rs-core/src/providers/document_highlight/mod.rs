@@ -213,7 +213,7 @@ impl DocumentHighlightProvider {
             }
             NodeKind::FunctionCall { args, .. } => Some(args.iter().collect()),
             NodeKind::Block { statements } => Some(statements.iter().collect()),
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
                 let mut children = vec![condition.as_ref(), then_branch.as_ref()];
                 for (cond, branch) in elsif_branches {
                     children.push(cond.as_ref());

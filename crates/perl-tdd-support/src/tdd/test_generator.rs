@@ -1220,11 +1220,12 @@ mod tests {
                             // Add some if statements to increase complexity
                             Node::new(
                                 NodeKind::If {
+                                    keyword: None,
                                     condition: Box::new(Node::new(
                                         NodeKind::Variable {
                                             name: "$a".to_string(),
                                             sigil: "$".to_string(),
-                                        , .. },
+                                        },
                                         crate::ast::SourceLocation { start: 0, end: 0 },
                                     )),
                                     then_branch: Box::new(Node::new(
@@ -1261,8 +1262,9 @@ mod tests {
             NodeKind::Block {
                 statements: vec![Node::new(
                     NodeKind::If {
+                        keyword: None,
                         condition: Box::new(Node::new(
-                            NodeKind::Variable { name: "$x".to_string(), sigil: "$".to_string() , .. },
+                            NodeKind::Variable { name: "$x".to_string(), sigil: "$".to_string() },
                             crate::ast::SourceLocation { start: 0, end: 0 },
                         )),
                         then_branch: Box::new(Node::new(

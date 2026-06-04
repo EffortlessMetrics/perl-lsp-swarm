@@ -210,7 +210,7 @@ where
         NodeKind::Return { value } => {
             value.as_deref().into_iter().for_each(&mut f);
         }
-        NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
+        NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
             f(condition);
             f(then_branch);
             for (cond, branch) in elsif_branches {

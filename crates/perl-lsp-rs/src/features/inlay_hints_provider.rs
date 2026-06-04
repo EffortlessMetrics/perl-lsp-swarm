@@ -369,7 +369,7 @@ impl InlayHintsProvider {
     /// Visit children nodes
     fn visit_children(&self, node: &Node, hints: &mut Vec<InlayHint>, range: Option<Range>) {
         match &node.kind {
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch , .. } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
                 self.visit_node(condition, hints, range);
                 self.visit_node(then_branch, hints, range);
                 for (cond, body) in elsif_branches {

@@ -184,7 +184,7 @@ impl FoldingRangeExtractor {
                 }
             }
 
-            NodeKind::If { condition: _, then_branch, elsif_branches, else_branch , .. } => {
+            NodeKind::If { condition: _, then_branch, elsif_branches, else_branch, .. } => {
                 // If statements with blocks are foldable
                 self.add_range_from_node(node, None);
                 self.visit_node(then_branch);
@@ -196,7 +196,7 @@ impl FoldingRangeExtractor {
                 }
             }
 
-            NodeKind::While { condition: _, body, continue_block , .. } => {
+            NodeKind::While { condition: _, body, continue_block, .. } => {
                 self.add_range_from_node(node, None);
                 self.visit_node(body);
                 if let Some(cont) = continue_block {
