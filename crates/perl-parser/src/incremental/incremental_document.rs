@@ -1337,13 +1337,7 @@ mod tests {
         assert_eq!(doc.count_nodes(&doc.root), 9);
         assert_eq!(doc.find_node_at_position(6).map(|node| node.location.start), Some(6));
 
-        let shifted = doc.adjust_node_position(&doc.root, 2).ok_or_else(|| {
-            perl_parser_core::error::ParseError::SyntaxError {
-                message: "If tree should shift by a positive delta".to_string(),
-                location: 0,
-            }
-        })?;
-        assert_eq!(shifted.location.start, 2);
+        assert_eq!(doc.adjust_node_position(&doc.root, 2).map(|node| node.location.start), Some(2));
 
         let reusable = Arc::new(number(25, "9"));
         let mut target = if_tree();

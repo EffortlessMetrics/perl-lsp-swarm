@@ -288,7 +288,7 @@ mod tests {
         let mut vars = HashSet::new();
         collect_variables(&root, &mut vars);
 
-        for name in [
+        let expected = [
             "cond",
             "then_value",
             "elsif_cond",
@@ -296,8 +296,10 @@ mod tests {
             "else_value",
             "loop_cond",
             "loop_value",
-        ] {
-            assert!(vars.contains(name), "expected traversal to collect {name}");
-        }
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+        assert_eq!(vars, expected);
     }
 }
