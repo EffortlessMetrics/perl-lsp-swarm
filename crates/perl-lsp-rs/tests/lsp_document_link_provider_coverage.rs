@@ -28,7 +28,10 @@ fn document_link_ranges_remain_correct_after_crlf_prefix() -> TestResult {
 
 #[test]
 fn quoted_file_document_link_resolves_relative_to_current_file() -> TestResult {
-    let uri = Url::parse("file:///workspace/bin/app.pl")?;
+    let uri = Url::from_file_path(
+        std::env::temp_dir().join("perl-lsp-document-link").join("bin").join("app.pl"),
+    )
+    .map_err(|()| "failed to build platform file URI")?;
     let text = "use Foo::Bar;\nrequire 'lib/Local.pm';\ndo \"script.pl\";\n";
 
     let links = collect_document_links(text, &uri)?;
@@ -45,13 +48,10 @@ fn quoted_file_document_link_resolves_relative_to_current_file() -> TestResult {
     let do_target = do_link.target.as_ref().ok_or("do link missing target")?;
 
     assert!(
-        require_target.as_str().ends_with("/workspace/bin/lib/Local.pm"),
+        require_target.as_str().ends_with("/bin/lib/Local.pm"),
         "unexpected require target: {require_target:?}"
     );
-    assert!(
-        do_target.as_str().ends_with("/workspace/bin/script.pl"),
-        "unexpected do target: {do_target:?}"
-    );
+    assert!(do_target.as_str().ends_with("/bin/script.pl"), "unexpected do target: {do_target:?}");
     assert_eq!(require_link.range.end, Position::new(1, 21));
     assert_eq!(do_link.range.end, Position::new(2, 13));
     Ok(())
