@@ -54,10 +54,6 @@ pub struct UxClient {
     stderr_lines: Arc<Mutex<Vec<String>>>,
     _stdout_thread: std::thread::JoinHandle<()>,
     _stderr_thread: std::thread::JoinHandle<()>,
-    #[cfg(test)]
-    test_responses: Option<Arc<Mutex<VecDeque<Value>>>>,
-    #[cfg(test)]
-    test_requests: Option<Arc<Mutex<Vec<Value>>>>,
 }
 
 impl UxClient {
@@ -146,10 +142,6 @@ impl UxClient {
             stderr_lines,
             _stdout_thread,
             _stderr_thread,
-            #[cfg(test)]
-            test_responses: None,
-            #[cfg(test)]
-            test_requests: None,
         };
 
         // ── LSP handshake ─────────────────────────────────────────────────────
@@ -245,37 +237,8 @@ impl UxClient {
             "method": method,
             "params": params
         });
-        #[cfg(test)]
-        if let Some(response) = self.test_response_for_request(&msg, id)? {
-            return Ok(response);
-        }
         self.send_raw(&msg)?;
         self.wait_for_response(id, timeout)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test_responses(responses: Vec<Value>) -> Result<Self> {
-        let (child, stdin) = spawn_test_child()?;
-        Ok(Self {
-            child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
-            initialize_result: Value::Null,
-            events: Arc::new(Mutex::new(VecDeque::new())),
-            responses: Arc::new(Mutex::new(VecDeque::new())),
-            stderr_lines: Arc::new(Mutex::new(Vec::new())),
-            _stdout_thread: std::thread::spawn(|| {}),
-            _stderr_thread: std::thread::spawn(|| {}),
-            test_responses: Some(Arc::new(Mutex::new(responses.into()))),
-            test_requests: Some(Arc::new(Mutex::new(Vec::new()))),
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn take_test_requests(&self) -> Vec<Value> {
-        self.test_requests
-            .as_ref()
-            .map(|requests| requests.lock().unwrap_or_else(|e| e.into_inner()).clone())
-            .unwrap_or_default()
     }
 
     /// Send a JSON-RPC notification (no response expected).
@@ -406,25 +369,6 @@ impl UxClient {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    #[cfg(test)]
-    fn test_response_for_request(&self, msg: &Value, id: u64) -> Result<Option<Value>> {
-        let Some(responses) = &self.test_responses else {
-            return Ok(None);
-        };
-        if let Some(requests) = &self.test_requests {
-            requests.lock().unwrap_or_else(|e| e.into_inner()).push(msg.clone());
-        }
-        let mut response = responses
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop_front()
-            .ok_or_else(|| anyhow!("test UX client response queue was empty"))?;
-        if response.get("id").is_none() {
-            response["id"] = json!(id);
-        }
-        Ok(Some(response))
-    }
-
     fn send_raw(&self, msg: &Value) -> Result<()> {
         let body = msg.to_string();
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
@@ -459,26 +403,6 @@ impl UxClient {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-}
-
-#[cfg(test)]
-fn spawn_test_child() -> Result<(Child, ChildStdin)> {
-    let mut command = if cfg!(windows) {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "exit 0"]);
-        command
-    } else {
-        let mut command = Command::new("sh");
-        command.args(["-c", "true"]);
-        command
-    };
-    let mut child =
-        command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow!("test UX child stdin not available after spawn"))?;
-    Ok((child, stdin))
 }
 
 fn merge_json(target: &mut Value, overlay: &Value) {
