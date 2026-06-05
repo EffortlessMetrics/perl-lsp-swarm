@@ -1201,6 +1201,93 @@ pub fn find_perlcritic() -> Option<String> {
 }
 
 #[cfg(test)]
+mod code_action_tests {
+    use super::{FakeWorkspace, ScenarioConfig, UxClient, UxHarness};
+    use anyhow::{Result, anyhow};
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    fn harness_with_response(response: Value) -> Result<UxHarness> {
+        Ok(UxHarness {
+            client: UxClient::for_test_responses(vec![response])?,
+            workspace: FakeWorkspace::new()?,
+            config: ScenarioConfig::default(),
+            document_versions: Mutex::new(HashMap::new()),
+        })
+    }
+
+    #[test]
+    fn code_actions_sends_editor_diagnostic_context_and_range() -> Result<()> {
+        let action = json!({
+            "title": "Declare '$missing' with 'my'",
+            "kind": "quickfix",
+        });
+        let harness = harness_with_response(json!({ "result": [action.clone()] }))?;
+        let diagnostic = json!({
+            "range": {
+                "start": { "line": 0, "character": 7 },
+                "end": { "line": 0, "character": 15 }
+            },
+            "code": "PL103",
+            "message": "Global symbol \"$missing\" requires explicit package name"
+        });
+
+        let actions = harness.code_actions(
+            "script.pl",
+            0,
+            7,
+            0,
+            15,
+            std::slice::from_ref(&diagnostic),
+            &["quickfix"],
+        )?;
+
+        assert_eq!(actions, vec![action]);
+        let requests = harness.client.take_test_requests();
+        let request = requests.first().ok_or_else(|| anyhow!("codeAction request was not sent"))?;
+        assert_eq!(request["method"], "textDocument/codeAction");
+        assert_eq!(request["params"]["textDocument"]["uri"], harness.workspace.uri("script.pl"));
+        assert_eq!(request["params"]["range"]["start"], json!({ "line": 0, "character": 7 }));
+        assert_eq!(request["params"]["range"]["end"], json!({ "line": 0, "character": 15 }));
+        assert_eq!(request["params"]["context"]["diagnostics"][0], diagnostic);
+        assert_eq!(request["params"]["context"]["only"], json!(["quickfix"]));
+        Ok(())
+    }
+
+    #[test]
+    fn code_actions_null_result_returns_empty_actions() -> Result<()> {
+        let harness = harness_with_response(json!({ "result": null }))?;
+        let actions = harness.code_actions("script.pl", 0, 0, 0, 1, &[], &["quickfix"])?;
+        assert!(actions.is_empty(), "null result should be normalized to no actions");
+        Ok(())
+    }
+
+    #[test]
+    fn code_actions_single_object_result_is_wrapped() -> Result<()> {
+        let action = json!({ "title": "Add package declaration" });
+        let harness = harness_with_response(json!({ "result": action.clone() }))?;
+        let actions = harness.code_actions("script.pl", 0, 0, 0, 1, &[], &["quickfix"])?;
+        assert_eq!(actions, vec![action]);
+        Ok(())
+    }
+
+    #[test]
+    fn code_actions_error_response_is_reported() -> Result<()> {
+        let harness =
+            harness_with_response(json!({ "error": { "code": -32603, "message": "boom" } }))?;
+        let error = harness
+            .code_actions("script.pl", 0, 0, 0, 1, &[], &["quickfix"])
+            .err()
+            .ok_or_else(|| anyhow!("error response should fail code_actions"))?;
+        let message = error.to_string();
+        assert!(message.contains("codeAction returned error"));
+        assert!(message.contains("boom"));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod normalize_tests {
     use super::{normalize_lsp_payload, normalize_uri_for_expectations};
     use serde_json::{Value, json};
