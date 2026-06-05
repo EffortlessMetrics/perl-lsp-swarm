@@ -548,6 +548,69 @@ mod tests {
 
         assert!(actions.is_empty());
     }
+
+    #[test]
+    fn fix_loop_control_undefined_label_handles_colon_label_with_trailing_space() {
+        let source = "while (1) {\n    redo Some::Label ;\n}\n";
+        let start = must_some(source.find("redo"));
+        let end = start + "redo Some::Label ;".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`redo Some::Label` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        let action = must_some(actions.first());
+        let edit = &action.edit.changes[0];
+        assert_eq!(&source[edit.location.start..edit.location.end], " Some::Label ");
+        assert_eq!(edit.new_text, "");
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_rejects_operator_with_whitespace_only_tail() {
+        let source = "while (1) { next   }\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next   ".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_rejects_empty_label_before_semicolon() {
+        let source = "while (1) { next ; }\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next ;".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_rejects_non_loop_control_statement() {
+        let source = "while (1) { return MISSING; }\n";
+        let start = must_some(source.find("return"));
+        let end = start + "return MISSING;".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`return MISSING` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert!(actions.is_empty());
+    }
 }
 
 /// Fix assignment in condition
