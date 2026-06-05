@@ -9,13 +9,13 @@
 // UX receipt tests intentionally write structured receipts to stderr for --nocapture logs.
 #![allow(clippy::print_stderr)]
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use perl_lsp_ux_tests::{
     ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available, missing_binary_skip,
     run_ux_scenario,
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::time::Duration;
 
 const SCENARIO_FILE: &str = "ux_scenario_67_code_action_quick_fix_e2e.rs";
@@ -92,6 +92,42 @@ fn action_edit_texts(actions: &[Value], title: &str, uri: &str) -> Vec<String> {
         .collect()
 }
 
+fn request_code_actions(
+    harness: &UxHarness,
+    relative_path: &str,
+    start_line: u32,
+    start_character: u32,
+    end_line: u32,
+    end_character: u32,
+    diagnostics: &[Value],
+    only: &[&str],
+) -> Result<Vec<Value>> {
+    let uri = harness.workspace.uri(relative_path);
+    let resp = harness.client.request(
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": start_line, "character": start_character },
+                "end": { "line": end_line, "character": end_character },
+            },
+            "context": {
+                "diagnostics": diagnostics,
+                "only": only,
+            },
+        }),
+        Duration::from_secs(20),
+    )?;
+    if resp.get("error").is_some() {
+        return Err(anyhow!("codeAction returned error: {}", resp["error"]));
+    }
+    match resp["result"].as_array() {
+        Some(actions) => Ok(actions.clone()),
+        None if resp["result"].is_null() => Ok(Vec::new()),
+        None => Ok(vec![resp["result"].clone()]),
+    }
+}
+
 #[test]
 fn scenario_67_code_action_quick_fix_e2e_receipt() {
     run_ux_scenario(
@@ -119,7 +155,8 @@ fn scenario_67_code_action_quick_fix_e2e_receipt() {
             let start_character = end_character.saturating_sub(u32::try_from("$missing".len())?);
 
             recorder.mark_request_start("code_action_quickfix");
-            let actions = harness.code_actions(
+            let actions = request_code_actions(
+                &harness,
                 FIXTURE_PATH,
                 line,
                 start_character,
