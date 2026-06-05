@@ -269,4 +269,19 @@ mod tests {
 
         assert!(actions.is_empty());
     }
+
+    #[test]
+    fn routes_pl410_boundary_discriminator_rejects_other_diagnostic_code() {
+        let source = "while (1) { next MISSING; }\n";
+        let start = must_some(source.find("next"));
+        let diagnostic = diagnostic(
+            DiagnosticCode::AssignmentInCondition.as_str(),
+            (start, start + "next MISSING;".len()),
+            "`next MISSING` references a label that is not defined in this file",
+        );
+
+        let actions = quick_fixes_for_diagnostic(source, &diagnostic);
+
+        assert_eq!(actions.len(), 0);
+    }
 }

@@ -7,10 +7,6 @@ use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn find_action_by_title<'a>(actions: &'a [Value], title: &str) -> Option<&'a Value> {
-    actions.iter().find(|action| action.get("title").and_then(Value::as_str) == Some(title))
-}
-
 #[test]
 fn pl410_remove_label_action_is_available_over_lsp() -> TestResult {
     let source = "use v5.40;\nwhile (1) {\n    next MISSING;\n}\n";
@@ -38,8 +34,14 @@ fn pl410_remove_label_action_is_available_over_lsp() -> TestResult {
 
     let actions =
         response.as_array().ok_or_else(|| format!("expected actions array: {response}"))?;
-    let action = find_action_by_title(actions, "Remove undefined label")
-        .ok_or_else(|| format!("missing PL410 remove-label action: {actions:?}"))?;
+    let pl410_actions = actions
+        .iter()
+        .filter(|action| {
+            action.get("title").and_then(Value::as_str) == Some("Remove undefined label")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(pl410_actions.len(), 1, "expected one PL410 remove-label action: {actions:?}");
+    let action = pl410_actions[0];
     assert_eq!(action.get("kind").and_then(Value::as_str), Some("quickfix"));
 
     let edit = action

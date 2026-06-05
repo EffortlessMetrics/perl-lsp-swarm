@@ -531,7 +531,22 @@ mod tests {
 
         let actions = fix_loop_control_undefined_label(source, &diagnostic);
 
-        assert!(actions.is_empty());
+        assert_eq!(actions.len(), 0);
+    }
+
+    #[test]
+    fn fix_loop_control_undefined_label_boundary_discriminator_rejects_empty_label_tail() {
+        let source = "while (1) { next   ; }\n";
+        let start = must_some(source.find("next"));
+        let end = start + "next   ".len();
+        let diagnostic = diagnostic_for(
+            (start, end),
+            "`next` references a label that is not defined in this file",
+        );
+
+        let actions = fix_loop_control_undefined_label(source, &diagnostic);
+
+        assert_eq!(actions.len(), 0);
     }
 
     #[test]
