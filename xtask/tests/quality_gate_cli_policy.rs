@@ -87,6 +87,30 @@ fn quality_gate_final_check_blocks_stale_json_receipt() -> TestResult {
 }
 
 #[test]
+fn quality_gate_final_check_blocks_missing_json_receipt() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let paths = FixturePaths::new(dir.path());
+
+    write_complete_final_proof_inputs(&root, &paths)?;
+    write_empty_exception_policy(&paths.exceptions)?;
+    final_quality_gate_command(&root, &paths)?.assert().success();
+    fs::remove_file(&paths.receipt)?;
+
+    let output = final_quality_gate_command(&root, &paths)?.arg("--check").output()?;
+    assert!(!output.status.success(), "quality-gate --check must fail on missing JSON proof");
+
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("quality gate JSON receipt is missing")
+            && stderr.contains(&paths.receipt.to_string_lossy().to_string()),
+        "missing JSON receipt failure must name the missing proof file: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn quality_gate_final_check_blocks_stale_markdown_summary() -> TestResult {
     let root = repo_root()?;
     let dir = tempdir()?;
@@ -111,6 +135,30 @@ fn quality_gate_final_check_blocks_stale_markdown_summary() -> TestResult {
         stderr.contains("quality gate Markdown summary is stale")
             && stderr.contains(&paths.summary.to_string_lossy().to_string()),
         "stale Markdown summary failure must name the stale proof file: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn quality_gate_final_check_blocks_missing_markdown_summary() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let paths = FixturePaths::new(dir.path());
+
+    write_complete_final_proof_inputs(&root, &paths)?;
+    write_empty_exception_policy(&paths.exceptions)?;
+    final_quality_gate_command(&root, &paths)?.assert().success();
+    fs::remove_file(&paths.summary)?;
+
+    let output = final_quality_gate_command(&root, &paths)?.arg("--check").output()?;
+    assert!(!output.status.success(), "quality-gate --check must fail on missing Markdown proof");
+
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("quality gate Markdown summary is missing")
+            && stderr.contains(&paths.summary.to_string_lossy().to_string()),
+        "missing Markdown summary failure must name the missing proof file: {stderr}"
     );
 
     Ok(())
@@ -148,6 +196,23 @@ fn quality_gate_final_enforce_blocks_total_ripr_project_coverage_and_active_exce
     );
     assert_repair_contract(exception)?;
 
+    let markdown = fs::read_to_string(&paths.summary)?;
+    assert!(
+        markdown.contains("project coverage: `94.90%` / `95.00%`"),
+        "summary must keep project coverage visible for final burn-down: {markdown}"
+    );
+    assert!(
+        markdown.contains("### project_coverage_below_target")
+            && markdown.contains("### quality_exception_active_final_blocker"),
+        "summary must render both final blockers as repair packets: {markdown}"
+    );
+    assert!(
+        markdown.contains(
+            "exception: `ripr-total-burndown` final target `repo-wide ripr+ unresolved total = 0`"
+        ),
+        "summary must name active temporary exceptions and their final target: {markdown}"
+    );
+
     Ok(())
 }
 
@@ -171,6 +236,27 @@ fn quality_gate_final_enforce_blocks_missing_receipts() -> TestResult {
         "ripr_review_receipt_not_current",
     ] {
         assert_repair_contract(next_action(&payload, kind)?)?;
+    }
+
+    let markdown = fs::read_to_string(&paths.summary)?;
+    for required in [
+        "### coverage_receipt_not_current",
+        "### ripr_receipt_not_current",
+        "### ripr_pr_receipt_not_current",
+        "### ripr_review_receipt_not_current",
+        "- repair: `Refresh the LCOV coverage receipt before running the aggregate quality gate.`",
+        "- verify: `rtk cargo xtask quality-gate --mode enforce",
+        "--check`",
+        "- receipt: `rtk cargo xtask quality-gate --mode enforce",
+        "rtk cargo xtask coverage-baseline",
+        "rtk cargo xtask ripr-plus",
+        "rtk cargo xtask ripr-pr",
+        "rtk cargo xtask ripr-review-comments",
+    ] {
+        assert!(
+            markdown.contains(required),
+            "summary repair packet missing `{required}`: {markdown}"
+        );
     }
 
     Ok(())

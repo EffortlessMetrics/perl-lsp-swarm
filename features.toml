@@ -231,7 +231,10 @@ spec = "LSP 3.0"
 area = "text_document"
 maturity = "ga"
 advertised = true
-tests = ["crates/perl-lsp-rs/tests/lsp_document_links_test.rs"]
+tests = [
+  "crates/perl-lsp-rs/tests/lsp_document_links_test.rs",
+  "crates/perl-lsp-rs/tests/lsp_document_links_e2e.rs",
+]
 description = "Document links to modules and docs"
 
 [[feature]]
@@ -1159,7 +1162,7 @@ maturity = "ga"
 advertised = true
 counts_in_coverage = false
 tests = ["crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs"]
-description = "Capability-gated ApplyWorkspaceEditParams.metadata on server-originated workspace/applyEdit refactoring requests"
+description = "Capability-gated ApplyWorkspaceEditParams.metadata label, description, and isRefactoring on server-originated workspace/applyEdit refactoring requests"
 
 [[feature]]
 id = "lsp.publish_diagnostics"
@@ -1252,7 +1255,7 @@ tests = [
   "crates/perl-lsp-rs/tests/lsp_virtual_content_tests.rs",
   "crates/perl-lsp-rs/tests/lsp_text_document_content_tests.rs",
 ]
-description = "workspace/textDocumentContent request for perldoc:// virtual documents, preferring workspace POD for locally resolved modules and falling back to external perldoc (@proposed)"
+description = "workspace/textDocumentContent request for perldoc:// virtual documents, preferring workspace POD for locally resolved modules, exposing bare/labeled POD module links, and falling back to external perldoc (@proposed)"
 
 [[feature]]
 id = "lsp.text_document_content_refresh"
