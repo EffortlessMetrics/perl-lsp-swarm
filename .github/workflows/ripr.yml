@@ -219,6 +219,10 @@ jobs:
             -w /workspace \
             em-ci-rust:1.95 \
             bash -eu -o pipefail -c '
+              # The workspace is checked out by the host runner user; the container
+              # runs as a different UID. Mark it safe so git commands work.
+              git config --global --add safe.directory /workspace
+
               rustc --version
               cargo --version
               sccache --version || true
@@ -388,6 +392,10 @@ jobs:
             -w /workspace \
             em-ci-rust:1.95 \
             bash -eu -o pipefail -c '
+              # The workspace is checked out by the host runner user; the container
+              # runs as a different UID. Mark it safe so git commands work.
+              git config --global --add safe.directory /workspace
+
               rustc --version
               cargo --version
               sccache --version || true
