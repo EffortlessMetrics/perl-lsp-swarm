@@ -551,6 +551,262 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
 }
 
 #[test]
+fn nodekind_cases_all_have_display_and_sexp_receipts() {
+    for (node, expected_name, _) in build_cases() {
+        assert_eq!(node.kind.to_string(), expected_name, "Display drifted for {expected_name}");
+
+        let sexp = node.to_sexp();
+        assert!(!sexp.is_empty(), "{expected_name} produced an empty S-expression");
+        assert!(sexp.starts_with('('), "{expected_name} S-expression must start with '(': {sexp}");
+        assert!(sexp.ends_with(')'), "{expected_name} S-expression must end with ')': {sexp}");
+
+        let open_parens = sexp.chars().filter(|ch| *ch == '(').count();
+        let close_parens = sexp.chars().filter(|ch| *ch == ')').count();
+        assert_eq!(
+            open_parens, close_parens,
+            "{expected_name} S-expression has unbalanced parentheses: {sexp}"
+        );
+    }
+}
+
+#[test]
+fn nodekind_children_helpers_agree_for_every_case() {
+    for (node, expected_name, expected_children) in build_cases() {
+        let children = node.children();
+        assert_eq!(
+            node.child_count(),
+            expected_children,
+            "child_count drifted for {expected_name}"
+        );
+        assert_eq!(
+            children.len(),
+            node.child_count(),
+            "children() and child_count() disagree for {expected_name}"
+        );
+        assert!(
+            node.count_nodes() > expected_children,
+            "count_nodes should include {expected_name} and at least its direct children"
+        );
+
+        let first_from_vec = children.first().copied().map(|child| child.kind.kind_name());
+        let first_from_helper = node.first_child().map(|child| child.kind.kind_name());
+        assert_eq!(
+            first_from_helper, first_from_vec,
+            "first_child disagrees with children().first() for {expected_name}"
+        );
+
+        let last_from_vec = children.last().copied().map(|child| child.kind.kind_name());
+        let last_from_helper = node.last_child().map(|child| child.kind.kind_name());
+        assert_eq!(
+            last_from_helper, last_from_vec,
+            "last_child disagrees with children().last() for {expected_name}"
+        );
+    }
+}
+
+fn optional_absence_cases() -> Vec<(Node, &'static str, usize, &'static str)> {
+    vec![
+        (
+            Node::new(
+                NodeKind::VariableDeclaration {
+                    declarator: "my".to_string(),
+                    variable: Box::new(leaf("var")),
+                    attributes: vec![],
+                    initializer: None,
+                },
+                loc(),
+            ),
+            "VariableDeclaration",
+            1,
+            "(my_declaration (identifier var))",
+        ),
+        (
+            Node::new(
+                NodeKind::VariableListDeclaration {
+                    declarator: "my".to_string(),
+                    variables: vec![leaf("a"), leaf("b")],
+                    attributes: vec![],
+                    initializer: None,
+                },
+                loc(),
+            ),
+            "VariableListDeclaration",
+            2,
+            "(my_declaration ((identifier a) (identifier b)))",
+        ),
+        (
+            Node::new(
+                NodeKind::Try {
+                    body: Box::new(leaf("body")),
+                    catch_blocks: vec![],
+                    finally_block: None,
+                },
+                loc(),
+            ),
+            "Try",
+            1,
+            "(try (identifier body))",
+        ),
+        (
+            Node::new(
+                NodeKind::If {
+                    condition: Box::new(leaf("cond")),
+                    then_branch: Box::new(leaf("then")),
+                    elsif_branches: vec![],
+                    else_branch: None,
+                },
+                loc(),
+            ),
+            "If",
+            2,
+            "(if (identifier cond) (identifier then))",
+        ),
+        (
+            Node::new(
+                NodeKind::While {
+                    condition: Box::new(leaf("cond")),
+                    body: Box::new(leaf("body")),
+                    continue_block: None,
+                },
+                loc(),
+            ),
+            "While",
+            2,
+            "(while (identifier cond) (identifier body))",
+        ),
+        (
+            Node::new(
+                NodeKind::For {
+                    init: None,
+                    condition: None,
+                    update: None,
+                    body: Box::new(leaf("body")),
+                    continue_block: None,
+                },
+                loc(),
+            ),
+            "For",
+            1,
+            "(for () () () (identifier body))",
+        ),
+        (
+            Node::new(
+                NodeKind::Foreach {
+                    variable: Box::new(leaf("var")),
+                    list: Box::new(leaf("list")),
+                    body: Box::new(leaf("body")),
+                    continue_block: None,
+                },
+                loc(),
+            ),
+            "Foreach",
+            3,
+            "(foreach (identifier var) (identifier list) (identifier body))",
+        ),
+        (
+            Node::new(
+                NodeKind::Subroutine {
+                    name: Some("demo".to_string()),
+                    name_span: None,
+                    prototype: None,
+                    signature: None,
+                    attributes: vec![],
+                    body: Box::new(leaf("body")),
+                },
+                loc(),
+            ),
+            "Subroutine",
+            1,
+            "(sub demo ()(identifier body))",
+        ),
+        (
+            Node::new(
+                NodeKind::Method {
+                    name: "demo".to_string(),
+                    signature: None,
+                    attributes: vec![],
+                    body: Box::new(leaf("body")),
+                },
+                loc(),
+            ),
+            "Method",
+            1,
+            "(method_declaration_statement (bareword) (block (identifier body)))",
+        ),
+        (Node::new(NodeKind::Return { value: None }, loc()), "Return", 0, "(return)"),
+        (
+            Node::new(
+                NodeKind::Package { name: "Main".to_string(), name_span: loc(), block: None },
+                loc(),
+            ),
+            "Package",
+            0,
+            "(package Main)",
+        ),
+        (
+            Node::new(
+                NodeKind::Error {
+                    message: "broken".to_string(),
+                    expected: vec![],
+                    found: None,
+                    partial: None,
+                },
+                loc(),
+            ),
+            "Error",
+            0,
+            "(ERROR \"broken\")",
+        ),
+        (Node::new(NodeKind::Readline { filehandle: None }, loc()), "Readline", 0, "(readline)"),
+        (
+            Node::new(
+                NodeKind::Use { module: "strict".to_string(), args: vec![], has_filter_risk: true },
+                loc(),
+            ),
+            "Use",
+            0,
+            "(use strict (risk:filter))",
+        ),
+        (
+            Node::new(
+                NodeKind::No {
+                    module: "warnings".to_string(),
+                    args: vec![],
+                    has_filter_risk: true,
+                },
+                loc(),
+            ),
+            "No",
+            0,
+            "(no warnings (risk:filter))",
+        ),
+        (
+            Node::new(NodeKind::DataSection { marker: "__END__".to_string(), body: None }, loc()),
+            "DataSection",
+            0,
+            "(data_section __END__)",
+        ),
+    ]
+}
+
+#[test]
+fn nodekind_optional_absence_paths_preserve_child_counts_and_sexp() {
+    for (node, expected_name, expected_children, expected_sexp) in optional_absence_cases() {
+        assert_eq!(node.kind.kind_name(), expected_name);
+        assert_eq!(
+            node.children().len(),
+            expected_children,
+            "optional absence child count drifted for {expected_name}"
+        );
+        assert_eq!(
+            node.to_sexp(),
+            expected_sexp,
+            "optional absence S-expression drifted for {expected_name}"
+        );
+    }
+}
+
+#[test]
 fn nodekind_cases_match_all_kind_names_set() {
     let mut case_names =
         build_cases().into_iter().map(|(_, expected_name, _)| expected_name).collect::<Vec<_>>();
