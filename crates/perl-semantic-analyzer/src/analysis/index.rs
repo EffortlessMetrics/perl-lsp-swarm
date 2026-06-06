@@ -202,7 +202,10 @@ impl WorkspaceIndex {
     }
 
     fn parse_qw_content(arg: &str) -> Option<&str> {
-        let rest = arg.strip_prefix("qw")?;
+        // Perl allows whitespace between `qw` and its opening delimiter
+        // (e.g. `qw [Foo::Bar]`); trim it so the delimiter is read correctly
+        // rather than treating the space as the delimiter.
+        let rest = arg.strip_prefix("qw")?.trim_start();
         let mut chars = rest.chars();
         let open = chars.next()?;
         let close = match open {
@@ -261,6 +264,35 @@ mod tests {
     use super::*;
     use crate::SourceLocation;
     use crate::symbol::Symbol;
+
+    /// Regression: `use parent qw [..]` with whitespace before the delimiter
+    /// must extract each base module as a dependency. Previously the leading
+    /// space was treated as the `qw` delimiter, so `parse_qw_content` returned
+    /// garbage and the whole `qw [..]` token was recorded as a single bogus
+    /// dependency. See `parse_qw_content`.
+    #[test]
+    fn parent_qw_space_before_delimiter_extracts_each_base() {
+        let index = WorkspaceIndex::new();
+        index
+            .index_file_str("file:///c.pl", "use parent qw [Foo::Base Bar::Base];\n1;\n")
+            .expect("index");
+        let deps = index.file_dependencies("file:///c.pl");
+        assert!(deps.contains("Foo::Base"), "deps: {deps:?}");
+        assert!(deps.contains("Bar::Base"), "deps: {deps:?}");
+        assert!(
+            !deps.iter().any(|d| d.contains("qw")),
+            "no bogus qw-prefixed dependency should be recorded, got {deps:?}"
+        );
+    }
+
+    /// `parse_qw_content` unit coverage: whitespace before the delimiter is
+    /// tolerated; compact form still works.
+    #[test]
+    fn parse_qw_content_tolerates_leading_space() {
+        assert_eq!(WorkspaceIndex::parse_qw_content("qw [a b]"), Some("a b"));
+        assert_eq!(WorkspaceIndex::parse_qw_content("qw(a b)"), Some("a b"));
+        assert_eq!(WorkspaceIndex::parse_qw_content("qw/a b/"), Some("a b"));
+    }
 
     #[test]
     fn test_workspace_index() {
