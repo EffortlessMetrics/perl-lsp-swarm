@@ -47,19 +47,46 @@ impl DebugAdapter {
             };
         }
 
-        let variables_ref = args.variables_reference as i32;
-        let start = args.start.unwrap_or(0) as usize;
-        let count = args.count.map(|v| v as usize).unwrap_or(256).clamp(1, 1024);
-
-        if variables_ref == 0 {
+        // Clamp i64 → i32 safely: values outside [1, i32::MAX] cannot encode a valid scope ref
+        // (scope encoding is frame_id * 10 + {1,2,3}, all positive). Negative or zero refs
+        // are protocol-safe "honest empty" per DAP spec — success=true, variables=[].
+        let variables_ref_raw = args.variables_reference;
+        let variables_ref = if variables_ref_raw <= 0 || variables_ref_raw > i32::MAX as i64 {
+            // Out-of-range: return protocol-safe empty response immediately.
             return DapMessage::Response {
                 seq,
                 request_seq,
-                success: false,
+                success: true,
                 command: "variables".to_string(),
-                body: None,
-                message: Some("Missing variablesReference".to_string()),
+                body: Some(json!({ "variables": [] })),
+                message: None,
             };
+        } else {
+            variables_ref_raw as i32
+        };
+
+        let start = args.start.unwrap_or(0) as usize;
+        let count = args.count.map(|v| v as usize).unwrap_or(256).clamp(1, 1024);
+
+        // Stale-ref guard: if a session exists but the debugger is not stopped, the cache
+        // has been cleared (variable_cache.clear() is called on every continue/step). Any
+        // variablesReference the client holds from the previous stop is stale. Querying
+        // the debugger while it is running would hang or produce garbage. Return the
+        // protocol-safe honest empty immediately.
+        {
+            let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+            if let Some(ref session) = *session_guard {
+                if session.state != DebugState::Stopped {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: true,
+                        command: "variables".to_string(),
+                        body: Some(json!({ "variables": [] })),
+                        message: None,
+                    };
+                }
+            }
         }
 
         // AC8.4: Render scalars/arrays/hashes with lazy child expansion.
