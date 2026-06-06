@@ -132,7 +132,25 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliError, CliOptions, parse_args};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{CliArgs, CliError, CliOptions, parse_args, run};
+
+    fn unique_temp_file(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0_u128, |duration| duration.as_nanos());
+
+        std::env::temp_dir().join(format!("tree_sitter_perl_c_parse_c_{name}_{nanos}.pl"))
+    }
+
+    fn default_options() -> CliOptions {
+        CliOptions { show_root_kind: false, show_has_error: false, show_sexp: false }
+    }
 
     #[test]
     fn parse_args_accepts_all_output_flags() -> Result<(), String> {
@@ -214,6 +232,63 @@ mod tests {
             Ok(_) => Err(String::from("expected unexpected-argument error for second file")),
             Err(error) => Err(format!("unexpected error: {error}")),
         }
+    }
+
+    #[test]
+    fn run_returns_success_for_valid_file() -> Result<(), String> {
+        let file = unique_temp_file("valid_run");
+        fs::write(&file, "my $value = 1;\n").map_err(|error| error.to_string())?;
+
+        let exit_code = run(CliArgs { filename: file.clone(), options: default_options() });
+
+        let _ = fs::remove_file(&file);
+
+        match exit_code {
+            Ok(0) => Ok(()),
+            Ok(code) => Err(format!("expected success exit code 0, got {code}")),
+            Err(error) => Err(format!("expected successful parse, got error: {error}")),
+        }
+    }
+
+    #[test]
+    fn run_returns_failure_for_syntax_error_tree() -> Result<(), String> {
+        let file = unique_temp_file("syntax_error_run");
+        fs::write(&file, "my $value = ;\n").map_err(|error| error.to_string())?;
+
+        let exit_code = run(CliArgs {
+            filename: file.clone(),
+            options: CliOptions { show_root_kind: true, show_has_error: true, show_sexp: false },
+        });
+
+        let _ = fs::remove_file(&file);
+
+        match exit_code {
+            Ok(1) => Ok(()),
+            Ok(code) => Err(format!("expected syntax-error exit code 1, got {code}")),
+            Err(error) => {
+                Err(format!("expected recoverable syntax-error parse, got error: {error}"))
+            }
+        }
+    }
+
+    #[test]
+    fn run_reports_read_error_with_file_path() -> Result<(), String> {
+        let file = unique_temp_file("missing_run");
+
+        let error = match run(CliArgs { filename: file.clone(), options: default_options() }) {
+            Ok(code) => return Err(format!("expected read error, got exit code {code}")),
+            Err(error) => error,
+        };
+
+        if !error.contains(&file.to_string_lossy().to_string()) {
+            return Err(format!("expected error to include file path, got: {error}"));
+        }
+
+        if !error.contains("failed to read") {
+            return Err(format!("expected read failure message, got: {error}"));
+        }
+
+        Ok(())
     }
 
     #[test]
