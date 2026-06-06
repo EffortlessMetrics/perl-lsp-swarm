@@ -630,7 +630,8 @@ fn parse_qw_arg_list(trimmed: &str) -> Option<Vec<String>> {
     }
 
     let inner = &after_operator[inner_start..inner_end];
-    Some(inner.split_whitespace().filter(|word| !word.is_empty()).map(str::to_string).collect())
+    // `split_whitespace` already skips empty tokens, so no extra filter is needed.
+    Some(inner.split_whitespace().map(str::to_string).collect())
 }
 
 /// Return true when `line` indicates a new statement boundary that should stop
