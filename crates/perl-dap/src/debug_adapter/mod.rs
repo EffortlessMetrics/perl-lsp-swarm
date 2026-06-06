@@ -403,6 +403,60 @@ impl DebugAdapter {
         let mut output = lock_or_recover(&self.recent_output, "debug_adapter.push_recent_output");
         Self::append_recent_output_line_locked(&mut output, line);
     }
+
+    /// Seed a minimal DebugSession for testing (no real process required).
+    ///
+    /// Creates a `perl -e 1` child process and installs it as the active session
+    /// so that resume-path handlers (continue, next, stepIn, stepOut, goto) can
+    /// be exercised without a real debugging scenario.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    pub fn seed_session_for_test(&self) {
+        use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+        use crate::debug_adapter::variable_cache::VariableCache;
+        if let Ok(child) = std::process::Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Ok(mut guard) = self.session.lock() {
+                *guard = Some(DebugSession {
+                    process: child,
+                    state: DebugState::Stopped,
+                    stack_frames: vec![],
+                    variable_cache: VariableCache::default(),
+                    thread_id: 1,
+                    last_resume_mode: ResumeMode::Unknown,
+                });
+            }
+        }
+    }
+
+    /// Inject stack frames into the active session for testing stale-frame scenarios.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    pub fn inject_stack_frames_for_test(&self, frames: Vec<crate::types::StackFrame>) {
+        if let Ok(mut guard) = self.session.lock() {
+            if let Some(ref mut s) = *guard {
+                s.stack_frames = frames;
+            }
+        }
+    }
+
+    /// Return a snapshot of the active session's stack_frames for test assertions.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    pub fn stack_frames_snapshot_for_test(&self) -> Vec<crate::types::StackFrame> {
+        if let Ok(guard) = self.session.lock() {
+            if let Some(ref s) = *guard {
+                return s.stack_frames.clone();
+            }
+        }
+        vec![]
+    }
 }
 #[cfg(test)]
 mod tests {
