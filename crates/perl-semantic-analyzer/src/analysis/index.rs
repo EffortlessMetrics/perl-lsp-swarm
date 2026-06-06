@@ -271,11 +271,9 @@ mod tests {
     /// garbage and the whole `qw [..]` token was recorded as a single bogus
     /// dependency. See `parse_qw_content`.
     #[test]
-    fn parent_qw_space_before_delimiter_extracts_each_base() {
+    fn parent_qw_space_before_delimiter_extracts_each_base() -> Result<(), String> {
         let index = WorkspaceIndex::new();
-        index
-            .index_file_str("file:///c.pl", "use parent qw [Foo::Base Bar::Base];\n1;\n")
-            .expect("index");
+        index.index_file_str("file:///c.pl", "use parent qw [Foo::Base Bar::Base];\n1;\n")?;
         let deps = index.file_dependencies("file:///c.pl");
         assert!(deps.contains("Foo::Base"), "deps: {deps:?}");
         assert!(deps.contains("Bar::Base"), "deps: {deps:?}");
@@ -283,6 +281,7 @@ mod tests {
             !deps.iter().any(|d| d.contains("qw")),
             "no bogus qw-prefixed dependency should be recorded, got {deps:?}"
         );
+        Ok(())
     }
 
     /// `parse_qw_content` unit coverage: whitespace before the delimiter is
