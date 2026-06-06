@@ -2,6 +2,17 @@
 #
 # Badges are repo-scoped public state. This workflow produces diff-scoped PR
 # evidence under target/ripr/ and mutation-routing receipts under target/xtask/.
+#
+# Runner routing: large diffs (27-PR merge trains, 487-file syncs) OOM on the
+# GitHub-hosted ubuntu-24.04 runner (~7 GB). This workflow mirrors the routing
+# pattern from em-ci-routed-rust.yml: prefer CX53 (28 GB, 14 cores), fall back
+# to CX43 (16 GB, 8 cores), and use GitHub-hosted only for fork PRs or when no
+# self-hosted runner is idle.  Evidence: runs 27069450554, 27053186621 (x2),
+# killed at 2 m 21 s with exit 143 (SIGTERM / OOM eviction).
+#
+# The required-check name "ripr+ New Gap Gate" is owned by the result
+# aggregator job at the bottom of this file, matching the branch-protection
+# entry in .ci/policies/required-checks.toml.
 
 name: ripr
 
@@ -19,11 +30,426 @@ permissions:
   contents: read
 
 jobs:
-  ripr:
-    name: ripr+ New Gap Gate
+  # -------------------------------------------------------------------------
+  # 1. Router -- picks the target runner for this PR run.
+  # -------------------------------------------------------------------------
+  route-ripr:
+    name: Route ripr runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.pull_request.draft != true || github.event_name == 'workflow_dispatch'
+    outputs:
+      target: ${{ steps.route.outputs.target }}
+      reason: ${{ steps.route.outputs.reason }}
+      fallback_allowed: ${{ steps.route.outputs.fallback_allowed }}
+    steps:
+      - name: Decide target runner
+        id: route
+        env:
+          GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}
+          ORG: EffortlessMetrics
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          PR_AUTHOR_LOGIN: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login || '' }}
+          PR_AUTHOR_TYPE: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.type || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emit() {
+            local target="$1" reason="$2" fallback_allowed="$3"
+            echo "router_target=$target"
+            echo "router_reason=$reason"
+            echo "router_fallback_allowed=$fallback_allowed"
+            {
+              echo "target=$target"
+              echo "reason=$reason"
+              echo "fallback_allowed=$fallback_allowed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "### ripr Runner Route"
+              echo ""
+              echo "- router_target: \`$target\`"
+              echo "- router_reason: \`$reason\`"
+              echo "- router_fallback_allowed: \`$fallback_allowed\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          # Fork PRs cannot access self-hosted runners -- GitHub blocks secrets.
+          if [ "$IS_FORK_PR" = "true" ]; then
+            emit "github" "fork_pr" "true"
+            exit 0
+          fi
+
+          # Bot PRs (Dependabot, etc.) run on GitHub-hosted to avoid tying up
+          # self-hosted capacity.
+          pr_author_login_lc="$(printf '%s' "${PR_AUTHOR_LOGIN:-}" | tr '[:upper:]' '[:lower:]')"
+          pr_author_type_lc="$(printf '%s' "${PR_AUTHOR_TYPE:-}" | tr '[:upper:]' '[:lower:]')"
+          is_bot_pr="false"
+          case "$pr_author_login_lc" in
+            dependabot*|app/*|*\[bot\]) is_bot_pr="true" ;;
+          esac
+          if [ "$pr_author_type_lc" = "bot" ]; then is_bot_pr="true"; fi
+          if [ "$is_bot_pr" = "true" ]; then
+            emit "github" "bot_pr_github_hosted" "true"
+            exit 0
+          fi
+
+          # No runner token -- cannot query availability; fall back safely.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            emit "github" "runner_token_missing" "true"
+            exit 0
+          fi
+
+          response="$(mktemp)"
+          status="$(curl -sS -w '%{http_code}' -o "$response" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" || true)"
+
+          if [ "$status" != "200" ]; then
+            echo "::warning::runner API returned HTTP $status; falling back to GitHub-hosted"
+            emit "github" "runner_api_failed" "true"
+            exit 0
+          fi
+
+          idle_runner_count() {
+            local runner_label="$1"
+            jq --arg runner_label "$runner_label" '
+              [ .runners[]?
+                | select(.status == "online")
+                | select(.busy == false)
+                | ([.labels[].name | ascii_downcase] // []) as $have
+                | select(
+                    ($have | index("em-ci")) and
+                    ($have | index($runner_label)) and
+                    ($have | index("rust-small")) and
+                    ($have | index("trusted-pr"))
+                  )
+              ] | length
+            ' "$response"
+          }
+
+          idle_cx53="$(idle_runner_count "cx53")"
+          idle_cx43="$(idle_runner_count "cx43")"
+
+          echo "idle_cx53=${idle_cx53:-0}"
+          echo "idle_cx43=${idle_cx43:-0}"
+
+          if [ "${idle_cx53:-0}" -gt 0 ]; then
+            emit "cx53" "cx53_idle" "false"
+          elif [ "${idle_cx43:-0}" -gt 0 ]; then
+            emit "cx43" "cx43_idle" "false"
+          else
+            # No self-hosted runner idle -- fall back to GitHub-hosted.
+            # ripr analysis on large diffs may OOM, but small/medium PRs pass.
+            emit "github" "no_idle_runner" "true"
+          fi
+
+  # -------------------------------------------------------------------------
+  # 2a. ripr on CX53 (28 GB, 14 cores) -- preferred self-hosted lane.
+  # -------------------------------------------------------------------------
+  ripr-cx53:
+    name: ripr+ on CX53
+    needs: route-ripr
+    if: >-
+      needs.route-ripr.result == 'success' &&
+      needs.route-ripr.outputs.target == 'cx53'
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]
+    timeout-minutes: 60
+    env:
+      RIPR_VERSION: "0.5.0"
+      BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+      PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
+      CARGO_HOME: /mnt/ci-cache/cargo-home
+      SCCACHE_DIR: /mnt/ci-cache/sccache
+      SCCACHE_CACHE_SIZE: 60G
+      CARGO_BUILD_JOBS: "12"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/ripr-${{ github.run_id }}-${{ github.run_attempt }}
+      TMPDIR: /mnt/ci-scratch/tmp/ripr-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Preflight disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci-disk-guard /mnt/ci-scratch 100
+          ci-disk-guard /mnt/ci-cache 20
+          df -h /mnt/ci-scratch /mnt/ci-cache || true
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
+
+      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+        run: rustc --version
+
+      - name: Install ripr
+        run: CARGO_HOME="$CARGO_HOME" cargo install ripr --version "$RIPR_VERSION" --locked
+
+      - name: Run ripr doctor
+        run: ripr doctor
+
+      - name: Generate PR evidence
+        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD
+
+      - name: Generate repo-wide RIPR+ baseline receipt
+        if: always()
+        run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+
+      - name: Generate review guidance
+        if: always()
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210
+
+      - name: Generate impacted evidence
+        if: always()
+        run: cargo xtask impacted-evidence --labels-csv "$PR_LABELS"
+
+      - name: Generate PR evidence summary
+        if: always()
+        run: cargo xtask ripr-pr-summary
+
+      - name: Generate warning annotations
+        if: always()
+        run: cargo xtask ripr-annotations
+
+      - name: Validate PR evidence contracts
+        if: always()
+        run: |
+          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
+          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
+          cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
+          cargo xtask ripr-pr-summary --check
+          cargo xtask ripr-annotations --check
+
+      - name: Enforce new RIPR gap quality gate
+        if: always()
+        run: |
+          cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/$BASE_REF" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md
+          cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/$BASE_REF" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md \
+            --check
+
+      - name: Append PR evidence summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f target/ripr/pr/summary.md ]; then
+            cat target/ripr/pr/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RIPR PR evidence summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/receipts/quality/quality-gate-ripr.md ]; then
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            cat target/receipts/quality/quality-gate-ripr.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RIPR quality-gate summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/ripr/review/annotations.txt ]; then
+            cat target/ripr/review/annotations.txt
+          fi
+
+      - name: Upload ripr PR evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ripr-pr-evidence
+          path: |
+            target/ripr/pr/**
+            target/ripr/review/**
+            target/xtask/impacted-evidence/**
+            target/receipts/quality/ripr-plus.json
+            target/receipts/quality/quality-gate-ripr.json
+            target/receipts/quality/quality-gate-ripr.md
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Cleanup scratch
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -rf "$CARGO_TARGET_DIR" "$TMPDIR" 2>/dev/null || true
+          df -h /mnt/ci-scratch /mnt/ci-cache || true
+
+  # -------------------------------------------------------------------------
+  # 2b. ripr on CX43 (16 GB, 8 cores) -- secondary self-hosted lane.
+  # -------------------------------------------------------------------------
+  ripr-cx43:
+    name: ripr+ on CX43
+    needs: route-ripr
+    if: >-
+      needs.route-ripr.result == 'success' &&
+      needs.route-ripr.outputs.target == 'cx43'
+    runs-on:
+      group: em-ci-small
+      labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
+    timeout-minutes: 75
+    env:
+      RIPR_VERSION: "0.5.0"
+      BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+      PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
+      CARGO_HOME: /mnt/ci-cache/cargo-home
+      SCCACHE_DIR: /mnt/ci-cache/sccache
+      SCCACHE_CACHE_SIZE: 30G
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/ripr-${{ github.run_id }}-${{ github.run_attempt }}
+      TMPDIR: /mnt/ci-scratch/tmp/ripr-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Preflight disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci-disk-guard /mnt/ci-scratch 80
+          ci-disk-guard /mnt/ci-cache 15
+          df -h /mnt/ci-scratch /mnt/ci-cache || true
+          mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
+
+      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
+        run: rustc --version
+
+      - name: Install ripr
+        run: CARGO_HOME="$CARGO_HOME" cargo install ripr --version "$RIPR_VERSION" --locked
+
+      - name: Run ripr doctor
+        run: ripr doctor
+
+      - name: Generate PR evidence
+        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD
+
+      - name: Generate repo-wide RIPR+ baseline receipt
+        if: always()
+        run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
+
+      - name: Generate review guidance
+        if: always()
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210
+
+      - name: Generate impacted evidence
+        if: always()
+        run: cargo xtask impacted-evidence --labels-csv "$PR_LABELS"
+
+      - name: Generate PR evidence summary
+        if: always()
+        run: cargo xtask ripr-pr-summary
+
+      - name: Generate warning annotations
+        if: always()
+        run: cargo xtask ripr-annotations
+
+      - name: Validate PR evidence contracts
+        if: always()
+        run: |
+          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
+          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
+          cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
+          cargo xtask ripr-pr-summary --check
+          cargo xtask ripr-annotations --check
+
+      - name: Enforce new RIPR gap quality gate
+        if: always()
+        run: |
+          cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/$BASE_REF" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md
+          cargo xtask quality-gate \
+            --mode enforce-new-ripr \
+            --ripr-receipt target/receipts/quality/ripr-plus.json \
+            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+            --review-receipt target/ripr/review/comments.json \
+            --ripr-base "origin/$BASE_REF" \
+            --ripr-head HEAD \
+            --receipt target/receipts/quality/quality-gate-ripr.json \
+            --summary target/receipts/quality/quality-gate-ripr.md \
+            --check
+
+      - name: Append PR evidence summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f target/ripr/pr/summary.md ]; then
+            cat target/ripr/pr/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RIPR PR evidence summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/receipts/quality/quality-gate-ripr.md ]; then
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+            cat target/receipts/quality/quality-gate-ripr.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No RIPR quality-gate summary was produced." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f target/ripr/review/annotations.txt ]; then
+            cat target/ripr/review/annotations.txt
+          fi
+
+      - name: Upload ripr PR evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ripr-pr-evidence
+          path: |
+            target/ripr/pr/**
+            target/ripr/review/**
+            target/xtask/impacted-evidence/**
+            target/receipts/quality/ripr-plus.json
+            target/receipts/quality/quality-gate-ripr.json
+            target/receipts/quality/quality-gate-ripr.md
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Cleanup scratch
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -rf "$CARGO_TARGET_DIR" "$TMPDIR" 2>/dev/null || true
+          df -h /mnt/ci-scratch /mnt/ci-cache || true
+
+  # -------------------------------------------------------------------------
+  # 2c. ripr on GitHub-hosted -- fork PRs, bots, and no-idle-runner fallback.
+  # -------------------------------------------------------------------------
+  ripr-github:
+    name: ripr+ on GitHub Hosted
+    needs: route-ripr
+    if: >-
+      needs.route-ripr.result == 'success' &&
+      needs.route-ripr.outputs.target == 'github' &&
+      needs.route-ripr.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    if: github.event.pull_request.draft != true
     env:
       RIPR_VERSION: "0.5.0"
       BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
@@ -140,3 +566,79 @@ jobs:
             target/receipts/quality/quality-gate-ripr.md
           retention-days: 14
           if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # 3. Result aggregator -- owns the "ripr+ New Gap Gate" required-check name.
+  # -------------------------------------------------------------------------
+  ripr:
+    name: ripr+ New Gap Gate
+    needs:
+      - route-ripr
+      - ripr-cx53
+      - ripr-cx43
+      - ripr-github
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate routed result
+        shell: bash
+        env:
+          ROUTE_RESULT: ${{ needs.route-ripr.result }}
+          ROUTER_TARGET: ${{ needs.route-ripr.outputs.target }}
+          ROUTER_REASON: ${{ needs.route-ripr.outputs.reason }}
+          CX53_RESULT: ${{ needs.ripr-cx53.result }}
+          CX43_RESULT: ${{ needs.ripr-cx43.result }}
+          GITHUB_RESULT: ${{ needs.ripr-github.result }}
+        run: |
+          set -euo pipefail
+
+          echo "route_result=${ROUTE_RESULT:-}"
+          echo "router_target=${ROUTER_TARGET:-}"
+          echo "router_reason=${ROUTER_REASON:-}"
+          echo "cx53_result=${CX53_RESULT:-}"
+          echo "cx43_result=${CX43_RESULT:-}"
+          echo "github_result=${GITHUB_RESULT:-}"
+
+          {
+            echo "### ripr+ New Gap Gate Result"
+            echo ""
+            echo "- route_result: \`${ROUTE_RESULT:-}\`"
+            echo "- router_target: \`${ROUTER_TARGET:-}\`"
+            echo "- router_reason: \`${ROUTER_REASON:-}\`"
+            echo "- cx53_result: \`${CX53_RESULT:-}\`"
+            echo "- cx43_result: \`${CX43_RESULT:-}\`"
+            echo "- github_result: \`${GITHUB_RESULT:-}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$ROUTE_RESULT" != "success" ]; then
+            echo "::error::ripr router did not complete successfully: $ROUTE_RESULT"
+            exit 1
+          fi
+
+          case "${ROUTER_TARGET:-}" in
+            cx53)
+              if [ "$CX53_RESULT" != "success" ]; then
+                echo "::error::ripr on CX53 did not succeed: $CX53_RESULT"
+                exit 1
+              fi
+              ;;
+            cx43)
+              if [ "$CX43_RESULT" != "success" ]; then
+                echo "::error::ripr on CX43 did not succeed: $CX43_RESULT"
+                exit 1
+              fi
+              ;;
+            github)
+              if [ "$GITHUB_RESULT" != "success" ]; then
+                echo "::error::ripr on GitHub-hosted did not succeed: $GITHUB_RESULT"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unknown router target: ${ROUTER_TARGET:-<empty>}"
+              exit 1
+              ;;
+          esac
+
+          echo "ripr+ New Gap Gate: success (runner: ${ROUTER_TARGET:-unknown}, reason: ${ROUTER_REASON:-unknown})"
