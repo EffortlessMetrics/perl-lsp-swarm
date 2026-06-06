@@ -177,6 +177,19 @@ jobs:
       CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/ripr-${{ github.run_id }}-${{ github.run_attempt }}
       TMPDIR: /mnt/ci-scratch/tmp/ripr-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Fix workspace ownership (pre-checkout)
+        shell: bash
+        run: |
+          # Docker writes workspace files as root. If a previous run left root-owned
+          # files behind (e.g. cleanup step missed), actions/checkout@v6 fails with
+          # EACCES when it tries to 'git clean'. Use Docker to chown them back before
+          # checkout runs.
+          set +e
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            em-ci-rust:1.95 \
+            bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true" || true
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -357,6 +370,19 @@ jobs:
       CARGO_TARGET_DIR: /mnt/ci-scratch/perl-lsp-swarm/ripr-${{ github.run_id }}-${{ github.run_attempt }}
       TMPDIR: /mnt/ci-scratch/tmp/ripr-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Fix workspace ownership (pre-checkout)
+        shell: bash
+        run: |
+          # Docker writes workspace files as root. If a previous run left root-owned
+          # files behind (e.g. cleanup step missed), actions/checkout@v6 fails with
+          # EACCES when it tries to 'git clean'. Use Docker to chown them back before
+          # checkout runs.
+          set +e
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            em-ci-rust:1.95 \
+            bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true" || true
+
       - name: Checkout
         uses: actions/checkout@v6
         with:
