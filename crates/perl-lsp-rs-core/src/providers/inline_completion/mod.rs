@@ -924,6 +924,14 @@ impl InlineCompletionProvider {
         line: u32,
         character: u32,
     ) -> InlineCompletionList {
+        if let Some(range) = shebang_replacement_range(context.prefix.as_str(), line, character) {
+            for item in &mut list.items {
+                if item.range.is_none() && is_shebang_completion_item(item) {
+                    item.range = Some(range);
+                }
+            }
+        }
+
         let Some(fragment) = replacement_fragment_at_cursor(context.prefix.as_str()) else {
             return list;
         };
@@ -1385,29 +1393,67 @@ impl InlineCompletionProvider {
             return Vec::new();
         };
 
-        let mut package_scanner = PackageScopeScanner::new();
+        let mut package_scanner = PackageTopLevelScanner::new();
         let mut methods = Vec::<MethodFact>::new();
+        let framework_accessors_enabled =
+            self.current_package_has_framework_accessors(text, target_package);
         for line in self.normalized_lines(text) {
             package_scanner.advance(line, self.parse_package_name(line));
 
             if package_scanner.current_package() != Some(target_package) {
+                package_scanner.finish_line(line);
                 continue;
             }
 
-            let Some(method_name) = self.parse_sub_name(line) else {
-                continue;
-            };
-            if enclosing_sub == Some(method_name.as_str()) {
-                continue;
-            }
-            if methods.iter().any(|method| method.name == method_name) {
-                continue;
+            if let Some(method_name) = self.parse_sub_name(line)
+                && enclosing_sub != Some(method_name.as_str())
+            {
+                push_unique_method_fact(&mut methods, method_name);
             }
 
-            methods.push(MethodFact { name: method_name });
+            if framework_accessors_enabled
+                && package_scanner.is_current_package_top_level()
+                && let Some(accessor_name) = self.parse_framework_accessor_name(line)
+            {
+                push_unique_method_fact(&mut methods, accessor_name);
+            }
+            package_scanner.finish_line(line);
         }
 
         methods
+    }
+
+    fn current_package_has_framework_accessors(&self, text: &str, target_package: &str) -> bool {
+        let mut package_scanner = PackageTopLevelScanner::new();
+        for line in self.normalized_lines(text) {
+            package_scanner.advance(line, self.parse_package_name(line));
+            if package_scanner.current_package() != Some(target_package) {
+                package_scanner.finish_line(line);
+                continue;
+            }
+            if package_scanner.is_current_package_top_level()
+                && self.parse_use_name(line).as_deref().is_some_and(is_framework_accessor_module)
+            {
+                return true;
+            }
+            package_scanner.finish_line(line);
+        }
+
+        false
+    }
+
+    fn parse_framework_accessor_name(&self, line: &str) -> Option<String> {
+        let rest = code_before_line_comment(line).trim_start().strip_prefix("has ")?;
+        let rest = rest.trim_start();
+        let quote = rest.chars().next()?;
+        if !matches!(quote, '\'' | '"') {
+            return None;
+        }
+
+        let after_quote = &rest[quote.len_utf8()..];
+        let end = after_quote.find(quote)?;
+        let name = &after_quote[..end];
+        is_framework_accessor_name(name).then(|| name.to_string())
     }
 
     fn expected_syntax(&self, context: &PreparedInlineCompletionContext) -> ExpectedSyntax {
@@ -1436,16 +1482,16 @@ impl InlineCompletionProvider {
         if return_expression_fragment(prefix).is_some() {
             return ExpectedSyntax::ReturnExpression;
         }
-        if is_guard_condition_prefix(prefix) {
+        if guard_condition_fragment(prefix).is_some() {
             return ExpectedSyntax::GuardCondition;
         }
         if condition_expression_prefix(prefix).is_some() {
             return ExpectedSyntax::ConditionExpression;
         }
-        if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
+        if loop_binding_fragment(prefix).is_some() {
             return ExpectedSyntax::LoopBinding;
         }
-        if ends_with_keyword(prefix, "ok(") || ends_with_keyword(prefix, "is(") {
+        if test_assertion_fragment(prefix).is_some() {
             return ExpectedSyntax::TestAssertionArguments;
         }
         if prefix == "#!" || prefix == "#!/" {
@@ -1696,15 +1742,20 @@ impl InlineCompletionProvider {
             .map(VariableFact::as_perl_variable)
     }
 
-    fn preferred_loop_binding(&self, context: &SemanticInlineContext) -> Option<String> {
+    fn preferred_loop_binding_item(
+        &self,
+        context: &SemanticInlineContext,
+    ) -> Option<(String, String)> {
         if let Some(array) = context.visible_variables.iter().find(|variable| variable.is_array()) {
+            let collection = array.as_perl_variable();
             let item_name = singular_loop_variable_name(array.name.as_str());
-            return Some(format!("my ${item_name} ({}) {{\n    \n}}", array.as_perl_variable()));
+            return Some((format!("my ${item_name} ({collection}) {{\n    \n}}"), collection));
         }
 
         let hash = context.visible_variables.iter().find(|variable| variable.is_hash())?;
+        let collection = hash.as_perl_variable();
         let key_name = hash_key_loop_variable_name(hash.name.as_str());
-        Some(format!("my ${key_name} (keys {}) {{\n    \n}}", hash.as_perl_variable()))
+        Some((format!("my ${key_name} (keys {collection}) {{\n    \n}}"), collection))
     }
 
     fn current_package_method_items(
@@ -2026,8 +2077,9 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             }
         }
 
-        if is_guard_condition_prefix(prefix)
+        if let Some(fragment) = guard_condition_fragment(prefix)
             && let Some(condition) = provider.preferred_guard_condition(semantic_context)
+            && completion_matches_fragment(condition.as_str(), &format!("{condition};"), fragment)
         {
             sink.push(
                 Self::SOURCE,
@@ -2077,19 +2129,21 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
 
-        if ends_with_keyword(prefix, "for ") || ends_with_keyword(prefix, "foreach ") {
-            if let Some(binding) = provider.preferred_loop_binding(semantic_context) {
-                sink.push(
-                    Self::SOURCE,
-                    0,
-                    InlineCompletionItem {
-                        insert_text: binding,
-                        filter_text: Some("my".into()),
-                        range: None,
-                        command: None,
-                    },
-                );
-            }
+        if let Some(fragment) = loop_binding_fragment(prefix)
+            && let Some((binding, collection)) =
+                provider.preferred_loop_binding_item(semantic_context)
+            && completion_matches_fragment(collection.as_str(), binding.as_str(), fragment)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: binding,
+                    filter_text: Some(collection),
+                    range: None,
+                    command: None,
+                },
+            );
         }
     }
 }
@@ -2106,8 +2160,9 @@ impl InlineCandidateSource for TestCandidateSource {
     ) {
         let prefix = context.prefix.as_str();
 
-        if ends_with_keyword(prefix, "ok(")
+        if let Some(("ok", fragment)) = test_assertion_fragment(prefix)
             && let Some(arguments) = provider.preferred_ok_assertion_arguments(semantic_context)
+            && completion_matches_fragment(arguments.as_str(), arguments.as_str(), fragment)
         {
             sink.push(
                 Self::SOURCE,
@@ -2121,8 +2176,9 @@ impl InlineCandidateSource for TestCandidateSource {
             );
         }
 
-        if ends_with_keyword(prefix, "is(")
+        if let Some(("is", fragment)) = test_assertion_fragment(prefix)
             && let Some(arguments) = provider.preferred_is_assertion_arguments(semantic_context)
+            && completion_matches_fragment(arguments.as_str(), arguments.as_str(), fragment)
         {
             sink.push(
                 Self::SOURCE,
@@ -2164,12 +2220,16 @@ impl InlineCandidateSource for ShebangCandidateSource {
         sink: &mut InlineCandidateSink<'_>,
     ) {
         let prefix = context.prefix.as_str();
-        if prefix == "#!" || prefix == "#!/" {
+        let Some(fragment) = shebang_completion_fragment(prefix) else {
+            return;
+        };
+
+        if completion_matches_fragment("perl", SHEBANG_PERL_INTERPRETER, fragment) {
             sink.push(
                 Self::SOURCE,
                 0,
                 InlineCompletionItem {
-                    insert_text: "/usr/bin/env perl".into(),
+                    insert_text: SHEBANG_PERL_INTERPRETER.into(),
                     filter_text: Some("perl".into()),
                     range: None,
                     command: None,
@@ -2205,6 +2265,25 @@ fn is_constructor_sub(name: Option<&str>) -> bool {
     matches!(name, Some("new" | "BUILD"))
 }
 
+fn is_framework_accessor_module(module: &str) -> bool {
+    matches!(module, "Moo" | "Moose")
+}
+
+fn is_framework_accessor_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_') && chars.all(is_identifier_fragment_char)
+}
+
+fn push_unique_method_fact(methods: &mut Vec<MethodFact>, name: String) {
+    if methods.iter().any(|method| method.name == name) {
+        return;
+    }
+    methods.push(MethodFact { name });
+}
+
 fn is_preferred_guard_condition_name(name: &str) -> bool {
     name == "ok"
         || name == "valid"
@@ -2216,23 +2295,98 @@ fn is_preferred_guard_condition_name(name: &str) -> bool {
         || name.ends_with("_ok")
 }
 
+const SHEBANG_PERL_INTERPRETER: &str = "/usr/bin/env perl";
+
 fn return_expression_fragment(prefix: &str) -> Option<&str> {
-    let return_index = last_keyword_index(prefix, "return ")?;
-    let fragment = &prefix[return_index + 7..];
-    fragment.chars().all(is_return_expression_fragment_char).then_some(fragment)
+    keyword_tail_fragment(prefix, "return ", is_return_expression_fragment_text)
+}
+
+fn is_return_expression_fragment_text(fragment: &str) -> bool {
+    fragment.chars().all(is_return_expression_fragment_char)
 }
 
 fn is_return_expression_fragment_char(ch: char) -> bool {
     is_identifier_fragment_char(ch) || matches!(ch, '$' | '@' | '%')
 }
 
-fn is_guard_condition_prefix(prefix: &str) -> bool {
-    ends_with_keyword(prefix, "return unless ")
-        || ends_with_keyword(prefix, "return if ")
-        || ends_with_keyword(prefix, "next if ")
-        || ends_with_keyword(prefix, "next unless ")
-        || ends_with_keyword(prefix, "last if ")
-        || ends_with_keyword(prefix, "last unless ")
+fn guard_condition_fragment(prefix: &str) -> Option<&str> {
+    ["return unless ", "return if ", "next if ", "next unless ", "last if ", "last unless "]
+        .into_iter()
+        .find_map(|keyword| keyword_tail_fragment(prefix, keyword, is_variable_fragment_text))
+}
+
+fn loop_binding_fragment(prefix: &str) -> Option<&str> {
+    ["for ", "foreach "]
+        .into_iter()
+        .find_map(|keyword| keyword_tail_fragment(prefix, keyword, is_collection_fragment_text))
+}
+
+fn test_assertion_fragment(prefix: &str) -> Option<(&'static str, &str)> {
+    if let Some(fragment) = keyword_tail_fragment(prefix, "ok(", is_variable_fragment_text) {
+        return Some(("ok", fragment));
+    }
+    if let Some(fragment) = keyword_tail_fragment(prefix, "is(", is_variable_fragment_text) {
+        return Some(("is", fragment));
+    }
+    None
+}
+
+fn keyword_tail_fragment<'a>(
+    prefix: &'a str,
+    keyword: &str,
+    is_valid_fragment: fn(&str) -> bool,
+) -> Option<&'a str> {
+    let keyword_index = last_keyword_index(prefix, keyword)?;
+    let fragment = &prefix[keyword_index + keyword.len()..];
+    is_valid_fragment(fragment).then_some(fragment)
+}
+
+fn is_variable_fragment_text(fragment: &str) -> bool {
+    if fragment.is_empty() {
+        return true;
+    }
+
+    let Some(rest) = fragment.strip_prefix('$') else {
+        return false;
+    };
+    rest.chars().all(is_identifier_fragment_char)
+}
+
+fn is_collection_fragment_text(fragment: &str) -> bool {
+    if fragment.is_empty() {
+        return true;
+    }
+
+    let Some(rest) = fragment.strip_prefix('@').or_else(|| fragment.strip_prefix('%')) else {
+        return false;
+    };
+    rest.chars().all(is_identifier_fragment_char)
+}
+
+fn shebang_completion_fragment(prefix: &str) -> Option<&str> {
+    prefix.strip_prefix("#!").and_then(|fragment| {
+        (fragment.is_empty()
+            || SHEBANG_PERL_INTERPRETER.starts_with(fragment)
+            || "perl".starts_with(fragment))
+        .then_some(fragment)
+    })
+}
+
+fn is_shebang_completion_item(item: &InlineCompletionItem) -> bool {
+    item.insert_text == SHEBANG_PERL_INTERPRETER
+}
+
+fn shebang_replacement_range(prefix: &str, line: u32, character: u32) -> Option<lsp_types::Range> {
+    let fragment = shebang_completion_fragment(prefix)?;
+    if fragment.is_empty() {
+        return None;
+    }
+
+    let start_character = "#!".encode_utf16().count() as u32;
+    (start_character <= character).then_some(lsp_types::Range {
+        start: lsp_types::Position::new(line, start_character),
+        end: lsp_types::Position::new(line, character),
+    })
 }
 
 fn condition_expression_prefix(prefix: &str) -> Option<&'static str> {
@@ -2423,6 +2577,45 @@ impl PackageScopeScanner {
                 self.block_depth = None;
             }
         }
+    }
+}
+
+#[derive(Debug, Default)]
+struct PackageTopLevelScanner {
+    package_scanner: PackageScopeScanner,
+    structural_depth: i32,
+    package_body_depth: Option<i32>,
+}
+
+impl PackageTopLevelScanner {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn current_package(&self) -> Option<&str> {
+        self.package_scanner.current_package()
+    }
+
+    fn is_current_package_top_level(&self) -> bool {
+        self.package_body_depth == Some(self.structural_depth)
+    }
+
+    fn advance(&mut self, line: &str, parsed_package: Option<String>) {
+        if parsed_package.is_some() {
+            self.package_body_depth = Some(if package_line_opens_block(line) {
+                self.structural_depth + brace_delta(line)
+            } else {
+                self.structural_depth
+            });
+        }
+        self.package_scanner.advance(line, parsed_package);
+        if self.package_scanner.current_package().is_none() {
+            self.package_body_depth = None;
+        }
+    }
+
+    fn finish_line(&mut self, line: &str) {
+        self.structural_depth += brace_delta(line);
     }
 }
 
@@ -3048,7 +3241,7 @@ fn cursor_is_inside_line_comment(
 }
 
 fn is_shebang_completion_prefix(prefix: &str, hash_offset: usize) -> bool {
-    hash_offset == 0 && matches!(prefix, "#!" | "#!/")
+    hash_offset == 0 && prefix.starts_with("#!")
 }
 
 fn cursor_is_inside_pod(text: &str, cursor_offset: usize) -> bool {
@@ -3654,6 +3847,26 @@ mod tests {
     }
 
     #[test]
+    fn shebang_partial_path_replaces_typed_interpreter() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "#!/usr/bin/env p";
+        let character = source.encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 0, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "/usr/bin/env perl")
+            .ok_or("expected shebang interpreter completion")?;
+        let range = item.range.as_ref().ok_or("shebang completion should replace partial path")?;
+
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, "#!".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 0);
+        assert_eq!(range.end.character, character);
+        Ok(())
+    }
+
+    #[test]
     fn test_after_arrow_with_unicode_prefix_uses_utf16_position() {
         let provider = InlineCompletionProvider::new();
         let source = "my $emoji = \"😀\"; my $obj = Package->";
@@ -3749,6 +3962,41 @@ mod tests {
     }
 
     #[test]
+    fn commented_dbi_assignment_does_not_infer_receiver_kind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use DBI;\n# my $conn = DBI->connect($dsn);\n$conn->\n";
+        let character = u32::try_from("$conn->".encode_utf16().count())?;
+        let completions = provider.get_inline_completions(source, 2, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        for unexpected in ["prepare()", "do()", "disconnect()"] {
+            assert!(
+                !insert_texts.contains(&unexpected),
+                "commented DBI assignment must not shape receiver completions: {insert_texts:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dbi_assignment_keeps_hash_inside_quoted_dsn_as_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "use DBI;\nmy $conn = DBI->connect(\"dbi:SQLite:dbname=#scratch\");\n$conn->\n";
+        let character = u32::try_from("$conn->".encode_utf16().count())?;
+        let completions = provider.get_inline_completions(source, 2, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        assert!(insert_texts.contains(&"prepare()"));
+        assert!(insert_texts.contains(&"disconnect()"));
+        Ok(())
+    }
+
+    #[test]
     fn imported_dbi_unrelated_prepare_receiver_does_not_get_statement_methods() {
         let provider = InlineCompletionProvider::new();
         let source = "use DBI;\nmy $query = $builder->prepare($sql);\n$query->f\n";
@@ -3780,6 +4028,52 @@ mod tests {
     }
 
     #[test]
+    fn return_partial_variable_completes_visible_scalar_with_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {
+    my $result = compute();
+    return $res";
+        let character = "    return $res".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$result;")
+            .ok_or("expected partial return variable completion")?;
+        let range = item.range.as_ref().ok_or("partial return variable must carry a range")?;
+
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, "    return ".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, character);
+        Ok(())
+    }
+
+    #[test]
+    fn guard_partial_variable_completes_boolean_scalar_with_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {
+    my $is_valid = validate();
+    return unless $is";
+        let character = "    return unless $is".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$is_valid;")
+            .ok_or("expected partial guard variable completion")?;
+        let range = item.range.as_ref().ok_or("partial guard variable must carry a range")?;
+
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, "    return unless ".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, character);
+        Ok(())
+    }
+
+    #[test]
     fn guard_condition_prefers_boolean_named_visible_scalar() {
         let provider = InlineCompletionProvider::new();
         let source = "sub helper {\n    my $result = compute();\n    my $is_valid = validate($result);\n    return unless ";
@@ -3800,6 +4094,42 @@ mod tests {
         let completions = provider.get_inline_completions(source, 2, character);
 
         assert!(completions.items.is_empty());
+    }
+
+    #[test]
+    fn guard_condition_ignores_comment_and_string_decl_lookalikes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    # my $is_valid = validate();\n    my $message = \"my $ready = 1 # still text\";\n    return unless ";
+        let character = u32::try_from("    return unless ".encode_utf16().count())?;
+        let completions = provider.get_inline_completions(source, 3, character);
+        let insert_texts: Vec<&str> =
+            completions.items.iter().map(|item| item.insert_text.as_str()).collect();
+
+        assert!(
+            !insert_texts.contains(&"$is_valid;"),
+            "commented declaration must not become a guard candidate: {insert_texts:?}"
+        );
+        assert!(
+            !insert_texts.contains(&"$ready;"),
+            "quoted declaration lookalike must not become a guard candidate: {insert_texts:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn guard_condition_ignores_closed_block_locals() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub helper {\n    if ($enabled) {\n        my $is_ready = expensive_check();\n    }\n    return unless ";
+        let character = u32::try_from("    return unless ".encode_utf16().count())?;
+        let completions = provider.get_inline_completions(source, 4, character);
+
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "$is_ready;"),
+            "block-local boolean must not leak into outer guard completions: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+        Ok(())
     }
 
     #[test]
@@ -4064,6 +4394,78 @@ mod tests {
         let methods: Vec<&str> =
             semantic.current_package_methods.iter().map(|method| method.name.as_str()).collect();
         assert_eq!(methods, vec!["save", "display_name"]);
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_context_source_collects_moo_accessor_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Other;\nuse Moo;\nhas 'external' => (is => 'ro');\npackage Demo;\nuse Moo;\nhas 'name' => (is => 'ro');\nhas \"email\" => (is => 'rw');\nsub save {}\nsub caller {\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let prepared = provider
+            .prepare_context(source, 9, character)
+            .ok_or("expected prepared inline context")?;
+        let semantic = provider.semantic_context_for_source(source, &prepared);
+
+        let methods: Vec<&str> =
+            semantic.current_package_methods.iter().map(|method| method.name.as_str()).collect();
+        assert_eq!(methods, vec!["name", "email", "save"]);
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_context_source_collects_moose_accessor_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Demo;\nuse Moose;\nhas 'enabled' => (is => 'ro');\nsub caller {\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let prepared = provider
+            .prepare_context(source, 4, character)
+            .ok_or("expected prepared inline context")?;
+        let semantic = provider.semantic_context_for_source(source, &prepared);
+
+        let methods: Vec<&str> =
+            semantic.current_package_methods.iter().map(|method| method.name.as_str()).collect();
+        assert_eq!(methods, vec!["enabled"]);
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_context_does_not_promote_has_without_moo_or_moose()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Demo;\nhas 'name' => (is => 'ro');\nsub caller {\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let prepared = provider
+            .prepare_context(source, 3, character)
+            .ok_or("expected prepared inline context")?;
+        let semantic = provider.semantic_context_for_source(source, &prepared);
+
+        assert!(
+            semantic.current_package_methods.is_empty(),
+            "non-framework has declarations must not become methods: {:?}",
+            semantic.current_package_methods
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_context_does_not_promote_runtime_has_call() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Demo;\nuse Moo;\nsub caller {\n    has 'temporary' => (is => 'ro');\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let prepared = provider
+            .prepare_context(source, 4, character)
+            .ok_or("expected prepared inline context")?;
+        let semantic = provider.semantic_context_for_source(source, &prepared);
+
+        assert!(
+            semantic.current_package_methods.is_empty(),
+            "runtime has calls must not become methods: {:?}",
+            semantic.current_package_methods
+        );
         Ok(())
     }
 
@@ -4709,6 +5111,27 @@ mod tests {
     }
 
     #[test]
+    fn test_assertion_partial_variable_replaces_typed_fragment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Test::More;\nmy $result = compute();\nok($res";
+        let character = "ok($res".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "$result, 'test description');")
+            .ok_or("expected ok assertion arguments for partial fragment")?;
+        let range = item.range.as_ref().ok_or("partial assertion must carry a range")?;
+
+        assert_eq!(range.start.line, 2);
+        assert_eq!(range.start.character, "ok(".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, character);
+        Ok(())
+    }
+
+    #[test]
     fn is_paren_in_test_file_uses_declared_actual_expected_pair()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
@@ -4943,6 +5366,40 @@ mod tests {
     }
 
     #[test]
+    fn inline_completion_handles_crlf_use_partial_range() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let provider = InlineCompletionProvider::new();
+        let source = "my $value = 1;\r\nuse str";
+        let character = u32::try_from("use str".encode_utf16().count())?;
+        let completions = provider.get_inline_completions(source, 1, character);
+        let strict = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "strict;")
+            .ok_or("expected strict; completion on CRLF line")?;
+        let range = strict.range.as_ref().ok_or("CRLF partial completion must carry range")?;
+
+        assert_eq!(range.start.line, 1);
+        assert_eq!(range.start.character, 4);
+        assert_eq!(range.end.line, 1);
+        assert_eq!(range.end.character, character);
+        assert!(completions.items.iter().all(|item| item.insert_text != "warnings;"));
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_suppresses_crlf_comment_then_resumes_next_line() {
+        let provider = InlineCompletionProvider::new();
+        let source = "# use \r\nuse ";
+
+        let comment_completions = provider.get_inline_completions(source, 0, 6);
+        let code_completions = provider.get_inline_completions(source, 1, 4);
+
+        assert!(comment_completions.items.is_empty());
+        assert!(code_completions.items.iter().any(|item| item.insert_text == "strict;"));
+    }
+
+    #[test]
     fn indented_equals_text_is_not_treated_as_pod() {
         let provider = InlineCompletionProvider::new();
         let source = " =pod\nuse ";
@@ -5099,6 +5556,27 @@ mod tests {
     }
 
     #[test]
+    fn loop_binding_partial_collection_replaces_typed_fragment()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "my @users = fetch_users();\nfor @us";
+        let character = "for @us".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "my $user (@users) {\n    \n}")
+            .ok_or("expected loop binding completion for partial collection")?;
+        let range = item.range.as_ref().ok_or("partial loop binding must carry a range")?;
+
+        assert_eq!(range.start.line, 1);
+        assert_eq!(range.start.character, "for ".encode_utf16().count() as u32);
+        assert_eq!(range.end.line, 1);
+        assert_eq!(range.end.character, character);
+        Ok(())
+    }
+
+    #[test]
     fn foreach_loop_singularizes_visible_array_name() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let source = "my @entries = read_entries();\nforeach ";
@@ -5251,6 +5729,76 @@ mod tests {
             "__PACKAGE__ receiver should use current package methods: {:?}",
             completions.items
         );
+        Ok(())
+    }
+
+    #[test]
+    fn self_receiver_suggests_moo_accessor_methods() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Demo::Widget;\nuse Moo;\nhas 'name' => (is => 'ro');\nhas 'email' => (is => 'rw');\nsub caller {\n    my $self = shift;\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 6, character);
+
+        assert!(
+            completions.items.iter().any(|item| item.insert_text == "name()"),
+            "Moo accessors should be current-package receiver methods: {:?}",
+            completions.items
+        );
+        assert!(
+            completions.items.iter().any(|item| item.insert_text == "email()"),
+            "Moo accessors should include each quoted has attribute: {:?}",
+            completions.items
+        );
+        assert!(completions.items.iter().all(|item| item.insert_text != "new()"));
+        Ok(())
+    }
+
+    #[test]
+    fn self_receiver_suggests_moose_accessor_methods() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Demo::Widget;\nuse Moose;\nhas 'enabled' => (is => 'ro');\nsub caller {\n    my $self = shift;\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 5, character);
+
+        assert!(
+            completions.items.iter().any(|item| item.insert_text == "enabled()"),
+            "Moose accessors should be current-package receiver methods: {:?}",
+            completions.items
+        );
+        assert!(completions.items.iter().all(|item| item.insert_text != "new()"));
+        Ok(())
+    }
+
+    #[test]
+    fn self_receiver_does_not_suggest_has_name_without_framework_import()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source =
+            "package Demo::Widget;\nhas 'name' => (is => 'ro');\nsub caller {\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 3, character);
+
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "name()"),
+            "non-framework has declarations must not leak into receiver completions: {:?}",
+            completions.items
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn self_receiver_does_not_suggest_runtime_has_call() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "package Demo::Widget;\nuse Moo;\nsub caller {\n    has 'temporary' => (is => 'ro');\n    $self->\n}\n";
+        let character = "    $self->".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 4, character);
+
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "temporary()"),
+            "runtime has calls must not leak into receiver completions: {:?}",
+            completions.items
+        );
+        assert!(completions.items.is_empty());
         Ok(())
     }
 

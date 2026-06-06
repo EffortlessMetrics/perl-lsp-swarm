@@ -8,7 +8,8 @@ use std::error::Error;
 
 use lsp_types::{Position, Range};
 use perl_lsp_rs_core::providers::inline_completion::{
-    InlineCompletionItem, InlineCompletionList, InlineCompletionProvider,
+    InlineCompletionEnvironment, InlineCompletionItem, InlineCompletionList,
+    InlineCompletionProvider,
 };
 use perl_parser_core::position::{offset_to_utf16_line_col, utf16_line_col_to_offset};
 
@@ -38,6 +39,18 @@ impl InlineCompletionScenario {
             self.text.as_str(),
             self.line,
             self.character,
+        )
+    }
+
+    fn completions_with_environment(
+        &self,
+        environment: &InlineCompletionEnvironment,
+    ) -> InlineCompletionList {
+        InlineCompletionProvider::new().get_inline_completions_with_environment(
+            self.text.as_str(),
+            self.line,
+            self.character,
+            environment,
         )
     }
 }
@@ -150,6 +163,34 @@ fn inline_completion_fixture_corpus_returns_expected_ghost_text() -> TestResult 
             not_expected: &["external()", "new()"],
         },
         SuggestionFixture {
+            name: "moo_self_receiver_prefers_attribute_accessors",
+            source: "package Other;\nuse Moo;\nhas 'external' => (is => 'ro');\n\npackage Demo;\nuse Moo;\nhas 'name' => (is => 'ro');\nhas \"email\" => (is => 'rw');\nsub caller {\n    my $self = shift;\n    $self-><<CURSOR>>\n}\n",
+            first: Some("name()"),
+            expected: &["name()", "email()"],
+            not_expected: &["external()", "new()"],
+        },
+        SuggestionFixture {
+            name: "moose_self_receiver_prefers_attribute_accessors",
+            source: "package Demo;\nuse Moose;\nhas 'enabled' => (is => 'ro');\nsub caller {\n    my $self = shift;\n    $self-><<CURSOR>>\n}\n",
+            first: Some("enabled()"),
+            expected: &["enabled()"],
+            not_expected: &["new()"],
+        },
+        SuggestionFixture {
+            name: "plain_has_declaration_does_not_become_accessor",
+            source: "package Demo;\nhas 'name' => (is => 'ro');\nsub caller {\n    $self-><<CURSOR>>\n}\n",
+            first: None,
+            expected: &[],
+            not_expected: &["name()", "external()", "new()"],
+        },
+        SuggestionFixture {
+            name: "moo_runtime_has_call_does_not_become_accessor",
+            source: "package Demo;\nuse Moo;\nsub caller {\n    has 'temporary' => (is => 'ro');\n    $self-><<CURSOR>>\n}\n",
+            first: None,
+            expected: &[],
+            not_expected: &["temporary()", "new()"],
+        },
+        SuggestionFixture {
             name: "constructor_completion_keeps_shift_style",
             source: "sub helper {\n    my $self = shift;\n}\n\nsub new<<CURSOR>>",
             first: Some(
@@ -185,6 +226,128 @@ fn inline_completion_fixture_corpus_returns_expected_ghost_text() -> TestResult 
                 " ($class, %args) {\n    my $self = bless {}, $class;\n    return $self;\n}",
             ],
             not_expected: &["my $class = shift;"],
+        },
+        SuggestionFixture {
+            name: "lexical_scalar_declaration_suggests_self_shift",
+            source: "sub method {\n    my $<<CURSOR>>\n}",
+            first: Some("self = shift;"),
+            expected: &["self = shift;"],
+            not_expected: &["strict;"],
+        },
+        SuggestionFixture {
+            name: "package_declaration_suggests_module_skeleton",
+            source: "package <<CURSOR>>",
+            first: Some("MyPackage;\n\nuse strict;\nuse warnings;"),
+            expected: &["MyPackage;\n\nuse strict;\nuse warnings;"],
+            not_expected: &["strict;"],
+        },
+        SuggestionFixture {
+            name: "bless_arguments_suggest_self_and_class",
+            source: "sub new {\n    my $class = shift;\n    my $self = {};\n    bless <<CURSOR>>\n}",
+            first: Some("$self, $class;"),
+            expected: &["$self, $class;"],
+            not_expected: &["return $self;"],
+        },
+        SuggestionFixture {
+            name: "constructor_return_prefers_self",
+            source: "sub new {\n    my $class = shift;\n    my $self = bless {}, $class;\n    return <<CURSOR>>\n}",
+            first: Some("$self;"),
+            expected: &["$self;"],
+            not_expected: &["return $self;"],
+        },
+        SuggestionFixture {
+            name: "foreach_hash_uses_key_binding",
+            source: "my %counts = ();\nforeach <<CURSOR>>",
+            first: Some("my $key (keys %counts) {\n    \n}"),
+            expected: &["my $key (keys %counts) {\n    \n}"],
+            not_expected: &["my $count (@counts) {\n    \n}"],
+        },
+    ];
+
+    for fixture in fixtures {
+        assert_suggestions(fixture)?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_uses_request_environment_modules() -> TestResult {
+    let scenario = InlineCompletionScenario::from_fixture("use Local::W<<CURSOR>>")?;
+    let environment = InlineCompletionEnvironment {
+        available_modules: vec![
+            "Other::Widget".to_string(),
+            "Local::Widget".to_string(),
+            "Local::Worker".to_string(),
+        ],
+    };
+    let completions = scenario.completions_with_environment(&environment);
+
+    assert_completion_present("workspace_modules", &completions, "Local::Widget;")?;
+    assert_completion_present("workspace_modules", &completions, "Local::Worker;")?;
+    assert_completion_absent("workspace_modules", &completions, "Other::Widget;")?;
+
+    let first = completions
+        .items
+        .first()
+        .map(|item| item.insert_text.as_str())
+        .ok_or("workspace_modules: expected module completion")?;
+    if first != "Local::Widget;" {
+        return Err(format!("workspace_modules: expected Local::Widget; first, got {first}").into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_covers_dbi_receivers() -> TestResult {
+    let fixtures = [
+        SuggestionFixture {
+            name: "dbi_database_handle_methods",
+            source: "use DBI;\nmy $dbh = DBI->connect($dsn, $user, $pass);\n$dbh->pr<<CURSOR>>",
+            first: Some("prepare()"),
+            expected: &["prepare()"],
+            not_expected: &["fetchrow_hashref()", "new()"],
+        },
+        SuggestionFixture {
+            name: "dbi_statement_handle_methods",
+            source: "use DBI;\nmy $dbh = DBI->connect($dsn, $user, $pass);\nmy $sth = $dbh->prepare($sql);\n$sth->fetch<<CURSOR>>",
+            first: Some("fetchrow_hashref()"),
+            expected: &["fetchrow_hashref()", "fetchrow_array()"],
+            not_expected: &["prepare()", "new()"],
+        },
+    ];
+
+    for fixture in fixtures {
+        assert_suggestions(fixture)?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_covers_control_flow_and_shebang_contexts() -> TestResult {
+    let fixtures = [
+        SuggestionFixture {
+            name: "guard_condition_prefers_boolean_lexical",
+            source: "my $is_ready = check();\nreturn unless <<CURSOR>>",
+            first: Some("$is_ready;"),
+            expected: &["$is_ready;"],
+            not_expected: &["$self;"],
+        },
+        SuggestionFixture {
+            name: "loop_binding_singularizes_visible_array",
+            source: "my @statuses = load_statuses();\nfor <<CURSOR>>",
+            first: Some("my $status (@statuses) {\n    \n}"),
+            expected: &["my $status (@statuses) {\n    \n}"],
+            not_expected: &["my $item (@statuses) {\n    \n}"],
+        },
+        SuggestionFixture {
+            name: "shebang_interpreter",
+            source: "#!<<CURSOR>>",
+            first: Some("/usr/bin/env perl"),
+            expected: &["/usr/bin/env perl"],
+            not_expected: &["strict;"],
         },
     ];
 
@@ -227,6 +390,41 @@ fn inline_completion_fixture_corpus_stays_silent_in_reject_zones() -> TestResult
                 completion_texts(&completions)
             )
             .into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn inline_completion_fixture_corpus_prefers_workspace_available_modules() -> TestResult {
+    let scenario = InlineCompletionScenario::from_fixture("use My::W<<CURSOR>>")?;
+    let environment = InlineCompletionEnvironment {
+        available_modules: vec![
+            "My::Widget".to_string(),
+            "My::Worker".to_string(),
+            "Other::Widget".to_string(),
+        ],
+    };
+    let completions = scenario.completions_with_environment(&environment);
+    let inserts = completion_texts(&completions);
+
+    if inserts != vec!["My::Widget;", "My::Worker;"] {
+        return Err(format!(
+            "workspace module suggestions should match the typed module fragment, got {inserts:?}"
+        )
+        .into());
+    }
+
+    for item in &completions.items {
+        let range = item.range.as_ref().ok_or_else(|| {
+            format!("{} should replace the typed module fragment", item.insert_text)
+        })?;
+        let replaced = slice_for_range(scenario.text.as_str(), range)?;
+        if replaced != "My::W" {
+            return Err(
+                format!("{} should replace My::W, got {replaced:?}", item.insert_text).into()
+            );
         }
     }
 
@@ -357,25 +555,43 @@ fn assert_suggestions(fixture: SuggestionFixture) -> TestResult {
     }
 
     for expected in fixture.expected {
-        if !completions.items.iter().any(|item| item.insert_text == *expected) {
-            return Err(format!(
-                "{}: expected completion {expected}, got {:?}",
-                fixture.name,
-                completion_texts(&completions)
-            )
-            .into());
-        }
+        assert_completion_present(fixture.name, &completions, expected)?;
     }
 
     for unexpected in fixture.not_expected {
-        if completions.items.iter().any(|item| item.insert_text == *unexpected) {
-            return Err(format!(
-                "{}: unexpected completion {unexpected}, got {:?}",
-                fixture.name,
-                completion_texts(&completions)
-            )
-            .into());
-        }
+        assert_completion_absent(fixture.name, &completions, unexpected)?;
+    }
+
+    Ok(())
+}
+
+fn assert_completion_present(
+    fixture_name: &str,
+    completions: &InlineCompletionList,
+    expected: &str,
+) -> TestResult {
+    if !completions.items.iter().any(|item| item.insert_text == expected) {
+        return Err(format!(
+            "{fixture_name}: expected completion {expected}, got {:?}",
+            completion_texts(completions)
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+fn assert_completion_absent(
+    fixture_name: &str,
+    completions: &InlineCompletionList,
+    unexpected: &str,
+) -> TestResult {
+    if completions.items.iter().any(|item| item.insert_text == unexpected) {
+        return Err(format!(
+            "{fixture_name}: unexpected completion {unexpected}, got {:?}",
+            completion_texts(completions)
+        )
+        .into());
     }
 
     Ok(())

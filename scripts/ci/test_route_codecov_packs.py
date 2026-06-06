@@ -117,6 +117,47 @@ class RouteCodecovPacksTests(unittest.TestCase):
         )
         self.assertEqual([], router.lcov_matches_without_source(packs, paths))
 
+    def test_mixed_completion_general_rust_and_non_lcov_selects_fallback(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-completion-core",
+                "files": [
+                    "crates/perl-lsp-rs-core/src/providers/completion/",
+                ],
+                "commands": [
+                    "cargo test -p perl-lsp-rs-core --lib completion::completion",
+                ],
+                "coverage_filters": ["completion::completion"],
+            },
+            {
+                "id": "patch-coverage-ci-route",
+                "lcov": False,
+                "files": [
+                    "scripts/ci/route-codecov-packs.py",
+                    "scripts/ci/test_route_codecov_packs.py",
+                ],
+                "commands": ["python -m unittest scripts/ci/test_route_codecov_packs.py"],
+                "coverage_filters": ["ci_route"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = [
+            "crates/perl-lsp-rs-core/src/providers/completion/completion.rs",
+            "crates/perl-module/src/import/mod.rs",
+            "scripts/ci/route-codecov-packs.py",
+        ]
+
+        self.assertEqual(
+            ["patch-coverage-completion-core", router.FALLBACK_PACK_ID],
+            [pack["id"] for pack in router.selected_packs(packs, paths)],
+        )
+
     def test_inline_provider_change_selects_provider_pack_without_quality_pack(self) -> None:
         packs = [
             {
@@ -438,6 +479,34 @@ class RouteCodecovPacksTests(unittest.TestCase):
         self.assertEqual([], router.selected_packs(packs, paths))
         self.assertEqual(
             ["patch-coverage-update-current-status-shim"],
+            [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
+        )
+
+    def test_update_parser_matrix_shim_change_is_non_lcov_focused_proof(self) -> None:
+        packs = [
+            {
+                "id": "patch-coverage-update-parser-matrix-shim",
+                "lcov": False,
+                "files": [
+                    "scripts/update-parser-matrix.py",
+                    "scripts/tests/test-update-parser-matrix-shim.py",
+                ],
+                "commands": ["python scripts/tests/test-update-parser-matrix-shim.py"],
+                "coverage_filters": ["update-parser-matrix-shim"],
+            },
+            {
+                "id": router.FALLBACK_PACK_ID,
+                "files": ["*.rs"],
+                "commands": ["cargo test --workspace --lib"],
+                "coverage_filters": ["workspace-lib"],
+            },
+        ]
+
+        paths = ["scripts/update-parser-matrix.py"]
+
+        self.assertEqual([], router.selected_packs(packs, paths))
+        self.assertEqual(
+            ["patch-coverage-update-parser-matrix-shim"],
             [pack["id"] for pack in router.non_lcov_matches(packs, paths)],
         )
 
