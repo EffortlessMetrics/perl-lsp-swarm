@@ -100,3 +100,72 @@ fn pragma_words(value: &str) -> Vec<&str> {
 pub(crate) fn normalized_pragma_token(arg: &str) -> &str {
     arg.trim().trim_matches('\'').trim_matches('"')
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pragma_arg_items_splits_qw_forms_with_multiple_delimiters() {
+        assert_eq!(pragma_arg_items("qw(vars subs)"), vec!["vars", "subs"]);
+        assert_eq!(pragma_arg_items("qw< deprecated io >"), vec!["deprecated", "io"]);
+        assert_eq!(pragma_arg_items("qw!alpha beta!"), vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn pragma_arg_items_trims_quotes_and_whitespace() {
+        assert_eq!(pragma_arg_items("  'uninitialized'  "), vec!["uninitialized"]);
+        assert_eq!(pragma_arg_items("\"vars subs\""), vec!["vars", "subs"]);
+    }
+
+    #[test]
+    fn invalid_qw_delimiter_falls_back_to_single_token() {
+        assert_eq!(pragma_arg_items("qwAvars subsA"), vec!["qwAvars", "subsA"]);
+    }
+
+    #[test]
+    fn builtin_imports_deduplicate_qw_and_single_name_imports() {
+        let mut state = PragmaState::default();
+        apply_builtin_imports(
+            &mut state,
+            &["qw(true false)".to_string(), "'true'".to_string(), "\"blessed\"".to_string()],
+        );
+
+        assert_eq!(state.builtin_imports, vec!["true", "false", "blessed"]);
+    }
+
+    #[test]
+    fn remove_builtin_imports_removes_selected_names_or_all_names() {
+        let mut state = PragmaState {
+            builtin_imports: vec!["true".to_string(), "false".to_string(), "blessed".to_string()],
+            ..PragmaState::default()
+        };
+
+        remove_builtin_imports(&mut state, &["qw(false true)".to_string()]);
+        assert_eq!(state.builtin_imports, vec!["blessed"]);
+
+        remove_builtin_imports(&mut state, &[]);
+        assert!(state.builtin_imports.is_empty());
+    }
+
+    #[test]
+    fn add_disabled_warning_category_ignores_empty_duplicate_and_over_cap_values() {
+        let mut state = PragmaState::default();
+
+        add_disabled_warning_category(&mut state, "");
+        add_disabled_warning_category(&mut state, "uninitialized");
+        add_disabled_warning_category(&mut state, "uninitialized");
+        for index in 0..300 {
+            add_disabled_warning_category(&mut state, &format!("category_{index}"));
+        }
+
+        assert_eq!(
+            state.disabled_warning_categories.first().map(String::as_str),
+            Some("uninitialized")
+        );
+        assert_eq!(state.disabled_warning_categories.len(), MAX_DISABLED_WARNING_CATEGORIES);
+        assert!(
+            !state.disabled_warning_categories.iter().any(|category| category == "category_299")
+        );
+    }
+}

@@ -42,3 +42,51 @@ pub(crate) fn conditional_pragma_target(args: &[String]) -> Option<(&str, &[Stri
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn string_args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    #[test]
+    fn conditional_target_skips_expression_and_returns_tracked_module_tail() {
+        let args = string_args(&["$Config{use_utf8}", "'utf8'"]);
+
+        assert_eq!(conditional_pragma_target(&args), Some(("utf8", &args[2..])));
+    }
+
+    #[test]
+    fn conditional_target_accepts_version_only_without_tail() {
+        let args = string_args(&["$] >= 5.036", "v5.36"]);
+
+        assert_eq!(conditional_pragma_target(&args), Some(("v5.36", &args[2..])));
+    }
+
+    #[test]
+    fn conditional_target_rejects_invalid_target_tails() {
+        let invalid_strict = string_args(&["$cond", "strict", "bogus"]);
+        let invalid_feature = string_args(&["$cond", "feature"]);
+        let invalid_encoding = string_args(&["$cond", "encoding", "''"]);
+        let invalid_version = string_args(&["$cond", "v5.36", "feature"]);
+
+        assert_eq!(conditional_pragma_target(&invalid_strict), None);
+        assert_eq!(conditional_pragma_target(&invalid_feature), None);
+        assert_eq!(conditional_pragma_target(&invalid_encoding), None);
+        assert_eq!(conditional_pragma_target(&invalid_version), None);
+    }
+
+    #[test]
+    fn conditional_target_accepts_builtin_only_when_names_are_present() {
+        let empty_builtin = string_args(&["$cond", "builtin", "''"]);
+        let named_builtin = string_args(&["$cond", "builtin", "qw(true false)"]);
+
+        assert_eq!(conditional_pragma_target(&empty_builtin), None);
+        assert_eq!(
+            conditional_pragma_target(&named_builtin),
+            Some(("builtin", &named_builtin[2..]))
+        );
+    }
+}
