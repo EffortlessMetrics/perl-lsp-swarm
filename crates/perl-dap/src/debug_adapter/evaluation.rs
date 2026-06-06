@@ -183,8 +183,10 @@ impl DebugAdapter {
             };
         };
 
+        let variables_reference =
+            self.allocate_evaluate_result_ref(expression, &result, &result_type);
         let eval_body =
-            EvaluateResponseBody { result, type_: Some(result_type), variables_reference: 0 };
+            EvaluateResponseBody { result, type_: Some(result_type), variables_reference };
 
         DapMessage::Response {
             seq,
@@ -348,10 +350,12 @@ impl DebugAdapter {
             };
         };
 
+        let variables_reference =
+            self.allocate_evaluate_result_ref(expression, &rendered_value, &rendered_type);
         let body = SetExpressionResponseBody {
             value: rendered_value,
             type_: Some(rendered_type),
-            variables_reference: 0,
+            variables_reference,
         };
 
         DapMessage::Response {
@@ -473,6 +477,59 @@ impl DebugAdapter {
             command: "completions".to_string(),
             body: serde_json::to_value(&body).ok(),
             message: None,
+        }
+    }
+
+    /// Determine whether a type name produced by the Perl debugger refers to a
+    /// structured container (HASH, ARRAY, REF, blessed object, TIED).
+    ///
+    /// Returns `true` when the result can be further expanded via a `variables`
+    /// request; `false` for scalars, integers, and plain strings.
+    fn result_type_is_expandable(type_name: &str) -> bool {
+        matches!(type_name, "HASH" | "ARRAY" | "REF" | "OBJECT" | "TIED")
+            || type_name.contains("HASH")
+            || type_name.contains("ARRAY")
+    }
+
+    /// Allocate a `variablesReference` for a structured evaluate/setExpression/setVariable
+    /// result and cache a placeholder entry so a follow-up `variables` request can expand it.
+    ///
+    /// Returns `0` when the result type is not expandable or when no active session
+    /// is available (the ref cannot be served without a cache).
+    ///
+    /// Uses a 50_000+ base offset to avoid collision with scope refs which are
+    /// `frame_id * 10 + scope_type` (well below 50_000 for any practical stack depth).
+    pub(super) fn allocate_evaluate_result_ref(
+        &self,
+        expression: &str,
+        result: &str,
+        result_type: &str,
+    ) -> i64 {
+        if !Self::result_type_is_expandable(result_type) {
+            return 0;
+        }
+        if let Some(ref mut session) =
+            *lock_or_recover(&self.session, "debug_adapter.allocate_evaluate_result_ref")
+        {
+            let raw_counter = self.debugger_output_marker.fetch_add(1, Ordering::Relaxed);
+            let eval_ref =
+                50_000_i32.saturating_add(Self::i64_to_i32_saturating(raw_counter as i64));
+            let placeholder = Variable {
+                name: expression.to_string(),
+                value: result.to_string(),
+                type_: Some(result_type.to_string()),
+                variables_reference: 0,
+                named_variables: None,
+                indexed_variables: None,
+            };
+            session.variable_cache.upsert(
+                eval_ref,
+                VariableCacheKind::EvaluateResult,
+                vec![placeholder],
+            );
+            i64::from(eval_ref)
+        } else {
+            0
         }
     }
 }

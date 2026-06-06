@@ -5,6 +5,8 @@ use std::collections::HashMap;
 pub(super) enum VariableCacheKind {
     Root,
     Child,
+    /// Cached result from evaluate/setExpression/setVariable for structured expansion.
+    EvaluateResult,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +60,11 @@ impl VariableCache {
             .values()
             .filter(|entry| entry.kind == VariableCacheKind::Root)
             .chain(self.entries.values().filter(|entry| entry.kind == VariableCacheKind::Child))
+            .chain(
+                self.entries
+                    .values()
+                    .filter(|entry| entry.kind == VariableCacheKind::EvaluateResult),
+            )
             .flat_map(|entry| entry.full.iter())
     }
 }
