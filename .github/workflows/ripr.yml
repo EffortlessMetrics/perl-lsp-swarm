@@ -148,6 +148,12 @@ jobs:
 
   # -------------------------------------------------------------------------
   # 2a. ripr on CX53 (28 GB, 14 cores) -- preferred self-hosted lane.
+  #
+  # All cargo/ripr commands run inside the em-ci-rust:1.95 Docker image,
+  # matching em-ci-routed-rust.yml exactly. The host runner does not have
+  # the Rust toolchain on PATH -- it is only available inside the container.
+  # ripr is installed into /cargo-home/bin (= /mnt/ci-cache/cargo-home/bin
+  # on the host) so subsequent runs skip the install if the version matches.
   # -------------------------------------------------------------------------
   ripr-cx53:
     name: ripr+ on CX53
@@ -185,70 +191,86 @@ jobs:
           df -h /mnt/ci-scratch /mnt/ci-cache || true
           mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
 
-      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
-        run: rustc --version
-
-      - name: Install ripr
-        run: CARGO_HOME="$CARGO_HOME" cargo install ripr --version "$RIPR_VERSION" --locked
-
-      - name: Run ripr doctor
-        run: ripr doctor
-
-      - name: Generate PR evidence
-        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD
-
-      - name: Generate repo-wide RIPR+ baseline receipt
-        if: always()
-        run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
-
-      - name: Generate review guidance
-        if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210
-
-      - name: Generate impacted evidence
-        if: always()
-        run: cargo xtask impacted-evidence --labels-csv "$PR_LABELS"
-
-      - name: Generate PR evidence summary
-        if: always()
-        run: cargo xtask ripr-pr-summary
-
-      - name: Generate warning annotations
-        if: always()
-        run: cargo xtask ripr-annotations
-
-      - name: Validate PR evidence contracts
-        if: always()
+      - name: Run ripr evidence and gate (Docker)
+        shell: bash
         run: |
-          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
-          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
-          cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
-          cargo xtask ripr-pr-summary --check
-          cargo xtask ripr-annotations --check
+          set -euo pipefail
+          docker run --rm \
+            --cpus="14" \
+            --memory="28g" \
+            -e RIPR_VERSION="$RIPR_VERSION" \
+            -e BASE_REF="$BASE_REF" \
+            -e PR_LABELS="$PR_LABELS" \
+            -e CARGO_HOME=/cargo-home \
+            -e SCCACHE_DIR=/sccache \
+            -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
+            -e RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+            -e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
+            -e CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
+            -e CARGO_TARGET_DIR=/target \
+            -e RUST_BACKTRACE=1 \
+            -e CARGO_TERM_COLOR=always \
+            -e TMPDIR=/tmp/jobtmp \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$CARGO_HOME:/cargo-home" \
+            -v "$SCCACHE_DIR:/sccache" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            -v "$TMPDIR:/tmp/jobtmp" \
+            -w /workspace \
+            em-ci-rust:1.95 \
+            bash -eu -o pipefail -c '
+              rustc --version
+              cargo --version
+              sccache --version || true
 
-      - name: Enforce new RIPR gap quality gate
-        if: always()
-        run: |
-          cargo xtask quality-gate \
-            --mode enforce-new-ripr \
-            --ripr-receipt target/receipts/quality/ripr-plus.json \
-            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
-            --review-receipt target/ripr/review/comments.json \
-            --ripr-base "origin/$BASE_REF" \
-            --ripr-head HEAD \
-            --receipt target/receipts/quality/quality-gate-ripr.json \
-            --summary target/receipts/quality/quality-gate-ripr.md
-          cargo xtask quality-gate \
-            --mode enforce-new-ripr \
-            --ripr-receipt target/receipts/quality/ripr-plus.json \
-            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
-            --review-receipt target/ripr/review/comments.json \
-            --ripr-base "origin/$BASE_REF" \
-            --ripr-head HEAD \
-            --receipt target/receipts/quality/quality-gate-ripr.json \
-            --summary target/receipts/quality/quality-gate-ripr.md \
-            --check
+              # Install ripr into the cached cargo-home so subsequent runs skip this.
+              cargo install ripr --version "$RIPR_VERSION" --locked
+
+              /cargo-home/bin/ripr doctor
+
+              # Generation phase: keep going on individual failures so we can
+              # still upload whatever artifacts were produced.
+              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD || RIPR_FAILED=1
+              cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
+              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210 || RIPR_FAILED=1
+              cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
+              cargo xtask ripr-pr-summary || RIPR_FAILED=1
+              cargo xtask ripr-annotations || RIPR_FAILED=1
+
+              # Validation phase.
+              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
+              cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
+              cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
+              cargo xtask ripr-pr-summary --check
+              cargo xtask ripr-annotations --check
+
+              # Quality gate.
+              cargo xtask quality-gate \
+                --mode enforce-new-ripr \
+                --ripr-receipt target/receipts/quality/ripr-plus.json \
+                --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+                --review-receipt target/ripr/review/comments.json \
+                --ripr-base "origin/$BASE_REF" \
+                --ripr-head HEAD \
+                --receipt target/receipts/quality/quality-gate-ripr.json \
+                --summary target/receipts/quality/quality-gate-ripr.md
+              cargo xtask quality-gate \
+                --mode enforce-new-ripr \
+                --ripr-receipt target/receipts/quality/ripr-plus.json \
+                --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+                --review-receipt target/ripr/review/comments.json \
+                --ripr-base "origin/$BASE_REF" \
+                --ripr-head HEAD \
+                --receipt target/receipts/quality/quality-gate-ripr.json \
+                --summary target/receipts/quality/quality-gate-ripr.md \
+                --check
+
+              sccache --show-stats || true
+
+              # Propagate any generation-phase failure after all steps ran.
+              if [ "${RIPR_FAILED:-0}" = "1" ]; then exit 1; fi
+            '
 
       - name: Append PR evidence summary
         if: always()
@@ -289,11 +311,18 @@ jobs:
         shell: bash
         run: |
           set +e
-          rm -rf "$CARGO_TARGET_DIR" "$TMPDIR" 2>/dev/null || true
+          docker run --rm \
+            -v "$TMPDIR:/tmpdir" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            em-ci-rust:1.95 \
+            bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
+          rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
           df -h /mnt/ci-scratch /mnt/ci-cache || true
 
   # -------------------------------------------------------------------------
   # 2b. ripr on CX43 (16 GB, 8 cores) -- secondary self-hosted lane.
+  #
+  # Same Docker pattern as CX53; --cpus/--memory adjusted for CX43 hardware.
   # -------------------------------------------------------------------------
   ripr-cx43:
     name: ripr+ on CX43
@@ -331,70 +360,86 @@ jobs:
           df -h /mnt/ci-scratch /mnt/ci-cache || true
           mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
 
-      - name: Toolchain (rust-toolchain.toml pins 1.95.0)
-        run: rustc --version
-
-      - name: Install ripr
-        run: CARGO_HOME="$CARGO_HOME" cargo install ripr --version "$RIPR_VERSION" --locked
-
-      - name: Run ripr doctor
-        run: ripr doctor
-
-      - name: Generate PR evidence
-        run: cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD
-
-      - name: Generate repo-wide RIPR+ baseline receipt
-        if: always()
-        run: cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json
-
-      - name: Generate review guidance
-        if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210
-
-      - name: Generate impacted evidence
-        if: always()
-        run: cargo xtask impacted-evidence --labels-csv "$PR_LABELS"
-
-      - name: Generate PR evidence summary
-        if: always()
-        run: cargo xtask ripr-pr-summary
-
-      - name: Generate warning annotations
-        if: always()
-        run: cargo xtask ripr-annotations
-
-      - name: Validate PR evidence contracts
-        if: always()
+      - name: Run ripr evidence and gate (Docker)
+        shell: bash
         run: |
-          cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
-          cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
-          cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
-          cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
-          cargo xtask ripr-pr-summary --check
-          cargo xtask ripr-annotations --check
+          set -euo pipefail
+          docker run --rm \
+            --cpus="8" \
+            --memory="16g" \
+            -e RIPR_VERSION="$RIPR_VERSION" \
+            -e BASE_REF="$BASE_REF" \
+            -e PR_LABELS="$PR_LABELS" \
+            -e CARGO_HOME=/cargo-home \
+            -e SCCACHE_DIR=/sccache \
+            -e SCCACHE_CACHE_SIZE="$SCCACHE_CACHE_SIZE" \
+            -e RUSTC_WRAPPER=/usr/local/cargo/bin/sccache \
+            -e CARGO_INCREMENTAL="$CARGO_INCREMENTAL" \
+            -e CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
+            -e CARGO_TARGET_DIR=/target \
+            -e RUST_BACKTRACE=1 \
+            -e CARGO_TERM_COLOR=always \
+            -e TMPDIR=/tmp/jobtmp \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$CARGO_HOME:/cargo-home" \
+            -v "$SCCACHE_DIR:/sccache" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            -v "$TMPDIR:/tmp/jobtmp" \
+            -w /workspace \
+            em-ci-rust:1.95 \
+            bash -eu -o pipefail -c '
+              rustc --version
+              cargo --version
+              sccache --version || true
 
-      - name: Enforce new RIPR gap quality gate
-        if: always()
-        run: |
-          cargo xtask quality-gate \
-            --mode enforce-new-ripr \
-            --ripr-receipt target/receipts/quality/ripr-plus.json \
-            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
-            --review-receipt target/ripr/review/comments.json \
-            --ripr-base "origin/$BASE_REF" \
-            --ripr-head HEAD \
-            --receipt target/receipts/quality/quality-gate-ripr.json \
-            --summary target/receipts/quality/quality-gate-ripr.md
-          cargo xtask quality-gate \
-            --mode enforce-new-ripr \
-            --ripr-receipt target/receipts/quality/ripr-plus.json \
-            --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
-            --review-receipt target/ripr/review/comments.json \
-            --ripr-base "origin/$BASE_REF" \
-            --ripr-head HEAD \
-            --receipt target/receipts/quality/quality-gate-ripr.json \
-            --summary target/receipts/quality/quality-gate-ripr.md \
-            --check
+              # Install ripr into the cached cargo-home so subsequent runs skip this.
+              cargo install ripr --version "$RIPR_VERSION" --locked
+
+              /cargo-home/bin/ripr doctor
+
+              # Generation phase: keep going on individual failures so we can
+              # still upload whatever artifacts were produced.
+              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD || RIPR_FAILED=1
+              cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
+              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210 || RIPR_FAILED=1
+              cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
+              cargo xtask ripr-pr-summary || RIPR_FAILED=1
+              cargo xtask ripr-annotations || RIPR_FAILED=1
+
+              # Validation phase.
+              cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD --check
+              cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check
+              cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --check
+              cargo xtask impacted-evidence --labels-csv "$PR_LABELS" --check
+              cargo xtask ripr-pr-summary --check
+              cargo xtask ripr-annotations --check
+
+              # Quality gate.
+              cargo xtask quality-gate \
+                --mode enforce-new-ripr \
+                --ripr-receipt target/receipts/quality/ripr-plus.json \
+                --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+                --review-receipt target/ripr/review/comments.json \
+                --ripr-base "origin/$BASE_REF" \
+                --ripr-head HEAD \
+                --receipt target/receipts/quality/quality-gate-ripr.json \
+                --summary target/receipts/quality/quality-gate-ripr.md
+              cargo xtask quality-gate \
+                --mode enforce-new-ripr \
+                --ripr-receipt target/receipts/quality/ripr-plus.json \
+                --ripr-pr-receipt target/ripr/pr/repo-exposure.json \
+                --review-receipt target/ripr/review/comments.json \
+                --ripr-base "origin/$BASE_REF" \
+                --ripr-head HEAD \
+                --receipt target/receipts/quality/quality-gate-ripr.json \
+                --summary target/receipts/quality/quality-gate-ripr.md \
+                --check
+
+              sccache --show-stats || true
+
+              # Propagate any generation-phase failure after all steps ran.
+              if [ "${RIPR_FAILED:-0}" = "1" ]; then exit 1; fi
+            '
 
       - name: Append PR evidence summary
         if: always()
@@ -435,7 +480,12 @@ jobs:
         shell: bash
         run: |
           set +e
-          rm -rf "$CARGO_TARGET_DIR" "$TMPDIR" 2>/dev/null || true
+          docker run --rm \
+            -v "$TMPDIR:/tmpdir" \
+            -v "$CARGO_TARGET_DIR:/target" \
+            em-ci-rust:1.95 \
+            bash -c 'find /tmpdir /target -mindepth 1 -delete 2>/dev/null || true' || true
+          rmdir "$TMPDIR" "$CARGO_TARGET_DIR" 2>/dev/null || true
           df -h /mnt/ci-scratch /mnt/ci-cache || true
 
   # -------------------------------------------------------------------------
