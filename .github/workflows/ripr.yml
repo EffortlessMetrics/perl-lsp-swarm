@@ -315,6 +315,13 @@ jobs:
         shell: bash
         run: |
           set +e
+          # Fix ownership of workspace target/ dirs written by root inside Docker.
+          # Without this the next run's checkout action cannot clean them (EACCES).
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            em-ci-rust:1.95 \
+            bash -c "chown -R $(id -u):$(id -g) /workspace/target/ripr /workspace/target/xtask /workspace/target/receipts 2>/dev/null || true" || true
+          # Clean the scratch dirs (Docker-owned files removed by Docker).
           docker run --rm \
             -v "$TMPDIR:/tmpdir" \
             -v "$CARGO_TARGET_DIR:/target" \
@@ -488,6 +495,12 @@ jobs:
         shell: bash
         run: |
           set +e
+          # Fix ownership of workspace target/ dirs written by root inside Docker.
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            em-ci-rust:1.95 \
+            bash -c "chown -R $(id -u):$(id -g) /workspace/target/ripr /workspace/target/xtask /workspace/target/receipts 2>/dev/null || true" || true
+          # Clean the scratch dirs (Docker-owned files removed by Docker).
           docker run --rm \
             -v "$TMPDIR:/tmpdir" \
             -v "$CARGO_TARGET_DIR:/target" \
