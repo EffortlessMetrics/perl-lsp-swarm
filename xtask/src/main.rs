@@ -20,6 +20,7 @@ use tasks::check_test_wiring;
 use tasks::dead_code::{DeadCodeConfig, DeadCodeMode};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
+use tasks::issue_plan::IssuePlanOutputFormat;
 use tasks::methodology_gate::MethodologyOutputFormat;
 use tasks::metrics;
 use tasks::targeted_checks::CheckMode;
@@ -117,6 +118,13 @@ enum Commands {
     Pr {
         #[command(subcommand)]
         command: PrSubcommand,
+    },
+
+    /// Issue Research / Plan Review Desk tooling (report-only audit, etc.).
+    #[command(name = "issue-plan")]
+    IssuePlan {
+        #[command(subcommand)]
+        command: IssuePlanSubcommand,
     },
 
     /// Build project with various configurations
@@ -2581,6 +2589,37 @@ enum PrSubcommand {
 }
 
 #[derive(Subcommand)]
+enum IssuePlanSubcommand {
+    /// Report-only audit of issue-plan quality (builder-ready completeness,
+    /// label drift, `#0000` placeholder references). Always exits 0.
+    Audit {
+        /// JSON fixture: an array of issues (offline / testing).
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+
+        /// Repository (owner/name) for live `gh issue list`.
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Scope the live query to a label (repeatable).
+        #[arg(long = "label")]
+        labels: Vec<String>,
+
+        /// Receipt JSON output path.
+        #[arg(long, default_value = "target/receipts/issue-plan-audit.json")]
+        receipt: PathBuf,
+
+        /// Do not write the receipt to disk.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output format.
+        #[arg(long, value_enum, default_value = "human")]
+        format: IssuePlanOutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
 enum DevexCommand {
     /// Plan the cheapest correct local proof commands for the current diff.
     Plan {
@@ -3529,6 +3568,18 @@ fn main() -> Result<()> {
                 format,
             })
         }
+        Commands::IssuePlan { command } => match command {
+            IssuePlanSubcommand::Audit { fixture, repo, labels, receipt, dry_run, format } => {
+                issue_plan::audit(issue_plan::AuditConfig {
+                    fixture,
+                    repo,
+                    labels,
+                    receipt,
+                    dry_run,
+                    format,
+                })
+            }
+        },
         Commands::TargetedChecks { base, mode } => targeted_checks::run(base, mode),
         Commands::ResolvePackageName { crate_dir } => {
             // Use the current working directory as workspace root so this subcommand
