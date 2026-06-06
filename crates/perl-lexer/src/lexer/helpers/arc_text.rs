@@ -14,3 +14,33 @@ pub(crate) fn truncate_preview(text: &str, max_chars: usize) -> String {
         None => text.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{empty_arc, truncate_preview};
+    use std::sync::Arc;
+
+    #[test]
+    fn empty_arc_reuses_shared_allocation() -> Result<(), Box<dyn std::error::Error>> {
+        let first = empty_arc();
+        let second = empty_arc();
+
+        assert!(first.is_empty());
+        assert!(Arc::ptr_eq(&first, &second));
+        Ok(())
+    }
+
+    #[test]
+    fn truncate_preview_preserves_short_input() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(truncate_preview("short", 10), "short");
+        assert_eq!(truncate_preview("", 10), "");
+        Ok(())
+    }
+
+    #[test]
+    fn truncate_preview_respects_unicode_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(truncate_preview("åβçdé", 3), "åβç...");
+        assert_eq!(truncate_preview("abcdef", 0), "...");
+        Ok(())
+    }
+}

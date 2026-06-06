@@ -11,3 +11,35 @@ impl PerlLexer<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_file_start_skips_bom_at_start_only() -> Result<(), Box<dyn std::error::Error>> {
+        let mut lexer = PerlLexer::new("\u{feff}my $x");
+        lexer.normalize_file_start();
+
+        assert_eq!(lexer.position, 3);
+        assert_eq!(lexer.line_start_offset, 3);
+        assert_eq!(lexer.current_char(), Some('m'));
+
+        let mut not_at_start = PerlLexer::new("x\u{feff}y");
+        not_at_start.position = 1;
+        not_at_start.normalize_file_start();
+        assert_eq!(not_at_start.position, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_file_start_leaves_plain_input_unchanged() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut lexer = PerlLexer::new("my $x");
+        lexer.normalize_file_start();
+
+        assert_eq!(lexer.position, 0);
+        assert_eq!(lexer.line_start_offset, 0);
+        Ok(())
+    }
+}

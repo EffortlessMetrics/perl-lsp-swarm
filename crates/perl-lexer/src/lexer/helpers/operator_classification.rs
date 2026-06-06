@@ -62,3 +62,61 @@ pub(crate) fn is_compound_operator(first: char, second: char) -> bool {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_compound_operator;
+
+    #[test]
+    fn recognizes_assignment_and_comparison_operators() -> Result<(), Box<dyn std::error::Error>> {
+        for (first, second) in [
+            ('+', '='),
+            ('-', '='),
+            ('*', '='),
+            ('/', '='),
+            ('%', '='),
+            ('&', '='),
+            ('|', '='),
+            ('^', '='),
+            ('.', '='),
+            ('<', '='),
+            ('>', '='),
+            ('=', '='),
+            ('!', '='),
+        ] {
+            assert!(is_compound_operator(first, second), "{first}{second}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn recognizes_non_assignment_compound_operators() -> Result<(), Box<dyn std::error::Error>> {
+        for (first, second) in [
+            ('=', '~'),
+            ('!', '~'),
+            ('+', '+'),
+            ('-', '-'),
+            ('&', '&'),
+            ('|', '|'),
+            ('<', '<'),
+            ('>', '>'),
+            ('*', '*'),
+            ('-', '>'),
+            ('=', '>'),
+            ('.', '.'),
+            ('~', '~'),
+            (':', ':'),
+        ] {
+            assert!(is_compound_operator(first, second), "{first}{second}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_single_or_unknown_operator_pairs() -> Result<(), Box<dyn std::error::Error>> {
+        for (first, second) in [('=', '+'), ('+', '~'), ('?', '?'), ('x', '='), ('+', 'é')] {
+            assert!(!is_compound_operator(first, second), "{first}{second}");
+        }
+        Ok(())
+    }
+}

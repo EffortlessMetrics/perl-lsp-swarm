@@ -118,3 +118,79 @@ impl PerlLexer<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LexerConfig;
+
+    #[test]
+    fn byte_at_returns_zero_for_out_of_bounds_in_release_builds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bytes = b"abc";
+        assert_eq!(PerlLexer::byte_at(bytes, 1), b'b');
+        if !cfg!(debug_assertions) {
+            assert_eq!(PerlLexer::byte_at(bytes, 9), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn current_and_peek_char_handle_ascii_and_unicode() -> Result<(), Box<dyn std::error::Error>> {
+        let mut lexer = PerlLexer::new("éa");
+
+        assert_eq!(lexer.current_char(), Some('é'));
+        assert_eq!(lexer.peek_char(1), Some('a'));
+
+        lexer.advance();
+        assert_eq!(lexer.position, 2);
+        assert_eq!(lexer.current_char(), Some('a'));
+
+        lexer.advance();
+        assert_eq!(lexer.current_char(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_char_boundary_advances_to_next_valid_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut lexer = PerlLexer::new("éx");
+        lexer.position = 1;
+
+        assert_eq!(lexer.current_char(), None);
+        lexer.normalize_char_boundary();
+
+        assert_eq!(lexer.position, 2);
+        assert_eq!(lexer.current_char(), Some('x'));
+        Ok(())
+    }
+
+    #[test]
+    fn peek_helpers_respect_max_lookahead() -> Result<(), Box<dyn std::error::Error>> {
+        let config =
+            LexerConfig { parse_interpolation: true, track_positions: true, max_lookahead: 1 };
+        let lexer = PerlLexer::with_config("abcd", config);
+
+        assert_eq!(lexer.peek_char(1), Some('b'));
+        assert_eq!(lexer.peek_char(2), None);
+        assert_eq!(lexer.peek_byte(1), Some(b'b'));
+        assert_eq!(lexer.peek_byte(2), None);
+        assert!(lexer.matches_bytes(b"ab"));
+        assert!(!lexer.matches_bytes(b"abc"));
+        Ok(())
+    }
+
+    #[test]
+    fn matches_bytes_handles_empty_and_overlong_patterns() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut lexer = PerlLexer::new("abc");
+
+        assert!(lexer.matches_bytes(b""));
+        assert!(lexer.matches_bytes(b"abc"));
+        assert!(!lexer.matches_bytes(b"abcd"));
+
+        lexer.position = usize::MAX;
+        assert!(!lexer.matches_bytes(b"a"));
+        Ok(())
+    }
+}
