@@ -13,6 +13,7 @@ use crate::cancellation::{
 use crate::completion::{
     CompletionItemKind, CompletionProvider, add_xs_api_completions_for_prefix,
 };
+use crate::runtime::types::workspace_folder_matches_doc_uri;
 use crate::{
     protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri},
     runtime::routing::{IndexAccessMode, route_index_access},
@@ -469,6 +470,20 @@ impl LspServer {
                     None
                 };
 
+                // For multi-root workspaces, determine the workspace folder that owns
+                // the document so we can filter non-module symbols to that folder only.
+                // When there is only one folder (or none), skip the filter — no cross-
+                // folder leak is possible.
+                let doc_folder_filter = {
+                    let folders = self.workspace_folders.lock();
+                    if folders.len() > 1 {
+                        crate::runtime::types::best_workspace_folder_for_doc(&folders, doc_uri)
+                            .cloned()
+                    } else {
+                        None
+                    }
+                };
+
                 let qualified_variable_symbols =
                     Self::qualified_variable_workspace_symbols(index, &prefix);
                 let replace_prefix_range = (offset.saturating_sub(prefix.len()), offset);
@@ -489,8 +504,8 @@ impl LspServer {
                         continue;
                     }
 
-                    // For module-kind symbols in a `use Module` / `require Module`
-                    // context, filter by position-aware @INC reachability so that
+                    // Strategy A: module-kind symbols in `use Module` / `require Module`
+                    // context — filter by position-aware @INC reachability so that
                     // `no lib` cancellations are honoured (fixes #8537).
                     let is_module_kind = matches!(
                         symbol.kind,
@@ -505,6 +520,25 @@ impl LspServer {
                                     symbol = %symbol.name,
                                     uri = %symbol.uri,
                                     "completion: skipping workspace symbol not reachable via @INC"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Strategy B: non-module symbols in multi-root workspace — filter
+                    // by workspace-folder containment. symbol_uri_reachable is designed
+                    // for @INC paths (module files) and would incorrectly drop scripts
+                    // and .pm files not on @INC. Folder containment is the right filter
+                    // for subroutines, variables, methods, and constants (fixes #970).
+                    if !is_module_kind {
+                        if let Some(ref folder) = doc_folder_filter {
+                            if !workspace_folder_matches_doc_uri(folder, &symbol.uri) {
+                                tracing::trace!(
+                                    symbol = %symbol.name,
+                                    uri = %symbol.uri,
+                                    folder = %folder.uri,
+                                    "completion: skipping cross-folder non-module symbol"
                                 );
                                 continue;
                             }
