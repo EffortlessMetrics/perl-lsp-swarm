@@ -809,3 +809,129 @@ fn read_lines(path: &Path) -> Result<Vec<String>> {
         fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(contents.lines().map(str::to_owned).collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{check_todos, collect_todo_hits};
+    use regex::Regex;
+    use std::error::Error;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::LazyLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+    static TODO_RE: LazyLock<Result<Regex, regex::Error>> =
+        LazyLock::new(|| Regex::new(r"(?i)\b(?:todo|fixme)\b"));
+
+    fn todo_re() -> TestResult<&'static Regex> {
+        TODO_RE.as_ref().map_err(|err| {
+            std::io::Error::other(format!("failed to compile TODO scanner regex: {err}")).into()
+        })
+    }
+
+    fn unique_temp_repo(label: &str) -> TestResult<PathBuf> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let root = std::env::temp_dir()
+            .join(format!("perl-ci-hygiene-todos-{label}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    fn write_file(root: &Path, relative: &str, contents: &str) -> TestResult {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, contents)?;
+        Ok(())
+    }
+
+    fn hit_lines(
+        root: &Path,
+        exclude_dirs: &[&str],
+        exclude_files: &[PathBuf],
+    ) -> TestResult<Vec<String>> {
+        Ok(collect_todo_hits(root, exclude_dirs, exclude_files, todo_re()?)?
+            .into_iter()
+            .map(|hit| hit.line_text)
+            .collect())
+    }
+
+    #[test]
+    fn collect_todo_hits_filters_excluded_paths_and_non_source_files() -> TestResult {
+        let root = unique_temp_repo("collect-filters")?;
+        write_file(
+            &root,
+            "src/lib.rs",
+            "// TODO: wire real case\nlet safe = \"TODO in string\";\n",
+        )?;
+        write_file(&root, "script.sh", "echo ok # FIXME: shell follow up\n")?;
+        write_file(&root, "notes.md", "TODO: prose is outside scanned source\n")?;
+        write_file(&root, "target/generated.rs", "// TODO: ignored build output\n")?;
+        write_file(&root, "ignored.rs", "// TODO: explicitly ignored file\n")?;
+
+        let hits = hit_lines(&root, &["target"], &[root.join("ignored.rs")])?;
+
+        assert_eq!(hits.len(), 2, "only Rust and hash-comment source hits should remain");
+        assert!(hits.iter().any(|line| line.contains("src/lib.rs:1:// TODO")));
+        assert!(hits.iter().any(|line| line.contains("script.sh:1:echo ok # FIXME")));
+        assert!(!hits.iter().any(|line| line.contains("notes.md")));
+        assert!(!hits.iter().any(|line| line.contains("target/generated.rs")));
+        assert!(!hits.iter().any(|line| line.contains("ignored.rs")));
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn collect_todo_hits_tracks_perl_comments_but_not_quote_like_literals() -> TestResult {
+        let root = unique_temp_repo("collect-perl")?;
+        write_file(
+            &root,
+            "lib/Example.pm",
+            "my $re = m#TODO#;\nmy $s = q{# FIXME literal};\nprint 'ok'; # TODO: real Perl comment\n",
+        )?;
+
+        let hits = hit_lines(&root, &[], &[])?;
+
+        assert_eq!(hits, vec!["lib/Example.pm:3:print 'ok'; # TODO: real Perl comment"]);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_todos_creates_missing_baseline_from_current_count() -> TestResult {
+        let root = unique_temp_repo("baseline-create")?;
+        write_file(&root, "src/lib.rs", "// TODO: initial known debt\n")?;
+
+        let exit_code = check_todos(&root, false)?;
+        let baseline = fs::read_to_string(root.join("ci").join("todo_baseline.txt"))?;
+
+        assert_eq!(exit_code, 0);
+        assert_eq!(baseline, "1\n");
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn check_todos_fails_only_when_current_count_exceeds_baseline() -> TestResult {
+        let root = unique_temp_repo("baseline-fail")?;
+        write_file(&root, "ci/todo_baseline.txt", "1\n")?;
+        write_file(&root, "src/lib.rs", "// TODO: first\n// FIXME: second\n")?;
+
+        assert_eq!(check_todos(&root, false)?, 1);
+
+        fs::write(root.join("src").join("lib.rs"), "// TODO: first\n")?;
+        assert_eq!(check_todos(&root, false)?, 0);
+
+        fs::write(root.join("src").join("lib.rs"), "")?;
+        assert_eq!(check_todos(&root, false)?, 0);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+}
