@@ -32,10 +32,6 @@
 use super::types::CodeAction;
 use perl_parser_core::ast::{Node, NodeKind};
 use std::collections::HashSet;
-use std::sync::LazyLock;
-
-use regex::Regex;
-
 mod error_checking;
 mod extract_subroutine;
 mod extract_variable;
@@ -43,15 +39,11 @@ mod helpers;
 mod import_management;
 mod loop_conversion;
 mod postfix;
+mod pragmas;
+mod selection;
 mod signature_actions;
 
 use helpers::Helpers;
-
-static UTF8_PRAGMA_RE: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r"(?m)^\s*use\s+utf8\b").ok());
-static OPEN_UTF8_PRAGMA_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(r"(?mi)^\s*use\s+open\b[^\n;]*:(?:utf8|encoding\s*\(\s*utf-?8\s*\))").ok()
-});
 
 /// Enhanced code actions provider with additional refactorings
 pub struct EnhancedCodeActionsProvider {
@@ -100,38 +92,7 @@ impl EnhancedCodeActionsProvider {
     /// Normalize a selected byte range so trailing statement punctuation does not
     /// block expression-oriented refactor actions.
     fn normalize_range_for_refactors(&self, range: (usize, usize)) -> (usize, usize) {
-        if self.source.is_empty() {
-            return (0, 0);
-        }
-
-        let start = range.0.min(self.source.len());
-        let mut end = range.1.min(self.source.len());
-
-        if start >= end {
-            return (start, end);
-        }
-
-        while end > start {
-            // Use .get(..end) to avoid panicking on a non-char-boundary `end` value
-            // that a stale or externally-sourced byte range might supply.
-            let Some(ch) = self.source.get(..end).and_then(|s| s.chars().next_back()) else {
-                // `end` is mid-char — snap to the nearest lower char boundary by
-                // decrementing one byte at a time until we land on a boundary.
-                end -= 1;
-                while end > start && !self.source.is_char_boundary(end) {
-                    end -= 1;
-                }
-                continue;
-            };
-
-            if ch.is_whitespace() || ch == ';' {
-                end -= ch.len_utf8();
-            } else {
-                break;
-            }
-        }
-
-        (start, end.max(start))
+        selection::normalize_range_for_refactors(&self.source, range)
     }
 
     /// Walk the AST and emit signature refactoring actions for subroutine nodes
@@ -418,75 +379,7 @@ impl EnhancedCodeActionsProvider {
         }
 
         // Add pragmas
-        actions.extend(self.add_recommended_pragmas(&helpers));
-
-        actions
-    }
-
-    /// Add recommended pragmas
-    fn add_recommended_pragmas(&self, helpers: &Helpers<'_>) -> Vec<CodeAction> {
-        use super::types::{CodeAction, CodeActionEdit, CodeActionKind};
-        use crate::providers::rename::TextEdit;
-        use perl_parser_core::ast::SourceLocation;
-
-        let mut actions = Vec::new();
-
-        // Check for missing strict and warnings
-        let has_strict = self.source.contains("use strict");
-        let has_warnings = self.source.contains("use warnings");
-
-        if !has_strict || !has_warnings {
-            let mut pragmas = Vec::new();
-            if !has_strict {
-                pragmas.push("use strict;");
-            }
-            if !has_warnings {
-                pragmas.push("use warnings;");
-            }
-
-            let insert_pos = helpers.find_pragma_insert_position();
-
-            actions.push(CodeAction {
-                title: format!("Add missing pragmas ({})", pragmas.join(", ")),
-                kind: CodeActionKind::QuickFix,
-                diagnostics: Vec::new(),
-                edit: CodeActionEdit {
-                    changes: vec![TextEdit {
-                        location: SourceLocation { start: insert_pos, end: insert_pos },
-                        new_text: format!("{}\n", pragmas.join("\n")),
-                    }],
-                },
-                is_preferred: true,
-            });
-        }
-
-        // Add UTF-8 pragmas if missing
-        let has_utf8 = UTF8_PRAGMA_RE.as_ref().is_some_and(|re| re.is_match(&self.source));
-        let has_open_utf8 =
-            OPEN_UTF8_PRAGMA_RE.as_ref().is_some_and(|re| re.is_match(&self.source));
-        if helpers.has_non_ascii_content() && (!has_utf8 || !has_open_utf8) {
-            let insert_pos = helpers.find_pragma_insert_position();
-            let mut missing_pragmas = Vec::new();
-            if !has_utf8 {
-                missing_pragmas.push("use utf8;");
-            }
-            if !has_open_utf8 {
-                missing_pragmas.push("use open qw(:std :utf8);");
-            }
-
-            actions.push(CodeAction {
-                title: "Add UTF-8 support".to_string(),
-                kind: CodeActionKind::QuickFix,
-                diagnostics: Vec::new(),
-                edit: CodeActionEdit {
-                    changes: vec![TextEdit {
-                        location: SourceLocation { start: insert_pos, end: insert_pos },
-                        new_text: format!("{}\n", missing_pragmas.join("\n")),
-                    }],
-                },
-                is_preferred: false,
-            });
-        }
+        actions.extend(pragmas::add_recommended_pragmas(&self.source, &helpers));
 
         actions
     }
@@ -506,11 +399,6 @@ mod tests {
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_enhanced_refactoring_actions(&ast, (8, 23)); // Select "length($string)"
-
-        // Debug: print all actions
-        for action in &actions {
-            eprintln!("Action: {}", action.title);
-        }
 
         assert!(!actions.is_empty(), "Expected at least one action");
         assert!(
