@@ -346,6 +346,20 @@ impl<'a> DeclarationProvider<'a> {
                     None
                 }
             }
+            // Cursor on a `method` name at its declaration site — self-location.
+            // NodeKind::Method has no separate name-child node; the full Method node
+            // spans the keyword + name, so find_node_at_offset returns the Method node.
+            NodeKind::Method { name, .. } => {
+                let mut declarations = Vec::new();
+                self.collect_subroutine_declarations(&self.ast, name, &mut declarations);
+                declarations.first().map(|decl| {
+                    vec![self.create_location_link(
+                        node,
+                        decl,
+                        self.get_subroutine_name_range(decl),
+                    )]
+                })
+            }
             // Handle string literals that are method names inside modifier calls:
             // `before 'save' => sub { }` — cursor on 'save' navigates to sub save { }
             NodeKind::String { value, .. } => self.find_modifier_target_declaration(node, value),
@@ -830,12 +844,16 @@ impl<'a> DeclarationProvider<'a> {
         sub_name: &str,
         subs: &mut Vec<&'b Node>,
     ) {
-        if let NodeKind::Subroutine { name, .. } = &node.kind {
-            if let Some(name_str) = name {
-                if name_str == sub_name {
-                    subs.push(node);
-                }
+        match &node.kind {
+            NodeKind::Subroutine { name: Some(name_str), .. } if name_str == sub_name => {
+                subs.push(node);
             }
+            // Method declarations (Perl 5.38+ native class / Object::Pad).
+            // NodeKind::Method.name is a bare String (not Option<String>).
+            NodeKind::Method { name: method_name, .. } if method_name == sub_name => {
+                subs.push(node);
+            }
+            _ => {}
         }
 
         for child in self.get_children(node) {
@@ -855,10 +873,11 @@ impl<'a> DeclarationProvider<'a> {
         pkg_name: &str,
         packages: &mut Vec<&'b Node>,
     ) {
-        if let NodeKind::Package { name, .. } = &node.kind {
-            if name == pkg_name {
+        match &node.kind {
+            NodeKind::Package { name, .. } | NodeKind::Class { name, .. } if name == pkg_name => {
                 packages.push(node);
             }
+            _ => {}
         }
 
         for child in self.get_children(node) {
@@ -1270,6 +1289,10 @@ impl<'a> DeclarationProvider<'a> {
                 vec![variable.as_ref(), list.as_ref(), body.as_ref()]
             }
             NodeKind::ExpressionStatement { expression } => vec![expression.as_ref()],
+            // Class body (Perl 5.38+ native class / Object::Pad) contains methods.
+            NodeKind::Class { body, .. } => vec![body.as_ref()],
+            // Package with optional inline block: `package Foo { ... }`.
+            NodeKind::Package { block: Some(block), .. } => vec![block.as_ref()],
             _ => vec![],
         }
     }
@@ -1386,6 +1409,7 @@ fn symbol_at_cursor_internal(
                     NodeKind::Variable { .. }
                         | NodeKind::FunctionCall { .. }
                         | NodeKind::Subroutine { .. }
+                        | NodeKind::Method { .. }
                         | NodeKind::MethodCall { .. }
                         | NodeKind::Use { .. }
                 )
@@ -1935,6 +1959,16 @@ fn symbol_at_cursor_internal(
             Some(SymbolKey { pkg: pkg.into(), name: bare.into(), sigil: None, kind: SymKind::Sub })
         }
         NodeKind::Subroutine { name: Some(name), .. } => {
+            let (pkg, bare) = if let Some(idx) = name.rfind("::") {
+                (&name[..idx], &name[idx + 2..])
+            } else {
+                (current_pkg, name.as_str())
+            };
+            Some(SymbolKey { pkg: pkg.into(), name: bare.into(), sigil: None, kind: SymKind::Sub })
+        }
+        // Method declaration (Perl 5.38+ native class / Object::Pad).
+        // name is a bare String (not Option<String>) unlike NodeKind::Subroutine.
+        NodeKind::Method { name, .. } => {
             let (pkg, bare) = if let Some(idx) = name.rfind("::") {
                 (&name[..idx], &name[idx + 2..])
             } else {
