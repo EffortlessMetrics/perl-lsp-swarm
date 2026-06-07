@@ -64,13 +64,16 @@ impl DebugAdapter {
                 framed_frames
             }
         } else {
-            let output_lines = self.snapshot_recent_output_lines();
-            if output_lines.is_empty() {
-                Vec::new()
-            } else {
-                let output = output_lines.join("\n");
-                Self::filter_user_visible_frames(Self::parse_stack_frames_from_text(&output))
-            }
+            // Degraded-transport path: the framed `T` command failed, so we have no
+            // reliable, current-stop output.  The snapshot buffer contains the entire
+            // session history in output order; at a breakpoint the initial implicit-stop
+            // context line appears BEFORE the current-stop context line, so
+            // parse_stack_frames_from_text would return the stale first frame — the same
+            // class of bug #927 fixed on the primary path.
+            //
+            // Return Vec::new() to fall through to session.stack_frames (written by the
+            // output reader with the most-recent context line) or the placeholder frame.
+            Vec::new()
         };
 
         let stack_frames = if !parsed_frames.is_empty() {
@@ -206,6 +209,60 @@ impl DebugAdapter {
             Some(limit) => iter.take(limit).collect(),
             None => iter.collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod degraded_transport_tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Regression: when the framed `T` command transport fails, the degraded-path
+    /// previously parsed `snapshot_recent_output_lines()` in buffer order, which
+    /// returned the stale initial-implicit-stop context line as the first frame.
+    /// After the fix, the else branch returns Vec::new(), falling through to the
+    /// authoritative `session.stack_frames` or the placeholder frame.
+    #[test]
+    fn degraded_transport_does_not_serve_stale_first_frame() -> TestResult {
+        let mut adapter = DebugAdapter::new();
+
+        // Seed the recent_output buffer with a stale context line (line 4) appearing
+        // before the current context line (line 5), mirroring real debugger output order.
+        // Format matches context_re() in patterns.rs: `FuncName(file:line):`
+        {
+            let mut output = lock_or_recover(&adapter.recent_output, "test.seed");
+            DebugAdapter::append_recent_output_line_locked(&mut output, "main::(/tmp/test.pl:4):");
+            DebugAdapter::append_recent_output_line_locked(&mut output, "  4:    my $x = 1;");
+            DebugAdapter::append_recent_output_line_locked(&mut output, "main::(/tmp/test.pl:5):");
+            DebugAdapter::append_recent_output_line_locked(&mut output, "  5:    my $y = 2;");
+        }
+
+        // Issue a stackTrace request.  No live process means the framed session block
+        // is skipped and framed_output_lines stays None — exercising the else branch.
+        //
+        // Pre-fix: parse_stack_frames_from_text returns frame at line 4 (first in buffer).
+        // Post-fix: Vec::new() is returned; caller falls through to placeholder path.
+        let response = adapter.handle_request(1, "stackTrace", Some(json!({"threadId": 1})));
+        match response {
+            DapMessage::Response { body: Some(body), .. } => {
+                let frames = body
+                    .get("stackFrames")
+                    .and_then(|v| v.as_array())
+                    .ok_or("missing stackFrames")?;
+                // No frame should have line == 4 (the stale buffer-first context line).
+                for frame in frames {
+                    let line = frame.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+                    assert_ne!(
+                        line, 4,
+                        "stale snapshot frame (line 4) must not appear in degraded-transport \
+                         response; got frames: {frames:?}"
+                    );
+                }
+            }
+            other => return Err(format!("expected Response, got {other:?}").into()),
+        }
+        Ok(())
     }
 }
 
