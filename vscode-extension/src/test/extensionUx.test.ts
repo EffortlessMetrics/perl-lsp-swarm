@@ -18,6 +18,7 @@ jest.mock('vscode-languageclient/node', () => ({
   },
 }));
 import {
+  buildDisabledFeaturesFromConfig,
   copyProviderDecisionReceiptCommand,
   diagnoseConfiguredServerPath,
   explainDiagnosticCommand,
@@ -1189,5 +1190,57 @@ describe('extension UX warnings', () => {
     expect(rendered).toContain('Missing::Payload');
     expect(rendered).toContain('workspace includePaths');
     expect(rendered).toContain('Raw lookup JSON');
+  });
+});
+
+// ── Tests for buildDisabledFeaturesFromConfig (#968) ─────────────────────────
+
+describe('buildDisabledFeaturesFromConfig', () => {
+  function makeConfig(vals: Record<string, unknown>) {
+    return {
+      get: <T>(key: string, def: T): T => (key in vals ? (vals[key] as T) : def),
+    };
+  }
+
+  test('returns base array when both enable* are true (defaults)', () => {
+    const cfg = makeConfig({ disabledFeatures: [] });
+    expect(buildDisabledFeaturesFromConfig(cfg)).toEqual([]);
+  });
+
+  test('adds lsp.semantic_tokens when enableSemanticTokens is false', () => {
+    const cfg = makeConfig({ disabledFeatures: [], enableSemanticTokens: false });
+    expect(buildDisabledFeaturesFromConfig(cfg)).toContain('lsp.semantic_tokens');
+  });
+
+  test('adds lsp.formatting when enableFormatting is false', () => {
+    const cfg = makeConfig({ disabledFeatures: [], enableFormatting: false });
+    expect(buildDisabledFeaturesFromConfig(cfg)).toContain('lsp.formatting');
+  });
+
+  test('does not duplicate lsp.semantic_tokens if already in disabledFeatures', () => {
+    const cfg = makeConfig({
+      disabledFeatures: ['lsp.semantic_tokens'],
+      enableSemanticTokens: false,
+    });
+    const result = buildDisabledFeaturesFromConfig(cfg);
+    expect(result.filter((x: string) => x === 'lsp.semantic_tokens')).toHaveLength(1);
+  });
+
+  test('does not mutate the original disabledFeatures array', () => {
+    const orig = ['lsp.hover'];
+    const cfg = makeConfig({ disabledFeatures: orig, enableFormatting: false });
+    buildDisabledFeaturesFromConfig(cfg);
+    expect(orig).toEqual(['lsp.hover']);
+  });
+
+  test('adds both feature IDs when both enable* are false', () => {
+    const cfg = makeConfig({
+      disabledFeatures: [],
+      enableSemanticTokens: false,
+      enableFormatting: false,
+    });
+    const result = buildDisabledFeaturesFromConfig(cfg);
+    expect(result).toContain('lsp.semantic_tokens');
+    expect(result).toContain('lsp.formatting');
   });
 });
