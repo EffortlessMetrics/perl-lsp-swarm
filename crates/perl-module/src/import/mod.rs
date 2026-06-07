@@ -514,10 +514,20 @@ mod tests {
     /// `parse_qw_arg_list` unit coverage: leading whitespace before the
     /// delimiter is tolerated; the compact form still works; a word character
     /// after `qw` is still rejected (not a delimiter).
+    /// Covers space, tab, and newline — all `trim_start` whitespace variants.
     #[test]
     fn parse_qw_arg_list_tolerates_leading_space() {
+        // Space before delimiter (original fix).
         assert_eq!(parse_qw_arg_list("qw [a b]"), Some(vec!["a".to_string(), "b".to_string()]));
         assert_eq!(parse_qw_arg_list("qw(a b)"), Some(vec!["a".to_string(), "b".to_string()]));
+        // Tab before delimiter.
+        assert_eq!(parse_qw_arg_list("qw\t[a b]"), Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(parse_qw_arg_list("qw\t(a b)"), Some(vec!["a".to_string(), "b".to_string()]));
+        // Newline before delimiter (Perl allows this in multi-line source).
+        assert_eq!(parse_qw_arg_list("qw\n[a b]"), Some(vec!["a".to_string(), "b".to_string()]));
+        // Multiple mixed whitespace.
+        assert_eq!(parse_qw_arg_list("qw  \t [a b]"), Some(vec!["a".to_string(), "b".to_string()]));
+        // Bareword directly after qw is not a valid delimiter — must return None.
         assert_eq!(parse_qw_arg_list("qwfoo"), None);
     }
 
