@@ -13,6 +13,15 @@
 # The required-check name "ripr+ New Gap Gate" is owned by the result
 # aggregator job at the bottom of this file, matching the branch-protection
 # entry in .ci/policies/required-checks.toml.
+#
+# merge_group added in #1232: required for GitHub merge queue.
+# In merge_group context:
+#   - github.base_ref is absent; BASE_REF resolves via
+#     github.event.merge_group.base_ref (the queue target branch).
+#   - PR_LABELS is empty (no pull_request event); ripr runs without label routing.
+#   - IS_FORK_PR is false — merge queue only admits trusted same-repo SHAs.
+#   - ripr diff analysis uses origin/<base_ref>..HEAD; the merge-test commit HEAD
+#     is the squash of PR + base, so the diff is semantically equivalent to PR diff.
 
 name: ripr
 
@@ -20,11 +29,12 @@ on:
   pull_request:
     branches: [master, main]
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
   workflow_dispatch: {}
 
 concurrency:
   group: ripr-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 permissions:
   contents: read
@@ -37,7 +47,7 @@ jobs:
     name: Route ripr runner
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event.pull_request.draft != true || github.event_name == 'workflow_dispatch'
+    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'
     outputs:
       target: ${{ steps.route.outputs.target }}
       reason: ${{ steps.route.outputs.reason }}
@@ -167,7 +177,7 @@ jobs:
     timeout-minutes: 60
     env:
       RIPR_VERSION: "0.5.0"
-      BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+      BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
       CARGO_HOME: /mnt/ci-cache/cargo-home
       SCCACHE_DIR: /mnt/ci-cache/sccache
@@ -199,7 +209,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ci-disk-guard /mnt/ci-scratch 100
+          # Self-heal: remove orphaned ripr-* scratch dirs older than 24 h that were
+          # left by killed or timed-out runs whose cleanup step never executed.
+          # Scope is intentionally narrow (ripr-* only); other lanes' dirs are out
+          # of scope and belong to issue #978 for workspace-wide scratch governance.
+          find /mnt/ci-scratch -maxdepth 1 -name 'ripr-*' -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+          # ripr needs at most an xtask debug build (~5-8 GB) plus small JSON
+          # analysis artifacts (<1 GB).  20 GB gives 2-3x headroom without
+          # requiring the full 100 GB reserved for the complete Rust CI build.
+          ci-disk-guard /mnt/ci-scratch 20
           ci-disk-guard /mnt/ci-cache 20
           df -h /mnt/ci-scratch /mnt/ci-cache || true
           mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
@@ -360,7 +378,7 @@ jobs:
     timeout-minutes: 75
     env:
       RIPR_VERSION: "0.5.0"
-      BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+      BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
       CARGO_HOME: /mnt/ci-cache/cargo-home
       SCCACHE_DIR: /mnt/ci-cache/sccache
@@ -392,7 +410,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ci-disk-guard /mnt/ci-scratch 80
+          # Self-heal: remove orphaned ripr-* scratch dirs older than 24 h that were
+          # left by killed or timed-out runs whose cleanup step never executed.
+          # Scope is intentionally narrow (ripr-* only); other lanes' dirs are out
+          # of scope and belong to issue #978 for workspace-wide scratch governance.
+          find /mnt/ci-scratch -maxdepth 1 -name 'ripr-*' -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+          # ripr needs at most an xtask debug build (~5-8 GB) plus small JSON
+          # analysis artifacts (<1 GB).  20 GB gives 2-3x headroom without
+          # requiring the full 80 GB reserved for the complete Rust CI build.
+          # CX43 had 32 GB free when the 80 GB guard fired (run 27074596917) --
+          # 32 GB > 20 GB, so this guard will pass on a reasonably maintained host.
+          ci-disk-guard /mnt/ci-scratch 20
           ci-disk-guard /mnt/ci-cache 15
           df -h /mnt/ci-scratch /mnt/ci-cache || true
           mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$CARGO_HOME" "$SCCACHE_DIR"
@@ -549,7 +577,7 @@ jobs:
     timeout-minutes: 45
     env:
       RIPR_VERSION: "0.5.0"
-      BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+      BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
     steps:
       - name: Checkout
