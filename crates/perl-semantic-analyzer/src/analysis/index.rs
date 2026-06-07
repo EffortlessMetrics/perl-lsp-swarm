@@ -286,11 +286,22 @@ mod tests {
 
     /// `parse_qw_content` unit coverage: whitespace before the delimiter is
     /// tolerated; compact form still works.
+    /// Covers space, tab, and newline — all `trim_start` whitespace variants.
     #[test]
     fn parse_qw_content_tolerates_leading_space() {
+        // Space before delimiter.
         assert_eq!(WorkspaceIndex::parse_qw_content("qw [a b]"), Some("a b"));
         assert_eq!(WorkspaceIndex::parse_qw_content("qw(a b)"), Some("a b"));
         assert_eq!(WorkspaceIndex::parse_qw_content("qw/a b/"), Some("a b"));
+        // Tab before delimiter.
+        assert_eq!(WorkspaceIndex::parse_qw_content("qw\t[a b]"), Some("a b"));
+        assert_eq!(WorkspaceIndex::parse_qw_content("qw\t(a b)"), Some("a b"));
+        // Newline before delimiter.
+        assert_eq!(WorkspaceIndex::parse_qw_content("qw\n[a b]"), Some("a b"));
+        // Multiple mixed whitespace.
+        assert_eq!(WorkspaceIndex::parse_qw_content("qw  \t [a b]"), Some("a b"));
+        // A bareword directly after qw is not a valid delimiter.
+        assert_eq!(WorkspaceIndex::parse_qw_content("qwfoo"), None);
     }
 
     #[test]
