@@ -8,6 +8,16 @@ static STEP_IN_TARGET_CALL_RE: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r"(\w[\w:]*)\s*\(").ok());
 
 impl DebugAdapter {
+    /// Build a protocol-safe guidance message for execution-control requests
+    /// that arrive when neither a process session nor an attached pid is active.
+    fn no_active_debug_session_message(action: &str) -> String {
+        format!(
+            "Cannot {action} because no Perl debug session is active. \
+             Start a launch or attach request first, wait for the debug session \
+             to start, then retry {action}."
+        )
+    }
+
     /// Handle continue request
     pub(super) fn handle_continue(
         &self,
@@ -19,7 +29,8 @@ impl DebugAdapter {
             arguments.and_then(|v| serde_json::from_value(v).ok());
 
         let mut thread_id = 1;
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
+        let has_session = if let Some(ref mut session) =
+            *lock_or_recover(&self.session, "debug_adapter.session")
             && let Some(stdin) = session.process.stdin.as_mut()
         {
             let _ = stdin.write_all(b"c\n");
@@ -28,10 +39,25 @@ impl DebugAdapter {
             session.last_resume_mode = ResumeMode::Continue;
             session.variable_cache.clear();
             thread_id = session.thread_id;
+            true
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
         {
             let _ = self.send_continue_signal(pid);
             thread_id = Self::i64_to_i32_saturating(i64::from(pid));
+            true
+        } else {
+            false
+        };
+
+        if !has_session {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "continue".to_string(),
+                body: None,
+                message: Some(Self::no_active_debug_session_message("continue")),
+            };
         }
 
         // AC9.4: Proper DAP event emission: continued
@@ -63,7 +89,8 @@ impl DebugAdapter {
         arguments: Option<Value>,
     ) -> DapMessage {
         let _args: Option<NextArguments> = arguments.and_then(|v| serde_json::from_value(v).ok());
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
+        let has_session = if let Some(ref mut session) =
+            *lock_or_recover(&self.session, "debug_adapter.session")
             && let Some(stdin) = session.process.stdin.as_mut()
         {
             let _ = stdin.write_all(b"n\n");
@@ -79,6 +106,20 @@ impl DebugAdapter {
                     "allThreadsContinued": true
                 })),
             );
+            true
+        } else {
+            false
+        };
+
+        if !has_session {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "next".to_string(),
+                body: None,
+                message: Some(Self::no_active_debug_session_message("next")),
+            };
         }
 
         DapMessage::Response {
@@ -99,7 +140,8 @@ impl DebugAdapter {
         arguments: Option<Value>,
     ) -> DapMessage {
         let _args: Option<StepInArguments> = arguments.and_then(|v| serde_json::from_value(v).ok());
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
+        let has_session = if let Some(ref mut session) =
+            *lock_or_recover(&self.session, "debug_adapter.session")
             && let Some(stdin) = session.process.stdin.as_mut()
         {
             let _ = stdin.write_all(b"s\n");
@@ -115,6 +157,20 @@ impl DebugAdapter {
                     "allThreadsContinued": true
                 })),
             );
+            true
+        } else {
+            false
+        };
+
+        if !has_session {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "stepIn".to_string(),
+                body: None,
+                message: Some(Self::no_active_debug_session_message("stepIn")),
+            };
         }
 
         DapMessage::Response {
@@ -136,7 +192,8 @@ impl DebugAdapter {
     ) -> DapMessage {
         let _args: Option<StepOutArguments> =
             arguments.and_then(|v| serde_json::from_value(v).ok());
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
+        let has_session = if let Some(ref mut session) =
+            *lock_or_recover(&self.session, "debug_adapter.session")
             && let Some(stdin) = session.process.stdin.as_mut()
         {
             let _ = stdin.write_all(b"r\n");
@@ -152,6 +209,20 @@ impl DebugAdapter {
                     "allThreadsContinued": true
                 })),
             );
+            true
+        } else {
+            false
+        };
+
+        if !has_session {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "stepOut".to_string(),
+                body: None,
+                message: Some(Self::no_active_debug_session_message("stepOut")),
+            };
         }
 
         DapMessage::Response {
