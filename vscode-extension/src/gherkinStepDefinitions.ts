@@ -18,7 +18,12 @@ const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // linear-time and safe — flagging it produced false "ambiguous" classifications
 // for ordinary step definitions, including the `"([^"]+)"` patterns this module
 // generates itself (see buildGeneratedStepPattern).
-const POTENTIALLY_EXPENSIVE_REGEX_RE = /(?:\([^)]*[+*][^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
+// Bounded inner quantifiers (`{m}`, `{m,}`, `{m,n}`) inside a quantified group
+// can still backtrack super-linearly (e.g. `([a-z]{2,5})+`), so they are also
+// flagged (#953). Keep this in sync with the identical constant in
+// gherkinProviders.ts.
+const POTENTIALLY_EXPENSIVE_REGEX_RE =
+    /(?:\([^)]*(?:[+*]|\{\d+(?:,\d*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
 
 export type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But';
 export type StepDefinitionStatus = 'defined' | 'undefined' | 'ambiguous';

@@ -66,9 +66,13 @@ const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // contains a quantifier* (e.g. `(a+)+`), a backreference, or a lookaround. A
 // single character class followed by one quantifier (`[^"]+`, `[0-9]+`) is
 // linear-time and safe — flagging it produced false negatives that suppressed
-// step-definition links for ordinary `"([^"]+)"` patterns (see #859). Keep this
-// in sync with the identical constant in gherkinStepDefinitions.ts.
-const POTENTIALLY_EXPENSIVE_REGEX_RE = /(?:\([^)]*[+*][^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
+// step-definition links for ordinary `"([^"]+)"` patterns (see #859).
+// Bounded inner quantifiers (`{m}`, `{m,}`, `{m,n}`) inside a quantified group
+// can still backtrack super-linearly (e.g. `([a-z]{2,5})+`), so they are also
+// flagged (#953). Keep this in sync with the identical constant in
+// gherkinStepDefinitions.ts.
+const POTENTIALLY_EXPENSIVE_REGEX_RE =
+    /(?:\([^)]*(?:[+*]|\{\d+(?:,\d*)?\})[^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
 const DELIMITER_PAIRS: Record<string, string> = {
     '{': '}',
     '[': ']',

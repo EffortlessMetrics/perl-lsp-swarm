@@ -140,6 +140,55 @@ describe('gherkin step definition support', () => {
     ).toBe(path.join('/workspace', 'spec', 'features', 'step_definitions', 'login_steps.pm'));
   });
 
+  // Regression #953: bounded inner quantifiers in quantified groups are ReDoS-risky
+  test('treats bounded inner quantifier in quantified group as ambiguous', () => {
+    // ([a-z]{2,5})+ is super-linear due to combinatorial explosion at group boundary
+    const step = parseGherkinStepLine('Then the code is abc', 1);
+    expect(step).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step!, [
+      'Then qr/^the code is ([a-z]{2,5})+$/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // (\d{1,3}){4} — exact-count outer quantifier with bounded inner
+    const ipStep = parseGherkinStepLine('Then the IP is 192', 1);
+    expect(ipStep).not.toBeNull();
+    expect(classifyStepDefinitionStatus(ipStep!, [
+      'Then qr/^the IP is (\\d{1,3}){4}$/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // (x{5})+ — exact-count inner
+    const exactStep = parseGherkinStepLine('Then x is xxxxx', 1);
+    expect(exactStep).not.toBeNull();
+    expect(classifyStepDefinitionStatus(exactStep!, [
+      'Then qr/^x is (x{5})+$/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // (x{2,})+ — lower-bound-only inner
+    const lbStep = parseGherkinStepLine('Then y is xx', 1);
+    expect(lbStep).not.toBeNull();
+    expect(classifyStepDefinitionStatus(lbStep!, [
+      'Then qr/^y is (x{2,})+$/, sub { return; };',
+    ])).toBe('ambiguous');
+  });
+
+  test('does not flag bounded inner group with no outer quantifier (safe)', () => {
+    // ([a-z]{2,5}) with no outer quantifier is safe
+    const step = parseGherkinStepLine('Then the code is abc', 1);
+    expect(step).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step!, [
+      'Then qr/^the code is ([a-z]{2,5})$/, sub { return; };',
+    ])).not.toBe('ambiguous');
+  });
+
+  test('does not flag non-numeric brace as quantifier (safe)', () => {
+    // (a{b})+ — `{b}` is a literal string, not a numeric quantifier
+    const step = parseGherkinStepLine('Then the val is a{b}', 1);
+    expect(step).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step!, [
+      'Then qr/^the val is (a\\{b\\})+$/, sub { return; };',
+    ])).not.toBe('ambiguous');
+  });
+
   test('builds new-file step definition content with boilerplate and TODO stub', () => {
     const step = parseGherkinStepLine('When I add <item> to the cart', 8);
     expect(step).not.toBeNull();

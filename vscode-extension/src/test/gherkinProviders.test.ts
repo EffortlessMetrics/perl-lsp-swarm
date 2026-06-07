@@ -130,6 +130,33 @@ describe('gherkin outline providers', () => {
     expect(links).toHaveLength(0);
   });
 
+  // Regression #953: bounded inner quantifiers in quantified groups are ReDoS-risky
+  test('skips step definitions with bounded inner quantifiers in groups (ReDoS)', () => {
+    const featureText = [
+      'Feature: IP',
+      '  Scenario: match IP',
+      '    Given the host is 192',
+    ].join('\n');
+
+    const links = provideGherkinStepDefinitionLinks(
+      featureText,
+      { line: 2, character: 15 } as vscode.Position,
+      [
+        {
+          uri: vscode.Uri.file('/project/features/step_definitions/net_steps.pm'),
+          text: [
+            'use Test::BDD::Cucumber::StepFile;',
+            '',
+            'Given qr/^the host is (\\d{1,3}){4}$/, sub {',
+            '};',
+          ].join('\n'),
+        },
+      ]
+    );
+
+    expect(links).toHaveLength(0);
+  });
+
   test('does not skip named-capture group step definitions (no false positive)', () => {
     const featureText = [
       'Feature: Cart',
