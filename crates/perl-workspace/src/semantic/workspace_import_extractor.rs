@@ -882,12 +882,21 @@ mod tests {
     /// `parse_quote_operator_content` unit coverage: leading whitespace before
     /// the delimiter is tolerated for `qw`, `q`, and `qq`; a word character
     /// after the operator is still rejected (it is not a delimiter).
+    /// Covers space, tab, and newline — all `trim_start` whitespace variants.
     #[test]
     fn parse_quote_operator_content_tolerates_leading_space() {
+        // Space before delimiter.
         assert_eq!(parse_quote_operator_content("qw [a b]", "qw"), Some("a b"));
         assert_eq!(parse_quote_operator_content("qw(a b)", "qw"), Some("a b"));
         assert_eq!(parse_quote_operator_content("q (x)", "q"), Some("x"));
         assert_eq!(parse_quote_operator_content("qq {y}", "qq"), Some("y"));
+        // Tab before delimiter (`trim_start` trims tabs too).
+        assert_eq!(parse_quote_operator_content("qw\t[a b]", "qw"), Some("a b"));
+        assert_eq!(parse_quote_operator_content("q\t(x)", "q"), Some("x"));
+        // Newline before delimiter (e.g. heredoc-adjacent or multi-line use).
+        assert_eq!(parse_quote_operator_content("qw\n[a b]", "qw"), Some("a b"));
+        // Multiple mixed whitespace before delimiter.
+        assert_eq!(parse_quote_operator_content("qw  \t [a b]", "qw"), Some("a b"));
         // A word char after the operator is a bareword, not a delimiter.
         assert_eq!(parse_quote_operator_content("qq foo", "qq"), None);
     }
