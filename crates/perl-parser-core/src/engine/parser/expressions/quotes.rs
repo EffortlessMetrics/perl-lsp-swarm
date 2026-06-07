@@ -265,7 +265,8 @@ impl<'a> Parser<'a> {
                     closing_delim,
                 )?;
                 let modifiers = self.parse_quote_operator_substitution_modifiers()?;
-                let has_embedded_code = self.analyze_regex_body_for_ast(&content, start)?;
+                let has_embedded_code = self.analyze_regex_body_for_ast(&content, start)?
+                    || modifiers.contains('e');
                 end = self.previous_position();
 
                 Ok(Node::new(
