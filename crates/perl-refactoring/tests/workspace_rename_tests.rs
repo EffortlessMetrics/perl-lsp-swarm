@@ -468,6 +468,75 @@ fn workspace_rename_handles_circular_deps() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+// ============================================================================
+// Regression #956: Unicode-adjacent word-boundary safety
+// ============================================================================
+
+/// Renaming `foo` must NOT corrupt `$変数foo` — the UTF-8 continuation byte
+/// immediately before the match position was previously misread as a word boundary.
+#[test]
+fn workspace_rename_does_not_corrupt_adjacent_unicode_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    // $変数foo has the byte sequence ...0xB0 'f' 'o' 'o'; 0xB0 is not ASCII
+    // alphanumeric, so the old byte-based check falsely reported a word boundary.
+    let content = "use utf8;\nmy $\u{5909}\u{6570}foo = 1;\nmy $foo = 2;\n";
+    let (workspace, index) = setup_workspace(&[("test.pl", content)])?;
+    let config = WorkspaceRenameConfig::default();
+    let engine = WorkspaceRename::new(index, config);
+
+    let result = engine.rename_symbol(
+        "foo",
+        "bar",
+        &workspace.path().join("test.pl"),
+        (2, 3), // line 2, col 3 — points at $foo on the third line
+    );
+
+    match result {
+        Ok(r) => {
+            let total: usize = r.file_edits.iter().map(|fe| fe.edits.len()).sum();
+            // Only bare `$foo` on line 3 should match; `$変数foo` on line 2 must not.
+            assert!(
+                total <= 1,
+                "Only bare $foo should rename, not $変数foo suffix. Got {} edits",
+                total
+            );
+        }
+        // SymbolNotFound is acceptable — the engine may reject the rename when the
+        // cursor offset doesn't land on a recognised symbol; the important thing is
+        // that no additional edits corrupted the Unicode identifier.
+        Err(WorkspaceRenameError::SymbolNotFound { .. }) => {}
+        Err(e) => return Err(format!("Unexpected error: {e}").into()),
+    }
+
+    Ok(())
+}
+
+/// Renaming `foo` must NOT corrupt `$fooα` — the lead byte of a following
+/// Unicode char must not be misread as a word boundary.
+#[test]
+fn workspace_rename_does_not_corrupt_adjacent_unicode_suffix()
+-> Result<(), Box<dyn std::error::Error>> {
+    // α (U+03B1) encodes as 0xCE 0xB1 in UTF-8; 0xCE is not ASCII alphanumeric,
+    // so the old byte-based check falsely reported a word boundary after `foo`.
+    let content = "use utf8;\nmy $foo\u{03B1} = 1;\nmy $foo = 2;\n";
+    let (workspace, index) = setup_workspace(&[("test.pl", content)])?;
+    let config = WorkspaceRenameConfig::default();
+    let engine = WorkspaceRename::new(index, config);
+
+    let result = engine.rename_symbol("foo", "bar", &workspace.path().join("test.pl"), (2, 3));
+
+    match result {
+        Ok(r) => {
+            let total: usize = r.file_edits.iter().map(|fe| fe.edits.len()).sum();
+            assert!(total <= 1, "Only bare $foo should rename, not $fooα. Got {} edits", total);
+        }
+        Err(WorkspaceRenameError::SymbolNotFound { .. }) => {}
+        Err(e) => return Err(format!("Unexpected error: {e}").into()),
+    }
+
+    Ok(())
+}
+
 #[test]
 fn workspace_rename_config_defaults() {
     let config = WorkspaceRenameConfig::default();
