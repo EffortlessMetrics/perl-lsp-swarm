@@ -2047,7 +2047,7 @@ pub enum NodeKind {
         replacement: String,
         /// Substitution modifiers (g, e, r, etc.)
         modifiers: String,
-        /// Whether the regex contains embedded code `(?{...})`
+        /// Whether the regex or its modifiers trigger code execution: `(?{...})` in the pattern, or the `e`/`ee` modifier in a substitution
         has_embedded_code: bool,
         /// Whether the binding operator was `!~` (negated match)
         negated: bool,
