@@ -722,8 +722,69 @@ fn test_evaluate_with_frame_id_passes_validation() -> TestResult {
             "allowSideEffects": false
         })),
     );
-    // frameId is advisory — safe expressions with a frameId should pass safety validation.
+    // With no active session, a frameId request returns a session error (not a
+    // safe-mode policy block).  The error must NOT mention "Safe evaluation mode".
     assert_evaluate_not_safe_blocked(response, "Safe evaluation mode")
+}
+
+// ---------------------------------------------------------------------------
+// AC: frameId validation — Issue #902
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_evaluate_with_invalid_frameid_returns_error() -> TestResult {
+    let mut adapter = new_adapter();
+    let response =
+        adapter.handle_request(1, "evaluate", Some(json!({ "expression": "$x", "frameId": 999 })));
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "evaluate");
+            assert!(!success);
+            let msg = message.ok_or("expected error message")?;
+            // Either "frame not found" or "no session" — both are protocol-safe errors.
+            assert!(
+                msg.to_lowercase().contains("frame") || msg.contains("No debugger session"),
+                "expected frame-related error, got: {msg}"
+            );
+        }
+        other => return Err(format!("expected response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_evaluate_with_out_of_range_frameid_no_panic() -> TestResult {
+    let mut adapter = new_adapter();
+    for frame_id in [i64::MIN, -1_i64, 0_i64, i64::MAX] {
+        let response = adapter.handle_request(
+            1,
+            "evaluate",
+            Some(json!({ "expression": "$x", "frameId": frame_id })),
+        );
+        // Must not panic; must return a Response (not an Event/Request).
+        assert!(
+            matches!(response, DapMessage::Response { .. }),
+            "frameId {frame_id} caused non-Response: {response:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_evaluate_without_frameid_no_session_still_returns_error() -> TestResult {
+    // frameId = None: validation block is skipped; falls through to session check.
+    let mut adapter = new_adapter();
+    let response = adapter.handle_request(1, "evaluate", Some(json!({ "expression": "$x" })));
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "evaluate");
+            assert!(!success);
+            let msg = message.ok_or("expected error message")?;
+            assert!(msg.contains("No debugger session"), "expected no-session error, got: {msg}");
+        }
+        other => return Err(format!("expected response, got {other:?}").into()),
+    }
+    Ok(())
 }
 
 #[test]
