@@ -503,12 +503,13 @@ mod tests {
     /// Previously the leading space was treated as the delimiter, so the list
     /// failed to parse and no symbols were extracted. See `parse_qw_arg_list`.
     #[test]
-    fn import_qw_list_space_before_delimiter_extracts_symbols() {
+    fn import_qw_list_space_before_delimiter_extracts_symbols() -> Result<(), String> {
         let src = "require Foo::Bar;\nFoo::Bar->import(qw [alpha beta]);\n";
         let syms: Vec<String> =
             extract_require_import_symbols(src).into_iter().map(|e| e.symbol).collect();
         assert!(syms.contains(&"alpha".to_string()), "syms: {syms:?}");
         assert!(syms.contains(&"beta".to_string()), "syms: {syms:?}");
+        Ok(())
     }
 
     /// `parse_qw_arg_list` unit coverage: leading whitespace before the
@@ -516,7 +517,7 @@ mod tests {
     /// after `qw` is still rejected (not a delimiter).
     /// Covers space, tab, and newline — all `trim_start` whitespace variants.
     #[test]
-    fn parse_qw_arg_list_tolerates_leading_space() {
+    fn parse_qw_arg_list_tolerates_leading_space() -> Result<(), String> {
         // Space before delimiter (original fix).
         assert_eq!(parse_qw_arg_list("qw [a b]"), Some(vec!["a".to_string(), "b".to_string()]));
         assert_eq!(parse_qw_arg_list("qw(a b)"), Some(vec!["a".to_string(), "b".to_string()]));
@@ -529,6 +530,7 @@ mod tests {
         assert_eq!(parse_qw_arg_list("qw  \t [a b]"), Some(vec!["a".to_string(), "b".to_string()]));
         // Bareword directly after qw is not a valid delimiter — must return None.
         assert_eq!(parse_qw_arg_list("qwfoo"), None);
+        Ok(())
     }
 
     #[test]
