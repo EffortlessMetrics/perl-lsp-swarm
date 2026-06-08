@@ -217,7 +217,14 @@ impl WorkspaceIndex {
         };
         let start = open.len_utf8();
         let end = rest.rfind(close)?;
-        (end >= start).then_some(&rest[start..end])
+        // Guard the bounds explicitly: `then_some` evaluates its argument
+        // eagerly, so `&rest[start..end]` must not be constructed when
+        // `end < start` (e.g. a bareword like `qwfoo` where the delimiter
+        // char is also the first content char) — that would panic.
+        if end < start {
+            return None;
+        }
+        Some(&rest[start..end])
     }
 
     /// Find all definitions of a symbol by name
