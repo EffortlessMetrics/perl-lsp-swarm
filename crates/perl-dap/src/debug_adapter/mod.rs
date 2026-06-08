@@ -403,6 +403,59 @@ impl DebugAdapter {
         let mut output = lock_or_recover(&self.recent_output, "debug_adapter.push_recent_output");
         Self::append_recent_output_line_locked(&mut output, line);
     }
+
+    /// Seed a minimal debug session for unit testing resume-path side-effects.
+    ///
+    /// Spawns `perl -e "1"` with piped stdio so `session.process.stdin` is `Some`.
+    /// The process exits immediately; write errors to stdin are discarded by callers
+    /// (all resume handlers use `let _ = stdin.write_all(...)`), so the clear paths
+    /// still execute correctly.  No-ops silently when perl is not on PATH.
+    #[cfg(test)]
+    pub fn seed_session_for_test(&self) {
+        use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+        if let Ok(child) = std::process::Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Ok(mut guard) = self.session.lock() {
+                *guard = Some(DebugSession {
+                    process: child,
+                    state: DebugState::Stopped,
+                    stack_frames: vec![],
+                    variable_cache: VariableCache::default(),
+                    thread_id: 1,
+                    last_resume_mode: ResumeMode::Unknown,
+                });
+            }
+        }
+    }
+
+    /// Overwrite the active session's `stack_frames` with the supplied frames.
+    /// Panics (in tests) if no session has been seeded.
+    #[cfg(test)]
+    pub fn inject_stack_frames_for_test(&self, frames: Vec<crate::types::StackFrame>) {
+        if let Ok(mut guard) = self.session.lock() {
+            if let Some(ref mut s) = *guard {
+                s.stack_frames = frames;
+            }
+        }
+    }
+
+    /// Read a snapshot of the active session's `stack_frames` without consuming them.
+    /// Returns an empty vec when no session is present.
+    #[cfg(test)]
+    pub fn stack_frames_snapshot_for_test(&self) -> Vec<crate::types::StackFrame> {
+        if let Ok(guard) = self.session.lock() {
+            if let Some(ref s) = *guard {
+                return s.stack_frames.clone();
+            }
+        }
+        vec![]
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -1551,6 +1604,135 @@ print "result: $final\n";
     fn test_send_interrupt_signal_nonexistent_pid_returns_false() {
         let adapter = DebugAdapter::new();
         assert!(!adapter.send_interrupt_signal(999_999));
+    }
+
+    // ── stack_frames cleared on resume (issue #964) ──────────────────────────
+
+    fn make_stale_frame(id: i32) -> StackFrame {
+        StackFrame {
+            id,
+            name: "main::stale_sub".to_string(),
+            source: Source {
+                name: Some("stale.pl".to_string()),
+                path: "/tmp/stale.pl".to_string(),
+                source_reference: None,
+            },
+            line: 99,
+            column: 1,
+            end_line: None,
+            end_column: None,
+        }
+    }
+
+    #[test]
+    fn stack_frames_cleared_on_continue() {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        adapter.inject_stack_frames_for_test(vec![make_stale_frame(1)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 1, "precondition");
+
+        let _ = adapter.handle_continue(1, 1, None);
+
+        assert!(
+            adapter.stack_frames_snapshot_for_test().is_empty(),
+            "stack_frames must be empty after continue"
+        );
+    }
+
+    #[test]
+    fn stack_frames_cleared_on_next() {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        adapter.inject_stack_frames_for_test(vec![make_stale_frame(2)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 1, "precondition");
+
+        let _ = adapter.handle_next(1, 1, None);
+
+        assert!(
+            adapter.stack_frames_snapshot_for_test().is_empty(),
+            "stack_frames must be empty after next"
+        );
+    }
+
+    #[test]
+    fn stack_frames_cleared_on_step_in() {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        adapter.inject_stack_frames_for_test(vec![make_stale_frame(3)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 1, "precondition");
+
+        let _ = adapter.handle_step_in(1, 1, None);
+
+        assert!(
+            adapter.stack_frames_snapshot_for_test().is_empty(),
+            "stack_frames must be empty after stepIn"
+        );
+    }
+
+    #[test]
+    fn stack_frames_cleared_on_step_out() {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        adapter.inject_stack_frames_for_test(vec![make_stale_frame(4)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 1, "precondition");
+
+        let _ = adapter.handle_step_out(1, 1, None);
+
+        assert!(
+            adapter.stack_frames_snapshot_for_test().is_empty(),
+            "stack_frames must be empty after stepOut"
+        );
+    }
+
+    #[test]
+    fn stack_frames_cleared_on_pause() {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        adapter.inject_stack_frames_for_test(vec![make_stale_frame(5)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 1, "precondition");
+
+        let _ = adapter.handle_pause(1, 1, None);
+
+        assert!(
+            adapter.stack_frames_snapshot_for_test().is_empty(),
+            "stack_frames must be empty after pause"
+        );
+    }
+
+    #[test]
+    fn stack_frames_cleared_on_goto() {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        // Pre-seed a goto target mapping so the handler reaches the session block.
+        {
+            let mut goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
+            goto_map.insert(1, ("/tmp/test.pl".to_string(), 5));
+        }
+
+        adapter.inject_stack_frames_for_test(vec![make_stale_frame(6)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 1, "precondition");
+
+        let _ = adapter.handle_goto(1, 1, Some(json!({"threadId": 1, "targetId": 1})));
+
+        assert!(
+            adapter.stack_frames_snapshot_for_test().is_empty(),
+            "stack_frames must be empty after goto"
+        );
+    }
+
+    #[test]
+    fn no_session_stack_frames_snapshot_returns_empty() {
+        let adapter = DebugAdapter::new();
+        assert!(
+            adapter.stack_frames_snapshot_for_test().is_empty(),
+            "snapshot with no session must return empty vec"
+        );
     }
 
     // ── context_re unit tests ─────────────────────────────────────────────────
