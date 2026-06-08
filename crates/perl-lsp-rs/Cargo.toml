@@ -81,7 +81,7 @@ ropey = { version = "1.6.1" }
 tokio = { workspace = true }
 once_cell.workspace = true
 tracing.workspace = true
-which = "8.0.2"
+which = "8.0.3"
 
 [build-dependencies]
 
