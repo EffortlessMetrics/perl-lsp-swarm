@@ -481,3 +481,101 @@ fn workspace_rename_config_defaults() {
     assert!(config.report_progress, "report_progress should default to true");
     assert!(config.validate_syntax, "validate_syntax should default to true");
 }
+
+// ============================================================================
+// Regression: #956 — Unicode-adjacent word-boundary corruption
+// ============================================================================
+
+#[test]
+// Regression #956: a UTF-8 continuation byte immediately before the match was
+// not an ASCII identifier char, so the byte-level guard falsely reported a word
+// boundary and renamed a suffix of an unrelated Unicode identifier.
+fn workspace_rename_does_not_corrupt_adjacent_unicode_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    // $変数foo — the kanji end in continuation bytes; $foo is a separate variable
+    let content = "use utf8;\nmy $\u{5909}\u{6570}foo = 1;\nmy $foo = 2;\n";
+    let (_workspace, index) = setup_workspace(&[("test.pl", content)])?;
+    let config = WorkspaceRenameConfig::default();
+    let rename_engine = WorkspaceRename::new(index, config);
+
+    let result =
+        rename_engine.rename_symbol("foo", "bar", &_workspace.path().join("test.pl"), (2, 4));
+
+    match result {
+        Ok(r) => {
+            let total_edits: usize = r.file_edits.iter().map(|fe| fe.edits.len()).sum();
+            assert_eq!(
+                total_edits, 1,
+                "Only bare `foo` on line 3 should rename; `$変数foo` must not be touched. Got {} edits",
+                total_edits
+            );
+        }
+        // SymbolNotFound is acceptable when the engine can't locate `foo` at the
+        // given position — it means no false rename fired, which is the safety property.
+        Err(WorkspaceRenameError::SymbolNotFound { .. }) => {}
+        Err(e) => return Err(format!("Unexpected error: {e}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+// Regression #956: a UTF-8 lead byte immediately after the match (e.g. the α in
+// $fooα) was not an ASCII identifier char, so the byte-level guard falsely
+// reported a word boundary and renamed a prefix of a Unicode identifier.
+fn workspace_rename_does_not_corrupt_adjacent_unicode_suffix()
+-> Result<(), Box<dyn std::error::Error>> {
+    // $fooα — α is U+03B1, encoded as two bytes (0xCE 0xB1); $foo is separate
+    let content = "use utf8;\nmy $foo\u{03B1} = 1;\nmy $foo = 2;\n";
+    let (_workspace, index) = setup_workspace(&[("test.pl", content)])?;
+    let config = WorkspaceRenameConfig::default();
+    let rename_engine = WorkspaceRename::new(index, config);
+
+    let result =
+        rename_engine.rename_symbol("foo", "bar", &_workspace.path().join("test.pl"), (2, 4));
+
+    match result {
+        Ok(r) => {
+            let total_edits: usize = r.file_edits.iter().map(|fe| fe.edits.len()).sum();
+            assert_eq!(
+                total_edits, 1,
+                "Only bare `foo` on line 3 should rename; `$fooα` must not be touched. Got {} edits",
+                total_edits
+            );
+        }
+        Err(WorkspaceRenameError::SymbolNotFound { .. }) => {}
+        Err(e) => return Err(format!("Unexpected error: {e}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+// Regression #956: `foo` embedded between Unicode chars on both sides must not
+// be renamed; only the isolated `$foo` occurrence should change.
+fn workspace_rename_does_not_corrupt_unicode_surrounded_occurrence()
+-> Result<(), Box<dyn std::error::Error>> {
+    // $変数foo変数 — foo is surrounded by kanji bytes; $foo is the only valid target
+    let content = "use utf8;\nmy $\u{5909}\u{6570}foo\u{5909}\u{6570} = 1;\nmy $foo = 2;\n";
+    let (_workspace, index) = setup_workspace(&[("test.pl", content)])?;
+    let config = WorkspaceRenameConfig::default();
+    let rename_engine = WorkspaceRename::new(index, config);
+
+    let result =
+        rename_engine.rename_symbol("foo", "bar", &_workspace.path().join("test.pl"), (2, 4));
+
+    match result {
+        Ok(r) => {
+            let total_edits: usize = r.file_edits.iter().map(|fe| fe.edits.len()).sum();
+            assert_eq!(
+                total_edits, 1,
+                "Only isolated `$foo` should rename; embedded occurrence must be skipped. Got {} edits",
+                total_edits
+            );
+        }
+        Err(WorkspaceRenameError::SymbolNotFound { .. }) => {}
+        Err(e) => return Err(format!("Unexpected error: {e}").into()),
+    }
+
+    Ok(())
+}
