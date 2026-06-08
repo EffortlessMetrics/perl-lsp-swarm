@@ -398,7 +398,8 @@ impl<'a> Parser<'a> {
                         },
                     )?;
 
-                let has_embedded_code = self.analyze_regex_body_for_ast(&pattern, token.start)?;
+                let has_embedded_code = self.analyze_regex_body_for_ast(&pattern, token.start)?
+                    || modifiers.contains('e');
 
                 // Substitution as a standalone expression (will be used with =~ later)
                 Ok(Node::new(
