@@ -157,6 +157,38 @@ describe('gherkin outline providers', () => {
     expect(links).toHaveLength(1);
   });
 
+  test('skips bounded-inner-quantifier group step definitions (#953)', () => {
+    // ([a-z]{2,5})+ and (\d{1,3}){4} can backtrack super-linearly even though
+    // the inner quantifier is bounded — the heuristic must flag them.
+    const makeFeature = (step: string) => [
+      'Feature: Validate',
+      '  Scenario: Input',
+      `    Given ${step}`,
+    ].join('\n');
+
+    for (const [stepText, pattern] of [
+      ['abc abcde', '([a-z]{2,5})+'],
+      ['123', '(\\d{1,3}){4}'],
+    ] as const) {
+      const links = provideGherkinStepDefinitionLinks(
+        makeFeature(stepText),
+        { line: 2, character: 10 } as vscode.Position,
+        [
+          {
+            uri: vscode.Uri.file('/project/features/step_definitions/validate_steps.pm'),
+            text: [
+              'use Test::BDD::Cucumber::StepFile;',
+              '',
+              `Given qr/${pattern}/, sub {`,
+              '};',
+            ].join('\n'),
+          },
+        ]
+      );
+      expect(links).toHaveLength(0);
+    }
+  });
+
   test('resolves And steps using the previous Given/When/Then context', () => {
     const featureText = [
       'Feature: Checkout',

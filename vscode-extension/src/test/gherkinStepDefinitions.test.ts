@@ -107,6 +107,21 @@ describe('gherkin step definition support', () => {
     expect(result).not.toBe('ambiguous');
   });
 
+  test('treats bounded-inner-quantifier groups as expensive (#953)', () => {
+    // ([a-z]{2,5})+ and (\d{1,3}){4} can backtrack super-linearly; must be flagged.
+    const step1 = parseGherkinStepLine('Then abc abcde matches', 1);
+    expect(step1).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step1!, [
+      'Then qr/([a-z]{2,5})+/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    const step2 = parseGherkinStepLine('Then 123 matches', 1);
+    expect(step2).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step2!, [
+      'Then qr/(\\d{1,3}){4}/, sub { return; };',
+    ])).toBe('ambiguous');
+  });
+
   test('does not treat a single char-class quantifier as expensive (no false positive)', () => {
     // Regression for #859: `[0-9]+` / `[^"]+` are linear-time and safe. The
     // ReDoS guard previously flagged any character class followed by a

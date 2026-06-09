@@ -13,12 +13,15 @@ const MAX_STEP_DEFINITION_FILES = 500;
 const MAX_MATCH_REGEX_LENGTH = 256;
 const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
-// contains a quantifier* (e.g. `(a+)+`), a backreference, or a lookaround.
-// A single character class followed by one quantifier (`[^"]+`, `[0-9]+`) is
-// linear-time and safe — flagging it produced false "ambiguous" classifications
-// for ordinary step definitions, including the `"([^"]+)"` patterns this module
-// generates itself (see buildGeneratedStepPattern).
-const POTENTIALLY_EXPENSIVE_REGEX_RE = /(?:\([^)]*[+*][^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
+// contains a quantifier* (e.g. `(a+)+`, `([a-z]{2,5})+`), a backreference,
+// or a lookaround. A single character class followed by one quantifier
+// (`[^"]+`, `[0-9]+`) is linear-time and safe — flagging it produced false
+// "ambiguous" classifications for ordinary step definitions, including the
+// `"([^"]+)"` patterns this module generates itself (see
+// buildGeneratedStepPattern). The inner `[+*{]` catches both unbounded
+// (`+`/`*`) and bounded (`{m,n}`) inner quantifiers (see #953). Keep this in
+// sync with the identical constant in gherkinProviders.ts.
+const POTENTIALLY_EXPENSIVE_REGEX_RE = /(?:\([^)]*[+*{][^)]*\))[+*{]|\\[1-9]|\(\?<[=!]|(\(\?[!=])/;
 
 export type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But';
 export type StepDefinitionStatus = 'defined' | 'undefined' | 'ambiguous';
