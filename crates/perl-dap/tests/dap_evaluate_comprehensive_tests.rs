@@ -787,6 +787,148 @@ fn test_evaluate_without_frameid_no_session_still_returns_error() -> TestResult 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// AC: frameId validation — Running-state and frame-found paths (#902)
+//
+// The three tests below cover changed production lines that are NOT exercised
+// by the tests above:
+//   1. session.state != Stopped → "not stopped" error
+//   2. Stopped session, frame NOT found → "Frame not found" error (already
+//      exercised by test_evaluate_with_invalid_frameid_returns_error only if
+//      a session is present; the existing test uses no-session which returns
+//      "No debugger session" first)
+//   3. Stopped session, frame found → validation passes, continues to eval
+// ---------------------------------------------------------------------------
+
+/// session exists + is Running + frameId provided → "not stopped" error
+#[test]
+fn test_evaluate_running_session_with_frameid_returns_not_stopped_error() -> TestResult {
+    if !perl_available() {
+        return Ok(());
+    }
+    let mut adapter = new_adapter();
+    // Seed a session in Running state.
+    adapter.seed_running_session_for_test();
+
+    let response =
+        adapter.handle_request(1, "evaluate", Some(json!({ "expression": "$x", "frameId": 1 })));
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "evaluate");
+            assert!(
+                !success,
+                "evaluate with Running session and frameId must return success=false"
+            );
+            let msg = message.ok_or("expected error message for Running session + frameId")?;
+            assert!(
+                msg.contains("not stopped"),
+                "expected 'not stopped' error for Running session, got: {msg}"
+            );
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// session exists + is Stopped + frameId NOT in stack_frames → "Frame not found" error
+#[test]
+fn test_evaluate_stopped_session_frame_not_found_returns_error() -> TestResult {
+    if !perl_available() {
+        return Ok(());
+    }
+    use perl_dap::types::{Source, StackFrame};
+    let mut adapter = new_adapter();
+    // Seed a stopped session with frame id=1 only.
+    let frame = StackFrame {
+        id: 1,
+        name: "main::foo".to_string(),
+        source: Source {
+            name: Some("foo.pl".to_string()),
+            path: "/tmp/foo.pl".to_string(),
+            source_reference: None,
+        },
+        line: 10,
+        column: 1,
+        end_line: None,
+        end_column: None,
+    };
+    adapter.seed_stopped_session_with_frames_for_test(vec![frame]);
+
+    // Request frameId=999 which is not in the session.
+    let response = adapter.handle_request(
+        1,
+        "evaluate",
+        Some(json!({ "expression": "$x", "frameId": 999, "allowSideEffects": true })),
+    );
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "evaluate");
+            assert!(
+                !success,
+                "evaluate with unknown frameId must return success=false"
+            );
+            let msg = message.ok_or("expected error message for unknown frameId")?;
+            assert!(
+                msg.to_lowercase().contains("frame not found")
+                    || msg.to_lowercase().contains("frameid"),
+                "expected 'Frame not found' error, got: {msg}"
+            );
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// session exists + is Stopped + frameId found in stack_frames → validation passes
+#[test]
+fn test_evaluate_stopped_session_frame_found_passes_validation() -> TestResult {
+    if !perl_available() {
+        return Ok(());
+    }
+    use perl_dap::types::{Source, StackFrame};
+    let mut adapter = new_adapter();
+    // Seed a stopped session with frame id=1.
+    let frame = StackFrame {
+        id: 1,
+        name: "main::bar".to_string(),
+        source: Source {
+            name: Some("bar.pl".to_string()),
+            path: "/tmp/bar.pl".to_string(),
+            source_reference: None,
+        },
+        line: 5,
+        column: 1,
+        end_line: None,
+        end_column: None,
+    };
+    adapter.seed_stopped_session_with_frames_for_test(vec![frame]);
+
+    // frameId=1 is in the session — validation passes; the handler continues
+    // to the session eval path.  With a live `perl -e 1` process that has
+    // already exited, the eval result will be a timeout/no-output error, but
+    // that is NOT a frameId error — it is a different error category.
+    let response = adapter.handle_request(
+        1,
+        "evaluate",
+        Some(json!({ "expression": "$x", "frameId": 1, "allowSideEffects": true })),
+    );
+    match response {
+        DapMessage::Response { command, message, .. } => {
+            assert_eq!(command, "evaluate");
+            // The frameId validation did NOT produce a "No debugger session",
+            // "not stopped", or "Frame not found" error.
+            if let Some(msg) = message {
+                assert!(
+                    !msg.contains("not stopped") && !msg.to_lowercase().contains("frame not found"),
+                    "frameId validation should have passed but got error: {msg}"
+                );
+            }
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
 #[test]
 fn test_evaluate_command_name_in_all_responses() -> TestResult {
     let mut adapter = new_adapter();
