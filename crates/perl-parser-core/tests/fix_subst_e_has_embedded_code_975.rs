@@ -100,3 +100,44 @@ fn subst_e_sexp_contains_risk_code_marker() {
         sexp
     );
 }
+
+// ── Site 2 supplemental: quotes.rs false branch and both-true path ───────────
+
+/// `s{a}{b}g` — brace-delimited form with NO `e` modifier: has_embedded_code must be false.
+/// This covers the `modifiers.contains('e')` → false branch in quotes.rs.
+#[test]
+fn subst_quote_operator_form_no_e_does_not_set_has_embedded_code() {
+    let ast = parse_subst(r#"s{a}{b}g;"#);
+    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    assert!(
+        !embedded,
+        "s{{}}{{}}g (quote-operator, no e modifier) must NOT set has_embedded_code (modifiers={:?})",
+        mods
+    );
+}
+
+/// `s{a}{b}ee` — brace-delimited form with `ee` double-eval modifier: has_embedded_code must be true.
+/// This covers the `ee` path in quotes.rs (modifiers.contains('e') is true for 'ee').
+#[test]
+fn subst_quote_operator_form_ee_sets_has_embedded_code() {
+    let ast = parse_subst(r#"s{a}{b}ee;"#);
+    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    assert!(
+        embedded,
+        "s{{}}{{}}ee (quote-operator, double-eval) must set has_embedded_code=true (modifiers={:?})",
+        mods
+    );
+}
+
+/// `s{(?{1+1})}{b}e` — both `(?{...})` in pattern body AND `e` modifier active simultaneously.
+/// Verifies the `||` does not short-circuit incorrectly when both sides are true (quotes.rs path).
+#[test]
+fn subst_quote_operator_form_both_embedded_code_and_e_modifier() {
+    let ast = parse_subst(r#"s{(?{1+1})}{b}e;"#);
+    let (embedded, mods) = find_first_substitution(&ast).expect("should find a Substitution node");
+    assert!(
+        embedded,
+        "s{{(?{{...}})}}{{}}e (both pattern body and e modifier) must set has_embedded_code=true (modifiers={:?})",
+        mods
+    );
+}
