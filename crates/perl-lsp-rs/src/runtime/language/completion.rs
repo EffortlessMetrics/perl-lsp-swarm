@@ -2626,4 +2626,120 @@ mod tests {
             "folder-a-extra must not match folder-a (not a path boundary)"
         );
     }
+
+    // =========================================================================
+    // Strategy-B through-production-path tests (#970, patch-coverage)
+    //
+    // The five tests above cover the helper functions directly.  These two tests
+    // go through add_runtime_workspace_completions itself so the changed lines at
+    // the doc_folder_filter block (lines ~477-485) and the Strategy-B block
+    // (lines ~534-546) are executed and visible to the --lib coverage pack.
+    //
+    // They require the workspace feature (IndexAccessMode::Full).
+    // =========================================================================
+
+    /// With two registered workspace folders, add_runtime_workspace_completions
+    /// computes doc_folder_filter = Some(folder-a) and rejects the sub from
+    /// folder-b via the Strategy-B continue branch.
+    ///
+    /// Covered changed lines:
+    ///   477-481  doc_folder_filter = Some(best_workspace_folder_for_doc(...))
+    ///   534      if !is_module_kind
+    ///   535      if let Some(ref folder) = doc_folder_filter
+    ///   536-543  !workspace_folder_matches_doc_uri -> trace + continue
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn strategy_b_multi_folder_filters_cross_folder_sub() {
+        use crate::runtime::routing::IndexAccessMode;
+        use crate::runtime::workspace_folder::WorkspaceFolderState;
+        use perl_parser::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+
+        let server = LspServer::default();
+        {
+            let mut folders = server.workspace_folders.lock();
+            folders.push(WorkspaceFolderState::new("file:///project/folder-a".to_string()));
+            folders.push(WorkspaceFolderState::new("file:///project/folder-b".to_string()));
+        }
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        // Add a non-module (Sub) symbol from folder-b — it should be filtered out.
+        let _ = coordinator.index().index_file_str(
+            "file:///project/folder-b/lib/B.pm",
+            "package B;
+sub cross_folder_sub_b { 1 }
+1;
+",
+        );
+        coordinator.transition_to_ready(1, 1);
+
+        let doc_text = "my $x = cr";
+        let doc_uri = "file:///project/folder-a/script.pl";
+        let mut completions = Vec::new();
+        server.add_runtime_workspace_completions(
+            &mut completions,
+            doc_text,
+            doc_uri,
+            doc_text.len(),
+            &IndexAccessMode::Full(&coordinator),
+            500,
+        );
+
+        let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            !names.contains(&"cross_folder_sub_b"),
+            "Strategy-B must reject cross_folder_sub_b from folder-b when doc is in folder-a;              got completions: {names:?}"
+        );
+    }
+
+    /// With a single registered workspace folder, add_runtime_workspace_completions
+    /// skips Strategy-B (doc_folder_filter = None) and includes symbols from any URI.
+    ///
+    /// Covered changed lines:
+    ///   479  folders.len() > 1 -> false
+    ///   482-484  else { None }   (doc_folder_filter = None -> Strategy-B skipped)
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn strategy_b_single_folder_skips_filter_includes_symbol() {
+        use crate::runtime::routing::IndexAccessMode;
+        use crate::runtime::workspace_folder::WorkspaceFolderState;
+        use perl_parser::workspace_index::IndexCoordinator;
+        use std::sync::Arc;
+
+        let server = LspServer::default();
+        {
+            let mut folders = server.workspace_folders.lock();
+            // Only one folder — len() > 1 is false -> doc_folder_filter = None.
+            folders.push(WorkspaceFolderState::new("file:///project/folder-a".to_string()));
+        }
+
+        let coordinator = Arc::new(IndexCoordinator::new());
+        // Symbol at a path outside folder-a — still included because filter is None.
+        let _ = coordinator.index().index_file_str(
+            "file:///project/folder-b/lib/B.pm",
+            "package B;
+sub single_root_sub { 1 }
+1;
+",
+        );
+        coordinator.transition_to_ready(1, 1);
+
+        let doc_text = "single";
+        let doc_uri = "file:///project/folder-a/script.pl";
+        let mut completions = Vec::new();
+        server.add_runtime_workspace_completions(
+            &mut completions,
+            doc_text,
+            doc_uri,
+            doc_text.len(),
+            &IndexAccessMode::Full(&coordinator),
+            500,
+        );
+
+        let names: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            names.contains(&"single_root_sub"),
+            "single-folder workspace must not filter by folder (doc_folder_filter = None);              got completions: {names:?}"
+        );
+    }
 }
