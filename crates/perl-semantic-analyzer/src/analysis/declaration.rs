@@ -2180,3 +2180,165 @@ pub fn get_node_children(node: &Node) -> Vec<&Node> {
     // which handles all node kinds including Block, Package, MethodCall, etc.
     node.children()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Parser;
+    use std::sync::Arc;
+
+    /// Helper: parse source and return DeclarationProvider with version 0.
+    fn make_provider(source: &str) -> DeclarationProvider<'static> {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().expect("parse must succeed");
+        DeclarationProvider::new(Arc::new(ast), source.to_string(), "file:///test.pl".to_string())
+    }
+
+    // =========================================================================
+    // NodeKind::Method — changed lines in declaration.rs (#854, patch-coverage)
+    //
+    // find_declaration Method arm (lines ~352-362)
+    // collect_subroutine_declarations Method arm (lines ~853-854)
+    // collect_package_declarations Class arm (line ~877)
+    // get_children_static Class arm (line ~1293)
+    // get_children_static Package block arm (line ~1295)
+    // symbol_at_cursor_internal Method arm (lines ~1971-1977)
+    // =========================================================================
+
+    /// find_declaration on a Method node (cursor on the method name) returns
+    /// Some([...]) — exercises the NodeKind::Method arm in find_declaration.
+    ///
+    /// Covered changed line: ~352  NodeKind::Method { name, .. } =>
+    #[test]
+    fn method_decl_find_declaration_self_locates() {
+        let source = "class Foo { method greet { return 1; } }";
+        let provider = make_provider(source);
+        // "greet" starts at offset 19 (after "class Foo { method ").
+        // The Method node has no separate name child, so find_node_at_offset
+        // returns the Method node when the cursor is on the name characters.
+        let offset = source.find("greet").expect("greet must be in source");
+        let result = provider.find_declaration(offset, 0);
+        assert!(
+            result.is_some(),
+            "find_declaration on a Method node must return Some; source={source:?} offset={offset}"
+        );
+    }
+
+    /// collect_subroutine_declarations finds a Method node by name.
+    ///
+    /// Covered changed line: ~853  NodeKind::Method { name: method_name, .. }
+    #[test]
+    fn method_decl_collect_subroutine_declarations_finds_method() {
+        let source = "class Foo { method greet { return 1; } }";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "greet", &mut subs);
+        assert!(
+            !subs.is_empty(),
+            "collect_subroutine_declarations must find the method 'greet'; got empty vec"
+        );
+        assert!(
+            matches!(subs[0].kind, NodeKind::Method { ref name, .. } if name == "greet"),
+            "collected declaration must be a Method node named 'greet'"
+        );
+    }
+
+    /// collect_package_declarations finds a Class node by name.
+    ///
+    /// Covered changed line: ~877  NodeKind::Class { name, .. } if name == pkg_name
+    #[test]
+    fn class_decl_collect_package_declarations_finds_class() {
+        let source = "class Foo { method greet { return 1; } }";
+        let provider = make_provider(source);
+        let mut packages = Vec::new();
+        provider.collect_package_declarations(&provider.ast, "Foo", &mut packages);
+        assert!(
+            !packages.is_empty(),
+            "collect_package_declarations must find class 'Foo'; got empty vec"
+        );
+        assert!(
+            matches!(packages[0].kind, NodeKind::Class { ref name, .. } if name == "Foo"),
+            "collected declaration must be a Class node named 'Foo'"
+        );
+    }
+
+    /// get_children_static on a Class node returns the class body.
+    ///
+    /// Covered changed line: ~1293  NodeKind::Class { body, .. } => vec![body.as_ref()]
+    #[test]
+    fn get_children_static_class_returns_body() {
+        let source = "class Foo { method greet { return 1; } }";
+        let provider = make_provider(source);
+        // Walk the AST to find the Class node.
+        fn find_class(node: &Node) -> Option<&Node> {
+            if matches!(node.kind, NodeKind::Class { .. }) {
+                return Some(node);
+            }
+            for child in node.children() {
+                if let Some(found) = find_class(child) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let class_node = find_class(&provider.ast).expect("Class node must exist in parsed AST");
+        let children = DeclarationProvider::get_children_static(class_node);
+        assert!(
+            !children.is_empty(),
+            "get_children_static on Class must return the body; got empty vec"
+        );
+        // The single child must be the Block body.
+        assert!(
+            matches!(children[0].kind, NodeKind::Block { .. }),
+            "Class child returned by get_children_static must be a Block"
+        );
+    }
+
+    /// get_children_static on a Package-with-block node returns the block.
+    ///
+    /// Covered changed line: ~1295  NodeKind::Package { block: Some(block), .. }
+    #[test]
+    fn get_children_static_package_block_returns_block() {
+        let source = "package Foo { sub hello { return 1; } }";
+        let provider = make_provider(source);
+        fn find_package(node: &Node) -> Option<&Node> {
+            if matches!(node.kind, NodeKind::Package { .. }) {
+                return Some(node);
+            }
+            for child in node.children() {
+                if let Some(found) = find_package(child) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        let package_node =
+            find_package(&provider.ast).expect("Package node must exist in parsed AST");
+        let children = DeclarationProvider::get_children_static(package_node);
+        // package Foo { } has a block — get_children_static must return it.
+        assert!(
+            !children.is_empty(),
+            "get_children_static on Package-with-block must return the block; got empty vec"
+        );
+    }
+
+    /// symbol_at_cursor on a Method declaration site returns a SymbolKey with
+    /// name = method name and kind = Sub.
+    ///
+    /// Covered changed lines: ~1971-1977  NodeKind::Method { name, .. } => { ... }
+    #[test]
+    fn symbol_at_cursor_method_decl_returns_symbol_key() {
+        let source = "class Foo { method greet { return 1; } }";
+        let mut parser = Parser::new(source);
+        let ast = parser.parse().expect("parse must succeed");
+        let offset = source.find("greet").expect("greet must be in source");
+        let result = symbol_at_cursor(&ast, offset, "Foo");
+        assert!(
+            result.is_some(),
+            "symbol_at_cursor on a Method declaration must return Some; source={source:?}"
+        );
+        let key = result.unwrap();
+        assert_eq!(key.name.as_ref(), "greet", "symbol name must be the method name");
+        assert_eq!(key.kind, crate::workspace_index::SymKind::Sub, "method kind must be Sub");
+    }
+}
