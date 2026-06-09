@@ -533,3 +533,105 @@ impl DebugAdapter {
         }
     }
 }
+
+#[cfg(test)]
+mod evaluate_allocation_tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // result_type_is_expandable — cover all arms including contains-HASH/ARRAY
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn expandable_exact_matches() {
+        for ty in ["HASH", "ARRAY", "REF", "OBJECT", "TIED"] {
+            assert!(
+                DebugAdapter::result_type_is_expandable(ty),
+                "{ty} should be expandable"
+            );
+        }
+    }
+
+    #[test]
+    fn expandable_contains_hash() {
+        // Blessed objects often have type strings like "SomeClass=HASH(0x...)"
+        assert!(DebugAdapter::result_type_is_expandable("SomeClass=HASH(0x1234)"));
+        assert!(DebugAdapter::result_type_is_expandable("My::Module=HASH"));
+    }
+
+    #[test]
+    fn expandable_contains_array() {
+        assert!(DebugAdapter::result_type_is_expandable("SomeClass=ARRAY(0x1234)"));
+        assert!(DebugAdapter::result_type_is_expandable("Tied=ARRAY"));
+    }
+
+    #[test]
+    fn not_expandable_scalar_types() {
+        for ty in ["SCALAR", "INTEGER", "FLOAT", "STRING", "UNDEF", "CODE", "IO"] {
+            assert!(
+                !DebugAdapter::result_type_is_expandable(ty),
+                "{ty} should not be expandable"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // allocate_evaluate_result_ref — no-session path (else { 0 }) is the key
+    // changed line that needs coverage.  When no session is present, even an
+    // expandable type must return 0.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn allocate_returns_zero_with_no_session_and_expandable_type() {
+        // Without a session the else-branch returns 0 even for expandable types.
+        // This covers the `else { 0 }` arm of allocate_evaluate_result_ref.
+        let adapter = DebugAdapter::new();
+        let ref_val = adapter.allocate_evaluate_result_ref("$h", "HASH(0x1234)", "HASH");
+        assert_eq!(
+            ref_val, 0,
+            "allocate_evaluate_result_ref must return 0 when no session is present"
+        );
+    }
+
+    #[test]
+    fn allocate_returns_zero_for_non_expandable_type() {
+        // Covers the early-return `if !Self::result_type_is_expandable` arm.
+        let adapter = DebugAdapter::new();
+        let ref_val = adapter.allocate_evaluate_result_ref("$x", "42", "SCALAR");
+        assert_eq!(
+            ref_val, 0,
+            "allocate_evaluate_result_ref must return 0 for non-expandable scalar type"
+        );
+    }
+
+    #[test]
+    fn allocate_returns_zero_for_ref_type_no_session() {
+        // Cover REF type (not just HASH/ARRAY) through the no-session path.
+        let adapter = DebugAdapter::new();
+        let ref_val = adapter.allocate_evaluate_result_ref("\\$x", "REF(0xabcd)", "REF");
+        assert_eq!(ref_val, 0, "REF type with no session must return 0");
+    }
+
+    #[test]
+    fn allocate_returns_zero_for_blessed_hash_no_session() {
+        // Cover the contains-HASH arm of result_type_is_expandable through the
+        // no-session path of allocate_evaluate_result_ref.
+        let adapter = DebugAdapter::new();
+        let ref_val =
+            adapter.allocate_evaluate_result_ref("$obj", "SomeClass=HASH(0x1)", "SomeClass=HASH");
+        assert_eq!(ref_val, 0, "blessed HASH type with no session must return 0");
+    }
+
+    #[test]
+    fn allocate_returns_zero_for_blessed_array_no_session() {
+        // Cover the contains-ARRAY arm of result_type_is_expandable through the
+        // no-session path of allocate_evaluate_result_ref.
+        let adapter = DebugAdapter::new();
+        let ref_val = adapter.allocate_evaluate_result_ref(
+            "$arr_obj",
+            "Iter=ARRAY(0x1)",
+            "Iter=ARRAY",
+        );
+        assert_eq!(ref_val, 0, "blessed ARRAY type with no session must return 0");
+    }
+}
