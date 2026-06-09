@@ -112,8 +112,13 @@ fn test_stack_frames_cleared_on_step_out() {
     assert_frames_cleared(&adapter, "stepOut");
 }
 
+/// Test that goto with a valid registered target clears stack_frames.
+///
+/// This exercises the session block in handle_goto where `session.stack_frames.clear()`
+/// is the changed production line.  Without `register_goto_target_for_test` the handler
+/// returns early at "Unknown goto target id", never reaching the clear.
 #[test]
-fn test_stack_frames_cleared_on_goto() {
+fn test_stack_frames_cleared_on_goto_with_valid_target() {
     if !perl_available() {
         return;
     }
@@ -122,23 +127,32 @@ fn test_stack_frames_cleared_on_goto() {
     adapter.inject_stack_frames_for_test(vec![stale_frame()]);
     assert_stale_frame_present(&adapter, "goto");
 
-    // goto requires a registered goto target; with no registered target the
-    // handler returns an error response — but the test verifies the error path
-    // does NOT leave stale frames (the handler reaches the session block only
-    // when a valid target is found, so with no target the frames are untouched).
-    // Register a dummy target first by calling gotoTargets.
-    adapter.handle_request(
-        1,
-        "goto",
-        Some(json!({"threadId": 1, "targetId": 9999})),
-    );
+    // Register a target so the handler passes the "Unknown goto target" guard
+    // and reaches the session block where stack_frames.clear() is called.
+    adapter.register_goto_target_for_test(1, "/tmp/test.pl", 10);
+    adapter.handle_request(1, "goto", Some(json!({"threadId": 1, "targetId": 1})));
 
-    // With an invalid targetId the session block is not reached, so frames are
-    // NOT cleared (expected — the goto handler guards its session access).
-    // The important invariant is: it must not panic.
-    // Test the happy-path clear via the internal state change documented below:
-    // (Full goto clear is covered by the plan-review acceptance criteria;
-    // the targetId=9999 path exercises error-path stability only.)
+    // The goto handler clears stack_frames when it reaches the session block.
+    assert_frames_cleared(&adapter, "goto");
+}
+
+/// Test that goto with an invalid targetId does not panic and does not corrupt state.
+#[test]
+fn test_goto_with_invalid_target_no_panic() {
+    if !perl_available() {
+        return;
+    }
+    let mut adapter = DebugAdapter::new();
+    adapter.seed_session_for_test();
+    adapter.inject_stack_frames_for_test(vec![stale_frame()]);
+
+    // Unregistered targetId — handler returns error before reaching session block.
+    let response = adapter.handle_request(1, "goto", Some(json!({"threadId": 1, "targetId": 9999})));
+    // Must not panic; must return a Response.
+    assert!(
+        matches!(response, perl_dap::debug_adapter::DapMessage::Response { .. }),
+        "expected Response for invalid targetId"
+    );
 }
 
 #[test]

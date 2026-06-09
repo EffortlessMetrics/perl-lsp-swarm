@@ -457,6 +457,19 @@ impl DebugAdapter {
         }
         vec![]
     }
+
+    /// Register a goto target directly into the goto_targets map for testing.
+    ///
+    /// This allows external integration tests to exercise the goto happy-path
+    /// (session block reached, stack_frames cleared) without requiring a real
+    /// source file or AST validator.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    pub fn register_goto_target_for_test(&self, target_id: i64, path: &str, line: i64) {
+        if let Ok(mut guard) = self.goto_targets.lock() {
+            guard.insert(target_id, (path.to_string(), line));
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
