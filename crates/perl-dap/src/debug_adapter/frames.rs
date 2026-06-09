@@ -266,25 +266,27 @@ mod degraded_transport_tests {
     }
 
     /// Degraded-transport with empty recent_output buffer:
-    /// Vec::new() is returned → falls through to placeholder frame.
+    /// Vec::new() is returned → no active session → protocol-safe empty stackFrames.
+    /// The DAP spec permits an empty stackFrames array; fabricated placeholder frames
+    /// were removed in #995 to avoid confusing VS Code.
     /// Directly covers the `Vec::new()` return in the else branch with empty buffer.
     #[test]
-    fn degraded_transport_empty_buffer_returns_placeholder() -> TestResult {
+    fn degraded_transport_empty_buffer_returns_empty_frames() -> TestResult {
         let mut adapter = DebugAdapter::new();
-        // recent_output buffer is empty — no stale lines at all.
+        // recent_output buffer is empty — no stale lines at all, no active session.
 
         let response = adapter.handle_request(1, "stackTrace", Some(json!({"threadId": 1})));
         match response {
             DapMessage::Response { success, body: Some(body), .. } => {
-                assert!(success, "stackTrace must succeed even in degraded state");
+                assert!(success, "stackTrace must succeed even with no active session");
                 let frames = body
                     .get("stackFrames")
                     .and_then(|v| v.as_array())
                     .ok_or("missing stackFrames")?;
-                // Placeholder frame must be returned (no real session).
+                // No active session → honest empty list (DAP spec allows this).
                 assert!(
-                    !frames.is_empty(),
-                    "degraded-transport with empty buffer must return placeholder frame"
+                    frames.is_empty(),
+                    "degraded-transport with empty buffer and no session must return empty \n                     stackFrames (not fabricated placeholder); got: {frames:?}"
                 );
             }
             other => return Err(format!("expected Response with body, got {other:?}").into()),
