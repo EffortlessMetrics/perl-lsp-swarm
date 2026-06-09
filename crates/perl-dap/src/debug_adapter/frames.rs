@@ -264,6 +264,75 @@ mod degraded_transport_tests {
         }
         Ok(())
     }
+
+    /// Degraded-transport with empty recent_output buffer:
+    /// Vec::new() is returned → falls through to placeholder frame.
+    /// Directly covers the `Vec::new()` return in the else branch with empty buffer.
+    #[test]
+    fn degraded_transport_empty_buffer_returns_placeholder() -> TestResult {
+        let mut adapter = DebugAdapter::new();
+        // recent_output buffer is empty — no stale lines at all.
+
+        let response = adapter.handle_request(1, "stackTrace", Some(json!({"threadId": 1})));
+        match response {
+            DapMessage::Response { success, body: Some(body), .. } => {
+                assert!(success, "stackTrace must succeed even in degraded state");
+                let frames = body
+                    .get("stackFrames")
+                    .and_then(|v| v.as_array())
+                    .ok_or("missing stackFrames")?;
+                // Placeholder frame must be returned (no real session).
+                assert!(
+                    !frames.is_empty(),
+                    "degraded-transport with empty buffer must return placeholder frame"
+                );
+            }
+            other => return Err(format!("expected Response with body, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    /// Degraded-transport with many stale context lines: Vec::new() is returned
+    /// regardless; stale lines (100-109) must not appear in response.
+    #[test]
+    fn degraded_transport_large_buffer_does_not_serve_stale_early_lines() -> TestResult {
+        let mut adapter = DebugAdapter::new();
+        {
+            let mut output = lock_or_recover(&adapter.recent_output, "test.seed");
+            // Use line numbers 100-109 to avoid collision with placeholder frame (line=10).
+            for line_num in 100..=109_u32 {
+                DebugAdapter::append_recent_output_line_locked(
+                    &mut output,
+                    &format!("main::(/tmp/test.pl:{line_num}):"),
+                );
+                DebugAdapter::append_recent_output_line_locked(
+                    &mut output,
+                    &format!("  {line_num}:    my $x = {line_num};"),
+                );
+            }
+        }
+
+        let response = adapter.handle_request(1, "stackTrace", Some(json!({"threadId": 1})));
+        match response {
+            DapMessage::Response { body: Some(body), .. } => {
+                let frames = body
+                    .get("stackFrames")
+                    .and_then(|v| v.as_array())
+                    .ok_or("missing stackFrames")?;
+                // No stale frame from the buffer (lines 100-109) should appear.
+                for frame in frames {
+                    let line = frame.get("line").and_then(|v| v.as_i64()).unwrap_or(-1);
+                    assert!(
+                        !(100..=109).contains(&line),
+                        "stale buffer frame (line {line}) must not appear in degraded-transport \
+                         response; got frames: {frames:?}"
+                    );
+                }
+            }
+            other => return Err(format!("expected Response, got {other:?}").into()),
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

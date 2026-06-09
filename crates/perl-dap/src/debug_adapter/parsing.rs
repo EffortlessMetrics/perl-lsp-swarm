@@ -536,27 +536,46 @@ mod tests {
         );
     }
 
+    /// Regression test for issue #933: the degraded-transport path must NOT parse
+    /// recent_output when framed transport fails.  Recent output contains the entire
+    /// session history in order, and parsing it returns the stale first-stop frame
+    /// instead of the current-stop frame.
+    ///
+    /// Post-fix (PR #1247): the degraded path returns Vec::new() so the caller falls
+    /// through to session.stack_frames (set by output reader) or the placeholder frame.
     #[test]
-    pub(super) fn test_stack_trace_uses_recent_output_when_available()
+    pub(super) fn test_stack_trace_does_not_use_stale_recent_output_in_degraded_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
+        // Push stack-trace-like lines into the recent_output buffer.
         adapter.push_recent_output_line_for_test("# 0 main::compute at /tmp/script.pl line 20");
         adapter.push_recent_output_line_for_test("# 1 Foo::process called at /tmp/Foo.pm line 15");
 
+        // With no live session, framed_output_lines stays None → degraded path → Vec::new().
+        // The caller then falls through to the placeholder frame (no session, no pid).
         let response = adapter.handle_request(1, "stackTrace", Some(json!({"threadId": 1})));
         match response {
             DapMessage::Response { success, body, .. } => {
-                assert!(success);
+                assert!(success, "stackTrace must succeed in degraded state");
                 let body = body.ok_or("missing stackTrace body")?;
                 let frames = body
                     .get("stackFrames")
                     .and_then(|v| v.as_array())
                     .ok_or("missing stackFrames")?;
-                assert!(
-                    frames.len() >= 2,
-                    "expected parsed frames from recent output, got {}",
-                    frames.len()
-                );
+                // The degraded path must NOT return frames from recent_output.
+                // It falls through to the placeholder frame (1 frame).
+                // Importantly: no frame should have source path /tmp/script.pl or /tmp/Foo.pm.
+                for frame in frames {
+                    let path = frame
+                        .get("source")
+                        .and_then(|s| s.get("path"))
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("");
+                    assert!(
+                        !path.contains("script.pl") && !path.contains("Foo.pm"),
+                        "degraded path must not serve stale recent_output frames; got path={path:?}"
+                    );
+                }
             }
             _ => return Err("expected stackTrace response".into()),
         }
