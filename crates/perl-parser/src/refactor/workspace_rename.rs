@@ -887,4 +887,91 @@ mod tests {
         assert_eq!(find_package_at_offset(text, 45), Some("Bar".to_string()));
         assert_eq!(find_package_at_offset(text, 0), None);
     }
+
+    #[test]
+    fn test_word_boundary_underscore_prefix_blocks_match()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Covers is_word_start path: char before match is an identifier char (underscore).
+        // text[..match_start].chars().next_back() returns '_', is_perl_ident_char('_') = true
+        // => is_word_start = false => no match for "foo" in "_foo".
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.pl");
+        let content = "my $_foo = 1;\nfoo();\n";
+        std::fs::write(&path, content)?;
+
+        let index = WorkspaceIndex::new();
+        let uri = url::Url::from_file_path(&path)
+            .map_err(|_| format!("failed to create URL for {}", path.display()))?;
+        index.index_file_str(uri.as_str(), content)?;
+
+        let config = WorkspaceRenameConfig { create_backups: false, ..Default::default() };
+        let rename_engine = WorkspaceRename::new(index, config);
+        let result = rename_engine.rename_symbol("foo", "bar", &path, (1, 0))?;
+
+        // Only the standalone "foo()" on line 2 matches; "_foo" is not a word boundary.
+        assert_eq!(
+            result.statistics.total_changes, 1,
+            "expected only the standalone call to match, not the underscore-prefixed form"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_word_boundary_underscore_suffix_blocks_match()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Covers is_word_end path: char after match is an identifier char (underscore).
+        // text[match_end..].chars().next() returns '_', is_perl_ident_char('_') = true
+        // => is_word_end = false => no match for "foo" in "foo_bar".
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.pl");
+        let content = "my $foo_bar = 1;\nfoo();\n";
+        std::fs::write(&path, content)?;
+
+        let index = WorkspaceIndex::new();
+        let uri = url::Url::from_file_path(&path)
+            .map_err(|_| format!("failed to create URL for {}", path.display()))?;
+        index.index_file_str(uri.as_str(), content)?;
+
+        let config = WorkspaceRenameConfig { create_backups: false, ..Default::default() };
+        let rename_engine = WorkspaceRename::new(index, config);
+        let result = rename_engine.rename_symbol("foo", "bar", &path, (1, 0))?;
+
+        // Only the standalone "foo()" on line 2 matches; "foo_bar" is not a word boundary.
+        assert_eq!(
+            result.statistics.total_changes, 1,
+            "expected only the standalone call to match, not the underscore-suffixed form"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_word_boundary_unicode_char_prefix_blocks_match()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Regression for #956: Unicode char adjacent to match start.
+        // "\u{03B1}foo" where \u{03B1} (Greek alpha, UTF-8: 0xCE 0xB1) precedes "foo".
+        // Old byte code: byte at match_start-1 = 0xB1 (not ASCII alphanum) => false boundary.
+        // New char code: chars().next_back() = '\u{03B1}', is_alphanumeric() = true
+        //   => is_word_start = false => correctly skips the embedded match.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("main.pl");
+        let prefix = "\u{03B1}";  // Greek alpha
+        let content = format!("my ${prefix}foo = 1;\nfoo();\n");
+        std::fs::write(&path, &content)?;
+
+        let index = WorkspaceIndex::new();
+        let uri = url::Url::from_file_path(&path)
+            .map_err(|_| format!("failed to create URL for {}", path.display()))?;
+        index.index_file_str(uri.as_str(), &content)?;
+
+        let config = WorkspaceRenameConfig { create_backups: false, ..Default::default() };
+        let rename_engine = WorkspaceRename::new(index, config);
+        let result = rename_engine.rename_symbol("foo", "bar", &path, (1, 0))?;
+
+        // Only standalone "foo()" matches; "\u{03B1}foo" is rejected via char boundary check.
+        assert_eq!(
+            result.statistics.total_changes, 1,
+            "expected only standalone call; \u{03B1}foo suffix must not be a word boundary"
+        );
+        Ok(())
+    }
 }
