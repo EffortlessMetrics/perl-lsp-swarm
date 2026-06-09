@@ -403,6 +403,47 @@ impl DebugAdapter {
         let mut output = lock_or_recover(&self.recent_output, "debug_adapter.push_recent_output");
         Self::append_recent_output_line_locked(&mut output, line);
     }
+
+    /// Inject a mock session for frame-context validation tests.
+    ///
+    /// `stopped` controls whether the session is in `Stopped` (true) or `Running` (false) state.
+    /// Spawns a short-lived shell process to satisfy the `Child` requirement; the handle stays
+    /// valid after process exit, which is sufficient for validation that never touches stdin.
+    ///
+    /// Only for use in tests — not part of the stable API.
+    #[doc(hidden)]
+    pub fn inject_session_for_test(
+        &self,
+        stopped: bool,
+        stack_frames: Vec<crate::types::StackFrame>,
+    ) -> Result<(), std::io::Error> {
+        #[cfg(unix)]
+        let process = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        #[cfg(not(unix))]
+        let process = std::process::Command::new("cmd")
+            .args(["/c", "exit", "0"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+
+        let state = if stopped { DebugState::Stopped } else { DebugState::Running };
+        let session = DebugSession {
+            process,
+            state,
+            stack_frames,
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+        };
+        *lock_or_recover(&self.session, "test.inject_session") = Some(session);
+        Ok(())
+    }
 }
 #[cfg(test)]
 mod tests {

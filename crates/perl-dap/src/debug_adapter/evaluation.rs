@@ -89,6 +89,42 @@ impl DebugAdapter {
             }
         }
 
+        // Validate frameId when provided — DAP requires it to resolve to a current stopped frame.
+        // Use i64::from(f.id) for the comparison to avoid overflow on large frame IDs.
+        if let Some(requested_frame_id) = args.frame_id {
+            let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+            if let Some(ref session) = *session_guard {
+                if session.state != DebugState::Stopped {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "evaluate".to_string(),
+                        body: None,
+                        message: Some(
+                            "Cannot evaluate in frame context: session is not stopped. \
+                             Wait for a stopped event before sending evaluate with frameId."
+                                .to_string(),
+                        ),
+                    };
+                }
+                if !session.stack_frames.iter().any(|f| i64::from(f.id) == requested_frame_id) {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "evaluate".to_string(),
+                        body: None,
+                        message: Some(format!(
+                            "Frame not found: frameId {requested_frame_id} is not in the \
+                             current stack. Request stackTrace to get valid frame IDs."
+                        )),
+                    };
+                }
+            }
+            // No active session: the existing no-session guard below handles this case.
+        }
+
         let expression = &args.expression;
 
         // AC10.3: Get timeout configuration (5s default, 30s hard limit)

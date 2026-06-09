@@ -722,8 +722,94 @@ fn test_evaluate_with_frame_id_passes_validation() -> TestResult {
             "allowSideEffects": false
         })),
     );
-    // frameId is advisory — safe expressions with a frameId should pass safety validation.
+    // With no active session, frameId triggers the "no stopped session" error, not the
+    // safe-expression safety guard.  Verify the response does not blame safe-mode validation.
     assert_evaluate_not_safe_blocked(response, "Safe evaluation mode")
+}
+
+// ---------------------------------------------------------------------------
+// AC: frameId validation (Issue #902) — frame context must be a stopped session
+// ---------------------------------------------------------------------------
+
+/// frameId provided but no active session: must return an error, not silent success.
+/// With no session the "no stopped session" guard fires before any frame lookup.
+#[test]
+fn test_evaluate_with_invalid_frameid_returns_error() -> TestResult {
+    let mut adapter = new_adapter();
+    let response =
+        adapter.handle_request(1, "evaluate", Some(json!({ "expression": "$x", "frameId": 999 })));
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "evaluate");
+            assert!(!success, "evaluate with invalid frameId should fail");
+            let msg = message.ok_or("expected error message")?;
+            // Either "frame not found" (stopped session) or "No debugger session" (no session)
+            // — both are protocol-safe errors, not silent success.
+            assert!(
+                msg.to_lowercase().contains("frame")
+                    || msg.contains("No debugger session")
+                    || msg.contains("session"),
+                "expected frame-context or session error, got: {msg}"
+            );
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// frameId provided with an active session that is in Running state: must return
+/// "not stopped" error, not silent success or panic.
+#[test]
+fn test_evaluate_with_frameid_when_not_stopped_returns_error() -> TestResult {
+    let mut adapter = new_adapter();
+    // Inject a Running (not stopped) session so the state guard fires.
+    adapter
+        .inject_session_for_test(false /* stopped */, vec![])
+        .map_err(|e| format!("test setup failed: {e}"))?;
+
+    let response =
+        adapter.handle_request(1, "evaluate", Some(json!({ "expression": "$x", "frameId": 1 })));
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "evaluate");
+            assert!(!success, "evaluate with frameId in non-stopped session should fail");
+            let msg = message.ok_or("expected error message")?;
+            assert!(
+                msg.contains("not stopped") || msg.contains("stopped"),
+                "expected 'not stopped' error, got: {msg}"
+            );
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// Out-of-range frameId values (negative, zero, huge i64) must not panic.
+/// Each must return a protocol-safe error Response, never an Event or Request.
+#[test]
+fn test_evaluate_with_out_of_range_frameid_no_panic() -> TestResult {
+    let mut adapter = new_adapter();
+    // Inject a stopped session with an empty frame list so all frame IDs are "not found".
+    adapter
+        .inject_session_for_test(true /* stopped */, vec![])
+        .map_err(|e| format!("test setup failed: {e}"))?;
+
+    for frame_id in [i64::MIN, -1_i64, 0_i64, i64::MAX] {
+        let response = adapter.handle_request(
+            1,
+            "evaluate",
+            Some(json!({ "expression": "$x", "frameId": frame_id })),
+        );
+        assert!(
+            matches!(response, DapMessage::Response { .. }),
+            "frameId {frame_id} must return a Response (not panic), got: {response:?}"
+        );
+        // Verify the response is a failure (frame was not found)
+        if let DapMessage::Response { success, .. } = response {
+            assert!(!success, "frameId {frame_id} in empty-frames session should fail");
+        }
+    }
+    Ok(())
 }
 
 #[test]
