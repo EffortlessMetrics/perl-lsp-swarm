@@ -141,3 +141,17 @@ fn subst_quote_operator_form_both_embedded_code_and_e_modifier() {
         mods
     );
 }
+
+/// `find_first_substitution` returns `None` when the AST has no Substitution node.
+/// Pins the `None` branch of the helper: a non-substitution expression must yield None.
+/// RIPR seam: `find_first_substitution` return_value None at line 20.
+#[test]
+fn find_first_substitution_returns_none_for_non_subst_ast() {
+    // Parse a plain assignment — no s/// anywhere in the AST.
+    let ast = parse_subst(r#"my $x = 42;"#);
+    assert_eq!(
+        find_first_substitution(&ast),
+        None,
+        "find_first_substitution must return None for an AST with no Substitution node"
+    );
+}
