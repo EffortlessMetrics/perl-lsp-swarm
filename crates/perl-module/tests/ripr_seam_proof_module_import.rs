@@ -226,3 +226,51 @@ fn seam_space_before_bracket_module_name_is_correct() {
     assert!(names.contains(&"modcheck1"), "modcheck1 must appear; got: {names:?}");
     assert!(names.contains(&"modcheck2"), "modcheck2 must appear; got: {names:?}");
 }
+
+// ── BOUNDARY I: inner_start > inner_end guard (short/unclosed input) ─────────
+
+/// `qw[` with no closing bracket must yield no symbols.
+/// Pinned boundary: `inner_start > inner_end` guard in `parse_qw_arg_list`.
+/// When the input after trimming has only the opening delimiter (no room for
+/// content + closing), `checked_sub` returns `Some(0)` and
+/// `inner_start (1) > inner_end (0)` → `None`.
+/// Observable via the public API: the import call never matches.
+#[test]
+fn seam_unclosed_bracket_yields_no_symbols() {
+    // `qw[` with no closing — the inner_start > inner_end guard triggers.
+    let syms = symbols("(qw[)");
+    assert!(
+        syms.is_empty(),
+        "qw[ (no closing) must yield no symbols; got: {syms:?}"
+    );
+    // `qw(` with no closing — same guard, different bracket.
+    let syms2 = symbols("(qw()");
+    // Note: `qw()` parses as empty qw list (inner = ""), yielding no symbols.
+    // The important thing: no panic and the result is empty/valid.
+    assert!(
+        syms2.is_empty(),
+        "qw( (empty list) must yield no symbols; got: {syms2:?}"
+    );
+}
+
+// ── BOUNDARY J: !after_operator.ends_with(closing) guard (mismatched delimiter) ──
+
+/// `qw(abc]` — mismatched closing delimiter must yield no symbols.
+/// Pinned boundary: `!after_operator.ends_with(closing)` guard in `parse_qw_arg_list`.
+/// When the opening delimiter is `(` but the closing is `]`, the guard returns `None`.
+/// Observable via the public API: the import call with mismatched delimiters extracts nothing.
+#[test]
+fn seam_mismatched_closing_delimiter_yields_no_symbols() {
+    // Opening `(` but closing `]` — delimiter mismatch.
+    let syms = symbols("(qw(abc])");
+    assert!(
+        syms.is_empty(),
+        "qw(abc] (mismatched delimiters) must yield no symbols; got: {syms:?}"
+    );
+    // With leading whitespace: after trim, same mismatch condition.
+    let syms2 = symbols("(qw (abc])");
+    assert!(
+        syms2.is_empty(),
+        "qw (abc] (spaced, mismatched) must yield no symbols; got: {syms2:?}"
+    );
+}
