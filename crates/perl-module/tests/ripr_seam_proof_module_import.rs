@@ -171,8 +171,9 @@ fn seam_space_before_slash_delimiter_extracts_symbols() {
 fn seam_bareword_after_qw_is_rejected() {
     // `qwfoo` is not a valid qw invocation — it parses as the bareword `qwfoo`.
     let syms = symbols("(qwfoo)");
-    assert!(
-        syms.is_empty(),
+    assert_eq!(
+        syms,
+        Vec::<String>::new(),
         "qwfoo must not extract any symbols; got: {syms:?}"
     );
 }
@@ -239,16 +240,18 @@ fn seam_space_before_bracket_module_name_is_correct() {
 fn seam_unclosed_bracket_yields_no_symbols() {
     // `qw[` with no closing — the inner_start > inner_end guard triggers.
     let syms = symbols("(qw[)");
-    assert!(
-        syms.is_empty(),
+    assert_eq!(
+        syms,
+        Vec::<String>::new(),
         "qw[ (no closing) must yield no symbols; got: {syms:?}"
     );
     // `qw(` with no closing — same guard, different bracket.
     let syms2 = symbols("(qw()");
     // Note: `qw()` parses as empty qw list (inner = ""), yielding no symbols.
     // The important thing: no panic and the result is empty/valid.
-    assert!(
-        syms2.is_empty(),
+    assert_eq!(
+        syms2,
+        Vec::<String>::new(),
         "qw( (empty list) must yield no symbols; got: {syms2:?}"
     );
 }
@@ -263,14 +266,16 @@ fn seam_unclosed_bracket_yields_no_symbols() {
 fn seam_mismatched_closing_delimiter_yields_no_symbols() {
     // Opening `(` but closing `]` — delimiter mismatch.
     let syms = symbols("(qw(abc])");
-    assert!(
-        syms.is_empty(),
+    assert_eq!(
+        syms,
+        Vec::<String>::new(),
         "qw(abc] (mismatched delimiters) must yield no symbols; got: {syms:?}"
     );
     // With leading whitespace: after trim, same mismatch condition.
     let syms2 = symbols("(qw (abc])");
-    assert!(
-        syms2.is_empty(),
+    assert_eq!(
+        syms2,
+        Vec::<String>::new(),
         "qw (abc] (spaced, mismatched) must yield no symbols; got: {syms2:?}"
     );
 }
