@@ -29,6 +29,7 @@
 //!   `qwfoo`      → `[]`           (bareword after qw — must stay rejected)
 
 use perl_module::extract_require_import_symbols;
+use perl_module::import::parse_qw_arg_list;
 
 // ── helper ────────────────────────────────────────────────────────────────────
 
@@ -277,5 +278,75 @@ fn seam_mismatched_closing_delimiter_yields_no_symbols() {
         syms2,
         Vec::<String>::new(),
         "qw (abc] (spaced, mismatched) must yield no symbols; got: {syms2:?}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DIRECT SEAM BOUNDARY ANCHORS — parse_qw_arg_list (pub API, direct call)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// These tests call `parse_qw_arg_list` directly via the public API path
+// (since it is `pub` in `perl_module::import`) to give RIPR's static call-graph
+// a directly traceable reach edge from this test file to the seam.
+//
+// Seam A: `if delimiter.is_ascii_alphanumeric() || delimiter == '_'` (line ~667)
+//   Covered by: parse_qw_arg_list_direct_digit_delimiter,
+//               parse_qw_arg_list_direct_underscore_delimiter
+//
+// Seam B: `if inner_start > inner_end || !after_operator.ends_with(closing)` (line ~681)
+//   Covered by: parse_qw_arg_list_direct_unclosed_bracket,
+//               parse_qw_arg_list_direct_mismatched_closing
+
+// ── Direct seam A: alphanumeric guard ────────────────────────────────────────
+
+/// `qw9abc` — digit directly after qw, `delimiter.is_ascii_alphanumeric()` fires.
+/// RIPR seam anchor: direct call with a boundary input for the alphanumeric guard.
+/// A mutation removing `delimiter.is_ascii_alphanumeric()` would let `'9'` through
+/// as a delimiter, producing garbage output instead of `None`.
+#[test]
+fn parse_qw_arg_list_direct_digit_delimiter() {
+    assert_eq!(
+        parse_qw_arg_list("qw9abc"),
+        None,
+        "digit delimiter must return None (seam A: is_ascii_alphanumeric guard)"
+    );
+}
+
+/// `qw_foo` — underscore directly after qw, `delimiter == '_'` fires.
+/// RIPR seam anchor: direct call with a boundary input for the underscore guard.
+/// A mutation removing `delimiter == '_'` would let `'_'` be treated as a
+/// symmetric delimiter, extracting `"foo"` instead of returning `None`.
+#[test]
+fn parse_qw_arg_list_direct_underscore_delimiter() {
+    assert_eq!(
+        parse_qw_arg_list("qw_foo"),
+        None,
+        "underscore delimiter must return None (seam A: '_' guard)"
+    );
+}
+
+// ── Direct seam B: inner-bounds and closing-match guards ──────────────────────
+
+/// `qw[` — inner_start (1) > inner_end (0), checked_sub returns Some(0).
+/// RIPR seam anchor: direct call with a boundary input for the inner_start > inner_end guard.
+/// A mutation removing the guard would produce an inverted slice `&rest[1..0]` (panic or UB).
+#[test]
+fn parse_qw_arg_list_direct_unclosed_bracket() {
+    assert_eq!(
+        parse_qw_arg_list("qw["),
+        None,
+        "unclosed bracket must return None (seam B: inner_start > inner_end guard)"
+    );
+}
+
+/// `qw(abc]` — opening `(` but closing `]`, `!after_operator.ends_with(')')` fires.
+/// RIPR seam anchor: direct call with a boundary input for the ends_with mismatch guard.
+/// A mutation removing this guard would silently accept mismatched delimiters.
+#[test]
+fn parse_qw_arg_list_direct_mismatched_closing() {
+    assert_eq!(
+        parse_qw_arg_list("qw(abc]"),
+        None,
+        "mismatched delimiter must return None (seam B: ends_with guard)"
     );
 }
