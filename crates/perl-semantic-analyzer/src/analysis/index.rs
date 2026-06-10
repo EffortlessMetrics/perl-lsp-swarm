@@ -217,10 +217,9 @@ impl WorkspaceIndex {
         };
         let start = open.len_utf8();
         let end = rest.rfind(close)?;
-        // Guard the bounds explicitly: `then_some` evaluates its argument
-        // eagerly, so `&rest[start..end]` must not be constructed when
-        // `end < start` (e.g. a bareword like `qwfoo` where the delimiter
-        // char is also the first content char) — that would panic.
+        // Guard the bounds explicitly: constructing `&rest[start..end]` when
+        // `end < start` would panic (e.g. a bareword like `qwfoo` where the
+        // delimiter char is also the first content char). Return `None` first.
         if end < start {
             return None;
         }
