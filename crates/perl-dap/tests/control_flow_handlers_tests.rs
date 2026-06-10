@@ -3,6 +3,7 @@
 //! Tests for DAP control flow operations: continue, next, stepIn, stepOut, pause
 //!
 //! Specification: Issue #454 - DAP Control Flow Handlers (AC9)
+//! Updated: Issue #898 - execution-control handlers must return failure without a session
 //!
 //! Run with: cargo test -p perl-dap --test control_flow_handlers_tests
 
@@ -10,31 +11,20 @@ use perl_dap::{DapMessage, DebugAdapter};
 use perl_tdd_support::{must, must_some};
 use serde_json::json;
 
-// AC9.1: Test continue request handler
+// AC9.1: Test continue request handler — should fail without a session (#898)
 #[test]
 fn test_continue_handler() {
-    // AC9: Continue request should transition to Running state
+    // AC9/#898: Continue request without a session must fail with guidance
     let mut adapter = DebugAdapter::new();
 
     let response = adapter.handle_request(1, "continue", None);
 
     match response {
         DapMessage::Response { success, command, body, message, .. } => {
-            assert!(success, "Continue request should succeed");
+            assert!(!success, "Continue without a session must fail");
             assert_eq!(command, "continue");
-            assert!(message.is_none(), "Continue should not have error message");
-
-            // Verify response body contains allThreadsContinued
-            if let Some(body_value) = body {
-                assert_eq!(
-                    body_value.get("allThreadsContinued"),
-                    Some(&json!(true)),
-                    "Continue response should indicate all threads continued"
-                );
-            } else {
-                must(Err::<(), _>("Continue response should have body with allThreadsContinued"));
-                unreachable!()
-            }
+            assert!(message.is_some(), "Continue without session should have guidance message");
+            assert!(body.is_none(), "Failure response must not have a body");
         }
         _ => {
             must(Err::<(), _>("Expected Response message for continue"));
@@ -43,19 +33,19 @@ fn test_continue_handler() {
     }
 }
 
-// AC9.1: Test next (step over) request handler
+// AC9.1: Test next (step over) request handler — should fail without a session (#898)
 #[test]
 fn test_next_handler() {
-    // AC9: Next request should execute step over operation
+    // AC9/#898: Next request without a session must fail with guidance
     let mut adapter = DebugAdapter::new();
 
     let response = adapter.handle_request(1, "next", None);
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(success, "Next request should succeed");
+            assert!(!success, "Next without a session must fail");
             assert_eq!(command, "next");
-            assert!(message.is_none(), "Next should not have error message");
+            assert!(message.is_some(), "Next without session should have guidance message");
         }
         _ => {
             must(Err::<(), _>("Expected Response message for next"));
@@ -64,19 +54,19 @@ fn test_next_handler() {
     }
 }
 
-// AC9.1: Test stepIn request handler
+// AC9.1: Test stepIn request handler — should fail without a session (#898)
 #[test]
 fn test_step_in_handler() {
-    // AC9: StepIn request should step into subroutine calls
+    // AC9/#898: StepIn request without a session must fail with guidance
     let mut adapter = DebugAdapter::new();
 
     let response = adapter.handle_request(1, "stepIn", None);
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(success, "StepIn request should succeed");
+            assert!(!success, "StepIn without a session must fail");
             assert_eq!(command, "stepIn");
-            assert!(message.is_none(), "StepIn should not have error message");
+            assert!(message.is_some(), "StepIn without session should have guidance message");
         }
         _ => {
             must(Err::<(), _>("Expected Response message for stepIn"));
@@ -85,19 +75,19 @@ fn test_step_in_handler() {
     }
 }
 
-// AC9.1: Test stepOut request handler
+// AC9.1: Test stepOut request handler — should fail without a session (#898)
 #[test]
 fn test_step_out_handler() {
-    // AC9: StepOut request should step out of current subroutine
+    // AC9/#898: StepOut request without a session must fail with guidance
     let mut adapter = DebugAdapter::new();
 
     let response = adapter.handle_request(1, "stepOut", None);
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(success, "StepOut request should succeed");
+            assert!(!success, "StepOut without a session must fail");
             assert_eq!(command, "stepOut");
-            assert!(message.is_none(), "StepOut should not have error message");
+            assert!(message.is_some(), "StepOut without session should have guidance message");
         }
         _ => {
             must(Err::<(), _>("Expected Response message for stepOut"));
@@ -136,26 +126,23 @@ fn test_pause_handler_no_session() {
     }
 }
 
-// AC9.4: Test control flow state transitions
+// AC9.4: Test control flow state transitions — all four must fail without a session (#898)
 #[test]
 fn test_control_flow_state_transitions() {
-    // AC9: Verify state transitions for control flow operations
+    // AC9/#898: All four execution-control operations must fail without a session
     let mut adapter = DebugAdapter::new();
 
-    // All control flow operations should succeed even without a session
-    // (they handle missing session gracefully)
-
     let continue_response = adapter.handle_request(1, "continue", None);
-    assert!(matches!(continue_response, DapMessage::Response { success: true, .. }));
+    assert!(matches!(continue_response, DapMessage::Response { success: false, .. }));
 
     let next_response = adapter.handle_request(2, "next", None);
-    assert!(matches!(next_response, DapMessage::Response { success: true, .. }));
+    assert!(matches!(next_response, DapMessage::Response { success: false, .. }));
 
     let step_in_response = adapter.handle_request(3, "stepIn", None);
-    assert!(matches!(step_in_response, DapMessage::Response { success: true, .. }));
+    assert!(matches!(step_in_response, DapMessage::Response { success: false, .. }));
 
     let step_out_response = adapter.handle_request(4, "stepOut", None);
-    assert!(matches!(step_out_response, DapMessage::Response { success: true, .. }));
+    assert!(matches!(step_out_response, DapMessage::Response { success: false, .. }));
 }
 
 // AC9.4: Test that responses have correct sequence numbers
@@ -178,10 +165,10 @@ fn test_control_flow_sequence_numbers() {
     }
 }
 
-// AC9.1: Test continue with threadId argument
+// AC9.1: Test continue with threadId argument — should fail without a session (#898)
 #[test]
 fn test_continue_with_thread_id() {
-    // AC9: Continue request should accept threadId argument
+    // AC9/#898: Continue without a session must fail even when threadId is provided
     let mut adapter = DebugAdapter::new();
 
     let args = json!({
@@ -192,7 +179,7 @@ fn test_continue_with_thread_id() {
 
     match response {
         DapMessage::Response { success, command, .. } => {
-            assert!(success, "Continue with threadId should succeed");
+            assert!(!success, "Continue without a session must fail");
             assert_eq!(command, "continue");
         }
         _ => {
@@ -202,10 +189,10 @@ fn test_continue_with_thread_id() {
     }
 }
 
-// AC9.1: Test next with threadId argument
+// AC9.1: Test next with threadId argument — should fail without a session (#898)
 #[test]
 fn test_next_with_thread_id() {
-    // AC9: Next request should accept threadId argument
+    // AC9/#898: Next without a session must fail even when threadId is provided
     let mut adapter = DebugAdapter::new();
 
     let args = json!({
@@ -216,7 +203,7 @@ fn test_next_with_thread_id() {
 
     match response {
         DapMessage::Response { success, command, .. } => {
-            assert!(success, "Next with threadId should succeed");
+            assert!(!success, "Next without a session must fail");
             assert_eq!(command, "next");
         }
         _ => {
@@ -226,10 +213,10 @@ fn test_next_with_thread_id() {
     }
 }
 
-// AC9.1: Test stepIn with optional targetId
+// AC9.1: Test stepIn with optional targetId — should fail without a session (#898)
 #[test]
 fn test_step_in_with_target_id() {
-    // AC9: StepIn request should accept optional targetId
+    // AC9/#898: StepIn without a session must fail even when targetId is provided
     let mut adapter = DebugAdapter::new();
 
     let args = json!({
@@ -241,7 +228,7 @@ fn test_step_in_with_target_id() {
 
     match response {
         DapMessage::Response { success, command, .. } => {
-            assert!(success, "StepIn with targetId should succeed");
+            assert!(!success, "StepIn without a session must fail");
             assert_eq!(command, "stepIn");
         }
         _ => {
@@ -251,10 +238,10 @@ fn test_step_in_with_target_id() {
     }
 }
 
-// AC9.1: Test stepOut with threadId argument
+// AC9.1: Test stepOut with threadId argument — should fail without a session (#898)
 #[test]
 fn test_step_out_with_thread_id() {
-    // AC9: StepOut request should accept threadId argument
+    // AC9/#898: StepOut without a session must fail even when threadId is provided
     let mut adapter = DebugAdapter::new();
 
     let args = json!({
@@ -265,7 +252,7 @@ fn test_step_out_with_thread_id() {
 
     match response {
         DapMessage::Response { success, command, .. } => {
-            assert!(success, "StepOut with threadId should succeed");
+            assert!(!success, "StepOut without a session must fail");
             assert_eq!(command, "stepOut");
         }
         _ => {
@@ -299,10 +286,10 @@ fn test_pause_with_thread_id() {
     }
 }
 
-// AC9.4: Test multiple sequential control flow operations
+// AC9.4: Test multiple sequential control flow operations — all fail without a session (#898)
 #[test]
 fn test_sequential_control_flow_operations() {
-    // AC9: Verify multiple control flow operations can be executed sequentially
+    // AC9/#898: All execution-control operations must fail without a session
     let mut adapter = DebugAdapter::new();
 
     // Execute a sequence of control flow operations
@@ -320,7 +307,7 @@ fn test_sequential_control_flow_operations() {
 
         match response {
             DapMessage::Response { success, command: resp_cmd, .. } => {
-                assert!(success, "Operation {} should succeed", command);
+                assert!(!success, "Operation {} should fail without a session", command);
                 assert_eq!(&resp_cmd, command, "Command should match");
             }
             _ => must(Err::<(), _>(format!("Expected Response for command {}", command))),
@@ -328,10 +315,10 @@ fn test_sequential_control_flow_operations() {
     }
 }
 
-// AC9.5: Test edge case - continue with missing threadId
+// AC9.5: Test edge case - continue with missing threadId — should fail without a session (#898)
 #[test]
 fn test_continue_missing_thread_id() {
-    // AC9: Continue should work even without threadId argument
+    // AC9/#898: Continue without a session must fail even with empty args
     let mut adapter = DebugAdapter::new();
 
     let args = json!({});
@@ -340,7 +327,7 @@ fn test_continue_missing_thread_id() {
 
     match response {
         DapMessage::Response { success, command, .. } => {
-            assert!(success, "Continue without threadId should still succeed");
+            assert!(!success, "Continue without a session must fail");
             assert_eq!(command, "continue");
         }
         _ => {
@@ -350,10 +337,10 @@ fn test_continue_missing_thread_id() {
     }
 }
 
-// AC9.5: Test edge case - operations with null arguments
+// AC9.5: Test edge case - operations with null arguments — all fail without a session (#898)
 #[test]
 fn test_control_flow_with_null_arguments() {
-    // AC9: Control flow operations should handle null/empty arguments gracefully
+    // AC9/#898: Execution-control operations must fail without a session
     let mut adapter = DebugAdapter::new();
 
     let commands = vec!["continue", "next", "stepIn", "stepOut"];
@@ -363,23 +350,17 @@ fn test_control_flow_with_null_arguments() {
 
         match response {
             DapMessage::Response { success, .. } => {
-                // These should succeed even without arguments (for most operations)
-                if command == "pause" {
-                    // Pause may fail without a session - we accept either outcome
-                    let _ = success;
-                } else {
-                    assert!(success, "{} should succeed with null arguments", command);
-                }
+                assert!(!success, "{} should fail without a session", command);
             }
             _ => must(Err::<(), _>(format!("Expected Response for {}", command))),
         }
     }
 }
 
-// AC9.4: Test response format consistency
+// AC9.4: Test response format consistency — all fail without a session (#898)
 #[test]
 fn test_control_flow_response_format() {
-    // AC9: All control flow responses should have consistent format
+    // AC9/#898: All execution-control responses must fail consistently without a session
     let mut adapter = DebugAdapter::new();
 
     let commands = vec!["continue", "next", "stepIn", "stepOut"];
@@ -391,7 +372,7 @@ fn test_control_flow_response_format() {
             DapMessage::Response { seq, request_seq, success, command: cmd, .. } => {
                 assert!(seq > 0, "Sequence number should be positive");
                 assert_eq!(request_seq, 1, "Request sequence should match");
-                assert!(success, "{} should succeed", command);
+                assert!(!success, "{} should fail without a session", command);
                 assert_eq!(cmd, command, "Command name should match");
             }
             _ => must(Err::<(), _>(format!("Expected Response for {}", command))),
@@ -399,10 +380,10 @@ fn test_control_flow_response_format() {
     }
 }
 
-// AC9.1: Verify Perl debugger command mapping
+// AC9.1: Verify Perl debugger command mapping — handlers must fail without a session (#898)
 #[test]
 fn test_perl_debugger_command_mapping() {
-    // AC9: Verify that DAP commands map to correct Perl debugger commands
+    // AC9/#898: Verify that DAP commands fail without a session
     // This is implicitly tested by the handler implementations:
     // - continue -> "c\n"
     // - next -> "n\n"
@@ -412,25 +393,25 @@ fn test_perl_debugger_command_mapping() {
     // The actual command sending is tested through the handlers
     let mut adapter = DebugAdapter::new();
 
-    // Verify handlers respond correctly (command sending happens internally)
+    // Verify handlers respond correctly (command sending happens internally when session is active)
     assert!(matches!(
         adapter.handle_request(1, "continue", None),
-        DapMessage::Response { success: true, .. }
+        DapMessage::Response { success: false, .. }
     ));
 
     assert!(matches!(
         adapter.handle_request(2, "next", None),
-        DapMessage::Response { success: true, .. }
+        DapMessage::Response { success: false, .. }
     ));
 
     assert!(matches!(
         adapter.handle_request(3, "stepIn", None),
-        DapMessage::Response { success: true, .. }
+        DapMessage::Response { success: false, .. }
     ));
 
     assert!(matches!(
         adapter.handle_request(4, "stepOut", None),
-        DapMessage::Response { success: true, .. }
+        DapMessage::Response { success: false, .. }
     ));
 }
 
@@ -455,28 +436,18 @@ fn test_pause_without_active_session_returns_failure() {
     }
 }
 
-// AC9.4: Test continue response includes allThreadsContinued
+// AC9.4: Test continue response without a session — must fail, no body (#898)
 #[test]
 fn test_continue_includes_all_threads_continued() {
-    // AC9: Continue response must include allThreadsContinued per DAP spec
+    // AC9/#898: Without a session, continue must fail and must NOT have a body
     let mut adapter = DebugAdapter::new();
 
     let response = adapter.handle_request(1, "continue", None);
 
-    if let DapMessage::Response { body, .. } = response {
-        assert!(body.is_some(), "Continue must have response body");
-
-        if let Some(body_value) = body {
-            assert!(
-                body_value.get("allThreadsContinued").is_some(),
-                "Continue body must include allThreadsContinued field"
-            );
-            assert_eq!(
-                body_value.get("allThreadsContinued"),
-                Some(&json!(true)),
-                "allThreadsContinued should be true"
-            );
-        }
+    if let DapMessage::Response { success, body, message, .. } = response {
+        assert!(!success, "Continue without a session must fail");
+        assert!(body.is_none(), "Failure response must not have a body");
+        assert!(message.is_some(), "Failure response must include guidance message");
     } else {
         must(Err::<(), _>("Expected Response for continue"));
         unreachable!();
@@ -583,10 +554,10 @@ fn test_unknown_command_includes_typo_suggestion() {
     }
 }
 
-// AC9.4: Test that handlers are thread-safe (can be called multiple times)
+// AC9.4: Test that handlers are consistent (can be called multiple times) — all fail without session (#898)
 #[test]
 fn test_control_flow_handlers_thread_safe() {
-    // AC9: Handlers should be reusable and thread-safe
+    // AC9/#898: Handlers should be reusable; all must fail without a session
     let mut adapter = DebugAdapter::new();
 
     // Call same handler multiple times
@@ -595,17 +566,17 @@ fn test_control_flow_handlers_thread_safe() {
 
         match response {
             DapMessage::Response { success, .. } => {
-                assert!(success, "Handler should work on iteration {}", i);
+                assert!(!success, "Handler must fail without a session on iteration {}", i);
             }
             _ => must(Err::<(), _>(format!("Expected Response on iteration {}", i))),
         }
     }
 }
 
-// AC9.1: Test stepIn with granularity argument (future enhancement)
+// AC9.1: Test stepIn with granularity argument — should fail without a session (#898)
 #[test]
 fn test_step_in_with_granularity() {
-    // AC9: StepIn may support granularity in future (statement/line/instruction)
+    // AC9/#898: StepIn without a session must fail even when granularity is specified
     let mut adapter = DebugAdapter::new();
 
     let args = json!({
@@ -617,8 +588,7 @@ fn test_step_in_with_granularity() {
 
     match response {
         DapMessage::Response { success, .. } => {
-            // Should succeed even if granularity is not yet supported
-            assert!(success, "StepIn with granularity should succeed");
+            assert!(!success, "StepIn without a session must fail");
         }
         _ => {
             must(Err::<(), _>("Expected Response for stepIn with granularity"));
@@ -627,10 +597,10 @@ fn test_step_in_with_granularity() {
     }
 }
 
-// AC9.1: Test next with granularity argument (future enhancement)
+// AC9.1: Test next with granularity argument — should fail without a session (#898)
 #[test]
 fn test_next_with_granularity() {
-    // AC9: Next may support granularity in future
+    // AC9/#898: Next without a session must fail even when granularity is specified
     let mut adapter = DebugAdapter::new();
 
     let args = json!({
@@ -642,7 +612,7 @@ fn test_next_with_granularity() {
 
     match response {
         DapMessage::Response { success, .. } => {
-            assert!(success, "Next with granularity should succeed");
+            assert!(!success, "Next without a session must fail");
         }
         _ => {
             must(Err::<(), _>("Expected Response for next with granularity"));
@@ -651,10 +621,10 @@ fn test_next_with_granularity() {
     }
 }
 
-// AC9.1: Test stepOut with granularity argument (future enhancement)
+// AC9.1: Test stepOut with granularity argument — should fail without a session (#898)
 #[test]
 fn test_step_out_with_granularity() {
-    // AC9: StepOut may support granularity in future
+    // AC9/#898: StepOut without a session must fail even when granularity is specified
     let mut adapter = DebugAdapter::new();
 
     let args = json!({
@@ -666,11 +636,81 @@ fn test_step_out_with_granularity() {
 
     match response {
         DapMessage::Response { success, .. } => {
-            assert!(success, "StepOut with granularity should succeed");
+            assert!(!success, "StepOut without a session must fail");
         }
         _ => {
             must(Err::<(), _>("Expected Response for stepOut with granularity"));
             unreachable!()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical proving tests — lock the strict no-session behavior per issue #898
+// ---------------------------------------------------------------------------
+
+#[test]
+fn continue_without_session_returns_guidance() -> Result<(), Box<dyn std::error::Error>> {
+    let mut adapter = DebugAdapter::new();
+    let response = adapter.handle_request(1, "continue", None);
+    match response {
+        DapMessage::Response { success, command, message, body, .. } => {
+            assert_eq!(command, "continue");
+            assert!(!success, "continue without a session must fail");
+            assert!(body.is_none(), "failure response must not have a body");
+            let msg = message.ok_or("must include guidance message")?;
+            assert!(msg.contains("no Perl debug session is active"), "got: {msg}");
+            assert!(msg.contains("Start a launch or attach request"), "got: {msg}");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn next_without_session_returns_guidance() -> Result<(), Box<dyn std::error::Error>> {
+    let mut adapter = DebugAdapter::new();
+    let response = adapter.handle_request(1, "next", None);
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "next");
+            assert!(!success, "next without a session must fail");
+            let msg = message.ok_or("must include guidance message")?;
+            assert!(msg.contains("no Perl debug session is active"), "got: {msg}");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn step_in_without_session_returns_guidance() -> Result<(), Box<dyn std::error::Error>> {
+    let mut adapter = DebugAdapter::new();
+    let response = adapter.handle_request(1, "stepIn", None);
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "stepIn");
+            assert!(!success, "stepIn without a session must fail");
+            let msg = message.ok_or("must include guidance message")?;
+            assert!(msg.contains("no Perl debug session is active"), "got: {msg}");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn step_out_without_session_returns_guidance() -> Result<(), Box<dyn std::error::Error>> {
+    let mut adapter = DebugAdapter::new();
+    let response = adapter.handle_request(1, "stepOut", None);
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "stepOut");
+            assert!(!success, "stepOut without a session must fail");
+            let msg = message.ok_or("must include guidance message")?;
+            assert!(msg.contains("no Perl debug session is active"), "got: {msg}");
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
 }

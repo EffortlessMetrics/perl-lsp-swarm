@@ -36,7 +36,9 @@ mod dap_performance {
                 adapter.handle_request(i + 1, "next", Some(json!({ "threadId": 1 })))
             };
             match response {
-                DapMessage::Response { success, .. } => assert!(success),
+                // Without a session handlers return success:false with guidance (#898);
+                // latency test only cares about response time, not success value.
+                DapMessage::Response { .. } => {}
                 _ => anyhow::bail!("expected response"),
             }
             samples.push(start.elapsed());

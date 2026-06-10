@@ -256,17 +256,18 @@ mod dap_phase2_tests {
     async fn test_execution_control_operations() -> Result<()> {
         let mut adapter = DebugAdapter::new();
 
+        // Without an active session all four handlers must return failure (#898)
         let cont = adapter.handle_request(1, "continue", Some(json!({ "threadId": 1 })));
-        let _ = expect_response(cont, "continue", true);
+        let _ = expect_response(cont, "continue", false);
 
         let next = adapter.handle_request(2, "next", Some(json!({ "threadId": 1 })));
-        let _ = expect_response(next, "next", true);
+        let _ = expect_response(next, "next", false);
 
         let step_in = adapter.handle_request(3, "stepIn", Some(json!({ "threadId": 1 })));
-        let _ = expect_response(step_in, "stepIn", true);
+        let _ = expect_response(step_in, "stepIn", false);
 
         let step_out = adapter.handle_request(4, "stepOut", Some(json!({ "threadId": 1 })));
-        let _ = expect_response(step_out, "stepOut", true);
+        let _ = expect_response(step_out, "stepOut", false);
 
         Ok(())
     }

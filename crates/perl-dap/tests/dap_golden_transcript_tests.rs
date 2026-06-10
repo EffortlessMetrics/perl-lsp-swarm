@@ -65,6 +65,34 @@ mod dap_golden_transcripts {
         Ok(())
     }
 
+    // Execution-control commands (continue/next/stepIn/stepOut) require an active session (#898).
+    // Without a session they return success: false with a guidance message — that is correct
+    // behavior in a unit-test context where no real perl -d process is running.
+    fn send_execution_control_no_session(
+        adapter: &mut DebugAdapter,
+        request_seq: i64,
+        command: &str,
+        arguments: Option<Value>,
+    ) -> Result<()> {
+        let response = adapter.handle_request(request_seq, command, arguments);
+        match response {
+            DapMessage::Response { command: actual, message, .. } => {
+                if actual != command {
+                    anyhow::bail!("expected {command} response, got {actual}");
+                }
+                // Guidance message must be present (confirms the strict no-session path)
+                let msg = message.ok_or_else(|| {
+                    anyhow!("{command} must include a guidance message without a session")
+                })?;
+                if !msg.contains("no Perl debug session is active") {
+                    anyhow::bail!("{command} guidance message unexpected: {msg}");
+                }
+            }
+            _ => anyhow::bail!("expected response for {command}"),
+        }
+        Ok(())
+    }
+
     fn required_body_keys_for_command(command: &str) -> &'static [&'static str] {
         match command {
             "initialize" => &["supportsConfigurationDoneRequest"],
@@ -202,7 +230,13 @@ mod dap_golden_transcripts {
                 "breakpoints": [{ "line": 9 }]
             })),
         )?;
-        send_and_expect_success(&mut adapter, 3, "continue", Some(json!({ "threadId": 1 })))?;
+        // continue requires an active session; no-session path returns guidance (#898)
+        send_execution_control_no_session(
+            &mut adapter,
+            3,
+            "continue",
+            Some(json!({ "threadId": 1 })),
+        )?;
         send_and_expect_success(&mut adapter, 4, "stackTrace", Some(json!({ "threadId": 1 })))?;
         send_and_expect_success(&mut adapter, 5, "disconnect", None)?;
         Ok(())
@@ -219,11 +253,28 @@ mod dap_golden_transcripts {
         assert!(messages.iter().any(|m| m["command"] == "stepIn"));
         assert!(messages.iter().any(|m| m["command"] == "stepOut"));
 
+        // All four execution-control commands require an active session (#898).
+        // This replay confirms correct no-session behavior in a unit-test context.
         let mut adapter = DebugAdapter::new();
-        send_and_expect_success(&mut adapter, 1, "continue", Some(json!({ "threadId": 1 })))?;
-        send_and_expect_success(&mut adapter, 2, "next", Some(json!({ "threadId": 1 })))?;
-        send_and_expect_success(&mut adapter, 3, "stepIn", Some(json!({ "threadId": 1 })))?;
-        send_and_expect_success(&mut adapter, 4, "stepOut", Some(json!({ "threadId": 1 })))?;
+        send_execution_control_no_session(
+            &mut adapter,
+            1,
+            "continue",
+            Some(json!({ "threadId": 1 })),
+        )?;
+        send_execution_control_no_session(&mut adapter, 2, "next", Some(json!({ "threadId": 1 })))?;
+        send_execution_control_no_session(
+            &mut adapter,
+            3,
+            "stepIn",
+            Some(json!({ "threadId": 1 })),
+        )?;
+        send_execution_control_no_session(
+            &mut adapter,
+            4,
+            "stepOut",
+            Some(json!({ "threadId": 1 })),
+        )?;
         Ok(())
     }
 
