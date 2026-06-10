@@ -533,6 +533,47 @@ mod tests {
         Ok(())
     }
 
+    // ── Seam A: `delimiter.is_ascii_alphanumeric() || delimiter == '_'` (line 626) ──
+    //
+    // RIPR weakly_exposed seam.  A mutation that removes `delimiter.is_ascii_alphanumeric()`
+    // would let `qwfoo` produce Some([]) or garbled output.
+    // A mutation removing `delimiter == '_'` would let `qw_foo` treat `_` as a
+    // delimiter and parse `foo)` as an inner list.
+    // Each sub-condition is pinned by a separate assertion below.
+    #[test]
+    fn parse_qw_arg_list_alphanumeric_delimiter_is_rejected() {
+        // Digit after qw — covers `is_ascii_alphanumeric()` for numeric chars.
+        assert_eq!(parse_qw_arg_list("qw9abc"), None, "digit delimiter must be None");
+        // Underscore after qw — covers `delimiter == '_'`.
+        assert_eq!(parse_qw_arg_list("qw_foo"), None, "underscore delimiter must be None");
+    }
+
+    // ── Seam B: `inner_start > inner_end || !after_operator.ends_with(closing)` (line 640) ──
+    //
+    // RIPR weakly_exposed seam.  A mutation removing `inner_start > inner_end` would
+    // produce a zero-length (or inverted) inner slice, causing panics or empty vecs.
+    // A mutation removing `!after_operator.ends_with(closing)` would accept mismatched
+    // delimiters.  Each sub-condition is pinned separately.
+    #[test]
+    fn parse_qw_arg_list_opening_only_returns_none() {
+        // `qw[` — inner_start (1) > inner_end (0) → None.
+        assert_eq!(parse_qw_arg_list("qw["), None, "qw[ (no closing) must be None");
+        // `qw(` — same guard, paren variant.
+        assert_eq!(parse_qw_arg_list("qw("), None, "qw( (no closing) must be None");
+        // `qw [` — after trim_start still no closing bracket.
+        assert_eq!(parse_qw_arg_list("qw ["), None, "qw [ (space, no closing) must be None");
+    }
+
+    #[test]
+    fn parse_qw_arg_list_mismatched_closing_returns_none() {
+        // Opens with `(` but closes with `]` → ends_with guard fires.
+        assert_eq!(parse_qw_arg_list("qw(abc]"), None, "qw(abc] must be None (mismatched)");
+        // Opens with `[` but closes with `)`.
+        assert_eq!(parse_qw_arg_list("qw[abc)"), None, "qw[abc) must be None (mismatched)");
+        // With leading whitespace before `(`.
+        assert_eq!(parse_qw_arg_list("qw (abc]"), None, "qw (abc] must be None (mismatched)");
+    }
+
     #[test]
     fn token_as_module_name_keeps_non_pm_require_tokens() -> Result<(), String> {
         let bare = parse_module_import_head("require Local::Util;")
