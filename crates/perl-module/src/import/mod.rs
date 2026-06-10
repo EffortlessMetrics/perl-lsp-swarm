@@ -498,6 +498,41 @@ fn collect_literal_import_entries(
 mod tests {
     use super::*;
 
+    /// Regression: `Module->import(qw [..])` with whitespace before the `qw`
+    /// delimiter must extract each symbol the same as the compact `qw(..)` form.
+    /// Previously the leading space was treated as the delimiter, so the list
+    /// failed to parse and no symbols were extracted. See `parse_qw_arg_list`.
+    #[test]
+    fn import_qw_list_space_before_delimiter_extracts_symbols() -> Result<(), String> {
+        let src = "require Foo::Bar;\nFoo::Bar->import(qw [alpha beta]);\n";
+        let syms: Vec<String> =
+            extract_require_import_symbols(src).into_iter().map(|e| e.symbol).collect();
+        assert!(syms.contains(&"alpha".to_string()), "syms: {syms:?}");
+        assert!(syms.contains(&"beta".to_string()), "syms: {syms:?}");
+        Ok(())
+    }
+
+    /// `parse_qw_arg_list` unit coverage: leading whitespace before the
+    /// delimiter is tolerated; the compact form still works; a word character
+    /// after `qw` is still rejected (not a delimiter).
+    /// Covers space, tab, and newline — all `trim_start` whitespace variants.
+    #[test]
+    fn parse_qw_arg_list_tolerates_leading_space() -> Result<(), String> {
+        // Space before delimiter (original fix).
+        assert_eq!(parse_qw_arg_list("qw [a b]"), Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(parse_qw_arg_list("qw(a b)"), Some(vec!["a".to_string(), "b".to_string()]));
+        // Tab before delimiter.
+        assert_eq!(parse_qw_arg_list("qw\t[a b]"), Some(vec!["a".to_string(), "b".to_string()]));
+        assert_eq!(parse_qw_arg_list("qw\t(a b)"), Some(vec!["a".to_string(), "b".to_string()]));
+        // Newline before delimiter (Perl allows this in multi-line source).
+        assert_eq!(parse_qw_arg_list("qw\n[a b]"), Some(vec!["a".to_string(), "b".to_string()]));
+        // Multiple mixed whitespace.
+        assert_eq!(parse_qw_arg_list("qw  \t [a b]"), Some(vec!["a".to_string(), "b".to_string()]));
+        // Bareword directly after qw is not a valid delimiter — must return None.
+        assert_eq!(parse_qw_arg_list("qwfoo"), None);
+        Ok(())
+    }
+
     #[test]
     fn token_as_module_name_keeps_non_pm_require_tokens() -> Result<(), String> {
         let bare = parse_module_import_head("require Local::Util;")
@@ -582,9 +617,13 @@ fn parse_literal_arg_list(args: &str) -> Option<Vec<String>> {
 }
 
 fn parse_qw_arg_list(trimmed: &str) -> Option<Vec<String>> {
-    let after_operator = trimmed.strip_prefix("qw")?;
+    // Perl allows whitespace between `qw` and its opening delimiter, e.g.
+    // `qw [a b]`.  Trim it so the delimiter is read correctly rather than
+    // treated as the delimiter itself.  Indexing is done against `after_operator`
+    // (a suffix of `trimmed`) so offsets stay aligned after trimming.
+    let after_operator = trimmed.strip_prefix("qw")?.trim_start();
     let delimiter = after_operator.chars().next()?;
-    if delimiter.is_ascii_alphanumeric() || delimiter == '_' || delimiter.is_whitespace() {
+    if delimiter.is_ascii_alphanumeric() || delimiter == '_' {
         return None;
     }
 
@@ -596,14 +635,15 @@ fn parse_qw_arg_list(trimmed: &str) -> Option<Vec<String>> {
         other => other,
     };
 
-    let inner_start = "qw".len() + delimiter.len_utf8();
-    let inner_end = trimmed.len().checked_sub(closing.len_utf8())?;
-    if inner_start > inner_end || !trimmed.ends_with(closing) {
+    let inner_start = delimiter.len_utf8();
+    let inner_end = after_operator.len().checked_sub(closing.len_utf8())?;
+    if inner_start > inner_end || !after_operator.ends_with(closing) {
         return None;
     }
 
-    let inner = &trimmed[inner_start..inner_end];
-    Some(inner.split_whitespace().filter(|word| !word.is_empty()).map(str::to_string).collect())
+    let inner = &after_operator[inner_start..inner_end];
+    // `split_whitespace` already skips empty tokens, so no extra filter is needed.
+    Some(inner.split_whitespace().map(str::to_string).collect())
 }
 
 /// Return true when `line` indicates a new statement boundary that should stop
