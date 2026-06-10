@@ -2047,7 +2047,8 @@ pub enum NodeKind {
         replacement: String,
         /// Substitution modifiers (g, e, r, etc.)
         modifiers: String,
-        /// Whether the regex contains embedded code `(?{...})`
+        /// Whether the substitution contains embedded code — either a `(?{...})` pattern
+        /// in the regex pattern, or the `e`/`ee` modifier which evaluates the replacement as Perl code.
         has_embedded_code: bool,
         /// Whether the binding operator was `!~` (negated match)
         negated: bool,
