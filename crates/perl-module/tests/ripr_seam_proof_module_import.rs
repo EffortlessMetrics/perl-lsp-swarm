@@ -40,10 +40,7 @@ use perl_module::import::parse_qw_arg_list;
 /// e.g. `"(qw [alpha beta])"`.
 fn symbols(arg_suffix: &str) -> Vec<String> {
     let source = format!("require Foo::Bar;\nFoo::Bar->import{arg_suffix};\n");
-    extract_require_import_symbols(&source)
-        .into_iter()
-        .map(|e| e.symbol)
-        .collect()
+    extract_require_import_symbols(&source).into_iter().map(|e| e.symbol).collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -73,19 +70,9 @@ fn symbols(arg_suffix: &str) -> Vec<String> {
 #[test]
 fn seam_space_before_bracket_delimiter_extracts_symbols() {
     let syms = symbols("(qw [alpha beta])");
-    assert!(
-        syms.contains(&"alpha".to_string()),
-        "qw [..] must extract 'alpha'; got: {syms:?}"
-    );
-    assert!(
-        syms.contains(&"beta".to_string()),
-        "qw [..] must extract 'beta'; got: {syms:?}"
-    );
-    assert_eq!(
-        syms.len(),
-        2,
-        "qw [alpha beta] must yield exactly 2 symbols; got: {syms:?}"
-    );
+    assert!(syms.contains(&"alpha".to_string()), "qw [..] must extract 'alpha'; got: {syms:?}");
+    assert!(syms.contains(&"beta".to_string()), "qw [..] must extract 'beta'; got: {syms:?}");
+    assert_eq!(syms.len(), 2, "qw [alpha beta] must yield exactly 2 symbols; got: {syms:?}");
 }
 
 /// `qw [a b]` — exact symbol names match, not just non-empty.
@@ -122,14 +109,8 @@ fn seam_compact_qw_paren_still_works() {
 #[test]
 fn seam_tab_before_bracket_delimiter_extracts_symbols() {
     let syms = symbols("(qw\t[tab1 tab2])");
-    assert!(
-        syms.contains(&"tab1".to_string()),
-        "qw\\t[..] must extract 'tab1'; got: {syms:?}"
-    );
-    assert!(
-        syms.contains(&"tab2".to_string()),
-        "qw\\t[..] must extract 'tab2'; got: {syms:?}"
-    );
+    assert!(syms.contains(&"tab1".to_string()), "qw\\t[..] must extract 'tab1'; got: {syms:?}");
+    assert!(syms.contains(&"tab2".to_string()), "qw\\t[..] must extract 'tab2'; got: {syms:?}");
 }
 
 // ── BOUNDARY D: space before `(` delimiter ───────────────────────────────────
@@ -172,11 +153,7 @@ fn seam_space_before_slash_delimiter_extracts_symbols() {
 fn seam_bareword_after_qw_is_rejected() {
     // `qwfoo` is not a valid qw invocation — it parses as the bareword `qwfoo`.
     let syms = symbols("(qwfoo)");
-    assert_eq!(
-        syms,
-        Vec::<String>::new(),
-        "qwfoo must not extract any symbols; got: {syms:?}"
-    );
+    assert_eq!(syms, Vec::<String>::new(), "qwfoo must not extract any symbols; got: {syms:?}");
 }
 
 // ── BOUNDARY G: the whitespace-guard is gone — space is now valid before delimiters ──
@@ -193,14 +170,8 @@ fn seam_whitespace_guard_removed_space_before_bracket_is_accepted() {
         2,
         "guard must be absent: space-before-bracket must yield 2 symbols; got: {syms:?}"
     );
-    assert!(
-        syms.contains(&"guard_a".to_string()),
-        "guard_a must be extracted; got: {syms:?}"
-    );
-    assert!(
-        syms.contains(&"guard_b".to_string()),
-        "guard_b must be extracted; got: {syms:?}"
-    );
+    assert!(syms.contains(&"guard_a".to_string()), "guard_a must be extracted; got: {syms:?}");
+    assert!(syms.contains(&"guard_b".to_string()), "guard_b must be extracted; got: {syms:?}");
 }
 
 // ── BOUNDARY H: module field is correctly populated for spaced-delimiter form ──
@@ -212,17 +183,9 @@ fn seam_whitespace_guard_removed_space_before_bracket_is_accepted() {
 fn seam_space_before_bracket_module_name_is_correct() {
     let source = "require Foo::Bar;\nFoo::Bar->import(qw [modcheck1 modcheck2]);\n";
     let entries = extract_require_import_symbols(source);
-    assert_eq!(
-        entries.len(),
-        2,
-        "expected 2 entries for spaced qw; got: {entries:?}"
-    );
+    assert_eq!(entries.len(), 2, "expected 2 entries for spaced qw; got: {entries:?}");
     for e in &entries {
-        assert_eq!(
-            e.module, "Foo::Bar",
-            "module name must be Foo::Bar; got: {:?}",
-            e.module
-        );
+        assert_eq!(e.module, "Foo::Bar", "module name must be Foo::Bar; got: {:?}", e.module);
     }
     let names: Vec<&str> = entries.iter().map(|e| e.symbol.as_str()).collect();
     assert!(names.contains(&"modcheck1"), "modcheck1 must appear; got: {names:?}");
@@ -241,11 +204,7 @@ fn seam_space_before_bracket_module_name_is_correct() {
 fn seam_unclosed_bracket_yields_no_symbols() {
     // `qw[` with no closing — the inner_start > inner_end guard triggers.
     let syms = symbols("(qw[)");
-    assert_eq!(
-        syms,
-        Vec::<String>::new(),
-        "qw[ (no closing) must yield no symbols; got: {syms:?}"
-    );
+    assert_eq!(syms, Vec::<String>::new(), "qw[ (no closing) must yield no symbols; got: {syms:?}");
     // `qw(` with no closing — same guard, different bracket.
     let syms2 = symbols("(qw()");
     // Note: `qw()` parses as empty qw list (inner = ""), yielding no symbols.
