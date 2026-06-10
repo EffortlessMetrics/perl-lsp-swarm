@@ -533,6 +533,37 @@ mod tests {
         Ok(())
     }
 
+    /// `parse_qw_arg_list` boundary: `inner_start > inner_end` path.
+    ///
+    /// When the input has only the opening delimiter (no room for content + closing),
+    /// `checked_sub` yields `Some(0)` and `inner_start (1) > inner_end (0)` → `None`.
+    /// This pins the changed indexing logic (`after_operator`-relative vs old
+    /// `trimmed`-relative) for the short-input guard.
+    #[test]
+    fn parse_qw_arg_list_opening_only_returns_none() {
+        // Just the opening bracket — no closing. inner_start > inner_end → None.
+        assert_eq!(parse_qw_arg_list("qw["), None, "qw[ (no closing) must be None");
+        assert_eq!(parse_qw_arg_list("qw("), None, "qw( (no closing) must be None");
+        // With leading whitespace: after trim, same short-input condition.
+        assert_eq!(parse_qw_arg_list("qw ["), None, "qw [ (space, no closing) must be None");
+    }
+
+    /// `parse_qw_arg_list` boundary: `!after_operator.ends_with(closing)` path.
+    ///
+    /// When the closing delimiter doesn't match the opening one,
+    /// `ends_with(closing)` returns `false` → `None`.
+    /// This pins that the guard checks `after_operator` (not the original `trimmed`)
+    /// after the whitespace trim.
+    #[test]
+    fn parse_qw_arg_list_mismatched_closing_returns_none() {
+        // Opening `(` but closing `]` — delimiter mismatch → None.
+        assert_eq!(parse_qw_arg_list("qw(abc]"), None, "qw(abc] must be None (mismatched)");
+        // Opening `[` but closing `)` — delimiter mismatch → None.
+        assert_eq!(parse_qw_arg_list("qw[abc)"), None, "qw[abc) must be None (mismatched)");
+        // With leading whitespace: trim should not obscure the mismatch.
+        assert_eq!(parse_qw_arg_list("qw (abc]"), None, "qw (abc] must be None (mismatched)");
+    }
+
     #[test]
     fn token_as_module_name_keeps_non_pm_require_tokens() -> Result<(), String> {
         let bare = parse_module_import_head("require Local::Util;")
