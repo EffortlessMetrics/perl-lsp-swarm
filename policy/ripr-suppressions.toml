@@ -73,39 +73,3 @@ reason = "Seam-proof test files (ripr_seam_proof_*.rs) are diff-scoped proof har
 created = "2026-06-10"
 review_after = "2026-07-10"
 expires = "2026-09-30"
-
-# -----------------------------------------------------------------------------
-# parse_qw_arg_list predicate seams — new unit tests in same diff not credited.
-#
-# Two `weakly_exposed` predicate seams at crates/perl-module/src/import/mod.rs
-# (lines 626 and 640 in the production code, parse_qw_arg_list):
-#   (A) `if delimiter.is_ascii_alphanumeric() || delimiter == '_'`
-#   (B) `if inner_start > inner_end || !after_operator.ends_with(closing)`
-#
-# Direct unit tests in `mod tests` cover both seams:
-#   parse_qw_arg_list_alphanumeric_delimiter_is_rejected (seam A)
-#   parse_qw_arg_list_opening_only_returns_none           (seam B)
-#   parse_qw_arg_list_mismatched_closing_returns_none     (seam B)
-#
-# RIPR's diff-scoped analysis does not credit newly-added `mod tests` unit
-# tests as discriminating evidence for production code changed in the same
-# diff. Because both the production fix and the unit tests are new in this PR,
-# RIPR's test-correlation window finds only pre-existing integration tests
-# (which call parse_qw_arg_list indirectly and lack boundary-discriminating
-# inputs) rather than the direct unit tests that are the real proof.
-#
-# Tracks EffortlessMetrics/ripr#1429 (static analysis limitation: test
-# correlation does not credit newly-added inline unit tests for newly-changed
-# private functions in the same diff). Remove once #1429 is fixed upstream.
-# -----------------------------------------------------------------------------
-[[suppress]]
-id = "ripr-suppress-parse-qw-arg-list-predicate-seams"
-kind = "narrow_static_unknown"
-paths = ["crates/perl-module/src/import/mod.rs"]
-classification = ["weakly_exposed"]
-owner = "proof-lane"
-issue = "#1205"
-reason = "parse_qw_arg_list predicate seams (alphanumeric-guard and inner-bounds-guard) are covered by direct unit tests in mod tests (parse_qw_arg_list_alphanumeric_delimiter_is_rejected, parse_qw_arg_list_opening_only_returns_none, parse_qw_arg_list_mismatched_closing_returns_none). RIPR diff-scoped analysis does not credit newly-added mod tests unit tests as discriminating evidence when both the production fix and the tests are new in the same diff. Tracks ripr#1429."
-created = "2026-06-10"
-review_after = "2026-07-10"
-expires = "2026-09-30"

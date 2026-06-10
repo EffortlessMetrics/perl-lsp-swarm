@@ -657,7 +657,7 @@ fn parse_literal_arg_list(args: &str) -> Option<Vec<String>> {
     Some(symbols)
 }
 
-fn parse_qw_arg_list(trimmed: &str) -> Option<Vec<String>> {
+pub(crate) fn parse_qw_arg_list(trimmed: &str) -> Option<Vec<String>> {
     // Perl allows whitespace between `qw` and its opening delimiter, e.g.
     // `qw [a b]`.  Trim it so the delimiter is read correctly rather than
     // treated as the delimiter itself.  Indexing is done against `after_operator`
