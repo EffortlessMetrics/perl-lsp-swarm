@@ -64,13 +64,23 @@ impl DebugAdapter {
                 framed_frames
             }
         } else {
-            let output_lines = self.snapshot_recent_output_lines();
-            if output_lines.is_empty() {
-                Vec::new()
-            } else {
-                let output = output_lines.join("\n");
-                Self::filter_user_visible_frames(Self::parse_stack_frames_from_text(&output))
-            }
+            // Transport failure: `send_framed_debugger_commands` returned Err so
+            // `framed_output_lines` was never populated.
+            //
+            // Do NOT fall back to snapshot parsing here. The snapshot buffer contains
+            // the entire session history in output order, so the first parsed frame is
+            // the initial implicit-stop context line (e.g. line 4), NOT the current
+            // breakpoint context line (e.g. line 5). This is the same class of bug
+            // that PR #927 fixed on the primary framed path.
+            //
+            // Additionally, when transport fails the code issues a raw T command
+            // (lines 36-38) whose output lands in `recent_output` un-framed, mixing
+            // with stale history and making snapshot parsing doubly unreliable.
+            //
+            // The output reader already parsed the most recent context line and stored
+            // it in session.stack_frames. Returning Vec::new() here causes the caller
+            // to fall through to that authoritative source.
+            Vec::new()
         };
 
         let stack_frames = if !parsed_frames.is_empty() {
@@ -262,6 +272,53 @@ mod pagination_tests {
         let paginated = DebugAdapter::paginate_stack_frames(all_frames, 0, None);
 
         assert_eq!(paginated.len(), total_before, "no pagination: total == paginated");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod degraded_transport_tests {
+    use super::*;
+
+    /// Regression: degraded-transport path must not return stale snapshot frames.
+    ///
+    /// When `framed_output_lines` is `None` (transport failed), the pre-fix code called
+    /// `snapshot_recent_output_lines()` + `parse_stack_frames_from_text()` which returns
+    /// frames in buffer-insertion order. The snapshot buffer contains the initial
+    /// implicit-stop context line BEFORE the current breakpoint context line, so the
+    /// first parsed frame was always stale.
+    ///
+    /// Post-fix: the `else` branch returns `Vec::new()`, falling through to
+    /// `session.stack_frames` (which may also be empty when there is no live session,
+    /// as in this test) and ultimately to the honest-empty DAP response.
+    #[test]
+    fn degraded_transport_else_branch_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
+        // With no live process the framed session block (lines 22-41) is skipped
+        // entirely, so `framed_output_lines` stays `None` — this exercises the `else`
+        // branch directly.
+        let adapter = DebugAdapter::new();
+        let response = adapter.handle_stack_trace(
+            1,
+            1,
+            Some(serde_json::json!({"threadId": 1})),
+        );
+        match response {
+            DapMessage::Response { success, body: Some(body), .. } => {
+                assert!(success, "stackTrace must succeed even in degraded state");
+                let frames = body
+                    .get("stackFrames")
+                    .and_then(|v| v.as_array())
+                    .ok_or("missing stackFrames")?;
+                // Without a live session the honest-empty path must be taken.
+                // The pre-fix code would parse snapshot output and potentially
+                // return a non-empty stale frame list here.
+                assert!(
+                    frames.is_empty(),
+                    "degraded-transport with no session must return empty stackFrames; got: {frames:?}"
+                );
+            }
+            other => return Err(format!("expected successful Response, got {other:?}").into()),
+        }
         Ok(())
     }
 }

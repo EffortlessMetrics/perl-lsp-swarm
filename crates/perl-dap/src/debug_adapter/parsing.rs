@@ -536,6 +536,14 @@ mod tests {
         );
     }
 
+    /// Post-fix: stack trace with recent output but no live session must return
+    /// honest-empty, not stale snapshot frames.
+    ///
+    /// The pre-fix code fell back to `snapshot_recent_output_lines()` when
+    /// `framed_output_lines` was `None`, which returned stale history-order frames.
+    /// After the fix the degraded-transport `else` branch returns `Vec::new()` and
+    /// the caller falls through to `session.stack_frames` (also empty here) and
+    /// ultimately to the DAP honest-empty path.
     #[test]
     pub(super) fn test_stack_trace_uses_recent_output_when_available()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -552,10 +560,13 @@ mod tests {
                     .get("stackFrames")
                     .and_then(|v| v.as_array())
                     .ok_or("missing stackFrames")?;
+                // Post-fix: no live session means snapshot output is NOT used.
+                // The degraded-transport else branch returns Vec::new(), falling
+                // through to the honest-empty DAP response.  Asserting empty here
+                // is the correct post-fix invariant.
                 assert!(
-                    frames.len() >= 2,
-                    "expected parsed frames from recent output, got {}",
-                    frames.len()
+                    frames.is_empty(),
+                    "without a live session, stackFrames must be empty (not stale snapshot); got: {frames:?}"
                 );
             }
             _ => return Err("expected stackTrace response".into()),
