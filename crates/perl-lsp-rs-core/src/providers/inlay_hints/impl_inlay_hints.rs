@@ -665,3 +665,161 @@ where
 
     true
 }
+
+// ---------------------------------------------------------------------------
+// Inline lib tests — MethodCall seam coverage for RIPR / Codecov patch gate.
+//
+// These tests run under `cargo test --lib` and count toward patch coverage.
+// They target the specific branches in `parameter_hints_with_resolver` that
+// the RIPR tool cannot statically trace from the integration test suite
+// (ripr#1429 predicate-infection-untraceable class):
+//
+//   (A) all_param_names.is_empty() — true path: no params → &[] slice
+//   (B) param_names.len() <= 1     — true path: single visible param suppressed
+//   (C) resolver returns None      — unknown method, skip (return true)
+//   (D) no resolver (None)         — no resolver available, skip (return true)
+//   (E) range filter hit           — hint position outside range, continue
+//   (F) range filter miss          — hint position inside range, emit hint
+//
+// These seams are also covered by the integration tests in
+// `tests/inlay_hints_user_subs_unit.rs` but ripr#1429 prevents static
+// tracing from those tests through the closure + AST walk dispatch chain.
+// Inline lib tests use direct function call paths that ripr can trace.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_parser_core::Parser;
+
+    /// Parse source into an AST node.
+    fn ast_for(src: &str) -> Node {
+        let mut p = Parser::new(src);
+        p.parse().expect("parse should succeed in test helper")
+    }
+
+    /// Dummy position converter for lib tests.
+    fn dummy_pos(offset: usize) -> (u32, u32) {
+        ((offset / 100) as u32, (offset % 100) as u32)
+    }
+
+    /// Extract only labels coming from method calls to a specific method name.
+    /// This filters out hints from builtin FunctionCall nodes (e.g. `bless`)
+    /// that happen to appear in the same source snippet.
+    fn method_labels_for<'a>(hints: &'a [Value], method: &str) -> Vec<&'a str> {
+        hints
+            .iter()
+            .filter(|h| {
+                h["data"]["functionName"]
+                    .as_str()
+                    .map_or(false, |n| n == method)
+            })
+            .filter_map(|h| h["label"].as_str())
+            .collect()
+    }
+
+    // (A) Empty param list after self-skip: resolver returns only $self →
+    // after slicing [1..] we get &[] → is_empty() true → no hints for this method.
+    #[test]
+    fn test_method_call_resolver_empty_after_self_skip_no_hints() {
+        let resolver = |_method: &str| -> Option<Vec<String>> {
+            Some(vec!["self".to_string()]) // only $self, nothing visible
+        };
+        // Use only a method call, no builtin call, so hints list is clean.
+        let src = "my $obj; $obj->solo(42);";
+        let ast = ast_for(src);
+        let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
+        let labels = method_labels_for(&hints, "solo");
+        assert!(
+            labels.is_empty(),
+            "resolver returning only self should produce no hints for solo; labels: {labels:?}"
+        );
+    }
+
+    // (B) Single visible param: resolver returns [$self, $item] → after drop → [$item]
+    // len() == 1 → suppressed by noise policy (param_names.len() <= 1).
+    #[test]
+    fn test_method_call_single_visible_param_suppressed_lib() {
+        let resolver = |_method: &str| -> Option<Vec<String>> {
+            Some(vec!["self".to_string(), "item".to_string()])
+        };
+        let src = "my $obj; $obj->process(42);";
+        let ast = ast_for(src);
+        let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
+        let labels = method_labels_for(&hints, "process");
+        assert!(
+            labels.is_empty(),
+            "single visible param should be suppressed; labels: {labels:?}"
+        );
+    }
+
+    // (C) Resolver returns None: unknown method → None => return true path → no hints.
+    #[test]
+    fn test_method_call_resolver_returns_none_no_hints_lib() {
+        let resolver = |_method: &str| -> Option<Vec<String>> { None };
+        let src = "my $obj; $obj->unknown(1, 2, 3);";
+        let ast = ast_for(src);
+        let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
+        let labels = method_labels_for(&hints, "unknown");
+        assert!(
+            labels.is_empty(),
+            "resolver returning None should produce no hints for unknown"
+        );
+    }
+
+    // (D) No resolver (method_resolver is None): else { return true } path → no hints.
+    #[test]
+    fn test_method_call_no_resolver_unknown_method_no_hints_lib() {
+        let src = "my $obj; $obj->unknown(1, 2, 3);";
+        let ast = ast_for(src);
+        let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, None);
+        let labels = method_labels_for(&hints, "unknown");
+        assert!(
+            labels.is_empty(),
+            "no resolver should produce no hints for unknown method"
+        );
+    }
+
+    // (E) Range filter: hints outside the range → continue path in range filter.
+    // Use a range that covers only position (0,0)-(0,1) so no arg lands there.
+    #[test]
+    fn test_method_call_range_filter_excludes_out_of_range_hints() {
+        let resolver = |_method: &str| -> Option<Vec<String>> {
+            Some(vec!["self".to_string(), "a".to_string(), "b".to_string()])
+        };
+        let src = "my $obj; $obj->run(1, 2);";
+        let ast = ast_for(src);
+        let tiny_range = Range::new(Position::new(0, 0), Position::new(0, 1));
+        let hints =
+            parameter_hints_with_resolver(&ast, &dummy_pos, Some(tiny_range), Some(&resolver));
+        let labels = method_labels_for(&hints, "run");
+        assert!(
+            labels.is_empty(),
+            "hints outside the range should be filtered out; labels: {labels:?}"
+        );
+    }
+
+    // (F) Full resolver path: two visible params, no range filter → two hints.
+    // Verifies labels correct (alpha:, beta:) and self is NOT hinted.
+    #[test]
+    fn test_method_call_resolver_two_params_hints_emitted_lib() {
+        let resolver = |_method: &str| -> Option<Vec<String>> {
+            Some(vec!["self".to_string(), "alpha".to_string(), "beta".to_string()])
+        };
+        let src = "my $obj; $obj->compute(10, 20);";
+        let ast = ast_for(src);
+        let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
+        let labels = method_labels_for(&hints, "compute");
+        assert!(
+            labels.contains(&"alpha:"),
+            "expected 'alpha:' hint; labels: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"beta:"),
+            "expected 'beta:' hint; labels: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"self:"),
+            "must not emit hint for self; labels: {labels:?}"
+        );
+    }
+}

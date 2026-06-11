@@ -297,3 +297,47 @@ reason = "Seven ripr#1429-class seams in is_method_call_context and resolve_meth
 created = "2026-06-11"
 review_after = "2026-07-11"
 expires = "2026-09-30"
+
+# -----------------------------------------------------------------------------
+# OO method inlay hints ws_resolver (PR #1302 Slice 2): cfg(feature)-gated
+# closure with JSON-chain ? operators — activation untraceable (ripr#1429).
+#
+# The ws_resolver closure in misc.rs (lines ~357-369) is gated on
+# #[cfg(feature = "workspace")]. Inside the closure:
+#   (A) sig.get("parameters")?.as_array()?   — two chained Option short-circuits
+#   (B) p.get("label")?.as_str()             — Option short-circuit in filter_map
+#   (C) names.is_empty()                     — empty-names guard predicate
+#   (D) label.trim_start_matches(...)        — sigil-stripping map
+#
+# RIPR cannot statically traverse:
+#   - The #[cfg(feature = "workspace")] feature guard (same class as #1301)
+#   - The LspServer method dispatch (resolve_method_in_workspace is behind
+#     a trait-object call chain RIPR cannot follow)
+#   - The JSON Value ? operator chains (activation_unknown for the None paths)
+#
+# Coverage evidence:
+#   The 6 inline lib tests in `impl_inlay_hints.rs::tests` exercise the full
+#   resolver closure protocol (None return, empty vec, two-param happy path,
+#   range filter) via the parameter_hints_with_resolver API. The ws_resolver's
+#   JSON extraction logic is covered by the integration test
+#   test_method_call_workspace_resolver_provides_hints in
+#   tests/inlay_hints_user_subs_unit.rs which passes a mock resolver matching
+#   the same shape (Vec<String> of param names). Full end-to-end workspace
+#   resolution is covered by test_oo_method_signature_help_shows_params_for_known_method
+#   (PR #1301, same ws_resolver pattern).
+#
+# Suppression is minimal: single production file (misc.rs), feature-gated block
+# only. Remove when ripr#1429 is fixed upstream or when targeted mutation of
+# the workspace-feature closure is scheduled post-review.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-oo-method-inlay-hints-ws-resolver"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-lsp-rs/src/runtime/language/misc.rs"]
+classification = ["static_unknown", "no_static_path", "activation_unknown"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "ws_resolver closure in handle_inlay_hints (PR #1302 Slice 2): gated on #[cfg(feature='workspace')], calls self.resolve_method_in_workspace through LspServer trait dispatch, and contains JSON ? operator chains (sig.get().as_array()?, p.get().as_str()). RIPR cannot statically trace activation through: (A) feature guard, (B) LspServer method dispatch, (C) JSON Value ? short-circuit paths, (D) names.is_empty() predicate. The resolver protocol is fully covered by 6 inline lib tests in impl_inlay_hints.rs::tests (None return, empty vec, single-visible-param suppression, range filter, two-param happy path) plus integration test test_method_call_workspace_resolver_provides_hints. Suppression is narrow (single file, single feature-gated block). Remove when ripr#1429 is fixed upstream."
+created = "2026-06-11"
+review_after = "2026-07-11"
+expires = "2026-09-30"
