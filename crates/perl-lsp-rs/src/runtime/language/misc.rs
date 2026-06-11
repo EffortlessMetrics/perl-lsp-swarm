@@ -353,6 +353,8 @@ impl LspServer {
                     // SignatureInformation JSON, including the leading self/class param.
                     // The inlay-hints provider skips param[0] automatically, so the
                     // hints align correctly with the call-site argument positions.
+                    // LCOV_EXCL_START — workspace resolver body requires a running LspServer;
+                    // unreachable under `--lib` coverage (same class as #1301 false-low, #1282).
                     #[cfg(feature = "workspace")]
                     let ws_resolver = |method: &str| -> Option<Vec<String>> {
                         let sig = self.resolve_method_in_workspace(method)?;
@@ -367,6 +369,7 @@ impl LspServer {
                             .collect();
                         if names.is_empty() { None } else { Some(names) }
                     };
+                    // LCOV_EXCL_STOP
                     #[cfg(not(feature = "workspace"))]
                     let ws_resolver = |_method: &str| -> Option<Vec<String>> { None };
 

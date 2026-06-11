@@ -443,7 +443,7 @@ pub fn parameter_hints_with_resolver(
                         let hint_pos = Position::new(l, c);
                         if !pos_in_range(hint_pos, filter_range) {
                             continue;
-                        }
+                        } // LCOV_EXCL_LINE — unreachable: `continue` always exits iteration before this brace
                     }
 
                     out.push(json!({
@@ -708,11 +708,7 @@ mod tests {
     fn method_labels_for<'a>(hints: &'a [Value], method: &str) -> Vec<&'a str> {
         hints
             .iter()
-            .filter(|h| {
-                h["data"]["functionName"]
-                    .as_str()
-                    .map_or(false, |n| n == method)
-            })
+            .filter(|h| h["data"]["functionName"].as_str().map_or(false, |n| n == method))
             .filter_map(|h| h["label"].as_str())
             .collect()
     }
@@ -746,10 +742,7 @@ mod tests {
         let ast = ast_for(src);
         let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
         let labels = method_labels_for(&hints, "process");
-        assert!(
-            labels.is_empty(),
-            "single visible param should be suppressed; labels: {labels:?}"
-        );
+        assert!(labels.is_empty(), "single visible param should be suppressed; labels: {labels:?}");
     }
 
     // (C) Resolver returns None: unknown method → None => return true path → no hints.
@@ -760,10 +753,7 @@ mod tests {
         let ast = ast_for(src);
         let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
         let labels = method_labels_for(&hints, "unknown");
-        assert!(
-            labels.is_empty(),
-            "resolver returning None should produce no hints for unknown"
-        );
+        assert!(labels.is_empty(), "resolver returning None should produce no hints for unknown");
     }
 
     // (D) No resolver (method_resolver is None): else { return true } path → no hints.
@@ -773,10 +763,7 @@ mod tests {
         let ast = ast_for(src);
         let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, None);
         let labels = method_labels_for(&hints, "unknown");
-        assert!(
-            labels.is_empty(),
-            "no resolver should produce no hints for unknown method"
-        );
+        assert!(labels.is_empty(), "no resolver should produce no hints for unknown method");
     }
 
     // (E) Range filter: hints outside the range → continue path in range filter.
@@ -809,17 +796,70 @@ mod tests {
         let ast = ast_for(src);
         let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
         let labels = method_labels_for(&hints, "compute");
+        assert!(labels.contains(&"alpha:"), "expected 'alpha:' hint; labels: {labels:?}");
+        assert!(labels.contains(&"beta:"), "expected 'beta:' hint; labels: {labels:?}");
+        assert!(!labels.contains(&"self:"), "must not emit hint for self; labels: {labels:?}");
+    }
+
+    // (G) user_sigs path (line 412): an in-file formal-signature sub whose name
+    // matches the method call → user_sigs.get() returns Some → user_params.clone().
+    // Uses a Subroutine node (not a Method node) with a formal signature.
+    #[test]
+    fn test_method_call_user_sigs_path_covered() {
+        // The subroutine name "render" matches the method call "$obj->render(...)".
+        // collect_user_sub_signatures indexes it → user_sigs.get("render") = Some.
+        let src = r#"sub render($self, $tpl, $limit) { 1 }
+my $obj;
+$obj->render("hello", 10);"#;
+        let ast = ast_for(src);
+        // No resolver needed — user_sigs covers it.
+        let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, None);
+        let labels = method_labels_for(&hints, "render");
         assert!(
-            labels.contains(&"alpha:"),
-            "expected 'alpha:' hint; labels: {labels:?}"
+            labels.contains(&"tpl:"),
+            "expected 'tpl:' hint from user_sigs path; labels: {labels:?}"
         );
         assert!(
-            labels.contains(&"beta:"),
-            "expected 'beta:' hint; labels: {labels:?}"
+            labels.contains(&"limit:"),
+            "expected 'limit:' hint from user_sigs path; labels: {labels:?}"
         );
-        assert!(
-            !labels.contains(&"self:"),
-            "must not emit hint for self; labels: {labels:?}"
+        assert!(!labels.contains(&"self:"), "must not emit hint for self; labels: {labels:?}");
+    }
+
+    // (H) Empty all_param_names branch (line 425): resolver returns Some(vec![]) →
+    // all_param_names.is_empty() is true → param_names = &[] → len() == 0 → suppressed.
+    #[test]
+    fn test_method_call_resolver_returns_completely_empty_vec_no_hints() {
+        // Resolver returns Some(vec![]) — no params at all, not even self.
+        // This exercises the `if all_param_names.is_empty() { &[] }` branch.
+        let resolver = |_: &str| -> Option<Vec<String>> { Some(vec![]) };
+        let src = "my $obj; $obj->empty_method(1, 2);";
+        let ast = ast_for(src);
+        let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
+        let labels = method_labels_for(&hints, "empty_method");
+        assert!(labels.is_empty(), "empty param vec should produce no hints; labels: {labels:?}");
+    }
+
+    // (I) More call-site args than params (line 437): resolver returns self + 2 visible
+    // params but call has 4 args → loop breaks at i == param_names.len() (2).
+    // Exactly 2 hints emitted, 3rd and 4th args get none.
+    #[test]
+    fn test_method_call_more_args_than_params_breaks_at_loop_end() {
+        // self + a + b = 3 params total; visible = [a, b] (len 2).
+        // Call site: 4 args → after emitting a: and b:, loop breaks at i=2.
+        let resolver = |_: &str| -> Option<Vec<String>> {
+            Some(vec!["self".to_string(), "a".to_string(), "b".to_string()])
+        };
+        let src = "my $obj; $obj->run(1, 2, 3, 4);";
+        let ast = ast_for(src);
+        let hints = parameter_hints_with_resolver(&ast, &dummy_pos, None, Some(&resolver));
+        let labels = method_labels_for(&hints, "run");
+        assert_eq!(
+            labels.len(),
+            2,
+            "should emit exactly 2 hints (break stops at param boundary); labels: {labels:?}"
         );
+        assert!(labels.contains(&"a:"), "expected 'a:' hint; labels: {labels:?}");
+        assert!(labels.contains(&"b:"), "expected 'b:' hint; labels: {labels:?}");
     }
 }
