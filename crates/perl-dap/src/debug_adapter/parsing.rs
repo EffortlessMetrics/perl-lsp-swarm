@@ -537,7 +537,12 @@ mod tests {
     }
 
     #[test]
-    pub(super) fn test_stack_trace_uses_recent_output_when_available()
+    // Regression guard for #933/#964: the degraded path (no framed T output, no
+    // live session) must NOT return frames parsed from the snapshot buffer.
+    // Snapshot-based parsing is unreliable because the buffer holds the full
+    // session history — the stale pre-stop context line can appear before the
+    // current stop line, producing a wrong first frame.
+    pub(super) fn test_stack_trace_does_not_use_snapshot_in_degraded_path()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         adapter.push_recent_output_line_for_test("# 0 main::compute at /tmp/script.pl line 20");
@@ -552,9 +557,12 @@ mod tests {
                     .get("stackFrames")
                     .and_then(|v| v.as_array())
                     .ok_or("missing stackFrames")?;
-                assert!(
-                    frames.len() >= 2,
-                    "expected parsed frames from recent output, got {}",
+                // Degraded path must NOT parse stale snapshot output.
+                // Falls through to session.stack_frames (empty — no active session).
+                assert_eq!(
+                    frames.len(),
+                    0,
+                    "degraded path must not return stale snapshot frames; got {}",
                     frames.len()
                 );
             }

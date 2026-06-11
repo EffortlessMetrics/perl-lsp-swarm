@@ -178,9 +178,10 @@ fn test_total_frames_is_not_window_size() -> Result<(), Box<dyn std::error::Erro
         "totalFrames ({total}) must be >= returned frame count ({})",
         frames.len()
     );
-    // With 1 placeholder frame and levels=1: both must equal 1
-    assert_eq!(frames.len(), 1, "paginated window should be 1");
-    assert_eq!(total, 1, "totalFrames must report full depth (1 placeholder)");
+    // Without an active session the adapter returns an honest empty list (fix #995).
+    // `levels=1` pagination of an empty list is still empty; totalFrames is 0.
+    assert_eq!(frames.len(), 0, "no session must return stackFrames: []");
+    assert_eq!(total, 0, "no session totalFrames must be 0");
     Ok(())
 }
 
