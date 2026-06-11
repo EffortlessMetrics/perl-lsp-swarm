@@ -965,4 +965,47 @@ mod tests {
         );
         Ok(())
     }
+
+    // ── resolve_method_in_workspace unit tests ────────────────────────────────
+    //
+    // Integration with a live workspace index is covered by the integration
+    // tests in tests/lsp_signature_help_tests.rs. These lib-level tests cover
+    // the graceful-None early-return paths that are reachable without a fully-
+    // indexed workspace (and therefore visible to `--lib` coverage).
+
+    /// When the workspace index has not finished building (the coordinator is in
+    /// Building/Idle state on a fresh server), resolve_method_in_workspace must
+    /// return None gracefully instead of panicking or blocking.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn test_resolve_method_no_workspace_index_returns_none()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // LspServer::new() creates a coordinator in Building/Idle state — no
+        // files have been indexed, so route_index_access returns Partial (not
+        // Full), and the method exits via the `_ => return None` branch.
+        let server = LspServer::new();
+        let result = server.resolve_method_in_workspace("format");
+        assert!(
+            result.is_none(),
+            "resolve_method_in_workspace must return None when workspace index is not ready, got: {:?}",
+            result
+        );
+        Ok(())
+    }
+
+    /// When an empty method name is passed, resolve_method_in_workspace must
+    /// return None gracefully — the workspace search will either find no
+    /// matches or the index isn't ready, both of which produce None.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn test_resolve_method_empty_name_returns_none() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let result = server.resolve_method_in_workspace("");
+        assert!(
+            result.is_none(),
+            "resolve_method_in_workspace with empty name must return None, got: {:?}",
+            result
+        );
+        Ok(())
+    }
 }
