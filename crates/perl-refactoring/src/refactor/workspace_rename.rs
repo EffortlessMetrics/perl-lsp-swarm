@@ -488,13 +488,8 @@ impl WorkspaceRename {
                 // Verify this is a word boundary match (not a substring of a larger identifier).
                 // Walk chars (not bytes) so UTF-8 continuation bytes aren't mistaken for
                 // word boundaries (#956).
-                let is_word_start = match_start == 0
-                    || text[..match_start]
-                        .chars()
-                        .next_back()
-                        .is_none_or(|c| !is_perl_ident_char(c));
-                let is_word_end = match_end >= text.len()
-                    || text[match_end..].chars().next().is_none_or(|c| !is_perl_ident_char(c));
+                let is_word_start = is_word_boundary_before(text, match_start);
+                let is_word_end = is_word_boundary_after(text, match_end);
 
                 if is_word_start && is_word_end && is_rename_code_position(text, match_start) {
                     // AC:AC4 - Scope check: if we have a package context, verify this reference
@@ -895,6 +890,30 @@ fn is_perl_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// Returns `true` when the position immediately before `byte_offset` in `text`
+/// is a word boundary (no preceding Perl identifier character).
+///
+/// Char-aware replacement for the old byte-level check that treated UTF-8
+/// continuation bytes as boundaries (#956).
+fn is_word_boundary_before(text: &str, byte_offset: usize) -> bool {
+    if byte_offset == 0 {
+        return true;
+    }
+    text[..byte_offset].chars().next_back().is_none_or(|c| !is_perl_ident_char(c))
+}
+
+/// Returns `true` when the position immediately at `byte_offset` in `text`
+/// is a word boundary (no following Perl identifier character).
+///
+/// Char-aware replacement for the old byte-level check that treated UTF-8
+/// lead bytes as boundaries (#956).
+fn is_word_boundary_after(text: &str, byte_offset: usize) -> bool {
+    if byte_offset >= text.len() {
+        return true;
+    }
+    text[byte_offset..].chars().next().is_none_or(|c| !is_perl_ident_char(c))
+}
+
 /// Find the current package scope at a given byte offset in Perl source
 fn find_package_at_offset(text: &str, offset: usize) -> Option<String> {
     let before = &text[..offset];
@@ -1091,5 +1110,63 @@ mod tests {
 
         assert_eq!(start, 0);
         assert_eq!(replacement, "New::execute");
+    }
+
+    // -------------------------------------------------------------------------
+    // Char-boundary helpers (#956) - lib-level coverage for Codecov patch gate
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_is_word_boundary_before_ascii() {
+        // At offset 0: always a boundary
+        assert!(is_word_boundary_before("foo", 0));
+        // Preceded by space: boundary
+        assert!(is_word_boundary_before("x foo", 2));
+        // Preceded by ASCII ident char: NOT a boundary
+        assert!(!is_word_boundary_before("xfoo", 1));
+        assert!(!is_word_boundary_before("_foo", 1));
+    }
+
+    #[test]
+    fn test_is_word_boundary_before_unicode() {
+        // "変数foo" — each kanji is 3 bytes; byte offset of 'f' is 6
+        let text = "変数foo";
+        let foo_start = text.find("foo").unwrap();
+        // The char before 'f' is '数' (alphanumeric) — NOT a boundary
+        assert!(!is_word_boundary_before(text, foo_start));
+
+        // "αfoo" — α is 2 bytes (U+03B1); 'f' is at byte 2
+        let text2 = "αfoo";
+        let foo_start2 = text2.find("foo").unwrap();
+        assert!(!is_word_boundary_before(text2, foo_start2));
+
+        // "$foo" — '$' is not alphanumeric — IS a boundary
+        assert!(is_word_boundary_before("$foo", 1));
+    }
+
+    #[test]
+    fn test_is_word_boundary_after_ascii() {
+        let text = "foo bar";
+        // At text.len(): always a boundary
+        assert!(is_word_boundary_after(text, text.len()));
+        // After "foo": next char is space — boundary
+        assert!(is_word_boundary_after(text, 3));
+        // After 'f': next char is 'o' — NOT a boundary
+        assert!(!is_word_boundary_after(text, 1));
+    }
+
+    #[test]
+    fn test_is_word_boundary_after_unicode() {
+        // "fooα" — α is U+03B1 (2 bytes); byte 3 starts α
+        let text = "fooα";
+        // The char at byte 3 is 'α' (alphanumeric) — NOT a boundary
+        assert!(!is_word_boundary_after(text, 3));
+
+        // "foo変" — '変' is 3 bytes; byte 3 starts '変'
+        let text2 = "foo変";
+        assert!(!is_word_boundary_after(text2, 3));
+
+        // "foo " — byte 3 is space — boundary
+        assert!(is_word_boundary_after("foo ", 3));
     }
 }
