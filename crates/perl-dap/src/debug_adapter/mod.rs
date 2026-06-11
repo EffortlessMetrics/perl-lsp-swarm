@@ -403,6 +403,56 @@ impl DebugAdapter {
         let mut output = lock_or_recover(&self.recent_output, "debug_adapter.push_recent_output");
         Self::append_recent_output_line_locked(&mut output, line);
     }
+
+    /// Inject a minimal DebugSession so resume-path tests can verify state transitions.
+    ///
+    /// Spawns `sh -c 'cat > /dev/null'` with piped stdin so that all resume handlers
+    /// reach their `if let Some(stdin) = session.process.stdin.as_mut()` guard.
+    #[doc(hidden)]
+    pub fn seed_session_for_test(&self) {
+        use std::process::Stdio;
+        if let Ok(child) = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("cat > /dev/null")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
+            *guard = Some(DebugSession {
+                process: child,
+                state: DebugState::Stopped,
+                stack_frames: vec![],
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                last_resume_mode: ResumeMode::Unknown,
+            });
+        }
+    }
+
+    /// Replace the current session's stack_frames with `frames`.
+    #[doc(hidden)]
+    pub fn inject_stack_frames_for_test(&self, frames: Vec<crate::types::StackFrame>) {
+        let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
+        if let Some(ref mut s) = *guard {
+            s.stack_frames = frames;
+        }
+    }
+
+    /// Return a clone of the current session's stack_frames for assertion.
+    #[doc(hidden)]
+    pub fn stack_frames_snapshot_for_test(&self) -> Vec<crate::types::StackFrame> {
+        let guard = lock_or_recover(&self.session, "debug_adapter.session");
+        if let Some(ref s) = *guard { s.stack_frames.clone() } else { vec![] }
+    }
+
+    /// Insert a goto target so the goto handler reaches the session/stdin block.
+    #[doc(hidden)]
+    pub fn inject_goto_target_for_test(&self, id: i64, path: String, line: i64) {
+        let mut map = lock_or_recover(&self.goto_targets, "debug_adapter.goto_targets");
+        map.insert(id, (path, line));
+    }
 }
 #[cfg(test)]
 mod tests {
