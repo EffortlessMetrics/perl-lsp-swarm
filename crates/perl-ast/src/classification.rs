@@ -950,3 +950,449 @@ impl NodeKind {
         self.flags().recovery_artifact
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inline lib tests — counted by `--lib` profdata for Codecov patch coverage.
+//
+// These assert real behaviour (not padding). The integration contract tests in
+// `tests/classification_tests.rs` remain the primary specification suite; this
+// module ensures every production line in `classification.rs` is reachable
+// under `cargo llvm-cov -p perl-ast --lib`.
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::NodeKindCategory;
+    use super::NodeKindFlags;
+    use crate::ast::{Node, NodeKind};
+    use perl_position_tracking::SourceLocation;
+
+    fn loc() -> SourceLocation {
+        SourceLocation::new(0, 1)
+    }
+
+    fn leaf() -> Node {
+        Node::new(NodeKind::Identifier { name: "x".to_string() }, loc())
+    }
+
+    fn block_node() -> Node {
+        Node::new(NodeKind::Block { statements: vec![] }, loc())
+    }
+
+    /// One representative of every `NodeKind` variant so every match arm in
+    /// `category()` and `flags()` is exercised under `--lib` profdata.
+    fn all_variants() -> Vec<NodeKind> {
+        vec![
+            NodeKind::Program { statements: vec![] },
+            NodeKind::ExpressionStatement { expression: Box::new(leaf()) },
+            NodeKind::VariableDeclaration {
+                declarator: "my".to_string(),
+                variable: Box::new(leaf()),
+                attributes: vec![],
+                initializer: None,
+            },
+            NodeKind::VariableListDeclaration {
+                declarator: "my".to_string(),
+                variables: vec![],
+                attributes: vec![],
+                initializer: None,
+            },
+            NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
+            NodeKind::VariableWithAttributes { variable: Box::new(leaf()), attributes: vec![] },
+            NodeKind::Assignment {
+                lhs: Box::new(leaf()),
+                rhs: Box::new(leaf()),
+                op: "=".to_string(),
+            },
+            NodeKind::Binary {
+                op: "+".to_string(),
+                left: Box::new(leaf()),
+                right: Box::new(leaf()),
+            },
+            NodeKind::Ternary {
+                condition: Box::new(leaf()),
+                then_expr: Box::new(leaf()),
+                else_expr: Box::new(leaf()),
+            },
+            NodeKind::Unary { op: "-".to_string(), operand: Box::new(leaf()) },
+            NodeKind::Diamond,
+            NodeKind::Ellipsis,
+            NodeKind::Undef,
+            NodeKind::Readline { filehandle: None },
+            NodeKind::Glob { pattern: "*.pl".to_string() },
+            NodeKind::Typeglob { name: "foo".to_string() },
+            NodeKind::Number { value: "42".to_string() },
+            NodeKind::String { value: "hello".to_string(), interpolated: false },
+            NodeKind::Heredoc {
+                delimiter: "EOF".to_string(),
+                content: "body".to_string(),
+                interpolated: false,
+                indented: false,
+                command: false,
+                body_span: None,
+            },
+            NodeKind::ArrayLiteral { elements: vec![] },
+            NodeKind::HashLiteral { pairs: vec![] },
+            NodeKind::Block { statements: vec![] },
+            NodeKind::Eval { block: Box::new(block_node()) },
+            NodeKind::Do { block: Box::new(block_node()) },
+            NodeKind::Defer { block: Box::new(block_node()) },
+            NodeKind::Try {
+                body: Box::new(block_node()),
+                catch_blocks: vec![],
+                finally_block: None,
+            },
+            NodeKind::If {
+                condition: Box::new(leaf()),
+                then_branch: Box::new(block_node()),
+                elsif_branches: vec![],
+                else_branch: None,
+                keyword: None,
+            },
+            NodeKind::LabeledStatement {
+                label: "OUTER".to_string(),
+                statement: Box::new(Node::new(
+                    NodeKind::LoopControl { op: "next".to_string(), label: None },
+                    loc(),
+                )),
+            },
+            NodeKind::While {
+                condition: Box::new(leaf()),
+                body: Box::new(block_node()),
+                continue_block: None,
+                keyword: None,
+            },
+            NodeKind::Tie { variable: Box::new(leaf()), package: Box::new(leaf()), args: vec![] },
+            NodeKind::Untie { variable: Box::new(leaf()) },
+            NodeKind::For {
+                init: None,
+                condition: None,
+                update: None,
+                body: Box::new(block_node()),
+                continue_block: None,
+            },
+            NodeKind::Foreach {
+                variable: Box::new(leaf()),
+                list: Box::new(leaf()),
+                body: Box::new(block_node()),
+                continue_block: None,
+            },
+            NodeKind::Given { expr: Box::new(leaf()), body: Box::new(block_node()) },
+            NodeKind::When { condition: Box::new(leaf()), body: Box::new(block_node()) },
+            NodeKind::Default { body: Box::new(block_node()) },
+            NodeKind::StatementModifier {
+                statement: Box::new(leaf()),
+                modifier: "if".to_string(),
+                condition: Box::new(leaf()),
+            },
+            NodeKind::Subroutine {
+                name: Some("foo".to_string()),
+                name_span: None,
+                prototype: None,
+                signature: None,
+                attributes: vec![],
+                body: Box::new(block_node()),
+            },
+            NodeKind::Prototype { content: "$@".to_string() },
+            NodeKind::Signature { parameters: vec![] },
+            NodeKind::MandatoryParameter { variable: Box::new(leaf()) },
+            NodeKind::OptionalParameter {
+                variable: Box::new(leaf()),
+                default_value: Box::new(leaf()),
+            },
+            NodeKind::SlurpyParameter { variable: Box::new(leaf()) },
+            NodeKind::NamedParameter { variable: Box::new(leaf()) },
+            NodeKind::Method {
+                name: "bar".to_string(),
+                signature: None,
+                attributes: vec![],
+                body: Box::new(block_node()),
+            },
+            NodeKind::Return { value: None },
+            NodeKind::LoopControl { op: "next".to_string(), label: None },
+            NodeKind::Goto { target: Box::new(leaf()) },
+            NodeKind::MethodCall {
+                object: Box::new(leaf()),
+                method: "foo".to_string(),
+                args: vec![],
+            },
+            NodeKind::FunctionCall { name: "print".to_string(), args: vec![] },
+            NodeKind::IndirectCall {
+                method: "new".to_string(),
+                object: Box::new(leaf()),
+                args: vec![],
+            },
+            NodeKind::Regex {
+                pattern: "foo".to_string(),
+                replacement: None,
+                modifiers: "".to_string(),
+                has_embedded_code: false,
+            },
+            NodeKind::Match {
+                expr: Box::new(leaf()),
+                pattern: "foo".to_string(),
+                modifiers: "".to_string(),
+                has_embedded_code: false,
+                negated: false,
+            },
+            NodeKind::Substitution {
+                expr: Box::new(leaf()),
+                pattern: "foo".to_string(),
+                replacement: "bar".to_string(),
+                modifiers: "".to_string(),
+                has_embedded_code: false,
+                negated: false,
+            },
+            NodeKind::Transliteration {
+                expr: Box::new(leaf()),
+                search: "a".to_string(),
+                replace: "b".to_string(),
+                modifiers: "".to_string(),
+                negated: false,
+            },
+            NodeKind::Package { name: "Foo".to_string(), name_span: loc(), block: None },
+            NodeKind::Use { module: "strict".to_string(), args: vec![], has_filter_risk: false },
+            NodeKind::No { module: "strict".to_string(), args: vec![], has_filter_risk: false },
+            NodeKind::PhaseBlock {
+                phase: "BEGIN".to_string(),
+                phase_span: None,
+                block: Box::new(block_node()),
+            },
+            NodeKind::DataSection { marker: "__DATA__".to_string(), body: None },
+            NodeKind::Class {
+                name: "Foo".to_string(),
+                parents: vec![],
+                body: Box::new(block_node()),
+            },
+            NodeKind::Format { name: "STDOUT".to_string(), body: "".to_string() },
+            NodeKind::Identifier { name: "foo".to_string() },
+            NodeKind::Error {
+                message: "oops".to_string(),
+                expected: vec![],
+                found: None,
+                partial: None,
+            },
+            NodeKind::MissingExpression,
+            NodeKind::MissingStatement,
+            NodeKind::MissingIdentifier,
+            NodeKind::MissingBlock,
+            NodeKind::UnknownRest,
+        ]
+    }
+
+    // ── Test 1: every variant produces a category and flags that pass validate()
+
+    #[test]
+    fn all_variants_return_category_and_valid_flags() {
+        for kind in all_variants() {
+            let _cat = kind.category();
+            let flags = kind.flags();
+            assert!(
+                flags.validate().is_ok(),
+                "variant {} failed validate(): {:?}",
+                kind.kind_name(),
+                flags.validate()
+            );
+        }
+    }
+
+    // ── Test 2: category() spot-checks for every NodeKindCategory value ───────
+
+    #[test]
+    fn category_spot_checks() {
+        assert_eq!(NodeKind::Program { statements: vec![] }.category(), NodeKindCategory::Program);
+        assert_eq!(
+            NodeKind::If {
+                condition: Box::new(leaf()),
+                then_branch: Box::new(block_node()),
+                elsif_branches: vec![],
+                else_branch: None,
+                keyword: None,
+            }
+            .category(),
+            NodeKindCategory::Statement
+        );
+        assert_eq!(
+            NodeKind::FunctionCall { name: "print".to_string(), args: vec![] }.category(),
+            NodeKindCategory::Expression
+        );
+        assert_eq!(
+            NodeKind::Subroutine {
+                name: Some("foo".to_string()),
+                name_span: None,
+                prototype: None,
+                signature: None,
+                attributes: vec![],
+                body: Box::new(block_node()),
+            }
+            .category(),
+            NodeKindCategory::Declaration
+        );
+        assert_eq!(NodeKind::Block { statements: vec![] }.category(), NodeKindCategory::Scope);
+        assert_eq!(
+            NodeKind::Number { value: "1".to_string() }.category(),
+            NodeKindCategory::Literal
+        );
+        assert_eq!(NodeKind::Ellipsis.category(), NodeKindCategory::Operator);
+        assert_eq!(NodeKind::MissingExpression.category(), NodeKindCategory::Recovery);
+        assert_eq!(NodeKind::UnknownRest.category(), NodeKindCategory::Recovery);
+    }
+
+    // ── Test 3: recovery_artifact implies !safe_for_breakpoint (invariant) ────
+
+    #[test]
+    fn recovery_artifact_implies_not_safe_for_breakpoint() {
+        for kind in all_variants() {
+            let flags = kind.flags();
+            if flags.recovery_artifact {
+                assert!(
+                    !flags.safe_for_breakpoint,
+                    "variant {} has recovery_artifact=true but safe_for_breakpoint=true",
+                    kind.kind_name()
+                );
+            }
+        }
+    }
+
+    // ── Test 4: convenience accessors are consistent with flags() ─────────────
+
+    #[test]
+    fn convenience_accessors_match_flags() {
+        for kind in all_variants() {
+            let flags = kind.flags();
+            assert_eq!(
+                kind.is_executable(),
+                flags.executable,
+                "{}: is_executable() != flags.executable",
+                kind.kind_name()
+            );
+            assert_eq!(
+                kind.introduces_scope(),
+                flags.introduces_scope,
+                "{}: introduces_scope() != flags.introduces_scope",
+                kind.kind_name()
+            );
+            assert_eq!(
+                kind.declares_symbol(),
+                flags.declares_symbol,
+                "{}: declares_symbol() != flags.declares_symbol",
+                kind.kind_name()
+            );
+            assert_eq!(
+                kind.references_symbol(),
+                flags.references_symbol,
+                "{}: references_symbol() != flags.references_symbol",
+                kind.kind_name()
+            );
+            assert_eq!(
+                kind.safe_for_breakpoint(),
+                flags.safe_for_breakpoint,
+                "{}: safe_for_breakpoint() != flags.safe_for_breakpoint",
+                kind.kind_name()
+            );
+            assert_eq!(
+                kind.is_recovery(),
+                flags.recovery_artifact,
+                "{}: is_recovery() != flags.recovery_artifact",
+                kind.kind_name()
+            );
+        }
+    }
+
+    // ── Test 5: specific expected flag values for representative variants ──────
+
+    #[test]
+    fn flag_values_for_representative_variants() {
+        // FunctionCall: executable, references symbols, safe for breakpoint
+        let fc = NodeKind::FunctionCall { name: "say".to_string(), args: vec![] };
+        assert!(fc.is_executable());
+        assert!(fc.references_symbol());
+        assert!(fc.safe_for_breakpoint());
+        assert!(!fc.introduces_scope());
+        assert!(!fc.declares_symbol());
+        assert!(!fc.is_recovery());
+
+        // VariableDeclaration: executable, introduces scope, declares symbol
+        let vd = NodeKind::VariableDeclaration {
+            declarator: "my".to_string(),
+            variable: Box::new(leaf()),
+            attributes: vec![],
+            initializer: None,
+        };
+        assert!(vd.is_executable());
+        assert!(vd.introduces_scope());
+        assert!(vd.declares_symbol());
+        assert!(vd.safe_for_breakpoint());
+
+        // Number literal: none of the executable/scope/decl/refs/bp flags set
+        let num = NodeKind::Number { value: "0".to_string() };
+        assert!(!num.is_executable());
+        assert!(!num.introduces_scope());
+        assert!(!num.declares_symbol());
+        assert!(!num.references_symbol());
+        assert!(!num.safe_for_breakpoint());
+        assert!(!num.is_recovery());
+
+        // Error: recovery_artifact, never safe for breakpoint
+        let err = NodeKind::Error {
+            message: "bad".to_string(),
+            expected: vec![],
+            found: None,
+            partial: None,
+        };
+        assert!(err.is_recovery());
+        assert!(!err.safe_for_breakpoint());
+
+        // All five Missing*/UnknownRest variants are recovery artifacts
+        for recovery_kind in [
+            NodeKind::MissingExpression,
+            NodeKind::MissingStatement,
+            NodeKind::MissingIdentifier,
+            NodeKind::MissingBlock,
+            NodeKind::UnknownRest,
+        ] {
+            assert!(
+                recovery_kind.is_recovery(),
+                "{} should be recovery",
+                recovery_kind.kind_name()
+            );
+            assert!(
+                !recovery_kind.safe_for_breakpoint(),
+                "{} should not be safe_for_breakpoint",
+                recovery_kind.kind_name()
+            );
+        }
+
+        // Block: introduces scope, executable, and safe for breakpoint
+        let blk = NodeKind::Block { statements: vec![] };
+        assert!(blk.introduces_scope());
+        assert!(blk.is_executable());
+        assert!(blk.safe_for_breakpoint());
+    }
+
+    // ── Test 6: NodeKindFlags::validate() accepts valid, rejects invalid ───────
+
+    #[test]
+    fn flags_validate_rejects_recovery_with_breakpoint() {
+        let good = NodeKindFlags {
+            executable: false,
+            introduces_scope: false,
+            declares_symbol: false,
+            references_symbol: false,
+            contains_children: false,
+            recovery_artifact: true,
+            safe_for_breakpoint: false,
+        };
+        assert!(good.validate().is_ok());
+
+        let bad = NodeKindFlags {
+            executable: false,
+            introduces_scope: false,
+            declares_symbol: false,
+            references_symbol: false,
+            contains_children: false,
+            recovery_artifact: true,
+            safe_for_breakpoint: true, // INVALID: recovery AND breakpoint
+        };
+        assert!(bad.validate().is_err());
+    }
+}
