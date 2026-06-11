@@ -1362,4 +1362,110 @@ require $dynamic;
         );
         Ok(())
     }
+
+    // ── parse_quote_operator_content seam-proof unit tests ─────────────
+    //
+    // These tests provide direct static evidence for RIPR activation analysis
+    // of the `parse_quote_operator_content` function.  Each test pins ONE
+    // decision boundary so that a single-line mutation causes exactly that
+    // test to fail.
+
+    #[test]
+    fn parse_quote_operator_content_compact_paren() {
+        // Boundary: '(' => ')' arm in the match
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qw(foo bar)", "qw"),
+            Some("foo bar")
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_compact_bracket() {
+        // Boundary: '[' => ']' arm in the match
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qw[foo bar]", "qw"),
+            Some("foo bar")
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_compact_brace() {
+        // Boundary: '{' => '}' arm in the match
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qw{foo bar}", "qw"),
+            Some("foo bar")
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_compact_slash() {
+        // Boundary: other => other self-close arm
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qw/foo bar/", "qw"),
+            Some("foo bar")
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_space_before_paren() {
+        // Boundary: trim_start() handles leading whitespace
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qw (foo bar)", "qw"),
+            Some("foo bar")
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_space_before_bracket() {
+        // Boundary: trim_start() + '[' => ']' mapping
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qw [foo bar]", "qw"),
+            Some("foo bar")
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_space_before_slash() {
+        // Boundary: trim_start() + self-close
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qw /foo bar/", "qw"),
+            Some("foo bar")
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_alphanumeric_delimiter_rejected() {
+        // Boundary: alphanumeric guard — `qwfoo` must be rejected
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qwfoo", "qw"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_underscore_delimiter_rejected() {
+        // Boundary: underscore guard — `qw_foo_` must be rejected
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qw_foo_", "qw"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_wrong_operator_returns_none() {
+        // Boundary: strip_prefix — wrong operator prefix returns None
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qq(foo bar)", "qw"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_quote_operator_content_mismatched_close_returns_none() {
+        // Boundary: ends_with(close) check — mismatched close returns None
+        assert_eq!(
+            ImportExtractor::parse_quote_operator_content("qw(foo bar]", "qw"),
+            None
+        );
+    }
 }
