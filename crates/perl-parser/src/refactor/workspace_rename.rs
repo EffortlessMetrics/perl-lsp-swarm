@@ -494,10 +494,7 @@ impl WorkspaceRename {
                         .next_back()
                         .is_none_or(|c| !is_perl_ident_char(c));
                 let is_word_end = match_end >= text.len()
-                    || text[match_end..]
-                        .chars()
-                        .next()
-                        .is_none_or(|c| !is_perl_ident_char(c));
+                    || text[match_end..].chars().next().is_none_or(|c| !is_perl_ident_char(c));
 
                 if is_word_start && is_word_end {
                     // AC:AC4 - Scope check: if we have a package context, verify this reference

@@ -499,7 +499,8 @@ fn workspace_rename_does_not_corrupt_adjacent_unicode_prefix()
     let config = WorkspaceRenameConfig::default();
     let rename_engine = WorkspaceRename::new(index, config);
 
-    let result = rename_engine.rename_symbol("foo", "bar", &workspace.path().join("test.pl"), (2, 3));
+    let result =
+        rename_engine.rename_symbol("foo", "bar", &workspace.path().join("test.pl"), (2, 3));
 
     match result {
         Ok(r) => {
@@ -531,7 +532,8 @@ fn workspace_rename_does_not_corrupt_adjacent_unicode_suffix()
     let config = WorkspaceRenameConfig::default();
     let rename_engine = WorkspaceRename::new(index, config);
 
-    let result = rename_engine.rename_symbol("foo", "bar", &workspace.path().join("test.pl"), (2, 3));
+    let result =
+        rename_engine.rename_symbol("foo", "bar", &workspace.path().join("test.pl"), (2, 3));
 
     match result {
         Ok(r) => {
@@ -553,14 +555,14 @@ fn workspace_rename_does_not_corrupt_adjacent_unicode_suffix()
 /// A rename entirely within an ASCII file must still work correctly after the
 /// boundary-check change (no regression on the normal path).
 #[test]
-fn workspace_rename_ascii_boundary_still_works()
--> Result<(), Box<dyn std::error::Error>> {
+fn workspace_rename_ascii_boundary_still_works() -> Result<(), Box<dyn std::error::Error>> {
     let content = "sub foo { 1 }\nsub foobar { 2 }\nfoo();\n";
     let (workspace, index) = setup_workspace(&[("ascii.pl", content)])?;
     let config = WorkspaceRenameConfig::default();
     let rename_engine = WorkspaceRename::new(index, config);
 
-    let result = rename_engine.rename_symbol("foo", "baz", &workspace.path().join("ascii.pl"), (0, 4));
+    let result =
+        rename_engine.rename_symbol("foo", "baz", &workspace.path().join("ascii.pl"), (0, 4));
 
     match result {
         Ok(r) => {
