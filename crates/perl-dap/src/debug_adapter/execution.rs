@@ -27,6 +27,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::Continue;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             thread_id = session.thread_id;
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
         {
@@ -71,6 +72,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::Next;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             let t_id = session.thread_id;
             self.send_event(
                 "continued",
@@ -107,6 +109,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::StepIn;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             let t_id = session.thread_id;
             self.send_event(
                 "continued",
@@ -144,6 +147,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::StepOut;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             let t_id = session.thread_id;
             self.send_event(
                 "continued",
@@ -177,6 +181,7 @@ impl DebugAdapter {
         {
             let pid = session.process.id();
             session.variable_cache.clear();
+            session.stack_frames.clear();
             self.send_interrupt_signal(pid)
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
         {
@@ -359,6 +364,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::Goto;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             let t_id = session.thread_id;
 
             self.send_event(
@@ -513,5 +519,127 @@ impl DebugAdapter {
                     .to_string(),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod stale_frames_on_resume_tests {
+    use super::*;
+    use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+    use crate::debug_adapter::variable_cache::VariableCache;
+    use crate::types::{Source, StackFrame};
+    use std::process::{Command, Stdio};
+
+    fn make_frame(id: i32) -> StackFrame {
+        StackFrame {
+            id,
+            name: format!("main::sub{id}"),
+            source: Source {
+                name: Some("test.pl".to_string()),
+                path: "/tmp/test.pl".to_string(),
+                source_reference: None,
+            },
+            line: id * 10,
+            column: 1,
+            end_line: None,
+            end_column: None,
+        }
+    }
+
+    // Spawn a simple long-running process with piped stdin so we can inject a
+    // fake DebugSession without launching a real Perl debugger.
+    fn spawn_test_child() -> std::process::Child {
+        #[cfg(unix)]
+        {
+            Command::new("cat")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("failed to spawn test child (cat)")
+        }
+        #[cfg(windows)]
+        {
+            Command::new("cmd")
+                .args(["/C", "more"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("failed to spawn test child (cmd /C more)")
+        }
+    }
+
+    fn make_adapter_with_stale_frames() -> DebugAdapter {
+        let adapter = DebugAdapter::new();
+        let stale = vec![make_frame(1), make_frame(2), make_frame(3)];
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.inject");
+            *guard = Some(DebugSession {
+                process: spawn_test_child(),
+                state: DebugState::Stopped,
+                stack_frames: stale,
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                last_resume_mode: ResumeMode::Unknown,
+            });
+        }
+        adapter
+    }
+
+    fn assert_frames_cleared(adapter: &DebugAdapter, after: &str) {
+        let guard = lock_or_recover(&adapter.session, "test.verify");
+        if let Some(ref session) = *guard {
+            assert!(
+                session.stack_frames.is_empty(),
+                "stack_frames must be cleared after '{after}' — got {} stale frames",
+                session.stack_frames.len()
+            );
+        }
+        // If the session was dropped (e.g. cat exited) that is fine — frames are gone.
+    }
+
+    fn kill_child(adapter: &DebugAdapter) {
+        if let Some(ref mut session) = *lock_or_recover(&adapter.session, "test.cleanup") {
+            let _ = session.process.kill();
+        }
+    }
+
+    /// Regression for issue #964: continue must clear stack_frames so a
+    /// stackTrace request during running state does not return stale frames.
+    #[test]
+    fn stack_frames_cleared_on_continue() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = make_adapter_with_stale_frames();
+        adapter.handle_continue(0, 1, None);
+        assert_frames_cleared(&adapter, "continue");
+        kill_child(&adapter);
+        Ok(())
+    }
+
+    #[test]
+    fn stack_frames_cleared_on_next() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = make_adapter_with_stale_frames();
+        adapter.handle_next(0, 1, None);
+        assert_frames_cleared(&adapter, "next");
+        kill_child(&adapter);
+        Ok(())
+    }
+
+    #[test]
+    fn stack_frames_cleared_on_step_in() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = make_adapter_with_stale_frames();
+        adapter.handle_step_in(0, 1, None);
+        assert_frames_cleared(&adapter, "stepIn");
+        kill_child(&adapter);
+        Ok(())
+    }
+
+    #[test]
+    fn stack_frames_cleared_on_step_out() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = make_adapter_with_stale_frames();
+        adapter.handle_step_out(0, 1, None);
+        assert_frames_cleared(&adapter, "stepOut");
+        kill_child(&adapter);
+        Ok(())
     }
 }
