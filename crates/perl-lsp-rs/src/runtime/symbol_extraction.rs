@@ -153,6 +153,68 @@ impl LspServer {
                 self.extract_symbols_recursive(body, source, uri, Some(name.as_str()), symbols);
             }
 
+            // `our` package-interface variables — index with sigil-prefixed name.
+            // `my` / `local` / `state` are sub-local and must NOT appear in the outline.
+            NodeKind::VariableDeclaration { declarator, variable, .. } if declarator == "our" => {
+                if let NodeKind::Variable { sigil, name } = &variable.kind {
+                    let display_name = format!("{sigil}{name}");
+                    let (start_line, start_char) = byte_to_line_col(source, node.location.start);
+                    let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+
+                    symbols.push(LspWorkspaceSymbol {
+                        name: display_name,
+                        kind: 13, // Variable
+                        location: WireLocation::new(
+                            uri.to_string(),
+                            WireRange::new(
+                                WirePosition::new(start_line, start_char),
+                                WirePosition::new(end_line, end_char),
+                            ),
+                        ),
+                        container_name: container
+                            .map(|s| normalize_package_separator(s).into_owned()),
+                        workspace_folder_uri: None,
+                    });
+                }
+            }
+
+            // Moo/Moose `has 'attr' => (...)` declarations.
+            // These appear as FunctionCall{name="has"} with a string literal first arg.
+            // We emit them as Property (kind 7) so editors can distinguish them from subs.
+            NodeKind::FunctionCall { name, args } if name == "has" => {
+                if let Some(first_arg) = args.first() {
+                    // Extract the attribute name from a String literal (value is already
+                    // unquoted per NodeKind::String doc) or an Identifier first arg.
+                    let attr_name = match &first_arg.kind {
+                        NodeKind::String { value, .. } => Some(value.clone()),
+                        NodeKind::Identifier { name: id } => Some(id.clone()),
+                        _ => None,
+                    };
+                    if let Some(attr) = attr_name {
+                        if !attr.is_empty() {
+                            let (start_line, start_char) =
+                                byte_to_line_col(source, node.location.start);
+                            let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+
+                            symbols.push(LspWorkspaceSymbol {
+                                name: attr,
+                                kind: 7, // Property
+                                location: WireLocation::new(
+                                    uri.to_string(),
+                                    WireRange::new(
+                                        WirePosition::new(start_line, start_char),
+                                        WirePosition::new(end_line, end_char),
+                                    ),
+                                ),
+                                container_name: container
+                                    .map(|s| normalize_package_separator(s).into_owned()),
+                                workspace_folder_uri: None,
+                            });
+                        }
+                    }
+                }
+            }
+
             NodeKind::Program { statements } => {
                 for stmt in statements {
                     self.extract_symbols_recursive(stmt, source, uri, container, symbols);
@@ -163,6 +225,11 @@ impl LspServer {
                 for stmt in statements {
                     self.extract_symbols_recursive(stmt, source, uri, container, symbols);
                 }
+            }
+
+            // Recurse into expression statements so nested declarations are found
+            NodeKind::ExpressionStatement { expression } => {
+                self.extract_symbols_recursive(expression, source, uri, container, symbols);
             }
 
             _ => {
@@ -278,6 +345,62 @@ impl LspServer {
                 self.extract_simple_symbols(body, source, uri, query, symbols);
             }
 
+            // `our` package-interface variables — index with sigil-prefixed name.
+            // `my` / `local` / `state` are sub-local and must NOT appear in the outline.
+            NodeKind::VariableDeclaration { declarator, variable, .. } if declarator == "our" => {
+                if let NodeKind::Variable { sigil, name } = &variable.kind {
+                    let display_name = format!("{sigil}{name}");
+                    if display_name.to_lowercase().contains(&query_lower) {
+                        let (start_line, start_char) =
+                            byte_to_line_col(source, node.location.start);
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+
+                        symbols.push(json!({
+                            "name": display_name,
+                            "kind": 13, // Variable
+                            "location": {
+                                "uri": uri,
+                                "range": {
+                                    "start": {"line": start_line, "character": start_char},
+                                    "end": {"line": end_line, "character": end_char}
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+
+            // Moo/Moose `has 'attr' => (...)` declarations.
+            // NodeKind::String value is already unquoted per ast.rs doc.
+            NodeKind::FunctionCall { name, args } if name == "has" => {
+                if let Some(first_arg) = args.first() {
+                    let attr_name = match &first_arg.kind {
+                        NodeKind::String { value, .. } => Some(value.clone()),
+                        NodeKind::Identifier { name: id } => Some(id.clone()),
+                        _ => None,
+                    };
+                    if let Some(attr) = attr_name {
+                        if !attr.is_empty() && attr.to_lowercase().contains(&query_lower) {
+                            let (start_line, start_char) =
+                                byte_to_line_col(source, node.location.start);
+                            let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+
+                            symbols.push(json!({
+                                "name": attr,
+                                "kind": 7, // Property
+                                "location": {
+                                    "uri": uri,
+                                    "range": {
+                                        "start": {"line": start_line, "character": start_char},
+                                        "end": {"line": end_line, "character": end_char}
+                                    }
+                                }
+                            }));
+                        }
+                    }
+                }
+            }
+
             NodeKind::Program { statements } => {
                 for stmt in statements {
                     self.extract_simple_symbols(stmt, source, uri, query, symbols);
@@ -288,6 +411,11 @@ impl LspServer {
                 for stmt in statements {
                     self.extract_simple_symbols(stmt, source, uri, query, symbols);
                 }
+            }
+
+            // Recurse into expression statements so nested declarations are found
+            NodeKind::ExpressionStatement { expression } => {
+                self.extract_simple_symbols(expression, source, uri, query, symbols);
             }
 
             _ => {}
