@@ -271,6 +271,11 @@ fn collect_user_sub_signatures(ast: &Node) -> HashMap<String, Vec<String>> {
 /// `perl-builtins` crate. Any builtin with a known signature will produce
 /// parameter name hints for its arguments.
 ///
+/// For OO method calls (`$obj->method(arg1, arg2)` / `Class->method(...)`),
+/// use [`parameter_hints_with_resolver`] to supply workspace-level method
+/// resolution. Calling this function directly resolves only in-file method
+/// definitions (those collected by `collect_user_sub_signatures`).
+///
 /// # Arguments
 ///
 /// * `ast` - The root node of the AST to traverse.
@@ -285,72 +290,178 @@ pub fn parameter_hints(
     to_pos16: &impl Fn(usize) -> (u32, u32),
     range: Option<Range>,
 ) -> Vec<Value> {
+    parameter_hints_with_resolver(ast, to_pos16, range, None)
+}
+
+/// Like [`parameter_hints`] but also accepts an optional workspace method resolver.
+///
+/// When `method_resolver` is `Some(f)`, every `NodeKind::MethodCall` whose method
+/// name is not found in the in-file sub-signature map is resolved via `f(method_name)`.
+/// The resolver returns a list of parameter names in declaration order, **including**
+/// the leading self/class positional (e.g. `$self`). That leading positional is
+/// skipped automatically so that the emitted hints align with the actual call-site
+/// arguments (`$obj->method(arg1, arg2)` has two args, not three).
+///
+/// This design lets `perl-lsp-rs` supply workspace-level resolution via a closure
+/// (calling `LspServer::resolve_method_in_workspace`) while keeping
+/// `perl-lsp-rs-core` free of any dependency on the server runtime.
+///
+/// # Arguments
+///
+/// * `ast` - The root node of the AST to traverse.
+/// * `to_pos16` - A function that converts a byte offset to a `(line, character)` tuple.
+/// * `range` - An optional range to filter the inlay hints.
+/// * `method_resolver` - Optional closure: given a bare method name, returns its
+///   positional parameter names (with the leading self-param included) or `None`
+///   if the method is unknown to the workspace.
+///
+/// # Returns
+///
+/// A vector of `serde_json::Value` objects, each representing an inlay hint.
+pub fn parameter_hints_with_resolver(
+    ast: &Node,
+    to_pos16: &impl Fn(usize) -> (u32, u32),
+    range: Option<Range>,
+    method_resolver: Option<&dyn Fn(&str) -> Option<Vec<String>>>,
+) -> Vec<Value> {
     let sigs = create_builtin_signatures();
     // Pre-pass: collect user-defined sub signatures from the AST.
     // This is O(n) over the AST and runs once before the hint-emission walk.
+    // Both `Subroutine` and `Method` nodes with a formal signature are included.
     let user_sigs = collect_user_sub_signatures(ast);
     let mut out = Vec::new();
     walk_ast(ast, &mut |node| {
-        if let NodeKind::FunctionCall { name, args } = &node.kind {
-            // Determine param_names and whether this is a builtin.
-            // Builtins take precedence; they are not double-hinted by the user path.
-            let (param_names, is_builtin) = if let Some(builtin) = sigs.get(name.as_str()) {
-                // Builtin path: extract from the first (most complete) signature.
-                let pnames =
-                    builtin.signatures.first().map(|s| extract_param_names(s)).unwrap_or_default();
-                (pnames, true)
-            } else if let Some(user_params) = user_sigs.get(name.as_str()) {
-                // User-defined sub path: use the pre-collected signature params.
-                (user_params.clone(), false)
-            } else {
-                // Unresolved call — skip.
-                return true;
-            };
+        match &node.kind {
+            NodeKind::FunctionCall { name, args } => {
+                // Determine param_names and whether this is a builtin.
+                // Builtins take precedence; they are not double-hinted by the user path.
+                let (param_names, is_builtin) = if let Some(builtin) = sigs.get(name.as_str()) {
+                    // Builtin path: extract from the first (most complete) signature.
+                    let pnames = builtin
+                        .signatures
+                        .first()
+                        .map(|s| extract_param_names(s))
+                        .unwrap_or_default();
+                    (pnames, true)
+                } else if let Some(user_params) = user_sigs.get(name.as_str()) {
+                    // User-defined sub path: use the pre-collected signature params.
+                    (user_params.clone(), false)
+                } else {
+                    // Unresolved call — skip.
+                    return true;
+                };
 
-            // Skip functions with only a single parameter -- hints
-            // for e.g. `chomp($x)` showing `variable:` add noise
-            // rather than clarity.  Same policy applies to user subs.
-            if param_names.len() <= 1 {
-                return true;
+                // Skip functions with only a single parameter -- hints
+                // for e.g. `chomp($x)` showing `variable:` add noise
+                // rather than clarity.  Same policy applies to user subs.
+                if param_names.len() <= 1 {
+                    return true;
+                }
+
+                for (i, arg) in args.iter().enumerate() {
+                    if i >= param_names.len() {
+                        break;
+                    }
+                    let (l, c) = to_pos16(arg.location.start);
+
+                    // Filter by range if specified
+                    if let Some(filter_range) = range {
+                        let hint_pos = Position::new(l, c);
+                        if !pos_in_range(hint_pos, filter_range) {
+                            continue;
+                        }
+                    }
+
+                    // Embed function name and param index in data for
+                    // later label.location resolution via inlayHint/resolve.
+                    let mut hint = json!({
+                        "position": { "line": l, "character": c },
+                        "label": format!("{}:", param_names[i]),
+                        "kind": 2, // parameter
+                        "paddingLeft": false,
+                        "paddingRight": true,
+                        "data": {
+                            "functionName": name.as_str(),
+                            "paramIndex": i,
+                        }
+                    });
+
+                    // For builtins: embed perldoc summary for tooltip resolution.
+                    if is_builtin {
+                        if let Some(doc) = builtin_doc_summary(name.as_str(), &param_names[i], i) {
+                            hint["data"]["docSummary"] = json!(doc);
+                        }
+                    }
+
+                    out.push(hint);
+                }
             }
 
-            for (i, arg) in args.iter().enumerate() {
-                if i >= param_names.len() {
-                    break;
+            NodeKind::MethodCall { method, args, .. } => {
+                // Resolve param names for OO method calls: $obj->method(arg1, arg2)
+                // Resolution order:
+                //   1. In-file Method/Subroutine with a formal signature (user_sigs).
+                //   2. Workspace-level resolver supplied by the caller (method_resolver).
+                // If neither resolves the method, no hints are emitted (unknown method).
+                //
+                // The param list from the sub definition includes the leading self/class
+                // positional (e.g. `$self`). Because the call-site args do NOT include
+                // the receiver, we skip param_names[0] when emitting hints.
+                let all_param_names: Vec<String> =
+                    if let Some(user_params) = user_sigs.get(method.as_str()) {
+                        user_params.clone()
+                    } else if let Some(resolver) = method_resolver {
+                        match resolver(method.as_str()) {
+                            Some(names) => names,
+                            None => return true, // unknown to workspace — skip
+                        }
+                    } else {
+                        return true; // no resolver available — skip
+                    };
+
+                // Skip the leading self/class positional to align with call-site args.
+                // If the param list has only self or fewer, no visible params to hint.
+                let param_names: &[String] = if all_param_names.is_empty() {
+                    &[]
+                } else {
+                    &all_param_names[1..] // drop the implicit self/class param
+                };
+
+                // Apply the same noise-reduction policy: only hint when >1 visible param.
+                if param_names.len() <= 1 {
+                    return true;
                 }
-                let (l, c) = to_pos16(arg.location.start);
 
-                // Filter by range if specified
-                if let Some(filter_range) = range {
-                    let hint_pos = Position::new(l, c);
-                    if !pos_in_range(hint_pos, filter_range) {
-                        continue;
+                for (i, arg) in args.iter().enumerate() {
+                    if i >= param_names.len() {
+                        break;
                     }
+                    let (l, c) = to_pos16(arg.location.start);
+
+                    // Filter by range if specified
+                    if let Some(filter_range) = range {
+                        let hint_pos = Position::new(l, c);
+                        if !pos_in_range(hint_pos, filter_range) {
+                            continue;
+                        }
+                    }
+
+                    out.push(json!({
+                        "position": { "line": l, "character": c },
+                        "label": format!("{}:", param_names[i]),
+                        "kind": 2, // parameter
+                        "paddingLeft": false,
+                        "paddingRight": true,
+                        "data": {
+                            "functionName": method.as_str(),
+                            // +1 accounts for the skipped leading self/class param
+                            "paramIndex": i + 1,
+                        }
+                    }));
                 }
-
-                // Embed function name and param index in data for
-                // later label.location resolution via inlayHint/resolve.
-                let mut hint = json!({
-                    "position": { "line": l, "character": c },
-                    "label": format!("{}:", param_names[i]),
-                    "kind": 2, // parameter
-                    "paddingLeft": false,
-                    "paddingRight": true,
-                    "data": {
-                        "functionName": name.as_str(),
-                        "paramIndex": i,
-                    }
-                });
-
-                // For builtins: embed perldoc summary for tooltip resolution.
-                if is_builtin {
-                    if let Some(doc) = builtin_doc_summary(name.as_str(), &param_names[i], i) {
-                        hint["data"]["docSummary"] = json!(doc);
-                    }
-                }
-
-                out.push(hint);
             }
+
+            _ => {}
         }
         true
     });

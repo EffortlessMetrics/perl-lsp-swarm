@@ -346,10 +346,35 @@ impl LspServer {
             if let Some(ref ast) = doc.ast {
                 let mut hints = Vec::new();
                 if param_hints {
-                    hints.extend(crate::inlay_hints::parameter_hints(
+                    // Build a workspace method resolver that is called for every
+                    // MethodCall node whose method is not defined in the current file.
+                    // The resolver calls resolve_method_in_workspace (added by #1301)
+                    // and extracts the parameter name list from the returned LSP
+                    // SignatureInformation JSON, including the leading self/class param.
+                    // The inlay-hints provider skips param[0] automatically, so the
+                    // hints align correctly with the call-site argument positions.
+                    #[cfg(feature = "workspace")]
+                    let ws_resolver = |method: &str| -> Option<Vec<String>> {
+                        let sig = self.resolve_method_in_workspace(method)?;
+                        let params = sig.get("parameters")?.as_array()?;
+                        let names: Vec<String> = params
+                            .iter()
+                            .filter_map(|p| p.get("label")?.as_str())
+                            .map(|label| {
+                                // Strip leading sigil ($, @, %) to get bare name
+                                label.trim_start_matches(['$', '@', '%']).to_string()
+                            })
+                            .collect();
+                        if names.is_empty() { None } else { Some(names) }
+                    };
+                    #[cfg(not(feature = "workspace"))]
+                    let ws_resolver = |_method: &str| -> Option<Vec<String>> { None };
+
+                    hints.extend(crate::inlay_hints::parameter_hints_with_resolver(
                         ast,
                         &|off| self.offset_to_pos16(doc, off),
                         range,
+                        Some(&ws_resolver),
                     ));
                 }
                 if type_hints {
