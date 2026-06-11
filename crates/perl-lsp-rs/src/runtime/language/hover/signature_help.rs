@@ -60,6 +60,23 @@ impl LspServer {
                         })));
                     }
 
+                    // Workspace method resolution: when the call is a ->method( form,
+                    // search the workspace symbol index for the method definition and
+                    // return its parameter signature using the same @_-introspection
+                    // infrastructure as get_user_function_signature.
+                    // Designed as a clean reusable helper — a later slice will call this
+                    // same entry point for inlay hints without rebuilding the lookup logic.
+                    #[cfg(feature = "workspace")]
+                    if Self::is_method_call_context(&doc.text, offset) {
+                        if let Some(signature) = self.resolve_method_in_workspace(&function_name) {
+                            return Ok(Some(json!({
+                                "signatures": [signature],
+                                "activeSignature": active_signature,
+                                "activeParameter": active_param
+                            })));
+                        }
+                    }
+
                     // Check DBI method signatures — only for files that import DBI/DBIx,
                     // to avoid false positives for common method names like `execute`.
                     // find_function_context returns the function name but not paren_pos;
@@ -746,6 +763,119 @@ impl LspServer {
             None
         }
     }
+
+    /// Detect whether the call at `offset` in `text` is an OO method call (`->method(`).
+    ///
+    /// Scans backward from `offset` to find the opening `(`, then checks whether the
+    /// token before `(` is preceded by `->`. Returns `true` when the pattern
+    /// `->method_name(` is found; `false` otherwise.
+    ///
+    /// This is a pure-text heuristic with no AST dependency, making it safe to call
+    /// inside the document-lock section without re-parsing.
+    pub(crate) fn is_method_call_context(text: &str, offset: usize) -> bool {
+        let chars: Vec<char> = text.chars().collect();
+        let len = chars.len();
+        if len == 0 || offset == 0 {
+            return false;
+        }
+
+        // Scan backward to find the opening `(`
+        let mut depth = 0usize;
+        let mut paren_pos = None;
+        let mut i = offset.saturating_sub(1).min(len - 1);
+        loop {
+            match chars[i] {
+                ')' | ']' | '}' => depth += 1,
+                '(' => {
+                    if depth == 0 {
+                        paren_pos = Some(i);
+                        break;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                '[' | '{' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
+        }
+
+        let paren_pos = match paren_pos {
+            Some(p) => p,
+            None => return false,
+        };
+
+        if paren_pos == 0 {
+            return false;
+        }
+
+        // Skip backward over the method name token
+        let mut j = paren_pos - 1;
+        while j > 0 && chars[j].is_whitespace() {
+            j -= 1;
+        }
+        // Skip alphanumeric / underscore (method name)
+        while j > 0 && (chars[j].is_alphanumeric() || chars[j] == '_') {
+            j -= 1;
+        }
+        // Skip any whitespace between `->` and method name
+        while j > 0 && chars[j].is_whitespace() {
+            j -= 1;
+        }
+
+        // Check for `->`
+        j >= 1 && chars[j] == '>' && chars[j - 1] == '-'
+    }
+
+    /// Resolve a workspace method definition and return its LSP SignatureInformation.
+    ///
+    /// Searches the workspace symbol index for a callable (Subroutine or Method) whose
+    /// bare name matches `method_name`, then loads the source file for the first match,
+    /// re-parses it, and extracts the parameter signature using the same
+    /// `get_user_function_signature` / `@_`-introspection infrastructure used for
+    /// in-file lookups.
+    ///
+    /// Returns `None` gracefully when:
+    /// - The workspace feature is not enabled (compile-time gate)
+    /// - No coordinator / index is available yet
+    /// - No matching callable is found in the workspace
+    /// - The source file cannot be read or parsed
+    ///
+    /// # Design note
+    ///
+    /// This helper is intentionally self-contained and reusable. A later slice will
+    /// call it from the inlay hints provider without rebuilding the lookup logic.
+    #[cfg(feature = "workspace")]
+    pub(crate) fn resolve_method_in_workspace(&self, method_name: &str) -> Option<Value> {
+        use crate::runtime::routing::{IndexAccessMode, route_index_access};
+
+        let coord = match route_index_access(self.coordinator()) {
+            IndexAccessMode::Full(c) => c,
+            _ => return None,
+        };
+        let workspace_index = coord.index();
+
+        // Search the workspace index for callables matching the bare method name.
+        // `search_source_symbols` performs a case-insensitive substring match; we
+        // post-filter to exact bare-name matches of callable kinds only.
+        let candidates = workspace_index.search_source_symbols(method_name);
+        let symbol =
+            candidates.into_iter().find(|sym| sym.name == method_name && sym.kind.is_callable())?;
+
+        // Load the source file that defines this symbol.
+        let text = crate::runtime::language::navigation::workspace_document_text(
+            workspace_index,
+            &symbol.uri,
+        )?;
+
+        // Parse the source and extract the function signature.
+        let mut parser = crate::Parser::new(&text);
+        let ast = parser.parse().ok()?;
+
+        self.get_user_function_signature(&ast, method_name)
+    }
 }
 
 fn active_signature_from_context(params: &Value) -> u64 {
@@ -758,4 +888,81 @@ fn active_signature_from_context(params: &Value) -> u64 {
     }
 
     context.pointer("/activeSignatureHelp/activeSignature").and_then(Value::as_u64).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_method_call_context unit tests ─────────────────────────────────────
+
+    #[test]
+    fn test_is_method_call_context_detects_arrow_method() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Cursor is inside `$obj->format(`
+        let text = "$obj->format(";
+        let offset = text.len(); // after `(`
+        assert!(
+            LspServer::is_method_call_context(text, offset),
+            "should detect ->method( as method call context"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_method_call_context_regular_function_is_false()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let text = "calculate(";
+        let offset = text.len();
+        assert!(
+            !LspServer::is_method_call_context(text, offset),
+            "regular function call should not be detected as method call"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_method_call_context_class_method_call() -> Result<(), Box<dyn std::error::Error>> {
+        // Class->new( pattern
+        let text = "Formatter->new(";
+        let offset = text.len();
+        assert!(
+            LspServer::is_method_call_context(text, offset),
+            "Class->new( should be detected as method call context"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_method_call_context_inside_args() -> Result<(), Box<dyn std::error::Error>> {
+        // Cursor after first comma: $obj->method($a,
+        let text = "$obj->method($a, ";
+        let offset = text.len();
+        assert!(
+            LspServer::is_method_call_context(text, offset),
+            "cursor after comma inside ->method() should still be method call context"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_method_call_context_empty_text_is_false() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(
+            !LspServer::is_method_call_context("", 0),
+            "empty text should not be detected as method call"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_method_call_context_builtin_call_is_false() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let text = "push(@arr, ";
+        let offset = text.len();
+        assert!(
+            !LspServer::is_method_call_context(text, offset),
+            "builtin call should not be detected as method call context"
+        );
+        Ok(())
+    }
 }
