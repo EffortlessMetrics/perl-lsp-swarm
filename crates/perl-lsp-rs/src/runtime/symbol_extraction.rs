@@ -345,62 +345,6 @@ impl LspServer {
                 self.extract_simple_symbols(body, source, uri, query, symbols);
             }
 
-            // `our` package-interface variables — index with sigil-prefixed name.
-            // `my` / `local` / `state` are sub-local and must NOT appear in the outline.
-            NodeKind::VariableDeclaration { declarator, variable, .. } if declarator == "our" => {
-                if let NodeKind::Variable { sigil, name } = &variable.kind {
-                    let display_name = format!("{sigil}{name}");
-                    if display_name.to_lowercase().contains(&query_lower) {
-                        let (start_line, start_char) =
-                            byte_to_line_col(source, node.location.start);
-                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
-
-                        symbols.push(json!({
-                            "name": display_name,
-                            "kind": 13, // Variable
-                            "location": {
-                                "uri": uri,
-                                "range": {
-                                    "start": {"line": start_line, "character": start_char},
-                                    "end": {"line": end_line, "character": end_char}
-                                }
-                            }
-                        }));
-                    }
-                }
-            }
-
-            // Moo/Moose `has 'attr' => (...)` declarations.
-            // NodeKind::String value is already unquoted per ast.rs doc.
-            NodeKind::FunctionCall { name, args } if name == "has" => {
-                if let Some(first_arg) = args.first() {
-                    let attr_name = match &first_arg.kind {
-                        NodeKind::String { value, .. } => Some(value.clone()),
-                        NodeKind::Identifier { name: id } => Some(id.clone()),
-                        _ => None,
-                    };
-                    if let Some(attr) = attr_name {
-                        if !attr.is_empty() && attr.to_lowercase().contains(&query_lower) {
-                            let (start_line, start_char) =
-                                byte_to_line_col(source, node.location.start);
-                            let (end_line, end_char) = byte_to_line_col(source, node.location.end);
-
-                            symbols.push(json!({
-                                "name": attr,
-                                "kind": 7, // Property
-                                "location": {
-                                    "uri": uri,
-                                    "range": {
-                                        "start": {"line": start_line, "character": start_char},
-                                        "end": {"line": end_line, "character": end_char}
-                                    }
-                                }
-                            }));
-                        }
-                    }
-                }
-            }
-
             NodeKind::Program { statements } => {
                 for stmt in statements {
                     self.extract_simple_symbols(stmt, source, uri, query, symbols);
@@ -411,11 +355,6 @@ impl LspServer {
                 for stmt in statements {
                     self.extract_simple_symbols(stmt, source, uri, query, symbols);
                 }
-            }
-
-            // Recurse into expression statements so nested declarations are found
-            NodeKind::ExpressionStatement { expression } => {
-                self.extract_simple_symbols(expression, source, uri, query, symbols);
             }
 
             _ => {}
@@ -647,13 +586,14 @@ mod tests {
 
         let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
 
-        let ver = symbols.iter().find(|s| s.name == "$VERSION");
-        assert!(
-            ver.is_some(),
-            "our $VERSION should be indexed; got: {:?}",
-            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let ver = names.iter().position(|n| *n == "$VERSION");
+        assert!(ver.is_some(), "our $VERSION should be indexed; got: {names:?}");
+        assert_eq!(
+            symbols.get(ver.unwrap_or(0)).map(|s| s.kind),
+            Some(13),
+            "$VERSION should have LSP kind 13 (Variable)"
         );
-        assert_eq!(ver.map(|s| s.kind), Some(13), "$VERSION should have LSP kind 13 (Variable)");
     }
 
     /// `my $local` must NOT appear in the symbol list — only `our` is indexed.
@@ -681,11 +621,8 @@ mod tests {
 
         let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
 
-        assert!(
-            symbols.iter().all(|s| s.name != "$local"),
-            "my $local must NOT be indexed; got: {:?}",
-            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
-        );
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(!names.contains(&"$local"), "my $local must NOT be indexed; got: {names:?}");
     }
 
     /// `has 'name' => (...)` must appear as a Property symbol (kind 7) named
@@ -710,16 +647,139 @@ mod tests {
 
         let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
 
-        let attr = symbols.iter().find(|s| s.name == "name");
-        assert!(
-            attr.is_some(),
-            "has 'name' should be indexed as a Property; got: {:?}",
-            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
-        );
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let pos = names.iter().position(|n| *n == "name");
+        assert!(pos.is_some(), "has 'name' should be indexed as a Property; got: {names:?}");
         assert_eq!(
-            attr.map(|s| s.kind),
+            symbols.get(pos.unwrap_or(0)).map(|s| s.kind),
             Some(7),
             "'name' attribute should have LSP kind 7 (Property)"
+        );
+    }
+
+    /// `has name => (...)` where the first arg is a bare `Identifier` (not a quoted
+    /// string) must still emit a Property symbol (kind 7).
+    ///
+    /// Covers the `NodeKind::Identifier { name: id }` branch of the inner match.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_has_identifier_arg_emits_property_kind() {
+        let source = "has name => (is => 'ro');\n";
+        let attr_name_node =
+            Node::new(NodeKind::Identifier { name: "name".to_string() }, loc(4, 8));
+        let has_call = Node::new(
+            NodeKind::FunctionCall { name: "has".to_string(), args: vec![attr_name_node] },
+            loc(0, 25),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![has_call] }, loc(0, 26));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let pos = names.iter().position(|n| *n == "name");
+        assert!(
+            pos.is_some(),
+            "has name (Identifier arg) should be indexed as Property; got: {names:?}"
+        );
+        assert_eq!(
+            symbols.get(pos.unwrap_or(0)).map(|s| s.kind),
+            Some(7),
+            "Identifier-arg attribute should have kind 7 (Property)"
+        );
+    }
+
+    /// `our $VERSION` inside a `{ ... }` block must still be indexed.
+    ///
+    /// Covers the `NodeKind::Block { statements }` recursion arm added to
+    /// `extract_symbols_recursive`.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_our_var_inside_block_is_indexed() {
+        let source = "{ our $VERSION = '1.00'; }\n";
+        let variable_node = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "VERSION".to_string() },
+            loc(6, 14),
+        );
+        let decl_node = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "our".to_string(),
+                variable: Box::new(variable_node),
+                attributes: vec![],
+                initializer: None,
+            },
+            loc(2, 24),
+        );
+        let block = Node::new(NodeKind::Block { statements: vec![decl_node] }, loc(0, 26));
+        let root = Node::new(NodeKind::Program { statements: vec![block] }, loc(0, 27));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"$VERSION"),
+            "our $VERSION inside a block should be indexed; got: {names:?}"
+        );
+    }
+
+    /// `our $VERSION` wrapped in an `ExpressionStatement` must still be indexed.
+    ///
+    /// Covers the `NodeKind::ExpressionStatement { expression }` recursion arm
+    /// added to `extract_symbols_recursive`.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_our_var_inside_expression_statement_is_indexed() {
+        let source = "our $EPOCH = time();\n";
+        let variable_node = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "EPOCH".to_string() },
+            loc(4, 10),
+        );
+        let decl_node = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "our".to_string(),
+                variable: Box::new(variable_node),
+                attributes: vec![],
+                initializer: None,
+            },
+            loc(0, 20),
+        );
+        let expr_stmt = Node::new(
+            NodeKind::ExpressionStatement { expression: Box::new(decl_node) },
+            loc(0, 21),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![expr_stmt] }, loc(0, 22));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"$EPOCH"),
+            "our $EPOCH inside ExpressionStatement should be indexed; got: {names:?}"
+        );
+    }
+
+    /// `has` with an unrecognised first-arg kind must NOT produce a symbol
+    /// (exercises the `_ => None` wildcard branch in the inner match).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_has_unknown_first_arg_produces_no_symbol() {
+        let source = "has $attr_ref => (is => 'ro');\n";
+        // Use a Variable node as the first arg — not String or Identifier.
+        let var_arg = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "attr_ref".to_string() },
+            loc(4, 13),
+        );
+        let has_call = Node::new(
+            NodeKind::FunctionCall { name: "has".to_string(), args: vec![var_arg] },
+            loc(0, 30),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![has_call] }, loc(0, 31));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.is_empty(),
+            "has with Variable first arg must not produce a symbol; got: {names:?}"
         );
     }
 
