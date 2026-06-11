@@ -610,6 +610,121 @@ mod tests {
         Node::new(NodeKind::Number { value: "1".to_string() }, loc(start, start + 1))
     }
 
+    /// Build a server instance backed by in-memory I/O (no file system needed).
+    fn server() -> LspServer {
+        LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(Vec::<u8>::new()))
+    }
+
+    // ------------------------------------------------------------------
+    // extract_symbols_recursive — new arms introduced by this PR
+    // ------------------------------------------------------------------
+
+    /// `our $VERSION = '1.00'` must appear as a Variable symbol (kind 13)
+    /// with sigil-prefixed name `$VERSION`.
+    ///
+    /// This test exercises the `NodeKind::VariableDeclaration { declarator: "our" }`
+    /// arm that was added to `extract_symbols_recursive` (workspace feature path).
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_our_var_emits_variable_kind() {
+        // Build:  our $VERSION = '1.00';
+        // Source string must be long enough so byte offsets are valid.
+        let source = "our $VERSION = '1.00';\n";
+        let variable_node = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "VERSION".to_string() },
+            loc(4, 12),
+        );
+        let decl_node = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "our".to_string(),
+                variable: Box::new(variable_node),
+                attributes: vec![],
+                initializer: None,
+            },
+            loc(0, 22),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![decl_node] }, loc(0, 23));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let ver = symbols.iter().find(|s| s.name == "$VERSION");
+        assert!(
+            ver.is_some(),
+            "our $VERSION should be indexed; got: {:?}",
+            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert_eq!(ver.map(|s| s.kind), Some(13), "$VERSION should have LSP kind 13 (Variable)");
+    }
+
+    /// `my $local` must NOT appear in the symbol list — only `our` is indexed.
+    ///
+    /// Negative test for the `declarator == "our"` guard in the
+    /// `NodeKind::VariableDeclaration` arm.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_my_var_not_indexed() {
+        let source = "my $local = 1;\n";
+        let variable_node = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "local".to_string() },
+            loc(3, 9),
+        );
+        let decl_node = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "my".to_string(),
+                variable: Box::new(variable_node),
+                attributes: vec![],
+                initializer: None,
+            },
+            loc(0, 14),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![decl_node] }, loc(0, 15));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        assert!(
+            symbols.iter().all(|s| s.name != "$local"),
+            "my $local must NOT be indexed; got: {:?}",
+            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// `has 'name' => (...)` must appear as a Property symbol (kind 7) named
+    /// `name` (no sigil).
+    ///
+    /// This test exercises the `NodeKind::FunctionCall { name: "has" }` arm
+    /// that was added to `extract_symbols_recursive`.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_has_attr_emits_property_kind() {
+        // Build:  has 'name' => (is => 'ro');
+        let source = "has 'name' => (is => 'ro');\n";
+        let attr_name_node = Node::new(
+            NodeKind::String { value: "name".to_string(), interpolated: false },
+            loc(4, 10),
+        );
+        let has_call = Node::new(
+            NodeKind::FunctionCall { name: "has".to_string(), args: vec![attr_name_node] },
+            loc(0, 27),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![has_call] }, loc(0, 28));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let attr = symbols.iter().find(|s| s.name == "name");
+        assert!(
+            attr.is_some(),
+            "has 'name' should be indexed as a Property; got: {:?}",
+            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            attr.map(|s| s.kind),
+            Some(7),
+            "'name' attribute should have LSP kind 7 (Property)"
+        );
+    }
+
+    // ------------------------------------------------------------------
+
     #[test]
     fn count_references_visits_if_and_while_children_with_keyword_metadata() {
         let server =
