@@ -59,6 +59,14 @@ impl NativeFormatter {
             ));
         }
 
+        Self::validate_parse_only(source)
+    }
+
+    /// Check parse correctness only — no literal-preserve check.
+    ///
+    /// Used by `format_range` where the literal-preserve gate is scoped to the
+    /// requested line range rather than the whole document.
+    fn validate_parse_only(source: &str) -> Result<(), FormatDiagnostic> {
         let mut parser = perl_parser_core::Parser::new(source);
         let output = parser.parse_with_recovery();
 
@@ -182,14 +190,44 @@ impl PerlFormatter for NativeFormatter {
             return FormatResult::unchanged(source);
         }
 
-        if let Err(diagnostic) = Self::validate_clean_parse(source) {
+        // Scope the literal-preserve gate to only the requested line range.
+        // If the range itself contains a preservable construct (regex, heredoc,
+        // qw, POD, __DATA__/__END__, or format body), bail unchanged — that is
+        // correct and safe. Constructs that exist *outside* the requested range
+        // do not block formatting of the clean range.
+        //
+        // Overlap detection strategy: line-based constructs are checked only on
+        // lines within the range; token-based constructs compare token byte spans
+        // against the byte interval of the requested lines (conservative — a token
+        // that merely starts before the range but ends inside it is considered an
+        // overlap and causes a bail-out).
+        if let Some(kind) = literal_preserve_region_for_range(source, range) {
+            let mut result = FormatResult::unchanged(source);
+            result.diagnostics.push(FormatDiagnostic::new(
+                LITERAL_PRESERVE_CODE,
+                FormatDiagnosticSeverity::Warning,
+                None,
+                format!(
+                    "native range formatting skipped because {kind} preservation is not enabled yet"
+                ),
+            ));
+            return result;
+        }
+
+        // Parse-error gate still covers the full document — we cannot safely
+        // format any range of a document that does not parse.
+        if let Err(diagnostic) = Self::validate_parse_only(source) {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(diagnostic);
             return result;
         }
 
         let (formatted, edits) = Self::format_safe_subset_range(source, range, config);
-        if let Err(diagnostic) = Self::validate_clean_parse(&formatted) {
+
+        // Post-format parse check uses parse-only (no literal-preserve) because
+        // the formatted document still contains constructs from outside the range;
+        // those are not regressions introduced by formatting.
+        if let Err(diagnostic) = Self::validate_parse_only(&formatted) {
             let mut result = FormatResult::unchanged(source);
             result.diagnostics.push(FormatDiagnostic::new(
                 PARSE_PRESERVATION_CODE,
@@ -1623,6 +1661,118 @@ fn literal_preserve_region(source: &str) -> Option<&'static str> {
     token_literal_preserve_region(source)
 }
 
+/// Check for literal-preserve constructs within a specific line range only.
+///
+/// Returns `Some(kind)` if the requested range overlaps a construct that the
+/// native formatter cannot yet safely reflow (regex, heredoc, qw, POD, etc.).
+/// Returns `None` if the requested range is clean and safe to format, even if
+/// the rest of the document contains such constructs.
+///
+/// ## Line-based checks
+/// POD markers, `__DATA__`/`__END__`, heredoc starts, and `format` declarations
+/// are detected by scanning only the source lines that fall within `range`.
+///
+/// ## Token-based checks
+/// Regex literals, substitution, transliteration, and quote-like operators are
+/// detected by tokenising the full source and checking whether any such token's
+/// byte span overlaps the byte interval of the requested lines. A token that
+/// starts before the range but ends inside it is treated as an overlap (bail
+/// out). This is deliberately conservative and avoids false negatives from
+/// multi-line constructs that straddle the range boundary.
+fn literal_preserve_region_for_range(source: &str, range: TextRange) -> Option<&'static str> {
+    // --- line-based checks (scoped to the requested lines) ---
+    for (line_index, line) in source.lines().enumerate() {
+        if !range_includes_line(range, line_index as u32) {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if is_pod_start(trimmed) {
+            return Some("POD");
+        }
+        if matches!(trimmed.trim_end(), "__DATA__" | "__END__") {
+            return Some("DATA/END section");
+        }
+        if contains_likely_heredoc_start(line) {
+            return Some("heredoc");
+        }
+        if is_format_declaration_start(trimmed) {
+            return Some("format body");
+        }
+    }
+
+    // --- token-based checks (overlap with requested byte range) ---
+    // Compute the byte range for the requested lines.
+    let (range_byte_start, range_byte_end) = byte_span_for_line_range(source, range);
+    token_literal_preserve_region_overlapping(source, range_byte_start, range_byte_end)
+}
+
+/// Return the `[byte_start, byte_end)` byte interval that covers all lines
+/// within `range` in `source`.
+///
+/// `byte_start` is the byte offset of the first character of `range.start.line`.
+/// `byte_end` is the byte offset one past the last character of the last
+/// included line (including its newline if any).
+fn byte_span_for_line_range(source: &str, range: TextRange) -> (usize, usize) {
+    let mut byte_start = 0_usize;
+    let mut byte_end = source.len();
+    let mut found_start = false;
+
+    let mut byte_offset = 0_usize;
+    for (line_index, line) in source.split_inclusive('\n').enumerate() {
+        let line_index = line_index as u32;
+        if line_index == range.start.line {
+            byte_start = byte_offset;
+            found_start = true;
+        }
+        // The last line included in the range is the last line for which
+        // `range_includes_line` returns true.
+        let next_offset = byte_offset + line.len();
+        if range_includes_line(range, line_index) {
+            byte_end = next_offset;
+        }
+        byte_offset = next_offset;
+    }
+
+    if !found_start {
+        // Range starts beyond end of file — nothing to check.
+        return (source.len(), source.len());
+    }
+
+    (byte_start, byte_end)
+}
+
+fn token_literal_preserve_region_overlapping(
+    source: &str,
+    range_byte_start: usize,
+    range_byte_end: usize,
+) -> Option<&'static str> {
+    use perl_parser_core::TokenKind;
+
+    let mut stream = perl_parser_core::TokenStream::new(source);
+    loop {
+        let Ok(token) = stream.next() else {
+            return None;
+        };
+        // Check only tokens of interest for preserve regions.
+        let kind_label = match token.kind {
+            TokenKind::Eof => return None,
+            TokenKind::Regex => "regex literal",
+            TokenKind::Substitution => "substitution operator",
+            TokenKind::Transliteration => "transliteration operator",
+            TokenKind::QuoteSingle
+            | TokenKind::QuoteDouble
+            | TokenKind::QuoteWords
+            | TokenKind::QuoteCommand => "quote-like operator",
+            TokenKind::FormatBody => "format body",
+            _ => continue,
+        };
+        // A token overlaps the range if its byte span intersects [range_byte_start, range_byte_end).
+        if token.start < range_byte_end && token.end > range_byte_start {
+            return Some(kind_label);
+        }
+    }
+}
+
 fn token_literal_preserve_region(source: &str) -> Option<&'static str> {
     use perl_parser_core::TokenKind;
 
@@ -1695,7 +1845,8 @@ fn is_format_declaration_start(trimmed_line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        TextPosition, TextRange, literal_preserve_region, range_includes_line, split_line_ending,
+        TextPosition, TextRange, byte_span_for_line_range, literal_preserve_region,
+        literal_preserve_region_for_range, range_includes_line, split_line_ending,
         split_trailing_comment,
     };
 
@@ -1749,6 +1900,84 @@ mod tests {
         assert_eq!(literal_preserve_region("my $text = <<~'EOF';\nbody\nEOF\n"), Some("heredoc"));
         assert_eq!(literal_preserve_region("format STDOUT =\n@<<<<\n$x\n.\n"), Some("format body"));
         assert_eq!(literal_preserve_region("my $x = 1;\n"), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn byte_span_for_line_range_returns_correct_byte_interval()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // "line0\nline1\nline2\n"
+        //  0     6      12     18
+        let source = "line0\nline1\nline2\n";
+
+        // Range covering only line 1 (zero-based)
+        let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        let (start, end) = byte_span_for_line_range(source, range);
+        assert_eq!(start, 6, "byte start of line 1");
+        // end should be byte offset just past "line1\n"
+        assert_eq!(end, 12, "byte end of line 1");
+
+        // Range covering lines 0 and 1
+        let range = TextRange::new(TextPosition::new(0, 0), TextPosition::new(2, 0));
+        let (start, end) = byte_span_for_line_range(source, range);
+        assert_eq!(start, 0);
+        assert_eq!(end, 12);
+
+        Ok(())
+    }
+
+    #[test]
+    fn literal_preserve_region_for_range_ignores_constructs_outside_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Document: line 0 has a regex, line 1 is clean.
+        // Range covers only line 1 → should not detect the regex.
+        let source = "my $x = $t =~ /pat/;\nmy $y = 2;\n";
+        let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        assert_eq!(literal_preserve_region_for_range(source, range), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn literal_preserve_region_for_range_detects_constructs_inside_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Range covers the line with the regex → should detect it.
+        let source = "my $y = 2;\nmy $x = $t =~ /pat/;\n";
+        let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        assert_eq!(literal_preserve_region_for_range(source, range), Some("regex literal"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn literal_preserve_region_for_range_ignores_pod_outside_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // POD is on line 0, range covers only line 1.
+        let source = "=head1 NAME\nmy $x = 1;\n";
+        let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        assert_eq!(literal_preserve_region_for_range(source, range), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn literal_preserve_region_for_range_detects_pod_inside_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $x = 1;\n=head1 NAME\n";
+        let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        assert_eq!(literal_preserve_region_for_range(source, range), Some("POD"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn literal_preserve_region_for_range_ignores_heredoc_outside_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Heredoc start on line 0, range is line 1.
+        let source = "print <<'EOF';\nmy $x = 1;\n";
+        let range = TextRange::new(TextPosition::new(1, 0), TextPosition::new(2, 0));
+        assert_eq!(literal_preserve_region_for_range(source, range), None);
 
         Ok(())
     }
