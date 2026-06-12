@@ -634,4 +634,86 @@ mod evaluate_allocation_tests {
         );
         assert_eq!(ref_val, 0, "blessed ARRAY type with no session must return 0");
     }
+
+    // -----------------------------------------------------------------------
+    // allocate_evaluate_result_ref — session-present path (lines 511-530).
+    // When a live session is present and the type is expandable, allocate a
+    // non-zero variablesReference in the 50_000+ range and cache the entry.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn allocate_returns_nonzero_with_live_session_and_hash_type() {
+        // Covers the session-present branch: raw_counter fetch_add, eval_ref
+        // computation (50_000 base), Variable construction, cache upsert.
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        let ref_val = adapter.allocate_evaluate_result_ref("$h", "HASH(0x1234)", "HASH");
+
+        assert!(
+            ref_val >= 50_000,
+            "variablesReference must be in the 50_000+ range to avoid scope-ref collision; got {ref_val}"
+        );
+        assert_ne!(ref_val, 0, "session-present HASH must return non-zero variablesReference");
+    }
+
+    #[test]
+    fn allocate_returns_nonzero_with_live_session_and_array_type() {
+        // Same session-present coverage path for ARRAY type.
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        let ref_val = adapter.allocate_evaluate_result_ref("@arr", "ARRAY(0xabcd)", "ARRAY");
+
+        assert!(ref_val >= 50_000, "ARRAY ref must be in 50_000+ range; got {ref_val}");
+        assert_ne!(ref_val, 0, "session-present ARRAY must return non-zero variablesReference");
+    }
+
+    #[test]
+    fn allocate_refs_are_monotonically_increasing() {
+        // Verifies successive allocations increment the counter so refs are
+        // unique — covers the fetch_add path through multiple calls.
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        let ref1 = adapter.allocate_evaluate_result_ref("$a", "HASH(0x1)", "HASH");
+        let ref2 = adapter.allocate_evaluate_result_ref("$b", "HASH(0x2)", "HASH");
+
+        assert!(ref1 >= 50_000, "first ref must be in 50_000+ range; got {ref1}");
+        assert!(
+            ref2 > ref1,
+            "second ref must be greater than first; got ref1={ref1}, ref2={ref2}"
+        );
+    }
+
+    #[test]
+    fn allocate_caches_placeholder_variable_in_session() {
+        // Verifies the allocated ref is retrievable from the session cache via
+        // get_page — proving the upsert call ran and the placeholder was stored.
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        let expression = "$my_hash";
+        let result_val = "HASH(0x5678)";
+        let result_type = "HASH";
+        let ref_val = adapter.allocate_evaluate_result_ref(expression, result_val, result_type);
+
+        assert!(ref_val >= 50_000, "ref must be in 50_000+ range; got {ref_val}");
+        let ref_i32 = ref_val as i32;
+
+        // Read the placeholder back from the session variable_cache.
+        let mut session_guard =
+            lock_or_recover(&adapter.session, "test_allocate_caches_placeholder");
+        let vars = session_guard
+            .as_mut()
+            .and_then(|s| s.variable_cache.get_page(ref_i32, 0, 10));
+        assert!(
+            vars.is_some(),
+            "cache must contain the placeholder variable for ref {ref_val}"
+        );
+        let vars = vars.unwrap();
+        assert_eq!(vars.len(), 1, "exactly one placeholder variable expected; got {}", vars.len());
+        assert_eq!(vars[0].name, expression, "placeholder name must match expression");
+        assert_eq!(vars[0].value, result_val, "placeholder value must match result");
+    }
 }
