@@ -34,11 +34,214 @@ const COVERAGE_TARGET: f64 = 95.0;
 //   2. When found, mark the attribute line and all subsequent lines as
 //      belonging to the test span until the matching closing brace of the
 //      item that follows the attribute is seen (brace-depth tracking).
-//   3. String/comment contents are NOT parsed; in practice a `"{"` inside
-//      test code causing a slight over-count is acceptable — the worst case
-//      is excluding a few extra test-infra lines, which is conservative.
+//   3. Brace depth is counted using `structural_brace_delta`, which skips
+//      braces inside string literals (including raw strings), char literals,
+//      byte literals, and `//` line comments.  This prevents false depth
+//      changes from patterns like `assert!(s.starts_with('{'))` or
+//      `// }` comment braces, which would otherwise either prematurely end
+//      the test span (conservative direction) or extend it into production
+//      code (dangerous direction, masks real coverage gaps).
 //
 // The returned set contains 1-based line numbers (matching LCOV `DA:` records).
+
+/// Compute the net structural brace delta for a single line of Rust source,
+/// ignoring braces that appear inside:
+/// - `//` line comments
+/// - double-quoted string literals `"..."` (including escaped quotes `\"`)
+/// - single-char literals `'.'` (including `'\''` and `'\\'`)
+/// - byte literals `b"..."` and `b'.'`
+/// - raw string literals `r#"..."#` and `br#"..."#` (arbitrary hash count)
+///
+/// Block comments `/* ... */` are not handled (they can span lines); they are
+/// rare enough in Rust test modules that omitting them is acceptable.
+///
+/// Returns the signed sum of structural `{` (+1) and `}` (-1) characters.
+fn structural_brace_delta(line: &str) -> i32 {
+    let mut delta: i32 = 0;
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let mut i = 0;
+
+    while i < n {
+        let ch = chars[i];
+
+        // `//` line comment — everything from here is a comment.
+        if ch == '/' && i + 1 < n && chars[i + 1] == '/' {
+            break;
+        }
+
+        // Raw byte string `br#"..."#` — must be checked before `b"..."`.
+        if ch == 'b'
+            && i + 1 < n
+            && chars[i + 1] == 'r'
+            && {
+                let mut k = i + 2;
+                while k < n && chars[k] == '#' {
+                    k += 1;
+                }
+                k < n && chars[k] == '"'
+            }
+        {
+            let mut hash_count = 0usize;
+            let mut k = i + 2;
+            while k < n && chars[k] == '#' {
+                hash_count += 1;
+                k += 1;
+            }
+            // skip opening `"`
+            k += 1;
+            loop {
+                if k >= n {
+                    i = n;
+                    break;
+                }
+                if chars[k] == '"' {
+                    let mut h = 0usize;
+                    while k + 1 + h < n && chars[k + 1 + h] == '#' {
+                        h += 1;
+                    }
+                    if h >= hash_count {
+                        i = k + 1 + hash_count;
+                        break;
+                    }
+                }
+                k += 1;
+            }
+            continue;
+        }
+
+        // Raw string literal `r#"..."#`.
+        if ch == 'r'
+            && {
+                let mut k = i + 1;
+                while k < n && chars[k] == '#' {
+                    k += 1;
+                }
+                k < n && chars[k] == '"'
+            }
+        {
+            let mut hash_count = 0usize;
+            let mut k = i + 1;
+            while k < n && chars[k] == '#' {
+                hash_count += 1;
+                k += 1;
+            }
+            // skip opening `"`
+            k += 1;
+            loop {
+                if k >= n {
+                    i = n;
+                    break;
+                }
+                if chars[k] == '"' {
+                    let mut h = 0usize;
+                    while k + 1 + h < n && chars[k + 1 + h] == '#' {
+                        h += 1;
+                    }
+                    if h >= hash_count {
+                        i = k + 1 + hash_count;
+                        break;
+                    }
+                }
+                k += 1;
+            }
+            continue;
+        }
+
+        // Byte string literal `b"..."`.
+        if ch == 'b' && i + 1 < n && chars[i + 1] == '"' {
+            i += 2;
+            while i < n {
+                if chars[i] == '\\' {
+                    i += 2;
+                } else if chars[i] == '"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Byte char literal `b'.'`.
+        if ch == 'b' && i + 1 < n && chars[i + 1] == '\'' {
+            i += 2;
+            while i < n {
+                if chars[i] == '\\' {
+                    i += 2;
+                } else if chars[i] == '\'' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Double-quoted string literal `"..."`.
+        if ch == '"' {
+            i += 1;
+            while i < n {
+                if chars[i] == '\\' {
+                    i += 2;
+                } else if chars[i] == '"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Single-char literal `'.'`.  Distinguish from lifetime annotations
+        // (`'a`, `'static`, `'_`) by checking whether a closing `'` follows
+        // within the expected positions for a char literal.
+        if ch == '\'' {
+            // Lifetime or label heuristic: `'` followed by an identifier char
+            // with no closing `'` after the identifier means it is a lifetime.
+            let is_lifetime = i + 1 < n
+                && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_')
+                && {
+                    let mut k = i + 1;
+                    while k < n && (chars[k].is_ascii_alphanumeric() || chars[k] == '_') {
+                        k += 1;
+                    }
+                    k >= n || chars[k] != '\''
+                };
+            if is_lifetime {
+                i += 1;
+                continue;
+            }
+            // Char literal: consume until closing `'` (handling `\\` escapes).
+            i += 1;
+            while i < n {
+                if chars[i] == '\\' {
+                    i += 2;
+                } else if chars[i] == '\'' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        // Structural brace — counts toward depth.
+        if ch == '{' {
+            delta += 1;
+        } else if ch == '}' {
+            delta -= 1;
+        }
+
+        i += 1;
+    }
+
+    delta
+}
 
 /// Return the set of 1-based line numbers that fall inside any
 /// `#[cfg(test)]`-gated item in `source_text`.
@@ -78,20 +281,19 @@ fn cfg_test_line_numbers(source_text: &str) -> BTreeSet<u64> {
             let ln2 = idx2 as u64 + 1;
             test_lines.insert(ln2);
 
-            for ch in content.chars() {
-                match ch {
-                    '{' => {
-                        depth += 1;
-                        entered = true;
-                    }
-                    '}' => {
-                        depth -= 1;
-                        if entered && depth == 0 {
-                            break 'block;
-                        }
-                    }
-                    _ => {}
-                }
+            // structural_brace_delta skips braces in string/char literals and
+            // // comments, so patterns like `assert!(s.starts_with('{'))` or
+            // `// }` do not corrupt the depth counter.
+            let delta = structural_brace_delta(content);
+            let prev_depth = depth;
+            depth += delta;
+            if !entered && depth > 0 {
+                entered = true;
+            }
+            // The block closes when depth returns to 0 (or below, guarding
+            // against negative deltas from unrecognized patterns).
+            if entered && prev_depth > 0 && depth <= 0 {
+                break 'block;
             }
         }
     }
@@ -1386,6 +1588,165 @@ coverage:
 
         assert!(run_git(temp.path(), &["definitely-not-a-git-command"]).is_err());
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // structural_brace_delta — unit tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn structural_brace_delta_counts_plain_braces() {
+        assert_eq!(structural_brace_delta("mod tests {"), 1);
+        assert_eq!(structural_brace_delta("}"), -1);
+        assert_eq!(structural_brace_delta("fn f() {}"), 0);
+        assert_eq!(structural_brace_delta(""), 0);
+    }
+
+    #[test]
+    fn structural_brace_delta_skips_char_literal_open_brace() {
+        // The classic dangerous pattern: assert!(s.starts_with('{'));
+        // The '{' is a char literal; net structural delta must be 0, not +1.
+        assert_eq!(
+            structural_brace_delta("        assert!(s.starts_with('{'));"),
+            0
+        );
+    }
+
+    #[test]
+    fn structural_brace_delta_skips_char_literal_close_brace() {
+        // A '}' char literal must not decrement depth.
+        assert_eq!(
+            structural_brace_delta("        assert!(s.ends_with('}'));"),
+            0
+        );
+    }
+
+    #[test]
+    fn structural_brace_delta_skips_string_literal_braces() {
+        // Braces inside double-quoted strings must be ignored.
+        assert_eq!(structural_brace_delta(r#"        let s = "{";"#), 0);
+        assert_eq!(structural_brace_delta(r#"        let s = "}";"#), 0);
+        assert_eq!(structural_brace_delta(r#"        let s = "{ foo }";"#), 0);
+    }
+
+    #[test]
+    fn structural_brace_delta_skips_comment_braces() {
+        // Braces after `//` must not count.
+        assert_eq!(structural_brace_delta("        // closing: }"), 0);
+        assert_eq!(structural_brace_delta("        // opening: {"), 0);
+        // A brace before `//` counts; braces after do not.
+        assert_eq!(structural_brace_delta("    fn f() { // }"), 1);
+    }
+
+    #[test]
+    fn structural_brace_delta_skips_raw_string_braces() {
+        // r#"{"# — the { is inside the raw string, net delta 0.
+        assert_eq!(structural_brace_delta(r##"        let s = r#"{"#;"##), 0);
+        assert_eq!(structural_brace_delta(r###"        let s = r##"{"##;"###), 0);
+    }
+
+    #[test]
+    fn structural_brace_delta_skips_byte_literal_braces() {
+        // b'{' and b'}' must be treated as byte literals, not structural braces.
+        assert_eq!(structural_brace_delta("        let c = b'{';"), 0);
+        assert_eq!(structural_brace_delta("        let c = b'}';"), 0);
+    }
+
+    #[test]
+    fn structural_brace_delta_lifetime_not_mistaken_for_char() {
+        // Lifetime annotations ('a, 'static) must not suppress the next
+        // structural brace.
+        assert_eq!(structural_brace_delta("    fn t<'a>() {"), 1);
+        assert_eq!(
+            structural_brace_delta("        let _: &'static str = \"hi\";"),
+            0
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // cfg_test_line_numbers — literal/comment brace regression tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn cfg_test_char_literal_brace_does_not_include_production() {
+        // Regression: a naive char-by-char brace counter treats the `{` in
+        // `s.starts_with('{')` as a depth increment, causing the module close
+        // to be missed and production code after the test module to be
+        // incorrectly sucked into the test set (masking real coverage gaps).
+        //
+        // With `structural_brace_delta` the char literal is skipped, so the
+        // module correctly closes at the real `}` on line 10.
+        let source = [
+            "pub fn prod() -> bool { true }\n", // 1
+            "\n",                               // 2
+            "#[cfg(test)]\n",                   // 3
+            "mod tests {\n",                    // 4
+            "    #[test]\n",                    // 5
+            "    fn t() {\n",                   // 6
+            "        let s = \"{\";\n",       // 7
+            "        assert!(s.starts_with('{'));\n", // 8 char literal {
+            "    }\n",                          // 9
+            "}\n",                              // 10 real module close
+            "\n",                               // 11
+            "pub fn prod_after() -> bool {\n",  // 12 must NOT be in set
+            "    false\n",                      // 13
+            "}\n",                              // 14
+        ]
+        .concat();
+
+        let test_lines = cfg_test_line_numbers(&source);
+
+        assert!(
+            !test_lines.contains(&1),
+            "prod fn before must not be in test set"
+        );
+        assert!(
+            !test_lines.contains(&12),
+            "prod fn after must not be in test set (naive scanner bug)"
+        );
+        assert!(
+            !test_lines.contains(&13),
+            "prod fn body must not be in test set"
+        );
+        assert!(
+            !test_lines.contains(&14),
+            "prod fn close must not be in test set"
+        );
+        assert!(test_lines.contains(&3), "cfg(test) attr must be in test set");
+        assert!(test_lines.contains(&4), "mod tests open must be in test set");
+        assert!(
+            test_lines.contains(&8),
+            "assert! line with char literal must be in test set"
+        );
+        assert!(test_lines.contains(&10), "mod tests close must be in test set");
+    }
+
+    #[test]
+    fn cfg_test_comment_close_brace_does_not_exit_early() {
+        // Regression: a `}` in a `//` comment must not decrement depth
+        // prematurely.  If it did, the scanner exits before the real module
+        // close and production code after would remain unguarded.
+        let source = [
+            "#[cfg(test)]\n",                        // 1
+            "mod tests {\n",                         // 2
+            "    fn t() {\n",                        // 3
+            "        // this comment ends with }\n", // 4  comment brace
+            "    }\n",                               // 5
+            "}\n",                                   // 6  real module close
+            "pub fn prod_after() {}\n",              // 7  must NOT be in set
+        ]
+        .concat();
+
+        let test_lines = cfg_test_line_numbers(&source);
+
+        assert!(
+            !test_lines.contains(&7),
+            "prod after must not be in test set (comment brace regression)"
+        );
+        assert!(
+            test_lines.contains(&6),
+            "real module close must be in test set"
+        );
     }
 
     // ------------------------------------------------------------------
