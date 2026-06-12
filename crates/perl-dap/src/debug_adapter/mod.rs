@@ -1820,4 +1820,45 @@ print "result: $final\n";
         );
         Ok(())
     }
+
+    /// `handle_goto` must clear `session.stack_frames` when the session block
+    /// is entered (the #964 seam, parallel to handle_continue).
+    /// Requires a live perl process so stdin is present for the write path.
+    #[test]
+    fn test_handle_goto_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        if !perl_binary_available() {
+            eprintln!("Skipping test_handle_goto_clears_stack_frames — perl not available");
+            return Ok(());
+        }
+        let mut adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2, "precondition: 2 frames");
+
+        // Pre-populate the goto_targets map so handle_goto finds a valid target
+        {
+            let mut goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
+            goto_map.insert(1, ("/tmp/test.pl".to_string(), 5));
+        }
+
+        let response =
+            adapter.handle_request(1, "goto", Some(json!({"threadId": 1, "targetId": 1})));
+
+        // handle_goto with an active session must return success
+        match response {
+            DapMessage::Response { success, command, .. } => {
+                assert!(success, "handle_goto with active session must succeed");
+                assert_eq!(command, "goto");
+            }
+            _ => return Err("Expected response".into()),
+        }
+
+        // The session path clears stack_frames before writing goto commands
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_goto must clear stack_frames (fix for #964)"
+        );
+        Ok(())
+    }
 }
