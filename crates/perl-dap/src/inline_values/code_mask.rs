@@ -314,11 +314,8 @@ mod paired_delimiter_conformance {
 
     #[test]
     fn matching_delimiter_agrees_with_conformance_matrix() {
+        // MATRIX is ASCII by construction; matching_delimiter operates on u8.
         for &(open, expected_close, expected_paired) in MATRIX {
-            // Only test ASCII chars since matching_delimiter operates on u8.
-            if !open.is_ascii() {
-                continue;
-            }
             let (got_close, got_paired) = normalize(open);
             assert_eq!(
                 got_close, expected_close,
