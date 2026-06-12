@@ -341,3 +341,41 @@ reason = "Five ripr#1429-class seams in PR #1326 cfg(test)-strip helpers: cfg_te
 created = "2026-06-12"
 review_after = "2026-07-12"
 expires = "2026-09-30"
+
+# -----------------------------------------------------------------------------
+# signature_help.rs: invalid_signature_help_params + handle_signature_help call
+# sites — weakly_gripped call_presence seams (ripr 0.9.0, PR #1206).
+#
+# ripr 0.9.0 flags two call_presence seams in this file:
+#   Line 9:   invalid_signature_help_params function body
+#             (call to crate::protocol::invalid_params(...))
+#   Line 176: handle_signature_help call site
+#             (call to invalid_signature_help_params())
+#
+# Both seams are covered by 4 inline #[cfg(test)] unit tests added in PR #1206:
+#   handle_signature_help_none_params_returns_invalid_params
+#   handle_signature_help_missing_uri_returns_invalid_params
+#   handle_signature_help_missing_line_returns_invalid_params
+#   handle_signature_help_missing_character_returns_invalid_params
+#
+# Each test calls handle_signature_help with a missing-field input that exercises
+# the ok_or_else(invalid_signature_help_params) chain at lines 45, 50, 55 and
+# the else-branch at line 176. ripr 0.9.0 classifies these as weakly_gripped
+# because the call-presence seam flows through ok_or_else closure boundaries
+# that RIPR cannot trace statically from literal test inputs — ripr#1429 class.
+#
+# All assertions verify error.code == INVALID_PARAMS and message content.
+# Suppression is narrow (single production file, one PR). Remove when ripr#1429
+# is fixed upstream or when targeted mutation is scheduled per #1289.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-signature-help-invalid-params-call-presence"
+kind = "call_presence"
+paths = ["crates/perl-lsp-rs/src/runtime/language/hover/signature_help.rs"]
+classification = ["weakly_gripped"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "Two ripr 0.9.0 call_presence seams in PR #1206 signature_help.rs: (1) invalid_signature_help_params at line 9 (call to crate::protocol::invalid_params), (2) handle_signature_help at line 176 (call to invalid_signature_help_params). Both are covered by 4 inline #[cfg(test)] unit tests (none_params, missing_uri, missing_line, missing_character all verify INVALID_PARAMS error code and message content). ripr cannot statically trace activation through the ok_or_else closure boundary — ripr#1429 class. Suppression is narrow (single production file). Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289."
+created = "2026-06-12"
+review_after = "2026-07-12"
+expires = "2026-09-30"
