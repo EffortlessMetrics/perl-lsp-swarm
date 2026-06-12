@@ -752,8 +752,17 @@ fn ripr_pr_summary_counts(
     let mut unsuppressed_from_findings = RiprPrSummaryCounts::default();
     for finding in findings {
         let classification = finding.get("classification").and_then(Value::as_str);
+        // `weakly_gripped` is a grip_class that ripr 0.9+ may emit as the per-finding
+        // `classification` field for seams that the summary aggregates under
+        // `reachable_unrevealed`.  Treat it as equivalent to `reachable_unrevealed`
+        // for suppression and counter purposes so that policy-suppressed paths are
+        // correctly subtracted from the headline gap count.
+        let effective_classification = match classification {
+            Some("weakly_gripped") => Some("reachable_unrevealed"),
+            other => other,
+        };
         if !matches!(
-            classification,
+            effective_classification,
             Some("weakly_exposed" | "reachable_unrevealed" | "no_static_path")
         ) {
             continue;
@@ -764,7 +773,7 @@ fn ripr_pr_summary_counts(
         } else {
             &mut unsuppressed_from_findings
         };
-        match classification {
+        match effective_classification {
             Some("weakly_exposed") => counts.weakly_exposed += 1,
             Some("reachable_unrevealed") => counts.reachable_unrevealed += 1,
             Some("no_static_path") => counts.no_static_path += 1,
@@ -2788,6 +2797,78 @@ paths = ["archive/["]
         });
 
         assert!(suppression_matches_finding(&rules, &finding));
+        Ok(())
+    }
+
+    /// ripr 0.9+ may emit `"classification": "weakly_gripped"` for seams that the
+    /// ripr check summary aggregates under `reachable_unrevealed`.  Policy-suppressed
+    /// paths must be subtracted from the headline gap count regardless of which term
+    /// the per-finding classification field uses.
+    #[test]
+    fn pr_evidence_packet_suppresses_weakly_gripped_findings_under_policy_path() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+        };
+        // Simulate ripr 0.9 check --format json output where the per-finding
+        // classification is "weakly_gripped" but the summary aggregates under
+        // "reachable_unrevealed".
+        let check_value = json!({
+            "summary": {
+                "weakly_exposed": 0,
+                "reachable_unrevealed": 3,
+                "no_static_path": 0
+            },
+            "findings": [
+                {
+                    "classification": "weakly_gripped",
+                    "probe": {
+                        "file": "crates/perl-dap/src/debug_adapter/execution.rs"
+                    }
+                },
+                {
+                    "classification": "weakly_gripped",
+                    "probe": {
+                        "file": "crates/perl-dap/src/debug_adapter/execution.rs"
+                    }
+                },
+                {
+                    "classification": "weakly_gripped",
+                    "probe": {
+                        "file": "crates/perl-dap/src/debug_adapter/execution.rs"
+                    }
+                }
+            ]
+        });
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-dap/src/debug_adapter/execution.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+
+        let packet = pr_evidence_packet(
+            &options,
+            &["crates/perl-dap/src/debug_adapter/execution.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+        );
+
+        // All 3 weakly_gripped findings suppressed; summary reachable_unrevealed = 3 - 3 = 0.
+        assert_eq!(
+            packet.pointer("/summary/reachable_unrevealed"),
+            Some(&json!(0)),
+            "weakly_gripped findings in suppressed paths must reduce reachable_unrevealed to 0"
+        );
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(
+            packet.pointer("/summary/suppressed_by_policy"),
+            Some(&json!(3)),
+            "suppressed_by_policy must count all 3 weakly_gripped findings"
+        );
         Ok(())
     }
 
