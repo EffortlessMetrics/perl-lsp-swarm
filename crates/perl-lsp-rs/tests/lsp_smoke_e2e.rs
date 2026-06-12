@@ -1676,3 +1676,231 @@ fn lsp_smoke_e2e_will_save_wait_until_request_response() -> Result<(), Box<dyn s
 
     Ok(())
 }
+
+#[test]
+fn lsp_smoke_e2e_code_action_envelope() -> Result<(), Box<dyn std::error::Error>> {
+    let server = common::start_lsp_server();
+    let timeout = Duration::from_secs(3);
+    let init_timeout = common::timeout_scaler::TimeoutProfile::Initialization.timeout();
+    let uri = unique_test_uri("code-action-envelope");
+
+    // Fixture without use strict/warnings guarantees at least two quickfix
+    // actions ("Add use strict;" and "Add use warnings;") from missing_pragmas_actions,
+    // so assertions on non-empty result are deterministic without waiting for diagnostics.
+    let fixture = "package Smoke::CodeActions;\n\n$x = 1;\nsub calculate { return $x + 1; }\n";
+
+    let init_response = send_request_with_timeout(
+        &server,
+        301,
+        "initialize",
+        json!({
+            "processId": null,
+            "rootUri": null,
+            "capabilities": {
+                "textDocument": {
+                    "codeAction": { "dynamicRegistration": false }
+                }
+            }
+        }),
+        init_timeout,
+    )?;
+    assert!(init_response.get("error").is_none(), "initialize returned error: {init_response:#}");
+
+    common::send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    common::send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": fixture
+                }
+            }
+        }),
+    );
+
+    let fixture_line_count = fixture.lines().count() as u64;
+    let code_action_response = send_request_with_timeout(
+        &server,
+        302,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": fixture_line_count, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        }),
+        timeout,
+    )?;
+    assert!(
+        code_action_response.get("error").is_none(),
+        "codeAction returned error: {code_action_response:#}"
+    );
+
+    let actions = code_action_response["result"].as_array().ok_or(
+        "codeAction result should be an array (LSP spec: CodeAction[] | Command[] | null)",
+    )?;
+    assert!(
+        !actions.is_empty(),
+        "codeAction should return at least one action for a file missing use strict/warnings: {code_action_response:#}"
+    );
+    assert!(
+        actions.iter().any(|a| a.get("title").and_then(Value::as_str).is_some()),
+        "codeAction response should include at least one action with a title field: {code_action_response:#}"
+    );
+
+    let shutdown_response =
+        send_request_with_timeout(&server, 303, "shutdown", json!(null), timeout)?;
+    assert!(
+        shutdown_response.get("error").is_none(),
+        "shutdown returned error: {shutdown_response:#}"
+    );
+    common::send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "exit",
+            "params": null
+        }),
+    );
+
+    Ok(())
+}
+
+#[test]
+fn lsp_smoke_e2e_inline_completion_envelope() -> Result<(), Box<dyn std::error::Error>> {
+    let server = common::start_lsp_server();
+    let timeout = Duration::from_secs(3);
+    let init_timeout = common::timeout_scaler::TimeoutProfile::Initialization.timeout();
+    let uri = unique_test_uri("inline-completion-envelope");
+
+    // "use " triggers deterministic module-name completions (strict;, warnings;, …)
+    // from the built-in provider without any filesystem scan.
+    let fixture = "use ";
+
+    // Advertise inlineCompletion without dynamicRegistration so the server uses
+    // static registration and includes inlineCompletionProvider in its response
+    // (capabilities.rs: (features.inline_completion=true, dynamic=false) arm).
+    let init_response = send_request_with_timeout(
+        &server,
+        401,
+        "initialize",
+        json!({
+            "processId": null,
+            "rootUri": null,
+            "capabilities": {
+                "textDocument": {
+                    "inlineCompletion": {}
+                }
+            }
+        }),
+        init_timeout,
+    )?;
+    assert!(init_response.get("error").is_none(), "initialize returned error: {init_response:#}");
+    assert!(
+        init_response.pointer("/result/capabilities/inlineCompletionProvider").is_some(),
+        "server must advertise inlineCompletionProvider when client uses static registration: {init_response:#}"
+    );
+
+    common::send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    common::send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": fixture
+                }
+            }
+        }),
+    );
+
+    let inline_response = send_request_with_timeout(
+        &server,
+        402,
+        "textDocument/inlineCompletion",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 4 },
+            "context": { "triggerKind": 1 }
+        }),
+        timeout,
+    )?;
+    assert!(
+        inline_response.get("error").is_none(),
+        "inlineCompletion returned error: {inline_response:#}"
+    );
+
+    let items = inline_response
+        .pointer("/result/items")
+        .and_then(Value::as_array)
+        .ok_or("inlineCompletion result should be { items: [...] }")?;
+    assert!(
+        !items.is_empty(),
+        "inlineCompletion at `use ` should return module suggestions (e.g. strict;): {inline_response:#}"
+    );
+    assert!(
+        items.iter().all(|item| item.get("insertText").and_then(Value::as_str).is_some()),
+        "inlineCompletion items should all have an insertText string field: {inline_response:#}"
+    );
+
+    // Verify the server remains responsive after the inline completion request
+    // (guards against feature-gated handler corrupting server state).
+    let hover_response = send_request_with_timeout(
+        &server,
+        403,
+        "textDocument/hover",
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 0 }
+        }),
+        timeout,
+    )?;
+    assert!(
+        hover_response.get("error").is_none(),
+        "server should remain responsive after inlineCompletion: {hover_response:#}"
+    );
+
+    let shutdown_response =
+        send_request_with_timeout(&server, 404, "shutdown", json!(null), timeout)?;
+    assert!(
+        shutdown_response.get("error").is_none(),
+        "shutdown returned error: {shutdown_response:#}"
+    );
+    common::send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "exit",
+            "params": null
+        }),
+    );
+
+    Ok(())
+}
