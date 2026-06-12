@@ -403,6 +403,67 @@ impl DebugAdapter {
         let mut output = lock_or_recover(&self.recent_output, "debug_adapter.push_recent_output");
         Self::append_recent_output_line_locked(&mut output, line);
     }
+
+    #[cfg(test)]
+    fn seed_session_for_test(&self) {
+        use std::process::{Stdio, Command};
+        // Create a minimal mock session with a piped subprocess (perl -e 1 is the simplest no-op).
+        // This simulates a stopped debugger session without spawning a full interactive debugger.
+        let child = match Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => {
+                // If perl is unavailable, create a session with a dummy process.
+                // For unit tests, we mock the presence of a session.
+                let mut session = lock_or_recover(&self.session, "debug_adapter.seed_session");
+                *session = Some(DebugSession {
+                    process: unsafe {
+                        // SAFETY: This is test-only code. We create a placeholder Child
+                        // that won't be used for I/O, just to satisfy the type.
+                        // In real code this would be unsound, but for testing the session
+                        // structure we accept this limitation.
+                        std::mem::zeroed()
+                    },
+                    state: DebugState::Stopped,
+                    stack_frames: Vec::new(),
+                    variable_cache: VariableCache::default(),
+                    thread_id: 1,
+                    last_resume_mode: ResumeMode::Unknown,
+                });
+                return;
+            }
+        };
+
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_session");
+        *session = Some(DebugSession {
+            process: child,
+            state: DebugState::Stopped,
+            stack_frames: Vec::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+        });
+    }
+
+    #[cfg(test)]
+    fn inject_stack_frames_for_test(&self, frames: Vec<StackFrame>) {
+        let mut session = lock_or_recover(&self.session, "debug_adapter.inject_frames");
+        if let Some(ref mut sess) = *session {
+            sess.stack_frames = frames;
+        }
+    }
+
+    #[cfg(test)]
+    fn stack_frames_snapshot_for_test(&self) -> Vec<StackFrame> {
+        let session = lock_or_recover(&self.session, "debug_adapter.snapshot_frames");
+        session.as_ref().map(|s| s.stack_frames.clone()).unwrap_or_default()
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -1621,5 +1682,104 @@ print "result: $final\n";
         // "/path/file.pl:42" should yield file="/path/file.pl", line="42".
         let result = apply_context_re("main::(/path/file.pl:42):");
         assert_eq!(result, Some(("/path/file.pl".to_string(), "42".to_string())));
+    }
+
+    // Helper to create a test stack frame for #964 and #933 tests
+    fn make_test_frame(line_num: i32) -> StackFrame {
+        StackFrame::new(
+            line_num,
+            format!("test_func::{}", line_num),
+            Source::new(format!("/test/file{}.pl", line_num)),
+            line_num,
+        )
+    }
+
+    #[test]
+    fn test_handle_continue_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        // Precondition: frames are present
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            2,
+            "precondition: should have 2 frames before continue"
+        );
+
+        // Call the handler (this should clear stack_frames)
+        let _response = adapter.handle_continue(1, 1, None);
+
+        // Assert: frames are now cleared (FAILS if fix not implemented)
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_continue must clear stack_frames after resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_next_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
+        let _response = adapter.handle_next(1, 1, None);
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_next must clear stack_frames after resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_step_in_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
+        let _response = adapter.handle_step_in(1, 1, None);
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_step_in must clear stack_frames after resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_step_out_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
+        let _response = adapter.handle_step_out(1, 1, None);
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_step_out must clear stack_frames after resume"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_handle_pause_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2);
+        let _response = adapter.handle_pause(1, 1, None);
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_pause must clear stack_frames after pause"
+        );
+        Ok(())
     }
 }
