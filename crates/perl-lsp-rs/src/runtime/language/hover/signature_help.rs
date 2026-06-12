@@ -1235,4 +1235,113 @@ sub format_output {
         );
         Ok(())
     }
+
+    // ── invalid_signature_help_params error-guidance tests ────────────────────
+    //
+    // These inline lib tests exercise the `invalid_signature_help_params()`
+    // helper and its call-sites in `handle_signature_help` so that the new
+    // production lines (lines 8–16, 45, 50, 55, 176) are covered under
+    // `cargo llvm-cov --lib`. They do NOT require the LSP harness — the server
+    // method is called directly with controlled JSON input.
+
+    /// Calling `handle_signature_help` with `None` params triggers the `else`
+    /// branch at line 176 which calls `invalid_signature_help_params()`.
+    /// Verifies: INVALID_PARAMS code (-32602) and actionable message content.
+    #[test]
+    fn handle_signature_help_none_params_returns_invalid_params()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_tdd_support::must_err;
+        let server = LspServer::new();
+        let err = must_err(server.handle_signature_help(None));
+        assert_eq!(
+            err.code,
+            crate::protocol::INVALID_PARAMS,
+            "None params must return INVALID_PARAMS error code"
+        );
+        assert!(
+            err.message.contains("Missing required parameters"),
+            "error message must describe what is missing; got: {:?}",
+            err.message
+        );
+        assert!(
+            err.message.contains("textDocument/signatureHelp"),
+            "error message must name the method; got: {:?}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// Calling `handle_signature_help` with params that lack `textDocument.uri`
+    /// triggers the first `.ok_or_else(invalid_signature_help_params)` at line 45.
+    #[test]
+    fn handle_signature_help_missing_uri_returns_invalid_params()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_tdd_support::must_err;
+        let server = LspServer::new();
+        let params = serde_json::json!({
+            "position": { "line": 5, "character": 10 }
+        });
+        let err = must_err(server.handle_signature_help(Some(params)));
+        assert_eq!(
+            err.code,
+            crate::protocol::INVALID_PARAMS,
+            "missing textDocument.uri must return INVALID_PARAMS"
+        );
+        assert!(
+            err.message.contains("params.textDocument.uri"),
+            "error must name the missing field; got: {:?}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// Calling `handle_signature_help` with params that lack `position.line`
+    /// triggers the second `.ok_or_else(invalid_signature_help_params)` at line 50.
+    #[test]
+    fn handle_signature_help_missing_line_returns_invalid_params()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_tdd_support::must_err;
+        let server = LspServer::new();
+        let params = serde_json::json!({
+            "textDocument": { "uri": "file:///workspace/lib/Mod.pm" },
+            "position": { "character": 10 }
+        });
+        let err = must_err(server.handle_signature_help(Some(params)));
+        assert_eq!(
+            err.code,
+            crate::protocol::INVALID_PARAMS,
+            "missing position.line must return INVALID_PARAMS"
+        );
+        assert!(
+            err.message.contains("params.position.line"),
+            "error must name the missing field; got: {:?}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// Calling `handle_signature_help` with params that lack `position.character`
+    /// triggers the third `.ok_or_else(invalid_signature_help_params)` at line 55.
+    #[test]
+    fn handle_signature_help_missing_character_returns_invalid_params()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_tdd_support::must_err;
+        let server = LspServer::new();
+        let params = serde_json::json!({
+            "textDocument": { "uri": "file:///workspace/lib/Mod.pm" },
+            "position": { "line": 5 }
+        });
+        let err = must_err(server.handle_signature_help(Some(params)));
+        assert_eq!(
+            err.code,
+            crate::protocol::INVALID_PARAMS,
+            "missing position.character must return INVALID_PARAMS"
+        );
+        assert!(
+            err.message.contains("params.position.character"),
+            "error must name the missing field; got: {:?}",
+            err.message
+        );
+        Ok(())
+    }
 }
