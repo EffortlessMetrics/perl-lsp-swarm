@@ -344,17 +344,25 @@ expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
 # DAP resume-handler stack_frames.clear() seams (PR #1309, fixes #964 + #933):
-# process-stdin guard — activation untraceable by ripr 0.9.0 (ripr#1429 class).
+# Mutex-guard activation untraceable by ripr 0.9.0 (ripr#1429 class).
 #
 # Three `weakly_gripped` seams in crates/perl-dap/src/debug_adapter/execution.rs:
-#   line 30: session.stack_frames.clear() inside handle_continue
-#   line 75: session.stack_frames.clear() inside handle_next
+#   line 28: session.stack_frames.clear() inside handle_continue
+#   line 74: session.stack_frames.clear() inside handle_next
 #   line 112: session.stack_frames.clear() inside handle_step_in
 #
-# All three are inside the double let-chain guard:
-#   if let Some(ref mut session) = *lock_or_recover(&self.session, ...)
-#       && let Some(stdin) = session.process.stdin.as_mut()
-#   { ... session.stack_frames.clear() ... }
+# All three are inside a single let-chain session guard (refactored to unconditional
+# clear in PR #1309):
+#   if let Some(ref mut session) = *lock_or_recover(&self.session, ...) {
+#       session.variable_cache.clear();
+#       session.stack_frames.clear();  // ← seam
+#       if let Some(stdin) = session.process.stdin.as_mut() { ... }
+#   }
+#
+# The other 3 resume handlers (handle_step_out line 151, handle_pause line 191,
+# handle_goto line 364) use the same single-session-guard pattern and were not
+# flagged as diff-new by ripr because they were similarly restructured in the
+# same PR rather than being isolated diff-scope additions.
 #
 # Coverage evidence (PR #1309):
 #   Three focused unit tests in debug_adapter::mod::tests:
@@ -363,23 +371,18 @@ expires = "2026-09-30"
 #     test_handle_step_in_clears_stack_frames
 #   Each test: seeds a real session via seed_session_for_test (perl -e 1 with
 #   piped stdio), injects pre-existing stack frames via inject_stack_frames_for_test,
-#   calls the resume handler, asserts stack_frames is empty. Tests gate on
-#   perl_binary_available() and skip gracefully on CI without perl.
+#   calls the resume handler, asserts stack_frames is empty via
+#   stack_frames_snapshot_for_test. Tests gate on perl_binary_available() and skip
+#   gracefully on CI without perl. All three helpers use lock_or_recover to
+#   match the crate-wide convention and prevent silent no-op on poisoned Mutex.
 #   Additionally: two E2E tests in stack_frames_stale_resume_tests.rs exercise
 #   the full continue/next paths with real perl when available.
 #
-# RIPR cannot statically trace that:
-#   (a) lock_or_recover() returns Some (requires the Mutex to have been populated
-#       by seed_session_for_test at runtime), AND
-#   (b) session.process.stdin.as_mut() returns Some (requires a spawned Child
-#       process with Stdio::piped() — the spawn() call result is opaque to
-#       static analysis).
-# This matches the ripr#1429 predicate-infection-untraceable class: the guards
-# are live-runtime conditions that cannot be resolved statically. The seams
-# are real code paths, not dead code — all six resume handlers have the same
-# pattern; stepOut/pause/goto share the pattern but are at higher line numbers
-# not flagged as diff-new by ripr. Remove when ripr#1429 is fixed upstream or
-# when targeted mutation is scheduled per #1289.
+# RIPR cannot statically trace that lock_or_recover() returns Some (requires the
+# Mutex to have been populated by seed_session_for_test at runtime). This matches
+# the ripr#1429 predicate-infection-untraceable class: the guard is a live-runtime
+# condition that cannot be resolved statically. Remove when ripr#1429 is fixed
+# upstream or when targeted mutation is scheduled per #1289.
 # -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-dap-resume-stack-frames-clear"
@@ -388,7 +391,7 @@ paths = ["crates/perl-dap/src/debug_adapter/execution.rs"]
 classification = ["reachable_unrevealed", "weakly_gripped", "call_presence"]
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1429"
-reason = "Three ripr#1429-class seams in handle_continue/handle_next/handle_step_in (PR #1309, fix #964): session.stack_frames.clear() at execution.rs:30/:75/:112 inside double let-chain guard (lock_or_recover Mutex + process.stdin.as_mut piped-child check). RIPR cannot statically trace that the session Mutex contains Some or that the spawned child's stdin is piped — both are runtime-only conditions determined by seed_session_for_test at test time. Covered by 3 focused unit tests (test_handle_continue/next/step_in_clears_stack_frames) using seed_session_for_test + inject_stack_frames_for_test + exact assert_eq!(0) assertions, plus 2 E2E regression tests in stack_frames_stale_resume_tests.rs. Suppression is narrow (single production file, one PR). Remove when ripr#1429 is fixed upstream."
+reason = "Three ripr#1429-class seams in handle_continue/handle_next/handle_step_in (PR #1309, fix #964): session.stack_frames.clear() at execution.rs:28/:74/:112 inside single let-chain session guard (lock_or_recover Mutex; unconditional clear before nested stdin check). RIPR cannot statically trace that the session Mutex contains Some — a runtime-only condition set by seed_session_for_test. The other 3 resume handlers (step_out:151, pause:191, goto:364) share the same single-session-guard pattern and were not flagged as diff-new. Covered by 3 focused unit tests (test_handle_continue/next/step_in_clears_stack_frames) using lock_or_recover-based helpers (seed_session_for_test + inject_stack_frames_for_test) with exact assert_eq!(0) assertions, plus 2 E2E regression tests in stack_frames_stale_resume_tests.rs. Suppression is narrow (single production file, one PR). Remove when ripr#1429 is fixed upstream."
 created = "2026-06-12"
 review_after = "2026-07-12"
 expires = "2026-09-30"

@@ -145,16 +145,17 @@ impl DebugAdapter {
     ) -> DapMessage {
         let _args: Option<StepOutArguments> =
             arguments.and_then(|v| serde_json::from_value(v).ok());
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            && let Some(stdin) = session.process.stdin.as_mut()
-        {
-            let _ = stdin.write_all(b"r\n");
-            let _ = stdin.flush();
-            session.state = DebugState::Running;
-            session.last_resume_mode = ResumeMode::StepOut;
+        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session") {
+            // Always clear stale session state on resume (see handle_continue for rationale).
             session.variable_cache.clear();
             session.stack_frames.clear();
             let t_id = session.thread_id;
+            if let Some(stdin) = session.process.stdin.as_mut() {
+                let _ = stdin.write_all(b"r\n");
+                let _ = stdin.flush();
+            }
+            session.state = DebugState::Running;
+            session.last_resume_mode = ResumeMode::StepOut;
             self.send_event(
                 "continued",
                 Some(json!({
@@ -357,21 +358,22 @@ impl DebugAdapter {
             }
         };
 
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            && let Some(stdin) = session.process.stdin.as_mut()
-        {
-            // Set debugger file context for cross-file goto
-            let file_cmd = format!("f {}\n", target_path);
-            let _ = stdin.write_all(file_cmd.as_bytes());
-            let _ = stdin.flush();
-            let goto_cmd = format!("c {}\n", target_line);
-            let _ = stdin.write_all(goto_cmd.as_bytes());
-            let _ = stdin.flush();
-            session.state = DebugState::Running;
-            session.last_resume_mode = ResumeMode::Goto;
+        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session") {
+            // Always clear stale session state on resume (see handle_continue for rationale).
             session.variable_cache.clear();
             session.stack_frames.clear();
             let t_id = session.thread_id;
+            if let Some(stdin) = session.process.stdin.as_mut() {
+                // Set debugger file context for cross-file goto
+                let file_cmd = format!("f {}\n", target_path);
+                let _ = stdin.write_all(file_cmd.as_bytes());
+                let _ = stdin.flush();
+                let goto_cmd = format!("c {}\n", target_line);
+                let _ = stdin.write_all(goto_cmd.as_bytes());
+                let _ = stdin.flush();
+            }
+            session.state = DebugState::Running;
+            session.last_resume_mode = ResumeMode::Goto;
 
             self.send_event(
                 "continued",
