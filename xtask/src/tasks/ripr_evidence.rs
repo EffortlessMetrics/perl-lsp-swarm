@@ -2906,6 +2906,69 @@ paths = ["archive/["]
     }
 
     #[test]
+    fn ripr_0_9_x_unsuppressed_grip_class_produces_severe_gaps() -> Result<()> {
+        // Gate teeth: a ripr 0.9.x weakly_gripped finding on a path NOT covered by any
+        // suppression rule must produce severe_gaps > 0, causing the quality gate to FAIL.
+        // Before commit 6718bb713, the gate silently skipped such findings because
+        // grip_class was not recognized, so severe_gaps stayed 0 — the gate had no teeth.
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+        };
+        // ripr 0.9.x output: 2 weakly_gripped findings on a file not in any suppression.
+        let check_value = json!({
+            "summary": {
+                "weakly_exposed": 0,
+                "reachable_unrevealed": 2,
+                "no_static_path": 0
+            },
+            "findings": [
+                {
+                    "grip_class": "weakly_gripped",
+                    "kind": "call_presence",
+                    "seam": {
+                        "file": "crates/perl-lsp-rs/src/some_new_file.rs",
+                        "line": 10
+                    }
+                },
+                {
+                    "grip_class": "weakly_gripped",
+                    "kind": "call_presence",
+                    "seam": {
+                        "file": "crates/perl-lsp-rs/src/some_new_file.rs",
+                        "line": 20
+                    }
+                }
+            ]
+        });
+        // Suppression only covers the DAP execution.rs — the LSP file is NOT suppressed.
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-dap/src/debug_adapter/execution.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+
+        let packet = pr_evidence_packet(
+            &options,
+            &["crates/perl-lsp-rs/src/some_new_file.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+        );
+
+        // The 2 unsuppressed weakly_gripped findings map to reachable_unrevealed bucket.
+        // severe_gaps must be 2 (> 0) so the quality gate rejects this PR.
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    #[test]
     fn write_review_comments_skips_ripr_when_current_pr_evidence_has_no_severe_gaps() -> Result<()>
     {
         let temp = tempfile::tempdir()?;
