@@ -863,10 +863,7 @@ fn test_evaluate_stopped_session_frame_not_found_returns_error() -> TestResult {
     match response {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "evaluate");
-            assert!(
-                !success,
-                "evaluate with unknown frameId must return success=false"
-            );
+            assert!(!success, "evaluate with unknown frameId must return success=false");
             let msg = message.ok_or("expected error message for unknown frameId")?;
             assert!(
                 msg.to_lowercase().contains("frame not found")
@@ -923,6 +920,65 @@ fn test_evaluate_stopped_session_frame_found_passes_validation() -> TestResult {
                     "frameId validation should have passed but got error: {msg}"
                 );
             }
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// Stale-after-resume invariant (#902 + #1337): after resume clears stack_frames,
+/// a frameId that was valid before resume must be rejected cleanly — not silently
+/// evaluated against a wrong/empty frame.
+///
+/// Simulated by re-seeding the session with empty frames (as resume would do) and
+/// then requesting the previously-valid frameId.
+#[test]
+fn test_evaluate_stale_frameid_after_resume_rejected() -> TestResult {
+    if !perl_available() {
+        return Ok(());
+    }
+    use perl_dap::types::{Source, StackFrame};
+    let mut adapter = new_adapter();
+
+    // Phase 1: session has frame id=42 — validation passes.
+    let frame = StackFrame {
+        id: 42,
+        name: "main::before_resume".to_string(),
+        source: Source {
+            name: Some("stale.pl".to_string()),
+            path: "/tmp/stale.pl".to_string(),
+            source_reference: None,
+        },
+        line: 7,
+        column: 1,
+        end_line: None,
+        end_column: None,
+    };
+    adapter.seed_stopped_session_with_frames_for_test(vec![frame]);
+
+    // Phase 2: simulate resume clearing stack_frames by re-seeding with empty frames.
+    // (In production: handle_continue/handle_next call session.stack_frames.clear())
+    adapter.seed_stopped_session_with_frames_for_test(vec![]);
+
+    // Phase 3: try to evaluate with the previously-valid frameId=42.
+    // With empty stack_frames, this must fail with "Frame not found", not succeed.
+    let response = adapter.handle_request(
+        1,
+        "evaluate",
+        Some(json!({ "expression": "$x", "frameId": 42, "allowSideEffects": true })),
+    );
+    match response {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "evaluate");
+            assert!(!success, "stale frameId after resume must return success=false");
+            let msg = message.ok_or("expected error message for stale frameId")?;
+            // Must produce a protocol-safe error, not silently evaluate.
+            assert!(
+                msg.to_lowercase().contains("frame not found")
+                    || msg.to_lowercase().contains("frameid")
+                    || msg.to_lowercase().contains("not stopped"),
+                "stale frameId must produce a protocol-safe error, got: {msg}"
+            );
         }
         other => return Err(format!("expected Response, got {other:?}").into()),
     }

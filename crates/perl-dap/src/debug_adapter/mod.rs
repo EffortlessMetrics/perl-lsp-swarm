@@ -477,7 +477,17 @@ impl DebugAdapter {
     ///
     /// Only for use in tests; not part of the public API contract.
     pub fn seed_stopped_session_with_frames_for_test(&self, frames: Vec<crate::types::StackFrame>) {
-        let child = Self::spawn_noop_child_for_test();
+        use std::process::{Command, Stdio};
+        let Ok(child) = Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        else {
+            return;
+        };
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_stopped_session");
         *session = Some(DebugSession {
             process: child,
@@ -493,7 +503,17 @@ impl DebugAdapter {
     ///
     /// Only for use in tests; not part of the public API contract.
     pub fn seed_running_session_for_test(&self) {
-        let child = Self::spawn_noop_child_for_test();
+        use std::process::{Command, Stdio};
+        let Ok(child) = Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        else {
+            return;
+        };
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_running_session");
         *session = Some(DebugSession {
             process: child,
