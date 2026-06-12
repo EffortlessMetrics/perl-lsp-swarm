@@ -406,40 +406,8 @@ impl DebugAdapter {
 
     #[cfg(test)]
     fn seed_session_for_test(&self) {
-        use std::process::{Stdio, Command};
-        // Create a minimal mock session with a piped subprocess (perl -e 1 is the simplest no-op).
-        // This simulates a stopped debugger session without spawning a full interactive debugger.
-        let child = match Command::new("perl")
-            .arg("-e")
-            .arg("1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => {
-                // If perl is unavailable, create a session with a dummy process.
-                // For unit tests, we mock the presence of a session.
-                let mut session = lock_or_recover(&self.session, "debug_adapter.seed_session");
-                *session = Some(DebugSession {
-                    process: unsafe {
-                        // SAFETY: This is test-only code. We create a placeholder Child
-                        // that won't be used for I/O, just to satisfy the type.
-                        // In real code this would be unsound, but for testing the session
-                        // structure we accept this limitation.
-                        std::mem::zeroed()
-                    },
-                    state: DebugState::Stopped,
-                    stack_frames: Vec::new(),
-                    variable_cache: VariableCache::default(),
-                    thread_id: 1,
-                    last_resume_mode: ResumeMode::Unknown,
-                });
-                return;
-            }
-        };
-
+        // Spawn a cheap no-op subprocess so we have a real Child (no unsafe zeroed memory).
+        let child = Self::spawn_noop_child_for_test();
         let mut session = lock_or_recover(&self.session, "debug_adapter.seed_session");
         *session = Some(DebugSession {
             process: child,
@@ -449,6 +417,43 @@ impl DebugAdapter {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
         });
+    }
+
+    /// Spawn the cheapest available no-op child process for use in unit tests.
+    /// Tries perl first, then a platform-native no-op.  The test panics if no
+    /// subprocess can be spawned at all — that indicates a broken CI environment.
+    #[cfg(test)]
+    fn spawn_noop_child_for_test() -> std::process::Child {
+        use std::process::{Command, Stdio};
+        // perl -e 1 exits immediately with no output.
+        if let Ok(c) = Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            return c;
+        }
+        // Platform-native fallback when perl is not on PATH.
+        #[cfg(windows)]
+        let (prog, args): (&str, &[&str]) = ("cmd", &["/c", "exit", "0"]);
+        #[cfg(not(windows))]
+        let (prog, args): (&str, &[&str]) = ("true", &[]);
+        // SAFETY NOTE: no unsafe — uses only std::process::Command.
+        // The panic here is intentional: if *neither* perl nor the OS no-op
+        // binary is available the test environment is fundamentally broken and
+        // proceeding would produce meaningless results.
+        Command::new(prog)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|e| {
+                panic!("seed_session_for_test: cannot spawn any noop subprocess ({prog}): {e}")
+            })
     }
 
     #[cfg(test)]
