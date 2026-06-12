@@ -70,6 +70,13 @@ and again at reviewer-deep (post-build confirmation net).
 
 ---
 
+> **See also**: [docs/reference/LEARNINGS.md](../reference/LEARNINGS.md) for repo-specific
+> incidents that motivated each hazard class in section 8 above (L-2: ID collision,
+> L-3: scanner blindness, L-4: test-encodes-bug, L-1/L-7: coverage integrity).
+> Portable patterns: [docs/doctrine/](../doctrine/).
+
+---
+
 ## Quick reference: required CI checks
 
 Branch-protection required checks (three only — everything else is advisory):

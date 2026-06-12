@@ -10,6 +10,10 @@ migrations.
 This document is kept factual and citable. Claims without a primary artifact
 (file path, test name, merged PR) are not made.
 
+**Related**: For repo-specific incidents motivating scanner and coverage contracts, see
+[docs/reference/LEARNINGS.md](LEARNINGS.md) (especially L-3: scanner literal-blind,
+L-1: coverage measurement integrity). For portable patterns, see [docs/doctrine/](../doctrine/).
+
 ---
 
 ## 1. Quote-Like Operators — Canonical Parser
