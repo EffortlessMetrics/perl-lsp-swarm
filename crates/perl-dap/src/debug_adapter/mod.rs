@@ -1787,4 +1787,41 @@ print "result: $final\n";
         );
         Ok(())
     }
+
+    #[test]
+    fn test_handle_goto_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        // #964: handle_goto is the 6th resume handler that must clear stack_frames.
+        // It clears inside the `if let Some(session) && stdin` arm, so a seeded session
+        // and a resolvable goto target are both required to exercise the clear path.
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+
+        // Precondition: stale frames are present
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            2,
+            "precondition: should have 2 frames before goto"
+        );
+
+        // Seed a goto target so handle_goto resolves it (otherwise returns early with
+        // "Unknown goto target" before reaching the clear).
+        {
+            let mut goto_map =
+                lock_or_recover(&adapter.goto_targets, "test.handle_goto_clears_stack_frames");
+            goto_map.insert(1, ("/tmp/test_goto.pl".to_string(), 5));
+        }
+
+        // Call handle_goto -- writes commands to the noop child's stdin (bytes are
+        // discarded by the no-op process); stack_frames.clear() must still fire.
+        let _response = adapter.handle_goto(1, 1, Some(json!({"threadId": 1, "targetId": 1})));
+
+        // Assert: frames cleared (FAILS if handle_goto does not call stack_frames.clear())
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_goto must clear stack_frames after resume"
+        );
+        Ok(())
+    }
 }
