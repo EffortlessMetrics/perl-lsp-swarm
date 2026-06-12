@@ -13,6 +13,164 @@ use serde_yaml_ng::Value as YamlValue;
 
 const COVERAGE_TARGET: f64 = 95.0;
 
+// ---------------------------------------------------------------------------
+// cfg(test) line detection
+// ---------------------------------------------------------------------------
+//
+// Inline `#[cfg(test)]` module blocks live inside production `src/*.rs` files,
+// so `cargo llvm-cov --ignore-filename-regex` cannot exclude them — it is
+// path-only.  Lines inside those blocks may legitimately be uncovered even
+// after running the full test suite (dead branches, never-triggered arms,
+// etc.), but they are pure test infrastructure, not production code.
+//
+// This module detects which source-file lines fall inside any
+// `#[cfg(test)]`-gated scope and strips them from the parsed `LcovSummary`
+// **before** patch-coverage arithmetic runs.  Production lines that happen to
+// be *exercised by* the test suite still appear in the LCOV (they are
+// measured when the test binary runs them) and are unaffected by the filter.
+//
+// Algorithm:
+//   1. Scan lines looking for `#[cfg(test)]`.
+//   2. When found, mark the attribute line and all subsequent lines as
+//      belonging to the test span until the matching closing brace of the
+//      item that follows the attribute is seen (brace-depth tracking).
+//   3. String/comment contents are NOT parsed; in practice a `"{"` inside
+//      test code causing a slight over-count is acceptable — the worst case
+//      is excluding a few extra test-infra lines, which is conservative.
+//
+// The returned set contains 1-based line numbers (matching LCOV `DA:` records).
+
+/// Return the set of 1-based line numbers that fall inside any
+/// `#[cfg(test)]`-gated item in `source_text`.
+///
+/// The attribute line itself and the closing brace line of the block are
+/// included.  Lines outside any `#[cfg(test)]` block are not included.
+fn cfg_test_line_numbers(source_text: &str) -> BTreeSet<u64> {
+    // We advance the iterator via `.next()` so that the inner scan can consume
+    // additional lines from the same iterator.  A plain `for (x, y) in iter`
+    // holds an exclusive borrow for the entire loop body, preventing the inner
+    // while-let from re-borrowing the same iterator; `.next()` sidesteps that.
+    let mut test_lines = BTreeSet::new();
+    let mut lines_iter = source_text.lines().enumerate();
+
+    while let Some((idx, line)) = lines_iter.next() {
+        let lineno = idx as u64 + 1; // 1-based
+
+        // Detect `#[cfg(test)]` anywhere on the line (handles leading
+        // whitespace and multi-attribute stacking).
+        if !is_cfg_test_attr(line) {
+            continue;
+        }
+
+        // Mark the attribute line itself.
+        test_lines.insert(lineno);
+
+        // Consume lines until we've opened and closed the item's brace block.
+        // depth > 0 once we've seen the first `{`; back to 0 means block done.
+        let mut depth: i32 = 0;
+        let mut entered = false;
+
+        // `while let` with a labeled break is needed here: a `for` loop would
+        // require `iter.by_ref()` which conflicts with the outer while-let
+        // borrow on the same iterator.
+        #[allow(clippy::while_let_on_iterator)]
+        'block: while let Some((idx2, content)) = lines_iter.next() {
+            let ln2 = idx2 as u64 + 1;
+            test_lines.insert(ln2);
+
+            for ch in content.chars() {
+                match ch {
+                    '{' => {
+                        depth += 1;
+                        entered = true;
+                    }
+                    '}' => {
+                        depth -= 1;
+                        if entered && depth == 0 {
+                            break 'block;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    test_lines
+}
+
+/// Return `true` if `line` contains a `#[cfg(test)]` attribute.
+fn is_cfg_test_attr(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.contains("#[cfg(test)]")
+        || trimmed.contains("#[cfg(test,")
+        || trimmed.contains("#[cfg(all(test")
+}
+
+/// Strip lines that fall inside `#[cfg(test)]` blocks from a parsed
+/// `LcovSummary`.  Source files are resolved relative to `source_root`.
+///
+/// Files that cannot be read (e.g. absolute paths in a different tree,
+/// generated files) are silently skipped — their lines remain measured,
+/// which is the conservative direction.
+fn strip_cfg_test_lines(summary: &mut LcovSummary, source_root: &Path) {
+    for file in &mut summary.files {
+        let source_path = resolve_source_path(&file.path, source_root);
+        let source_text = source_path.and_then(|p| fs::read_to_string(p).ok());
+        let Some(text) = source_text else {
+            continue; // cannot resolve — leave file untouched
+        };
+        let test_line_set = cfg_test_line_numbers(&text);
+        if test_line_set.is_empty() {
+            continue;
+        }
+
+        // Rebuild the line list, dropping test-block lines from hit/found.
+        let mut new_lines = Vec::with_capacity(file.lines.len());
+        let mut new_line_hit: u64 = 0;
+        let mut new_line_found: u64 = 0;
+        let mut new_uncovered: Vec<u64> = Vec::new();
+
+        for lcov_line in &file.lines {
+            if test_line_set.contains(&lcov_line.number) {
+                continue; // drop test-infra line from accounting
+            }
+            new_line_found += 1;
+            if lcov_line.hit_count > 0 {
+                new_line_hit += 1;
+            } else {
+                new_uncovered.push(lcov_line.number);
+            }
+            new_lines.push(LcovLine { number: lcov_line.number, hit_count: lcov_line.hit_count });
+        }
+
+        // Adjust summary totals by the delta we removed.
+        summary.line_hit -= file.line_hit.saturating_sub(new_line_hit);
+        summary.line_found -= file.line_found.saturating_sub(new_line_found);
+
+        file.lines = new_lines;
+        file.line_hit = new_line_hit;
+        file.line_found = new_line_found;
+        file.uncovered_lines = new_uncovered;
+    }
+}
+
+/// Resolve an LCOV `SF:` path to an existing filesystem path.
+///
+/// llvm-cov may emit absolute paths or workspace-relative paths.  We try
+/// the path as-is first, then join it to `source_root`.
+fn resolve_source_path(lcov_path: &str, source_root: &Path) -> Option<PathBuf> {
+    let p = PathBuf::from(lcov_path);
+    if p.is_absolute() && p.exists() {
+        return Some(p);
+    }
+    let joined = source_root.join(lcov_path);
+    if joined.exists() {
+        return Some(joined);
+    }
+    None
+}
+
 #[derive(Debug)]
 pub struct CoverageBaselineArgs {
     pub lcov: PathBuf,
@@ -70,7 +228,13 @@ pub fn run(args: CoverageBaselineArgs) -> Result<()> {
 }
 
 fn build_receipt(root: &Path, args: &CoverageBaselineArgs) -> Result<JsonValue> {
-    let lcov = parse_lcov(&args.lcov)?;
+    let mut lcov = parse_lcov(&args.lcov)?;
+    // Strip lines inside `#[cfg(test)]` blocks before coverage arithmetic.
+    // These are test-infra lines, not production code, and may be legitimately
+    // uncovered even after running the full test suite.  Production lines
+    // exercised by the test binary are unaffected (they appear in the LCOV
+    // regardless of which `cfg` block they live in).
+    strip_cfg_test_lines(&mut lcov, root);
     let codecov = read_codecov_status(&args.codecov)?;
     let line_coverage = percent(lcov.line_hit, lcov.line_found);
     let changed_lines =
@@ -1221,6 +1385,242 @@ coverage:
         let temp = tempfile::tempdir()?;
 
         assert!(run_git(temp.path(), &["definitely-not-a-git-command"]).is_err());
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // cfg_test_line_numbers — unit tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn cfg_test_line_numbers_detects_inline_test_module() {
+        // Lines 5–11 are inside the #[cfg(test)] block.
+        let source = "\
+pub fn prod_fn() -> bool {\n\
+    true\n\
+}\n\
+\n\
+#[cfg(test)]\n\
+mod tests {\n\
+    use super::*;\n\
+\n\
+    #[test]\n\
+    fn it_works() { assert!(prod_fn()); }\n\
+}\n";
+        //  line 1: pub fn prod_fn
+        //  line 2:     true
+        //  line 3: }
+        //  line 4: (empty)
+        //  line 5: #[cfg(test)]        <- test span starts
+        //  line 6: mod tests {
+        //  line 7:     use super::*;
+        //  line 8: (empty)
+        //  line 9:     #[test]
+        //  line 10:    fn it_works()
+        //  line 11: }                  <- test span ends
+
+        let test_lines = cfg_test_line_numbers(source);
+
+        // Production lines must NOT be in the set.
+        assert!(!test_lines.contains(&1), "prod fn opening should not be test");
+        assert!(!test_lines.contains(&2), "prod fn body should not be test");
+        assert!(!test_lines.contains(&3), "prod fn closing should not be test");
+        assert!(!test_lines.contains(&4), "blank line between prod and test should not be test");
+
+        // Test module lines MUST be in the set.
+        assert!(test_lines.contains(&5), "#[cfg(test)] attr line must be in set");
+        assert!(test_lines.contains(&6), "mod tests opening must be in set");
+        assert!(test_lines.contains(&7), "use statement inside test mod must be in set");
+        assert!(test_lines.contains(&9), "#[test] attr inside test mod must be in set");
+        assert!(test_lines.contains(&10), "test fn inside test mod must be in set");
+        assert!(test_lines.contains(&11), "closing brace of test mod must be in set");
+    }
+
+    #[test]
+    fn cfg_test_line_numbers_empty_file_returns_empty_set() {
+        assert!(cfg_test_line_numbers("").is_empty());
+        assert!(cfg_test_line_numbers("pub fn f() {}\n").is_empty());
+    }
+
+    #[test]
+    fn cfg_test_line_numbers_handles_multiple_test_blocks() {
+        // Two separate #[cfg(test)] blocks in the same file.
+        let source = "\
+fn a() {}\n\
+#[cfg(test)]\n\
+mod tests_a {\n\
+    fn ta() {}\n\
+}\n\
+fn b() {}\n\
+#[cfg(test)]\n\
+mod tests_b {\n\
+    fn tb() {}\n\
+}\n";
+        //  1: fn a() {}
+        //  2: #[cfg(test)]     <- block A attr
+        //  3: mod tests_a {    <- block A open
+        //  4:     fn ta() {}
+        //  5: }                <- block A close
+        //  6: fn b() {}
+        //  7: #[cfg(test)]     <- block B attr
+        //  8: mod tests_b {    <- block B open
+        //  9:     fn tb() {}
+        // 10: }                <- block B close
+
+        let test_lines = cfg_test_line_numbers(source);
+
+        assert!(!test_lines.contains(&1), "fn a is production");
+        assert!(!test_lines.contains(&6), "fn b is production");
+        for line in [2u64, 3, 4, 5] {
+            assert!(test_lines.contains(&line), "block A line {line} should be in set");
+        }
+        for line in [7u64, 8, 9, 10] {
+            assert!(test_lines.contains(&line), "block B line {line} should be in set");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // strip_cfg_test_lines — integration with LcovSummary
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn strip_cfg_test_lines_removes_test_block_lines_from_lcov() -> TestResult {
+        // Source file: 3 production lines + 4 test lines.
+        // The test line at line 6 (inside the test module) is "never hit" —
+        // simulating the dead branch that triggered issue #1326.
+        let source = "\
+pub fn prod() -> bool { true }\n\
+pub fn prod2() -> i32 { 1 }\n\
+pub fn prod3() -> i32 { 2 }\n\
+#[cfg(test)]\n\
+mod tests {\n\
+    fn dead_branch() { if false { return; } }\n\
+}\n";
+        //  line 1: prod() — production, hit
+        //  line 2: prod2() — production, hit
+        //  line 3: prod3() — production, NOT hit
+        //  line 4: #[cfg(test)]
+        //  line 5: mod tests {
+        //  line 6:     fn dead_branch — NEVER HIT in test suite
+        //  line 7: }
+
+        let temp = tempfile::tempdir()?;
+        let source_file = temp.path().join("lib.rs");
+        fs::write(&source_file, source)?;
+
+        let source_path_str = source_file.to_string_lossy().replace('\\', "/");
+
+        // LCOV has coverage data: lines 1,2 hit; line 3 not hit; line 6 not hit.
+        let lcov_content = format!(
+            "SF:{source_path_str}\n\
+             DA:1,5\n\
+             DA:2,3\n\
+             DA:3,0\n\
+             DA:6,0\n\
+             end_of_record\n"
+        );
+        let lcov_path = temp.path().join("lcov.info");
+        fs::write(&lcov_path, &lcov_content)?;
+
+        let mut summary = parse_lcov(&lcov_path)?;
+
+        // Before stripping: 4 lines found (1 hit=5, 2 hit=3, 3 hit=0, 6 hit=0).
+        assert_eq!(summary.line_found, 4, "pre-strip: 4 executable lines");
+        assert_eq!(summary.line_hit, 2, "pre-strip: 2 hit lines");
+
+        strip_cfg_test_lines(&mut summary, temp.path());
+
+        // After stripping: only production lines 1,2,3 remain; test line 6 is gone.
+        assert_eq!(summary.line_found, 3, "post-strip: only 3 production lines");
+        assert_eq!(summary.line_hit, 2, "post-strip: still 2 production hits");
+
+        let file = summary.files.first().ok_or("expected file entry")?;
+        assert_eq!(file.line_found, 3);
+        assert_eq!(file.line_hit, 2);
+        // Line 6 (test code) must be absent.
+        assert!(!file.lines.iter().any(|l| l.number == 6), "test line 6 must be stripped");
+        // Production uncovered line 3 must still be reported.
+        assert!(file.uncovered_lines.contains(&3), "production uncovered line 3 must remain");
+        Ok(())
+    }
+
+    #[test]
+    fn strip_cfg_test_lines_does_not_affect_production_hit_count() -> TestResult {
+        // Ensure that stripping test lines does not accidentally lower
+        // production hit counts (regression guard for the summary delta update).
+        let source = "\
+pub fn prod() -> bool { true }\n\
+#[cfg(test)]\n\
+mod tests {\n\
+    fn unused() {}\n\
+}\n";
+        let temp = tempfile::tempdir()?;
+        let source_file = temp.path().join("lib.rs");
+        fs::write(&source_file, source)?;
+
+        let source_path_str = source_file.to_string_lossy().replace('\\', "/");
+        let lcov_content = format!(
+            "SF:{source_path_str}\n\
+             DA:1,10\n\
+             DA:4,0\n\
+             end_of_record\n"
+        );
+        let lcov_path = temp.path().join("lcov.info");
+        fs::write(&lcov_path, &lcov_content)?;
+
+        let mut summary = parse_lcov(&lcov_path)?;
+        strip_cfg_test_lines(&mut summary, temp.path());
+
+        // Only line 1 (production, hit) should remain.
+        assert_eq!(summary.line_found, 1);
+        assert_eq!(summary.line_hit, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn strip_cfg_test_lines_patch_coverage_full_for_test_only_pr() -> TestResult {
+        // Simulate a test-only PR: the diff adds lines 4-7 (all inside the
+        // test module).  After stripping, none of those lines appear in the
+        // LCOV, so patch_coverage_from_changed_lines returns 100.0.
+        let source = "\
+pub fn prod() -> bool { true }\n\
+\n\
+#[cfg(test)]\n\
+mod tests {\n\
+    fn new_test() { assert!(prod()); }\n\
+    fn dead() { if false { return; } }\n\
+}\n";
+        let temp = tempfile::tempdir()?;
+        let source_file = temp.path().join("crates/mylib/src/lib.rs");
+        fs::create_dir_all(source_file.parent().ok_or("no parent")?)?;
+        fs::write(&source_file, source)?;
+
+        let source_path_str = source_file.to_string_lossy().replace('\\', "/");
+        // LCOV: line 1 hit; lines 5 and 6 never hit (test-only dead branches).
+        let lcov_content = format!(
+            "SF:{source_path_str}\n\
+             DA:1,1\n\
+             DA:5,0\n\
+             DA:6,0\n\
+             end_of_record\n"
+        );
+        let lcov_path = temp.path().join("lcov.info");
+        fs::write(&lcov_path, &lcov_content)?;
+
+        let mut summary = parse_lcov(&lcov_path)?;
+        strip_cfg_test_lines(&mut summary, temp.path());
+
+        // Changed lines are only within the test block (lines 3-7).
+        let changed: BTreeMap<String, BTreeSet<u64>> = BTreeMap::from([(
+            "crates/mylib/src/lib.rs".to_string(),
+            BTreeSet::from([3u64, 4, 5, 6, 7]),
+        )]);
+
+        // After stripping, those lines no longer appear in LCOV, so
+        // executable_found == 0 → patch coverage returns 100.0.
+        let patch =
+            patch_coverage_from_changed_lines_for_root(Some(temp.path()), &summary, &changed);
+        assert_eq!(patch, 100.0, "test-only PR patch coverage must be 100.0 after stripping");
         Ok(())
     }
 }
