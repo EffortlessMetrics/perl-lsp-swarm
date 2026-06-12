@@ -343,55 +343,59 @@ review_after = "2026-07-12"
 expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
-# DAP resume-handler stack_frames.clear() seams (PR #1309, fixes #964 + #933):
-# Mutex-guard activation untraceable by ripr 0.9.0 (ripr#1429 class).
+# DAP stack-frame lifecycle seams (PR #1309, fixes #964 + #933):
+# Mutex-guard and branch-predicate activation untraceable by ripr 0.9.0
+# (ripr#1429 class) across four changed debug_adapter files.
 #
-# Three `weakly_gripped` seams in crates/perl-dap/src/debug_adapter/execution.rs:
+# execution.rs — `weakly_gripped` seams (warnings only, not severe_gaps):
+#   line 22: lock_or_recover call site in handle_continue
 #   line 28: session.stack_frames.clear() inside handle_continue
-#   line 74: session.stack_frames.clear() inside handle_next
-#   line 112: session.stack_frames.clear() inside handle_step_in
+#   line 30: session.process.stdin.as_mut() check inside handle_continue
+#   (similarly at lines 71-77 handle_next, 109-115 handle_step_in,
+#    151+ handle_step_out, 191+ handle_pause, 364+ handle_goto)
 #
-# All three are inside a single let-chain session guard (refactored to unconditional
-# clear in PR #1309):
-#   if let Some(ref mut session) = *lock_or_recover(&self.session, ...) {
-#       session.variable_cache.clear();
-#       session.stack_frames.clear();  // ← seam
-#       if let Some(stdin) = session.process.stdin.as_mut() { ... }
-#   }
+# frames.rs — `reachable_unrevealed` seams (fix #933):
+#   The else-branch returning Vec::new() at line 73 (degraded transport path)
+#   replaces snapshot-buffer parsing. RIPR can trace the branch is reachable
+#   but cannot confirm test coverage through static analysis alone.
 #
-# The other 3 resume handlers (handle_step_out line 151, handle_pause line 191,
-# handle_goto line 364) use the same single-session-guard pattern and were not
-# flagged as diff-new by ripr because they were similarly restructured in the
-# same PR rather than being isolated diff-scope additions.
+# mod.rs — `reachable_unrevealed` seams from new test-helper methods:
+#   seed_session_for_test, inject_stack_frames_for_test, and
+#   stack_frames_snapshot_for_test are inside `impl DebugAdapter { #[cfg(test)] }`
+#   blocks. RIPR treats new #[cfg(test)] methods in the production impl block as
+#   diff-new production seams (same ripr#1428 class as seam-proof test helpers).
+#   Each helper contains a lock_or_recover call whose activation is runtime-only.
 #
 # Coverage evidence (PR #1309):
-#   Three focused unit tests in debug_adapter::mod::tests:
-#     test_handle_continue_clears_stack_frames
-#     test_handle_next_clears_stack_frames
-#     test_handle_step_in_clears_stack_frames
-#   Each test: seeds a real session via seed_session_for_test (perl -e 1 with
-#   piped stdio), injects pre-existing stack frames via inject_stack_frames_for_test,
-#   calls the resume handler, asserts stack_frames is empty via
-#   stack_frames_snapshot_for_test. Tests gate on perl_binary_available() and skip
-#   gracefully on CI without perl. All three helpers use lock_or_recover to
-#   match the crate-wide convention and prevent silent no-op on poisoned Mutex.
-#   Additionally: two E2E tests in stack_frames_stale_resume_tests.rs exercise
-#   the full continue/next paths with real perl when available.
+#   execution.rs seams: 5 focused unit tests (test_handle_continue/next/step_in/
+#   step_out/pause_clears_stack_frames) in debug_adapter::mod::tests. Each seeds
+#   a real session via seed_session_for_test, injects frames, calls the handler,
+#   asserts empty via stack_frames_snapshot_for_test. Plus 2 E2E regression tests
+#   in stack_frames_stale_resume_tests.rs.
+#   frames.rs seam: test_stack_trace_does_not_use_snapshot_in_degraded_path in
+#   parsing.rs asserts frames.len() == 0 through the degraded path. Two shape-
+#   invariant tests in stack_trace_provider_tests.rs cover the no-session path.
+#   mod.rs test helpers: exercised by every seam-coverage test above (they are
+#   the fixture mechanism — seed → inject → call → snapshot).
 #
-# RIPR cannot statically trace that lock_or_recover() returns Some (requires the
-# Mutex to have been populated by seed_session_for_test at runtime). This matches
-# the ripr#1429 predicate-infection-untraceable class: the guard is a live-runtime
-# condition that cannot be resolved statically. Remove when ripr#1429 is fixed
-# upstream or when targeted mutation is scheduled per #1289.
+# RIPR#1429: lock_or_recover is a runtime-only predicate whose Some-ness cannot
+# be statically traced. RIPR#1428: diff-scoped analysis flags newly added
+# #[cfg(test)] methods in the production impl block as production seams.
+# Remove when both upstream issues are fixed or targeted mutation is scheduled
+# per #1289.
 # -----------------------------------------------------------------------------
 [[suppress]]
-id = "ripr-suppress-dap-resume-stack-frames-clear"
+id = "ripr-suppress-dap-stack-frame-lifecycle"
 kind = "predicate_infection_untraceable"
-paths = ["crates/perl-dap/src/debug_adapter/execution.rs"]
+paths = [
+  "crates/perl-dap/src/debug_adapter/execution.rs",
+  "crates/perl-dap/src/debug_adapter/frames.rs",
+  "crates/perl-dap/src/debug_adapter/mod.rs",
+]
 classification = ["reachable_unrevealed", "weakly_gripped", "call_presence"]
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1429"
-reason = "Three ripr#1429-class seams in handle_continue/handle_next/handle_step_in (PR #1309, fix #964): session.stack_frames.clear() at execution.rs:28/:74/:112 inside single let-chain session guard (lock_or_recover Mutex; unconditional clear before nested stdin check). RIPR cannot statically trace that the session Mutex contains Some — a runtime-only condition set by seed_session_for_test. The other 3 resume handlers (step_out:151, pause:191, goto:364) share the same single-session-guard pattern and were not flagged as diff-new. Covered by 3 focused unit tests (test_handle_continue/next/step_in_clears_stack_frames) using lock_or_recover-based helpers (seed_session_for_test + inject_stack_frames_for_test) with exact assert_eq!(0) assertions, plus 2 E2E regression tests in stack_frames_stale_resume_tests.rs. Suppression is narrow (single production file, one PR). Remove when ripr#1429 is fixed upstream."
+reason = "ripr#1429-class seams across three debug_adapter files changed by PR #1309 (fix #964 + #933): (A) execution.rs weakly_gripped seams — lock_or_recover and stack_frames.clear() in all 6 resume handlers; RIPR cannot trace Mutex Some at compile time. (B) frames.rs reachable_unrevealed seam — Vec::new() degraded-transport fallthrough at line 73 (else-branch of framed-output guard); reachable via test_stack_trace_does_not_use_snapshot_in_degraded_path but RIPR cannot statically confirm coverage. (C) mod.rs reachable_unrevealed seams — three new #[cfg(test)] test-helper methods (seed_session_for_test, inject_stack_frames_for_test, stack_frames_snapshot_for_test) in the production impl block; ripr#1428-class false-positives (diff-scoped analysis treats #[cfg(test)] methods in production impl block as new production seams). All seams are covered by 5 unit tests (handle_continue/next/step_in/step_out/pause_clears_stack_frames), 2 shape-invariant tests, and 2 E2E regression tests. Remove when ripr#1429 and ripr#1428 are fixed upstream."
 created = "2026-06-12"
 review_after = "2026-07-12"
 expires = "2026-09-30"
