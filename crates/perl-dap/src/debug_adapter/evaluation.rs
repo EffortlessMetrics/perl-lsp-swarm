@@ -694,7 +694,7 @@ mod evaluate_allocation_tests {
             lock_or_recover(&adapter.session, "test_allocate_caches_placeholder");
         let vars = session_guard.as_mut().and_then(|s| s.variable_cache.get_page(ref_i32, 0, 10));
         assert!(vars.is_some(), "cache must contain the placeholder variable for ref {ref_val}");
-        let vars = vars.unwrap();
+        let vars = vars.unwrap_or_default();
         assert_eq!(vars.len(), 1, "exactly one placeholder variable expected; got {}", vars.len());
         assert_eq!(vars[0].name, expression, "placeholder name must match expression");
         assert_eq!(vars[0].value, result_val, "placeholder value must match result");
