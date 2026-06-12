@@ -78,3 +78,47 @@ pub fn parse_uri(s: &str) -> Uri {
             .unwrap_or_else(fallback_uri),
     }
 }
+
+#[cfg(test)]
+mod uri_path_helpers_tests {
+    use super::{file_path_uri, windows_file_path_uri};
+
+    /// `windows_file_path_uri` rejects drive-relative paths (drive + colon but no
+    /// separator), e.g. `C:relative` — these are NOT absolute Windows paths.
+    /// Covers the `separator != '\' && separator != '/'` early-return branch.
+    #[test]
+    fn windows_file_path_uri_rejects_drive_relative_path() {
+        // `C:relative` has the drive+colon prefix but the third character is not
+        // a separator, so the function must return None.
+        assert!(
+            windows_file_path_uri("C:relative").is_none(),
+            "drive-relative path must not be accepted as an absolute Windows URI"
+        );
+    }
+
+    /// `windows_file_path_uri` rejects strings whose first character is not
+    /// ASCII-alphabetic (e.g. a digit, punctuation, or a Unix-path `/`).
+    /// Covers the `!drive.is_ascii_alphabetic()` branch of the early-return guard.
+    #[test]
+    fn windows_file_path_uri_rejects_non_alpha_first_char() {
+        assert!(
+            windows_file_path_uri("1:/foo").is_none(),
+            "digit-prefixed string must not be accepted as a Windows URI"
+        );
+        assert!(
+            windows_file_path_uri("/etc/passwd").is_none(),
+            "Unix-path starting with '/' must not be accepted as a Windows URI"
+        );
+    }
+
+    /// `file_path_uri` returns None for paths that are not recognized as absolute
+    /// by `Url::from_file_path` (e.g. relative paths and Windows drive-relative
+    /// paths on Unix).
+    #[test]
+    fn file_path_uri_returns_none_for_non_absolute_path() {
+        assert!(
+            file_path_uri("relative/path.pm").is_none(),
+            "relative path must not produce a file:// URI"
+        );
+    }
+}
