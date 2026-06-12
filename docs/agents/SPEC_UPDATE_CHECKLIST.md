@@ -70,10 +70,13 @@ and again at reviewer-deep (post-build confirmation net).
 
 ---
 
-> **See also**: [docs/reference/LEARNINGS.md](../reference/LEARNINGS.md) for repo-specific
-> incidents that motivated each hazard class in section 8 above (L-2: ID collision,
-> L-3: scanner blindness, L-4: test-encodes-bug, L-1/L-7: coverage integrity).
-> Portable patterns: [docs/doctrine/](../doctrine/).
+> **See also**: [docs/learnings/README.md](../learnings/README.md) for repo-specific
+> incidents that motivated each hazard class in section 8 above:
+> 2026-06-dap-ref-space-collision.md (Class 1 ID collision),
+> 2026-06-coverage-gate-measurement.md (Class 4 scanner blindness),
+> 2026-06-test-encodes-the-bug.md (Class 5 test-encodes-bug),
+> 2026-06-ripr-output-schema-break.md and 2026-06-codecov-false-low.md (Class 6 coverage).
+> Portable patterns: [docs/concepts/](../concepts/).
 
 ---
 
