@@ -792,15 +792,20 @@ mod tests {
     // Package→Module(2), Class→Class(5), Method→Method(6),
     // VariableDeclaration{our}→Variable(13), FunctionCall{has}→Property(7).
     //
-    // MECHANISM (compile-time drift-guard, not runtime-testable):
-    // - The refactored extract_symbols_recursive will guard the 6 declaration
-    //   arms with an outer match: `kind if kind.category() == Declaration => { ... }`
-    // - Inside that guard, an exhaustive inner match ensures all Declaration
-    //   variants are explicitly handled.
-    // - If a new NodeKind variant is added with category() == Declaration and
-    //   the developer forgets to add an arm in the inner match, the compiler
-    //   will error: "pattern `NodeKind::NewVariant { .. }` not covered".
-    // - This prevents silent drops of new Declaration types (the drift risk).
+    // MECHANISM (drift-guard — centralization enforced by convention, compile-time
+    // enforcement lives in perl_ast::classification):
+    // - The outer guard `kind if kind.category() == Declaration => { ... }` funnels
+    //   all Declaration-category variants into one match arm, centralizing policy.
+    // - The real compile-time enforcement is in `perl_ast::classification::category()`:
+    //   that match has NO wildcard arm, so adding a new NodeKind variant is a compile
+    //   error in classification.rs until category() and flags() are both extended.
+    // - Once classification.rs is updated, the new Declaration variant reaches the
+    //   inner match here. The inner match has a `_ => {}` wildcard that silently
+    //   ignores un-indexed Declaration variants (Use, No, PhaseBlock, etc.).
+    // - Convention: when adding a new Declaration NodeKind, the developer must
+    //   explicitly decide here: index it (add an arm) or leave silent (`_` covers it).
+    // - FunctionCall{name=="has"} is Expression-category (NOT Declaration) and is
+    //   handled as a separate outer arm below, outside this guard.
     //
     // RUNTIME TESTS below verify that the 6 declaration-emitting cases still
     // produce their correct LSP symbol kinds after the refactoring.
