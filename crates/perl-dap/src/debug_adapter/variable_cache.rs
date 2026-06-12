@@ -114,7 +114,11 @@ mod tests {
     #[test]
     fn all_variables_evaluate_result_only() {
         let mut cache = VariableCache::default();
-        cache.upsert(10, VariableCacheKind::EvaluateResult, vec![make_variable("x"), make_variable("y")]);
+        cache.upsert(
+            10,
+            VariableCacheKind::EvaluateResult,
+            vec![make_variable("x"), make_variable("y")],
+        );
 
         let names: Vec<&str> = cache.all_variables().map(|v| v.name.as_str()).collect();
         assert_eq!(names.len(), 2, "expected 2 EvaluateResult variables; got {names:?}");

@@ -545,10 +545,7 @@ mod evaluate_allocation_tests {
     #[test]
     fn expandable_exact_matches() {
         for ty in ["HASH", "ARRAY", "REF", "OBJECT", "TIED"] {
-            assert!(
-                DebugAdapter::result_type_is_expandable(ty),
-                "{ty} should be expandable"
-            );
+            assert!(DebugAdapter::result_type_is_expandable(ty), "{ty} should be expandable");
         }
     }
 
@@ -568,10 +565,7 @@ mod evaluate_allocation_tests {
     #[test]
     fn not_expandable_scalar_types() {
         for ty in ["SCALAR", "INTEGER", "FLOAT", "STRING", "UNDEF", "CODE", "IO"] {
-            assert!(
-                !DebugAdapter::result_type_is_expandable(ty),
-                "{ty} should not be expandable"
-            );
+            assert!(!DebugAdapter::result_type_is_expandable(ty), "{ty} should not be expandable");
         }
     }
 
@@ -627,11 +621,8 @@ mod evaluate_allocation_tests {
         // Cover the contains-ARRAY arm of result_type_is_expandable through the
         // no-session path of allocate_evaluate_result_ref.
         let adapter = DebugAdapter::new();
-        let ref_val = adapter.allocate_evaluate_result_ref(
-            "$arr_obj",
-            "Iter=ARRAY(0x1)",
-            "Iter=ARRAY",
-        );
+        let ref_val =
+            adapter.allocate_evaluate_result_ref("$arr_obj", "Iter=ARRAY(0x1)", "Iter=ARRAY");
         assert_eq!(ref_val, 0, "blessed ARRAY type with no session must return 0");
     }
 
@@ -680,10 +671,7 @@ mod evaluate_allocation_tests {
         let ref2 = adapter.allocate_evaluate_result_ref("$b", "HASH(0x2)", "HASH");
 
         assert!(ref1 >= 50_000, "first ref must be in 50_000+ range; got {ref1}");
-        assert!(
-            ref2 > ref1,
-            "second ref must be greater than first; got ref1={ref1}, ref2={ref2}"
-        );
+        assert!(ref2 > ref1, "second ref must be greater than first; got ref1={ref1}, ref2={ref2}");
     }
 
     #[test]
@@ -704,13 +692,8 @@ mod evaluate_allocation_tests {
         // Read the placeholder back from the session variable_cache.
         let mut session_guard =
             lock_or_recover(&adapter.session, "test_allocate_caches_placeholder");
-        let vars = session_guard
-            .as_mut()
-            .and_then(|s| s.variable_cache.get_page(ref_i32, 0, 10));
-        assert!(
-            vars.is_some(),
-            "cache must contain the placeholder variable for ref {ref_val}"
-        );
+        let vars = session_guard.as_mut().and_then(|s| s.variable_cache.get_page(ref_i32, 0, 10));
+        assert!(vars.is_some(), "cache must contain the placeholder variable for ref {ref_val}");
         let vars = vars.unwrap();
         assert_eq!(vars.len(), 1, "exactly one placeholder variable expected; got {}", vars.len());
         assert_eq!(vars[0].name, expression, "placeholder name must match expression");
