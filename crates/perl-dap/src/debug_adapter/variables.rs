@@ -684,18 +684,21 @@ mod hazard_invariant_tests {
     #[test]
     fn scope_ref_and_eval_ref_ranges_do_not_collide_for_small_frame_ids() {
         let mut a = adapter();
-        // Scope refs for frame_ids 0..=99_999 are in [1, 999_993] — below eval_ref base.
+        // Scope refs for frame_id <=99_999 are in [1, 999_993]; eval refs from #1219
+        // start at 1_000_000 — no overlap. Encoding invariant documented in #901/#1219.
         let max_scope_ref: i64 = 99_999 * 10 + 3; // = 999_993
-        // First eval ref from #1219 is 1_000_000.
         let min_eval_ref: i64 = 1_000_000;
-        // No overlap: max scope ref < min eval ref.
+        // Verify both values PASS the invalid-ref guard ([1, i32::MAX]) and return success.
+        // This tests actual guard behavior — the range-non-collision is a precondition
+        // documented above, not an assertion on the code under test.
         assert!(
-            max_scope_ref < min_eval_ref,
-            "scope ref range (frame_id<=99_999) must not overlap eval_ref base (1_000_000)"
+            variables_success(&mut a, max_scope_ref),
+            "max scope ref ({max_scope_ref}) must pass invalid-ref guard and succeed"
         );
-        // Both are valid (pass invalid-ref guard) and don't panic.
-        assert!(variables_success(&mut a, max_scope_ref), "max scope ref must succeed");
-        assert!(variables_success(&mut a, min_eval_ref), "min eval ref must succeed");
+        assert!(
+            variables_success(&mut a, min_eval_ref),
+            "min eval ref ({min_eval_ref}) must pass invalid-ref guard and succeed"
+        );
     }
 
     // --- Protocol-safety: never-allocated ref (valid range, but unknown to cache) → no crash ---
