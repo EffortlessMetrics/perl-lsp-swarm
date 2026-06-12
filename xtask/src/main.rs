@@ -372,6 +372,17 @@ enum Commands {
         check: bool,
     },
 
+    /// Apply path-based suppression from review-guidance comments to repo-exposure.json.
+    ///
+    /// Run this after `ripr-review-comments` and before `quality-gate`. Reduces
+    /// `reachable_unrevealed` in repo-exposure.json by the count of weakly_gripped seams
+    /// in suppressed paths, fixing ripr 0.9.x summary/findings discrepancy.
+    RiprPrApplyReviewSuppression {
+        /// RIPR suppression policy path.
+        #[arg(long, default_value = "policy/ripr-suppressions.toml")]
+        suppressions: PathBuf,
+    },
+
     /// Render non-blocking GitHub warning annotations from comments[] guidance only.
     RiprAnnotations {
         /// Review guidance JSON path.
@@ -2922,6 +2933,9 @@ fn main() -> Result<()> {
             ripr_evidence::ripr_review_comments(&root, &base, &head, timeout_seconds, check)
         }
         Commands::RiprPrSummary { check } => ripr_evidence::ripr_pr_summary(check),
+        Commands::RiprPrApplyReviewSuppression { suppressions } => {
+            ripr_evidence::ripr_pr_apply_review_suppression(&suppressions)
+        }
         Commands::RiprAnnotations { comments, out, check } => {
             ripr_evidence::ripr_annotations(&comments, &out, check)
         }

@@ -272,6 +272,7 @@ jobs:
               cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
               cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210 || RIPR_FAILED=1
+              cargo xtask ripr-pr-apply-review-suppression || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
               cargo xtask ripr-annotations || RIPR_FAILED=1
@@ -479,6 +480,7 @@ jobs:
               cargo xtask ripr-pr --base "origin/$BASE_REF" --head HEAD || RIPR_FAILED=1
               cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json || RIPR_FAILED=1
               cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210 || RIPR_FAILED=1
+              cargo xtask ripr-pr-apply-review-suppression || RIPR_FAILED=1
               cargo xtask impacted-evidence --labels-csv "$PR_LABELS" || RIPR_FAILED=1
               cargo xtask ripr-pr-summary || RIPR_FAILED=1
               cargo xtask ripr-annotations || RIPR_FAILED=1
@@ -628,6 +630,10 @@ jobs:
       - name: Generate review guidance
         if: always()
         run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --timeout-seconds 210
+
+      - name: Apply review-guidance suppression to PR evidence
+        if: always()
+        run: cargo xtask ripr-pr-apply-review-suppression
 
       - name: Generate impacted evidence
         if: always()

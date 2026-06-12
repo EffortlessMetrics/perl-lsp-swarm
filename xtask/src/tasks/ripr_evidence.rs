@@ -108,6 +108,148 @@ pub fn ripr_pr_summary(check: bool) -> Result<()> {
     Ok(())
 }
 
+/// Apply path-based suppression from review-guidance comments to the PR evidence packet.
+///
+/// `ripr check --format json` (used by `ripr-pr`) and `ripr review-comments` (used by
+/// `ripr-review-comments`) are two separate ripr commands. In ripr 0.9.x, `weakly_gripped`
+/// seams may appear in `summary.reachable_unrevealed` of the check output without a matching
+/// per-finding entry in the `findings` array, so the path-based suppression in
+/// `ripr_pr_summary_counts` cannot reduce the count. After `ripr-review-comments` writes
+/// `comments.json`, this command re-applies suppression from `ripr-suppressions.toml` to the
+/// `weakly_gripped` seams there and patches `repo-exposure.json` accordingly.
+///
+/// Run this command AFTER `ripr-review-comments` and BEFORE `quality-gate`.
+pub fn ripr_pr_apply_review_suppression(suppressions: &Path) -> Result<()> {
+    let repo = repo_root()?;
+    apply_review_suppression(&repo, suppressions)
+}
+
+fn apply_review_suppression(repo: &Path, suppressions_path: &Path) -> Result<()> {
+    // Load the PR evidence packet.
+    let pr_path = repo.join(PR_EVIDENCE_JSON);
+    let pr_text = fs::read_to_string(&pr_path)
+        .with_context(|| format!("missing or unreadable {PR_EVIDENCE_JSON}"))?;
+    let mut packet: Value =
+        serde_json::from_str(&pr_text).context("PR evidence JSON is not valid JSON")?;
+
+    // Load the review-comments JSON.
+    let comments_path = repo.join(REVIEW_COMMENTS_JSON);
+    let Ok(comments_text) = fs::read_to_string(&comments_path) else {
+        // No review comments yet — nothing to apply.
+        println!("ripr-pr-apply-review-suppression: {REVIEW_COMMENTS_JSON} not found; skipping.");
+        return Ok(());
+    };
+    let comments_value: Value =
+        serde_json::from_str(&comments_text).context("review comments JSON is not valid JSON")?;
+
+    // Check that review-comments is stamped for the same HEAD as the PR evidence.
+    let pr_head = packet.get("head_sha").and_then(Value::as_str).unwrap_or("");
+    let comments_head = comments_value.get("head_sha").and_then(Value::as_str).unwrap_or("");
+    if pr_head.is_empty() || comments_head.is_empty() || pr_head != comments_head {
+        println!(
+            "ripr-pr-apply-review-suppression: head SHA mismatch ({pr_head} vs {comments_head}); skipping."
+        );
+        return Ok(());
+    }
+
+    // Load suppressions.
+    let policy_path = if suppressions_path.is_absolute() {
+        suppressions_path.to_path_buf()
+    } else {
+        repo.join(suppressions_path)
+    };
+    let suppressions = read_ripr_suppression_rules(repo, &policy_path)?;
+
+    // Count weakly_gripped seams in suppressed paths from the review-comments.
+    // Both "comments" (inline) and "summary_only" (overflow) arrays are checked.
+    let mut additional_suppressed: usize = 0;
+    for source in ["comments", "summary_only"] {
+        let Some(items) = comments_value.get(source).and_then(Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            let grip_class = item.get("grip_class").and_then(Value::as_str);
+            if grip_class != Some("weakly_gripped") {
+                continue;
+            }
+            let seam_file =
+                item.get("seam").and_then(|s| s.get("file").and_then(Value::as_str)).unwrap_or("");
+            if seam_file.is_empty() {
+                continue;
+            }
+            let normalized = normalize_suppression_match_path(&normalize_path_text(seam_file));
+            let is_suppressed =
+                suppressions.path_patterns.iter().zip(suppressions.display_patterns.iter()).any(
+                    |(pattern, display)| {
+                        pattern.matches(&normalized)
+                            || suppression_directory_pattern_matches(display, &normalized)
+                    },
+                );
+            if is_suppressed {
+                additional_suppressed += 1;
+            }
+        }
+    }
+
+    if additional_suppressed == 0 {
+        println!(
+            "ripr-pr-apply-review-suppression: no additional suppressions found; skipping patch."
+        );
+        return Ok(());
+    }
+
+    // Apply the suppression to the packet summary.
+    let summary = packet
+        .get_mut("summary")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| eyre!("PR evidence summary is missing or not an object"))?;
+
+    let current_reachable =
+        summary.get("reachable_unrevealed").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let current_suppressed_by_policy =
+        summary.get("suppressed_by_policy").and_then(Value::as_u64).unwrap_or(0) as usize;
+
+    // Cap: never subtract more than current reachable_unrevealed.
+    let to_subtract = additional_suppressed.min(current_reachable);
+    if to_subtract == 0 {
+        println!(
+            "ripr-pr-apply-review-suppression: {additional_suppressed} suppressed seams but reachable_unrevealed already 0; skipping."
+        );
+        return Ok(());
+    }
+
+    let new_reachable = current_reachable - to_subtract;
+    let current_weakly_exposed =
+        summary.get("weakly_exposed").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let current_no_static_path =
+        summary.get("no_static_path").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let new_severe_gaps =
+        current_weakly_exposed.saturating_add(new_reachable).saturating_add(current_no_static_path);
+    let new_suppressed = current_suppressed_by_policy + to_subtract;
+
+    summary.insert("reachable_unrevealed".to_string(), json!(new_reachable));
+    summary.insert("severe_gaps".to_string(), json!(new_severe_gaps));
+    summary.insert("requires_targeted_mutation".to_string(), json!(new_severe_gaps > 0));
+    summary.insert("ripr_severe_gap".to_string(), json!(new_severe_gaps > 0));
+    summary.insert(
+        "routing_reason".to_string(),
+        if new_severe_gaps > 0 { json!("ripr severe gap") } else { Value::Null },
+    );
+    summary.insert("suppressed_by_policy".to_string(), json!(new_suppressed));
+
+    // Rewrite the PR evidence JSON and regenerate the markdown.
+    write_text(&pr_path, &format_json(&packet)?)?;
+    write_text(&repo.join(PR_EVIDENCE_MD), &render_pr_evidence_markdown(&packet))?;
+    println!(
+        "ripr-pr-apply-review-suppression: subtracted {to_subtract} from reachable_unrevealed \
+         ({current_reachable} → {new_reachable}), severe_gaps → {new_severe_gaps}, \
+         suppressed_by_policy → {new_suppressed}"
+    );
+    println!("Patched {PR_EVIDENCE_JSON}");
+    println!("Patched {PR_EVIDENCE_MD}");
+    Ok(())
+}
+
 pub fn ripr_annotations(comments: &str, out: &str, check: bool) -> Result<()> {
     let repo = repo_root()?;
     let comments = normalized_option(comments, REVIEW_COMMENTS_JSON);
@@ -3662,5 +3804,244 @@ esac
     fn merged_labels_accepts_csv_only_without_explicit_labels() {
         let merged = merged_labels(&[], Some("needs-ci-fix,needs-ci-fix"));
         assert_eq!(merged, vec!["needs-ci-fix".to_string()]);
+    }
+
+    // --- apply_review_suppression tests ---
+
+    /// Helper: build a minimal PR evidence JSON and write it to `PR_EVIDENCE_JSON` in the repo.
+    fn write_pr_evidence_for_suppression_test(
+        repo: &Path,
+        reachable_unrevealed: u64,
+        suppressed_by_policy: u64,
+        head_sha: &str,
+    ) -> Result<()> {
+        let severe_gaps = reachable_unrevealed;
+        let packet = json!({
+            "schema_version": "0.1",
+            "tool": "ripr",
+            "kind": "pr_evidence",
+            "scope": "diff",
+            "status": "advisory",
+            "root": ".",
+            "base": "origin/main",
+            "base_sha": "base-sha",
+            "head": "HEAD",
+            "head_sha": head_sha,
+            "summary": {
+                "changed_files": 1,
+                "comments": 0,
+                "summary_only": 0,
+                "suppressed": 0,
+                "weakly_exposed": 0,
+                "reachable_unrevealed": reachable_unrevealed,
+                "no_static_path": 0,
+                "severe_gaps": severe_gaps,
+                "requires_targeted_mutation": severe_gaps > 0,
+                "ripr_severe_gap": severe_gaps > 0,
+                "routing_reason": if severe_gaps > 0 { json!("ripr severe gap") } else { Value::Null },
+                "suppressed_by_policy": suppressed_by_policy,
+                "suppression_patterns": [],
+            },
+            "artifacts": [],
+            "warnings": [],
+            "advisory_limits": []
+        });
+        let pr_path = repo.join(PR_EVIDENCE_JSON);
+        if let Some(parent) = pr_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        write_text(&pr_path, &format_json(&packet)?)
+    }
+
+    /// Helper: build a review-comments JSON and write it to `REVIEW_COMMENTS_JSON` in the repo.
+    fn write_review_comments_for_suppression_test(
+        repo: &Path,
+        head_sha: &str,
+        inline_files: &[&str],
+        summary_only_files: &[&str],
+    ) -> Result<()> {
+        let make_comment = |file: &str| {
+            json!({
+                "grip_class": "weakly_gripped",
+                "kind": "call_presence",
+                "seam": {
+                    "file": file,
+                    "line": 1
+                }
+            })
+        };
+        let comments: Vec<Value> = inline_files.iter().map(|f| make_comment(f)).collect();
+        let summary_only: Vec<Value> = summary_only_files.iter().map(|f| make_comment(f)).collect();
+        let packet = json!({
+            "schema_version": "0.1",
+            "tool": "ripr",
+            "kind": "review_guidance",
+            "status": "advisory",
+            "head_sha": head_sha,
+            "base": "origin/main",
+            "base_sha": "base-sha",
+            "comments": comments,
+            "summary_only": summary_only,
+            "summary": {
+                "comments": inline_files.len(),
+                "summary_only": summary_only_files.len(),
+                "suppressed": 0
+            }
+        });
+        let comments_path = repo.join(REVIEW_COMMENTS_JSON);
+        if let Some(parent) = comments_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        write_text(&comments_path, &format_json(&packet)?)
+    }
+
+    /// Helper: build a minimal ripr-suppressions.toml with one path suppression.
+    fn write_suppressions_for_test(repo: &Path, suppressed_path: &str) -> Result<PathBuf> {
+        let toml_content = format!(
+            "[[suppress]]\nid = \"test-suppress\"\nkind = \"predicate_infection_untraceable\"\npaths = [\"{suppressed_path}\"]\nreason = \"test\"\n"
+        );
+        let policy_path = repo.join("policy/ripr-suppressions.toml");
+        if let Some(parent) = policy_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&policy_path, toml_content)?;
+        Ok(policy_path)
+    }
+
+    #[test]
+    fn apply_review_suppression_reduces_reachable_unrevealed_when_seams_are_suppressed()
+    -> Result<()> {
+        // Simulates the ripr 0.9.x CI scenario: repo-exposure.json has reachable_unrevealed=3
+        // but the 3 weakly_gripped seams appear only in review-comments, not in the findings
+        // array (so pr_evidence_packet suppression couldn't catch them). This test verifies
+        // that apply_review_suppression correctly patches the PR evidence after comments are generated.
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        let head_sha = "abc123";
+        let suppressed_file = "crates/perl-dap/src/debug_adapter/execution.rs";
+
+        write_pr_evidence_for_suppression_test(repo, 3, 13, head_sha)?;
+        write_review_comments_for_suppression_test(
+            repo,
+            head_sha,
+            &[suppressed_file, suppressed_file, suppressed_file],
+            &[],
+        )?;
+        let policy_path = write_suppressions_for_test(repo, suppressed_file)?;
+
+        apply_review_suppression(repo, &policy_path)?;
+
+        let pr_text = fs::read_to_string(repo.join(PR_EVIDENCE_JSON))?;
+        let packet: Value = serde_json::from_str(&pr_text)?;
+
+        assert_eq!(
+            packet.pointer("/summary/reachable_unrevealed"),
+            Some(&json!(0)),
+            "all 3 weakly_gripped seams in suppressed path should reduce reachable_unrevealed to 0"
+        );
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(false)));
+        assert_eq!(
+            packet.pointer("/summary/suppressed_by_policy"),
+            Some(&json!(16)),
+            "suppressed_by_policy should be 13 (original) + 3 (new) = 16"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn apply_review_suppression_skips_when_no_seams_are_in_suppressed_paths() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        let head_sha = "abc123";
+        let suppressed_file = "crates/perl-dap/src/debug_adapter/execution.rs";
+        let other_file = "crates/perl-parser/src/parser.rs";
+
+        write_pr_evidence_for_suppression_test(repo, 2, 0, head_sha)?;
+        write_review_comments_for_suppression_test(repo, head_sha, &[other_file, other_file], &[])?;
+        let policy_path = write_suppressions_for_test(repo, suppressed_file)?;
+
+        apply_review_suppression(repo, &policy_path)?;
+
+        let pr_text = fs::read_to_string(repo.join(PR_EVIDENCE_JSON))?;
+        let packet: Value = serde_json::from_str(&pr_text)?;
+        // Not in suppressed path → no change.
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(2)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(2)));
+        Ok(())
+    }
+
+    #[test]
+    fn apply_review_suppression_also_counts_summary_only_seams() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        let head_sha = "abc123";
+        let suppressed_file = "crates/perl-dap/src/debug_adapter/execution.rs";
+
+        write_pr_evidence_for_suppression_test(repo, 3, 0, head_sha)?;
+        // 1 inline + 7 summary_only, all suppressed.
+        write_review_comments_for_suppression_test(
+            repo,
+            head_sha,
+            &[suppressed_file],
+            &[
+                suppressed_file,
+                suppressed_file,
+                suppressed_file,
+                suppressed_file,
+                suppressed_file,
+                suppressed_file,
+                suppressed_file,
+            ],
+        )?;
+        let policy_path = write_suppressions_for_test(repo, suppressed_file)?;
+
+        apply_review_suppression(repo, &policy_path)?;
+
+        let pr_text = fs::read_to_string(repo.join(PR_EVIDENCE_JSON))?;
+        let packet: Value = serde_json::from_str(&pr_text)?;
+        // All 8 suppressed but capped at reachable_unrevealed=3, so reachable drops to 0.
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(0)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(0)));
+        Ok(())
+    }
+
+    #[test]
+    fn apply_review_suppression_skips_when_review_comments_missing() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        let head_sha = "abc123";
+        let suppressed_file = "crates/perl-dap/src/debug_adapter/execution.rs";
+
+        write_pr_evidence_for_suppression_test(repo, 3, 0, head_sha)?;
+        // No review comments file.
+        let policy_path = write_suppressions_for_test(repo, suppressed_file)?;
+
+        apply_review_suppression(repo, &policy_path)?;
+
+        // Should not panic; PR evidence unchanged.
+        let pr_text = fs::read_to_string(repo.join(PR_EVIDENCE_JSON))?;
+        let packet: Value = serde_json::from_str(&pr_text)?;
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(3)));
+        Ok(())
+    }
+
+    #[test]
+    fn apply_review_suppression_skips_when_head_sha_mismatch() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        let suppressed_file = "crates/perl-dap/src/debug_adapter/execution.rs";
+
+        write_pr_evidence_for_suppression_test(repo, 3, 0, "sha-from-pr")?;
+        write_review_comments_for_suppression_test(repo, "different-sha", &[suppressed_file], &[])?;
+        let policy_path = write_suppressions_for_test(repo, suppressed_file)?;
+
+        apply_review_suppression(repo, &policy_path)?;
+
+        // SHA mismatch → skipped; PR evidence unchanged.
+        let pr_text = fs::read_to_string(repo.join(PR_EVIDENCE_JSON))?;
+        let packet: Value = serde_json::from_str(&pr_text)?;
+        assert_eq!(packet.pointer("/summary/reachable_unrevealed"), Some(&json!(3)));
+        Ok(())
     }
 }
