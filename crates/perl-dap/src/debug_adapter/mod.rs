@@ -403,6 +403,65 @@ impl DebugAdapter {
         let mut output = lock_or_recover(&self.recent_output, "debug_adapter.push_recent_output");
         Self::append_recent_output_line_locked(&mut output, line);
     }
+
+    /// Seed a minimal `DebugSession` for testing resume-handler seam coverage.
+    ///
+    /// Spawns `perl -e 1` with piped stdio and installs the child as the active
+    /// session.  The process exits almost immediately, but `stdin` remains `Some`
+    /// because it was created with `Stdio::piped()`.  All resume handlers check
+    /// `session.process.stdin.as_mut()` before entering the body, so this is
+    /// sufficient to reach the `stack_frames.clear()` seam.
+    ///
+    /// Only for use in tests.  Not part of the public API contract.
+    #[cfg(test)]
+    pub fn seed_session_for_test(&self) {
+        use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+        use crate::debug_adapter::variable_cache::VariableCache;
+        if let Ok(child) = std::process::Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Ok(mut guard) = self.session.lock() {
+                *guard = Some(DebugSession {
+                    process: child,
+                    state: DebugState::Stopped,
+                    stack_frames: vec![],
+                    variable_cache: VariableCache::default(),
+                    thread_id: 1,
+                    last_resume_mode: ResumeMode::Unknown,
+                });
+            }
+        }
+    }
+
+    /// Inject stack frames into the active session for testing stale-frame scenarios.
+    ///
+    /// Only for use in tests.  Not part of the public API contract.
+    #[cfg(test)]
+    pub fn inject_stack_frames_for_test(&self, frames: Vec<crate::types::StackFrame>) {
+        if let Ok(mut guard) = self.session.lock() {
+            if let Some(ref mut s) = *guard {
+                s.stack_frames = frames;
+            }
+        }
+    }
+
+    /// Return a snapshot of the active session's `stack_frames` for test assertions.
+    ///
+    /// Only for use in tests.  Not part of the public API contract.
+    #[cfg(test)]
+    pub fn stack_frames_snapshot_for_test(&self) -> Vec<crate::types::StackFrame> {
+        if let Ok(guard) = self.session.lock() {
+            if let Some(ref s) = *guard {
+                return s.stack_frames.clone();
+            }
+        }
+        vec![]
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -1621,5 +1680,90 @@ print "result: $final\n";
         // "/path/file.pl:42" should yield file="/path/file.pl", line="42".
         let result = apply_context_re("main::(/path/file.pl:42):");
         assert_eq!(result, Some(("/path/file.pl".to_string(), "42".to_string())));
+    }
+
+    // ─── Resume-handler seam: stack_frames cleared (#964) ────────────────────────
+
+    fn make_test_frame(id: i32) -> crate::types::StackFrame {
+        crate::types::StackFrame::new(
+            id,
+            "main".to_string(),
+            crate::types::Source::new("test.pl"),
+            id,
+        )
+    }
+
+    /// Check if perl is available for seeding a test session.
+    fn perl_binary_available() -> bool {
+        std::process::Command::new("perl").arg("-e").arg("1").output().is_ok()
+    }
+
+    /// `handle_continue` must clear `session.stack_frames` when the session block
+    /// is entered (the #964 seam).  Requires a live perl process for the stdin guard.
+    #[test]
+    fn test_handle_continue_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        if !perl_binary_available() {
+            eprintln!("Skipping test_handle_continue_clears_stack_frames — perl not available");
+            return Ok(());
+        }
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2, "precondition: 2 frames");
+
+        adapter.handle_continue(1, 1, None);
+
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_continue must clear stack_frames (fix for #964)"
+        );
+        Ok(())
+    }
+
+    /// `handle_next` must clear `session.stack_frames` when the session block
+    /// is entered (the #964 seam).  Requires a live perl process for the stdin guard.
+    #[test]
+    fn test_handle_next_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        if !perl_binary_available() {
+            eprintln!("Skipping test_handle_next_clears_stack_frames — perl not available");
+            return Ok(());
+        }
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 1, "precondition: 1 frame");
+
+        adapter.handle_next(1, 1, None);
+
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_next must clear stack_frames (fix for #964)"
+        );
+        Ok(())
+    }
+
+    /// `handle_step_in` must clear `session.stack_frames` when the session block
+    /// is entered (the #964 seam).  Requires a live perl process for the stdin guard.
+    #[test]
+    fn test_handle_step_in_clears_stack_frames() -> Result<(), Box<dyn std::error::Error>> {
+        if !perl_binary_available() {
+            eprintln!("Skipping test_handle_step_in_clears_stack_frames — perl not available");
+            return Ok(());
+        }
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+        adapter.inject_stack_frames_for_test(vec![make_test_frame(1), make_test_frame(2)]);
+        assert_eq!(adapter.stack_frames_snapshot_for_test().len(), 2, "precondition: 2 frames");
+
+        adapter.handle_step_in(1, 1, None);
+
+        assert_eq!(
+            adapter.stack_frames_snapshot_for_test().len(),
+            0,
+            "handle_step_in must clear stack_frames (fix for #964)"
+        );
+        Ok(())
     }
 }
