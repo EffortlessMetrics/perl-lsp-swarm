@@ -293,9 +293,9 @@ fn test_variables_with_running_session_returns_protocol_safe_empty()
             );
             Ok(())
         }
-        other => must(Err(format!(
-            "stale-ref guard: expected DapMessage::Response, got: {other:?}"
-        ))),
+        other => {
+            must(Err(format!("stale-ref guard: expected DapMessage::Response, got: {other:?}")))
+        }
     }
 }
 
@@ -320,8 +320,7 @@ fn test_variables_running_session_multiple_valid_refs_all_empty()
                     "variablesReference={var_ref} with Running session must succeed (stale-ref guard)"
                 );
                 assert_eq!(command, "variables");
-                let body_val =
-                    must(body.ok_or(format!("body must be present for ref={var_ref}")));
+                let body_val = must(body.ok_or(format!("body must be present for ref={var_ref}")));
                 let variables = extract_variables_array(&body_val);
                 assert!(
                     variables.is_empty(),
