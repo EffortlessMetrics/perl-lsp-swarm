@@ -6,10 +6,12 @@ import {
   buildStepDefinitionFileContent,
   classifyStepDefinitionStatus,
   parseGherkinStepLine,
+  POTENTIALLY_EXPENSIVE_REGEX_RE as STEP_DEFS_RE,
   registerGherkinStepDefinitionSupport,
   scanStepDefinitions,
   suggestStepDefinitionPath,
 } from '../gherkinStepDefinitions';
+import { POTENTIALLY_EXPENSIVE_REGEX_RE as PROVIDERS_RE } from '../gherkinProviders';
 
 describe('gherkin step definition support', () => {
   beforeEach(() => {
@@ -94,6 +96,63 @@ describe('gherkin step definition support', () => {
     expect(classifyStepDefinitionStatus(step!, [
       'Then qr/^(a+)+!$/, sub { return; };',
     ])).toBe('ambiguous');
+  });
+
+  test('treats bounded-quantifier inner group as ambiguous (ReDoS heuristic extension)', () => {
+    // ([a-z]{2,5})+ — bounded inner quantifier {m,n} with outer +
+    const step1 = parseGherkinStepLine('Then the code is abc', 1);
+    expect(step1).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step1!, [
+      'Then qr/^the code is ([a-z]{2,5})+$/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // (\d{1,3}){4} — bounded inner {m,n} with outer exact-count {n}
+    const step2 = parseGherkinStepLine('Then the IP is 192.168.1.1', 1);
+    expect(step2).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step2!, [
+      'Then qr/^the IP is (\\d{1,3}.){4}$/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // (x{5})+ — exact-count inner {m} with outer +
+    const step3 = parseGherkinStepLine('Then match xxxxxfoo', 1);
+    expect(step3).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step3!, [
+      'Then qr/^match (x{5})+foo$/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // (x{2,})+ — lower-bound-only {m,} with outer +
+    const step4 = parseGherkinStepLine('Then match xxfoo', 1);
+    expect(step4).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step4!, [
+      'Then qr/^match (x{2,})+foo$/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // ([a-z]{2,5}){3,7} — bounded inner, bounded outer {m,n}
+    const step5 = parseGherkinStepLine('Then match abcdef', 1);
+    expect(step5).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step5!, [
+      'Then qr/^match ([a-z]{2,5}){3,7}$/, sub { return; };',
+    ])).toBe('ambiguous');
+  });
+
+  test('does not flag bounded-inner group with no outer quantifier (safe case)', () => {
+    // ([a-z]{2,5}) with NO outer quantifier — linear-time, must not be flagged
+    const step = parseGherkinStepLine('Then the code is abc', 1);
+    expect(step).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step!, [
+      'Then qr/^the code is ([a-z]{2,5})$/, sub { return; };',
+    ])).not.toBe('ambiguous');
+
+    // Non-numeric brace like (a{b})+ must not be flagged (not a valid quantifier)
+    const step2 = parseGherkinStepLine('Then test xb', 1);
+    expect(step2).not.toBeNull();
+    expect(classifyStepDefinitionStatus(step2!, [
+      'Then qr/^test (a{b})+$/, sub { return; };',
+    ])).not.toBe('ambiguous');
+  });
+
+  test('POTENTIALLY_EXPENSIVE_REGEX_RE is identical in gherkinProviders and gherkinStepDefinitions (parity guard)', () => {
+    expect(STEP_DEFS_RE.toString()).toBe(PROVIDERS_RE.toString());
   });
 
   test('does not treat named-capture groups as expensive (no false positive)', () => {

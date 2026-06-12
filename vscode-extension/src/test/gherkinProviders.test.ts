@@ -130,6 +130,58 @@ describe('gherkin outline providers', () => {
     expect(links).toHaveLength(0);
   });
 
+  test('skips step definitions with bounded inner quantifiers in groups (ReDoS heuristic extension)', () => {
+    // (\d{1,3}){4} — bounded inner {m,n} with outer exact-count {n}
+    const featureText = [
+      'Feature: Networking',
+      '  Scenario: match IP',
+      '    Given the host is 192.168.1.1',
+    ].join('\n');
+
+    const links = provideGherkinStepDefinitionLinks(
+      featureText,
+      { line: 2, character: 15 } as vscode.Position,
+      [
+        {
+          uri: vscode.Uri.file('/project/features/step_definitions/net_steps.pm'),
+          text: [
+            'use Test::BDD::Cucumber::StepFile;',
+            '',
+            'Given qr/^the host is (\\d{1,3}\\.){4}$/, sub {',
+            '};',
+          ].join('\n'),
+        },
+      ]
+    );
+
+    expect(links).toHaveLength(0);
+
+    // ([a-z]{2,5})+ — bounded inner {m,n} with outer +
+    const featureText2 = [
+      'Feature: Codes',
+      '  Scenario: match code',
+      '    Given the code is abc',
+    ].join('\n');
+
+    const links2 = provideGherkinStepDefinitionLinks(
+      featureText2,
+      { line: 2, character: 15 } as vscode.Position,
+      [
+        {
+          uri: vscode.Uri.file('/project/features/step_definitions/code_steps.pm'),
+          text: [
+            'use Test::BDD::Cucumber::StepFile;',
+            '',
+            'Given qr/^the code is ([a-z]{2,5})+$/, sub {',
+            '};',
+          ].join('\n'),
+        },
+      ]
+    );
+
+    expect(links2).toHaveLength(0);
+  });
+
   test('does not skip named-capture group step definitions (no false positive)', () => {
     const featureText = [
       'Feature: Cart',
