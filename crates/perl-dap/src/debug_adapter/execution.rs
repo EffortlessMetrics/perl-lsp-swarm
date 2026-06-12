@@ -19,16 +19,20 @@ impl DebugAdapter {
             arguments.and_then(|v| serde_json::from_value(v).ok());
 
         let mut thread_id = 1;
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            && let Some(stdin) = session.process.stdin.as_mut()
-        {
-            let _ = stdin.write_all(b"c\n");
-            let _ = stdin.flush();
-            session.state = DebugState::Running;
-            session.last_resume_mode = ResumeMode::Continue;
+        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session") {
+            // Always clear stale session state on resume, regardless of stdin availability.
+            // The debug adapter always spawns with Stdio::piped(), so stdin is Some in
+            // normal operation; the write is best-effort (errors ignored) and never blocks
+            // the state transition.
             session.variable_cache.clear();
             session.stack_frames.clear();
             thread_id = session.thread_id;
+            if let Some(stdin) = session.process.stdin.as_mut() {
+                let _ = stdin.write_all(b"c\n");
+                let _ = stdin.flush();
+            }
+            session.state = DebugState::Running;
+            session.last_resume_mode = ResumeMode::Continue;
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
         {
             let _ = self.send_continue_signal(pid);
@@ -64,16 +68,17 @@ impl DebugAdapter {
         arguments: Option<Value>,
     ) -> DapMessage {
         let _args: Option<NextArguments> = arguments.and_then(|v| serde_json::from_value(v).ok());
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            && let Some(stdin) = session.process.stdin.as_mut()
-        {
-            let _ = stdin.write_all(b"n\n");
-            let _ = stdin.flush();
-            session.state = DebugState::Running;
-            session.last_resume_mode = ResumeMode::Next;
+        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session") {
+            // Always clear stale session state on resume (see handle_continue for rationale).
             session.variable_cache.clear();
             session.stack_frames.clear();
             let t_id = session.thread_id;
+            if let Some(stdin) = session.process.stdin.as_mut() {
+                let _ = stdin.write_all(b"n\n");
+                let _ = stdin.flush();
+            }
+            session.state = DebugState::Running;
+            session.last_resume_mode = ResumeMode::Next;
             self.send_event(
                 "continued",
                 Some(json!({
@@ -101,16 +106,17 @@ impl DebugAdapter {
         arguments: Option<Value>,
     ) -> DapMessage {
         let _args: Option<StepInArguments> = arguments.and_then(|v| serde_json::from_value(v).ok());
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            && let Some(stdin) = session.process.stdin.as_mut()
-        {
-            let _ = stdin.write_all(b"s\n");
-            let _ = stdin.flush();
-            session.state = DebugState::Running;
-            session.last_resume_mode = ResumeMode::StepIn;
+        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session") {
+            // Always clear stale session state on resume (see handle_continue for rationale).
             session.variable_cache.clear();
             session.stack_frames.clear();
             let t_id = session.thread_id;
+            if let Some(stdin) = session.process.stdin.as_mut() {
+                let _ = stdin.write_all(b"s\n");
+                let _ = stdin.flush();
+            }
+            session.state = DebugState::Running;
+            session.last_resume_mode = ResumeMode::StepIn;
             self.send_event(
                 "continued",
                 Some(json!({
