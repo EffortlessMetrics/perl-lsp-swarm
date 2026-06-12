@@ -48,10 +48,13 @@ impl DebugAdapter {
         }
 
         // Clamp i64 → i32 safely: values outside [1, i32::MAX] cannot encode a valid scope ref
-        // (scope encoding is frame_id * 10 + {1,2,3}, all positive). Negative or zero refs
-        // are protocol-safe "honest empty" per DAP spec — success=true, variables=[].
+        // (scope encoding is frame_id * 10 + {1,2,3}, all positive). Negative, zero, or
+        // out-of-i32-range refs return protocol-safe empty per DAP spec — success=true, variables=[].
+        // We check the raw i64 first to catch huge positive overflow before saturation would
+        // hide it (i64::MAX saturates to i32::MAX, which is a non-zero i32 and would pass
+        // a simple `== 0` check — wrong). Refs in (0, i32::MAX] are passed to i64_to_i32_saturating.
         let variables_ref_raw = args.variables_reference;
-        let variables_ref = if variables_ref_raw <= 0 || variables_ref_raw > i32::MAX as i64 {
+        if variables_ref_raw <= 0 || variables_ref_raw > i32::MAX as i64 {
             // Out-of-range: return protocol-safe empty response immediately.
             return DapMessage::Response {
                 seq,
@@ -61,9 +64,8 @@ impl DebugAdapter {
                 body: Some(json!({ "variables": [] })),
                 message: None,
             };
-        } else {
-            variables_ref_raw as i32
-        };
+        }
+        let variables_ref = Self::i64_to_i32_saturating(variables_ref_raw);
 
         let start = args.start.unwrap_or(0) as usize;
         let count = args.count.map(|v| v as usize).unwrap_or(256).clamp(1, 1024);
@@ -466,10 +468,12 @@ impl DebugAdapter {
             };
         };
 
+        let variables_reference =
+            self.allocate_evaluate_result_ref(name, &rendered_value, &rendered_type);
         let set_var_body = SetVariableResponseBody {
             value: rendered_value,
             type_: Some(rendered_type),
-            variables_reference: 0,
+            variables_reference,
         };
 
         DapMessage::Response {
