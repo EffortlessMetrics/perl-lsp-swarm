@@ -36,6 +36,19 @@ fn uri_module_parse_uri_accepts_windows_file_paths() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+/// Ported from EffortlessMetrics/perl-lsp#9903.
+///
+/// Windows bare file paths with forward-slash separators (e.g. `C:/foo/bar.pm`)
+/// must also be accepted and normalised — some editors send forward-slash
+/// Windows paths even on Windows hosts.
+#[test]
+fn uri_module_parse_uri_accepts_windows_forward_slash_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let uri = parse_uri("C:/Users/dev/lib/PlainPath.pm");
+    assert_eq!(uri.as_str(), "file:///C:/Users/dev/lib/PlainPath.pm");
+    Ok(())
+}
+
 #[test]
 fn uri_module_parse_uri_handles_windows_paths() {
     // Verify that parse_uri handles Windows paths correctly post-absorption
