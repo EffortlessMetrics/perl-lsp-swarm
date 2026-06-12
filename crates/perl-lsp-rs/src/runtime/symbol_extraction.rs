@@ -784,6 +784,236 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // NodeKindCategory drift-guard tests (PR #1330)
+    // ------------------------------------------------------------------
+    // These tests verify that the NodeKindCategory::Declaration guard in
+    // extract_symbols_recursive correctly filters declaration types and
+    // preserves all 6 symbol-kind mappings: Subroutine→Function(12),
+    // Package→Module(2), Class→Class(5), Method→Method(6),
+    // VariableDeclaration{our}→Variable(13), FunctionCall{has}→Property(7).
+    //
+    // MECHANISM (compile-time drift-guard, not runtime-testable):
+    // - The refactored extract_symbols_recursive will guard the 6 declaration
+    //   arms with an outer match: `kind if kind.category() == Declaration => { ... }`
+    // - Inside that guard, an exhaustive inner match ensures all Declaration
+    //   variants are explicitly handled.
+    // - If a new NodeKind variant is added with category() == Declaration and
+    //   the developer forgets to add an arm in the inner match, the compiler
+    //   will error: "pattern `NodeKind::NewVariant { .. }` not covered".
+    // - This prevents silent drops of new Declaration types (the drift risk).
+    //
+    // RUNTIME TESTS below verify that the 6 declaration-emitting cases still
+    // produce their correct LSP symbol kinds after the refactoring.
+
+    /// `sub test_sub { }` must emit kind 12 (Function).
+    /// Characterization test for Subroutine → Function mapping.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_subroutine_emits_function() {
+        let source = "sub test_sub { }\n";
+        let sub_node = Node::new(
+            NodeKind::Subroutine {
+                name: Some("test_sub".to_string()),
+                body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(10, 13))),
+                prototype: None,
+                attributes: vec![],
+            },
+            loc(0, 15),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![sub_node] }, loc(0, 16));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let idx = names.iter().position(|n| *n == "test_sub");
+        assert!(idx.is_some(), "Subroutine 'test_sub' should produce a symbol; got: {names:?}");
+        assert_eq!(
+            symbols.get(idx.unwrap()).map(|s| s.kind),
+            Some(12),
+            "Subroutine should have LSP kind 12 (Function)"
+        );
+    }
+
+    /// `package Foo;` must emit kind 2 (Module).
+    /// Characterization test for Package → Module mapping.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_package_emits_module() {
+        let source = "package Foo;\n";
+        let pkg_node = Node::new(
+            NodeKind::Package {
+                name: "Foo".to_string(),
+                block: Some(Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(10, 11)))),
+            },
+            loc(0, 12),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![pkg_node] }, loc(0, 13));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let idx = names.iter().position(|n| *n == "Foo");
+        assert!(idx.is_some(), "Package 'Foo' should produce a symbol; got: {names:?}");
+        assert_eq!(
+            symbols.get(idx.unwrap()).map(|s| s.kind),
+            Some(2),
+            "Package should have LSP kind 2 (Module)"
+        );
+    }
+
+    /// `class MyClass { }` must emit kind 5 (Class).
+    /// Characterization test for Class → Class mapping.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_class_emits_class() {
+        let source = "class MyClass { }\n";
+        let class_node = Node::new(
+            NodeKind::Class {
+                name: "MyClass".to_string(),
+                body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(12, 14))),
+                body_location: Some((12, 14)),
+            },
+            loc(0, 17),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![class_node] }, loc(0, 18));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let idx = names.iter().position(|n| *n == "MyClass");
+        assert!(idx.is_some(), "Class 'MyClass' should produce a symbol; got: {names:?}");
+        assert_eq!(
+            symbols.get(idx.unwrap()).map(|s| s.kind),
+            Some(5),
+            "Class should have LSP kind 5 (Class)"
+        );
+    }
+
+    /// `method my_method { }` must emit kind 6 (Method).
+    /// Characterization test for Method → Method mapping.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_method_emits_method() {
+        let source = "method my_method { }\n";
+        let method_node = Node::new(
+            NodeKind::Method {
+                name: "my_method".to_string(),
+                body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(15, 17))),
+                body_location: Some((15, 17)),
+            },
+            loc(0, 20),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![method_node] }, loc(0, 21));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let idx = names.iter().position(|n| *n == "my_method");
+        assert!(idx.is_some(), "Method 'my_method' should produce a symbol; got: {names:?}");
+        assert_eq!(
+            symbols.get(idx.unwrap()).map(|s| s.kind),
+            Some(6),
+            "Method should have LSP kind 6 (Method)"
+        );
+    }
+
+    /// `our $VERSION;` must emit kind 13 (Variable) with sigil-prefixed name.
+    /// Characterization test for VariableDeclaration{our} → Variable mapping.
+    /// (Complements the existing extract_symbols_our_var_emits_variable_kind test
+    /// as part of the drift-guard characterization suite.)
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_our_var_characterization() {
+        let source = "our $VERSION = '1.0';\n";
+        let variable_node = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "VERSION".to_string() },
+            loc(4, 12),
+        );
+        let decl_node = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "our".to_string(),
+                variable: Box::new(variable_node),
+                attributes: vec![],
+                initializer: None,
+            },
+            loc(0, 22),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![decl_node] }, loc(0, 23));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let idx = names.iter().position(|n| *n == "$VERSION");
+        assert!(idx.is_some(), "our $VERSION should produce a symbol; got: {names:?}");
+        assert_eq!(
+            symbols.get(idx.unwrap()).map(|s| s.kind),
+            Some(13),
+            "our variable should have LSP kind 13 (Variable)"
+        );
+    }
+
+    /// `has 'attr_name' => (...)` must emit kind 7 (Property).
+    /// Characterization test for FunctionCall{name=="has"} → Property mapping.
+    /// (Complements the existing extract_symbols_has_attr_emits_property_kind test
+    /// as part of the drift-guard characterization suite.)
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_has_attr_characterization() {
+        let source = "has 'attr_name' => (is => 'ro');\n";
+        let attr_node = Node::new(
+            NodeKind::String { value: "attr_name".to_string(), interpolated: false },
+            loc(4, 15),
+        );
+        let has_call = Node::new(
+            NodeKind::FunctionCall { name: "has".to_string(), args: vec![attr_node] },
+            loc(0, 32),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![has_call] }, loc(0, 33));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        let idx = names.iter().position(|n| *n == "attr_name");
+        assert!(idx.is_some(), "has 'attr_name' should produce a Property symbol; got: {names:?}");
+        assert_eq!(
+            symbols.get(idx.unwrap()).map(|s| s.kind),
+            Some(7),
+            "has attribute should have LSP kind 7 (Property)"
+        );
+    }
+
+    /// Non-Declaration nodes (my variables, Use, No, etc.) must NOT emit symbols
+    /// when passed through the declaration guard.
+    /// This test documents that the guard correctly filters non-declaration types.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn extract_symbols_my_var_filtered_by_declaration_guard() {
+        // Verify that `my $local;` (which is VariableDeclaration{declarator: "my"})
+        // does NOT produce a symbol. This is an edge case where a Declaration node
+        // exists but the internal guard `declarator == "our"` prevents emission.
+        let source = "my $local = 1;\n";
+        let variable_node = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "local".to_string() },
+            loc(3, 9),
+        );
+        let decl_node = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "my".to_string(),
+                variable: Box::new(variable_node),
+                attributes: vec![],
+                initializer: None,
+            },
+            loc(0, 14),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![decl_node] }, loc(0, 15));
+
+        let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
+
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(!names.contains(&"$local"), "my $local must NOT be indexed (handled by inner declarator guard)");
+    }
+
+    // ------------------------------------------------------------------
 
     #[test]
     fn count_references_visits_if_and_while_children_with_keyword_metadata() {
