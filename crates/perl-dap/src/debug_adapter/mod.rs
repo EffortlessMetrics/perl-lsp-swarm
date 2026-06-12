@@ -1622,4 +1622,132 @@ print "result: $final\n";
         let result = apply_context_re("main::(/path/file.pl:42):");
         assert_eq!(result, Some(("/path/file.pl".to_string(), "42".to_string())));
     }
+
+    // ── stale-frame regression tests (issue #964) ─────────────────────────────
+    //
+    // All resume handlers must clear session.stack_frames alongside variable_cache.
+    // A stackTrace arriving between resume and the next stopped event must not see
+    // frames from the previous stop.
+
+    fn seed_stopped_session_with_stale_frame(adapter: &DebugAdapter) -> bool {
+        if let Ok(child) = std::process::Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            let stale = crate::types::StackFrame {
+                id: 1,
+                name: "main::stale_sub".to_string(),
+                source: crate::types::Source {
+                    name: Some("stale.pl".to_string()),
+                    path: "/tmp/stale.pl".to_string(),
+                    source_reference: None,
+                },
+                line: 42,
+                column: 1,
+                end_line: None,
+                end_column: None,
+            };
+            let mut guard = lock_or_recover(&adapter.session, "test.seed_session");
+            *guard = Some(session::DebugSession {
+                process: child,
+                state: session::DebugState::Stopped,
+                stack_frames: vec![stale],
+                variable_cache: variable_cache::VariableCache::default(),
+                thread_id: 1,
+                last_resume_mode: session::ResumeMode::Unknown,
+            });
+            true
+        } else {
+            false
+        }
+    }
+
+    fn session_stack_frame_count(adapter: &DebugAdapter) -> usize {
+        let guard = lock_or_recover(&adapter.session, "test.frame_count");
+        if let Some(ref s) = *guard { s.stack_frames.len() } else { 0 }
+    }
+
+    #[test]
+    fn test_stack_frames_cleared_on_continue() {
+        let mut adapter = DebugAdapter::new();
+        if !seed_stopped_session_with_stale_frame(&adapter) {
+            return;
+        }
+        assert_eq!(session_stack_frame_count(&adapter), 1, "precondition: stale frame present");
+        adapter.handle_request(1, "continue", None);
+        assert_eq!(
+            session_stack_frame_count(&adapter),
+            0,
+            "stack_frames must be cleared after continue"
+        );
+    }
+
+    #[test]
+    fn test_stack_frames_cleared_on_next() {
+        let mut adapter = DebugAdapter::new();
+        if !seed_stopped_session_with_stale_frame(&adapter) {
+            return;
+        }
+        assert_eq!(session_stack_frame_count(&adapter), 1, "precondition");
+        adapter.handle_request(1, "next", None);
+        assert_eq!(
+            session_stack_frame_count(&adapter),
+            0,
+            "stack_frames must be cleared after next"
+        );
+    }
+
+    #[test]
+    fn test_stack_frames_cleared_on_step_in() {
+        let mut adapter = DebugAdapter::new();
+        if !seed_stopped_session_with_stale_frame(&adapter) {
+            return;
+        }
+        assert_eq!(session_stack_frame_count(&adapter), 1, "precondition");
+        adapter.handle_request(1, "stepIn", None);
+        assert_eq!(
+            session_stack_frame_count(&adapter),
+            0,
+            "stack_frames must be cleared after stepIn"
+        );
+    }
+
+    #[test]
+    fn test_stack_frames_cleared_on_step_out() {
+        let mut adapter = DebugAdapter::new();
+        if !seed_stopped_session_with_stale_frame(&adapter) {
+            return;
+        }
+        assert_eq!(session_stack_frame_count(&adapter), 1, "precondition");
+        adapter.handle_request(1, "stepOut", None);
+        assert_eq!(
+            session_stack_frame_count(&adapter),
+            0,
+            "stack_frames must be cleared after stepOut"
+        );
+    }
+
+    #[test]
+    fn test_stack_frames_cleared_on_goto() {
+        let mut adapter = DebugAdapter::new();
+        if !seed_stopped_session_with_stale_frame(&adapter) {
+            return;
+        }
+        // Register a goto target so handle_goto proceeds past the target-lookup gate.
+        {
+            let mut goto_map = lock_or_recover(&adapter.goto_targets, "test.goto_targets");
+            goto_map.insert(99, ("/tmp/test.pl".to_string(), 5));
+        }
+        assert_eq!(session_stack_frame_count(&adapter), 1, "precondition");
+        adapter.handle_request(1, "goto", Some(json!({"threadId": 1, "targetId": 99})));
+        assert_eq!(
+            session_stack_frame_count(&adapter),
+            0,
+            "stack_frames must be cleared after goto"
+        );
+    }
 }
