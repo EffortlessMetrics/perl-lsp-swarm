@@ -1,4 +1,4 @@
-//! REPL and expression evaluation: evaluate, set expression, completions.
+﻿//! REPL and expression evaluation: evaluate, set expression, completions.
 
 use super::*;
 use std::sync::LazyLock;
@@ -497,8 +497,13 @@ impl DebugAdapter {
     /// Returns `0` when the result type is not expandable or when no active session
     /// is available (the ref cannot be served without a cache).
     ///
-    /// Uses a 50_000+ base offset to avoid collision with scope refs which are
-    /// `frame_id * 10 + scope_type` (well below 50_000 for any practical stack depth).
+    /// ## Ref-range non-collision guarantee
+    ///
+    /// Scope refs are `frame_id * 10 + scope_type` (scope_type in {1, 2, 3}).
+    /// A frame_id of 5_000 already produces scope ref 50_001, which would collide
+    /// with a naive 50_000 base offset.  This function uses a 1_000_000 base
+    /// instead: `frame_id` would need to reach 100_000 to collide, which is
+    /// impossible in practice and `saturating_mul` caps well before i32::MAX.
     pub(super) fn allocate_evaluate_result_ref(
         &self,
         expression: &str,
@@ -513,7 +518,7 @@ impl DebugAdapter {
         {
             let raw_counter = self.debugger_output_marker.fetch_add(1, Ordering::Relaxed);
             let eval_ref =
-                50_000_i32.saturating_add(Self::i64_to_i32_saturating(raw_counter as i64));
+                1_000_000_i32.saturating_add(Self::i64_to_i32_saturating(raw_counter as i64));
             let placeholder = Variable {
                 name: expression.to_string(),
                 value: result.to_string(),
@@ -629,21 +634,21 @@ mod evaluate_allocation_tests {
     // -----------------------------------------------------------------------
     // allocate_evaluate_result_ref — session-present path (lines 511-530).
     // When a live session is present and the type is expandable, allocate a
-    // non-zero variablesReference in the 50_000+ range and cache the entry.
+    // non-zero variablesReference in the 1_000_000+ range and cache the entry.
     // -----------------------------------------------------------------------
 
     #[test]
     fn allocate_returns_nonzero_with_live_session_and_hash_type() {
         // Covers the session-present branch: raw_counter fetch_add, eval_ref
-        // computation (50_000 base), Variable construction, cache upsert.
+        // computation (1_000_000 base), Variable construction, cache upsert.
         let adapter = DebugAdapter::new();
         adapter.seed_session_for_test();
 
         let ref_val = adapter.allocate_evaluate_result_ref("$h", "HASH(0x1234)", "HASH");
 
         assert!(
-            ref_val >= 50_000,
-            "variablesReference must be in the 50_000+ range to avoid scope-ref collision; got {ref_val}"
+            ref_val >= 1_000_000,
+            "variablesReference must be in the 1_000_000+ range to avoid scope-ref collision; got {ref_val}"
         );
         assert_ne!(ref_val, 0, "session-present HASH must return non-zero variablesReference");
     }
@@ -656,7 +661,7 @@ mod evaluate_allocation_tests {
 
         let ref_val = adapter.allocate_evaluate_result_ref("@arr", "ARRAY(0xabcd)", "ARRAY");
 
-        assert!(ref_val >= 50_000, "ARRAY ref must be in 50_000+ range; got {ref_val}");
+        assert!(ref_val >= 1_000_000, "ARRAY ref must be in 1_000_000+ range; got {ref_val}");
         assert_ne!(ref_val, 0, "session-present ARRAY must return non-zero variablesReference");
     }
 
@@ -670,7 +675,7 @@ mod evaluate_allocation_tests {
         let ref1 = adapter.allocate_evaluate_result_ref("$a", "HASH(0x1)", "HASH");
         let ref2 = adapter.allocate_evaluate_result_ref("$b", "HASH(0x2)", "HASH");
 
-        assert!(ref1 >= 50_000, "first ref must be in 50_000+ range; got {ref1}");
+        assert!(ref1 >= 1_000_000, "first ref must be in 1_000_000+ range; got {ref1}");
         assert!(ref2 > ref1, "second ref must be greater than first; got ref1={ref1}, ref2={ref2}");
     }
 
@@ -686,7 +691,7 @@ mod evaluate_allocation_tests {
         let result_type = "HASH";
         let ref_val = adapter.allocate_evaluate_result_ref(expression, result_val, result_type);
 
-        assert!(ref_val >= 50_000, "ref must be in 50_000+ range; got {ref_val}");
+        assert!(ref_val >= 1_000_000, "ref must be in 1_000_000+ range; got {ref_val}");
         let ref_i32 = ref_val as i32;
 
         // Read the placeholder back from the session variable_cache.
