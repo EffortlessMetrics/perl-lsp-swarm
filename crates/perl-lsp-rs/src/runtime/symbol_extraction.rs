@@ -41,146 +41,191 @@ impl LspServer {
         container: Option<&str>,
         symbols: &mut Vec<LspWorkspaceSymbol>,
     ) {
+        use perl_ast::classification::NodeKindCategory;
         use perl_parser::ast::NodeKind;
 
         match &node.kind {
-            NodeKind::Subroutine { name, body, .. } => {
-                // Add the subroutine as a symbol if it has a name
-                if let Some(sub_name) = name {
-                    let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                    let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+            // ── Drift-guard: all Declaration variants are funnelled through this arm.
+            //
+            // The outer guard `kind.category() == NodeKindCategory::Declaration` ensures
+            // that any new NodeKind variant added to the Declaration category MUST be
+            // handled in the inner match below — a missing arm is a compile error.
+            // This prevents silent symbol drops when the parser gains new declaration
+            // constructs (e.g. a future NodeKind::Role or NodeKind::Trait).
+            //
+            // Note: FunctionCall{name=="has"} is Expression-category, not Declaration,
+            // so Moo/Moose `has` attributes are handled in their own arm below.
+            kind if kind.category() == NodeKindCategory::Declaration => {
+                match &node.kind {
+                    NodeKind::Subroutine { name, body, .. } => {
+                        // Add the subroutine as a symbol if it has a name
+                        if let Some(sub_name) = name {
+                            let (start_line, start_char) =
+                                byte_to_line_col(source, node.location.start);
+                            let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
-                    symbols.push(LspWorkspaceSymbol {
-                        name: sub_name.clone(),
-                        kind: 12, // Function
-                        location: WireLocation::new(
-                            uri.to_string(),
-                            WireRange::new(
-                                WirePosition::new(start_line, start_char),
-                                WirePosition::new(end_line, end_char),
+                            symbols.push(LspWorkspaceSymbol {
+                                name: sub_name.clone(),
+                                kind: 12, // Function
+                                location: WireLocation::new(
+                                    uri.to_string(),
+                                    WireRange::new(
+                                        WirePosition::new(start_line, start_char),
+                                        WirePosition::new(end_line, end_char),
+                                    ),
+                                ),
+                                container_name: container
+                                    .map(|s| normalize_package_separator(s).into_owned()),
+                                workspace_folder_uri: None,
+                            });
+
+                            // Recurse into body with this subroutine as container
+                            self.extract_symbols_recursive(
+                                body,
+                                source,
+                                uri,
+                                Some(sub_name.as_str()),
+                                symbols,
+                            );
+                        }
+                    }
+
+                    NodeKind::Package { name, block, .. } => {
+                        // Add the package as a symbol
+                        let (start_line, start_char) =
+                            byte_to_line_col(source, node.location.start);
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+
+                        symbols.push(LspWorkspaceSymbol {
+                            name: name.clone(),
+                            kind: 2, // Module
+                            location: WireLocation::new(
+                                uri.to_string(),
+                                WireRange::new(
+                                    WirePosition::new(start_line, start_char),
+                                    WirePosition::new(end_line, end_char),
+                                ),
                             ),
-                        ),
-                        container_name: container
-                            .map(|s| normalize_package_separator(s).into_owned()),
-                        workspace_folder_uri: None,
-                    });
+                            container_name: container
+                                .map(|s| normalize_package_separator(s).into_owned()),
+                            workspace_folder_uri: None,
+                        });
 
-                    // Recurse into body with this subroutine as container
-                    self.extract_symbols_recursive(
-                        body,
-                        source,
-                        uri,
-                        Some(sub_name.as_str()),
-                        symbols,
-                    );
-                }
-            }
+                        // Recurse into block with this package as container
+                        if let Some(block) = block {
+                            self.extract_symbols_recursive(
+                                block,
+                                source,
+                                uri,
+                                Some(name.as_str()),
+                                symbols,
+                            );
+                        }
+                    }
 
-            NodeKind::Package { name, block, .. } => {
-                // Add the package as a symbol
-                let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+                    // Perl 5.38+ native class declaration
+                    NodeKind::Class { name, body, .. } => {
+                        let (start_line, start_char) =
+                            byte_to_line_col(source, node.location.start);
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
 
-                symbols.push(LspWorkspaceSymbol {
-                    name: name.clone(),
-                    kind: 2, // Module
-                    location: WireLocation::new(
-                        uri.to_string(),
-                        WireRange::new(
-                            WirePosition::new(start_line, start_char),
-                            WirePosition::new(end_line, end_char),
-                        ),
-                    ),
-                    container_name: container.map(|s| normalize_package_separator(s).into_owned()),
-                    workspace_folder_uri: None,
-                });
-
-                // Recurse into block with this package as container
-                if let Some(block) = block {
-                    self.extract_symbols_recursive(
-                        block,
-                        source,
-                        uri,
-                        Some(name.as_str()),
-                        symbols,
-                    );
-                }
-            }
-
-            // Perl 5.38+ native class declaration
-            NodeKind::Class { name, body, .. } => {
-                let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                let (end_line, end_char) = byte_to_line_col(source, node.location.end);
-
-                symbols.push(LspWorkspaceSymbol {
-                    name: name.clone(),
-                    kind: 5, // Class
-                    location: WireLocation::new(
-                        uri.to_string(),
-                        WireRange::new(
-                            WirePosition::new(start_line, start_char),
-                            WirePosition::new(end_line, end_char),
-                        ),
-                    ),
-                    container_name: container.map(|s| normalize_package_separator(s).into_owned()),
-                    workspace_folder_uri: None,
-                });
-
-                // Recurse into body with this class as container
-                self.extract_symbols_recursive(body, source, uri, Some(name.as_str()), symbols);
-            }
-
-            // Perl 5.38+ native method declaration
-            NodeKind::Method { name, body, .. } => {
-                let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                let (end_line, end_char) = byte_to_line_col(source, node.location.end);
-
-                symbols.push(LspWorkspaceSymbol {
-                    name: name.clone(),
-                    kind: 6, // Method
-                    location: WireLocation::new(
-                        uri.to_string(),
-                        WireRange::new(
-                            WirePosition::new(start_line, start_char),
-                            WirePosition::new(end_line, end_char),
-                        ),
-                    ),
-                    container_name: container.map(|s| normalize_package_separator(s).into_owned()),
-                    workspace_folder_uri: None,
-                });
-
-                // Recurse into body with this method as container
-                self.extract_symbols_recursive(body, source, uri, Some(name.as_str()), symbols);
-            }
-
-            // `our` package-interface variables — index with sigil-prefixed name.
-            // `my` / `local` / `state` are sub-local and must NOT appear in the outline.
-            NodeKind::VariableDeclaration { declarator, variable, .. } if declarator == "our" => {
-                if let NodeKind::Variable { sigil, name } = &variable.kind {
-                    let display_name = format!("{sigil}{name}");
-                    let (start_line, start_char) = byte_to_line_col(source, node.location.start);
-                    let (end_line, end_char) = byte_to_line_col(source, node.location.end);
-
-                    symbols.push(LspWorkspaceSymbol {
-                        name: display_name,
-                        kind: 13, // Variable
-                        location: WireLocation::new(
-                            uri.to_string(),
-                            WireRange::new(
-                                WirePosition::new(start_line, start_char),
-                                WirePosition::new(end_line, end_char),
+                        symbols.push(LspWorkspaceSymbol {
+                            name: name.clone(),
+                            kind: 5, // Class
+                            location: WireLocation::new(
+                                uri.to_string(),
+                                WireRange::new(
+                                    WirePosition::new(start_line, start_char),
+                                    WirePosition::new(end_line, end_char),
+                                ),
                             ),
-                        ),
-                        container_name: container
-                            .map(|s| normalize_package_separator(s).into_owned()),
-                        workspace_folder_uri: None,
-                    });
+                            container_name: container
+                                .map(|s| normalize_package_separator(s).into_owned()),
+                            workspace_folder_uri: None,
+                        });
+
+                        // Recurse into body with this class as container
+                        self.extract_symbols_recursive(
+                            body,
+                            source,
+                            uri,
+                            Some(name.as_str()),
+                            symbols,
+                        );
+                    }
+
+                    // Perl 5.38+ native method declaration
+                    NodeKind::Method { name, body, .. } => {
+                        let (start_line, start_char) =
+                            byte_to_line_col(source, node.location.start);
+                        let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+
+                        symbols.push(LspWorkspaceSymbol {
+                            name: name.clone(),
+                            kind: 6, // Method
+                            location: WireLocation::new(
+                                uri.to_string(),
+                                WireRange::new(
+                                    WirePosition::new(start_line, start_char),
+                                    WirePosition::new(end_line, end_char),
+                                ),
+                            ),
+                            container_name: container
+                                .map(|s| normalize_package_separator(s).into_owned()),
+                            workspace_folder_uri: None,
+                        });
+
+                        // Recurse into body with this method as container
+                        self.extract_symbols_recursive(
+                            body,
+                            source,
+                            uri,
+                            Some(name.as_str()),
+                            symbols,
+                        );
+                    }
+
+                    // `our` package-interface variables — index with sigil-prefixed name.
+                    // `my` / `local` / `state` are sub-local and must NOT appear in the outline.
+                    NodeKind::VariableDeclaration { declarator, variable, .. }
+                        if declarator == "our" =>
+                    {
+                        if let NodeKind::Variable { sigil, name } = &variable.kind {
+                            let display_name = format!("{sigil}{name}");
+                            let (start_line, start_char) =
+                                byte_to_line_col(source, node.location.start);
+                            let (end_line, end_char) = byte_to_line_col(source, node.location.end);
+
+                            symbols.push(LspWorkspaceSymbol {
+                                name: display_name,
+                                kind: 13, // Variable
+                                location: WireLocation::new(
+                                    uri.to_string(),
+                                    WireRange::new(
+                                        WirePosition::new(start_line, start_char),
+                                        WirePosition::new(end_line, end_char),
+                                    ),
+                                ),
+                                container_name: container
+                                    .map(|s| normalize_package_separator(s).into_owned()),
+                                workspace_folder_uri: None,
+                            });
+                        }
+                    }
+
+                    // All other Declaration variants (Use, No, PhaseBlock, DataSection,
+                    // Format, VariableListDeclaration, Prototype, Signature, *Parameter, etc.)
+                    // are not indexed as workspace symbols. A future new Declaration variant
+                    // will cause a compile error above unless this wildcard covers it, which
+                    // forces an explicit decision: emit a symbol or leave it here.
+                    _ => {}
                 }
             }
 
             // Moo/Moose `has 'attr' => (...)` declarations.
-            // These appear as FunctionCall{name="has"} with a string literal first arg.
-            // We emit them as Property (kind 7) so editors can distinguish them from subs.
+            // FunctionCall is Expression-category (NOT Declaration), so it is handled
+            // as its own outer arm — outside the Declaration drift-guard above.
+            // We emit these as Property (kind 7) so editors can distinguish them from subs.
             NodeKind::FunctionCall { name, args } if name == "has" => {
                 if let Some(first_arg) = args.first() {
                     // Extract the attribute name from a String literal (value is already
@@ -233,8 +278,7 @@ impl LspServer {
             }
 
             _ => {
-                // For other node types, recurse into children if they might contain symbols
-                // This is a simplified version - you might want to handle more node types
+                // All other non-Declaration, non-recurse node types: no symbol emitted.
             }
         }
     }
@@ -846,7 +890,10 @@ mod tests {
             NodeKind::Package {
                 name: "Foo".to_string(),
                 name_span: loc(8, 11),
-                block: Some(Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(10, 11)))),
+                block: Some(Box::new(Node::new(
+                    NodeKind::Block { statements: vec![] },
+                    loc(10, 11),
+                ))),
             },
             loc(0, 12),
         );
@@ -1014,7 +1061,10 @@ mod tests {
         let symbols = server().extract_document_symbols(&root, source, "file:///test.pl");
 
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
-        assert!(!names.contains(&"$local"), "my $local must NOT be indexed (handled by inner declarator guard)");
+        assert!(
+            !names.contains(&"$local"),
+            "my $local must NOT be indexed (handled by inner declarator guard)"
+        );
     }
 
     // ------------------------------------------------------------------
