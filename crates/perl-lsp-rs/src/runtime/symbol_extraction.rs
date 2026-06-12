@@ -814,9 +814,11 @@ mod tests {
         let sub_node = Node::new(
             NodeKind::Subroutine {
                 name: Some("test_sub".to_string()),
-                body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(10, 13))),
+                name_span: None,
                 prototype: None,
+                signature: None,
                 attributes: vec![],
+                body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(10, 13))),
             },
             loc(0, 15),
         );
@@ -843,6 +845,7 @@ mod tests {
         let pkg_node = Node::new(
             NodeKind::Package {
                 name: "Foo".to_string(),
+                name_span: loc(8, 11),
                 block: Some(Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(10, 11)))),
             },
             loc(0, 12),
@@ -870,8 +873,8 @@ mod tests {
         let class_node = Node::new(
             NodeKind::Class {
                 name: "MyClass".to_string(),
+                parents: vec![],
                 body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(12, 14))),
-                body_location: Some((12, 14)),
             },
             loc(0, 17),
         );
@@ -898,8 +901,9 @@ mod tests {
         let method_node = Node::new(
             NodeKind::Method {
                 name: "my_method".to_string(),
+                signature: None,
+                attributes: vec![],
                 body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(15, 17))),
-                body_location: Some((15, 17)),
             },
             loc(0, 20),
         );
