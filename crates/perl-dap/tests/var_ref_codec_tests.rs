@@ -710,3 +710,74 @@ fn test_adversarial_evalresult_negative_counter_rejected() -> Result<(), Box<dyn
     assert_eq!(result_min, None, "EvalResult{{counter: i32::MIN}} encode must return None");
     Ok(())
 }
+
+// ============================================================================
+// Regression guard — issue #1445
+// ============================================================================
+
+/// Regression guard for issue #1445: `fallback_scope_variables` placeholder child refs
+/// must not land in the EvalResult wire band for deep-frame Scope refs.
+///
+/// ## The bug (pre-fix)
+///
+/// The old formula `variables_ref.saturating_mul(100) + 2` collides with the EvalResult
+/// band `[1_000_000, 1_999_999_999]` when `variables_ref >= 10_000`.
+/// A Scope wire of 100_001 (frame_id=10_000, Locals) produces:
+/// `100_001 * 100 + 2 = 10_000_102` — inside the EvalResult band.
+/// A DAP client requesting expansion on that ref would decode it as `EvalResult`, not `Child`.
+///
+/// ## The fix
+///
+/// Encode placeholder child refs via `VariableReference::Child`, which always places
+/// them in the disjoint Child band `[2_000_000_000, i32::MAX]`.
+#[test]
+fn test_issue_1445_fallback_child_refs_child_band_not_evalresult()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Scope wire for frame_id=10_000, Locals: 10_000 * 10 + 1 = 100_001
+    let deep_scope_wire = VariableReference::Scope { frame_id: 10_000, kind: ScopeKind::Locals }
+        .encode()
+        .ok_or("Scope(10_000, Locals) encode must succeed")?;
+    assert_eq!(deep_scope_wire, 100_001, "Scope(10_000, Locals) must encode to 100_001");
+
+    // Confirm the pre-fix formula produces an EvalResult-band value (the bug).
+    let old_formula = deep_scope_wire.saturating_mul(100).saturating_add(2);
+    assert!(
+        (1_000_000..=1_999_999_999).contains(&old_formula),
+        "Pre-fix formula result {old_formula} must be in the EvalResult band — confirming the collision"
+    );
+    assert!(
+        matches!(
+            VariableReference::decode(old_formula),
+            Some(VariableReference::EvalResult { .. })
+        ),
+        "Pre-fix formula result {old_formula} decodes as EvalResult (the misclassification bug)"
+    );
+
+    // The fix: VariableReference::Child encodes into the Child band.
+    let child_ref = VariableReference::Child { parent: deep_scope_wire, index: 1 }
+        .encode()
+        .ok_or("VariableReference::Child encode must succeed for non-negative parent")?;
+
+    assert!(
+        child_ref >= 2_000_000_000_i32,
+        "Child-encoded ref {child_ref} must be in the Child band [2_000_000_000, i32::MAX]"
+    );
+
+    let decoded =
+        VariableReference::decode(child_ref).ok_or("Child-encoded ref must be decodable")?;
+    assert!(
+        matches!(decoded, VariableReference::Child { .. }),
+        "Deep-frame placeholder child ref {child_ref} must decode as Child; got: {decoded:?}"
+    );
+
+    // Also verify the lower index variant (index=0, used for @_).
+    let child_ref_0 = VariableReference::Child { parent: deep_scope_wire, index: 0 }
+        .encode()
+        .ok_or("VariableReference::Child index=0 encode must succeed")?;
+    assert!(
+        matches!(VariableReference::decode(child_ref_0), Some(VariableReference::Child { .. })),
+        "Child ref with index=0 for deep frame must also decode as Child"
+    );
+
+    Ok(())
+}

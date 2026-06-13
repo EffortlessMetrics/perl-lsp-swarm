@@ -245,7 +245,16 @@ impl DebugAdapter {
                         name: "$self".to_string(),
                         value: "blessed(My::Module)".to_string(),
                         type_: Some("hash".to_string()),
-                        variables_reference: variables_ref.saturating_mul(100) + 2,
+                        // Use the codec's Child band so the ref never lands in the
+                        // EvalResult band [1_000_000, 1_999_999_999] for deep frames.
+                        // Pre-fix formula `variables_ref * 100 + 2` collides when
+                        // variables_ref >= 10_000 (frame_id >= ~1_000). (#1445)
+                        variables_reference: VariableReference::Child {
+                            parent: variables_ref,
+                            index: 1,
+                        }
+                        .encode()
+                        .unwrap_or(0),
                         named_variables: Some(5),
                         indexed_variables: None,
                     },
@@ -253,7 +262,12 @@ impl DebugAdapter {
                         name: "@_".to_string(),
                         value: "array(size=0)".to_string(),
                         type_: Some("array".to_string()),
-                        variables_reference: variables_ref.saturating_mul(100) + 1,
+                        variables_reference: VariableReference::Child {
+                            parent: variables_ref,
+                            index: 0,
+                        }
+                        .encode()
+                        .unwrap_or(0),
                         named_variables: None,
                         indexed_variables: Some(0),
                     },
