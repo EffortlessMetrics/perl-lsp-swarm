@@ -110,6 +110,13 @@ fn walk_security_node(
                 signal_shadowed
             }
         }
+        NodeKind::NestedVariableList { items } => {
+            // Recurse into nested variable list items for security analysis.
+            for item in items {
+                walk_security_node(item, diagnostics, signal_shadowed);
+            }
+            signal_shadowed
+        }
         NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
             walk_security_node(condition, diagnostics, signal_shadowed);
             walk_security_node(then_branch, diagnostics, signal_shadowed);

@@ -161,12 +161,41 @@ impl<'a> Parser<'a> {
                 ))
             }
             Some(TokenKind::LeftParen) => {
-                self.consume_token()?;
-                let item = self.parse_variable_list_item()?;
+                let start = self.current_position();
+                self.consume_token()?; // consume (
+                let mut items = Vec::new();
+                while self.peek_kind() != Some(TokenKind::RightParen) && !self.tokens.is_eof() {
+                    items.push(self.parse_variable_list_item()?);
+                    if self.peek_kind() == Some(TokenKind::Comma) {
+                        self.consume_token()?; // consume ,
+                    } else if self.peek_kind() != Some(TokenKind::RightParen) {
+                        return Err(ParseError::syntax(
+                            "Expected comma or closing parenthesis in nested variable list",
+                            self.current_position(),
+                        ));
+                    }
+                }
                 self.expect_closing_delimiter(TokenKind::RightParen)?;
-                Ok(item)
+                let end = self.previous_position();
+                // Single-item group: return the item directly for backward compatibility.
+                // Multi-item group: wrap in NestedVariableList.
+                match items.len() {
+                    0 => Ok(Node::new(NodeKind::Undef, SourceLocation { start, end })),
+                    1 => {
+                        // Safe: we just checked len == 1
+                        let mut it = items.into_iter();
+                        match it.next() {
+                            Some(only) => Ok(only),
+                            None => Ok(Node::new(NodeKind::Undef, SourceLocation { start, end })),
+                        }
+                    }
+                    _ => Ok(Node::new(
+                        NodeKind::NestedVariableList { items },
+                        SourceLocation { start, end },
+                    )),
+                }
             }
-            _ => self.parse_variable(),
+            _ => self.parse_ternary(),
         }
     }
 

@@ -264,6 +264,11 @@ impl Node {
                 }
             }
 
+            NodeKind::NestedVariableList { items } => {
+                let item_sexps = items.iter().map(|i| i.to_sexp()).collect::<Vec<_>>().join(" ");
+                format!("(nested_variable_list {})", item_sexps)
+            }
+
             NodeKind::Variable { sigil, name } => {
                 // Format expected by bless parsing tests: (variable $ name)
                 format!("(variable {} {})", sigil, name)
@@ -868,6 +873,11 @@ impl Node {
                     f(init);
                 }
             }
+            NodeKind::NestedVariableList { items } => {
+                for item in items {
+                    f(item);
+                }
+            }
             NodeKind::VariableWithAttributes { variable, .. } => f(variable),
 
             // Binary operations
@@ -1116,6 +1126,11 @@ impl Node {
                 }
                 if let Some(init) = initializer {
                     f(init);
+                }
+            }
+            NodeKind::NestedVariableList { items } => {
+                for item in items {
+                    f(item);
                 }
             }
             NodeKind::VariableWithAttributes { variable, .. } => f(variable),
@@ -1600,6 +1615,17 @@ pub enum NodeKind {
         attributes: Vec<String>,
         /// Optional initializer for the entire variable list
         initializer: Option<Box<Node>>,
+    },
+
+    /// Nested variable list within a lexical list declaration.
+    ///
+    /// Represents a parenthesised group of variables inside a `my`/`our`/`state`
+    /// list declaration, such as the `($b, $c)` in `my ($a, ($b, $c)) = ...`.
+    /// A nested group with exactly one item is returned unwrapped (as the item
+    /// itself), so this variant only appears for two-or-more-item groups.
+    NestedVariableList {
+        /// The variables or nested lists inside the inner parentheses.
+        items: Vec<Node>,
     },
 
     /// Perl variable reference (scalar, array, hash, etc.) in Perl parsing workflow
@@ -2230,6 +2256,7 @@ impl NodeKind {
             NodeKind::ExpressionStatement { .. } => "ExpressionStatement",
             NodeKind::VariableDeclaration { .. } => "VariableDeclaration",
             NodeKind::VariableListDeclaration { .. } => "VariableListDeclaration",
+            NodeKind::NestedVariableList { .. } => "NestedVariableList",
             NodeKind::Variable { .. } => "Variable",
             NodeKind::VariableWithAttributes { .. } => "VariableWithAttributes",
             NodeKind::Assignment { .. } => "Assignment",
@@ -2340,6 +2367,7 @@ impl NodeKind {
         "MissingIdentifier",
         "MissingStatement",
         "NamedParameter",
+        "NestedVariableList",
         "No",
         "Number",
         "OptionalParameter",
@@ -2597,6 +2625,7 @@ mod tests {
                 attributes: vec![],
                 initializer: None,
             },
+            NodeKind::NestedVariableList { items: vec![] },
             NodeKind::Variable { sigil: String::new(), name: String::new() },
             NodeKind::VariableWithAttributes {
                 variable: Box::new(dummy_node()),

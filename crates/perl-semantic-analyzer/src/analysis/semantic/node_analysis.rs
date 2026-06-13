@@ -462,6 +462,13 @@ impl SemanticAnalyzer {
                 }
             }
 
+            NodeKind::NestedVariableList { items } => {
+                // Recurse into nested variable list items (e.g., the (, ) in my (, (, ))).
+                for item in items {
+                    self.analyze_node(item, scope_id);
+                }
+            }
+
             NodeKind::Ternary { condition, then_expr, else_expr } => {
                 // Handle conditional expressions: $x ? $y : $z
                 self.analyze_node(condition, scope_id);
