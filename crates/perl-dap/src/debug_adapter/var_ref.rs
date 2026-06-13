@@ -11,26 +11,41 @@
 //!
 //! Prior to this module, encoding was done with ad-hoc arithmetic scattered across
 //! multiple call sites. Issue #1219 identified a collision hazard: `frame_id * 10 + kind`
-//! (where kind ∈ [1,3]) can produce values that overlap early EvalResult counters.
+//! (where kind ∈ [1,3]) can produce values that overlap EvalResult counters.
 //!
-//! # Solution
+//! # Solution: pure-range disjoint bands
 //!
 //! This module provides a typed enum `VariableReference` with a single encode/decode
-//! codec. Each variant occupies a non-overlapping wire range:
+//! codec. Each variant occupies a **strictly disjoint** wire range:
 //!
 //! | Variant | Wire Range | Encoding |
 //! |---------|-----------|----------|
-//! | `Scope` | [1, 9_999_999] | `frame_id * 10 + kind` (kind ∈ [1,3]) |
-//! | `EvalResult` | [1_000_000, 2_000_000_000) | `1_000_000 + counter` |
+//! | `Scope` | [1, 999_999] | `frame_id * 10 + kind` (kind ∈ [1,3], frame_id ∈ [0, 99_999]) |
+//! | `EvalResult` | [1_000_000, 1_999_999_999] | `1_000_000 + counter` |
 //! | `Child` | [2_000_000_000, i32::MAX] | `2_000_000_000 + (parent << 16 \| index)` |
 //!
-//! # Decode ordering
+//! The bands are pairwise disjoint: no Scope wire value can equal any EvalResult or
+//! Child wire value, by construction. Decode is pure-range — it tests which band
+//! `raw` falls into, with no discriminant disambiguation required.
 //!
-//! Decode is **range-first and exhaustive**: Child → Scope → EvalResult.
-//! Child is checked first (highest base, unambiguous). Scope is checked next —
-//! the kind discriminant (`raw % 10 ∈ [1,3]`) provides unambiguous type identification
-//! even in the overlap zone [1_000_000..9_999_999] where Scope and EvalResult ranges
-//! meet. EvalResult catches remaining values in [1_000_000..2_000_000_000).
+//! # Scope frame_id bound
+//!
+//! Scope wire = `frame_id * 10 + kind` must stay in `[1, 999_999]`.
+//! With kind ∈ [1, 3], the maximum Scope wire is `99_999 * 10 + 3 = 999_993`.
+//! Therefore `frame_id` must be in `[0, 99_999]`.
+//! Encoding a Scope with `frame_id > 99_999` returns `None` (safely rejected,
+//! never produces a wire value in the EvalResult or Child band).
+//!
+//! # Decode ordering (pure range)
+//!
+//! 1. `raw <= 0` → `None`
+//! 2. `raw >= 2_000_000_000` → `Child`
+//! 3. `raw >= 1_000_000` → `EvalResult` (counter = raw − 1_000_000)
+//! 4. `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ [1,3]`, else `None`
+//! 5. Otherwise → `None`
+//!
+//! No value can match more than one band, so decode is unambiguous without any
+//! residue-based disambiguation.
 //!
 //! # Safety
 //!
@@ -89,28 +104,29 @@ impl TryFrom<i32> for ScopeKind {
 
 /// A typed, codec-backed reference into the DAP `variablesReference` wire space.
 ///
-/// ## Wire ranges (non-overlapping)
+/// ## Wire ranges (pairwise disjoint)
 ///
-/// - `Scope`:      [1, 9_999_999]          — `frame_id * 10 + kind` (kind ∈ [1,3])
-/// - `EvalResult`: [1_000_000, 2_000_000_000) — `1_000_000 + counter`
+/// - `Scope`:      [1, 999_999]            — `frame_id * 10 + kind` (frame_id ∈ [0, 99_999], kind ∈ [1,3])
+/// - `EvalResult`: [1_000_000, 1_999_999_999] — `1_000_000 + counter`
 /// - `Child`:      [2_000_000_000, i32::MAX]  — `2_000_000_000 + (parent << 16 | index)`
 ///
 /// Wire value 0 is reserved/invalid (DAP: 0 = "no children"). Negative values are
-/// invalid. `decode` returns `None` for any value outside the three ranges.
+/// invalid. Values in [1_000_000..2_000_000_000) not matching any band decode to None.
 ///
-/// ## Decode ordering
+/// ## Encode contract for Scope
 ///
-/// Decode tests Child → Scope → EvalResult. Child is checked first (highest base,
-/// no ambiguity). Scope is checked next using the kind discriminant (`raw % 10 ∈ [1,3]`),
-/// which unambiguously identifies Scope values even in the overlap zone with EvalResult.
-/// EvalResult catches the remaining [1_000_000..2_000_000_000) values.
+/// `encode()` returns `None` for `Scope` when `frame_id > 99_999` (would overflow into
+/// the EvalResult band). All other variants always succeed (using saturating arithmetic
+/// for extreme inputs).
 ///
 /// All fields are primitive scalar types, so `VariableReference` is `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VariableReference {
     /// A scope reference: variables in `kind` scope at stack frame `frame_id`.
+    ///
+    /// Valid range: `frame_id ∈ [0, 99_999]`.
     Scope {
-        /// Stack frame identifier (0-based).
+        /// Stack frame identifier (0-based; must be ≤ 99_999 for a valid wire encoding).
         frame_id: i32,
         /// Which scope within the frame.
         kind: ScopeKind,
@@ -129,68 +145,72 @@ pub enum VariableReference {
     },
 }
 
-/// Wire range constants.
+/// Wire range constants — pairwise disjoint bands.
+///
+/// Scope:      [SCOPE_MIN, SCOPE_MAX]              = [1, 999_999]
+/// EvalResult: [EVAL_BASE, EVAL_MAX]               = [1_000_000, 1_999_999_999]
+/// Child:      [CHILD_BASE, i32::MAX]              = [2_000_000_000, 2_147_483_647]
 const SCOPE_MIN: i32 = 1;
-const SCOPE_MAX: i32 = 9_999_999;
+const SCOPE_MAX: i32 = 999_999; // 99_999 * 10 + 3 = 999_993 < 999_999; max Scope wire
+const SCOPE_FRAME_ID_MAX: i32 = 99_999; // frame_id bound: 99_999 * 10 + 3 = 999_993 ≤ SCOPE_MAX
 const EVAL_BASE: i32 = 1_000_000;
+const EVAL_MAX: i32 = 1_999_999_999;
 const CHILD_BASE: i32 = 2_000_000_000;
 
 impl VariableReference {
     /// Encode this reference to an i32 wire value.
     ///
-    /// All arithmetic is saturating — extreme inputs clamp to i32::MAX rather than panicking.
-    /// Note: values that saturate may not round-trip through `decode`.
-    pub fn encode(&self) -> i32 {
+    /// Returns `None` only for `Scope` when `frame_id` is out of `[0, 99_999]` — this
+    /// prevents the Scope wire value from bleeding into the EvalResult band.
+    ///
+    /// For `EvalResult` and `Child`, saturating arithmetic is used; extreme inputs
+    /// clamp to i32::MAX rather than panicking.
+    pub fn encode(&self) -> Option<i32> {
         match self {
             VariableReference::Scope { frame_id, kind } => {
-                // Wire = frame_id * 10 + kind_disc (1-3)
+                // Scope wire = frame_id * 10 + kind_disc (1-3).
+                // frame_id must be in [0, SCOPE_FRAME_ID_MAX] to stay within the Scope band.
+                if *frame_id < 0 || *frame_id > SCOPE_FRAME_ID_MAX {
+                    return None;
+                }
                 let kind_disc = *kind as i32;
-                frame_id.saturating_mul(10).saturating_add(kind_disc)
+                // frame_id in [0, 99_999] and kind_disc in [1, 3]:
+                // max wire = 99_999 * 10 + 3 = 999_993 ≤ SCOPE_MAX ✓
+                Some(frame_id * 10 + kind_disc)
             }
             VariableReference::EvalResult { counter } => {
-                // Wire = 1_000_000 + counter
-                EVAL_BASE.saturating_add(*counter)
+                // Wire = 1_000_000 + counter. Saturating to stay non-negative.
+                Some(EVAL_BASE.saturating_add(*counter))
             }
             VariableReference::Child { parent, index } => {
                 // Wire = 2_000_000_000 + (parent << 16 | (index & 0xFFFF))
-                // parent is in the high bits, index (truncated to 16 bits) in the low bits.
-                // Use saturating arithmetic to avoid panicking on overflow.
+                // Clamp parent so the multiplication fits in i32.
                 let index_truncated = (*index & 0xFFFF) as i32;
-                // Saturating left-shift: clamp parent so multiplication fits in i32.
                 let parent_clamped = (*parent).clamp(i32::MIN / 65_536, i32::MAX / 65_536);
                 let parent_shifted = parent_clamped * 65_536;
                 let packed = parent_shifted.saturating_add(index_truncated);
-                CHILD_BASE.saturating_add(packed)
+                Some(CHILD_BASE.saturating_add(packed))
             }
         }
     }
 
     /// Decode a wire i32 value into a `VariableReference`.
     ///
-    /// Returns `None` if the value is:
-    /// - Zero (reserved; DAP "no children")
-    /// - Negative (invalid)
-    /// - In the Scope range but has an invalid kind discriminant (not 1, 2, or 3)
-    /// - Not in any of the three wire ranges
+    /// Uses **pure-range** classification against the three disjoint bands:
     ///
-    /// ## Decode ordering (range-first)
+    /// - `raw in [2_000_000_000, i32::MAX]` → `Child`
+    /// - `raw in [1_000_000, 1_999_999_999]` → `EvalResult{counter: raw - 1_000_000}`
+    /// - `raw in [1, 999_999]` → `Scope` if `raw % 10 ∈ {1,2,3}`, else `None`
+    /// - All others (0, negative, gaps) → `None`
     ///
-    /// 1. **Child** (`raw >= 2_000_000_000`): checked first — highest range, no ambiguity.
-    /// 2. **Scope** (`1 <= raw <= 9_999_999`): checked second — kind discriminant (`raw % 10`)
-    ///    must be 1, 2, or 3 (Locals/Package/Globals). If the discriminant is invalid,
-    ///    the value is NOT a Scope; fall through to EvalResult.
-    ///    Note: Scope range [1..9_999_999] overlaps EvalResult range [1_000_000..),
-    ///    but values with a valid Scope kind discriminant are always Scope. EvalResult
-    ///    counters that would produce overlapping wire values are reserved by design.
-    /// 3. **EvalResult** (`1_000_000 <= raw < 2_000_000_000`): matches values in the
-    ///    EvalResult base range that did not decode as Scope.
-    /// 4. **None**: all other values (0, negative, > 2_000_000_000 with no Child match).
+    /// Because the bands are pairwise disjoint, no value can match more than one case.
+    /// There is no residue-based disambiguation between bands.
     pub fn decode(raw: i32) -> Option<Self> {
         if raw <= 0 {
             return None;
         }
 
-        // 1. Child range: [2_000_000_000, i32::MAX] — checked first (highest base)
+        // 1. Child band: [2_000_000_000, i32::MAX]
         if raw >= CHILD_BASE {
             let packed = raw - CHILD_BASE;
             let parent = packed >> 16;
@@ -198,27 +218,22 @@ impl VariableReference {
             return Some(VariableReference::Child { parent, index });
         }
 
-        // 2. Scope range: [1, 9_999_999] — kind discriminant validates unambiguously.
-        //    Scope takes priority over EvalResult in the overlap zone [1_000_000..9_999_999].
-        //    EvalResult wire values that end in 1/2/3 in this zone are reserved by the
-        //    encoding scheme (counter values that would collide are not allocated).
-        if (SCOPE_MIN..=SCOPE_MAX).contains(&raw) {
-            let kind_disc = raw % 10;
-            let frame_id = raw / 10;
-            if let Ok(kind) = ScopeKind::try_from(kind_disc) {
-                return Some(VariableReference::Scope { frame_id, kind });
-            }
-            // Invalid kind discriminant: not a Scope. Fall through to EvalResult check.
-        }
-
-        // 3. EvalResult range: [1_000_000, 2_000_000_000) — values not classified as Scope.
-        //    Wire values with kind_disc ∈ {0, 4..9} in [1_000_000..9_999_999] reach here.
-        if (EVAL_BASE..CHILD_BASE).contains(&raw) {
+        // 2. EvalResult band: [1_000_000, 1_999_999_999]
+        if (EVAL_BASE..=EVAL_MAX).contains(&raw) {
             let counter = raw - EVAL_BASE;
             return Some(VariableReference::EvalResult { counter });
         }
 
-        // Out of all ranges
+        // 3. Scope band: [1, 999_999] — kind discriminant must be 1, 2, or 3.
+        if (SCOPE_MIN..=SCOPE_MAX).contains(&raw) {
+            let kind_disc = raw % 10;
+            let frame_id = raw / 10;
+            let kind = ScopeKind::try_from(kind_disc).ok()?;
+            return Some(VariableReference::Scope { frame_id, kind });
+        }
+
+        // Gap or out-of-range (e.g. [2_000_000_000, i32::MAX] already handled above,
+        // [1_000_000..2_000_000_000) above 1_999_999_999 falls here → None).
         None
     }
 }
@@ -244,27 +259,57 @@ mod codec_unit_tests {
     #[test]
     fn scope_encode_decode_basic() {
         let s = VariableReference::Scope { frame_id: 5000, kind: ScopeKind::Locals };
-        assert_eq!(s.encode(), 50_001);
+        let wire = s.encode().expect("frame_id=5000 is in [0,99_999]");
+        assert_eq!(wire, 50_001);
         assert_eq!(VariableReference::decode(50_001), Some(s));
     }
 
     #[test]
-    fn evalresult_encode_decode_basic() {
-        // counter=0 → wire 1_000_000 (ends in 0, kind_disc=0 → invalid Scope → EvalResult)
-        let e = VariableReference::EvalResult { counter: 0 };
-        assert_eq!(e.encode(), 1_000_000);
-        assert_eq!(VariableReference::decode(1_000_000), Some(e));
+    fn evalresult_encode_decode_roundtrip() {
+        // counter=0: wire 1_000_000 (EvalResult band)
+        let e0 = VariableReference::EvalResult { counter: 0 };
+        let w0 = e0.encode().unwrap();
+        assert_eq!(w0, 1_000_000);
+        assert_eq!(VariableReference::decode(w0), Some(e0));
 
-        // counter=10 → wire 1_000_010 (ends in 0, kind_disc=0 → invalid Scope → EvalResult)
-        let e2 = VariableReference::EvalResult { counter: 10 };
-        assert_eq!(e2.encode(), 1_000_010);
-        assert_eq!(VariableReference::decode(1_000_010), Some(e2));
+        // counter=1: wire 1_000_001 — previously misclassified as Scope
+        let e1 = VariableReference::EvalResult { counter: 1 };
+        let w1 = e1.encode().unwrap();
+        assert_eq!(w1, 1_000_001);
+        assert_eq!(VariableReference::decode(w1), Some(e1), "counter=1 must decode as EvalResult");
+
+        // counter=3: wire 1_000_003 — kind_disc=3 is Globals under old logic
+        let e3 = VariableReference::EvalResult { counter: 3 };
+        let w3 = e3.encode().unwrap();
+        assert_eq!(w3, 1_000_003);
+        assert_eq!(VariableReference::decode(w3), Some(e3), "counter=3 must decode as EvalResult");
+    }
+
+    #[test]
+    fn scope_frame_id_max_boundary() {
+        // frame_id=99_999 is valid; wire = 999_993 (Locals)
+        let s_max = VariableReference::Scope { frame_id: 99_999, kind: ScopeKind::Locals };
+        let wire = s_max.encode().expect("frame_id=99_999 is the max valid frame_id");
+        assert_eq!(wire, 999_991);
+        assert_eq!(VariableReference::decode(wire), Some(s_max));
+    }
+
+    #[test]
+    fn scope_frame_id_over_max_returns_none() {
+        // frame_id=100_000 would put wire at 1_000_001 — in the EvalResult band
+        let over = VariableReference::Scope { frame_id: 100_000, kind: ScopeKind::Locals };
+        assert_eq!(
+            over.encode(),
+            None,
+            "frame_id=100_000 must be rejected (would overflow into EvalResult band)"
+        );
     }
 
     #[test]
     fn child_encode_decode_base() {
         let c = VariableReference::Child { parent: 0, index: 0 };
-        assert_eq!(c.encode(), 2_000_000_000);
+        let wire = c.encode().unwrap();
+        assert_eq!(wire, 2_000_000_000);
         assert_eq!(VariableReference::decode(2_000_000_000), Some(c));
     }
 
@@ -281,7 +326,18 @@ mod codec_unit_tests {
 
     #[test]
     fn decode_invalid_scope_kind_none() {
-        // frame_id=99_999, kind_disc=9 → None
+        // 999_999: frame_id=99_999, kind_disc=9 → None (invalid kind)
         assert_eq!(VariableReference::decode(999_999), None);
+    }
+
+    #[test]
+    fn bands_are_disjoint_no_scope_wire_in_eval_range() {
+        // No valid Scope encoding can fall in [1_000_000, 1_999_999_999].
+        // Max Scope wire = 99_999 * 10 + 3 = 999_993 < 1_000_000.
+        let max_scope_wire = SCOPE_FRAME_ID_MAX * 10 + 3;
+        assert!(
+            max_scope_wire < EVAL_BASE,
+            "Scope max wire {max_scope_wire} must be < EvalResult base {EVAL_BASE}"
+        );
     }
 }
