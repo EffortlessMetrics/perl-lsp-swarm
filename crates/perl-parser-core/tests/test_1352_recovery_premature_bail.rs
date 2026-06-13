@@ -400,3 +400,57 @@ fn test_error_is_recorded_after_recovery() {
     let has_foo = has_subroutine(src, "foo");
     assert!(has_foo, "Error must be recorded, but subroutine must still be recovered");
 }
+
+// ============================================================================
+// Reviewer-deep regression guards — added by deep review of PR #1456
+// ============================================================================
+
+/// **Regression: valid multi-statement block (non-hash first stmt) must not be truncated**
+///
+/// The `unclosed_after_inner_error` guard in parse_hash_or_block_inner must NOT fire
+/// for a valid multi-statement block where the first statement does NOT produce inner
+/// errors during parse_expression().
+///
+/// Example: `transaction { my $x = 1; do_work(); }` — the block's first expression
+/// `my $x = 1` succeeds without errors, so had_inner_errors=false and the guard does
+/// not fire. The multi-statement block loop runs correctly.
+#[test]
+fn test_valid_multi_stmt_block_not_truncated() {
+    // A bare-function-style call where the {} argument is a multi-statement block
+    let src = "transaction { my $x = 1; do_work($x); commit(); };";
+    let errs = error_count(src);
+    assert_eq!(errs, 0, "Valid multi-stmt block must have 0 errors, got {}", errs);
+    let count = statement_count(src);
+    assert_eq!(count, 1, "Must parse as 1 statement (the transaction call), got {}", count);
+}
+
+/// **Regression: sub body with multiple statements must not be truncated**
+///
+/// Sub bodies use parse_block(), not parse_hash_or_block_inner(), so this is a
+/// belt-and-suspenders regression guard that also confirms the scoping of the fix.
+#[test]
+fn test_sub_body_multi_stmt_regression() {
+    let src = "sub compute { my $x = 1; my $y = 2; return $x + $y; }";
+    let errs = error_count(src);
+    assert_eq!(errs, 0, "Sub with multi-stmt body must have 0 errors, got {}", errs);
+    let count = statement_count(src);
+    assert_eq!(count, 1, "Sub must be 1 top-level statement, got {}", count);
+    let has_compute = has_subroutine(src, "compute");
+    assert!(has_compute, "Subroutine 'compute' must be in AST");
+}
+
+/// **Regression: valid block with inner expression error still recovers gracefully**
+///
+/// Verifies the `unclosed_after_inner_error` arm: when inner errors DID occur
+/// (e.g., nested unclosed `[`) AND peek is `;`, the guard fires correctly and
+/// the following declarations appear as separate top-level statements.
+#[test]
+fn test_inner_error_plus_semicolon_triggers_recovery() {
+    // my $x = { { { { [1   — 5 levels deep unclosed, then ; sub
+    // The unclosed_after_inner_error guard must fire here (not unclosed_hash)
+    let src = "my $x = { { { { [1; sub recovered {}";
+    let has_sub = has_subroutine(src, "recovered");
+    assert!(has_sub, "'recovered' sub must appear as separate statement after deeply-nested error");
+    let errs = error_count(src);
+    assert!(errs >= 1, "Deeply nested unclosed must record at least one error");
+}
