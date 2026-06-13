@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -104,7 +105,7 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
     let ripr = read_ripr_plus_receipt(&args.ripr_receipt, head);
     let ripr_pr = read_ripr_pr_receipt(&args.ripr_pr_receipt, head);
     let review = read_review_guidance_receipt(&args.review_receipt, head);
-    let exceptions = read_exception_policy(&args.exception_policy, today());
+    let exceptions = read_exception_policy(args, today());
     let mut next_actions = Vec::new();
     next_actions.extend(exceptions.actions.clone());
 
@@ -158,7 +159,7 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
     if ripr.status == "present" {
         match ripr.unresolved {
             Some(count) if count > 0 => {
-                next_actions.push(ripr_total_unresolved_action(count, args))
+                next_actions.push(ripr_total_unresolved_action(count, &ripr, args))
             }
             None => next_actions.push(ripr_total_unknown_action(args)),
             _ => {}
@@ -211,6 +212,7 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
             "codecov_config": display_path(&args.codecov),
             "codecov_patch_status": codecov_patch_status,
             "codecov_project_status": codecov_project_status,
+            "recommended_project_clusters": coverage.recommended_project_clusters,
         },
         "ripr_plus": {
             "status": ripr.status,
@@ -218,6 +220,7 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
             "receipt_head": ripr.receipt_head,
             "expected_head": head,
             "unresolved": ripr.unresolved,
+            "recommended_first_clusters": ripr.recommended_first_clusters,
         },
         "ripr_pr": {
             "status": ripr_pr.status,
@@ -248,7 +251,7 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
 fn evaluate_patch_coverage(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> {
     let codecov_status = read_codecov_patch_status(&args.codecov)?;
     let coverage = read_coverage_receipt(&args.coverage_receipt, head);
-    let exceptions = read_exception_policy(&args.exception_policy, today());
+    let exceptions = read_exception_policy(args, today());
     let mut next_actions = Vec::new();
     next_actions.extend(exceptions.actions.clone());
 
@@ -320,7 +323,7 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
     let ripr = read_ripr_plus_receipt(&args.ripr_receipt, head);
     let ripr_pr = read_ripr_pr_receipt(&args.ripr_pr_receipt, head);
     let review = read_review_guidance_receipt(&args.review_receipt, head);
-    let exceptions = read_exception_policy(&args.exception_policy, today());
+    let exceptions = read_exception_policy(args, today());
     let mut next_actions = Vec::new();
     next_actions.extend(exceptions.actions.clone());
 
@@ -330,7 +333,9 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
     if ripr_pr.status != "present" {
         next_actions.push(ripr_pr_receipt_action(&ripr_pr, head, args));
     }
-    if review.status != "present" {
+    let review_receipt_blocks_without_new_gaps =
+        matches!(review.status.as_str(), "missing" | "invalid" | "stale");
+    if review_receipt_blocks_without_new_gaps {
         next_actions.push(ripr_review_receipt_action(&review, head, args));
     }
 
@@ -338,7 +343,11 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
         match ripr_pr.new_unresolved {
             Some(count) if count > 0 => {
                 next_actions.push(new_ripr_gap_action(count, &ripr_pr, &review, args));
-                if review.status == "present" && review.top_gaps.is_empty() {
+                if review.status != "present" {
+                    if !review_receipt_blocks_without_new_gaps {
+                        next_actions.push(ripr_review_receipt_action(&review, head, args));
+                    }
+                } else if review.top_gaps.is_empty() {
                     next_actions.push(ripr_review_guidance_gap_action(&review, head, args));
                 }
             }
@@ -401,6 +410,7 @@ struct CoverageReceipt {
     scope: Option<String>,
     patch_files: Vec<Value>,
     top_files: Vec<Value>,
+    recommended_project_clusters: Vec<Value>,
 }
 
 #[derive(Debug)]
@@ -408,6 +418,7 @@ struct RiprPlusReceipt {
     status: String,
     receipt_head: Option<String>,
     unresolved: Option<u64>,
+    recommended_first_clusters: Vec<Value>,
 }
 
 #[derive(Debug)]
@@ -458,7 +469,13 @@ struct ExceptionRequirements {
 #[derive(Debug, Deserialize)]
 struct QualityException {
     id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    scope: String,
     owner: String,
+    #[serde(default)]
+    issue: Option<String>,
     reason: String,
     final_target: String,
     evidence: String,
@@ -474,7 +491,8 @@ enum JsonReceipt {
     Present(Value),
 }
 
-fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvaluation {
+fn read_exception_policy(args: &QualityGateArgs, today: NaiveDate) -> ExceptionPolicyEvaluation {
+    let path = &args.exception_policy;
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(_) => {
@@ -487,7 +505,7 @@ fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvalua
                     "active": [],
                 }),
                 actions: vec![quality_exception_policy_action(
-                    path,
+                    args,
                     "missing",
                     "quality exception policy ledger is missing",
                 )],
@@ -507,7 +525,7 @@ fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvalua
                     "active": [],
                 }),
                 actions: vec![quality_exception_policy_action(
-                    path,
+                    args,
                     "invalid_toml",
                     "quality exception policy ledger is not valid TOML",
                 )],
@@ -522,7 +540,7 @@ fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvalua
 
     if policy.schema_version != 1 || policy.policy != "quality-gate-exceptions" {
         actions.push(quality_exception_policy_action(
-            path,
+            args,
             "invalid_header",
             "quality exception policy must use schema_version = 1 and policy = \"quality-gate-exceptions\"",
         ));
@@ -532,7 +550,7 @@ fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvalua
         || policy.updated.trim().is_empty()
     {
         actions.push(quality_exception_policy_action(
-            path,
+            args,
             "invalid_metadata",
             "quality exception policy must have owner, status = \"active\", and updated",
         ));
@@ -541,7 +559,7 @@ fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvalua
     for exception in &policy.exceptions {
         let validation_errors = exception_validation_errors(exception);
         if !validation_errors.is_empty() {
-            actions.push(quality_exception_invalid_action(path, exception, validation_errors));
+            actions.push(quality_exception_invalid_action(args, exception, validation_errors));
             continue;
         }
 
@@ -550,7 +568,7 @@ fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvalua
         let created = parse_policy_date(&exception.created);
         if review_after.is_none() || expires.is_none() || created.is_none() {
             actions.push(quality_exception_invalid_action(
-                path,
+                args,
                 exception,
                 vec!["created, review_after, and expires must use YYYY-MM-DD".to_string()],
             ));
@@ -561,7 +579,7 @@ fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvalua
             continue;
         };
         if expires < today {
-            actions.push(quality_exception_expired_action(path, exception, expires, today));
+            actions.push(quality_exception_expired_action(args, exception, expires, today));
             continue;
         }
 
@@ -573,7 +591,7 @@ fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvalua
         };
         if review_after <= today {
             actions.push(quality_exception_review_due_action(
-                path,
+                args,
                 exception,
                 review_after,
                 today,
@@ -591,7 +609,7 @@ fn read_exception_policy(path: &Path, today: NaiveDate) -> ExceptionPolicyEvalua
         .collect::<Vec<_>>();
     if !missing_required.is_empty() {
         actions.push(quality_exception_required_missing_action(
-            path,
+            args,
             &missing_required,
             &policy.requirements.required_active,
         ));
@@ -620,6 +638,8 @@ fn exception_validation_errors(exception: &QualityException) -> Vec<String> {
     let mut errors = Vec::new();
     for (field, value) in [
         ("id", exception.id.as_str()),
+        ("kind", exception.kind.as_str()),
+        ("scope", exception.scope.as_str()),
         ("owner", exception.owner.as_str()),
         ("reason", exception.reason.as_str()),
         ("final_target", exception.final_target.as_str()),
@@ -632,6 +652,9 @@ fn exception_validation_errors(exception: &QualityException) -> Vec<String> {
         if value.trim().is_empty() {
             errors.push(format!("{field} is required"));
         }
+    }
+    if !exception.kind.trim().is_empty() && exception.kind != "temporary_burndown" {
+        errors.push("kind must be temporary_burndown".to_string());
     }
     errors
 }
@@ -651,7 +674,10 @@ fn quality_exception_receipt_entry(
 ) -> Value {
     json!({
         "id": exception.id,
+        "kind": exception.kind,
+        "scope": exception.scope,
         "owner": exception.owner,
+        "issue": exception.issue,
         "reason": exception.reason,
         "final_target": exception.final_target,
         "evidence": exception.evidence,
@@ -673,6 +699,7 @@ fn read_coverage_receipt(path: &Path, expected_head: &str) -> CoverageReceipt {
             scope: None,
             patch_files: Vec::new(),
             top_files: Vec::new(),
+            recommended_project_clusters: Vec::new(),
         };
     };
     let Ok(payload) = serde_json::from_str::<Value>(&raw) else {
@@ -685,6 +712,7 @@ fn read_coverage_receipt(path: &Path, expected_head: &str) -> CoverageReceipt {
             scope: None,
             patch_files: Vec::new(),
             top_files: Vec::new(),
+            recommended_project_clusters: Vec::new(),
         };
     };
 
@@ -704,6 +732,11 @@ fn read_coverage_receipt(path: &Path, expected_head: &str) -> CoverageReceipt {
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(actionable_file_gap).take(3).collect::<Vec<_>>())
         .unwrap_or_default();
+    let recommended_project_clusters = payload
+        .get("recommended_project_clusters")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().take(3).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
 
     CoverageReceipt {
         status: status.to_string(),
@@ -714,6 +747,7 @@ fn read_coverage_receipt(path: &Path, expected_head: &str) -> CoverageReceipt {
         scope,
         patch_files,
         top_files,
+        recommended_project_clusters,
     }
 }
 
@@ -729,20 +763,32 @@ fn read_json_receipt(path: &Path) -> JsonReceipt {
 
 fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
     match read_json_receipt(path) {
-        JsonReceipt::Missing => {
-            RiprPlusReceipt { status: "missing".to_string(), receipt_head: None, unresolved: None }
-        }
-        JsonReceipt::Invalid => {
-            RiprPlusReceipt { status: "invalid".to_string(), receipt_head: None, unresolved: None }
-        }
+        JsonReceipt::Missing => RiprPlusReceipt {
+            status: "missing".to_string(),
+            receipt_head: None,
+            unresolved: None,
+            recommended_first_clusters: Vec::new(),
+        },
+        JsonReceipt::Invalid => RiprPlusReceipt {
+            status: "invalid".to_string(),
+            receipt_head: None,
+            unresolved: None,
+            recommended_first_clusters: Vec::new(),
+        },
         JsonReceipt::Present(payload) => {
             let receipt_head = payload.get("head").and_then(Value::as_str).map(ToOwned::to_owned);
             let status =
                 if receipt_head.as_deref() == Some(expected_head) { "present" } else { "stale" };
+            let recommended_first_clusters = payload
+                .get("recommended_first_clusters")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().take(3).cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
             RiprPlusReceipt {
                 status: status.to_string(),
                 receipt_head,
                 unresolved: payload.get("unresolved").and_then(Value::as_u64),
+                recommended_first_clusters,
             }
         }
     }
@@ -802,10 +848,13 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
         JsonReceipt::Present(payload) => {
             let receipt_head_sha =
                 payload.get("head_sha").and_then(Value::as_str).map(ToOwned::to_owned);
-            let mut status = if receipt_head_sha.as_deref() == Some(expected_head) {
-                "present"
-            } else {
+            let producer_status = payload.get("status").and_then(Value::as_str);
+            let mut status = if receipt_head_sha.as_deref() != Some(expected_head) {
                 "stale"
+            } else if matches!(producer_status, Some("error" | "incomplete")) {
+                producer_status.unwrap_or("incomplete")
+            } else {
+                "present"
             }
             .to_string();
             let top_gaps =
@@ -1024,8 +1073,8 @@ fn patch_coverage_below_target_action(
     coverage: &CoverageReceipt,
     args: &QualityGateArgs,
 ) -> Value {
-    let top_files =
-        if coverage.patch_files.is_empty() { &coverage.top_files } else { &coverage.patch_files };
+    let uses_changed_files = !coverage.patch_files.is_empty();
+    let top_files = if uses_changed_files { &coverage.patch_files } else { &coverage.top_files };
     let path = coverage
         .patch_files
         .first()
@@ -1041,6 +1090,7 @@ fn patch_coverage_below_target_action(
         "current": round2(patch),
         "target": PATCH_TARGET,
         "source": source,
+        "file_scope": if uses_changed_files { "changed_files" } else { "project_fallback" },
         "top_files": top_files,
         "suggested_test": "Prefer focused tests for error paths, boundary conditions, config parsing, serialization, cancellation, and output contracts.",
         "repair": "Add behavior-oriented tests for the uncovered changed-code surfaces, then refresh coverage evidence.",
@@ -1080,6 +1130,7 @@ fn project_coverage_below_target_action(
         "current": round2(project),
         "target": PROJECT_TARGET,
         "top_files": coverage.top_files,
+        "recommended_project_clusters": coverage.recommended_project_clusters.clone(),
         "suggested_test": "Prioritize public API boundaries, error handling, config parsing, serialization, cancellation, provider decisions, and report generators.",
         "repair": "Burn down meaningful uncovered behavior until workspace project coverage reaches the final target, then refresh coverage evidence.",
         "verify": quality_gate_command(args, true, args.patch_coverage),
@@ -1126,37 +1177,37 @@ fn codecov_project_policy_action(status: &str, args: &QualityGateArgs) -> Value 
     })
 }
 
-fn quality_exception_policy_action(path: &Path, reason: &str, repair: &str) -> Value {
+fn quality_exception_policy_action(args: &QualityGateArgs, reason: &str, repair: &str) -> Value {
     json!({
         "kind": "quality_exception_policy_not_current",
         "blocking": true,
-        "path": display_path(path),
+        "path": display_path(&args.exception_policy),
         "reason": reason,
         "repair": repair,
-        "verify": quality_exception_policy_command(path, true),
-        "receipt": quality_exception_policy_command(path, false),
+        "verify": quality_gate_command(args, true, args.patch_coverage),
+        "receipt": quality_gate_command(args, false, args.patch_coverage),
     })
 }
 
 fn quality_exception_invalid_action(
-    path: &Path,
+    args: &QualityGateArgs,
     exception: &QualityException,
     errors: Vec<String>,
 ) -> Value {
     json!({
         "kind": "quality_exception_invalid",
         "blocking": true,
-        "path": display_path(path),
+        "path": display_path(&args.exception_policy),
         "id": exception.id,
         "reason": errors.join("; "),
-        "repair": "Fill owner, reason, final_target, evidence, removal_criteria, review_after, and expires for the temporary quality exception.",
-        "verify": quality_exception_policy_command(path, true),
-        "receipt": quality_exception_policy_command(path, false),
+        "repair": "Fill kind = \"temporary_burndown\", scope, owner, reason, final_target, evidence, removal_criteria, review_after, and expires for the temporary quality exception.",
+        "verify": quality_gate_command(args, true, args.patch_coverage),
+        "receipt": quality_gate_command(args, false, args.patch_coverage),
     })
 }
 
 fn quality_exception_expired_action(
-    path: &Path,
+    args: &QualityGateArgs,
     exception: &QualityException,
     expires: NaiveDate,
     today: NaiveDate,
@@ -1164,17 +1215,17 @@ fn quality_exception_expired_action(
     json!({
         "kind": "quality_exception_expired",
         "blocking": true,
-        "path": display_path(path),
+        "path": display_path(&args.exception_policy),
         "id": exception.id,
         "reason": format!("expires {expires} is before {today}"),
         "repair": "Remove the temporary quality exception by completing its removal criteria, or replace it with a fresh policy PR that names new evidence and expiry.",
-        "verify": quality_exception_policy_command(path, true),
-        "receipt": quality_exception_policy_command(path, false),
+        "verify": quality_gate_command(args, true, args.patch_coverage),
+        "receipt": quality_gate_command(args, false, args.patch_coverage),
     })
 }
 
 fn quality_exception_review_due_action(
-    path: &Path,
+    args: &QualityGateArgs,
     exception: &QualityException,
     review_after: NaiveDate,
     today: NaiveDate,
@@ -1184,30 +1235,30 @@ fn quality_exception_review_due_action(
     json!({
         "kind": "quality_exception_review_due",
         "blocking": blocking,
-        "path": display_path(path),
+        "path": display_path(&args.exception_policy),
         "id": exception.id,
         "reason": format!("review_after {review_after} is on or before {today}"),
         "repair": "Re-review the temporary quality exception, update current evidence, and either remove it or move review_after/expires in a policy PR.",
-        "verify": quality_exception_policy_command(path, true),
-        "receipt": quality_exception_policy_command(path, false),
+        "verify": quality_gate_command(args, true, args.patch_coverage),
+        "receipt": quality_gate_command(args, false, args.patch_coverage),
     })
 }
 
 fn quality_exception_required_missing_action(
-    path: &Path,
+    args: &QualityGateArgs,
     missing: &[String],
     required: &[String],
 ) -> Value {
     json!({
         "kind": "quality_exception_required_missing",
         "blocking": true,
-        "path": display_path(path),
+        "path": display_path(&args.exception_policy),
         "reason": format!("missing required active temporary quality exception(s): {}", missing.join(", ")),
         "missing": missing,
         "required_active": required,
         "repair": "Document every transitional burn-down exception in policy/quality-gate-exceptions.toml, or remove it from required_active after the target has been met and enforcement is final.",
-        "verify": quality_exception_policy_command(path, true),
-        "receipt": quality_exception_policy_command(path, false),
+        "verify": quality_gate_command(args, true, args.patch_coverage),
+        "receipt": quality_gate_command(args, false, args.patch_coverage),
     })
 }
 
@@ -1229,13 +1280,18 @@ fn ripr_receipt_action(
     })
 }
 
-fn ripr_total_unresolved_action(count: u64, args: &QualityGateArgs) -> Value {
+fn ripr_total_unresolved_action(
+    count: u64,
+    ripr: &RiprPlusReceipt,
+    args: &QualityGateArgs,
+) -> Value {
     json!({
         "kind": "ripr_total_unresolved",
         "blocking": true,
         "path": display_path(&args.ripr_receipt),
         "unresolved": count,
         "reason": "repo-wide RIPR+ unresolved total is above zero",
+        "recommended_first_clusters": ripr.recommended_first_clusters.clone(),
         "repair": "Burn down the remaining repo-wide RIPR+ gap cluster with focused tests, then refresh the RIPR+ receipt.",
         "verify": ripr_plus_command(args, true),
         "receipt": ripr_plus_command(args, false),
@@ -1481,6 +1537,14 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
             }
         }
         if let Some(files) = action.get("top_files").and_then(Value::as_array) {
+            let coverage_file_label = match (kind, action.get("file_scope").and_then(Value::as_str))
+            {
+                ("patch_coverage_below_target", Some("changed_files")) => "changed coverage file",
+                ("patch_coverage_below_target", Some("project_fallback")) => {
+                    "project fallback coverage file"
+                }
+                _ => "coverage file",
+            };
             for file in files {
                 let path = file.get("path").and_then(Value::as_str).unwrap_or("unknown");
                 let samples = file
@@ -1496,9 +1560,16 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
                     })
                     .unwrap_or_default();
                 markdown.push_str(&format!(
-                    "- coverage file: `{path}` sample uncovered lines: {samples}\n"
+                    "- {coverage_file_label}: `{path}` sample uncovered lines: {samples}\n"
                 ));
             }
+        }
+        if let Some(clusters) = action.get("recommended_first_clusters").and_then(Value::as_array) {
+            render_recommended_clusters(&mut markdown, "ripr cluster", clusters);
+        }
+        if let Some(clusters) = action.get("recommended_project_clusters").and_then(Value::as_array)
+        {
+            render_recommended_clusters(&mut markdown, "coverage cluster", clusters);
         }
         if let Some(gaps) = action.get("top_gaps").and_then(Value::as_array) {
             for gap in gaps {
@@ -1520,6 +1591,47 @@ fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
     }
 
     Ok(markdown)
+}
+
+fn render_recommended_clusters(markdown: &mut String, label: &str, clusters: &[Value]) {
+    for cluster in clusters {
+        let name = cluster.get("name").and_then(Value::as_str).unwrap_or("unknown");
+        let reason = cluster.get("reason").and_then(Value::as_str).unwrap_or("unspecified");
+        let metrics =
+            ["score", "active_file_count", "gap_kind_count", "file_count", "uncovered_line_count"]
+                .iter()
+                .filter_map(|metric| {
+                    cluster
+                        .get(*metric)
+                        .and_then(Value::as_u64)
+                        .map(|value| format!("{metric}: {value}"))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+        let metrics = if metrics.is_empty() { String::new() } else { format!(" ({metrics})") };
+        markdown.push_str(&format!("- {label}: `{name}`{metrics} reason `{reason}`\n"));
+        render_cluster_examples(markdown, label, "example file", cluster.get("example_files"));
+        render_cluster_examples(
+            markdown,
+            label,
+            "example gap kind",
+            cluster.get("example_gap_kinds"),
+        );
+    }
+}
+
+fn render_cluster_examples(
+    markdown: &mut String,
+    label: &str,
+    example_label: &str,
+    examples: Option<&Value>,
+) {
+    let Some(examples) = examples.and_then(Value::as_array) else {
+        return;
+    };
+    for example in examples.iter().filter_map(Value::as_str) {
+        markdown.push_str(&format!("- {label} {example_label}: `{example}`\n"));
+    }
 }
 
 fn receipt_freshness_summary(receipt: &Value) -> String {
@@ -1630,20 +1742,16 @@ fn ripr_review_command(args: &QualityGateArgs, check: bool) -> String {
     command
 }
 
-fn quality_exception_policy_command(path: &Path, check: bool) -> String {
-    let mut command = format!(
-        "rtk cargo xtask quality-gate --mode enforce-patch-coverage --exception-policy {} --coverage-receipt target/receipts/quality/coverage-baseline.json --codecov codecov.yml --receipt target/receipts/quality/quality-gate.json --summary target/receipts/quality/quality-gate.md",
-        path.display()
-    );
-    if check {
-        command.push_str(" --check");
-    }
-    command
-}
-
 fn assert_current(path: &Path, expected: &str, label: &str) -> Result<()> {
-    let existing =
-        fs::read_to_string(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    let existing = match fs::read_to_string(path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            bail!("{label} is missing: {}", path.display());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {label} {}", path.display()));
+        }
+    };
     if normalize(&existing) != normalize(expected) {
         bail!("{label} is stale: {}", path.display());
     }
@@ -1686,4 +1794,134 @@ fn display_path(path: &Path) -> String {
 
 fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn coverage_receipt_preserves_recommended_project_clusters() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("coverage-baseline.json");
+        let head = "cluster-head";
+        write_text(
+            &path,
+            &render_json(&json!({
+                "head": head,
+                "scope": "workspace",
+                "coverage": {
+                    "patch": 99.0,
+                    "project": 94.0
+                },
+                "recommended_project_clusters": [
+                    {
+                        "name": "proof-infrastructure",
+                        "file_count": 2,
+                        "uncovered_line_count": 37,
+                        "reason": "Coverage proof, quality-gate, workflow, and policy surfaces are owned by this lane.",
+                        "example_files": ["xtask/src/tasks/quality_gate.rs"]
+                    }
+                ]
+            }))?,
+        )?;
+
+        let receipt = read_coverage_receipt(&path, head);
+
+        assert_eq!(receipt.status, "present");
+        assert_eq!(
+            receipt
+                .recommended_project_clusters
+                .first()
+                .and_then(|cluster| cluster.get("name"))
+                .and_then(Value::as_str),
+            Some("proof-infrastructure")
+        );
+        assert_eq!(
+            receipt
+                .recommended_project_clusters
+                .first()
+                .and_then(|cluster| cluster.get("uncovered_line_count"))
+                .and_then(Value::as_u64),
+            Some(37)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_plus_receipt_preserves_recommended_first_clusters() -> Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("ripr-plus.json");
+        let head = "cluster-head";
+        write_text(
+            &path,
+            &render_json(&json!({
+                "head": head,
+                "unresolved": 3,
+                "recommended_first_clusters": [
+                    {
+                        "name": "ci-report-formatting",
+                        "score": 5,
+                        "active_file_count": 3,
+                        "gap_kind_count": 2,
+                        "reason": "Receipt and report formatting gaps should become agent repair packets.",
+                        "example_files": ["xtask/src/tasks/quality_gate.rs"],
+                        "example_gap_kinds": ["receipt_missing"]
+                    }
+                ]
+            }))?,
+        )?;
+
+        let receipt = read_ripr_plus_receipt(&path, head);
+
+        assert_eq!(receipt.status, "present");
+        assert_eq!(
+            receipt
+                .recommended_first_clusters
+                .first()
+                .and_then(|cluster| cluster.get("name"))
+                .and_then(Value::as_str),
+            Some("ci-report-formatting")
+        );
+        assert_eq!(
+            receipt
+                .recommended_first_clusters
+                .first()
+                .and_then(|cluster| cluster.get("score"))
+                .and_then(Value::as_u64),
+            Some(5)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn render_recommended_clusters_names_metrics_reasons_and_examples() -> Result<()> {
+        let clusters = vec![json!({
+            "name": "ci-report-formatting",
+            "score": 5,
+            "active_file_count": 3,
+            "gap_kind_count": 2,
+            "reason": "Receipt and report formatting gaps should become agent repair packets.",
+            "example_files": ["xtask/src/tasks/quality_gate.rs"],
+            "example_gap_kinds": ["receipt_missing"]
+        })];
+        let mut markdown = String::new();
+
+        render_recommended_clusters(&mut markdown, "ripr cluster", &clusters);
+
+        for required in [
+            "ripr cluster: `ci-report-formatting` (score: 5, active_file_count: 3, gap_kind_count: 2) reason `Receipt and report formatting gaps should become agent repair packets.`",
+            "ripr cluster example file: `xtask/src/tasks/quality_gate.rs`",
+            "ripr cluster example gap kind: `receipt_missing`",
+        ] {
+            assert!(
+                markdown.contains(required),
+                "cluster markdown missing `{required}`:\n{markdown}"
+            );
+        }
+        Ok(())
+    }
 }

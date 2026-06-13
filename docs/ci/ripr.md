@@ -78,6 +78,9 @@ Do **not** translate these into `killed` / `survived`. They mean something diffe
 - Runs `cargo xtask quality-gate --mode enforce-new-ripr`, which blocks new
   severe RIPR gaps and stale or missing repo-wide, diff-scoped, or
   review-guidance receipts.
+- Applies the documented suppression policy to diff-scoped PR evidence as well
+  as repo-wide RIPR+ receipts. Suppressed paths remain visible in receipts, but
+  they do not count as new blocking gaps.
 - In CI, review guidance has an explicit timeout. If guidance cannot produce an
   actionable receipt for a new gap, the quality gate reports the missing repair
   packet instead of hiding the failure.
@@ -103,9 +106,16 @@ Each suppression requires:
 - `created`, `review_after`, `expires` — dates
 
 The suppression file is read by `ripr.toml`'s `[suppressions] path` setting.
-The `cargo xtask ripr-plus` wrapper also applies the same path suppressions when
-it computes the repo-wide baseline receipt and reports suppressed files
-separately from active unresolved gaps.
+The `cargo xtask ripr-pr` and `cargo xtask ripr-plus` wrappers also apply the
+same path suppressions when they compute diff-scoped and repo-wide receipts.
+Suppressed files are reported separately from active unresolved gaps.
+
+Current suppressed non-production proof surfaces include:
+
+- archived source under `archive/**`;
+- generated status docs under `docs/project/status/**`;
+- executable editor UX receipt tests under
+  `crates/perl-lsp-ux-tests/tests/**`.
 
 ---
 
@@ -125,7 +135,7 @@ burn-down closes.
 
 ## Toolchain
 
-`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.5.0` as
+`rust-toolchain.toml` pins `1.95.0`. The workflow installs `ripr` `0.9.0` as
 the current advisory version for this lane.
 
 ---
@@ -133,7 +143,7 @@ the current advisory version for this lane.
 ## Running locally
 
 ```bash
-rtk cargo install ripr --version 0.5.0 --locked
+rtk cargo install ripr --version 0.9.0 --locked
 rtk ripr doctor
 rtk cargo xtask ripr-pr --base origin/HEAD --head HEAD
 rtk cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json

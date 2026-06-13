@@ -27,11 +27,9 @@ impl LspServer {
         if let Some(p) = params {
             let uri = req_uri(&p)?;
             let documents = self.documents_guard();
-            let doc = self.get_document(&documents, uri).ok_or_else(|| JsonRpcError {
-                code: INVALID_REQUEST,
-                message: format!("Document not open: {}", uri),
-                data: None,
-            })?;
+            let doc = self
+                .get_document(&documents, uri)
+                .ok_or_else(|| semantic_tokens_document_not_open(uri))?;
             if let Some(ref ast) = doc.ast {
                 let data =
                     crate::semantic_tokens::collect_semantic_tokens(ast, &doc.text, &|off| {
@@ -429,18 +427,14 @@ impl LspServer {
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
                 if let Some(ref ast) = doc.ast {
-                    let provider = SemanticTokensProvider::new(doc.text.clone());
-                    let all_tokens = provider.extract(ast);
+                    let all_tokens =
+                        crate::semantic_tokens::collect_semantic_tokens(ast, &doc.text, &|off| {
+                            self.offset_to_pos16(doc, off)
+                        });
+                    let encoded =
+                        filter_encoded_semantic_tokens_by_line(all_tokens, start_line, end_line);
 
-                    // Filter tokens to the requested range
-                    let range_tokens: Vec<_> = all_tokens
-                        .into_iter()
-                        .filter(|token| token.line >= start_line && token.line <= end_line)
-                        .collect();
-
-                    let encoded = encode_semantic_tokens(&range_tokens);
-
-                    tracing::debug!(count = range_tokens.len(), "Found semantic tokens in range");
+                    tracing::debug!(count = encoded.len() / 5, "Found semantic tokens in range");
 
                     return Ok(Some(json!({
                         "data": encoded
@@ -452,6 +446,135 @@ impl LspServer {
         Ok(Some(json!({
             "data": []
         })))
+    }
+}
+
+fn filter_encoded_semantic_tokens_by_line(
+    tokens: Vec<crate::semantic_tokens::EncodedToken>,
+    start_line: u32,
+    end_line: u32,
+) -> Vec<u32> {
+    let mut absolute_tokens = Vec::new();
+    let mut line = 0u32;
+    let mut start = 0u32;
+
+    for token in tokens {
+        let [delta_line, delta_start, length, token_type, modifiers] = token;
+        if delta_line == 0 {
+            start = start.saturating_add(delta_start);
+        } else {
+            line = line.saturating_add(delta_line);
+            start = delta_start;
+        }
+
+        if line >= start_line && line <= end_line {
+            absolute_tokens.push((line, start, length, token_type, modifiers));
+        }
+    }
+
+    let mut encoded = Vec::with_capacity(absolute_tokens.len() * 5);
+    let mut previous_line = 0u32;
+    let mut previous_start = 0u32;
+    for (line, start, length, token_type, modifiers) in absolute_tokens {
+        let delta_line = line.saturating_sub(previous_line);
+        let delta_start =
+            if delta_line == 0 { start.saturating_sub(previous_start) } else { start };
+        encoded.extend([delta_line, delta_start, length, token_type, modifiers]);
+        previous_line = line;
+        previous_start = start;
+    }
+
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn semantic_token_value(value: &Value) -> Result<u32, Box<dyn std::error::Error>> {
+        let raw = value.as_u64().ok_or("semantic token value was not an unsigned integer")?;
+        Ok(u32::try_from(raw)?)
+    }
+
+    #[test]
+    fn filter_encoded_semantic_tokens_by_line_reencodes_retained_range()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tokens: Vec<crate::semantic_tokens::EncodedToken> =
+            vec![[0, 0, 5, 1, 0], [1, 2, 3, 2, 0], [0, 5, 4, 3, 1], [1, 1, 2, 4, 0]];
+
+        assert_eq!(
+            filter_encoded_semantic_tokens_by_line(tokens.clone(), 1, 1),
+            vec![1, 2, 3, 2, 0, 0, 5, 4, 3, 1]
+        );
+        assert_eq!(
+            filter_encoded_semantic_tokens_by_line(tokens.clone(), 1, 2),
+            vec![1, 2, 3, 2, 0, 0, 5, 4, 3, 1, 1, 1, 2, 4, 0]
+        );
+        assert!(filter_encoded_semantic_tokens_by_line(tokens, 3, 4).is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn handle_semantic_tokens_range_uses_core_label_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///semantic_range_label.pl";
+        let source = "OUTER: while ($x) {\n    last OUTER;\n}\n";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": source,
+            }
+        })))?;
+
+        let result = server
+            .handle_semantic_tokens_range(Some(json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 1, "character": 0 },
+                    "end": { "line": 1, "character": 20 }
+                }
+            })))?
+            .ok_or("semantic tokens range result missing")?;
+        let data = result
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or("semantic tokens range data missing")?;
+        let label_idx =
+            *crate::semantic_tokens::legend().map.get("label").ok_or("label token missing")?;
+
+        let mut line = 0u32;
+        let mut col = 0u32;
+        let mut labels = Vec::new();
+        let mut chunks = data.chunks_exact(5);
+        for chunk in &mut chunks {
+            let delta_line = semantic_token_value(&chunk[0])?;
+            let delta_start = semantic_token_value(&chunk[1])?;
+            let length = semantic_token_value(&chunk[2])?;
+            let token_type = semantic_token_value(&chunk[3])?;
+            let modifiers = semantic_token_value(&chunk[4])?;
+
+            if delta_line == 0 {
+                col = col.saturating_add(delta_start);
+            } else {
+                line = line.saturating_add(delta_line);
+                col = delta_start;
+            }
+            if token_type == label_idx {
+                labels.push((line, col, length, modifiers));
+            }
+        }
+        if !chunks.remainder().is_empty() {
+            return Err("semantic token data length was not a multiple of five".into());
+        }
+
+        assert_eq!(labels, vec![(1, 9, 5, 0)]);
+
+        Ok(())
     }
 }
 
@@ -1157,4 +1280,66 @@ fn provider_fallback_state_label(state: ProviderFallbackState) -> &'static str {
 
 fn is_subroutine_name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == ':'
+}
+
+/// Build an actionable INVALID_REQUEST error for semantic-token requests on
+/// documents that have not been opened/synchronized yet.
+///
+/// The expanded message guides the editor developer to send
+/// `textDocument/didOpen` before requesting tokens.
+///
+/// Ported from EffortlessMetrics/perl-lsp#9868.
+fn semantic_tokens_document_not_open(uri: &str) -> JsonRpcError {
+    JsonRpcError {
+        code: INVALID_REQUEST,
+        message: format!(
+            "Document not open: {uri}. \
+             textDocument/semanticTokens/full requires the editor to send \
+             textDocument/didOpen before requesting tokens; \
+             resend after the document is open and synchronized."
+        ),
+        data: None,
+    }
+}
+
+#[cfg(test)]
+mod semantic_tokens_guidance_tests {
+    use super::*;
+    use perl_tdd_support::must_err;
+    use serde_json::json;
+
+    /// A semantic-token request on an un-opened document must return an
+    /// INVALID_REQUEST error whose message contains sync-guidance strings.
+    ///
+    /// Ported from EffortlessMetrics/perl-lsp#9868.
+    #[test]
+    fn semantic_tokens_closed_document_error_includes_sync_guidance()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///workspace/lib/Missing.pm";
+
+        let error = must_err(server.handle_semantic_tokens(Some(json!({
+            "textDocument": {
+                "uri": uri,
+            },
+        }))));
+
+        assert_eq!(error.code, INVALID_REQUEST);
+        assert!(error.data.is_none());
+        for expected in [
+            "Document not open",
+            uri,
+            "textDocument/semanticTokens/full",
+            "textDocument/didOpen",
+            "open and synchronized",
+        ] {
+            assert!(
+                error.message.contains(expected),
+                "error message must mention {expected:?}; got {:?}",
+                error.message
+            );
+        }
+
+        Ok(())
+    }
 }

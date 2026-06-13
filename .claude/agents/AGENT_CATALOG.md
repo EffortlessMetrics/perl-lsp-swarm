@@ -44,7 +44,7 @@ is coherent across all agent commits. Haiku ops merges.
 
 | Agent | Model | Pipeline Stage | Workers it spawns |
 |-------|-------|----------------|-------------------|
-| lead-discovery | sonnet | Find work | scout, accuracy-scout, scout-parser, scout-lsp, scout-dap, plan-reviewer |
+| lead-discovery | sonnet | Find work | scout, accuracy-scout, scout-parser, scout-lsp, scout-dap, scout-find-* (6 discovery scouts), plan-reviewer |
 | lead-build | sonnet | Build from specs | builder |
 | lead-review | sonnet | Review and merge | reviewer, reviewer-deep, ops, wisdom |
 
@@ -53,7 +53,7 @@ session, manage a shared task list, and spawn workers via Agent(). Leads
 never read code or investigate — they only work through subagents.
 disallowedTools (Edit, Write) enforces orchestrator-only role.
 
-## Worker Agents (Agent()) — 26
+## Worker Agents (Agent()) — 32
 
 ### Pipeline Agents (21)
 
@@ -89,12 +89,33 @@ disallowedTools (Edit, Write) enforces orchestrator-only role.
 | scout-lsp | haiku | features.toml, providers, LSP spec |
 | scout-dap | sonnet | DAP protocol, bridge mode, security |
 
+These file **one builder-ready issue** with a full spec. They differ from
+the discovery scouts below, which file lightweight candidate packets.
+
+### Discovery Scouts (6)
+
+The **Issue Discovery / Bug Scout Desk** — the swarm's radar, upstream of
+plan review. Read-only sweeps that file evidence-backed *candidate packets*
+(label `candidate-issue`), never builder-ready specs. Doctrine:
+[`docs/reference/ISSUE_DISCOVERY_DOCTRINE.md`](../../docs/reference/ISSUE_DISCOVERY_DOCTRINE.md).
+Kick off with `/issue-discovery`.
+
+| Agent | Model | Surface |
+|-------|-------|---------|
+| scout-find-dap-gaps | haiku | DAP stack/scopes/variables/lifecycle/transport |
+| scout-find-lsp-gaps | haiku | document state, URI isolation, completion, hover, code-action, semantic tokens |
+| scout-find-parser-gaps | haiku | parser/AST/NodeKind/recovery/fixtures |
+| scout-find-ci-ops-gaps | haiku | workflow routing, path filters, labels, cleanup, runner capacity |
+| scout-find-robustness-gaps | haiku | panic/DoS/unsafe-indexing/byte-slicing in server paths |
+| scout-find-docs-receipt-drift | haiku | status-doc vs receipt drift and basis conflicts |
+
 ### Utility (2)
 
 | Agent | Model | Role |
 |-------|-------|------|
 | research-web | sonnet | Ad-hoc web research — single question, spawned by other agents |
 | wisdom | sonnet | Synthesize learnings from issue→PR→merge cycles |
+| learning-scribe | haiku | Gate-7 capture: convert deep-review fixes and incidents into docs/learnings/ entries |
 
 ## Step Skills (62)
 
@@ -151,6 +172,46 @@ coding-standards, health-check, status-drift, rebase-pr, worktree-pr
 
 parser-fix, parser-scout, corpus-ratchet, dep-check, dep-clean,
 security-scout, dap-scout, changelog
+
+## Saved Workflows (2)
+
+Workflow scripts under `.claude/workflows/` — reusable multi-phase orchestration patterns
+invoked by agents, not by the user directly.
+
+| Workflow | Invoked by | Purpose |
+|---|---|---|
+| `release-readiness.js` | release captain | Six-phase adversarial release-readiness check; produces go/no-go recommendation; always requires human approval before dispatch |
+| `spec-builder.js` | spec-planner (for non-trivial issues) | Six parallel haiku analysis angles → synthesizer → acceptance.md §Hazards/§Contracts/§API-Shape/§Test-Grid/§Blast-Radius + context.md prior-art block |
+
+**Spec-builder rich-spec flow** (Gate 2 — Spec):
+
+```
+spec-planner reads issue
+  → is non-trivial? (touches >1 file OR new public API OR protocol handler)
+      YES → invoke spec-builder workflow { issue, subsystem, risk }
+               → 6 parallel haiku angles (A-hazard, B-contract, C-prior-art, D-api, E-testgrid, F-blast)
+               → synthesizer merges into acceptance.md sections
+               → spec-planner adds §Behavior, seeds subsystem hazard defaults, writes .spec/ files
+      NO  → spec-planner populates all six sections manually, marks N/A with reason
+  → red-tdd reads acceptance.md §Test-Grid + §Hazards → writes failing tests
+  → builder reads checklist.md + acceptance.md → implements until tests green
+  → deep-reviewer confirms (does not discover) — the spec already named what to check
+```
+
+**Canonical spec structure**: `docs/reference/SPEC_TEMPLATE.md` — defines the three-file layout
+(checklist.md / acceptance.md / context.md) with exact section names and worked examples for
+three shapes (parser-fix, LSP-feature, test-only).
+
+## Campaign Guardrails (learned from 2026-06 autonomous campaign)
+
+These are cross-cutting rules encoded in individual agent defs. Listed here for visibility:
+
+- **Duplicate-issue/PR prevention:** Scouts and builders run `gh issue list --search` + `gh pr list --search` before filing or opening. Issue #964 accumulated four near-identical PRs from skipping this. See each agent def for the exact command.
+- **In-build tracking:** When a builder opens a PR, the source issue is labeled `in-build`. Issues without this label appear unstarted to discovery scouts.
+- **Base ref is `origin/main`:** All `git diff origin/...` calls, branch creation, and merge-base checks use `origin/main` (not `origin/master`). A stale master ref caused a ~2h CI stall (#1310).
+- **RIPR via CI receipt only:** CI pins `RIPR_VERSION=0.5.0` (`ripr.yml`). Local installs may differ. Always verify from the `ripr+ New Gap Gate` CI receipt.
+- **Three required checks:** `Perl LSP Rust Small Result`, `ripr+ New Gap Gate`, `Codecov / Patch 95`. "Skipping" = satisfied. Advisory checks failing alone never block merge.
+- **PR body must match the diff.** See `docs/agents/SPEC_UPDATE_CHECKLIST.md` — every product PR answers it before publishing.
 
 ## Design Principles
 

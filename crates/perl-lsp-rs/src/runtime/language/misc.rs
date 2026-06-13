@@ -346,10 +346,38 @@ impl LspServer {
             if let Some(ref ast) = doc.ast {
                 let mut hints = Vec::new();
                 if param_hints {
-                    hints.extend(crate::inlay_hints::parameter_hints(
+                    // Build a workspace method resolver that is called for every
+                    // MethodCall node whose method is not defined in the current file.
+                    // The resolver calls resolve_method_in_workspace (added by #1301)
+                    // and extracts the parameter name list from the returned LSP
+                    // SignatureInformation JSON, including the leading self/class param.
+                    // The inlay-hints provider skips param[0] automatically, so the
+                    // hints align correctly with the call-site argument positions.
+                    // LCOV_EXCL_START — workspace resolver body requires a running LspServer;
+                    // unreachable under `--lib` coverage (same class as #1301 false-low, #1282).
+                    #[cfg(feature = "workspace")]
+                    let ws_resolver = |method: &str| -> Option<Vec<String>> {
+                        let sig = self.resolve_method_in_workspace(method)?;
+                        let params = sig.get("parameters")?.as_array()?;
+                        let names: Vec<String> = params
+                            .iter()
+                            .filter_map(|p| p.get("label")?.as_str())
+                            .map(|label| {
+                                // Strip leading sigil ($, @, %) to get bare name
+                                label.trim_start_matches(['$', '@', '%']).to_string()
+                            })
+                            .collect();
+                        if names.is_empty() { None } else { Some(names) }
+                    };
+                    // LCOV_EXCL_STOP
+                    #[cfg(not(feature = "workspace"))]
+                    let ws_resolver = |_method: &str| -> Option<Vec<String>> { None };
+
+                    hints.extend(crate::inlay_hints::parameter_hints_with_resolver(
                         ast,
                         &|off| self.offset_to_pos16(doc, off),
                         range,
+                        Some(&ws_resolver),
                     ));
                 }
                 if type_hints {
@@ -1065,12 +1093,22 @@ impl LspServer {
                 let mut inline_values = Vec::new();
 
                 let lines: Vec<&str> = doc.text.lines().collect();
+                let requested_line_count = effective_end
+                    .checked_sub(start_line)
+                    .map_or(0, |line_delta| line_delta.saturating_add(1) as usize);
+
                 let Some(re) = inline_value_regex() else {
                     return Ok(Some(json!([])));
                 };
 
-                for line_num in start_line..=effective_end.min((lines.len() - 1) as u32) {
-                    let line_text = lines[line_num as usize];
+                for (line_num, line_text) in lines
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .skip(start_line as usize)
+                    .take(requested_line_count)
+                {
+                    let line_num = line_num as u32;
 
                     // Find $scalar, @array, and %hash variables
                     for cap in re.captures_iter(line_text) {
@@ -1736,6 +1774,29 @@ mod tests {
             filtered, include_paths,
             "without a document include context, inline scan roots should remain unchanged"
         );
+    }
+
+    #[test]
+    fn inline_value_empty_document_returns_empty_array() -> Result<(), Box<dyn std::error::Error>> {
+        let server = make_server_with_caps(ClientCapabilities::default());
+        let uri = "file:///inline_value_empty_lib.pl";
+        server.test_apply_did_open(uri, "", 1)?;
+
+        let result = server.handle_inline_value(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": {}
+        })))?;
+
+        assert_eq!(
+            result,
+            Some(json!([])),
+            "empty documents should return an empty inline value array"
+        );
+        Ok(())
     }
 
     #[test]
