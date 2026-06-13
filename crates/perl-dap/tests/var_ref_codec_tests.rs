@@ -21,10 +21,7 @@ use perl_dap::var_ref::{ScopeKind, VariableReference};
 /// which must be distinct from any EvalResult value.
 #[test]
 fn test_h1_no_collision_scope_vs_evalresult() -> Result<(), Box<dyn std::error::Error>> {
-    let scope = VariableReference::Scope {
-        frame_id: 5000,
-        kind: ScopeKind::Locals,
-    };
+    let scope = VariableReference::Scope { frame_id: 5000, kind: ScopeKind::Locals };
     let eval = VariableReference::EvalResult { counter: 1 };
 
     let scope_wire = scope.encode();
@@ -39,14 +36,10 @@ fn test_h1_no_collision_scope_vs_evalresult() -> Result<(), Box<dyn std::error::
         scope_wire, 50_001,
         "H1: Scope{{frame_id: 5000, kind: Locals}} should encode as 50_001"
     );
-    assert_eq!(
-        eval_wire, 1_000_001,
-        "H1: EvalResult{{counter: 1}} should encode as 1_000_001"
-    );
+    assert_eq!(eval_wire, 1_000_001, "H1: EvalResult{{counter: 1}} should encode as 1_000_001");
 
     // Critical test: decode(50_001) must return Scope, NOT EvalResult
-    let decoded = VariableReference::decode(50_001)
-        .ok_or("H1: decode(50_001) should succeed")?;
+    let decoded = VariableReference::decode(50_001).ok_or("H1: decode(50_001) should succeed")?;
     match decoded {
         VariableReference::Scope { frame_id, kind } => {
             assert_eq!(
@@ -55,7 +48,8 @@ fn test_h1_no_collision_scope_vs_evalresult() -> Result<(), Box<dyn std::error::
                 frame_id
             );
             assert_eq!(
-                kind, ScopeKind::Locals,
+                kind,
+                ScopeKind::Locals,
                 "H1: decoded Scope kind should be Locals, got {:?}",
                 kind
             );
@@ -78,13 +72,10 @@ fn test_h1_no_collision_scope_vs_evalresult() -> Result<(), Box<dyn std::error::
 /// H2: Scope{frame_id: 5000, kind: Locals} round-trips correctly.
 #[test]
 fn test_h2_roundtrip_scope_locals_5000() -> Result<(), Box<dyn std::error::Error>> {
-    let original = VariableReference::Scope {
-        frame_id: 5000,
-        kind: ScopeKind::Locals,
-    };
+    let original = VariableReference::Scope { frame_id: 5000, kind: ScopeKind::Locals };
     let wire = original.encode();
-    let decoded = VariableReference::decode(wire)
-        .ok_or("H2: decode should succeed for valid Scope wire")?;
+    let decoded =
+        VariableReference::decode(wire).ok_or("H2: decode should succeed for valid Scope wire")?;
 
     assert_eq!(
         original, decoded,
@@ -106,24 +97,15 @@ fn test_h2_roundtrip_scope_locals_5000() -> Result<(), Box<dyn std::error::Error
 /// H2: Scope{frame_id: 0, kind: Globals} round-trips.
 #[test]
 fn test_h2_roundtrip_scope_globals() -> Result<(), Box<dyn std::error::Error>> {
-    let original = VariableReference::Scope {
-        frame_id: 0,
-        kind: ScopeKind::Globals,
-    };
+    let original = VariableReference::Scope { frame_id: 0, kind: ScopeKind::Globals };
     let wire = original.encode();
-    let decoded = VariableReference::decode(wire)
-        .ok_or("H2: decode should succeed for valid Scope wire")?;
+    let decoded =
+        VariableReference::decode(wire).ok_or("H2: decode should succeed for valid Scope wire")?;
 
-    assert_eq!(
-        original, decoded,
-        "H2: round-trip failed for Scope{{frame_id: 0, kind: Globals}}"
-    );
+    assert_eq!(original, decoded, "H2: round-trip failed for Scope{{frame_id: 0, kind: Globals}}");
 
     let rewired = decoded.encode();
-    assert_eq!(
-        wire, rewired,
-        "H2: encode(decode(w)) == w for Scope Globals"
-    );
+    assert_eq!(wire, rewired, "H2: encode(decode(w)) == w for Scope Globals");
 
     Ok(())
 }
@@ -131,10 +113,7 @@ fn test_h2_roundtrip_scope_globals() -> Result<(), Box<dyn std::error::Error>> {
 /// H2: Scope{frame_id: 999_999, kind: Package} round-trips (boundary case).
 #[test]
 fn test_h2_roundtrip_scope_package_max() -> Result<(), Box<dyn std::error::Error>> {
-    let original = VariableReference::Scope {
-        frame_id: 999_999,
-        kind: ScopeKind::Package,
-    };
+    let original = VariableReference::Scope { frame_id: 999_999, kind: ScopeKind::Package };
     let wire = original.encode();
     let decoded = VariableReference::decode(wire)
         .ok_or("H2: decode should succeed for max Scope frame_id")?;
@@ -145,10 +124,7 @@ fn test_h2_roundtrip_scope_package_max() -> Result<(), Box<dyn std::error::Error
     );
 
     let rewired = decoded.encode();
-    assert_eq!(
-        wire, rewired,
-        "H2: encode(decode(w)) == w for max Scope"
-    );
+    assert_eq!(wire, rewired, "H2: encode(decode(w)) == w for max Scope");
 
     Ok(())
 }
@@ -158,19 +134,13 @@ fn test_h2_roundtrip_scope_package_max() -> Result<(), Box<dyn std::error::Error
 fn test_h2_roundtrip_evalresult_counter_large() -> Result<(), Box<dyn std::error::Error>> {
     let original = VariableReference::EvalResult { counter: 1_000_000 };
     let wire = original.encode();
-    let decoded = VariableReference::decode(wire)
-        .ok_or("H2: decode should succeed for EvalResult")?;
+    let decoded =
+        VariableReference::decode(wire).ok_or("H2: decode should succeed for EvalResult")?;
 
-    assert_eq!(
-        original, decoded,
-        "H2: round-trip failed for EvalResult{{counter: 1_000_000}}"
-    );
+    assert_eq!(original, decoded, "H2: round-trip failed for EvalResult{{counter: 1_000_000}}");
 
     let rewired = decoded.encode();
-    assert_eq!(
-        wire, rewired,
-        "H2: encode(decode(w)) == w for EvalResult large counter"
-    );
+    assert_eq!(wire, rewired, "H2: encode(decode(w)) == w for EvalResult large counter");
 
     Ok(())
 }
@@ -183,16 +153,10 @@ fn test_h2_roundtrip_evalresult_counter_zero() -> Result<(), Box<dyn std::error:
     let decoded = VariableReference::decode(wire)
         .ok_or("H2: decode should succeed for EvalResult counter=0")?;
 
-    assert_eq!(
-        original, decoded,
-        "H2: round-trip failed for EvalResult{{counter: 0}}"
-    );
+    assert_eq!(original, decoded, "H2: round-trip failed for EvalResult{{counter: 0}}");
 
     let rewired = decoded.encode();
-    assert_eq!(
-        wire, rewired,
-        "H2: encode(decode(w)) == w for EvalResult zero"
-    );
+    assert_eq!(wire, rewired, "H2: encode(decode(w)) == w for EvalResult zero");
 
     Ok(())
 }
@@ -200,24 +164,14 @@ fn test_h2_roundtrip_evalresult_counter_zero() -> Result<(), Box<dyn std::error:
 /// H2: Child{parent: 1000, index: 50} round-trips.
 #[test]
 fn test_h2_roundtrip_child_basic() -> Result<(), Box<dyn std::error::Error>> {
-    let original = VariableReference::Child {
-        parent: 1000,
-        index: 50,
-    };
+    let original = VariableReference::Child { parent: 1000, index: 50 };
     let wire = original.encode();
-    let decoded = VariableReference::decode(wire)
-        .ok_or("H2: decode should succeed for Child")?;
+    let decoded = VariableReference::decode(wire).ok_or("H2: decode should succeed for Child")?;
 
-    assert_eq!(
-        original, decoded,
-        "H2: round-trip failed for Child{{parent: 1000, index: 50}}"
-    );
+    assert_eq!(original, decoded, "H2: round-trip failed for Child{{parent: 1000, index: 50}}");
 
     let rewired = decoded.encode();
-    assert_eq!(
-        wire, rewired,
-        "H2: encode(decode(w)) == w for Child"
-    );
+    assert_eq!(wire, rewired, "H2: encode(decode(w)) == w for Child");
 
     Ok(())
 }
@@ -225,20 +179,17 @@ fn test_h2_roundtrip_child_basic() -> Result<(), Box<dyn std::error::Error>> {
 /// H2: Child at base (parent: 0, index: 0) round-trips.
 #[test]
 fn test_h2_roundtrip_child_base() -> Result<(), Box<dyn std::error::Error>> {
-    let original = VariableReference::Child {
-        parent: 0,
-        index: 0,
-    };
+    let original = VariableReference::Child { parent: 0, index: 0 };
     let wire = original.encode();
-    assert_eq!(wire, 2_000_000_000, "H2: Child{{parent: 0, index: 0}} should encode to base 2_000_000_000");
-
-    let decoded = VariableReference::decode(wire)
-        .ok_or("H2: decode should succeed for Child at base")?;
-
     assert_eq!(
-        original, decoded,
-        "H2: round-trip failed for Child{{parent: 0, index: 0}}"
+        wire, 2_000_000_000,
+        "H2: Child{{parent: 0, index: 0}} should encode to base 2_000_000_000"
     );
+
+    let decoded =
+        VariableReference::decode(wire).ok_or("H2: decode should succeed for Child at base")?;
+
+    assert_eq!(original, decoded, "H2: round-trip failed for Child{{parent: 0, index: 0}}");
 
     Ok(())
 }
@@ -250,10 +201,7 @@ fn test_h2_roundtrip_child_base() -> Result<(), Box<dyn std::error::Error>> {
 /// H3: Encode with i32::MAX in frame_id does not panic (uses saturating arithmetic).
 #[test]
 fn test_h3_encode_frame_id_i32_max_no_panic() -> Result<(), Box<dyn std::error::Error>> {
-    let var = VariableReference::Scope {
-        frame_id: i32::MAX,
-        kind: ScopeKind::Locals,
-    };
+    let var = VariableReference::Scope { frame_id: i32::MAX, kind: ScopeKind::Locals };
     // Must not panic; should saturate
     let _wire = var.encode();
     Ok(())
@@ -290,10 +238,7 @@ fn test_h3_decode_i32_min_no_panic() -> Result<(), Box<dyn std::error::Error>> {
 /// H3: Child with index: u32::MAX does not panic (bit-packing).
 #[test]
 fn test_h3_child_index_u32_max_no_panic() -> Result<(), Box<dyn std::error::Error>> {
-    let var = VariableReference::Child {
-        parent: 1000,
-        index: u32::MAX,
-    };
+    let var = VariableReference::Child { parent: 1000, index: u32::MAX };
     // Must not panic; bit-packing should saturate or overflow safely
     let _wire = var.encode();
     Ok(())
@@ -318,10 +263,7 @@ fn test_h5_decode_zero_returns_none() -> Result<(), Box<dyn std::error::Error>> 
 #[test]
 fn test_h5_decode_negative_one_returns_none() -> Result<(), Box<dyn std::error::Error>> {
     let result = VariableReference::decode(-1);
-    assert_eq!(
-        result, None,
-        "H5: decode(-1) should return None"
-    );
+    assert_eq!(result, None, "H5: decode(-1) should return None");
     Ok(())
 }
 
@@ -331,10 +273,7 @@ fn test_h5_decode_i32_min_returns_none() -> Result<(), Box<dyn std::error::Error
     let result = VariableReference::decode(i32::MIN);
     // For the most negative i32, result should be None (unless it happens to fall in Child range, which it shouldn't)
     // Since Child base is 2_000_000_000 (positive), i32::MIN definitely returns None
-    assert_eq!(
-        result, None,
-        "H5: decode(i32::MIN) should return None"
-    );
+    assert_eq!(result, None, "H5: decode(i32::MIN) should return None");
     Ok(())
 }
 
@@ -390,10 +329,7 @@ fn test_h5_decode_invalid_scope_kind_returns_none() -> Result<(), Box<dyn std::e
 #[test]
 fn test_h5_decode_evalresult_base_valid() -> Result<(), Box<dyn std::error::Error>> {
     let result = VariableReference::decode(1_000_000);
-    assert!(
-        result.is_some(),
-        "H5: decode(1_000_000) should be Some (EvalResult base)"
-    );
+    assert!(result.is_some(), "H5: decode(1_000_000) should be Some (EvalResult base)");
     match result.unwrap() {
         VariableReference::EvalResult { counter } => {
             assert_eq!(counter, 0, "H5: EvalResult at base should have counter=0");
@@ -407,10 +343,7 @@ fn test_h5_decode_evalresult_base_valid() -> Result<(), Box<dyn std::error::Erro
 #[test]
 fn test_h5_decode_child_base_valid() -> Result<(), Box<dyn std::error::Error>> {
     let result = VariableReference::decode(2_000_000_000);
-    assert!(
-        result.is_some(),
-        "H5: decode(2_000_000_000) should be Some (Child base)"
-    );
+    assert!(result.is_some(), "H5: decode(2_000_000_000) should be Some (Child base)");
     match result.unwrap() {
         VariableReference::Child { parent, index } => {
             assert_eq!(parent, 0, "H5: Child at base should have parent=0");
