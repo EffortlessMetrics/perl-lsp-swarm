@@ -12,8 +12,8 @@
 //! - **DAP-4: Backward compat** — Encoded wire values match old formula for canonical frame_ids
 //! - **DAP-5: Saturation safety** — No panics on extreme inputs (i32::MAX, etc.)
 
-use perl_dap::{DebugAdapter, DapMessage};
-use serde_json::{json, Value};
+use perl_dap::{DapMessage, DebugAdapter};
+use serde_json::{Value, json};
 use std::sync::mpsc::channel;
 
 // ─── Helper: extract response body ───────────────────────────────────────────
@@ -51,11 +51,7 @@ fn scope_encode_frame_id_0_locals() {
         .expect("variablesReference should be present");
 
     // Wire value must equal 1 for backward compat with old formula
-    assert_eq!(
-        locals_ref, 1,
-        "Scope(frame_id=0, Locals) should encode to 1, got {}",
-        locals_ref
-    );
+    assert_eq!(locals_ref, 1, "Scope(frame_id=0, Locals) should encode to 1, got {}", locals_ref);
 }
 
 #[test]
@@ -74,10 +70,8 @@ fn scope_encode_frame_id_5000_locals() {
         .find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Locals"))
         .expect("Locals scope");
 
-    let locals_ref = locals
-        .get("variablesReference")
-        .and_then(|v| v.as_i64())
-        .expect("variablesReference");
+    let locals_ref =
+        locals.get("variablesReference").and_then(|v| v.as_i64()).expect("variablesReference");
 
     assert_eq!(
         locals_ref, 50_001,
@@ -102,10 +96,8 @@ fn scope_encode_frame_id_99999_globals() {
         .find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Globals"))
         .expect("Globals scope");
 
-    let globals_ref = globals
-        .get("variablesReference")
-        .and_then(|v| v.as_i64())
-        .expect("variablesReference");
+    let globals_ref =
+        globals.get("variablesReference").and_then(|v| v.as_i64()).expect("variablesReference");
 
     assert_eq!(
         globals_ref, 999_993,
@@ -130,10 +122,8 @@ fn scope_encode_frame_id_99999_package() {
         .find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Package"))
         .expect("Package scope");
 
-    let package_ref = package
-        .get("variablesReference")
-        .and_then(|v| v.as_i64())
-        .expect("variablesReference");
+    let package_ref =
+        package.get("variablesReference").and_then(|v| v.as_i64()).expect("variablesReference");
 
     // Package is kind 2: 99_999 * 10 + 2 = 999_992
     assert_eq!(
@@ -154,18 +144,12 @@ fn scope_encode_frame_id_42_all_kinds() {
     let body = extract_response_body(&msg).expect("scopes should succeed");
     let scopes = body.get("scopes").and_then(|v| v.as_array()).expect("scopes array");
 
-    let locals = scopes
-        .iter()
-        .find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Locals"))
-        .unwrap();
-    let package = scopes
-        .iter()
-        .find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Package"))
-        .unwrap();
-    let globals = scopes
-        .iter()
-        .find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Globals"))
-        .unwrap();
+    let locals =
+        scopes.iter().find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Locals")).unwrap();
+    let package =
+        scopes.iter().find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Package")).unwrap();
+    let globals =
+        scopes.iter().find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Globals")).unwrap();
 
     let locals_ref = locals.get("variablesReference").and_then(|v| v.as_i64()).unwrap();
     let package_ref = package.get("variablesReference").and_then(|v| v.as_i64()).unwrap();
@@ -259,11 +243,7 @@ fn variables_handle_out_of_range_i64_overflow() {
     let (tx, _rx) = channel();
     adapter.set_event_sender(tx);
 
-    let msg = adapter.handle_variables(
-        1,
-        0,
-        Some(json!({ "variablesReference": i64::MAX })),
-    );
+    let msg = adapter.handle_variables(1, 0, Some(json!({ "variablesReference": i64::MAX })));
     let body = extract_response_body(&msg).expect("handle_variables should respond");
 
     let vars = body.get("variables").and_then(|v| v.as_array()).expect("variables array");
@@ -275,24 +255,17 @@ fn variables_handle_out_of_range_i64_overflow() {
 #[test]
 fn roundtrip_scope_locals_frame_0() {
     // Encode Scope{frame_id:0, kind:Locals}, then decode the wire value back.
-    let scope = perl_dap::VariableReference::Scope {
-        frame_id: 0,
-        kind: perl_dap::ScopeKind::Locals,
-    };
+    let scope =
+        perl_dap::VariableReference::Scope { frame_id: 0, kind: perl_dap::ScopeKind::Locals };
     let wire = scope.encode().expect("should encode");
     let decoded = perl_dap::VariableReference::decode(wire).expect("should decode");
-    assert_eq!(
-        decoded, scope,
-        "round-trip encode/decode Scope{{0,Locals}} failed"
-    );
+    assert_eq!(decoded, scope, "round-trip encode/decode Scope{{0,Locals}} failed");
 }
 
 #[test]
 fn roundtrip_scope_package_frame_5000() {
-    let scope = perl_dap::VariableReference::Scope {
-        frame_id: 5000,
-        kind: perl_dap::ScopeKind::Package,
-    };
+    let scope =
+        perl_dap::VariableReference::Scope { frame_id: 5000, kind: perl_dap::ScopeKind::Package };
     let wire = scope.encode().expect("should encode");
     let decoded = perl_dap::VariableReference::decode(wire).expect("should decode");
     assert_eq!(decoded, scope, "round-trip encode/decode Scope{{5000,Package}} failed");
@@ -300,16 +273,11 @@ fn roundtrip_scope_package_frame_5000() {
 
 #[test]
 fn roundtrip_scope_globals_frame_99999() {
-    let scope = perl_dap::VariableReference::Scope {
-        frame_id: 99_999,
-        kind: perl_dap::ScopeKind::Globals,
-    };
+    let scope =
+        perl_dap::VariableReference::Scope { frame_id: 99_999, kind: perl_dap::ScopeKind::Globals };
     let wire = scope.encode().expect("should encode");
     let decoded = perl_dap::VariableReference::decode(wire).expect("should decode");
-    assert_eq!(
-        decoded, scope,
-        "round-trip encode/decode Scope{{99_999,Globals}} failed"
-    );
+    assert_eq!(decoded, scope, "round-trip encode/decode Scope{{99_999,Globals}} failed");
 }
 
 // ─── H1 Decode: EvalResult codec round-trip ──────────────────────────────────
@@ -327,10 +295,7 @@ fn roundtrip_evalresult_counter_999999() {
     let eval = perl_dap::VariableReference::EvalResult { counter: 999_999 };
     let wire = eval.encode().expect("should encode");
     let decoded = perl_dap::VariableReference::decode(wire).expect("should decode");
-    assert_eq!(
-        decoded, eval,
-        "round-trip encode/decode EvalResult{{999_999}} failed"
-    );
+    assert_eq!(decoded, eval, "round-trip encode/decode EvalResult{{999_999}} failed");
 }
 
 #[test]
@@ -338,10 +303,7 @@ fn roundtrip_evalresult_counter_500000() {
     let eval = perl_dap::VariableReference::EvalResult { counter: 500_000 };
     let wire = eval.encode().expect("should encode");
     let decoded = perl_dap::VariableReference::decode(wire).expect("should decode");
-    assert_eq!(
-        decoded, eval,
-        "round-trip encode/decode EvalResult{{500_000}} failed"
-    );
+    assert_eq!(decoded, eval, "round-trip encode/decode EvalResult{{500_000}} failed");
 }
 
 // ─── H5 Saturation safety: extreme inputs ──────────────────────────────────────
@@ -355,20 +317,15 @@ fn scope_encode_saturation_frame_id_max() {
         kind: perl_dap::ScopeKind::Locals,
     };
     let result = scope.encode();
-    assert!(
-        result.is_none(),
-        "frame_id=i32::MAX should be rejected (out of bounds), not panic"
-    );
+    assert!(result.is_none(), "frame_id=i32::MAX should be rejected (out of bounds), not panic");
 }
 
 #[test]
 fn scope_encode_saturation_frame_id_100000() {
     // Boundary: frame_id = 100_000 (just beyond max valid 99_999)
     // Should encode to None (safe rejection)
-    let scope = perl_dap::VariableReference::Scope {
-        frame_id: 100_000,
-        kind: perl_dap::ScopeKind::Locals,
-    };
+    let scope =
+        perl_dap::VariableReference::Scope { frame_id: 100_000, kind: perl_dap::ScopeKind::Locals };
     let result = scope.encode();
     assert!(
         result.is_none(),
@@ -380,14 +337,9 @@ fn scope_encode_saturation_frame_id_100000() {
 fn evalresult_encode_saturation_counter_max() {
     // Extreme: counter at the edge of the EvalResult band
     // Maximum valid counter: 1_998_999_999 (wire = 1_999_999_999)
-    let eval_max_valid =
-        perl_dap::VariableReference::EvalResult { counter: 1_998_999_999 };
+    let eval_max_valid = perl_dap::VariableReference::EvalResult { counter: 1_998_999_999 };
     let wire = eval_max_valid.encode();
-    assert_eq!(
-        wire,
-        Some(1_999_999_999),
-        "counter=1_998_999_999 should encode to EVAL_MAX"
-    );
+    assert_eq!(wire, Some(1_999_999_999), "counter=1_998_999_999 should encode to EVAL_MAX");
 
     // Beyond max: counter that would overflow into Child band
     let eval_overflow = perl_dap::VariableReference::EvalResult { counter: 1_999_000_000 };
@@ -423,10 +375,9 @@ fn compat_scope_old_formula_small_frame_ids() {
             (perl_dap::ScopeKind::Globals, 3),
         ] {
             let scope = perl_dap::VariableReference::Scope { frame_id, kind };
-            let wire = scope.encode().expect(&format!(
-                "frame_id={}, kind={:?} should encode",
-                frame_id, kind
-            ));
+            let wire = scope
+                .encode()
+                .expect(&format!("frame_id={}, kind={:?} should encode", frame_id, kind));
             let old_formula = frame_id * 10 + disc;
             assert_eq!(
                 wire, old_formula,
@@ -460,10 +411,8 @@ fn disjoint_bands_scope_never_in_evalresult_range() {
     // Maximum valid Scope wire: 99_999 * 10 + 3 = 999_993
     // Minimum EvalResult wire: 1_000_000
     // They do not overlap.
-    let scope_max = perl_dap::VariableReference::Scope {
-        frame_id: 99_999,
-        kind: perl_dap::ScopeKind::Globals,
-    };
+    let scope_max =
+        perl_dap::VariableReference::Scope { frame_id: 99_999, kind: perl_dap::ScopeKind::Globals };
     let wire_max = scope_max.encode().expect("should encode");
     assert!(
         wire_max < 1_000_000,
@@ -480,11 +429,7 @@ fn disjoint_bands_scope_never_in_evalresult_range() {
         ] {
             let scope = perl_dap::VariableReference::Scope { frame_id, kind };
             let wire = scope.encode().expect("should encode");
-            assert!(
-                wire < 1_000_000,
-                "Scope wire {} must be < 1_000_000 (EvalResult base)",
-                wire
-            );
+            assert!(wire < 1_000_000, "Scope wire {} must be < 1_000_000 (EvalResult base)", wire);
         }
     }
 }
@@ -519,10 +464,7 @@ fn integration_frame_scopes_consistency() {
     // Call handle_scopes to get the frame 0 scopes
     let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": 0 })));
     let body = extract_response_body(&msg).expect("scopes should succeed");
-    let scopes = body
-        .get("scopes")
-        .and_then(|v| v.as_array())
-        .expect("scopes array");
+    let scopes = body.get("scopes").and_then(|v| v.as_array()).expect("scopes array");
 
     let locals_ref = scopes
         .iter()
@@ -550,10 +492,7 @@ fn integration_frame_scopes_consistency() {
     // Each should round-trip through the codec
     assert_eq!(
         perl_dap::VariableReference::decode(locals_ref as i32),
-        Some(perl_dap::VariableReference::Scope {
-            frame_id: 0,
-            kind: perl_dap::ScopeKind::Locals,
-        }),
+        Some(perl_dap::VariableReference::Scope { frame_id: 0, kind: perl_dap::ScopeKind::Locals }),
         "Locals ref decode"
     );
 
@@ -586,10 +525,7 @@ fn integration_multiple_frame_ids_consistency() {
     for frame_id in [0, 1, 2] {
         let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": frame_id })));
         let body = extract_response_body(&msg).expect("scopes should succeed");
-        let scopes = body
-            .get("scopes")
-            .and_then(|v| v.as_array())
-            .expect("scopes array");
+        let scopes = body.get("scopes").and_then(|v| v.as_array()).expect("scopes array");
 
         let locals_ref = scopes
             .iter()
@@ -615,5 +551,60 @@ fn integration_multiple_frame_ids_consistency() {
             "Locals ref should round-trip for frame_id={}",
             frame_id
         );
+    }
+}
+
+// ─── H5 Consumer: out-of-range frame_id hits unwrap_or(0) in handle_scopes ───────
+
+#[test]
+fn handle_scopes_out_of_range_frame_id_returns_zero_refs() {
+    // When frame_id > 99_999, encode() returns None and unwrap_or(0) fires.
+    // The DAP response must succeed with variablesReference=0 for all three scopes
+    // (not a crash, not a partial result). Verifies the consumer-level unwrap_or(0)
+    // degradation path in frames.rs is DAP-correct.
+    let mut adapter = DebugAdapter::new();
+    let (tx, _rx) = channel();
+    adapter.set_event_sender(tx);
+
+    let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": 100_000 })));
+    let body = extract_response_body(&msg)
+        .expect("handle_scopes should succeed even for out-of-range frame_id");
+    let scopes = body.get("scopes").and_then(|v| v.as_array()).expect("scopes array");
+
+    assert_eq!(scopes.len(), 3, "should still return 3 scope entries");
+
+    for scope in scopes {
+        let vars_ref = scope
+            .get("variablesReference")
+            .and_then(|v| v.as_i64())
+            .expect("variablesReference must be present");
+        assert_eq!(
+            vars_ref, 0,
+            "out-of-range frame_id encodes to 0 (no children), got {}",
+            vars_ref
+        );
+    }
+}
+
+#[test]
+fn handle_scopes_extreme_frame_id_i32_max_returns_zero_refs() {
+    // Adversarial: i64 frame_id clamped via i64_to_i32_saturating -> i32::MAX.
+    // encode(Scope{i32::MAX, ...}) returns None -> unwrap_or(0). No crash.
+    let mut adapter = DebugAdapter::new();
+    let (tx, _rx) = channel();
+    adapter.set_event_sender(tx);
+
+    let msg = adapter.handle_scopes(1, 0, Some(json!({ "frameId": i32::MAX })));
+    let body = extract_response_body(&msg)
+        .expect("handle_scopes should not crash on i32::MAX frame_id");
+    let scopes = body.get("scopes").and_then(|v| v.as_array()).expect("scopes array");
+
+    assert_eq!(scopes.len(), 3, "should still return 3 scope entries");
+    for scope in scopes {
+        let vars_ref = scope
+            .get("variablesReference")
+            .and_then(|v| v.as_i64())
+            .expect("variablesReference must be present");
+        assert_eq!(vars_ref, 0, "i32::MAX frame_id should yield ref=0 (no children)");
     }
 }
