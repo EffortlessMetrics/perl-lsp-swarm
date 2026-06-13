@@ -316,7 +316,7 @@ placement. It does **not** mean "always stop here." DAP consumers must
 additionally inspect instance-level facts (is this cursor inside a heredoc body?
 a POD block? after `__DATA__`?) and verify with the runtime/debugger.
 
-### §Breakpoint and Scope Classification Contract (ratified PR #1297)
+### §Breakpoint and Scope Classification Contract (ratified issue #1297, PR #1452)
 
 **Issue #1297 ratification (ChatGPT-Pro + Perl 5.40.1 debugger probe) is now merged.**
 The following table documents all ratified flag values and the instance-dependent rows
