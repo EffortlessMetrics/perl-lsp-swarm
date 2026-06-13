@@ -247,7 +247,7 @@ impl DebugAdapter {
         arguments: Option<Value>,
     ) -> DapMessage {
         let _args: Option<PauseArguments> = arguments.and_then(|v| serde_json::from_value(v).ok());
-        let success = if let Some(ref mut session) =
+        let has_session = if let Some(ref mut session) =
             *lock_or_recover(&self.session, "debug_adapter.session")
         {
             let pid = session.process.id();
@@ -258,17 +258,27 @@ impl DebugAdapter {
         {
             self.send_interrupt_signal(pid)
         } else {
-            tracing::warn!("No active debug session to pause");
             false
         };
+
+        if !has_session {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "pause".to_string(),
+                body: None,
+                message: Some(Self::no_active_debug_session_message("pause")),
+            };
+        }
 
         DapMessage::Response {
             seq,
             request_seq,
-            success,
+            success: true,
             command: "pause".to_string(),
             body: None,
-            message: if !success { Some("Failed to pause debugger".to_string()) } else { None },
+            message: None,
         }
     }
 

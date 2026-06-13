@@ -126,13 +126,11 @@ fn test_pause_handler_no_session() {
             assert_eq!(command, "pause");
             assert!(message.is_some(), "Pause without session should provide error message");
 
-            if let Some(msg) = message {
-                assert!(
-                    msg.contains("Failed to pause") || msg.to_lowercase().contains("debugger"),
-                    "Error message should indicate pause failure or no session: {}",
-                    msg
-                );
-            }
+            let msg = must_some(message);
+            assert!(
+                msg.contains("no Perl debug session is active"),
+                "pause error must indicate no session: {msg}"
+            );
         }
         _ => {
             must(Err::<(), _>("Expected Response message for pause"));
