@@ -420,12 +420,19 @@ pub fn parameter_hints_with_resolver(
                     };
 
                 // Skip the leading self/class positional to align with call-site args.
-                // If the param list has only self or fewer, no visible params to hint.
-                let param_names: &[String] = if all_param_names.is_empty() {
-                    &[]
-                } else {
-                    &all_param_names[1..] // drop the implicit self/class param
-                };
+                //
+                // Resolver contract: the returned param list MUST include the leading
+                // invocant (self/class) at index 0. If the resolver returns zero params,
+                // there is no invocant and no visible params — emit no hints gracefully.
+                //
+                // If `all_param_names` has items, `[1..]` drops the invocant at index 0.
+                // A resolver that returns params WITHOUT a leading invocant would cause
+                // misaligned hints; that is a caller-contract violation. Guard the minimum
+                // length here: require at least 1 param (the invocant) before slicing.
+                if all_param_names.is_empty() {
+                    return true; // no invocant, no visible params — skip gracefully
+                }
+                let param_names: &[String] = &all_param_names[1..]; // drop the implicit self/class param
 
                 // Apply the same noise-reduction policy: only hint when >1 visible param.
                 if param_names.len() <= 1 {
@@ -443,7 +450,7 @@ pub fn parameter_hints_with_resolver(
                         let hint_pos = Position::new(l, c);
                         if !pos_in_range(hint_pos, filter_range) {
                             continue;
-                        } // LCOV_EXCL_LINE — unreachable: `continue` always exits iteration before this brace
+                        }
                     }
 
                     out.push(json!({
@@ -787,6 +794,8 @@ mod tests {
 
     // (F) Full resolver path: two visible params, no range filter → two hints.
     // Verifies labels correct (alpha:, beta:) and self is NOT hinted.
+    // Also verifies paramIndex: MethodCall emits i+1 to align with signature
+    // index after self-skip (self is declaration index 0; alpha=1, beta=2).
     #[test]
     fn test_method_call_resolver_two_params_hints_emitted_lib() {
         let resolver = |_method: &str| -> Option<Vec<String>> {
@@ -799,6 +808,28 @@ mod tests {
         assert!(labels.contains(&"alpha:"), "expected 'alpha:' hint; labels: {labels:?}");
         assert!(labels.contains(&"beta:"), "expected 'beta:' hint; labels: {labels:?}");
         assert!(!labels.contains(&"self:"), "must not emit hint for self; labels: {labels:?}");
+
+        // paramIndex assertions: MethodCall emits i+1 (self at declaration index 0).
+        // alpha: → call-site i=0 → paramIndex = 1
+        // beta:  → call-site i=1 → paramIndex = 2
+        let alpha_hint = hints.iter().find(|h| {
+            h["data"]["functionName"].as_str() == Some("compute")
+                && h["label"].as_str() == Some("alpha:")
+        });
+        let beta_hint = hints.iter().find(|h| {
+            h["data"]["functionName"].as_str() == Some("compute")
+                && h["label"].as_str() == Some("beta:")
+        });
+        assert_eq!(
+            alpha_hint.and_then(|h| h["data"]["paramIndex"].as_u64()),
+            Some(1),
+            "alpha: paramIndex must be 1"
+        );
+        assert_eq!(
+            beta_hint.and_then(|h| h["data"]["paramIndex"].as_u64()),
+            Some(2),
+            "beta: paramIndex must be 2"
+        );
     }
 
     // (G) user_sigs path (line 412): an in-file formal-signature sub whose name
@@ -826,12 +857,12 @@ $obj->render("hello", 10);"#;
         assert!(!labels.contains(&"self:"), "must not emit hint for self; labels: {labels:?}");
     }
 
-    // (H) Empty all_param_names branch (line 425): resolver returns Some(vec![]) →
-    // all_param_names.is_empty() is true → param_names = &[] → len() == 0 → suppressed.
+    // (H) Empty all_param_names branch: resolver returns Some(vec![]) →
+    // all_param_names.is_empty() is true → early return true (no invocant, skip).
     #[test]
     fn test_method_call_resolver_returns_completely_empty_vec_no_hints() {
         // Resolver returns Some(vec![]) — no params at all, not even self.
-        // This exercises the `if all_param_names.is_empty() { &[] }` branch.
+        // This exercises the early `if all_param_names.is_empty() { return true }` guard.
         let resolver = |_: &str| -> Option<Vec<String>> { Some(vec![]) };
         let src = "my $obj; $obj->empty_method(1, 2);";
         let ast = ast_for(src);

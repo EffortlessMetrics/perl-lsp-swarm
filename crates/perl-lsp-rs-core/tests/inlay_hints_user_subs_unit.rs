@@ -172,18 +172,17 @@ some_external_function("a", "b");
 // OO method-call inlay hints — Slice 2 (#1302)
 // ---------------------------------------------------------------------------
 
-/// Strong-oracle test: in-file method with three params (including $self) should
-/// produce two hints ($template, $limit) for the two call-site arguments.
+/// No-false-positive guard: an @_-style (old-style) sub body does NOT produce
+/// hints because `collect_user_sub_signatures` only indexes formal-signature subs
+/// (NodeKind::Signature). This tests the no-resolver, no-signature fallthrough path.
 ///
 /// Perl source:
-///   use feature 'class';
-///   class Formatter {
-///     method render($self, $template, $limit) { ... }
-///   }
+///   package Formatter;
+///   sub render { my ($self, $template, $limit) = @_; ... }
 ///   $fmt->render("hello %s", 10);
 ///
-/// The param list is [$self, $template, $limit]. After skipping $self, the
-/// visible params are [$template, $limit] — >1, so hints are emitted.
+/// No NodeKind::Signature is emitted for @_-unpacked subs, so user_sigs has no
+/// entry for `render`, no resolver is present, and the walker skips cleanly.
 #[test]
 fn test_method_call_inlay_hints_in_file_method() -> Result<(), Box<dyn std::error::Error>> {
     let src = r#"
@@ -222,7 +221,9 @@ $fmt->render("hello %s", 10);
 /// Param list: ($self, $template, $limit) → two visible params after skipping $self.
 ///
 /// This tests the NodeKind::Subroutine path (formal signature) combined with
-/// NodeKind::MethodCall walking.
+/// NodeKind::MethodCall walking. Also verifies paramIndex offsets: the first
+/// visible param ($template) maps to paramIndex=1 (self is index 0), and the
+/// second ($limit) maps to paramIndex=2.
 #[test]
 fn test_method_call_inlay_hints_formal_signature_in_file() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -234,7 +235,11 @@ $fmt->render("hello %s", 10);
     let ast = ast_for(src)?;
     let hints = parameter_hints(&ast, &dummy_pos, None);
 
-    let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+    // Filter to only MethodCall hints for `render`
+    let method_hints: Vec<&serde_json::Value> =
+        hints.iter().filter(|h| h["data"]["functionName"].as_str() == Some("render")).collect();
+
+    let labels: Vec<&str> = method_hints.iter().filter_map(|h| h["label"].as_str()).collect();
 
     assert!(
         labels.contains(&"template:"),
@@ -248,6 +253,28 @@ $fmt->render("hello %s", 10);
     assert!(
         !labels.contains(&"self:"),
         "Must not emit hint for the implicit self param; labels: {labels:?}"
+    );
+
+    // paramIndex assertions: MethodCall emits i+1 (self is index 0 in the param list).
+    // template: is the first visible arg (call-site i=0) → paramIndex = 1
+    // limit:    is the second visible arg (call-site i=1) → paramIndex = 2
+    let template_hint = method_hints
+        .iter()
+        .find(|h| h["label"].as_str() == Some("template:"))
+        .expect("template hint must exist");
+    assert_eq!(
+        template_hint["data"]["paramIndex"].as_u64(),
+        Some(1),
+        "template: paramIndex should be 1 (self is index 0); hint: {template_hint}"
+    );
+    let limit_hint = method_hints
+        .iter()
+        .find(|h| h["label"].as_str() == Some("limit:"))
+        .expect("limit hint must exist");
+    assert_eq!(
+        limit_hint["data"]["paramIndex"].as_u64(),
+        Some(2),
+        "limit: paramIndex should be 2; hint: {limit_hint}"
     );
     Ok(())
 }
@@ -310,6 +337,11 @@ connect_db("localhost", 5432, "mydb");
 /// Strong-oracle test: workspace resolver is called for unknown methods.
 /// Simulates what `misc.rs` does when `resolve_method_in_workspace` returns
 /// a param list — confirms the resolver closure path works end-to-end.
+///
+/// Also verifies paramIndex offsets for the resolver path:
+///   format_output($self, $template, $data): self=index 0 (skipped).
+///   First visible arg: $template → call-site i=0 → paramIndex = i+1 = 1.
+///   Second visible arg: $data    → call-site i=1 → paramIndex = i+1 = 2.
 #[test]
 fn test_method_call_workspace_resolver_provides_hints() -> Result<(), Box<dyn std::error::Error>> {
     let src = r#"
@@ -339,6 +371,27 @@ $obj->format_output("tmpl", "arg2");
         !labels.contains(&"self:"),
         "Leading self param from resolver must be skipped; labels: {labels:?}"
     );
+
+    // paramIndex assertions — MethodCall arm emits `i + 1` to account for the skipped
+    // leading self/class positional. A regression to `i` would misalign with the
+    // SignatureHelp consumer that uses the same index convention.
+    let template_hint = hints
+        .iter()
+        .find(|h| h["label"].as_str() == Some("template:"))
+        .expect("template hint must exist");
+    assert_eq!(
+        template_hint["data"]["paramIndex"].as_u64(),
+        Some(1),
+        "template: paramIndex must be 1 (self is index 0 in the declaration list); \
+         hint: {template_hint}"
+    );
+    let data_hint =
+        hints.iter().find(|h| h["label"].as_str() == Some("data:")).expect("data hint must exist");
+    assert_eq!(
+        data_hint["data"]["paramIndex"].as_u64(),
+        Some(2),
+        "data: paramIndex must be 2; hint: {data_hint}"
+    );
     Ok(())
 }
 
@@ -360,7 +413,9 @@ $obj->mystery_method(1, 2);
 }
 
 /// Class->method() (static/class method call) should also receive hints
-/// when the resolver supplies param names.
+/// when the resolver supplies param names. Verifies paramIndex offsets:
+///   create($class, $name, $id): class=index 0 (skipped).
+///   $name → paramIndex=1, $id → paramIndex=2.
 #[test]
 fn test_class_method_call_workspace_resolver_provides_hints()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -388,5 +443,23 @@ My::Class->create("name", 42);
     );
     assert!(labels.contains(&"id:"), "Class->method() should get 'id:' hint; labels: {labels:?}");
     assert!(!labels.contains(&"class:"), "Leading class param must be skipped; labels: {labels:?}");
+
+    // paramIndex assertions: class is at declaration index 0 (skipped).
+    // name: is emitted for call-site i=0 → paramIndex = i+1 = 1.
+    // id:   is emitted for call-site i=1 → paramIndex = i+1 = 2.
+    let name_hint =
+        hints.iter().find(|h| h["label"].as_str() == Some("name:")).expect("name hint must exist");
+    assert_eq!(
+        name_hint["data"]["paramIndex"].as_u64(),
+        Some(1),
+        "name: paramIndex must be 1 (class is index 0 in declaration); hint: {name_hint}"
+    );
+    let id_hint =
+        hints.iter().find(|h| h["label"].as_str() == Some("id:")).expect("id hint must exist");
+    assert_eq!(
+        id_hint["data"]["paramIndex"].as_u64(),
+        Some(2),
+        "id: paramIndex must be 2; hint: {id_hint}"
+    );
     Ok(())
 }
