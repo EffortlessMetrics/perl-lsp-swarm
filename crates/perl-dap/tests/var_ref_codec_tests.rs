@@ -638,6 +638,65 @@ fn test_adversarial_evalresult_counter_max_valid_roundtrip()
     Ok(())
 }
 
+// ============================================================================
+// Adversarial round-trip tests — Child negative parent (band-bleed hazard)
+// ============================================================================
+
+/// Child encode with negative parent must return None.
+///
+/// A negative `parent` in Child encoding produces a wire value in the EvalResult
+/// band [1_000_000, 1_999_999_999], violating the disjoint-band invariant and
+/// causing round-trip failures (e.g. parent=-1, index=0 → wire 1_999_934_464,
+/// which decodes as EvalResult{counter: 998_934_464}, not as Child).
+///
+/// Valid DAP variablesReferences are always non-negative, so encode() must
+/// reject negative parents.
+#[test]
+fn test_adversarial_child_negative_parent_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    // parent=-1 would encode to wire 1_999_934_464 (EvalResult band) — must be None
+    let result = VariableReference::Child { parent: -1, index: 0 }.encode();
+    assert_eq!(
+        result,
+        None,
+        "Child{{parent: -1, index: 0}} encode must return None \
+         (wire 1_999_934_464 would bleed into EvalResult band)"
+    );
+
+    // parent=i32::MIN also rejected
+    let result_min = VariableReference::Child { parent: i32::MIN, index: 0 }.encode();
+    assert_eq!(
+        result_min,
+        None,
+        "Child{{parent: i32::MIN, index: 0}} encode must return None (negative parent)"
+    );
+
+    // parent=-1 with max index also rejected
+    let result_max_idx = VariableReference::Child { parent: -1, index: u32::MAX }.encode();
+    assert_eq!(
+        result_max_idx,
+        None,
+        "Child{{parent: -1, index: u32::MAX}} encode must return None (negative parent)"
+    );
+
+    Ok(())
+}
+
+/// Child encode with parent=0 is valid (minimum non-negative parent).
+///
+/// Regression guard: the negative-parent fix must not accidentally reject parent=0,
+/// which is a legitimate variablesReference value (encodes to CHILD_BASE).
+#[test]
+fn test_adversarial_child_parent_zero_valid() -> Result<(), Box<dyn std::error::Error>> {
+    let original = VariableReference::Child { parent: 0, index: 5 };
+    let wire = original.encode().ok_or("Child{{parent: 0, index: 5}} encode must succeed")?;
+    // wire = CHILD_BASE + (0 * 65_536) + 5 = 2_000_000_000 + 5 = 2_000_000_005
+    assert_eq!(wire, 2_000_000_005, "Child{{parent: 0, index: 5}} should encode as 2_000_000_005");
+    let decoded =
+        VariableReference::decode(wire).ok_or("decode(2_000_000_005) must succeed for Child")?;
+    assert_eq!(original, decoded, "Child{{parent: 0, index: 5}} must round-trip");
+    Ok(())
+}
+
 /// EvalResult negative counter is rejected by encode().
 ///
 /// Counters are logically non-negative (monotonically increasing allocation IDs).

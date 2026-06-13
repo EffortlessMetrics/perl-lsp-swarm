@@ -119,7 +119,8 @@ impl TryFrom<i32> for ScopeKind {
 /// - `Scope`: `None` when `frame_id > 99_999` (would overflow into the EvalResult band).
 /// - `EvalResult`: `None` when `1_000_000 + counter > EVAL_MAX` (counter ≥ 1_999_000_000,
 ///   practically unreachable, but enforced for type-level correctness).
-/// - `Child`: always `Some` (saturating arithmetic).
+/// - `Child`: `None` when `parent < 0` (negative parent produces wire in the EvalResult band,
+///   violating the disjoint-band invariant; saturating arithmetic for non-negative inputs).
 ///
 /// All fields are primitive scalar types, so `VariableReference` is `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +142,9 @@ pub enum VariableReference {
     /// A child variable reference within a parent variable.
     Child {
         /// The parent variable reference (the Scope or EvalResult that owns this child).
+        ///
+        /// Must be a non-negative, previously encoded `variablesReference` (always ≥ 0
+        /// by the DAP spec). Negative values are invalid and encode() returns `None`.
         parent: i32,
         /// Zero-based index of the child within the parent's variable list.
         index: u32,
@@ -167,7 +171,9 @@ impl VariableReference {
     /// - `Scope`: `None` when `frame_id` is out of `[0, 99_999]` (would bleed into EvalResult band).
     /// - `EvalResult`: `None` when `counter` is negative or `1_000_000 + counter > 1_999_999_999`
     ///   (would bleed into Child band; requires counter ≥ 1_999_000_000, practically unreachable).
-    /// - `Child`: always `Some` (uses saturating arithmetic; extreme inputs clamp to i32::MAX).
+    /// - `Child`: `None` when `parent < 0` (negative parent is semantically invalid — a
+    ///   DAP variablesReference is always non-negative, and negative parents produce wire values
+    ///   in the EvalResult band, corrupting the disjoint-band invariant).
     pub fn encode(&self) -> Option<i32> {
         match self {
             VariableReference::Scope { frame_id, kind } => {
@@ -197,9 +203,15 @@ impl VariableReference {
             }
             VariableReference::Child { parent, index } => {
                 // Wire = 2_000_000_000 + (parent << 16 | (index & 0xFFFF))
+                // Negative parents produce wire values in the EvalResult band
+                // (e.g. parent=-1 → wire 1_999_934_464), violating disjoint-band invariant.
+                // A valid DAP variablesReference is always non-negative, so reject here.
+                if *parent < 0 {
+                    return None;
+                }
                 // Clamp parent so the multiplication fits in i32.
                 let index_truncated = (*index & 0xFFFF) as i32;
-                let parent_clamped = (*parent).clamp(i32::MIN / 65_536, i32::MAX / 65_536);
+                let parent_clamped = (*parent).clamp(0, i32::MAX / 65_536);
                 let parent_shifted = parent_clamped * 65_536;
                 let packed = parent_shifted.saturating_add(index_truncated);
                 Some(CHILD_BASE.saturating_add(packed))
