@@ -351,7 +351,7 @@ fn safe_for_breakpoint_exact_false_set() {
 }
 
 #[test]
-fn safe_for_breakpoint_covers_all_67_variants() {
+fn safe_for_breakpoint_covers_all_69_variants() {
     // Every variant must appear in exactly one of the two lists.
     // After ratification: 41 in TRUE, 28 in FALSE = 69 total variants (per acceptance.md)
     for kind in all_variants() {
