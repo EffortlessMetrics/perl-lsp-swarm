@@ -133,6 +133,16 @@ impl LspServer {
         get_text_around_offset(content, offset, radius)
     }
 
+    /// Get text around an offset and return the adjusted byte start.
+    pub(crate) fn get_text_window_around_offset(
+        &self,
+        content: &str,
+        offset: usize,
+        radius: usize,
+    ) -> (usize, String) {
+        get_text_window_around_offset(content, offset, radius)
+    }
+
     /// Extract module reference from text (e.g., from "use Module::Name" or "require Module::Name")
     pub(crate) fn extract_module_reference(&self, text: &str, cursor_pos: usize) -> Option<String> {
         extract_module_reference(text, cursor_pos)
@@ -148,9 +158,14 @@ impl LspServer {
     }
 
     /// Get buffer text for a URI
+    ///
+    /// Normalizes the URI via `normalize_uri_key` before lookup so that
+    /// client-supplied URIs with e.g. uppercase Windows drive letters resolve
+    /// correctly against the normalized keys used when documents are stored.
     pub(crate) fn buffer_text(&self, uri: &str) -> Option<String> {
         let docs = self.documents.lock();
-        docs.get(uri).map(|d| d.text.clone())
+        let normalized = self.normalize_uri_key(uri);
+        docs.get(&normalized).map(|d| d.text.clone())
     }
 
     /// Current document generation counter for `uri`, if the document is open.
@@ -160,15 +175,23 @@ impl LspServer {
     /// has changed" signal used to detect stale read requests in the
     /// scheduler — distinct from the LSP-supplied `version`, which is
     /// client-controlled.
+    ///
+    /// Normalizes the URI so that stale-read cancellation works even when the
+    /// client supplies a non-canonical URI (e.g. uppercase drive letter on Windows).
     pub(crate) fn document_generation(&self, uri: &str) -> Option<u32> {
         let docs = self.documents.lock();
-        docs.get(uri).map(|d| d.generation.load(std::sync::atomic::Ordering::SeqCst))
+        let normalized = self.normalize_uri_key(uri);
+        docs.get(&normalized).map(|d| d.generation.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Current LSP document version for `uri`, if the document is open.
+    ///
+    /// Normalizes the URI so the lookup aligns with the normalized keys used
+    /// when documents are stored in `text_sync.rs`.
     pub(crate) fn document_version(&self, uri: &str) -> Option<i32> {
         let docs = self.documents.lock();
-        docs.get(uri).map(|d| d.version)
+        let normalized = self.normalize_uri_key(uri);
+        docs.get(&normalized).map(|d| d.version)
     }
 
     /// Iterate over all open buffers (for reference search)

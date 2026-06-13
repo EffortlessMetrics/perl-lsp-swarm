@@ -335,6 +335,7 @@
 //! This crate follows TDD principles with acceptance criteria from Issue #207.
 //! All tests are tagged with `// AC:ID` comments for traceability to specifications.
 
+#![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::print_stderr, clippy::print_stdout))]
 
 // Phase 1 modules (AC1-AC4) - IMPLEMENTED
@@ -394,6 +395,11 @@ pub mod tcp_attach;
 // See #453: Implement stack trace provider (AC8)
 // See #454: Implement control flow handlers (AC9)
 // See #455: Implement safe evaluation (AC10)
+
+/// Type-safe variablesReference codec — retiring the #1219 ID/ref-space collision class.
+pub mod var_ref {
+    pub use crate::debug_adapter::var_ref::{ScopeKind, VariableReference, VariableReferenceError};
+}
 
 // Re-export Phase 1 public types
 pub use bridge_adapter::{BridgeAdapter, DapBridgeEnvConfig};

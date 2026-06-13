@@ -134,13 +134,18 @@ impl<'a> Parser<'a> {
                     }
 
                     // Allow classic argument starts and sigiled variables ($x, @arr, %hash)
+                    // NOTE: LeftBracket and LeftBrace are intentionally excluded here.
+                    // When the second token is a $-sigiled variable, a following `[` or `{`
+                    // is ALWAYS a subscript of that variable ($var[i] or $var{key}), never
+                    // the start of a separate indirect-object argument. Perl treats both
+                    // `print $hash{key}` and `print $hash {key}` (with a space) identically
+                    // — both are subscripts of $hash, never filehandle + argument.
+                    // Verified via `perl -MO=Terse`. See issue #974.
                     let third_text = &third.text;
                     return matches!(
                         third.kind,
                         TokenKind::String       // print $fh "x"
                         | TokenKind::LeftParen    // print $fh ($x)
-                        | TokenKind::LeftBracket  // print $fh [$x]
-                        | TokenKind::LeftBrace    // print $fh { ... }
                     ) || third_text.starts_with('$')    // print $fh $x
                       || third_text.starts_with('@')    // print $fh @array
                       || third_text.starts_with('%'); // print $fh %hash
@@ -369,11 +374,15 @@ impl<'a> Parser<'a> {
         // this parser as an indirect call:
         //   print STDERR => "msg";  — STDERR is object, "msg" is first arg
         //   imported $$obj, $arg    — double-sigil object plus argument list
+        //   imported_fn $$obj, $arg — same but after unbraced-deref fix, object is Unary ${}
         let comma_after_double_sigil_object = self.peek_kind() == Some(TokenKind::Comma)
-            && matches!(
+            && (matches!(
                 &object.kind,
                 NodeKind::Variable { sigil, name } if sigil == "$" && name.starts_with('$')
-            );
+            ) || matches!(
+                &object.kind,
+                NodeKind::Unary { op, .. } if op == "${}"
+            ));
         if self.peek_kind() == Some(TokenKind::FatArrow) || comma_after_double_sigil_object {
             self.tokens.next()?; // consume , or =>
         }

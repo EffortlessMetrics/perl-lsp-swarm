@@ -39,7 +39,7 @@
 
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::{
-    AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance,
+    AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance, UseLibFact,
 };
 
 /// Walk the AST and return one [`ImportSpec`] per import site.
@@ -52,6 +52,116 @@ pub fn extract_import_specs(ast: &Node, file_id: FileId) -> Vec<ImportSpec> {
     let mut out = Vec::new();
     walk(ast, file_id, &mut out);
     out
+}
+
+/// Walk the AST and return one [`UseLibFact`] per static `use lib`/`no lib` entry.
+///
+/// Dynamic args (`use lib $var`, `use lib @dirs`) are skipped — no fact is emitted.
+/// Double-quoted strings and `qq` quote operators that contain `$`, `@`, or `%`
+/// are treated as dynamic (they interpolate at runtime) and are also skipped.
+/// Single-quoted strings, `q` quote operators, and interpolating strings that
+/// contain no interpolation sigils produce a
+/// `Provenance::ExactAst` / `Confidence::High` fact.
+///
+/// `is_active` is `true` for `use lib` entries and `false` for `no lib` entries.
+pub fn extract_use_lib_facts(ast: &Node, file_id: FileId) -> Vec<UseLibFact> {
+    let mut out = Vec::new();
+    walk_use_lib(ast, file_id, &mut out);
+    out
+}
+
+// ── UseLibFact walker ────────────────────────────────────────────────────────
+
+fn walk_use_lib(node: &Node, file_id: FileId, out: &mut Vec<UseLibFact>) {
+    match &node.kind {
+        NodeKind::Use { module, args, .. } if module == "lib" => {
+            collect_use_lib_facts(args, true, file_id, node, out);
+        }
+        NodeKind::No { module, args, .. } if module == "lib" => {
+            collect_use_lib_facts(args, false, file_id, node, out);
+        }
+        _ => {}
+    }
+
+    for child in node.children() {
+        walk_use_lib(child, file_id, out);
+    }
+}
+
+/// Inspect the argument list of a `use lib` / `no lib` statement and push a
+/// [`UseLibFact`] for each static (quoted-string or `qw(...)`) argument.
+///
+/// Dynamic arguments (variables `$var`, arrays `@arr`, and anything else that
+/// is not a static string literal or `qw(...)` list) are silently skipped.
+fn collect_use_lib_facts(
+    args: &[String],
+    is_active: bool,
+    file_id: FileId,
+    node: &Node,
+    out: &mut Vec<UseLibFact>,
+) {
+    let anchor_id = anchor_from_node(node);
+
+    for arg in args {
+        let trimmed = arg.trim();
+
+        // qw(...) list — emit one fact per word.
+        if let Some(inner) = parse_qw_content(trimmed) {
+            for word in inner.split_whitespace() {
+                out.push(UseLibFact::new(
+                    word.to_string(),
+                    is_active,
+                    file_id,
+                    Some(anchor_id),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ));
+            }
+            continue;
+        }
+
+        if let Some(literal) = parse_use_lib_literal(trimmed) {
+            if literal.interpolates
+                && (literal.body.contains('$')
+                    || literal.body.contains('@')
+                    || literal.body.contains('%'))
+            {
+                continue;
+            }
+            out.push(UseLibFact::new(
+                literal.body.to_string(),
+                is_active,
+                file_id,
+                Some(anchor_id),
+                Provenance::ExactAst,
+                Confidence::High,
+            ));
+            continue;
+        }
+
+        // Dynamic argument ($var, @arr, or anything else) — skip, emit nothing.
+    }
+}
+
+struct UseLibLiteral<'a> {
+    body: &'a str,
+    interpolates: bool,
+}
+
+fn parse_use_lib_literal(s: &str) -> Option<UseLibLiteral<'_>> {
+    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        return Some(UseLibLiteral { body: unquote(s), interpolates: true });
+    }
+    if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        return Some(UseLibLiteral { body: unquote(s), interpolates: false });
+    }
+    if let Some(body) = parse_quote_operator_content(s, "qq") {
+        return Some(UseLibLiteral { body, interpolates: true });
+    }
+    if let Some(body) = parse_quote_operator_content(s, "q") {
+        return Some(UseLibLiteral { body, interpolates: false });
+    }
+    None
 }
 
 // ── AST walker ──────────────────────────────────────────────────────────────
@@ -523,9 +633,11 @@ fn is_version_pragma(module: &str) -> bool {
 }
 
 fn parse_qw_content(s: &str) -> Option<&str> {
-    let rest = s.strip_prefix("qw")?;
-    let inner = rest.strip_prefix('(')?.strip_suffix(')')?;
-    Some(inner)
+    perl_parser_core::parse_quote_operator_content(s, "qw")
+}
+
+fn parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> Option<&'a str> {
+    perl_parser_core::parse_quote_operator_content(s, operator)
 }
 
 fn unquote(s: &str) -> &str {
@@ -581,6 +693,125 @@ mod tests {
         extract_import_specs(&ast, FileId(1))
     }
 
+    fn parse_and_extract_use_lib(
+        code: &str,
+    ) -> Result<Vec<UseLibFact>, Box<dyn std::error::Error>> {
+        let mut parser = Parser::new(code);
+        let ast =
+            parser.parse().map_err(|error| format!("parse failed for {code:?}: {error:?}"))?;
+        Ok(extract_use_lib_facts(&ast, FileId(2)))
+    }
+
+    #[test]
+    fn use_lib_extractor_returns_empty_vec_without_lib_statement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("use strict;")?;
+
+        assert!(facts.is_empty(), "non-lib imports must not emit UseLibFact values");
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_collects_active_and_inactive_facts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("use lib 'active'; no lib 'inactive';")?;
+
+        assert_eq!(
+            facts,
+            vec![
+                UseLibFact::new(
+                    "active".to_string(),
+                    true,
+                    FileId(2),
+                    Some(AnchorId(0)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+                UseLibFact::new(
+                    "inactive".to_string(),
+                    false,
+                    FileId(2),
+                    Some(AnchorId(18)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_walks_ast_children_for_later_statement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("use strict; use lib 'later';")?;
+        let fact = facts.first().ok_or("expected UseLibFact from later child")?;
+
+        assert_eq!(fact.path, "later");
+        assert_eq!(fact.file_id, FileId(2));
+        assert_eq!(fact.anchor_id, Some(AnchorId(12)));
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_assigns_anchor_to_collected_fact() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let facts = parse_and_extract_use_lib("use lib 'anchored';")?;
+        let fact = facts.first().ok_or("expected anchored UseLibFact")?;
+
+        assert_eq!(fact.path, "anchored");
+        assert_eq!(fact.anchor_id, Some(AnchorId(0)));
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_emits_qw_words_with_static_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("use lib qw(lib vendor);")?;
+
+        assert_eq!(
+            facts,
+            vec![
+                UseLibFact::new(
+                    "lib".to_string(),
+                    true,
+                    FileId(2),
+                    Some(AnchorId(0)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+                UseLibFact::new(
+                    "vendor".to_string(),
+                    true,
+                    FileId(2),
+                    Some(AnchorId(0)),
+                    Provenance::ExactAst,
+                    Confidence::High,
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn use_lib_extractor_emits_literal_with_static_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("no lib 'old';")?;
+        let fact = facts.first().ok_or("expected literal UseLibFact")?;
+
+        assert_eq!(
+            fact,
+            &UseLibFact::new(
+                "old".to_string(),
+                false,
+                FileId(2),
+                Some(AnchorId(0)),
+                Provenance::ExactAst,
+                Confidence::High,
+            )
+        );
+        Ok(())
+    }
+
     #[test]
     fn use_bare_module_produces_use_default() -> Result<(), Box<dyn std::error::Error>> {
         let specs = parse_and_extract("use strict;");
@@ -589,6 +820,59 @@ mod tests {
         assert_eq!(spec.kind, ImportKind::Use);
         assert_eq!(spec.symbols, ImportSymbols::Default);
         Ok(())
+    }
+
+    /// Regression: `qw` with whitespace before the delimiter (`qw [a b]`) must
+    /// extract the explicit import list the same as the compact form `qw(a b)`.
+    /// Previously the leading space was treated as the delimiter, so no symbols
+    /// were extracted. See `parse_quote_operator_content`.
+    #[test]
+    fn use_explicit_list_qw_space_before_delimiter() -> Result<(), Box<dyn std::error::Error>> {
+        let specs = parse_and_extract("use List::Util qw [first any];");
+        let spec = specs.first().ok_or("expected ImportSpec")?;
+        assert_eq!(spec.module, "List::Util");
+        assert_eq!(spec.kind, ImportKind::UseExplicitList);
+        if let ImportSymbols::Explicit(names) = &spec.symbols {
+            assert!(names.contains(&"first".to_string()), "got {:?}", spec.symbols);
+            assert!(names.contains(&"any".to_string()), "got {:?}", spec.symbols);
+        } else {
+            return Err(format!("expected Explicit, got {:?}", spec.symbols).into());
+        }
+        Ok(())
+    }
+
+    /// Regression: `use lib qw [..]` (space before delimiter) must still emit a
+    /// `UseLibFact` per word.
+    #[test]
+    fn use_lib_extractor_emits_qw_words_space_before_delimiter()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let facts = parse_and_extract_use_lib("use lib qw [lib vendor];")?;
+        let paths: Vec<&str> = facts.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"lib"), "got {paths:?}");
+        assert!(paths.contains(&"vendor"), "got {paths:?}");
+        Ok(())
+    }
+
+    /// `parse_quote_operator_content` unit coverage: leading whitespace before
+    /// the delimiter is tolerated for `qw`, `q`, and `qq`; a word character
+    /// after the operator is still rejected (it is not a delimiter).
+    /// Covers space, tab, and newline — all `trim_start` whitespace variants.
+    #[test]
+    fn parse_quote_operator_content_tolerates_leading_space() {
+        // Space before delimiter.
+        assert_eq!(parse_quote_operator_content("qw [a b]", "qw"), Some("a b"));
+        assert_eq!(parse_quote_operator_content("qw(a b)", "qw"), Some("a b"));
+        assert_eq!(parse_quote_operator_content("q (x)", "q"), Some("x"));
+        assert_eq!(parse_quote_operator_content("qq {y}", "qq"), Some("y"));
+        // Tab before delimiter (`trim_start` trims tabs too).
+        assert_eq!(parse_quote_operator_content("qw\t[a b]", "qw"), Some("a b"));
+        assert_eq!(parse_quote_operator_content("q\t(x)", "q"), Some("x"));
+        // Newline before delimiter (e.g. heredoc-adjacent or multi-line use).
+        assert_eq!(parse_quote_operator_content("qw\n[a b]", "qw"), Some("a b"));
+        // Multiple mixed whitespace before delimiter.
+        assert_eq!(parse_quote_operator_content("qw  \t [a b]", "qw"), Some("a b"));
+        // A word char after the operator is a bareword, not a delimiter.
+        assert_eq!(parse_quote_operator_content("qq foo", "qq"), None);
     }
 
     #[test]

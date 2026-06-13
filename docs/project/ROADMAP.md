@@ -526,10 +526,10 @@ The LSP compliance table is auto-generated from `features.toml`.
 | debug | 24 | 24 | 100% |
 | notebook | 2 | 2 | 100% |
 | protocol | 9 | 9 | 100% |
-| text_document | 49 | 49 | 100% |
+| text_document | 53 | 53 | 100% |
 | window | 9 | 9 | 100% |
-| workspace | 26 | 26 | 100% |
-| **Overall** | **119** | **119** | **100%** |
+| workspace | 28 | 28 | 100% |
+| **Overall** | **125** | **125** | **100%** |
 <!-- END: COMPLIANCE_TABLE -->
 
 For live capability posture, run `just status-check` or read [CURRENT_STATUS.md](CURRENT_STATUS.md).
@@ -544,4 +544,14 @@ For live capability posture, run `just status-check` or read [CURRENT_STATUS.md]
 | Evidence-backed metrics | [CURRENT_STATUS.md](CURRENT_STATUS.md) |
 | Top-level summary docs | [../../ROADMAP.md](../../ROADMAP.md), [../../NOW_NEXT_LATER.md](../../NOW_NEXT_LATER.md) |
 
-<!-- Last Updated: 2026-05-19 -->
+## Current Arc (2026-06)
+
+The active execution arc is the convergence-to-release program, documented in
+[docs/project/plans/2026-06-convergence-to-release.md](plans/2026-06-convergence-to-release.md).
+
+The umbrella issue is [#1209](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1209),
+which defines the four-milestone ladder (M1 trust floor → M2 daily repair loop →
+M3 semantic help → M4 release confidence) and the eight post-convergence product
+lanes in order.
+
+<!-- Last Updated: 2026-06-07 -->
