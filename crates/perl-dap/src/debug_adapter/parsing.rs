@@ -121,7 +121,18 @@ impl DebugAdapter {
         start: usize,
         count: usize,
     ) -> (Vec<Variable>, HashMap<i32, Vec<Variable>>) {
-        let scope_type = variables_ref % 10;
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+        // Decode the scope kind from the variablesReference using the codec.
+        // scope_variables::parse_assignments still expects i32 discriminant (1/2/3).
+        // Invalid (non-Scope or None) refs return empty results — no crash.
+        let scope_type = match VariableReference::decode(variables_ref) {
+            Some(VariableReference::Scope { kind, .. }) => match kind {
+                ScopeKind::Locals => 1_i32,
+                ScopeKind::Package => 2_i32,
+                ScopeKind::Globals => 3_i32,
+            },
+            _ => return (Vec::new(), HashMap::new()),
+        };
         let parsed = scope_variables::parse_assignments(lines, scope_type);
         let page = scope_variables::sort_and_paginate(parsed, start, count);
 
@@ -225,42 +236,46 @@ impl DebugAdapter {
         start: usize,
         count: usize,
     ) -> Vec<Variable> {
-        let variables = match variables_ref % 10 {
-            1 => vec![
-                Variable {
-                    name: "$self".to_string(),
-                    value: "blessed(My::Module)".to_string(),
-                    type_: Some("hash".to_string()),
-                    variables_reference: variables_ref.saturating_mul(100) + 2,
-                    named_variables: Some(5),
-                    indexed_variables: None,
-                },
-                Variable {
-                    name: "@_".to_string(),
-                    value: "array(size=0)".to_string(),
-                    type_: Some("array".to_string()),
-                    variables_reference: variables_ref.saturating_mul(100) + 1,
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+        // Decode scope kind via codec; None/non-Scope → empty fallback (no crash).
+        let variables = match VariableReference::decode(variables_ref) {
+            Some(VariableReference::Scope { kind, .. }) => match kind {
+                ScopeKind::Locals => vec![
+                    Variable {
+                        name: "$self".to_string(),
+                        value: "blessed(My::Module)".to_string(),
+                        type_: Some("hash".to_string()),
+                        variables_reference: variables_ref.saturating_mul(100) + 2,
+                        named_variables: Some(5),
+                        indexed_variables: None,
+                    },
+                    Variable {
+                        name: "@_".to_string(),
+                        value: "array(size=0)".to_string(),
+                        type_: Some("array".to_string()),
+                        variables_reference: variables_ref.saturating_mul(100) + 1,
+                        named_variables: None,
+                        indexed_variables: Some(0),
+                    },
+                ],
+                ScopeKind::Package => vec![Variable {
+                    name: "$VERSION".to_string(),
+                    value: "\"1.0.0\"".to_string(),
+                    type_: Some("scalar".to_string()),
+                    variables_reference: 0,
                     named_variables: None,
-                    indexed_variables: Some(0),
-                },
-            ],
-            2 => vec![Variable {
-                name: "$VERSION".to_string(),
-                value: "\"1.0.0\"".to_string(),
-                type_: Some("scalar".to_string()),
-                variables_reference: 0,
-                named_variables: None,
-                indexed_variables: None,
-            }],
-            3 => vec![Variable {
-                name: "$_".to_string(),
-                value: "undef".to_string(),
-                type_: Some("scalar".to_string()),
-                variables_reference: 0,
-                named_variables: None,
-                indexed_variables: None,
-            }],
-            _ => Vec::new(),
+                    indexed_variables: None,
+                }],
+                ScopeKind::Globals => vec![Variable {
+                    name: "$_".to_string(),
+                    value: "undef".to_string(),
+                    type_: Some("scalar".to_string()),
+                    variables_reference: 0,
+                    named_variables: None,
+                    indexed_variables: None,
+                }],
+            },
+            _ => Vec::new(), // Invalid or non-Scope varref → honest empty fallback
         };
 
         variables.into_iter().skip(start).take(count).collect()
@@ -537,8 +552,12 @@ mod tests {
     }
 
     #[test]
-    pub(super) fn test_stack_trace_uses_recent_output_when_available()
+    pub(super) fn test_stack_trace_returns_empty_without_live_session()
     -> Result<(), Box<dyn std::error::Error>> {
+        // After fix #933: the degraded-transport path no longer parses the snapshot
+        // buffer. When there is no live session, handle_stack_trace returns an empty
+        // frame list regardless of recent-output content (snapshot buffer is unreliable
+        // because it contains full session history in arrival order).
         let mut adapter = DebugAdapter::new();
         adapter.push_recent_output_line_for_test("# 0 main::compute at /tmp/script.pl line 20");
         adapter.push_recent_output_line_for_test("# 1 Foo::process called at /tmp/Foo.pm line 15");
@@ -552,9 +571,12 @@ mod tests {
                     .get("stackFrames")
                     .and_then(|v| v.as_array())
                     .ok_or("missing stackFrames")?;
-                assert!(
-                    frames.len() >= 2,
-                    "expected parsed frames from recent output, got {}",
+                // No live session → degraded path returns Vec::new() → session.stack_frames
+                // (also empty) → honest empty list per DAP spec.
+                assert_eq!(
+                    frames.len(),
+                    0,
+                    "without a live session, snapshot buffer must NOT be used; expected 0 frames, got {}",
                     frames.len()
                 );
             }
@@ -948,5 +970,59 @@ DB<1>"#;
         // Three consecutive prompts — verifies loop handles arbitrary depth.
         let result = DebugAdapter::normalize_debugger_output_line("DB<1> DB<2> DB<3> my $x = 10;");
         assert_eq!(result, "my $x = 10;");
+    }
+
+    #[test]
+    fn test_stack_trace_does_not_use_snapshot_in_degraded_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #933: When framed transport fails (degraded path), handle_stack_trace should return
+        // empty frames instead of trying to parse the snapshot buffer.
+        // The snapshot buffer contains the entire session history, so parsing it returns
+        // the stale initial-stop frame first, not the current-stop frame.
+        //
+        // This test verifies the fix: degraded path returns Vec::new() which falls through
+        // to session.stack_frames (populated by output reader).
+
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test();
+
+        // Inject stale frames (simulating a previous stop's state)
+        let stale_frame =
+            StackFrame::new(1, "old_func".to_string(), Source::new("/old/file.pl"), 5);
+        adapter.inject_stack_frames_for_test(vec![stale_frame]);
+
+        // Simulate degraded transport: push old context line to snapshot buffer.
+        // When framed transport fails, the else branch (lines 66-74 in frames.rs) is reached.
+        // The snapshot buffer contains arrival-order history, so we push old + new in order.
+        adapter.push_recent_output_line_for_test("main::(/test/file1.pl:4):"); // old context line
+        adapter.push_recent_output_line_for_test("main::(/test/file2.pl:5):"); // current context line
+
+        // Call handle_stack_trace with no framed output (simulating transport failure).
+        // Note: we can't directly mock framed_output_lines=None without spawning a process,
+        // so we rely on the absence of a live session stdin to trigger the else branch.
+        // The adapter was seeded but with a mock session, so send_framed_debugger_commands
+        // will fail or be skipped, reaching the degraded path.
+        let response = adapter.handle_stack_trace(1, 1, None);
+
+        // Extract the frames from response body
+        match response {
+            DapMessage::Response { body: Some(body), .. } => {
+                if let Ok(trace_response) =
+                    serde_json::from_value::<crate::protocol::StackTraceResponseBody>(body.clone())
+                {
+                    // FAILS if degraded path returns snapshot-parsed frames instead of empty.
+                    // Before fix: frames.len() == 2 (old + new parsed from snapshot)
+                    // After fix: frames.len() == 0 (empty from degraded path) OR len() == 1 (from session.stack_frames)
+                    assert!(
+                        trace_response.stack_frames.is_empty()
+                            || trace_response.stack_frames.len() == 1,
+                        "degraded path must return empty or fall through to session.stack_frames, not snapshot-parsed frames; got {} frames",
+                        trace_response.stack_frames.len()
+                    );
+                }
+            }
+            _ => return Err("Expected response with body".into()),
+        }
+        Ok(())
     }
 }
