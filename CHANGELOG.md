@@ -7,6 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!-- DRAFT — held for maintainer version cut. Do not tag or publish without explicit approval. -->
+
+### Added
+
+- **Workspace method signature help for `->method()` calls.** Triggering
+  signature help (or hovering) on an OO method call now resolves the signature
+  from the workspace symbol index for methods defined in the same project,
+  rather than returning nothing. (#1301)
+- **`our` variables in document and workspace symbols.** Package-scoped
+  variables declared with `our` are now included in the symbol index and
+  therefore visible in editor outline and go-to-symbol lookups. (#1300)
+- **Moo/Moose `has` attributes in document and workspace symbols.** Object
+  attributes declared with `has` (Moo, Moose, Moo::Role, Moose::Role) are now
+  indexed and appear in outline and symbol search. (#1300)
+- **Phase-block hover docs (`BEGIN`/`END`/`INIT`/`CHECK`/`UNITCHECK`).** Hovering
+  over a Perl phase block now displays an explanation of when that block runs
+  relative to compile and runtime. (#1298)
+
+### Fixed
+
+#### Debugger (DAP)
+
+- **Stale stack frames cleared on resume.** When the debugger resumes and hits
+  the next stop, the call stack and variables views now reflect the new stop
+  position instead of the previous one. (#1337)
+- **Degraded-transport `stackTrace` returns empty, not stale.** When the debug
+  transport is in a degraded state, `stackTrace` returns an empty frame list
+  rather than serving a stale snapshot from an earlier stop. (#1337)
+- **Structured/container evaluate results expand in the variables view.**
+  Evaluating an expression that returns a hash, array, or blessed reference now
+  allocates a proper `variablesReference` so the editor can expand the result
+  in the watch and variables panel. (#1219)
+- **Invalid `variablesReference` returns a safe empty response.** Requests with
+  an out-of-range or stale variables reference now return a protocol-safe empty
+  response instead of crashing or returning garbage data. (#1227)
+- **Execution-control requests with no active session return clear guidance.**
+  Sending `continue`, `next`, `stepIn`, or similar when no debug session is
+  active now returns an actionable error message instead of silently reporting
+  success. (#1240)
+- **`pause` accurately distinguishes signal-delivery failure from no-session.**
+  `pause` now reports whether the failure was "no active session" or "session
+  exists but signal delivery failed", giving editors and users an accurate
+  explanation. (#1364)
+
+#### Editor settings
+
+- **`enableSemanticTokens` and `enableFormatting` settings now take effect.**
+  These settings were previously wired up but had no runtime effect; the
+  underlying providers now check and honor them. Two no-op settings
+  (`enableDiagnostics`, `enableRefactoring`) that appeared in configuration UIs
+  but never did anything have been removed. (#1290)
+
+#### LSP integration
+
+- **Bare absolute file paths accepted as `file://` URIs.** Editors or scripts
+  that send an absolute path (e.g. `/home/user/foo.pl`) instead of a proper
+  `file:///home/user/foo.pl` URI no longer get a silent failure; the server now
+  accepts both forms. (#1206)
+- **Actionable error on malformed `signatureHelp` requests.** A request with a
+  wrong shape now returns a descriptive error message rather than a generic
+  protocol error. (#1206)
+- **"Document not open" semantic-token errors explain the `didOpen` sequencing.**
+  Editors that request semantic tokens before sending `textDocument/didOpen` now
+  receive a message explaining the required sequencing, rather than a bare error
+  code. (#1206)
+
+#### Formatting
+
+- **Range formatting works when complex syntax exists elsewhere in the file.**
+  Formatting a selected range no longer fails when the rest of the file contains
+  regex literals, heredocs, `qw(...)`, or POD blocks outside the selection.
+  (#1314)
+
+#### Rename and refactor
+
+- **Rename correctly updates dereference and string-interpolation occurrences.**
+  A workspace rename now covers `$$var`, `@{$var}`, and interpolated `"…$var…"`
+  occurrences in addition to bare identifier uses. (#1304)
+- **Rename uses character-aware word boundaries.** The boundary check now
+  handles multi-byte UTF-8 characters correctly, preventing partial-match
+  renames that would corrupt identifiers containing non-ASCII characters. (#1288)
+
+#### Module resolution
+
+- **`qw(...)` import lists with whitespace before the delimiter are parsed.**
+  `use Foo qw( Bar Baz )` (with a space before the opening delimiter) now
+  correctly extracts `Bar` and `Baz` from the import list for symbol resolution
+  and dependency indexing. (#1205, #1203, #1292)
+
+---
+
+### Under the hood (not user-facing)
+
+- **Parser contract index.** Lexer and parser-core paired-delimiter and
+  balanced-segment behavior is now covered by a conformance matrix and documented
+  in `docs/reference/PARSER_CONTRACTS.md`. (#1319, #1321, #1324)
+- **RIPR coverage tool upgraded from 0.5.0 to 0.9.0.** The CI seam-proof gate
+  now uses the current RIPR release. (#1329)
+- **`s///e` substitution marked as embedded code.** The parser now correctly
+  classifies the replacement side of `s///e` as Perl code, improving downstream
+  semantic analysis accuracy. (#1238)
+
+---
+
 ## [0.16.0] - 2026-06-06
 
 Release notes: [v0.16.0](docs/releases/v0.16.0.md)
