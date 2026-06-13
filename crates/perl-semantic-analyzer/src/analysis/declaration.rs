@@ -2448,34 +2448,22 @@ mod tests {
         );
     }
 
-    /// symbol_at_cursor on a Method with a qualified name (Foo::greet) extracts the
-    /// package prefix and bare name separately.
+    /// symbol_at_cursor_with_source on a Method declaration returns a SymbolKey
+    /// with source-text disambiguation active — exercises the Method arm of
+    /// symbol_at_cursor_internal via the symbol_at_cursor_with_source wrapper.
     ///
-    /// Covered changed line: ~1973  (&name[..idx], &name[idx + 2..])
-    /// (the rfind("::") true branch — qualified name with namespace separator)
+    /// Covered changed lines: ~1971-1977  NodeKind::Method arm in symbol_at_cursor_internal
+    /// Covers the bare-name path (line ~1975): no "::" in name, so pkg = current_pkg.
     #[test]
-    fn symbol_at_cursor_method_decl_qualified_name_extracts_pkg_and_bare() {
-        // Parse a source that produces a Method node with name "Foo::greet".
-        // We use symbol_at_cursor_with_source which takes an explicit current_pkg.
-        // We manually build a scenario where a method call produces the right path.
-        // The easiest way: call symbol_at_cursor on a plain method and verify the
-        // qualified-name split branch in symbol_at_cursor_internal by providing a
-        // source with an explicitly qualified method name if the parser supports it,
-        // otherwise verify the unqualified (current_pkg) path handles bare names.
+    fn symbol_at_cursor_with_source_method_decl_returns_symbol_key() {
         let source = "class Foo { method greet { return 1; } }";
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("parse must succeed");
         let offset = source.find("greet").expect("greet must be in source");
-        // When the method name is bare (no ::), rfind returns None and we fall
-        // through to (current_pkg, name.as_str()) at line 1975.
-        // To reach line 1973 we need a method whose name contains "::".
-        // The parser may normalize this; test it via symbol_at_cursor_with_source
-        // with a source that has the method and confirm the result is consistent.
         let result = symbol_at_cursor_with_source(&ast, offset, "Foo", source);
         assert!(result.is_some(), "symbol_at_cursor_with_source on a Method must return Some");
-        // For a bare name the pkg should be the current_pkg ("Foo") and name = "greet".
         let key = result.unwrap();
-        assert_eq!(key.name.as_ref(), "greet");
-        assert_eq!(key.pkg.as_ref(), "Foo");
+        assert_eq!(key.name.as_ref(), "greet", "symbol name must be the bare method name");
+        assert_eq!(key.pkg.as_ref(), "Foo", "pkg must be the current_pkg for bare method names");
     }
 }
