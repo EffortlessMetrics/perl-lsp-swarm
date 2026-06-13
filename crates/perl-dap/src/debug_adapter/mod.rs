@@ -529,32 +529,6 @@ impl DebugAdapter {
             last_resume_mode: ResumeMode::Unknown,
         });
     }
-
-    /// Seed a running (not stopped) DebugSession for testing "session is not stopped" guards.
-    ///
-    /// Only for use in tests; not part of the public API contract.
-    pub fn seed_running_session_for_test(&self) {
-        use std::process::{Command, Stdio};
-        let Ok(child) = Command::new("perl")
-            .arg("-e")
-            .arg("1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        else {
-            return;
-        };
-        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_running_session");
-        *session = Some(DebugSession {
-            process: child,
-            state: DebugState::Running,
-            stack_frames: vec![],
-            variable_cache: VariableCache::default(),
-            thread_id: 1,
-            last_resume_mode: ResumeMode::Continue,
-        });
-    }
 }
 #[cfg(test)]
 mod tests {
