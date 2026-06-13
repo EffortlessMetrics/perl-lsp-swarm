@@ -21,10 +21,9 @@ fn statement_kinds(src: &str) -> Vec<String> {
     let mut parser = Parser::new(src);
     let ast = must(parser.parse());
     match &ast.kind {
-        NodeKind::Program { statements } => statements
-            .iter()
-            .map(|stmt| format!("{:?}", stmt.kind))
-            .collect(),
+        NodeKind::Program { statements } => {
+            statements.iter().map(|stmt| format!("{:?}", stmt.kind)).collect()
+        }
         _ => vec![],
     }
 }
@@ -47,9 +46,7 @@ fn has_subroutine(src: &str, expected_name: &str) -> bool {
 
     fn find_sub(node: &perl_parser_core::Node, name: &str) -> bool {
         match &node.kind {
-            NodeKind::Program { statements } => {
-                statements.iter().any(|stmt| find_sub(stmt, name))
-            }
+            NodeKind::Program { statements } => statements.iter().any(|stmt| find_sub(stmt, name)),
             NodeKind::Subroutine { name: sub_name, .. } => {
                 sub_name.as_ref().map_or(false, |n| n == name)
             }
@@ -80,11 +77,7 @@ fn test_healthy_hash_and_sub() {
     let src = "my %x = { a => 1, b => 2 }; sub foo {}";
 
     let count = statement_count(src);
-    assert_eq!(
-        count, 2,
-        "Healthy case must have 2 statements (decl + sub), got {}",
-        count
-    );
+    assert_eq!(count, 2, "Healthy case must have 2 statements (decl + sub), got {}", count);
 
     let has_foo = has_subroutine(src, "foo");
     assert!(has_foo, "Healthy case must have subroutine 'foo'");
@@ -102,25 +95,14 @@ fn test_nested_arrays_deep_valid() {
     let src = "my $x = [[[1, 2, 3]]]; sub bar {}";
 
     let count = statement_count(src);
-    assert_eq!(
-        count, 2,
-        "Deeply nested valid code must have 2 statements, got {}",
-        count
-    );
+    assert_eq!(count, 2, "Deeply nested valid code must have 2 statements, got {}", count);
 
     let has_bar = has_subroutine(src, "bar");
-    assert!(
-        has_bar,
-        "Deeply nested valid code must have subroutine 'bar'"
-    );
+    assert!(has_bar, "Deeply nested valid code must have subroutine 'bar'");
 
     // Ensure no errors for valid code
     let errors = error_count(src);
-    assert_eq!(
-        errors, 0,
-        "Deeply nested valid code must have 0 errors, got {}",
-        errors
-    );
+    assert_eq!(errors, 0, "Deeply nested valid code must have 0 errors, got {}", errors);
 }
 
 /// **Test-Grid Row 3: Negative case — unclosed bracket in hash**
@@ -151,10 +133,7 @@ fn test_unclosed_bracket_in_hash() {
 
     // The subroutine should be recovered separately, not swallowed into the error.
     let has_sub = has_subroutine(src_with_sub, "valid_after");
-    assert!(
-        has_sub,
-        "Subroutine after unclosed bracket must be recovered; not found"
-    );
+    assert!(has_sub, "Subroutine after unclosed bracket must be recovered; not found");
 }
 
 /// **Test-Grid Row 4: Negative case — unclosed hash recovery**
@@ -175,17 +154,11 @@ fn test_unclosed_hash_recovery() {
     );
 
     let has_foo = has_subroutine(src, "foo");
-    assert!(
-        has_foo,
-        "Subroutine 'foo' must be recovered after unclosed hash"
-    );
+    assert!(has_foo, "Subroutine 'foo' must be recovered after unclosed hash");
 
     // Should have at least one error (the unclosed delimiter).
     let errors = error_count(src);
-    assert!(
-        errors >= 1,
-        "Unclosed hash must record an error; got 0"
-    );
+    assert!(errors >= 1, "Unclosed hash must record an error; got 0");
 }
 
 /// **Test-Grid Row 5: Boundary case — EOF in middle of unclosed array**
@@ -205,10 +178,7 @@ fn test_eof_in_unclosed_array() {
     );
 
     let errors = error_count(src);
-    assert!(
-        errors >= 1,
-        "EOF in unclosed array must record an error; got 0"
-    );
+    assert!(errors >= 1, "EOF in unclosed array must record an error; got 0");
 
     // With a trailing sub, should be recovered.
     let src_with_sub = "my $x = [1, 2, 3; sub baz {}";
@@ -249,10 +219,7 @@ fn test_5_level_unclosed_nesting() {
     );
 
     let has_qux = has_subroutine(src_with_sub, "qux");
-    assert!(
-        has_qux,
-        "Subroutine 'qux' must be recovered after 5-level unclosed nesting"
-    );
+    assert!(has_qux, "Subroutine 'qux' must be recovered after 5-level unclosed nesting");
 }
 
 /// **Test-Grid Row 7: Adversarial case — multiple separate unclosed errors**
@@ -273,11 +240,7 @@ fn test_multiple_unclosed_errors() {
 
     // Should have at least 2 errors (one per unclosed).
     let errors = error_count(src);
-    assert!(
-        errors >= 2,
-        "Multiple unclosed errors must record at least 2 errors; got {}",
-        errors
-    );
+    assert!(errors >= 2, "Multiple unclosed errors must record at least 2 errors; got {}", errors);
 
     // With a trailing sub, should be recovered.
     let src_with_sub = "my $x = [; my $y = {; sub zap {}";
@@ -311,10 +274,7 @@ fn test_error_in_if_branch_recovery() {
 
     // Should have at least one error (unclosed bracket in if body).
     let errors = error_count(src);
-    assert!(
-        errors >= 1,
-        "Error in if branch must record an error; got 0"
-    );
+    assert!(errors >= 1, "Error in if branch must record an error; got 0");
 
     // With a trailing sub, should be recovered.
     let src_with_sub = "if ($x) { my $y = [1 } else { print 1; } sub after {}";
@@ -326,10 +286,7 @@ fn test_error_in_if_branch_recovery() {
     );
 
     let has_after = has_subroutine(src_with_sub, "after");
-    assert!(
-        has_after,
-        "Subroutine 'after' must be recovered after error in if branch"
-    );
+    assert!(has_after, "Subroutine 'after' must be recovered after error in if branch");
 }
 
 // ============================================================================
@@ -425,11 +382,7 @@ sub after_deep_nesting {}";
     assert!(has_sub, "Subroutine after deep nesting must be present");
 
     let errors = error_count(src);
-    assert_eq!(
-        errors, 0,
-        "Deeply nested valid code must have 0 errors, got {}",
-        errors
-    );
+    assert_eq!(errors, 0, "Deeply nested valid code must have 0 errors, got {}", errors);
 }
 
 /// **Test: Error is still recorded (don't silently accept unclosed delimiters)**
@@ -441,15 +394,9 @@ fn test_error_is_recorded_after_recovery() {
     let src = "my $x = [1, 2, 3; sub foo {}";
 
     let errors = error_count(src);
-    assert!(
-        errors >= 1,
-        "Parser must still record an error for unclosed bracket; got 0"
-    );
+    assert!(errors >= 1, "Parser must still record an error for unclosed bracket; got 0");
 
     // But the subroutine must still be recovered.
     let has_foo = has_subroutine(src, "foo");
-    assert!(
-        has_foo,
-        "Error must be recorded, but subroutine must still be recovered"
-    );
+    assert!(has_foo, "Error must be recorded, but subroutine must still be recovered");
 }
