@@ -11,7 +11,7 @@
 
 ---
 
-## Shipping — merged PRs by theme (45 PRs total, 2026-06-11 through 2026-06-13)
+## Shipping — merged PRs by theme (46 PRs total, 2026-06-11 through 2026-06-13)
 
 Each entry is verified `state: MERGED` via `gh pr view` at the time of this writing.
 
