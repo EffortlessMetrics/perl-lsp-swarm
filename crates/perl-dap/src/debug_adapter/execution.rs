@@ -38,6 +38,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::Continue;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             thread_id = session.thread_id;
             true
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
@@ -98,6 +99,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::Next;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             let t_id = session.thread_id;
             self.send_event(
                 "continued",
@@ -149,6 +151,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::StepIn;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             let t_id = session.thread_id;
             self.send_event(
                 "continued",
@@ -201,6 +204,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::StepOut;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             let t_id = session.thread_id;
             self.send_event(
                 "continued",
@@ -248,6 +252,7 @@ impl DebugAdapter {
         {
             let pid = session.process.id();
             session.variable_cache.clear();
+            session.stack_frames.clear();
             self.send_interrupt_signal(pid)
         } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
         {
@@ -430,6 +435,7 @@ impl DebugAdapter {
             session.state = DebugState::Running;
             session.last_resume_mode = ResumeMode::Goto;
             session.variable_cache.clear();
+            session.stack_frames.clear();
             let t_id = session.thread_id;
 
             self.send_event(
