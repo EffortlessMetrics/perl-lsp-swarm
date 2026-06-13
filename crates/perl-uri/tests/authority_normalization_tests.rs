@@ -66,6 +66,35 @@ mod filesystem_authorities {
         let recovered = must_some(uri_to_fs_path(&uri));
         assert_eq!(recovered, original);
     }
+
+    #[test]
+    fn fs_path_to_uri_relative_path_round_trips_through_current_dir() {
+        // Relative paths should be resolved via current_dir and round-trip through absolute conversion
+        let rel_path = "test_module.pm";
+        let uri = must(fs_path_to_uri(rel_path));
+        assert!(uri.starts_with("file:///"), "URI should be absolute: {uri}");
+        let recovered = must_some(uri_to_fs_path(&uri));
+        let cwd = must(std::env::current_dir().map_err(|e| e.to_string()));
+        let expected = cwd.join(rel_path);
+        assert_eq!(recovered, expected, "round-trip through cwd should preserve path");
+    }
+
+    #[test]
+    fn normalize_uri_handles_legacy_unc_share_roots() {
+        // Windows UNC paths like \\server\share should normalize to file://server/share
+        let unc_path = r"\\server\share\file.pl";
+        let normalized = normalize_uri(unc_path);
+        assert!(
+            normalized.starts_with("file://"),
+            "UNC path should normalize to file:// URI: {normalized}"
+        );
+        assert!(
+            normalized.contains("server") && normalized.contains("share"),
+            "UNC path should preserve server and share components: {normalized}"
+        );
+        // The normalized form should not contain backslashes
+        assert!(!normalized.contains(r"\"), "normalized URI should replace backslashes with forward slashes: {normalized}");
+    }
 }
 
 mod classification_authorities {
@@ -107,5 +136,33 @@ mod classification_authorities {
     fn uri_extension_ignores_query_before_fragment_when_both_are_present() {
         assert_eq!(uri_extension("file:///tmp/script.pl?download=.txt#frag.pm"), Some("pl"));
         assert_eq!(uri_extension("file:///tmp/script.pm#frag.pl?download=.txt"), Some("pm"));
+    }
+
+    #[test]
+    fn uri_to_fs_path_ignores_lsp_query_and_fragment_components() {
+        // LSP editors may include query and fragment in URIs; they should be stripped during conversion
+        let uri_with_query_fragment = "file:///tmp/module.pl?rev=1&version=2#L42";
+        let path = perl_uri::uri_to_fs_path(uri_with_query_fragment);
+        assert!(path.is_some(), "should accept URI with query and fragment");
+        let path_buf = path.unwrap();
+        let path_str = path_buf.to_string_lossy();
+        assert!(path_str.ends_with("module.pl"), "should extract path without query/fragment: {path_str}");
+        assert!(!path_str.contains("?"), "path should not contain query: {path_str}");
+        assert!(!path_str.contains("#"), "path should not contain fragment: {path_str}");
+    }
+
+    #[test]
+    fn bare_windows_drive_root_normalizes_to_canonical_file_key() {
+        // Windows drive roots like C:\ and D:/ should normalize to canonical file:/// URIs with forward slashes
+        let drive_c_backslash = uri_key("file:///C:\\");
+        let drive_d_forward = uri_key("file:///D:/");
+        assert_eq!(drive_c_backslash, "file:///c:/", "C:\\ should normalize to file:///c:/ with forward slash");
+        assert_eq!(drive_d_forward, "file:///d:/", "D:/ should normalize to file:///d:/ with forward slash");
+        // Verify that the same URI with different case produces the same key
+        assert_eq!(
+            uri_key("file:///C:/folder"),
+            uri_key("file:///c:/folder"),
+            "drive letter should be case-insensitive for key lookup"
+        );
     }
 }
