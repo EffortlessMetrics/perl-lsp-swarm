@@ -656,8 +656,7 @@ fn test_adversarial_child_negative_parent_rejected() -> Result<(), Box<dyn std::
     // parent=-1 would encode to wire 1_999_934_464 (EvalResult band) — must be None
     let result = VariableReference::Child { parent: -1, index: 0 }.encode();
     assert_eq!(
-        result,
-        None,
+        result, None,
         "Child{{parent: -1, index: 0}} encode must return None \
          (wire 1_999_934_464 would bleed into EvalResult band)"
     );
@@ -665,16 +664,14 @@ fn test_adversarial_child_negative_parent_rejected() -> Result<(), Box<dyn std::
     // parent=i32::MIN also rejected
     let result_min = VariableReference::Child { parent: i32::MIN, index: 0 }.encode();
     assert_eq!(
-        result_min,
-        None,
+        result_min, None,
         "Child{{parent: i32::MIN, index: 0}} encode must return None (negative parent)"
     );
 
     // parent=-1 with max index also rejected
     let result_max_idx = VariableReference::Child { parent: -1, index: u32::MAX }.encode();
     assert_eq!(
-        result_max_idx,
-        None,
+        result_max_idx, None,
         "Child{{parent: -1, index: u32::MAX}} encode must return None (negative parent)"
     );
 

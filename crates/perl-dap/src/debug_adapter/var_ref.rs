@@ -365,4 +365,56 @@ mod codec_unit_tests {
             "Scope max wire {max_scope_wire} must be < EvalResult base {EVAL_BASE}"
         );
     }
+
+    // --- GUARD-PATH UNIT TESTS (covers --lib patch; integration suite has adversarial depth) ---
+
+    #[test]
+    fn evalresult_negative_counter_returns_none() {
+        // Guard: if *counter < 0 { return None; } -- added by deep-review fix.
+        // Negative counters are semantically invalid (counters are monotonically increasing).
+        assert_eq!(
+            VariableReference::EvalResult { counter: -1 }.encode(),
+            None,
+            "negative EvalResult counter must be rejected"
+        );
+        assert_eq!(
+            VariableReference::EvalResult { counter: i32::MIN }.encode(),
+            None,
+            "i32::MIN EvalResult counter must be rejected"
+        );
+    }
+
+    #[test]
+    fn evalresult_overflow_into_child_band_returns_none() {
+        // Guard: if wire > EVAL_MAX { return None; } -- added by deep-review fix.
+        // EVAL_BASE = 1_000_000, EVAL_MAX = 1_999_999_999.
+        // Max valid counter: EVAL_MAX - EVAL_BASE = 1_998_999_999 (wire = 1_999_999_999).
+        // counter = 1_999_000_000 -> wire = 2_000_000_000 = CHILD_BASE -> must be rejected.
+        assert_eq!(
+            VariableReference::EvalResult { counter: 1_998_999_999 }.encode(),
+            Some(1_999_999_999),
+            "counter=1_998_999_999 should encode to EVAL_MAX"
+        );
+        assert_eq!(
+            VariableReference::EvalResult { counter: 1_999_000_000 }.encode(),
+            None,
+            "counter that would push wire into Child band must be rejected"
+        );
+    }
+
+    #[test]
+    fn child_negative_parent_returns_none() {
+        // Guard: if *parent < 0 { return None; } -- added by deep-review fix.
+        // Negative parents produce wire values in the EvalResult band (disjoint-band violation).
+        assert_eq!(
+            VariableReference::Child { parent: -1, index: 0 }.encode(),
+            None,
+            "parent=-1 must be rejected (would land in EvalResult band)"
+        );
+        assert_eq!(
+            VariableReference::Child { parent: i32::MIN, index: 0 }.encode(),
+            None,
+            "parent=i32::MIN must be rejected"
+        );
+    }
 }
