@@ -7,8 +7,11 @@ red-TDD builder must write an adversarial test for it.
 
 This is the repo-specific application of the generic hazard taxonomy.
 Generic class definitions (the six canonical classes, when to apply each, and adversarial
-test patterns) live in [docs/agents/SPEC_UPDATE_CHECKLIST.md §8](../agents/SPEC_UPDATE_CHECKLIST.md#8-hazard-class-invariants).
-The checklist gate that enforces these rows at review time is the same section.
+test patterns) live in [docs/concepts/hazard-class-invariants.md](../concepts/hazard-class-invariants.md).
+The checklist gate that enforces these rows at review time is
+[docs/agents/SPEC_UPDATE_CHECKLIST.md §8](../agents/SPEC_UPDATE_CHECKLIST.md#8-hazard-class-invariants).
+Repo-specific incidents that motivated these classes are indexed in
+[docs/learnings/README.md](../learnings/README.md).
 
 ---
 
@@ -36,8 +39,8 @@ Any change touching `crates/perl-dap/`, `crates/perl-dap-*/`, or the DAP bridge
 | **Invariant** | All numeric reference spaces (variablesReference, frameId, scope IDs, evaluate-result refs, thread IDs) are provably disjoint. No two allocators share an untyped integer range without a named constant boundary and a compile-time or test-time disjointness proof. |
 | **Trigger** | Any newly allocated numeric range or changed allocation formula in DAP state |
 | **Required adversarial test** | Allocate one ID from the new range and one from each adjacent existing range; assert they are never equal. Assert that a lookup using an ID from range A into table B returns an error or empty result — not a stale entry from another session. |
-| **Motivating incident** | PR #1219 allocated base 50\_000; existing scope refs used `frame_id*10+scope_type`, colliding at frame\_id=5000. Fixed by bumping to 1\_000\_000 with a named constant. |
-| **Ref** | Generic Class 1 in SPEC_UPDATE_CHECKLIST.md §8 |
+| **Motivating incident** | [docs/learnings/2026-06-dap-ref-space-collision.md](../learnings/2026-06-dap-ref-space-collision.md): PR #1219 allocated base 50\_000; existing scope refs used `frame_id*10+scope_type`, colliding at frame\_id=5000. |
+| **Ref** | Class 1 in [docs/concepts/hazard-class-invariants.md](../concepts/hazard-class-invariants.md) |
 
 ### DAP-2: Bounds / overflow on client-supplied IDs
 
@@ -46,7 +49,7 @@ Any change touching `crates/perl-dap/`, `crates/perl-dap-*/`, or the DAP bridge
 | **Invariant** | All `frameId`, `variablesReference`, `threadId`, and `stackDepth` values originating from a DAP client request are validated before any array subscript or arithmetic. Out-of-range → honest `ErrorResponse`, never a panic or silent wrap. |
 | **Trigger** | Any handler that accepts a numeric value from a DAP `Request` body |
 | **Required adversarial test** | Send `frameId = u64::MAX`, `frameId = 0` (when no frames exist), and `variablesReference = 9999999` (no matching scope). Assert each returns `ErrorResponse` or equivalent empty result; assert none panic. |
-| **Ref** | Generic Class 2 in SPEC_UPDATE_CHECKLIST.md §8 |
+| **Ref** | Class 2 in [docs/concepts/hazard-class-invariants.md](../concepts/hazard-class-invariants.md) |
 
 ### DAP-3: Protocol-safety
 
@@ -55,7 +58,7 @@ Any change touching `crates/perl-dap/`, `crates/perl-dap-*/`, or the DAP bridge
 | **Invariant** | Every DAP request handler tolerates unknown command names, missing required fields, empty body, and session IDs that reference a terminated or non-existent session. Response is an honest `ErrorResponse` or empty result — never a crash, never fabricated data. |
 | **Trigger** | Any new or modified `handle_*` function in the DAP dispatch layer |
 | **Required adversarial test** | Send (a) an unknown command string, (b) a known command with a missing required field, (c) a request whose session ID references a session that was explicitly `.stop()`-ed. Assert each path returns the correct response kind without panicking. |
-| **Ref** | Generic Class 3 in SPEC_UPDATE_CHECKLIST.md §8 |
+| **Ref** | Class 3 in [docs/concepts/hazard-class-invariants.md](../concepts/hazard-class-invariants.md) |
 
 ### DAP-4: Running-vs-stopped state
 
@@ -104,8 +107,8 @@ or any other crate whose primary job is tokenizing or parsing Perl source text.
 | **Invariant** | Every byte- or char-level scanner in the parser must skip characters inside string literals (`"..."`, `'...'`), heredoc bodies, comment regions (`#...`), and `q{}`/`qq{}`/`qw{}`/`qr{}` quote-like operators. A scanner that is correct on bare source is insufficient. |
 | **Trigger** | Any new scanner that counts or matches delimiter characters, brace pairs, or structural tokens |
 | **Required adversarial test** | Supply input where the target delimiter appears exclusively inside (a) a double-quoted string, (b) a single-quoted string, (c) a `#` comment, (d) a heredoc body, (e) a `q{}` quote-like. Assert the scanner treats each context as if the character were absent. Also supply input with the delimiter both inside a literal and outside — assert only the outside occurrence is counted. |
-| **Motivating incident** | #1327: LCOV range brace scanner stripped production lines inside string literals |
-| **Ref** | Generic Class 4 in SPEC_UPDATE_CHECKLIST.md §8 |
+| **Motivating incident** | [docs/learnings/2026-06-coverage-gate-measurement.md](../learnings/2026-06-coverage-gate-measurement.md): #1327 LCOV range brace scanner stripped production lines inside string literals |
+| **Ref** | Class 4 in [docs/concepts/hazard-class-invariants.md](../concepts/hazard-class-invariants.md) |
 
 ### PARSER-2: Delimiter pairing
 
@@ -130,7 +133,7 @@ or any other crate whose primary job is tokenizing or parsing Perl source text.
 | **Invariant** | Error-recovery test cases must not snapshot AST variants that the parser's current recovery path cannot actually produce. Snapshotting an unreachable variant as "expected" encodes a latent lie — when the recovery code changes, the test silently becomes false. |
 | **Trigger** | Any change to error-recovery logic, or any new snapshot test that includes `Error` / `Invalid` / `Malformed` AST nodes |
 | **Required adversarial test** | Run the recovery test input through the current parser (not a cached snapshot) and confirm the variant is reachable before treating the snapshot as a positive assertion. Add a comment in the test naming the recovery path that produces each error node. |
-| **Ref** | Generic Class 5 (test-encodes-the-bug) in SPEC_UPDATE_CHECKLIST.md §8 |
+| **Ref** | Class 5 (test-encodes-the-bug) in [docs/concepts/hazard-class-invariants.md](../concepts/hazard-class-invariants.md); incident: [docs/learnings/2026-06-test-encodes-the-bug.md](../learnings/2026-06-test-encodes-the-bug.md) |
 
 ---
 
@@ -145,7 +148,7 @@ Any change touching `crates/perl-lsp/`, `crates/perl-lsp-rs/`, or `crates/perl-l
 | **Invariant** | Every LSP request handler validates required fields before processing. A missing or wrong-type field returns `ErrorCode::InvalidParams` with a message that names the missing field and its expected type. The handler never panics on malformed input. |
 | **Trigger** | Any new or modified LSP request handler (`textDocument/*`, `workspace/*`, custom commands) |
 | **Required adversarial test** | Send (a) a request with the required position field missing, (b) a request where `textDocument.uri` is null, (c) a request with a field that has an unexpected type. Assert `InvalidParams` is returned for each; assert no panic. |
-| **Ref** | Generic Class 3 in SPEC_UPDATE_CHECKLIST.md §8 |
+| **Ref** | Class 3 in [docs/concepts/hazard-class-invariants.md](../concepts/hazard-class-invariants.md) |
 
 ### LSP-2: Document lifecycle (didOpen sequencing)
 
@@ -186,8 +189,8 @@ transform (`coverage-filter`, `lcov.info` post-processors, ripr configuration, t
 | **Invariant** | Any tool that filters, strips, or annotates `lcov.info` or profdata must never drop lines that originate from production source (`crates/*/src/**`). The filter must be proved correct on a synthetic record containing exactly one production line and one test-only line. |
 | **Trigger** | Any change to coverage filters, post-processors, or coverage-routing scripts |
 | **Required adversarial test** | Feed a synthetic `lcov.info` containing one `SF: crates/foo/src/lib.rs` entry and one `SF: crates/foo/tests/foo_test.rs` entry through the transform. Assert the production entry survives; assert the test entry is absent; assert line counts match. |
-| **Motivating incident** | #1327: brace scanner in coverage transform stripped production LCOV lines |
-| **Ref** | Generic Class 6 in SPEC_UPDATE_CHECKLIST.md §8 |
+| **Motivating incident** | [docs/learnings/2026-06-coverage-gate-measurement.md](../learnings/2026-06-coverage-gate-measurement.md): #1327 brace scanner in coverage transform stripped production LCOV lines (scanner-blindness + coverage-integrity) |
+| **Ref** | Class 6 in [docs/concepts/hazard-class-invariants.md](../concepts/hazard-class-invariants.md) |
 
 ### COV-2: Test-only line filter (#1327 pattern)
 
@@ -212,7 +215,7 @@ transform (`coverage-filter`, `lcov.info` post-processors, ripr configuration, t
 | **Invariant** | Inline `#[cfg(test)]` blocks in production source files (`crates/*/src/**`) count toward `--lib` profdata coverage (boosting Codecov patch numbers) but simultaneously create ripr seams that ripr 0.9.x flags as `ripr#1428` gaps. The spec must declare which outcome is preferred: (a) move test helpers to `crates/*/tests/` to avoid the ripr flag, OR (b) keep inline and add a pre-planned narrow ripr suppression citing ripr#1429 and the open xtask gap #1346. This choice must appear in `acceptance.md` before the builder starts. |
 | **Trigger** | Any change that adds `#[cfg(test)]` blocks to production source files in a crate whose ripr gate is currently green |
 | **Required action** | Pre-declare the handling strategy in `acceptance.md`. CI receipt from `ripr+ New Gap Gate` (not local ripr output) is the verification artifact — local ripr installs may differ from the CI-pinned `RIPR_VERSION=0.5.0`. |
-| **Ref** | [ripr#1428](https://github.com/nickel-lang/ripr/issues/1428), [ripr#1429](https://github.com/nickel-lang/ripr/issues/1429), xtask gap #1346 |
+| **Ref** | [ripr#1428](https://github.com/nickel-lang/ripr/issues/1428), [ripr#1429](https://github.com/nickel-lang/ripr/issues/1429), xtask gap #1346; incident: [docs/learnings/2026-06-ripr-output-schema-break.md](../learnings/2026-06-ripr-output-schema-break.md) |
 
 ---
 
