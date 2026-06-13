@@ -821,9 +821,14 @@ fn ripr_pr_summary_counts(
             suppressed_unclassified: suppressed.suppressed_unclassified,
         };
     }
+    // Path B: no summary object — bucket totals come from `unsuppressed_from_findings`, which
+    // only counts recognized-classification findings.  Unclassified findings were never added
+    // to those buckets, so subtracting `suppressed_unclassified` in pr_evidence_packet would
+    // over-subtract and could mask a real gap via saturating_sub.  Zero it out here; the
+    // caller's `.saturating_sub(summary.suppressed_unclassified)` then becomes a no-op.
     RiprPrSummaryCounts {
         suppressed_by_policy: suppressed.suppressed_by_policy,
-        suppressed_unclassified: suppressed.suppressed_unclassified,
+        suppressed_unclassified: 0,
         ..unsuppressed_from_findings
     }
 }
@@ -3759,6 +3764,87 @@ esac
             "unsuppressed unrecognized-classification finding must produce severe_gaps > 0"
         );
         assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_no_summary_mixed_recognized_gap_and_suppressed_unclassified_does_not_over_subtract(
+    ) -> Result<()> {
+        // Regression test for Path B (no summary object) over-subtract risk:
+        // if a findings-only payload has both a real recognized unsuppressed gap AND
+        // unclassified suppressed findings, suppressed_unclassified must NOT be subtracted
+        // from the bucket totals (they were never added to them) — doing so would mask a
+        // real gap via saturating_sub.
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+        };
+        // No summary object — triggers Path B (findings-only mode).
+        let check_value = json!({
+            "findings": [
+                {
+                    // Real recognized gap — not in any suppression.
+                    "classification": "reachable_unrevealed",
+                    "kind": "call_presence",
+                    "seam": {
+                        "file": "crates/perl-lsp-rs/src/real_gap.rs",
+                        "line": 10
+                    }
+                },
+                {
+                    // Unclassified but path-suppressed — must NOT subtract from real gap.
+                    "classification": "static_unknown",
+                    "kind": "call_presence",
+                    "seam": {
+                        "file": "crates/perl-dap/src/debug_adapter/variables.rs",
+                        "line": 584
+                    }
+                },
+                {
+                    // Another unclassified suppressed — still must not cancel the real gap.
+                    "classification": "infection_unknown",
+                    "kind": "call_presence",
+                    "seam": {
+                        "file": "crates/perl-dap/src/debug_adapter/variables.rs",
+                        "line": 591
+                    }
+                }
+            ]
+        });
+        // Suppression covers DAP variables.rs only — not the LSP real_gap.rs.
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+
+        let packet = pr_evidence_packet(
+            &options,
+            &["crates/perl-lsp-rs/src/real_gap.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+        );
+
+        // 2 unclassified are suppressed, 1 recognized is not — gate must still fire.
+        assert_eq!(
+            packet.pointer("/summary/suppressed_by_policy"),
+            Some(&json!(2)),
+            "two unclassified findings on suppressed path must be counted as suppressed"
+        );
+        assert_eq!(
+            packet.pointer("/summary/severe_gaps"),
+            Some(&json!(1)),
+            "real recognized gap must not be cancelled by unclassified suppressed findings"
+        );
+        assert_eq!(
+            packet.pointer("/summary/ripr_severe_gap"),
+            Some(&json!(true)),
+            "gate must fire: 1 real gap remains even though 2 unclassified are suppressed"
+        );
         Ok(())
     }
 }
