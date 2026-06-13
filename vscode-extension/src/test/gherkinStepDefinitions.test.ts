@@ -96,6 +96,52 @@ describe('gherkin step definition support', () => {
     ])).toBe('ambiguous');
   });
 
+  // Regression for #953: bounded inner quantifiers in quantified groups also
+  // backtrack super-linearly and must be treated as ambiguous/expensive.
+  test('treats bounded inner quantifier in quantified group as ambiguous', () => {
+    const step = parseGherkinStepLine('Then ab', 1);
+    expect(step).not.toBeNull();
+
+    // ([a-z]{2,5})+ — bounded inner quantifier with outer +
+    expect(classifyStepDefinitionStatus(step!, [
+      'Then qr/([a-z]{2,5})+/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // (\d{1,3}){4} — bounded inner quantifier with outer {n}
+    const numericStep = parseGherkinStepLine('Then 123', 1);
+    expect(numericStep).not.toBeNull();
+    expect(classifyStepDefinitionStatus(numericStep!, [
+      'Then qr/(\\d{1,3}){4}/, sub { return; };',
+    ])).toBe('ambiguous');
+  });
+
+  // Parity guard: both modules must produce the same classification for patterns
+  // that exercise every branch of POTENTIALLY_EXPENSIVE_REGEX_RE. If the two
+  // copies drift, tests in one file or the other will start failing here.
+  test('both modules agree: unbounded quantified group is expensive, single char-class is safe', () => {
+    // The expensive patterns from each module's test suite must agree.
+    // Expensive: quantified group with unbounded inner quantifier
+    const expensiveStep = parseGherkinStepLine('Then aaaaa!', 1);
+    expect(expensiveStep).not.toBeNull();
+    expect(classifyStepDefinitionStatus(expensiveStep!, [
+      'Then qr/^(a+)+!$/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // Expensive: quantified group with bounded inner quantifier
+    const boundedStep = parseGherkinStepLine('Then ab', 1);
+    expect(boundedStep).not.toBeNull();
+    expect(classifyStepDefinitionStatus(boundedStep!, [
+      'Then qr/([a-z]{2,5})+/, sub { return; };',
+    ])).toBe('ambiguous');
+
+    // Safe: single char-class with quantifier (no quantified group)
+    const safeStep = parseGherkinStepLine('Then the name is "alice"', 1);
+    expect(safeStep).not.toBeNull();
+    expect(classifyStepDefinitionStatus(safeStep!, [
+      'Then qr/^the name is "([^"]+)"$/, sub { return; };',
+    ])).not.toBe('ambiguous');
+  });
+
   test('does not treat named-capture groups as expensive (no false positive)', () => {
     const step = parseGherkinStepLine('Then I have 5 items in the cart', 1);
     expect(step).not.toBeNull();

@@ -130,6 +130,70 @@ describe('gherkin outline providers', () => {
     expect(links).toHaveLength(0);
   });
 
+  // Regression for #953: bounded inner quantifiers in quantified groups also
+  // backtrack super-linearly and must be classified as potentially expensive.
+  test('skips step definitions with bounded inner quantifier in quantified group', () => {
+    const makeFeatureText = (stepText: string) => [
+      'Feature: ReDoS',
+      '  Scenario: Expensive',
+      `    Given ${stepText}`,
+    ].join('\n');
+
+    const makeStepFile = (pattern: string) => ({
+      uri: vscode.Uri.file('/project/features/step_definitions/steps.pm'),
+      text: [
+        'use Test::BDD::Cucumber::StepFile;',
+        '',
+        `Given qr/${pattern}/, sub {`,
+        '};',
+      ].join('\n'),
+    });
+
+    // ([a-z]{2,5})+ — bounded inner quantifier with outer +
+    expect(
+      provideGherkinStepDefinitionLinks(
+        makeFeatureText('ab'),
+        { line: 2, character: 10 } as vscode.Position,
+        [makeStepFile('([a-z]{2,5})+')]
+      )
+    ).toHaveLength(0);
+
+    // (\d{1,3}){4} — bounded inner quantifier with outer {n}
+    expect(
+      provideGherkinStepDefinitionLinks(
+        makeFeatureText('123'),
+        { line: 2, character: 10 } as vscode.Position,
+        [makeStepFile('(\\d{1,3}){4}')]
+      )
+    ).toHaveLength(0);
+  });
+
+  test('does not skip safe single char-class quantifier patterns (no false positive for #859)', () => {
+    const featureText = [
+      'Feature: Cart',
+      '  Scenario: Add items',
+      '    Given I have 3 items in the cart',
+    ].join('\n');
+
+    // [0-9]+ — safe linear-time pattern, must not be blocked
+    const links = provideGherkinStepDefinitionLinks(
+      featureText,
+      { line: 2, character: 15 } as vscode.Position,
+      [
+        {
+          uri: vscode.Uri.file('/project/features/step_definitions/cart_steps.pm'),
+          text: [
+            'use Test::BDD::Cucumber::StepFile;',
+            '',
+            'Given qr/I have [0-9]+ items in the cart/, sub {',
+            '};',
+          ].join('\n'),
+        },
+      ]
+    );
+    expect(links).toHaveLength(1);
+  });
+
   test('does not skip named-capture group step definitions (no false positive)', () => {
     const featureText = [
       'Feature: Cart',
