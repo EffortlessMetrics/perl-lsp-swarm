@@ -72,6 +72,15 @@ impl LspServer {
                                 )
                             }
                         } else if let Some(module_name) =
+                            Self::find_require_module_at_offset(&doc.text, offset)
+                        {
+                            HoverExtracted::UseModule(
+                                module_name,
+                                doc.text.clone(),
+                                uri.to_string(),
+                                offset,
+                            )
+                        } else if let Some(module_name) =
                             Self::find_with_module_at_offset(ast, offset)
                         {
                             // Check for `with 'Role'` / `extends 'Parent'` at this offset
@@ -159,6 +168,16 @@ impl LspServer {
     ) -> HoverExtracted {
         if let Some(xs_hover) = Self::extract_xs_api_hover(uri, text, offset) {
             return HoverExtracted::Complete(xs_hover);
+        }
+
+        // Phase block hover: BEGIN/END/INIT/CHECK/UNITCHECK get phase-specific timing
+        // semantics.  Check BEFORE find_definition because the semantic analyzer
+        // classifies phase block names as Subroutine symbols, which would otherwise
+        // produce the misleading "**Subroutine** `sub BEGIN`" card.
+        if let Some(phase_name) = Self::find_phase_block_at_offset(ast, offset) {
+            if let Some(phase_hover) = hover_cards::phase_block_hover(&phase_name) {
+                return HoverExtracted::Complete(phase_hover);
+            }
         }
 
         let analyzer = self.get_or_build_analyzer(uri, text, ast);
@@ -706,29 +725,54 @@ impl LspServer {
     }
 
     /// Get a token using the same simple fallback as rename, without requiring `&self`.
+    ///
+    /// Operates in byte space: `offset` is a byte offset into `content`, and the
+    /// returned string slice is extracted via `content[start..end]` where both
+    /// bounds are also byte offsets. This avoids the byte-as-char-index bug that
+    /// occurs when indexing `Vec<char>` with a value from `pos16_to_offset`.
     fn get_token_at_position_static(content: &str, offset: usize) -> String {
-        let chars: Vec<char> = content.chars().collect();
-        if offset >= chars.len() {
+        if offset > content.len() {
             return String::new();
         }
 
-        let mut start = offset;
-        while start > 0
-            && (chars[start - 1].is_alphanumeric()
-                || chars[start - 1] == '_'
-                || chars[start - 1] == '$'
-                || chars[start - 1] == '@'
-                || chars[start - 1] == '%')
-        {
+        let is_sigil = |ch: char| ch == '$' || ch == '@' || ch == '%';
+        let is_ident = |ch: char| ch.is_alphanumeric() || ch == '_';
+        let is_token_char = |ch: char| is_ident(ch) || is_sigil(ch);
+
+        // Build (byte_offset, char) pairs to navigate in byte space.
+        let pairs: Vec<(usize, char)> = content.char_indices().collect();
+        if pairs.is_empty() {
+            return String::new();
+        }
+
+        // Find the char at or just before the byte offset.
+        let ci = pairs.partition_point(|(b, _)| *b < offset);
+        let ci = ci.min(pairs.len().saturating_sub(1));
+
+        if !is_token_char(pairs[ci].1) {
+            return String::new();
+        }
+
+        // Scan left for the start of the token (sigils included).
+        let mut start = ci;
+        while start > 0 && is_token_char(pairs[start - 1].1) {
             start -= 1;
         }
 
-        let mut end = offset;
-        while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+        // Scan right for the end (ident chars only; sigil at ci.1 is the token head).
+        let mut end = ci;
+        // Include sigil at head
+        if is_sigil(pairs[end].1) {
+            end += 1;
+        }
+        while end < pairs.len() && is_ident(pairs[end].1) {
             end += 1;
         }
 
-        chars[start..end].iter().collect()
+        let start_byte = pairs[start].0;
+        let end_byte = if end < pairs.len() { pairs[end].0 } else { content.len() };
+
+        content[start_byte..end_byte].to_string()
     }
 
     /// Extract a package name at `offset`, spanning `::` separators.
@@ -890,6 +934,101 @@ impl LspServer {
         }
 
         None
+    }
+
+    /// Walk the AST to find a `PhaseBlock` node whose phase keyword spans `offset`.
+    ///
+    /// Returns the phase name (e.g. `"BEGIN"`) when the cursor is positioned on the
+    /// keyword token of a phase block, or `None` otherwise.
+    fn find_phase_block_at_offset(node: &Node, offset: usize) -> Option<String> {
+        if offset < node.location.start || offset > node.location.end {
+            return None;
+        }
+
+        if let NodeKind::PhaseBlock { phase, phase_span, .. } = &node.kind {
+            // If the parser recorded a precise span for the phase keyword, use it;
+            // fall back to the whole node span so hover still works if phase_span
+            // is absent (e.g. in hand-constructed test ASTs).
+            let in_phase_span =
+                phase_span.as_ref().map(|s| offset >= s.start && offset <= s.end).unwrap_or(true);
+            if in_phase_span {
+                return Some(phase.clone());
+            }
+        }
+
+        // Recurse into container nodes
+        match &node.kind {
+            NodeKind::Program { statements } | NodeKind::Block { statements } => {
+                for stmt in statements {
+                    if let Some(p) = Self::find_phase_block_at_offset(stmt, offset) {
+                        return Some(p);
+                    }
+                }
+            }
+            NodeKind::Package { block, .. } => {
+                if let Some(b) = block {
+                    return Self::find_phase_block_at_offset(b, offset);
+                }
+            }
+            NodeKind::PhaseBlock { block, .. } => {
+                return Self::find_phase_block_at_offset(block, offset);
+            }
+            _ => {}
+        }
+
+        None
+    }
+
+    /// Find a static `require Module::Name` reference whose module token spans `offset`.
+    fn find_require_module_at_offset(text: &str, offset: usize) -> Option<String> {
+        let cursor = Self::normalize_hover_text_offset(text, offset);
+        let line_start = text[..cursor].rfind('\n').map_or(0, |idx| idx + 1);
+        let line_end = text[cursor..].find('\n').map_or(text.len(), |idx| cursor + idx);
+        let line = &text[line_start..line_end];
+        let cursor_in_line = cursor.saturating_sub(line_start);
+
+        let head = perl_module::import::parse_module_import_head(line)?;
+        if !Self::is_static_require_module(head.kind, head.require_form()) {
+            return None;
+        }
+        if !Self::cursor_spans_module_token(cursor_in_line, head.token_start, head.token_end) {
+            return None;
+        }
+
+        let span = perl_module::token_parser::parse_module_token(line, head.token_start)?;
+        if !Self::module_token_span_matches_head(span.end, head.token_end) {
+            return None;
+        }
+
+        Some(perl_module::name::normalize_package_separator(head.token).into_owned())
+    }
+
+    fn is_static_require_module(
+        kind: perl_module::import::ModuleImportKind,
+        require_form: Option<perl_module::import::RequireForm>,
+    ) -> bool {
+        kind == perl_module::import::ModuleImportKind::Require
+            && require_form == Some(perl_module::import::RequireForm::ModuleName)
+    }
+
+    fn cursor_spans_module_token(
+        cursor_in_line: usize,
+        token_start: usize,
+        token_end: usize,
+    ) -> bool {
+        cursor_in_line >= token_start && cursor_in_line <= token_end
+    }
+
+    fn module_token_span_matches_head(span_end: usize, token_end: usize) -> bool {
+        span_end == token_end
+    }
+
+    fn normalize_hover_text_offset(text: &str, offset: usize) -> usize {
+        let mut normalized = offset.min(text.len());
+        while normalized > 0 && !text.is_char_boundary(normalized) {
+            normalized -= 1;
+        }
+        normalized
     }
 
     /// Walk the AST to find a `with 'Role'` or `extends 'Parent'` name at `offset`.

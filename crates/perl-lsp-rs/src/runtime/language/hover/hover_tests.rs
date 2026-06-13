@@ -194,8 +194,404 @@ fn resolved_module_hover_links_virtual_perldoc() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+fn require_module_hover_links_virtual_perldoc() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let temp = tempfile::tempdir()?;
+    let script = temp.path().join("require_hover.pl");
+    let uri = url::Url::from_file_path(&script).map_err(|_| "failed to create script URI")?;
+    let uri = uri.to_string();
+    let text = "require Local::Doc;\n";
+
+    server.did_open(json!({
+        "textDocument": {
+            "uri": uri,
+            "languageId": "perl",
+            "version": 1,
+            "text": text
+        }
+    }))?;
+
+    let hover = must_some(server.handle_hover(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 0, "character": 10 }
+    })))?);
+    let value = must_some(hover["contents"]["value"].as_str());
+
+    assert!(
+        value.contains("perldoc://Local::Doc"),
+        "static require hover should expose the virtual perldoc document: {value}"
+    );
+    assert!(
+        value.contains("https://metacpan.org/pod/Local::Doc"),
+        "static require hover should keep the MetaCPAN link: {value}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn require_module_scan_respects_static_module_token_boundaries() {
+    let text = "require Local::Doc;\n";
+    let token_start = must_some(text.find("Local"));
+    let token_end = must_some(text.find(';'));
+    let head = must_some(perl_module::import::parse_module_import_head(text));
+    let span = must_some(perl_module::token_parser::parse_module_token(text, head.token_start));
+
+    assert_eq!(head.kind, perl_module::import::ModuleImportKind::Require);
+    assert_eq!(head.require_form(), Some(perl_module::import::RequireForm::ModuleName));
+    assert_eq!(head.token_start, token_start);
+    assert_eq!(head.token_end, token_end);
+    assert_eq!(span.end, head.token_end);
+
+    assert_eq!(LspServer::find_require_module_at_offset(text, token_start.saturating_sub(1)), None);
+    assert_eq!(
+        LspServer::find_require_module_at_offset(text, token_start).as_deref(),
+        Some("Local::Doc")
+    );
+    assert_eq!(
+        LspServer::find_require_module_at_offset(text, token_start + 2).as_deref(),
+        Some("Local::Doc")
+    );
+    assert_eq!(
+        LspServer::find_require_module_at_offset(text, token_end).as_deref(),
+        Some("Local::Doc")
+    );
+    assert_eq!(LspServer::find_require_module_at_offset(text, token_end + 1), None);
+}
+
+#[test]
+fn require_module_scan_rejects_non_require_and_non_module_require_forms() {
+    assert_eq!(LspServer::find_require_module_at_offset("use Local::Doc;\n", 5), None);
+    assert_eq!(LspServer::find_require_module_at_offset("require $module;\n", 10), None);
+    assert_eq!(LspServer::find_require_module_at_offset("require 'Local/Doc.pm';\n", 10), None);
+}
+
+#[test]
+fn require_module_scan_rejects_non_module_suffixes() {
+    let text = "require Local::Doc-extra;\n";
+    let token_offset = must_some(text.find("Local")) + 2;
+
+    assert_eq!(LspServer::find_require_module_at_offset(text, token_offset), None);
+}
+
+#[test]
+fn require_module_scan_has_explicit_boundary_discriminators() {
+    let text = "require Local::Doc;\n";
+    let head = must_some(perl_module::import::parse_module_import_head(text));
+    let span = must_some(perl_module::token_parser::parse_module_token(text, 8));
+
+    assert_eq!(head.kind, perl_module::import::ModuleImportKind::Require);
+    assert_eq!(head.require_form(), Some(perl_module::import::RequireForm::ModuleName));
+    assert_eq!(span.end, 18);
+    assert_eq!(head.token_start, 8);
+    assert_eq!(head.token_end, 18);
+    assert_eq!(LspServer::find_require_module_at_offset(text, 7), None);
+    assert_eq!(LspServer::find_require_module_at_offset(text, 8).as_deref(), Some("Local::Doc"));
+    assert_eq!(LspServer::find_require_module_at_offset(text, 18).as_deref(), Some("Local::Doc"));
+    assert_eq!(LspServer::find_require_module_at_offset(text, 19), None);
+}
+
+#[test]
+fn require_module_boundary_predicates_are_explicit() {
+    assert!(LspServer::is_static_require_module(
+        perl_module::import::ModuleImportKind::Require,
+        Some(perl_module::import::RequireForm::ModuleName)
+    ));
+    assert!(!LspServer::is_static_require_module(perl_module::import::ModuleImportKind::Use, None));
+    assert!(!LspServer::is_static_require_module(
+        perl_module::import::ModuleImportKind::Require,
+        Some(perl_module::import::RequireForm::FilePath)
+    ));
+
+    assert!(!LspServer::cursor_spans_module_token(7, 8, 18));
+    assert!(LspServer::cursor_spans_module_token(8, 8, 18));
+    assert!(LspServer::cursor_spans_module_token(18, 8, 18));
+    assert!(!LspServer::cursor_spans_module_token(19, 8, 18));
+
+    assert!(LspServer::module_token_span_matches_head(18, 18));
+    assert!(!LspServer::module_token_span_matches_head(10, 18));
+}
+
+#[test]
+fn require_module_scan_normalizes_utf8_offsets() {
+    let text = "é\nrequire Local::Doc;\n";
+
+    assert_eq!(LspServer::normalize_hover_text_offset(text, 1), 0);
+}
+
+#[test]
 fn missing_module_search_paths_reports_empty_configuration() {
     let paths = LspServer::format_missing_module_search_paths(&[]);
 
     assert_eq!(paths, "- No include paths configured");
+}
+
+#[test]
+fn hover_token_extraction_works_with_non_ascii_prefix() {
+    // "# café\n" — 'é' (U+00E9) is 2 UTF-8 bytes; line is 9 bytes, 8 chars.
+    // Byte offset of '$' on line 2: "# café\nmy $bar = 2;" -> find('$') = 12.
+    // Bug: using byte offset 12 as char index into Vec<char> would yield the wrong character.
+    let text = "# café\nmy $bar = 2;";
+    let dollar_offset = must_some(text.find('$'));
+    let token = LspServer::get_token_at_position_static(text, dollar_offset);
+    assert_eq!(
+        token, "$bar",
+        "byte offset must not be used as char index in hover token extraction"
+    );
+}
+
+// -- Phase-block hover: strong-oracle unit tests ----------------------------------
+//
+// These tests assert exact content for every match arm in `phase_block_description`
+// and exact Option discriminants for every code path in `find_phase_block_at_offset`,
+// so that ripr static analysis can confirm each seam has an oracle-killing test.
+// The existing integration tests in hover_provider_coverage.rs use broad `contains`
+// checks; these unit tests provide the precise assertions the gap gate requires.
+
+#[test]
+fn phase_block_hover_begin_returns_compile_time_timing() {
+    let hover = must_some(super::hover_cards::phase_block_hover("BEGIN"));
+    let value = must_some(hover["contents"]["value"].as_str());
+    assert_eq!(
+        hover["contents"]["kind"].as_str(),
+        Some("markdown"),
+        "phase block hover must be markdown kind"
+    );
+    assert!(
+        value.starts_with("**Phase Block: `BEGIN`**"),
+        "BEGIN hover must open with the phase block header: {value}"
+    );
+    assert!(
+        value.contains("_Compile-time execution_"),
+        "BEGIN hover must contain exact timing label: {value}"
+    );
+    assert!(
+        value.contains("as soon as the block is fully parsed"),
+        "BEGIN hover must mention compile-time parse order: {value}"
+    );
+    assert!(value.contains("FIFO"), "BEGIN hover must mention FIFO ordering: {value}");
+    assert!(value.contains("perlmod"), "BEGIN hover must link to perlmod: {value}");
+}
+
+#[test]
+fn phase_block_hover_end_returns_program_exit_timing() {
+    let hover = must_some(super::hover_cards::phase_block_hover("END"));
+    let value = must_some(hover["contents"]["value"].as_str());
+    assert!(
+        value.starts_with("**Phase Block: `END`**"),
+        "END hover must open with the phase block header: {value}"
+    );
+    assert!(
+        value.contains("_Program-exit cleanup_"),
+        "END hover must contain exact timing label: {value}"
+    );
+    assert!(value.contains("program exit"), "END hover must mention program exit: {value}");
+    assert!(value.contains("LIFO"), "END hover must mention LIFO ordering: {value}");
+}
+
+#[test]
+fn phase_block_hover_init_returns_post_compile_timing() {
+    let hover = must_some(super::hover_cards::phase_block_hover("INIT"));
+    let value = must_some(hover["contents"]["value"].as_str());
+    assert!(
+        value.starts_with("**Phase Block: `INIT`**"),
+        "INIT hover must open with the phase block header: {value}"
+    );
+    assert!(
+        value.contains("_Post-compile, pre-runtime startup_"),
+        "INIT hover must contain exact timing label: {value}"
+    );
+    assert!(
+        value.contains("start of runtime"),
+        "INIT hover must mention start of runtime: {value}"
+    );
+    assert!(value.contains("FIFO"), "INIT hover must mention FIFO ordering: {value}");
+}
+
+#[test]
+fn phase_block_hover_check_returns_end_of_compilation_timing() {
+    let hover = must_some(super::hover_cards::phase_block_hover("CHECK"));
+    let value = must_some(hover["contents"]["value"].as_str());
+    assert!(
+        value.starts_with("**Phase Block: `CHECK`**"),
+        "CHECK hover must open with the phase block header: {value}"
+    );
+    assert!(
+        value.contains("_End-of-compilation hook_"),
+        "CHECK hover must contain exact timing label: {value}"
+    );
+    assert!(
+        value.contains("end of compilation"),
+        "CHECK hover must mention end of compilation: {value}"
+    );
+    assert!(value.contains("LIFO"), "CHECK hover must mention LIFO ordering: {value}");
+}
+
+#[test]
+fn phase_block_hover_unitcheck_returns_compilation_unit_timing() {
+    let hover = must_some(super::hover_cards::phase_block_hover("UNITCHECK"));
+    let value = must_some(hover["contents"]["value"].as_str());
+    assert!(
+        value.starts_with("**Phase Block: `UNITCHECK`**"),
+        "UNITCHECK hover must open with the phase block header: {value}"
+    );
+    assert!(
+        value.contains("_End-of-compilation-unit hook_"),
+        "UNITCHECK hover must contain exact timing label: {value}"
+    );
+    assert!(
+        value.contains("compilation unit"),
+        "UNITCHECK hover must mention compilation unit: {value}"
+    );
+    assert!(value.contains("LIFO"), "UNITCHECK hover must mention LIFO ordering: {value}");
+}
+
+#[test]
+fn phase_block_hover_unknown_returns_none() {
+    assert_eq!(
+        super::hover_cards::phase_block_hover("UNKNOWN"),
+        None,
+        "unrecognised phase name must return None"
+    );
+    assert_eq!(super::hover_cards::phase_block_hover(""), None, "empty string must return None");
+    assert_eq!(
+        super::hover_cards::phase_block_hover("begin"),
+        None,
+        "lowercase phase name must return None (case-sensitive match)"
+    );
+}
+
+#[test]
+fn find_phase_block_at_offset_returns_none_when_offset_out_of_node_range() {
+    use perl_parser::{Node, NodeKind, SourceLocation};
+
+    // A PhaseBlock node spanning [10, 30].
+    let block =
+        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation { start: 11, end: 29 });
+    let node = Node::new(
+        NodeKind::PhaseBlock {
+            phase: "BEGIN".to_string(),
+            phase_span: None,
+            block: Box::new(block),
+        },
+        SourceLocation { start: 10, end: 30 },
+    );
+
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&node, 9),
+        None,
+        "offset before node span must return None"
+    );
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&node, 31),
+        None,
+        "offset after node span must return None"
+    );
+}
+
+#[test]
+fn find_phase_block_at_offset_returns_phase_name_when_offset_in_node_and_no_phase_span() {
+    use perl_parser::{Node, NodeKind, SourceLocation};
+
+    // No phase_span: any offset within [10, 30] must return the phase name.
+    let block =
+        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation { start: 11, end: 29 });
+    let node = Node::new(
+        NodeKind::PhaseBlock {
+            phase: "BEGIN".to_string(),
+            phase_span: None,
+            block: Box::new(block),
+        },
+        SourceLocation { start: 10, end: 30 },
+    );
+
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&node, 10).as_deref(),
+        Some("BEGIN"),
+        "offset at node start must return phase name when no phase_span"
+    );
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&node, 20).as_deref(),
+        Some("BEGIN"),
+        "offset in node middle must return phase name when no phase_span"
+    );
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&node, 30).as_deref(),
+        Some("BEGIN"),
+        "offset at node end must return phase name when no phase_span"
+    );
+}
+
+#[test]
+fn find_phase_block_at_offset_respects_phase_span_boundary() {
+    use perl_parser::{Node, NodeKind, SourceLocation};
+
+    // phase_span = [10, 14] (just "BEGIN"), whole node = [10, 30].
+    let block =
+        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation { start: 16, end: 29 });
+    let node = Node::new(
+        NodeKind::PhaseBlock {
+            phase: "BEGIN".to_string(),
+            phase_span: Some(SourceLocation { start: 10, end: 14 }),
+            block: Box::new(block),
+        },
+        SourceLocation { start: 10, end: 30 },
+    );
+
+    // Inside phase_span: returns Some.
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&node, 10).as_deref(),
+        Some("BEGIN"),
+        "offset at phase_span start must return phase name"
+    );
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&node, 14).as_deref(),
+        Some("BEGIN"),
+        "offset at phase_span end must return phase name"
+    );
+    // Outside phase_span but inside node: must return None (phase_span present, not matched).
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&node, 15),
+        None,
+        "offset after phase_span end (but inside node) must return None when phase_span present"
+    );
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&node, 20),
+        None,
+        "offset in block area must return None when phase_span present and not matched"
+    );
+}
+
+#[test]
+fn find_phase_block_at_offset_recurses_through_program_to_find_phase_block() {
+    use perl_parser::{Node, NodeKind, SourceLocation};
+
+    // Program { statements: [PhaseBlock { "END", [40,50] }] } spanning [0, 60].
+    let block_inner =
+        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation { start: 45, end: 49 });
+    let phase_node = Node::new(
+        NodeKind::PhaseBlock {
+            phase: "END".to_string(),
+            phase_span: None,
+            block: Box::new(block_inner),
+        },
+        SourceLocation { start: 40, end: 50 },
+    );
+    let program = Node::new(
+        NodeKind::Program { statements: vec![phase_node] },
+        SourceLocation { start: 0, end: 60 },
+    );
+
+    // Offset inside the nested phase block: must find it.
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&program, 45).as_deref(),
+        Some("END"),
+        "recursion through Program must find nested PhaseBlock"
+    );
+    // Offset outside the nested phase block but inside program: must return None.
+    assert_eq!(
+        LspServer::find_phase_block_at_offset(&program, 35),
+        None,
+        "offset not in any PhaseBlock must return None even when inside Program"
+    );
 }

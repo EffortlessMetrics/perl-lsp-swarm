@@ -76,6 +76,9 @@ tempfile.workspace = true
 
 perl-tdd-support = { workspace = true }
 
+# Serial test execution for env-mutating tests (prevents races on PLENV_*, PERLBREW_*, PATH)
+serial_test = "3.5.0"
+
 [build-dependencies]
 # Wave Final PR B: perl-feature-catalog absorbed; build.rs uses inline catalog via include!()
 serde = { workspace = true, features = ["derive"] }
@@ -194,6 +197,11 @@ path = "tests/dap_syntax_check_tests.rs"
 name = "dap_e2e_workflow_tests"
 path = "tests/dap_e2e_workflow_tests.rs"
 # AC:3486 End-to-end workflow: launch -> breakpoint -> inspect -> step -> continue -> exit
+
+[[test]]
+name = "dap_lifecycle_matrix_tests"
+path = "tests/dap_lifecycle_matrix_tests.rs"
+# DAP lifecycle matrix: full protocol-ordered lifecycle e2e coverage (phase 2)
 
 [[test]]
 name = "dap_scope_filtering_tests"

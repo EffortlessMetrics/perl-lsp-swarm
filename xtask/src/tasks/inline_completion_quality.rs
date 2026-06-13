@@ -766,6 +766,54 @@ fn scenarios() -> &'static [Scenario] {
             },
         },
         Scenario {
+            name: "next_unless_uses_visible_guard_variable",
+            source_name: "syntax",
+            source: "for my $user (@users) {\n    my $should_skip = should_skip_user($user);\n    next unless <<CURSOR>>\n}",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Suggestion {
+                first: Some("$should_skip;"),
+                expected: &["$should_skip;"],
+                not_expected: &["$user;", "$result;"],
+            },
+        },
+        Scenario {
+            name: "lexical_assignment_uses_visible_scalar",
+            source_name: "syntax",
+            source: "sub copy {\n    my $result = compute();\n    my $copy = <<CURSOR>>\n}",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Suggestion {
+                first: Some("$result;"),
+                expected: &["$result;"],
+                not_expected: &["$copy;"],
+            },
+        },
+        Scenario {
+            name: "array_assignment_uses_visible_array",
+            source_name: "syntax",
+            source: "sub copy {\n    my @users = fetch_users();\n    my @copy = <<CURSOR>>\n}",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Suggestion {
+                first: Some("@users;"),
+                expected: &["@users;"],
+                not_expected: &["@copy;", "$users;"],
+            },
+        },
+        Scenario {
+            name: "hash_assignment_uses_visible_hash",
+            source_name: "syntax",
+            source: "sub copy {\n    my %users_by_id = load_users();\n    my %copy = <<CURSOR>>\n}",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Suggestion {
+                first: Some("%users_by_id;"),
+                expected: &["%users_by_id;"],
+                not_expected: &["%copy;", "$users_by_id;"],
+            },
+        },
+        Scenario {
             name: "self_receiver_prefers_current_package_methods",
             source_name: "receiver",
             source: "package Other;\nsub external {}\n\npackage Demo;\nsub save {}\nsub display_name {}\nsub caller {\n    my $self = shift;\n    $self-><<CURSOR>>\n}\n",
@@ -776,6 +824,46 @@ fn scenarios() -> &'static [Scenario] {
                 expected: &["save()", "display_name()"],
                 not_expected: &["external()", "new()"],
             },
+        },
+        Scenario {
+            name: "moo_self_receiver_prefers_attribute_accessors",
+            source_name: "receiver",
+            source: "package Other;\nuse Moo;\nhas 'external' => (is => 'ro');\n\npackage Demo;\nuse Moo;\nhas 'name' => (is => 'ro');\nhas \"email\" => (is => 'rw');\nsub caller {\n    my $self = shift;\n    $self-><<CURSOR>>\n}\n",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Suggestion {
+                first: Some("name()"),
+                expected: &["name()", "email()"],
+                not_expected: &["external()", "new()"],
+            },
+        },
+        Scenario {
+            name: "moose_self_receiver_prefers_attribute_accessors",
+            source_name: "receiver",
+            source: "package Demo;\nuse Moose;\nhas 'enabled' => (is => 'ro');\nsub caller {\n    my $self = shift;\n    $self-><<CURSOR>>\n}\n",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Suggestion {
+                first: Some("enabled()"),
+                expected: &["enabled()"],
+                not_expected: &["new()"],
+            },
+        },
+        Scenario {
+            name: "plain_has_declaration_does_not_become_accessor",
+            source_name: "receiver",
+            source: "package Demo;\nhas 'name' => (is => 'ro');\nsub caller {\n    $self-><<CURSOR>>\n}\n",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Silent,
+        },
+        Scenario {
+            name: "moo_runtime_has_call_does_not_become_accessor",
+            source_name: "receiver",
+            source: "package Demo;\nuse Moo;\nsub caller {\n    has 'temporary' => (is => 'ro');\n    $self-><<CURSOR>>\n}\n",
+            available_modules: &[],
+            hard_zone: false,
+            assertion: ScenarioAssertion::Silent,
         },
         Scenario {
             name: "dbi_database_handle_prefers_dbi_methods",
@@ -954,6 +1042,16 @@ mod tests {
     }
 
     #[test]
+    fn inline_completion_quality_framework_accessor_scenarios_are_registered() {
+        let names: Vec<&str> = scenarios().iter().map(|scenario| scenario.name).collect();
+
+        assert!(names.contains(&"moo_self_receiver_prefers_attribute_accessors"));
+        assert!(names.contains(&"moose_self_receiver_prefers_attribute_accessors"));
+        assert!(names.contains(&"plain_has_declaration_does_not_become_accessor"));
+        assert!(names.contains(&"moo_runtime_has_call_does_not_become_accessor"));
+    }
+
+    #[test]
     fn inline_completion_quality_guard_condition_scenarios_pass() -> Result<()> {
         let provider = InlineCompletionProvider::new();
 
@@ -970,6 +1068,52 @@ mod tests {
             assert_eq!(parse_regressions, 0);
             assert_eq!(edit_application, EditApplicationOutcome::Passed);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn inline_completion_quality_framework_accessor_scenarios_pass() -> Result<()> {
+        let provider = InlineCompletionProvider::new();
+        let accessor = scenarios()
+            .iter()
+            .find(|scenario| scenario.name == "moo_self_receiver_prefers_attribute_accessors")
+            .ok_or_else(|| eyre!("missing Moo accessor inline completion quality scenario"))?;
+        let (item_count, _notes, parse_regressions, edit_application) =
+            run_scenario(&provider, accessor)?;
+        assert!(item_count > 0);
+        assert_eq!(parse_regressions, 0);
+        assert_eq!(edit_application, EditApplicationOutcome::Passed);
+
+        let moose_accessor = scenarios()
+            .iter()
+            .find(|scenario| scenario.name == "moose_self_receiver_prefers_attribute_accessors")
+            .ok_or_else(|| eyre!("missing Moose accessor inline completion quality scenario"))?;
+        let (item_count, _notes, parse_regressions, edit_application) =
+            run_scenario(&provider, moose_accessor)?;
+        assert!(item_count > 0);
+        assert_eq!(parse_regressions, 0);
+        assert_eq!(edit_application, EditApplicationOutcome::Passed);
+
+        let plain_has = scenarios()
+            .iter()
+            .find(|scenario| scenario.name == "plain_has_declaration_does_not_become_accessor")
+            .ok_or_else(|| eyre!("missing plain has false-positive quality scenario"))?;
+        let (item_count, _notes, parse_regressions, edit_application) =
+            run_scenario(&provider, plain_has)?;
+        assert_eq!(item_count, 0);
+        assert_eq!(parse_regressions, 0);
+        assert_eq!(edit_application, EditApplicationOutcome::NotApplicable);
+
+        let runtime_has = scenarios()
+            .iter()
+            .find(|scenario| scenario.name == "moo_runtime_has_call_does_not_become_accessor")
+            .ok_or_else(|| eyre!("missing runtime has hard-reject quality scenario"))?;
+        let (item_count, _notes, parse_regressions, edit_application) =
+            run_scenario(&provider, runtime_has)?;
+        assert_eq!(item_count, 0);
+        assert_eq!(parse_regressions, 0);
+        assert_eq!(edit_application, EditApplicationOutcome::NotApplicable);
 
         Ok(())
     }

@@ -119,6 +119,37 @@ enum Commands {
         command: PrSubcommand,
     },
 
+    /// Verify merge-base ancestry proof before closing a PR.
+    ///
+    /// Implements CLOSE_PROOF_POLICY.md Rule 1: runs
+    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits
+    /// a structured receipt.
+    ///
+    /// Exit 0 = reachable (safe to close), exit 2 = not reachable (do not close),
+    /// exit 1 = error (git failed).
+    #[command(name = "pr-close-proof")]
+    PrCloseProof {
+        /// Commit SHA to verify.
+        #[arg(long)]
+        commit: String,
+        /// Canonical main ref (e.g. origin/main).
+        #[arg(long, default_value = "origin/main")]
+        canonical_main: String,
+        /// Optional distinctive string to grep in canonical-main (Rule 3 substance check).
+        #[arg(long)]
+        substance_grep: Option<String>,
+        /// Output format: `human` (default) or `json`.
+        #[arg(long, default_value = "human")]
+        format: String,
+    },
+
+    /// PR reconciliation ledger commands.
+    #[command(name = "pr-ledger")]
+    PrLedger {
+        #[command(subcommand)]
+        command: PrLedgerCommand,
+    },
+
     /// Build project with various configurations
     Build {
         /// Build in release mode
@@ -192,6 +223,9 @@ enum Commands {
         /// Optional deterministic quality receipt to summarize when present.
         #[arg(long, default_value = "target/receipts/inline-completion-quality.json")]
         quality_receipt: PathBuf,
+        /// Optional next-edit scaffold receipt to validate and summarize when present.
+        #[arg(long, default_value = "target/receipts/semantic-inline-next-edit.json")]
+        next_edit_receipt: PathBuf,
     },
 
     /// Emit a semantic inline-completion next-edit scaffold receipt.
@@ -208,6 +242,23 @@ enum Commands {
         /// Receipt JSON path to write.
         #[arg(long, default_value = "target/receipts/supported-editor-inline-smoke.json")]
         receipt: PathBuf,
+    },
+
+    /// Run release UX smoke fixtures over stdio and optionally write receipts.
+    #[command(name = "lsp-ux-smoke")]
+    LspUxSmoke {
+        /// Fixture root containing manifest.json and scenario directories.
+        #[arg(long, default_value = "testdata/ux/release_smoke")]
+        fixture: PathBuf,
+        /// Write JSON and Markdown receipts under target/receipts/ux.
+        #[arg(long)]
+        receipt: bool,
+        /// Existing perl-lsp binary to run instead of building target/agent/perl-lsp.
+        #[arg(long)]
+        binary: Option<PathBuf>,
+        /// Do not auto-build perl-lsp when --binary is omitted.
+        #[arg(long)]
+        no_build: bool,
     },
 
     /// Regenerate public Shields endpoint JSON for README badges.
@@ -293,7 +344,7 @@ enum Commands {
         #[arg(long, default_value = ".")]
         root: String,
         /// Base revision for the PR diff.
-        #[arg(long, default_value = "origin/master")]
+        #[arg(long, default_value = "origin/main")]
         base: String,
         /// Head revision for the PR diff.
         #[arg(long, default_value = "HEAD")]
@@ -325,7 +376,7 @@ enum Commands {
         #[arg(long, default_value = ".")]
         root: String,
         /// Base revision for the PR diff.
-        #[arg(long, default_value = "origin/master")]
+        #[arg(long, default_value = "origin/main")]
         base: String,
         /// Head revision for the PR diff.
         #[arg(long, default_value = "HEAD")]
@@ -714,10 +765,10 @@ enum Commands {
     /// **Claim boundary**: dry-run only. GitHub sticky-comment posting is
     /// a follow-up to issue #4825.
     ///
-    /// Example: `cargo xtask ci pr-summary --base origin/master --dry-run`
+    /// Example: `cargo xtask ci pr-summary --base origin/main --dry-run`
     CiPrSummary {
-        /// Base git reference to diff against (e.g. `origin/master`).
-        #[arg(long, default_value = "origin/master")]
+        /// Base git reference to diff against (e.g. `origin/main`).
+        #[arg(long, default_value = "origin/main")]
         base: String,
 
         /// Emit markdown to stdout only; do not post to GitHub.
@@ -764,7 +815,7 @@ enum Commands {
     /// Warn when a diff adds retained-state owner patterns without inventory updates.
     CheckMemoryRetainedOwnerDrift {
         /// Git base ref used for diffing changed files.
-        #[arg(long, default_value = "origin/master")]
+        #[arg(long, default_value = "origin/main")]
         base: String,
 
         /// Warn instead of fail when drift appears in existing retained-owner paths.
@@ -1741,15 +1792,15 @@ enum Commands {
         root: Option<PathBuf>,
     },
 
-    /// Check whether the current checkout is behind origin/master.
+    /// Check whether the current checkout is behind origin/main.
     ///
     /// Emits a JSON receipt (schema_version 1) with staleness metadata.
     /// Use --mode block to fail when stale; default is warn (exit 0 always).
     ///
-    /// Example: `cargo xtask freshness-check --base origin/master --mode block`
+    /// Example: `cargo xtask freshness-check --base origin/main --mode block`
     FreshnessCheck {
         /// Base git reference to compare HEAD against.
-        #[arg(long, default_value = "origin/master")]
+        #[arg(long, default_value = "origin/main")]
         base: String,
 
         /// Operating mode: warn (default, exit 0) or block (exit 1 when stale).
@@ -2510,6 +2561,29 @@ enum NativeToolingCommand {
 enum CiSubcommand {
     /// Run local/CI parity diagnostic: toolchain pin, components, git state, fmt drift, Perl, binary.
     Doctor,
+
+    /// Emit an advisory changed-file proof-pack route receipt.
+    Route {
+        /// Git base ref used for changed-file detection.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Git head ref used for changed-file detection.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+
+        /// Output path for the route receipt.
+        #[arg(long, default_value = "target/receipts/ci-route.json")]
+        receipt: PathBuf,
+
+        /// Output path for the Markdown route summary.
+        #[arg(long, default_value = "target/receipts/ci-route.md")]
+        summary: PathBuf,
+
+        /// Explicit changed file path. Repeat for tests or disconnected runs; when omitted, git diff is used.
+        #[arg(long = "changed-file")]
+        changed_file: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2534,6 +2608,26 @@ enum PrSubcommand {
         /// Skip the GitHub issue-existence API call.
         #[arg(long)]
         no_gh: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PrLedgerCommand {
+    /// Generate skeleton reconciliation ledger rows from open GitHub PRs.
+    ///
+    /// Shells to `gh pr list --json ...` for each repo, emits skeleton rows
+    /// with classification:"unclassified" and evidence:[] for scout fill-in,
+    /// and writes a combined pr-ledger.md summary table.
+    Generate {
+        /// One or more repositories (owner/name). Repeatable.
+        #[arg(long = "repo", required = true)]
+        repos: Vec<String>,
+        /// Output directory for generated artifacts.
+        #[arg(long, default_value = "target/reconciliation")]
+        out: PathBuf,
+        /// Optional fixture JSON (for testing without live gh).
+        #[arg(long)]
+        fixture: Option<PathBuf>,
     },
 }
 
@@ -2646,6 +2740,11 @@ enum AgentCommand {
         #[command(subcommand)]
         command: AgentLeaseCommand,
     },
+    /// Orchestration ledger commands.
+    Ledgers {
+        #[command(subcommand)]
+        command: AgentLedgersCommand,
+    },
     /// Receipt commands.
     Receipt {
         #[command(subcommand)]
@@ -2655,6 +2754,19 @@ enum AgentCommand {
     Worktree {
         #[command(subcommand)]
         command: AgentWorktreeCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentLedgersCommand {
+    /// Validate docs/agents/ledgers/*.jsonl against orchestration role contracts.
+    Validate {
+        /// Override ledger directory (default: docs/agents/ledgers/).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Output format: `human` (default) or `json`.
+        #[arg(long, default_value = "human")]
+        format: String,
     },
 }
 
@@ -2715,6 +2827,15 @@ fn main() -> Result<()> {
         Commands::Ci { command } => match command {
             None => ci::run(),
             Some(CiSubcommand::Doctor) => ci_doctor::run(),
+            Some(CiSubcommand::Route { base, head, receipt, summary, changed_file }) => {
+                ci_route::run(ci_route::CiRouteArgs {
+                    base,
+                    head,
+                    receipt,
+                    summary,
+                    changed_files: changed_file,
+                })
+            }
         },
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckLintPolicy => check_lint_policy::run(),
@@ -2755,6 +2876,30 @@ fn main() -> Result<()> {
                 })
             }
         },
+        Commands::PrCloseProof { commit, canonical_main, substance_grep, format } => {
+            let fmt = if format == "json" {
+                tasks::pr_close_proof::CloseProofFormat::Json
+            } else {
+                tasks::pr_close_proof::CloseProofFormat::Human
+            };
+            let reachable = tasks::pr_close_proof::run(tasks::pr_close_proof::CloseProofConfig {
+                commit,
+                canonical_main,
+                substance_grep,
+                format: fmt,
+            })?;
+            if !reachable {
+                // Exit 2: not ancestor — distinct from 1 (error).
+                // CLOSE_PROOF_POLICY.md: do not close if not reachable.
+                std::process::exit(2);
+            }
+            Ok(())
+        }
+        Commands::PrLedger { command } => match command {
+            PrLedgerCommand::Generate { repos, out, fixture } => {
+                tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
+            }
+        },
         Commands::Build { release, features, c_scanner, rust_scanner } => {
             build::run(release, features, c_scanner, rust_scanner)
         }
@@ -2766,12 +2911,20 @@ fn main() -> Result<()> {
         },
         Commands::InlineCompletionSmoke { binary } => inline_completion_smoke::run(binary),
         Commands::InlineCompletionQuality { receipt } => inline_completion_quality::run(receipt),
-        Commands::SemanticInlineReceipts { receipt, quality_receipt } => {
-            semantic_inline_receipts::run(receipt, quality_receipt)
+        Commands::SemanticInlineReceipts { receipt, quality_receipt, next_edit_receipt } => {
+            semantic_inline_receipts::run(receipt, quality_receipt, next_edit_receipt)
         }
         Commands::SemanticInlineNextEdit { receipt } => semantic_inline_next_edit::run(receipt),
         Commands::SupportedEditorInlineSmoke { receipt } => {
             supported_editor_inline_smoke::run(receipt)
+        }
+        Commands::LspUxSmoke { fixture, receipt, binary, no_build } => {
+            lsp_ux_smoke::run(lsp_ux_smoke::LspUxSmokeConfig {
+                fixture_root: fixture,
+                emit_receipt: receipt,
+                binary,
+                no_build,
+            })
         }
         Commands::Badges { check } => badges::run(check),
         Commands::CoverageBaseline {
@@ -3292,6 +3445,19 @@ fn main() -> Result<()> {
                 AgentLeaseCommand::Acquire { task, out } => agent_lease::acquire(&task, &out),
                 AgentLeaseCommand::Verify { lease, current } => {
                     agent_lease::verify(&lease, &current)
+                }
+            },
+            AgentCommand::Ledgers { command } => match command {
+                AgentLedgersCommand::Validate { dir, format } => {
+                    let fmt = if format == "json" {
+                        tasks::agent_ledgers::ValidateFormat::Json
+                    } else {
+                        tasks::agent_ledgers::ValidateFormat::Human
+                    };
+                    tasks::agent_ledgers::validate(tasks::agent_ledgers::ValidateConfig {
+                        ledger_dir: dir,
+                        format: fmt,
+                    })
                 }
             },
             AgentCommand::Receipt { command } => match command {
