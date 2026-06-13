@@ -245,7 +245,12 @@ impl DebugAdapter {
                         name: "$self".to_string(),
                         value: "blessed(My::Module)".to_string(),
                         type_: Some("hash".to_string()),
-                        variables_reference: variables_ref.saturating_mul(100) + 2,
+                        variables_reference: VariableReference::Child {
+                            parent: variables_ref,
+                            index: 0,
+                        }
+                        .encode()
+                        .unwrap_or(0),
                         named_variables: Some(5),
                         indexed_variables: None,
                     },
@@ -253,7 +258,12 @@ impl DebugAdapter {
                         name: "@_".to_string(),
                         value: "array(size=0)".to_string(),
                         type_: Some("array".to_string()),
-                        variables_reference: variables_ref.saturating_mul(100) + 1,
+                        variables_reference: VariableReference::Child {
+                            parent: variables_ref,
+                            index: 1,
+                        }
+                        .encode()
+                        .unwrap_or(0),
                         named_variables: None,
                         indexed_variables: Some(0),
                     },
