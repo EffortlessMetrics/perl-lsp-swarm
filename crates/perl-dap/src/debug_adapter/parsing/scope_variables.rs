@@ -56,12 +56,13 @@ pub(super) fn sort_and_paginate(
 /// Compute a stable child reference integer for a paged variable entry.
 ///
 /// `variables_ref` is the scope reference; `start` + `idx` give the absolute
-/// position (1-based).  Arithmetic uses saturating operations throughout.
+/// 0-based position within the variable list.  The returned wire value is always
+/// in the Child band `[2_000_000_000, i32::MAX]` — disjoint from the Scope and
+/// EvalResult bands — so DAP clients can never misroute the ref.
 pub(super) fn compute_child_reference(variables_ref: i32, start: usize, idx: usize) -> i32 {
-    let absolute_index = start.saturating_add(idx).saturating_add(1);
-    variables_ref.saturating_mul(1000).saturating_add(DebugAdapter::i64_to_i32_saturating(
-        i64::try_from(absolute_index).unwrap_or(i64::from(i32::MAX)),
-    ))
+    use crate::debug_adapter::var_ref::VariableReference;
+    let absolute_index = start.saturating_add(idx) as u32;
+    VariableReference::Child { parent: variables_ref, index: absolute_index }.encode().unwrap_or(0)
 }
 
 /// Render a single variable and, if expandable, its children.

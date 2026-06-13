@@ -245,7 +245,12 @@ impl DebugAdapter {
                         name: "$self".to_string(),
                         value: "blessed(My::Module)".to_string(),
                         type_: Some("hash".to_string()),
-                        variables_reference: variables_ref.saturating_mul(100) + 2,
+                        variables_reference: VariableReference::Child {
+                            parent: variables_ref,
+                            index: 0,
+                        }
+                        .encode()
+                        .unwrap_or(0),
                         named_variables: Some(5),
                         indexed_variables: None,
                     },
@@ -253,7 +258,12 @@ impl DebugAdapter {
                         name: "@_".to_string(),
                         value: "array(size=0)".to_string(),
                         type_: Some("array".to_string()),
-                        variables_reference: variables_ref.saturating_mul(100) + 1,
+                        variables_reference: VariableReference::Child {
+                            parent: variables_ref,
+                            index: 1,
+                        }
+                        .encode()
+                        .unwrap_or(0),
                         named_variables: None,
                         indexed_variables: Some(0),
                     },
@@ -970,6 +980,80 @@ DB<1>"#;
         // Three consecutive prompts — verifies loop handles arbitrary depth.
         let result = DebugAdapter::normalize_debugger_output_line("DB<1> DB<2> DB<3> my $x = 10;");
         assert_eq!(result, "my $x = 10;");
+    }
+
+    // ── wire-band collision regression tests (issue #1445) ───────────────────
+    // For Scope refs with large frame_id (approaching the Scope band max of 99_999),
+    // the old ad-hoc arithmetic `variables_ref * 100 + N` produced values inside
+    // the EvalResult band [1_000_000, 1_999_999_999].  The codec-based encoding must
+    // always land in the Child band [2_000_000_000, i32::MAX].
+
+    #[test]
+    fn test_fallback_scope_variables_child_refs_in_child_band_for_deep_frame() {
+        use crate::debug_adapter::var_ref::VariableReference;
+
+        // frame_id = 10_000 → Scope wire = 100_001.  Old arithmetic: 100_001 * 100 + 2
+        // = 10_000_102 — squarely in EvalResult band (1_000_000–1_999_999_999).
+        let deep_scope_ref = 100_001_i32; // frame_id=10_000, kind=Locals
+        assert!(
+            matches!(
+                VariableReference::decode(deep_scope_ref),
+                Some(VariableReference::Scope { .. })
+            ),
+            "deep_scope_ref should decode as Scope"
+        );
+
+        let vars = DebugAdapter::fallback_scope_variables(deep_scope_ref, 0, 10);
+        assert!(!vars.is_empty(), "expected fallback variables for Locals scope");
+
+        for var in &vars {
+            if var.variables_reference != 0 {
+                let decoded = VariableReference::decode(var.variables_reference);
+                assert!(
+                    matches!(decoded, Some(VariableReference::Child { .. })),
+                    "fallback child ref {} for deep frame must decode as Child (not EvalResult/Scope/None), got {:?}",
+                    var.variables_reference,
+                    decoded
+                );
+                // Belt-and-suspenders: wire value must be >= CHILD_BASE (2_000_000_000)
+                assert!(
+                    var.variables_reference >= 2_000_000_000_i32,
+                    "fallback child ref {} must be in Child band [2_000_000_000, i32::MAX]",
+                    var.variables_reference
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_scope_variables_child_refs_in_child_band_for_deep_frame() {
+        use crate::debug_adapter::var_ref::VariableReference;
+
+        // frame_id = 200 → Scope wire = 2_001.  Old compute_child_reference:
+        // 2_001 * 1000 + 1 = 2_001_001 — in EvalResult band.
+        let deep_scope_ref = 2_001_i32; // frame_id=200, kind=Locals
+        let lines = vec!["@items = (1, 2, 3)".to_string()];
+
+        let (vars, child_cache) =
+            DebugAdapter::parse_scope_variables_from_lines(&lines, deep_scope_ref, 0, 10);
+        assert!(!vars.is_empty(), "expected parsed variables");
+
+        for var in &vars {
+            if var.variables_reference != 0 {
+                let decoded = VariableReference::decode(var.variables_reference);
+                assert!(
+                    matches!(decoded, Some(VariableReference::Child { .. })),
+                    "parsed child ref {} for deep frame must decode as Child, got {:?}",
+                    var.variables_reference,
+                    decoded
+                );
+                assert!(
+                    child_cache.contains_key(&var.variables_reference),
+                    "child_cache must hold the deep-frame child ref {}",
+                    var.variables_reference
+                );
+            }
+        }
     }
 
     #[test]
