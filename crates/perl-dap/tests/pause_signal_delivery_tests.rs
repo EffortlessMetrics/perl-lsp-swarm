@@ -7,7 +7,7 @@
 //! Run with: cargo test -p perl-dap --test pause_signal_delivery_tests
 
 use perl_dap::{DapMessage, DebugAdapter};
-use perl_tdd_support::must_some;
+use perl_tdd_support::{must, must_some};
 
 /// No active session → "no Perl debug session is active" guidance message.
 ///
@@ -33,7 +33,10 @@ fn test_pause_no_session_returns_guidance_message() {
                 "no-session pause must NOT say 'Failed to pause debugger', got: {msg}"
             );
         }
-        _ => panic!("Expected DapMessage::Response for pause with no session"),
+        _ => {
+            must(Err::<(), _>("Expected DapMessage::Response for pause with no session"));
+            unreachable!()
+        }
     }
 }
 
@@ -69,6 +72,11 @@ fn test_pause_session_present_signal_failure_returns_accurate_error() {
                 "signal-delivery failure must say 'Failed to pause debugger', got: {msg}"
             );
         }
-        _ => panic!("Expected DapMessage::Response for pause with signal delivery failure"),
+        _ => {
+            must(Err::<(), _>(
+                "Expected DapMessage::Response for pause with signal delivery failure",
+            ));
+            unreachable!()
+        }
     }
 }
