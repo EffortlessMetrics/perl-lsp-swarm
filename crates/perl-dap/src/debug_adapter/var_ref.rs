@@ -113,11 +113,13 @@ impl TryFrom<i32> for ScopeKind {
 /// Wire value 0 is reserved/invalid (DAP: 0 = "no children"). Negative values are
 /// invalid. Values in [1_000_000..2_000_000_000) not matching any band decode to None.
 ///
-/// ## Encode contract for Scope
+/// ## Encode contract
 ///
-/// `encode()` returns `None` for `Scope` when `frame_id > 99_999` (would overflow into
-/// the EvalResult band). All other variants always succeed (using saturating arithmetic
-/// for extreme inputs).
+/// `encode()` returns `None` when encoding would bleed a wire value into another variant's band:
+/// - `Scope`: `None` when `frame_id > 99_999` (would overflow into the EvalResult band).
+/// - `EvalResult`: `None` when `1_000_000 + counter > EVAL_MAX` (counter ≥ 1_999_000_000,
+///   practically unreachable, but enforced for type-level correctness).
+/// - `Child`: always `Some` (saturating arithmetic).
 ///
 /// All fields are primitive scalar types, so `VariableReference` is `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,11 +162,12 @@ const CHILD_BASE: i32 = 2_000_000_000;
 impl VariableReference {
     /// Encode this reference to an i32 wire value.
     ///
-    /// Returns `None` only for `Scope` when `frame_id` is out of `[0, 99_999]` — this
-    /// prevents the Scope wire value from bleeding into the EvalResult band.
+    /// Returns `None` when encoding would produce a wire value outside the variant's band:
     ///
-    /// For `EvalResult` and `Child`, saturating arithmetic is used; extreme inputs
-    /// clamp to i32::MAX rather than panicking.
+    /// - `Scope`: `None` when `frame_id` is out of `[0, 99_999]` (would bleed into EvalResult band).
+    /// - `EvalResult`: `None` when `counter` is negative or `1_000_000 + counter > 1_999_999_999`
+    ///   (would bleed into Child band; requires counter ≥ 1_999_000_000, practically unreachable).
+    /// - `Child`: always `Some` (uses saturating arithmetic; extreme inputs clamp to i32::MAX).
     pub fn encode(&self) -> Option<i32> {
         match self {
             VariableReference::Scope { frame_id, kind } => {
@@ -179,8 +182,18 @@ impl VariableReference {
                 Some(frame_id * 10 + kind_disc)
             }
             VariableReference::EvalResult { counter } => {
-                // Wire = 1_000_000 + counter. Saturating to stay non-negative.
-                Some(EVAL_BASE.saturating_add(*counter))
+                // Wire = 1_000_000 + counter, must stay in [EVAL_BASE, EVAL_MAX].
+                // Negative counters are invalid. Counters >= 1_999_000_000 would push
+                // the wire value into or past CHILD_BASE (2_000_000_000) and be
+                // misclassified as Child on decode — reject them explicitly.
+                if *counter < 0 {
+                    return None;
+                }
+                let wire = EVAL_BASE.saturating_add(*counter);
+                if wire > EVAL_MAX {
+                    return None;
+                }
+                Some(wire)
             }
             VariableReference::Child { parent, index } => {
                 // Wire = 2_000_000_000 + (parent << 16 | (index & 0xFFFF))

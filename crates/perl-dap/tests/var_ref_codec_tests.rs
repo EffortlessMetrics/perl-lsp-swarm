@@ -586,3 +586,71 @@ fn test_adversarial_scope_evalresult_band_adjacency() -> Result<(), Box<dyn std:
     );
     Ok(())
 }
+
+/// EvalResult upper-bound: encode rejects counter values that would push the wire into the Child band.
+///
+/// The EvalResult band is [1_000_000, 1_999_999_999]. Any counter >= 1_999_000_000 causes
+/// wire = 1_000_000 + counter >= 2_000_000_000 = CHILD_BASE, which would be misclassified as
+/// Child on decode. The encode() contract rejects these counters with None.
+#[test]
+fn test_adversarial_evalresult_counter_upper_bound_rejected()
+-> Result<(), Box<dyn std::error::Error>> {
+    // First counter that overflows into Child zone: CHILD_BASE - EVAL_BASE = 1_999_000_000
+    let overflow_counter = 1_999_000_000_i32;
+    let result = VariableReference::EvalResult { counter: overflow_counter }.encode();
+    assert_eq!(
+        result,
+        None,
+        "EvalResult{{counter: {overflow_counter}}} encode must return None \
+         (wire would be {}, which equals CHILD_BASE and decodes as Child)",
+        1_000_000_i64 + overflow_counter as i64
+    );
+
+    // i32::MAX counter also returns None
+    let result_max = VariableReference::EvalResult { counter: i32::MAX }.encode();
+    assert_eq!(
+        result_max, None,
+        "EvalResult{{counter: i32::MAX}} encode must return None (wire overflows EVAL_MAX)"
+    );
+
+    Ok(())
+}
+
+/// EvalResult max valid counter round-trips correctly.
+///
+/// The last counter that stays within the EvalResult band:
+/// EVAL_MAX - EVAL_BASE = 1_999_999_999 - 1_000_000 = 1_998_999_999.
+#[test]
+fn test_adversarial_evalresult_counter_max_valid_roundtrip()
+-> Result<(), Box<dyn std::error::Error>> {
+    let max_valid_counter = 1_998_999_999_i32;
+    let original = VariableReference::EvalResult { counter: max_valid_counter };
+    let wire = original
+        .encode()
+        .ok_or(format!("EvalResult{{counter: {max_valid_counter}}} encode must succeed"))?;
+    assert_eq!(wire, 1_999_999_999, "wire at max valid counter must equal EVAL_MAX");
+    let decoded =
+        VariableReference::decode(wire).ok_or(format!("decode(EVAL_MAX = {wire}) must succeed"))?;
+    assert_eq!(
+        original, decoded,
+        "EvalResult max valid counter must round-trip: counter={max_valid_counter}"
+    );
+    Ok(())
+}
+
+/// EvalResult negative counter is rejected by encode().
+///
+/// Counters are logically non-negative (monotonically increasing allocation IDs).
+/// Negative counters must not produce any wire value.
+#[test]
+fn test_adversarial_evalresult_negative_counter_rejected() -> Result<(), Box<dyn std::error::Error>>
+{
+    let result = VariableReference::EvalResult { counter: -1 }.encode();
+    assert_eq!(
+        result, None,
+        "EvalResult{{counter: -1}} encode must return None (negative counter is invalid)"
+    );
+    let result_min = VariableReference::EvalResult { counter: i32::MIN }.encode();
+    assert_eq!(result_min, None, "EvalResult{{counter: i32::MIN}} encode must return None");
+    Ok(())
+}
