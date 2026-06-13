@@ -41,8 +41,19 @@ class IsIntegrationTestCommandTests(unittest.TestCase):
     """Unit tests for the is_integration_test_command predicate."""
 
     def test_cargo_test_with_tests_flag_is_integration(self) -> None:
+        # Legacy format: plain `cargo test --tests` is still recognised.
         cmd = "cargo test -p perl-dap --tests --profile agent --locked -- --test-threads=1"
         self.assertTrue(gen.is_integration_test_command(cmd))
+
+    def test_cargo_llvm_cov_test_no_report_with_tests_flag_is_integration(self) -> None:
+        # Since #1282: new format uses `cargo llvm-cov test --no-report --tests`.
+        cmd = "cargo llvm-cov test --no-report -p perl-dap --tests --profile agent --locked -- --test-threads=1"
+        self.assertTrue(gen.is_integration_test_command(cmd))
+
+    def test_cargo_llvm_cov_test_no_report_lib_is_not_integration(self) -> None:
+        # `cargo llvm-cov test --no-report --lib` is a lib test, not integration.
+        cmd = "cargo llvm-cov test --no-report --workspace --lib --profile agent --locked"
+        self.assertFalse(gen.is_integration_test_command(cmd))
 
     def test_cargo_test_lib_is_not_integration(self) -> None:
         cmd = "cargo test --workspace --lib --profile agent --locked"
@@ -66,7 +77,8 @@ class RenderCommandBlockTests(unittest.TestCase):
 
     def test_integration_test_command_wrapped_non_fatally(self) -> None:
         """Integration test command must use '|| {' to suppress exit code."""
-        cmd = "cargo test -p perl-dap --tests --profile agent --locked -- --test-threads=1"
+        # Since #1282: new format uses `cargo llvm-cov test --no-report`.
+        cmd = "cargo llvm-cov test --no-report -p perl-dap --tests --profile agent --locked -- --test-threads=1"
         block = gen.render_command_block(cmd)
         # Must contain the command itself.
         self.assertIn(cmd, block)
@@ -75,9 +87,18 @@ class RenderCommandBlockTests(unittest.TestCase):
         # Must reference the test-debt tracking issue.
         self.assertIn("#1269", block)
 
+    def test_legacy_cargo_test_integration_command_still_wrapped_non_fatally(self) -> None:
+        """Legacy `cargo test --tests` format must also be wrapped non-fatally."""
+        cmd = "cargo test -p perl-dap --tests --profile agent --locked -- --test-threads=1"
+        block = gen.render_command_block(cmd)
+        self.assertIn(cmd, block)
+        self.assertIn("|| {", block)
+        self.assertIn("#1269", block)
+
     def test_non_integration_command_uses_direct_invocation(self) -> None:
         """Non-integration commands must NOT be wrapped with '|| {'."""
-        cmd = "cargo test --workspace --lib --profile agent --locked"
+        # Since #1282: lib tests use `cargo llvm-cov test --no-report --lib`.
+        cmd = "cargo llvm-cov test --no-report --workspace --lib --profile agent --locked"
         block = gen.render_command_block(cmd)
         self.assertIn(cmd, block)
         self.assertNotIn("|| {", block)
@@ -89,7 +110,7 @@ class RenderCommandBlockTests(unittest.TestCase):
 
     def test_integration_block_contains_github_warning_annotation(self) -> None:
         """GitHub Actions ::warning:: annotation must appear for integration failures."""
-        cmd = "cargo test -p perl-parser --tests --profile agent --locked -- --test-threads=1"
+        cmd = "cargo llvm-cov test --no-report -p perl-parser --tests --profile agent --locked -- --test-threads=1"
         block = gen.render_command_block(cmd)
         self.assertIn("::warning::", block)
 
@@ -128,7 +149,7 @@ class GenerateScriptTests(unittest.TestCase):
         receipt = self._make_route_receipt([
             {
                 "id": "patch-coverage-rust-focused",
-                "commands": ["cargo test --workspace --lib --profile agent --locked"],
+                "commands": ["cargo llvm-cov test --no-report --workspace --lib --profile agent --locked"],
             }
         ])
         script = self._run_generate(receipt)
@@ -140,14 +161,14 @@ class GenerateScriptTests(unittest.TestCase):
             {
                 "id": "patch-coverage-rust-focused",
                 "commands": [
-                    "cargo test --workspace --lib --profile agent --locked",
-                    "cargo test -p perl-dap --tests --profile agent --locked -- --test-threads=1",
+                    "cargo llvm-cov test --no-report --workspace --lib --profile agent --locked",
+                    "cargo llvm-cov test --no-report -p perl-dap --tests --profile agent --locked -- --test-threads=1",
                 ],
             }
         ])
         script = self._run_generate(receipt)
         # Integration test command must be non-fatal.
-        self.assertIn("cargo test -p perl-dap --tests", script)
+        self.assertIn("cargo llvm-cov test --no-report -p perl-dap --tests", script)
         self.assertIn("|| {", script)
         # Warning annotation for observability.
         self.assertIn("::warning::", script)
@@ -158,7 +179,7 @@ class GenerateScriptTests(unittest.TestCase):
             {
                 "id": "patch-coverage-rust-focused",
                 "commands": [
-                    "cargo test --workspace --lib --profile agent --locked",
+                    "cargo llvm-cov test --no-report --workspace --lib --profile agent --locked",
                 ],
             }
         ])
@@ -173,7 +194,7 @@ class GenerateScriptTests(unittest.TestCase):
         part of the echo label), by checking lines that start with the command
         text rather than with 'echo'.
         """
-        shared_cmd = "cargo test --workspace --lib --profile agent --locked"
+        shared_cmd = "cargo llvm-cov test --no-report --workspace --lib --profile agent --locked"
         receipt = self._make_route_receipt([
             {"id": "pack-a", "commands": [shared_cmd]},
             {"id": "pack-b", "commands": [shared_cmd]},

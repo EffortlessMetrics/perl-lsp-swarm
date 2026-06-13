@@ -1219,11 +1219,17 @@ fn coverage_proof_pack_receipts(selector: &[String]) -> Result<Vec<CoverageProof
 /// Build the command list for the rust-focused pack, appending per-crate
 /// integration-test runs for every crate that owns a changed source file.
 ///
-/// The static pack command `cargo test --workspace --lib` only covers unit
-/// tests inside `src/lib.rs`.  DAP-style crates (e.g. `perl-dap`) prove
-/// production-code coverage exclusively through integration tests in `tests/`.
-/// Without the extra `--tests` invocations those lines show 0 % patch
-/// coverage even though the tests exist and pass.
+/// The static pack command (`cargo llvm-cov test --no-report --workspace --lib`)
+/// covers unit tests inside `src/lib.rs` using `cargo-llvm-cov` binary tracking.
+/// DAP-style crates (e.g. `perl-dap`) prove production-code coverage exclusively
+/// through integration tests in `tests/`.  Without the extra `--tests` invocations
+/// those lines show 0 % patch coverage even though the tests exist and pass.
+///
+/// Since #1282, ALL coverage commands use `cargo llvm-cov test --no-report` instead
+/// of `cargo test` so that `cargo-llvm-cov` registers each binary in its tracking
+/// file.  Without this, `cargo llvm-cov report` does not know which binary files to
+/// symbolise for integration-test profdata, causing integration-test-covered source
+/// lines to appear uncovered (false-low patch %).
 ///
 /// `-- --test-threads=1` forces serial execution within the test binary.
 /// Integration tests in this workspace mutate global/process state (env vars,
@@ -1245,8 +1251,18 @@ fn augment_rust_focused_commands(
 ) -> Vec<String> {
     let mut commands = base_commands.to_vec();
     for crate_name in changed_crates(changed_files) {
+        // Use `cargo llvm-cov test --no-report` instead of `cargo test` so that
+        // cargo-llvm-cov properly registers the integration-test binary in its
+        // tracking file.  With plain `cargo test`, the binary is compiled with
+        // LLVM instrumentation (via the RUSTFLAGS set by `show-env`) but the
+        // profdata is NOT merged into the final `cargo llvm-cov report` because
+        // cargo-llvm-cov only symbolises binaries it explicitly tracked.  Using
+        // `--no-report` here defers the LCOV generation to the single
+        // `cargo llvm-cov report` call at the end of the recipe, ensuring that
+        // integration-test-covered source lines are counted toward patch %.
+        // (#1282 root cause; sister fix to the `coverage-packs.toml` change.)
         let cmd = format!(
-            "cargo test -p {crate_name} --tests --profile agent --locked -- --test-threads=1"
+            "cargo llvm-cov test --no-report -p {crate_name} --tests --profile agent --locked -- --test-threads=1"
         );
         if !commands.contains(&cmd) {
             commands.push(cmd);
@@ -3571,15 +3587,21 @@ mod tests {
         Ok(())
     }
 
-    /// Regression guard for PR #1212 / #1217: DAP-style crates prove their
-    /// patch coverage through integration tests, not lib tests.  The
+    /// Regression guard for PR #1212 / #1217 / #1282: DAP-style crates prove
+    /// their patch coverage through integration tests, not lib tests.  The
     /// rust-focused pack must include a per-crate `--tests` command for every
     /// crate that owns a changed source file.
     ///
-    /// The command must also carry `-- --test-threads=1` (fix for #1232 /
+    /// The command must carry `-- --test-threads=1` (fix for #1232 /
     /// coverage-lane-single-threaded): integration tests in this workspace
     /// mutate global/process state and race when the coverage lane runs them
     /// in parallel.  Single-threaded execution is the whole-class fix.
+    ///
+    /// Since #1282 the command uses `cargo llvm-cov test --no-report` instead
+    /// of `cargo test` so that cargo-llvm-cov registers the binary in its
+    /// tracking file.  Without this, `cargo llvm-cov report` does not know
+    /// which binary files to symbolise for integration-test profdata, causing
+    /// integration-tested source lines to appear uncovered (false-low patch %).
     #[test]
     fn ci_route_rust_focused_pack_includes_integration_tests_for_changed_crate() -> Result<()> {
         let receipt = route_receipt(
@@ -3597,15 +3619,20 @@ mod tests {
             .find(|pack| pack.id == "patch-coverage-rust-focused")
             .ok_or_else(|| color_eyre::eyre::eyre!("patch-coverage-rust-focused not selected"))?;
 
-        // Must include per-crate integration-test invocation with single-threaded flag.
+        // Since #1282: must use `cargo llvm-cov test --no-report` (not `cargo test`)
+        // so binary tracking works correctly for `cargo llvm-cov report`.
         let integration_cmds: Vec<&String> = rust_pack
             .commands
             .iter()
-            .filter(|cmd| cmd.contains("cargo test -p perl-dap") && cmd.contains("--tests"))
+            .filter(|cmd| {
+                cmd.contains("cargo llvm-cov test --no-report")
+                    && cmd.contains("-p perl-dap")
+                    && cmd.contains("--tests")
+            })
             .collect();
         assert!(
             !integration_cmds.is_empty(),
-            "expected a `cargo test -p perl-dap --tests` command; got: {:?}",
+            "expected a `cargo llvm-cov test --no-report -p perl-dap --tests` command; got: {:?}",
             rust_pack.commands
         );
         for cmd in &integration_cmds {
@@ -3616,9 +3643,18 @@ mod tests {
         }
 
         // Original lib command must still be present (lib-test coverage is not regressed).
+        // Since #1282 it also uses `cargo llvm-cov test --no-report` for binary tracking.
         assert!(
             rust_pack.commands.iter().any(|cmd| cmd.contains("--lib")),
             "lib command must remain; got: {:?}",
+            rust_pack.commands
+        );
+        assert!(
+            rust_pack
+                .commands
+                .iter()
+                .any(|cmd| cmd.contains("cargo llvm-cov test --no-report") && cmd.contains("--lib")),
+            "lib command must use `cargo llvm-cov test --no-report` for binary tracking; got: {:?}",
             rust_pack.commands
         );
 

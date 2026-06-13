@@ -53,6 +53,16 @@ def augment_rust_focused_commands(base_commands: list[str], paths: list[str]) ->
     tests in ``tests/``.  Without the extra ``--tests`` invocations those
     lines show 0 % patch coverage even though the tests exist and pass.
 
+    We use ``cargo llvm-cov test --no-report`` instead of ``cargo test`` so
+    that cargo-llvm-cov registers the integration-test binary in its tracking
+    file.  With plain ``cargo test``, the binary is compiled with LLVM
+    instrumentation (via the RUSTFLAGS set by ``show-env``) but cargo-llvm-cov
+    does not know which binary files to symbolise when ``cargo llvm-cov report``
+    is later invoked, so integration-test-covered lines appear as 0 hits.
+    ``--no-report`` defers LCOV generation to the single
+    ``cargo llvm-cov report`` call at the end of the recipe.  (#1282 root
+    cause; sister fix to the ``coverage-packs.toml`` lib-command change.)
+
     ``-- --test-threads=1`` forces serial execution within the test binary.
     Integration tests in this workspace mutate global/process state (env vars,
     auto-ID counters, plenv PATH) without ``#[serial]`` guards.  Coverage does
@@ -70,7 +80,7 @@ def augment_rust_focused_commands(base_commands: list[str], paths: list[str]) ->
     """
     commands = list(base_commands)
     for crate_name in changed_crates(paths):
-        cmd = f"cargo test -p {crate_name} --tests --profile agent --locked -- --test-threads=1"
+        cmd = f"cargo llvm-cov test --no-report -p {crate_name} --tests --profile agent --locked -- --test-threads=1"
         if cmd not in commands:
             commands.append(cmd)
     return commands
