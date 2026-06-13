@@ -691,3 +691,38 @@ reason = "One ripr#1429-class seam in PR #1264 pr_close_proof.rs: validate_sha_f
 created = "2026-06-13"
 review_after = "2026-07-13"
 expires = "2026-09-30"
+
+# -----------------------------------------------------------------------------
+# Fuzz target workspace_inputs scaffolding: ripr#1428-class false-positive in
+# newly added test/fuzz file. Tracks EffortlessMetrics/ripr#1428.
+#
+# PR #686 adds a new libFuzzer target `workspace_inputs` in
+# `fuzz/fuzz_targets/workspace_inputs.rs` that exercises `perl-uri` and
+# `perl-workspace` APIs against arbitrary byte inputs. The fuzz target is
+# test-harness scaffolding (bounded_utf8_lossy, truncate_chars, exercise_*
+# helper functions) whose internal branching and assertions are flagged by
+# RIPR's diff-scoped analyzer as new production seams.
+#
+# This is the same ripr#1428 class as ripr-suppress-ux-receipt-tests and
+# ripr-suppress-seam-proof-tests (RIPR treats test-harness plumbing in newly
+# added test files as production seams when analyzing diffs).
+#
+# Coverage evidence: The fuzz target exercises the full API surface of
+# perl-uri (is_file_uri, normalize_uri, uri_key, uri_extension,
+# workspace_folder_to_path, root_path_to_file_uri) and perl-workspace
+# (extract_workspace_folder_uris, extract_workspace_folder_change,
+# is_perl_discovery_path, is_skipped_dir_name, path_contains_skipped_component)
+# via randomized inputs over the bounded input space.
+#
+# Remove when ripr#1428 is fixed upstream.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-fuzz-workspace-inputs"
+kind = "test_receipt_surface"
+paths = ["fuzz/fuzz_targets/workspace_inputs.rs"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "Test-harness scaffolding in PR #686's new fuzz target workspace_inputs.rs is a ripr#1428-class false-positive. The fuzz target exercises perl-uri and perl-workspace API surfaces via libFuzzer. The internal plumbing (bounded_utf8_lossy, truncate_chars, exercise_uri_surfaces, exercise_workspace_folder_json, exercise_path_surfaces) is test infrastructure, not production code. RIPR diff-scoped analysis treats newly added fuzz-harness functions as new production seams — same false-positive class as ripr-suppress-ux-receipt-tests (test harness falsely classified as production). The coverage exercised is production API; the scaffolding that exercises it is test-only. Path-scoped suppression. Remove when ripr#1428 is fixed upstream."
+created = "2026-06-13"
+review_after = "2026-07-13"
+expires = "2026-09-30"
