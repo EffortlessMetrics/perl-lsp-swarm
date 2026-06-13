@@ -23,7 +23,7 @@
 //! - Collision boundary: test_fallback_child_ref_never_in_eval_band
 
 use perl_dap::var_ref::{ScopeKind, VariableReference};
-use perl_tdd_support::{must_some};
+use perl_tdd_support::must_some;
 
 // ============================================================================
 // TEST 1: Normal frame_id (backward compatibility)
@@ -34,7 +34,8 @@ use perl_tdd_support::{must_some};
 /// Verifies that backward compatibility is preserved for small frame_ids.
 /// Expected: child refs are correctly in the Child band.
 #[test]
-fn test_fallback_scope_variables_normal_frame_child_refs() -> Result<(), Box<dyn std::error::Error>> {
+fn test_fallback_scope_variables_normal_frame_child_refs() -> Result<(), Box<dyn std::error::Error>>
+{
     // Create a Scope ref with frame_id=0, kind=Locals.
     let scope_ref = VariableReference::Scope { frame_id: 0, kind: ScopeKind::Locals };
     let wire = must_some(scope_ref.encode());
@@ -56,14 +57,8 @@ fn test_fallback_scope_variables_normal_frame_child_refs() -> Result<(), Box<dyn
     assert!(wire_1 > 0, "child ref 1 should be non-zero");
 
     const CHILD_BASE: i32 = 2_000_000_000;
-    assert!(
-        wire_0 >= CHILD_BASE,
-        "wire_0={wire_0} should be in Child band [CHILD_BASE, i32::MAX]"
-    );
-    assert!(
-        wire_1 >= CHILD_BASE,
-        "wire_1={wire_1} should be in Child band [CHILD_BASE, i32::MAX]"
-    );
+    assert!(wire_0 >= CHILD_BASE, "wire_0={wire_0} should be in Child band [CHILD_BASE, i32::MAX]");
+    assert!(wire_1 >= CHILD_BASE, "wire_1={wire_1} should be in Child band [CHILD_BASE, i32::MAX]");
 
     // Round-trip: decode and verify it's a Child.
     let decoded_0 = must_some(VariableReference::decode(wire_0));
@@ -71,7 +66,11 @@ fn test_fallback_scope_variables_normal_frame_child_refs() -> Result<(), Box<dyn
         VariableReference::Child { parent: _, index: _ } => {
             // Decoded as Child — correctness verified.
         }
-        _ => panic!("child ref {wire_0} should decode as Child, got {decoded_0:?}"),
+        _ => {
+            return Err(
+                format!("child ref {wire_0} should decode as Child, got {decoded_0:?}").into()
+            );
+        }
     }
 
     Ok(())
@@ -90,7 +89,8 @@ fn test_fallback_scope_variables_normal_frame_child_refs() -> Result<(), Box<dyn
 /// - OLD (buggy): child_wire = 100_001 * 100 + 1 = 10_000_101 (EvalResult band!)
 /// - NEW (fixed): child_wire = 2_000_000_000 + ... (Child band, no collision)
 #[test]
-fn test_fallback_scope_variables_deep_frame_child_ref_no_collision() -> Result<(), Box<dyn std::error::Error>> {
+fn test_fallback_scope_variables_deep_frame_child_ref_no_collision()
+-> Result<(), Box<dyn std::error::Error>> {
     const EVAL_BASE: i32 = 1_000_000;
     const EVAL_MAX: i32 = 1_999_999_999;
 
@@ -109,12 +109,16 @@ fn test_fallback_scope_variables_deep_frame_child_ref_no_collision() -> Result<(
     assert!(
         !(EVAL_BASE..=EVAL_MAX).contains(&wire_1),
         "child_wire {} must NOT be in EvalResult band [{}, {}]",
-        wire_1, EVAL_BASE, EVAL_MAX
+        wire_1,
+        EVAL_BASE,
+        EVAL_MAX
     );
     assert!(
         !(EVAL_BASE..=EVAL_MAX).contains(&wire_2),
         "child_wire {} must NOT be in EvalResult band [{}, {}]",
-        wire_2, EVAL_BASE, EVAL_MAX
+        wire_2,
+        EVAL_BASE,
+        EVAL_MAX
     );
 
     // Child refs must decode as Child, never EvalResult
@@ -122,14 +126,16 @@ fn test_fallback_scope_variables_deep_frame_child_ref_no_collision() -> Result<(
     assert!(
         matches!(decode_1, VariableReference::Child { .. }),
         "child_wire {} must decode as Child, got {:?}",
-        wire_1, decode_1
+        wire_1,
+        decode_1
     );
 
     let decode_2 = must_some(VariableReference::decode(wire_2));
     assert!(
         matches!(decode_2, VariableReference::Child { .. }),
         "child_wire {} must decode as Child, got {:?}",
-        wire_2, decode_2
+        wire_2,
+        decode_2
     );
 
     Ok(())
@@ -152,22 +158,24 @@ fn test_fallback_scope_variables_max_frame_id_boundary() -> Result<(), Box<dyn s
     // Scope with frame_id=99_999, kind=Locals.
     let scope_ref = VariableReference::Scope { frame_id: 99_999, kind: ScopeKind::Locals };
     let scope_wire = must_some(scope_ref.encode());
-    assert_eq!(scope_wire, 999_991, "Scope{{frame_id: 99_999, kind: Locals}} should encode as 999_991");
+    assert_eq!(
+        scope_wire, 999_991,
+        "Scope{{frame_id: 99_999, kind: Locals}} should encode as 999_991"
+    );
 
     let child_0 = VariableReference::Child { parent: scope_wire, index: 0 };
     let wire_0 = must_some(child_0.encode());
 
-    assert!(
-        wire_0 >= CHILD_BASE,
-        "wire_0={wire_0} should be >= CHILD_BASE={CHILD_BASE}"
-    );
+    assert!(wire_0 >= CHILD_BASE, "wire_0={wire_0} should be >= CHILD_BASE={CHILD_BASE}");
 
     let decoded_0 = must_some(VariableReference::decode(wire_0));
     match decoded_0 {
         VariableReference::Child { parent: _, index: _ } => {
             // Decoded as Child — pass.
         }
-        _ => panic!("expected Child, got {decoded_0:?}"),
+        _ => {
+            return Err(format!("expected Child, got {decoded_0:?}").into());
+        }
     }
 
     Ok(())
@@ -209,7 +217,7 @@ fn test_child_ref_encode_decode_roundtrip_deep_frame() -> Result<(), Box<dyn std
                 // clamped or truncated due to codec packing, but that's OK.
             }
             _ => {
-                panic!("decode: wire {wire} should be Child, got {decoded:?}");
+                return Err(format!("decode: wire {wire} should be Child, got {decoded:?}").into());
             }
         }
     }
@@ -236,18 +244,10 @@ fn test_fallback_scope_variables_invalid_scope_ref() -> Result<(), Box<dyn std::
     // This ensures the codec-based implementation is protocol-safe.
 
     // Wire value 0 (DAP "no children" sentinel) should decode to None.
-    assert_eq!(
-        VariableReference::decode(0),
-        None,
-        "wire=0 should decode to None"
-    );
+    assert_eq!(VariableReference::decode(0), None, "wire=0 should decode to None");
 
     // Negative wire should decode to None.
-    assert_eq!(
-        VariableReference::decode(-1),
-        None,
-        "negative wire should decode to None"
-    );
+    assert_eq!(VariableReference::decode(-1), None, "negative wire should decode to None");
 
     // Wire in the gap (above Scope, below EvalResult) should decode to None.
     // The highest valid Scope wire is 999_999.
@@ -281,17 +281,16 @@ fn test_fallback_scope_variables_pagination_deep_frame() -> Result<(), Box<dyn s
     let child_idx_1 = VariableReference::Child { parent: scope_wire, index: 1 };
     let wire_1 = must_some(child_idx_1.encode());
 
-    assert!(
-        wire_1 >= CHILD_BASE,
-        "wire_1={wire_1} should be in Child band"
-    );
+    assert!(wire_1 >= CHILD_BASE, "wire_1={wire_1} should be in Child band");
 
     let decoded = must_some(VariableReference::decode(wire_1));
     match decoded {
         VariableReference::Child { parent: _, index: _ } => {
             // Decoded as Child — pass.
         }
-        _ => panic!("expected Child, got {decoded:?}"),
+        _ => {
+            return Err(format!("expected Child, got {decoded:?}").into());
+        }
     }
 
     Ok(())
@@ -365,7 +364,9 @@ fn test_child_ref_wire_at_band_base() -> Result<(), Box<dyn std::error::Error>> 
         VariableReference::Child { parent: _, index: _ } => {
             // Decoded as Child — pass.
         }
-        _ => panic!("expected Child, got {decoded:?}"),
+        _ => {
+            return Err(format!("expected Child, got {decoded:?}").into());
+        }
     }
 
     Ok(())
@@ -382,7 +383,8 @@ fn test_child_ref_wire_at_band_base() -> Result<(), Box<dyn std::error::Error>> 
 ///
 /// Expected: all scope kinds produce child refs in Child band (or 0 for scalars).
 #[test]
-fn test_fallback_scope_variables_package_and_globals_kinds() -> Result<(), Box<dyn std::error::Error>> {
+fn test_fallback_scope_variables_package_and_globals_kinds()
+-> Result<(), Box<dyn std::error::Error>> {
     const CHILD_BASE: i32 = 2_000_000_000;
 
     let test_cases = vec![
@@ -400,10 +402,7 @@ fn test_fallback_scope_variables_package_and_globals_kinds() -> Result<(), Box<d
         let child = VariableReference::Child { parent: scope_wire, index: 0 };
         let wire = must_some(child.encode());
 
-        assert!(
-            wire >= CHILD_BASE,
-            "{label}: wire={wire} should be >= CHILD_BASE={CHILD_BASE}"
-        );
+        assert!(wire >= CHILD_BASE, "{label}: wire={wire} should be >= CHILD_BASE={CHILD_BASE}");
     }
 
     Ok(())

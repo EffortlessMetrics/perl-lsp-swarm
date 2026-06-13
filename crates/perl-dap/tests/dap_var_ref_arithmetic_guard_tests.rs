@@ -13,49 +13,6 @@
 use std::fs;
 use std::path::Path;
 
-/// Helper: strip line comments (from // to end of line) and block comments.
-///
-/// This is a simple regex-based approach that removes comments while preserving
-/// the code structure for pattern matching. Multi-line strings are NOT handled
-/// perfectly, but for guard-test purposes, this is sufficient.
-fn strip_comments(content: &str) -> String {
-    let mut result = String::new();
-    let mut chars = content.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '/' {
-            if chars.peek() == Some(&'/') {
-                // Line comment: skip to end of line
-                chars.next(); // consume second '/'
-                while let Some(&c) = chars.peek() {
-                    if c == '\n' {
-                        break;
-                    }
-                    chars.next();
-                }
-                result.push('\n'); // preserve newlines for line counting
-            } else if chars.peek() == Some(&'*') {
-                // Block comment: skip to */
-                chars.next(); // consume '*'
-                let mut prev = ' ';
-                while let Some(c) = chars.next() {
-                    if prev == '*' && c == '/' {
-                        break;
-                    }
-                    prev = c;
-                }
-                result.push(' '); // replace block comment with space (preserve offset)
-            } else {
-                result.push(ch);
-            }
-        } else {
-            result.push(ch);
-        }
-    }
-
-    result
-}
-
 /// Helper: find all line numbers containing a pattern in a string.
 fn find_pattern_lines(content: &str, pattern: &str) -> Vec<(usize, String)> {
     let mut matches = Vec::new();
@@ -76,7 +33,8 @@ fn find_pattern_lines(content: &str, pattern: &str) -> Vec<(usize, String)> {
 /// which produces child refs in the EvalResult band for deep frames (collision #1445).
 #[test]
 fn test_var_ref_codec_no_raw_arithmetic_in_parsing() -> Result<(), Box<dyn std::error::Error>> {
-    let parsing_rs_path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/debug_adapter/parsing.rs"));
+    let parsing_rs_path =
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/debug_adapter/parsing.rs"));
 
     let content = fs::read_to_string(parsing_rs_path)
         .map_err(|e| format!("failed to read {}: {}", parsing_rs_path.display(), e))?;
@@ -86,31 +44,20 @@ fn test_var_ref_codec_no_raw_arithmetic_in_parsing() -> Result<(), Box<dyn std::
     let bug_pattern = "saturating_mul(100)";
     let matches = find_pattern_lines(&content, bug_pattern);
 
-    println!("TEST: Looking for pattern '{}' in {}", bug_pattern, parsing_rs_path.display());
-    println!("TEST: Content length: {} bytes", content.len());
-    println!("TEST: Matches found: {}", matches.len());
-    for (line_num, line_text) in &matches {
-        println!("TEST: Line {}: {}", line_num, line_text);
-    }
-
     // RED TEST: This test FAILS when the bug is present (saturating_mul found).
     // After the builder fixes it, this test PASSES (no saturating_mul found).
-    // BEFORE fix: assertion fails — TEST IS RED ✗
-    // AFTER fix: assertion passes — TEST IS GREEN ✓
+    // BEFORE fix: assertion fails — TEST IS RED
+    // AFTER fix: assertion passes — TEST IS GREEN
     assert!(
         matches.is_empty(),
         "#1445 BUG DETECTED: Found '{}' in parsing.rs (fallback_scope_variables collision):\n{}",
         bug_pattern,
-        matches.iter()
+        matches
+            .iter()
             .map(|(line_num, text)| format!("Line {}: {}", line_num, text))
             .collect::<Vec<_>>()
             .join("\n")
     );
-
-    // Document where the bug is
-    for (line_num, line_text) in matches {
-        eprintln!("BUG LOCATION: Line {}: {}", line_num, line_text);
-    }
 
     Ok(())
 }
@@ -118,8 +65,10 @@ fn test_var_ref_codec_no_raw_arithmetic_in_parsing() -> Result<(), Box<dyn std::
 /// Sanity check: verify that var_ref.rs DOES have the expected patterns
 /// (as a positive control — var_ref.rs should contain the arithmetic we're forbidding elsewhere).
 #[test]
-fn test_var_ref_rs_contains_expected_arithmetic_patterns() -> Result<(), Box<dyn std::error::Error>> {
-    let var_ref_rs_path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/debug_adapter/var_ref.rs"));
+fn test_var_ref_rs_contains_expected_arithmetic_patterns() -> Result<(), Box<dyn std::error::Error>>
+{
+    let var_ref_rs_path =
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/debug_adapter/var_ref.rs"));
 
     let content = fs::read_to_string(var_ref_rs_path)
         .map_err(|e| format!("failed to read {}: {}", var_ref_rs_path.display(), e))?;
@@ -129,14 +78,8 @@ fn test_var_ref_rs_contains_expected_arithmetic_patterns() -> Result<(), Box<dyn
         content.contains("* 10 +"),
         "var_ref.rs should contain Scope encoding (frame_id * 10 + kind)"
     );
-    assert!(
-        content.contains("<< 16"),
-        "var_ref.rs should contain Child encoding (parent << 16)"
-    );
-    assert!(
-        content.contains("2_000_000_000"),
-        "var_ref.rs should contain CHILD_BASE constant"
-    );
+    assert!(content.contains("<< 16"), "var_ref.rs should contain Child encoding (parent << 16)");
+    assert!(content.contains("2_000_000_000"), "var_ref.rs should contain CHILD_BASE constant");
     assert!(
         content.contains("EVAL_BASE"),
         "var_ref.rs should contain EVAL_BASE for EvalResult band"
