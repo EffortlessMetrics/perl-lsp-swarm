@@ -404,9 +404,10 @@ impl Node {
                 parts.join(" ")
             }
 
-            NodeKind::If { condition, then_branch, elsif_branches, else_branch } => {
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, keyword } => {
+                let kw = keyword.as_deref().unwrap_or("if");
                 let mut parts =
-                    vec![format!("(if {} {})", condition.to_sexp(), then_branch.to_sexp())];
+                    vec![format!("({} {} {})", kw, condition.to_sexp(), then_branch.to_sexp())];
 
                 for (cond, block) in elsif_branches {
                     parts.push(format!("(elsif {} {})", cond.to_sexp(), block.to_sexp()));
@@ -423,8 +424,9 @@ impl Node {
                 format!("(labeled_statement {} {})", label, statement.to_sexp())
             }
 
-            NodeKind::While { condition, body, continue_block } => {
-                let mut s = format!("(while {} {})", condition.to_sexp(), body.to_sexp());
+            NodeKind::While { condition, body, continue_block, keyword } => {
+                let kw = keyword.as_deref().unwrap_or("while");
+                let mut s = format!("({} {} {})", kw, condition.to_sexp(), body.to_sexp());
                 if let Some(cont) = continue_block {
                     s.push_str(&format!(" (continue {})", cont.to_sexp()));
                 }
@@ -1779,6 +1781,8 @@ pub enum NodeKind {
         elsif_branches: Vec<(Box<Node>, Box<Node>)>,
         /// Optional else branch
         else_branch: Option<Box<Node>>,
+        /// Original keyword: None for 'if', Some("unless") for 'unless' block form.
+        keyword: Option<String>,
     },
 
     /// Statement with a label for loop control: `LABEL: while (...)`
@@ -1797,6 +1801,8 @@ pub enum NodeKind {
         body: Box<Node>,
         /// Optional continue block
         continue_block: Option<Box<Node>>,
+        /// Original keyword: None for 'while', Some("until") for 'until' block form.
+        keyword: Option<String>,
     },
 
     /// Tie operation for binding variables to objects: `tie %hash, 'Package', @args`
@@ -2041,7 +2047,9 @@ pub enum NodeKind {
         replacement: String,
         /// Substitution modifiers (g, e, r, etc.)
         modifiers: String,
-        /// Whether the regex contains embedded code `(?{...})`
+        /// Whether the substitution contains embedded code — either a `(?{...})` inline
+        /// code block in the pattern, or the `e`/`ee` modifier which evaluates the
+        /// replacement string as Perl code (equivalent to `eval`).
         has_embedded_code: bool,
         /// Whether the binding operator was `!~` (negated match)
         negated: bool,
@@ -2163,13 +2171,35 @@ pub enum NodeKind {
         partial: Option<Box<Node>>,
     },
 
-    /// Missing expression where one was expected
+    /// Missing expression where one was expected.
+    ///
+    /// Emitted by `recover_missing_infix_rhs` when a binary operator has no
+    /// right-hand-side (e.g. `1 +` at end of input). This is the **only**
+    /// `Missing*` variant currently emitted by the production parser.
     MissingExpression,
-    /// Missing statement where one was expected
+
+    /// RESERVED — not currently emitted by the parser.
+    ///
+    /// Retained for API symmetry and future error-recovery work. If recovery
+    /// starts emitting this variant, add real parser fixture tests before
+    /// shipping. Do not pattern-match on this variant expecting it to appear
+    /// in normal parse output.
     MissingStatement,
-    /// Missing identifier where one was expected
+
+    /// RESERVED — not currently emitted by the parser.
+    ///
+    /// Retained for API symmetry and future error-recovery work. If recovery
+    /// starts emitting this variant, add real parser fixture tests before
+    /// shipping. Do not pattern-match on this variant expecting it to appear
+    /// in normal parse output.
     MissingIdentifier,
-    /// Missing block where one was expected
+
+    /// RESERVED — not currently emitted by the parser.
+    ///
+    /// Retained for API symmetry and future error-recovery work. If recovery
+    /// starts emitting this variant, add real parser fixture tests before
+    /// shipping. Do not pattern-match on this variant expecting it to appear
+    /// in normal parse output.
     MissingBlock,
 
     /// Lexer budget exceeded marker preserving partial parse results
@@ -2620,12 +2650,14 @@ mod tests {
                 then_branch: Box::new(dummy_node()),
                 elsif_branches: vec![],
                 else_branch: None,
+                keyword: None,
             },
             NodeKind::LabeledStatement { label: String::new(), statement: Box::new(dummy_node()) },
             NodeKind::While {
                 condition: Box::new(dummy_node()),
                 body: Box::new(dummy_node()),
                 continue_block: None,
+                keyword: None,
             },
             NodeKind::Tie {
                 variable: Box::new(dummy_node()),

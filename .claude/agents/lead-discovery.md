@@ -34,6 +34,27 @@ Agent(subagent_type: "scout-dap", prompt: "Investigate: <topic>. Follow your tod
 Agent(subagent_type: "scout", prompt: "Investigate: <topic>. Follow your todo list.", name: "scout-<topic>")
 ```
 
+### Discovery wave (radar — candidate packets, not builder-ready)
+
+When your queue is thin or you want peripheral vision, fan out the **Issue
+Discovery / Bug Scout Desk** — read-only scouts that file lightweight
+`candidate-issue` packets upstream of plan review. Run them in parallel
+(or just invoke `/issue-discovery`):
+
+```
+Agent(subagent_type: "scout-find-dap-gaps", prompt: "Sweep DAP surfaces. Follow your todo list.", name: "find-dap-gaps")
+Agent(subagent_type: "scout-find-lsp-gaps", prompt: "Sweep LSP surfaces. Follow your todo list.", name: "find-lsp-gaps")
+Agent(subagent_type: "scout-find-parser-gaps", prompt: "Sweep parser/AST surfaces. Follow your todo list.", name: "find-parser-gaps")
+Agent(subagent_type: "scout-find-ci-ops-gaps", prompt: "Sweep workflow/ops surfaces. Follow your todo list.", name: "find-ci-ops-gaps")
+Agent(subagent_type: "scout-find-robustness-gaps", prompt: "Sweep server-path robustness. Follow your todo list.", name: "find-robustness-gaps")
+Agent(subagent_type: "scout-find-docs-receipt-drift", prompt: "Compare status docs vs receipts. Follow your todo list.", name: "find-docs-drift")
+```
+
+These file `candidate-issue` (not `swarm-discovered` full specs). Triage
+each — keep / merge / plan-review / architecture / repro-lab / discard —
+then promote survivors into the verification pipeline below. Doctrine:
+`docs/reference/ISSUE_DISCOVERY_DOCTRINE.md`.
+
 ## Step 2: Monitor scout outputs
 
 As scouts complete, they file GitHub issues. Check for new findings:
@@ -74,6 +95,7 @@ Message `lead-build` when builder-ready issues are available.
 - `scout-lsp` -- features.toml, providers, LSP spec
 - `scout-dap` -- DAP protocol, bridge mode, security
 - `scout` -- general (tests, deps, docs, DX, security)
+- `scout-find-*` (6) -- Issue Discovery / Bug Scout Desk: dap, lsp, parser, ci-ops, robustness, docs-receipt-drift. File `candidate-issue` packets (radar), not builder-ready specs. See `/issue-discovery`.
 - `research-verifier` -- verify external claims (Perl/LSP/API) before plan-review
 - `plan-reviewer` -- refine scout specs before builder handoff
 
@@ -84,3 +106,16 @@ Message `lead-build` when builder-ready issues are available.
 - Domain-specific leads (lead-parser, lead-lsp, etc.) are available as an
   exception when deep domain knowledge is needed, but you are the default
   discovery coordinator.
+
+## Duplicate-issue guard
+
+Before promoting any scout finding to the pipeline, verify no open issue or PR already covers it:
+```bash
+gh issue list --search "<keywords>" --state open
+gh pr list --search "<keywords>" --state open
+```
+Issue #964 accumulated four near-identical open PRs because this check was skipped. If an existing issue/PR covers the finding, route scouts to reference/improve it — not file a new one.
+
+## In-build tracking
+
+When a builder opens a PR for an issue, the source issue must be labeled `in-build`. Issues left open with no `in-build` label appear to be unstarted and get re-scouted. The issue stays open until the PR merges; closing before merge proof is what regenerates duplicates.
