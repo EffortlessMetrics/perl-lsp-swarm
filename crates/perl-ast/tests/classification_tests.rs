@@ -756,3 +756,38 @@ fn instance_dependent_flags_phaseblock() {
     // - INIT: maybe stoppable depending on attach timing
     // The variant flags are conservative (all true) and serve as a prefilter.
 }
+
+// ────────────────────────────────────────────────────────
+// Test: Use and No safe_for_breakpoint=false coverage
+//
+// Direct test for Use/No variants to ensure llvm-cov measures coverage of
+// the modified match arms in classification.rs (where Use/No changed from
+// safe_for_breakpoint=true to false). The main test suite exercises these
+// variants indirectly; this test directly asserts the flag value.
+// ────────────────────────────────────────────────────────
+
+#[test]
+fn use_not_safe_for_breakpoint() {
+    let use_kind = NodeKind::Use {
+        module: "strict".to_string(),
+        args: vec![],
+        has_filter_risk: false,
+    };
+    assert!(
+        !use_kind.flags().safe_for_breakpoint,
+        "Use must have safe_for_breakpoint=false (compile-time pragma)"
+    );
+}
+
+#[test]
+fn no_not_safe_for_breakpoint() {
+    let no_kind = NodeKind::No {
+        module: "warnings".to_string(),
+        args: vec![],
+        has_filter_risk: false,
+    };
+    assert!(
+        !no_kind.flags().safe_for_breakpoint,
+        "No must have safe_for_breakpoint=false (compile-time unimport)"
+    );
+}
