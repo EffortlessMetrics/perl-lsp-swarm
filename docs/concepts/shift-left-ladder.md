@@ -78,3 +78,5 @@ the first recurrence of a class. Make bespoke or expensive prevention earn its k
 count and severity: a class that appeared once in a one-off PR does not justify a new xtask
 validator; a class that appeared in three consecutive PRs from different builders justifies promoting
 to a spec hazard row and, if it recurs again, a compile-time or clippy-level elimination.
+
+Deep review stays load-bearing. Shifting known hazards left (to spec + red tests + mechanical checks) does not make deep review optional: novel gate/tooling logic and release-impacting behavior still require it. Its job shifts from "find every obvious invariant" to "confirm known hazards are covered, hunt unknown-unknowns, catch tool/gate math errors, and detect claim/proof drift."

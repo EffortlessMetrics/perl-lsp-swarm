@@ -216,3 +216,36 @@ This framing makes one thing explicit that the earlier field notes left implicit
 job is calibration, not implementation. The scarce work is not writing code — it is choosing
 invariants, shaping specs, assigning proof obligations, verifying results, and correcting the
 operating model when it drifts. That work moves up-stack as implementation becomes cheaper. Refs #1425.
+
+---
+
+## The operating style, named
+
+Call it **evidence-weighted autonomous engineering** (equivalently, **stochastic-ready engineering**). It is not "weird things with agents" — it is a stochastic engineering system run with explicit controls. Its principles:
+
+1. Claims are not truth until evidenced.
+2. Specs are build inputs, not after-the-fact docs.
+3. Tests must fail for the right reason before they prove anything.
+4. CI is important but fallible.
+5. Human judgment calibrates the system model (operator-guided stochastic compilation, not HITL).
+6. Parallel builds are good; merges need pacing.
+7. Recurring friction belongs in the substrate, not per-PR toil.
+8. Learnings become repo assets.
+9. Cheap static prevention is preferred; expensive bespoke gates must earn their keep.
+10. Release claims only include merged, proven scope.
+
+### The operating loop
+
+```
+1. Intake claim
+2. Haiku scouts: premise, prior art, hazard classes, affected contracts, test grid, blast radius
+3. Spec packet: behavior, hazards, contracts, API shape, test grid, blast radius
+4. Red-TDD: test fails before fix, failure reaches the bug path, invalid-red rejected
+5. Sonnet builder: one scoped slice, no broadening
+6. Deep review: confirm known hazards covered, hunt novel risks, verify PR body vs diff
+7. CI / proof: required checks, raw artifacts if failing, no blind debugging
+8. Merge: when green, no mid-CI rebase, admin exception only as incident-backed treadmill-break
+9. Learn: repo learning + portable concept if reusable + spec update if forward-looking + issue if mechanical follow-up remains
+```
+
+The code improves, but the deeper asset is that the system gets better at improving itself: claims → specs → tests → PRs → reviews → learnings → stronger specs.

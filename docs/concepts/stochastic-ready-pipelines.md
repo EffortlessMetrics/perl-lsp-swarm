@@ -85,3 +85,17 @@ The posture precedes the tactic. If the posture is not held — if artifacts are
 - **Hazard-class invariants** (`hazard-class-invariants.md`) — class 5 (test encodes the bug) and class 6 (coverage measurement integrity) are concrete instances of artifacts with known-bad reliability profiles; their controls follow directly from the stochastic-ready posture.
 - **Model conformance** (`model-conformance.md`) — when two artifacts conflict (two agents report different behavior for the same function), the conformance discipline provides the resolution procedure: enumerate claims, check against observed behavior, find the outlier.
 - **Human corrects substrate** (`human-corrects-substrate.md`) — the human operator's role is highest when artifacts from multiple pipeline layers are in conflict and no agent-level escalation path can resolve it; the human reads the primary sources the agents cannot access.
+
+---
+
+## Failure modes to watch
+
+These are the recurring ways a stochastic pipeline degrades, with the controls that catch each.
+
+**Agent overclaim** — symptoms: "red tests added" but they pass pre-fix; "CI green" but only advisory checks are green; "no suppression needed" before a live receipt; PR body says tests fail intentionally after they no longer do. Controls: valid-red proof; required-check truth (not advisory); PR-body-vs-diff review; raw-artifact capture.
+
+**Substrate mismatch** — symptoms: branch-protection assumptions wrong; main moves unexpectedly; CI starvation; tool output schema changed; default `gh` limits hide items. Controls: substrate-model docs; preflight model-conformance check; heartbeat state packets; an explicit merge-queue / strict-up-to-date decision.
+
+**Doctrine bloat** — symptoms: docs expand faster than enforcement; agents cite docs but do not follow them; specs become stale inventory. Controls: mechanical spec validators; learning entries linked to specs/tests; a periodic stale-doc scout.
+
+**Merge thrash** — symptoms: PRs green 2/3 forever; update-branch cancels in-progress CI; consolidated watch churns too many PRs. Controls: parallel builds, paced merges; never update mid-CI; small batches; an explicit merge-queue policy decision.

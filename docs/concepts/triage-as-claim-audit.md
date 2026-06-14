@@ -94,3 +94,9 @@ Five practices that keep triage from becoming phantom-work generation:
 - **Shift-left ladder** (`shift-left-ladder.md`) — triage is upstream of spec and builder. Catching phantom work at triage (refuted, already-fixed) saves the full builder cost. Catching class patterns at triage (broader-pattern) prevents recurring builder rework.
 - **Model conformance** (`model-conformance.md`) — when multiple issues make conflicting claims about the same behavior, triage is the process of finding the outlier and resolving the conflict against the current codebase.
 - **Human corrects substrate** (`human-corrects-substrate.md`) — when triage is producing a high proportion of phantom work (the claims are systematically wrong), the problem is usually a substrate issue: a scout that files issues without checking current codebase state, or an accuracy layer that is not running. The human corrects the substrate, not individual triage outcomes.
+
+---
+
+## Specs need an owner state
+
+A spec is an asset only if it is consumed. Every spec should carry an explicit owner state: `build-ready` | `blocked` | `deferred` | `refuted` | `superseded` | `contract-only`. A spec with no owner state is unconsumed inventory, not acceleration. Specs are cheap to produce early — but cheap-to-produce is not the same as free-to-leave-unreconciled. Pair early spec production with a periodic reconciliation sweep so spec debt does not silently become a shadow backlog.
