@@ -4137,6 +4137,12 @@ impl IndexVisitor {
             NodeKind::LabeledStatement { statement, .. } => {
                 self.visit_node(statement, file_index);
             }
+            NodeKind::NestedVariableList { items } => {
+                // Recurse into items so nested-declared variables are indexed.
+                for item in items {
+                    self.visit_node(item, file_index);
+                }
+            }
             _ => {
                 // For other node types, no children to visit
             }

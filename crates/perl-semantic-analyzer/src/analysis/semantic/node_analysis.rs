@@ -454,6 +454,11 @@ impl SemanticAnalyzer {
                         };
 
                         self.hover_info.insert(var.location, hover);
+                    } else if matches!(var.kind, NodeKind::NestedVariableList { .. }) {
+                        // Nested variable group like ($b, $c) in my ($a, ($b, $c)).
+                        // register_nested_decl_vars walks the nested list and registers each
+                        // leaf Variable with the correct declaration token type and modifiers.
+                        self.register_nested_decl_vars(var, declarator, attributes, scope_id);
                     }
                 }
 
@@ -912,6 +917,57 @@ impl SemanticAnalyzer {
             NodeKind::Error { .. } | NodeKind::UnknownRest => {
                 // No semantic tokens for error nodes
             }
+        }
+    }
+
+    /// Register leaf `Variable` nodes inside a `NestedVariableList` with
+    /// declaration semantic tokens and hover info, using the surrounding
+    /// `declarator` (e.g. `"my"`) and `attributes` from the enclosing
+    /// `VariableListDeclaration`.
+    ///
+    /// This is needed because `VariableListDeclaration`'s loop only does
+    /// `if let NodeKind::Variable { .. }` — any nested list item would be
+    /// silently skipped without this recursive walk.
+    fn register_nested_decl_vars(
+        &mut self,
+        node: &Node,
+        declarator: &str,
+        attributes: &[String],
+        scope_id: ScopeId,
+    ) {
+        match &node.kind {
+            NodeKind::NestedVariableList { items } => {
+                for item in items {
+                    self.register_nested_decl_vars(item, declarator, attributes, scope_id);
+                }
+            }
+            NodeKind::Variable { sigil, name } => {
+                let token_type = match declarator {
+                    "my" | "state" => SemanticTokenType::VariableDeclaration,
+                    _ => SemanticTokenType::Variable,
+                };
+                let mut modifiers = vec![SemanticTokenModifier::Declaration];
+                if declarator == "state" || attributes.iter().any(|a| a == ":shared") {
+                    modifiers.push(SemanticTokenModifier::Static);
+                }
+                self.semantic_tokens.push(SemanticToken {
+                    location: node.location,
+                    token_type,
+                    modifiers,
+                });
+                let hover = HoverInfo {
+                    signature: format!("{} {}{}", declarator, sigil, name),
+                    documentation: self.extract_documentation(node.location.start),
+                    details: if attributes.is_empty() {
+                        vec![]
+                    } else {
+                        vec![format!("Attributes: {}", attributes.join(", "))]
+                    },
+                };
+                self.hover_info.insert(node.location, hover);
+            }
+            // undef placeholders and other non-variable items have no declaration token.
+            _ => {}
         }
     }
 
