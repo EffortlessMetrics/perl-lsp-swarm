@@ -38,16 +38,9 @@ fn test_coverage_pack_non_fatal_lib_test_failure() -> TestResult {
     let summary = dir.path().join("quality-gate.md");
 
     // Simulate good patch coverage (97%)
-    write_coverage_receipt(
-        &coverage,
-        &current_head(&root)?,
-        Some(97.0),
-        json!([]),
-    )?;
+    write_coverage_receipt(&coverage, &current_head(&root)?, Some(97.0), json!([]))?;
 
-    patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?
-        .assert()
-        .success();
+    patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?.assert().success();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
 
@@ -77,16 +70,9 @@ fn test_coverage_pack_non_fatal_integration_test_failure() -> TestResult {
     let summary = dir.path().join("quality-gate.md");
 
     // Simulate excellent patch coverage (98%)
-    write_coverage_receipt(
-        &coverage,
-        &current_head(&root)?,
-        Some(98.0),
-        json!([]),
-    )?;
+    write_coverage_receipt(&coverage, &current_head(&root)?, Some(98.0), json!([]))?;
 
-    patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?
-        .assert()
-        .success();
+    patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?.assert().success();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
 
@@ -170,7 +156,7 @@ fn test_exact_failure_class_taxonomy_in_artifact() -> TestResult {
     write_coverage_receipt(
         &coverage,
         &current_head(&root)?,
-        Some(94.9),  // Below 95% threshold
+        Some(94.9), // Below 95% threshold
         json!([{
             "path": "crates/test-crate/src/lib.rs",
             "line_hit": 40,
@@ -180,20 +166,17 @@ fn test_exact_failure_class_taxonomy_in_artifact() -> TestResult {
         }]),
     )?;
 
-    let output = patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?
-        .output()?;
+    let output =
+        patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?.output()?;
     assert!(!output.status.success(), "coverage below 95% must fail the gate");
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
 
     // Builder will add explicit failure_class field. Red test asserts it exists.
-    let failure_class = payload
-        .get("failure_class")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            // If builder hasn't added it yet, red test will fail here.
-            None
-        });
+    let failure_class = payload.get("failure_class").and_then(Value::as_str).or_else(|| {
+        // If builder hasn't added it yet, red test will fail here.
+        None
+    });
 
     if let Some(class) = failure_class {
         assert_eq!(
@@ -305,12 +288,9 @@ fn test_genuine_coverage_shortfall_still_fails_gate() -> TestResult {
 
     // Gate should FAIL because coverage is below threshold.
     // This behavior is CORRECT and must not change after the builder's fixes.
-    let output = patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?
-        .output()?;
-    assert!(
-        !output.status.success(),
-        "gate must fail when patch coverage is below 95%"
-    );
+    let output =
+        patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?.output()?;
+    assert!(!output.status.success(), "gate must fail when patch coverage is below 95%");
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
     assert_eq!(

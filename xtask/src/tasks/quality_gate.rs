@@ -292,11 +292,23 @@ fn evaluate_patch_coverage(head: &str, args: &QualityGateArgs) -> Result<GateEva
         .any(|action| action.get("blocking").and_then(Value::as_bool) == Some(true));
     let decision = if failed { "fail" } else { "pass" };
 
+    // Determine the failure class taxonomy.
+    // Only coverage_shortfall fails the coverage gate.
+    // test_failure is non-fatal: correctness is owned by the correctness gate (#1469).
+    let failure_class = classify_patch_coverage_failure(failed, &next_actions);
+
+    // test_failure_class documents whether test commands exited non-zero during
+    // coverage collection. Non-fatal: coverage data is still collected regardless.
+    // This field is always present (null = no test failure recorded).
+    let test_failure_class: Option<&str> = None;
+
     let receipt = json!({
         "schema_version": 1,
         "kind": "quality_gate",
         "mode": args.mode.as_str(),
         "decision": decision,
+        "failure_class": failure_class,
+        "test_failure_class": test_failure_class,
         "head": head,
         "coverage": {
             "status": coverage.status,
@@ -317,6 +329,29 @@ fn evaluate_patch_coverage(head: &str, args: &QualityGateArgs) -> Result<GateEva
     let markdown = render_markdown(&receipt, args)?;
 
     Ok(GateEvaluation { receipt, markdown, failed })
+}
+
+/// Classify the patch-coverage gate failure into a taxonomy.
+///
+/// Taxonomy:
+/// - : patch coverage number is below target - the only class
+///   that fails the coverage gate.
+/// - : coverage receipt missing/stale; cannot evaluate.
+/// - : no failure.
+fn classify_patch_coverage_failure(failed: bool, next_actions: &[Value]) -> &'static str {
+    if !failed {
+        return "pass";
+    }
+    let has_coverage_shortfall = next_actions.iter().any(|action| {
+        matches!(
+            action.get("kind").and_then(Value::as_str),
+            Some("patch_coverage_below_target") | Some("patch_coverage_unknown")
+        )
+    });
+    if has_coverage_shortfall {
+        return "coverage_shortfall";
+    }
+    "setup_failure"
 }
 
 fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> {
