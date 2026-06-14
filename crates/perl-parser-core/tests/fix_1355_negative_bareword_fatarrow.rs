@@ -1,0 +1,308 @@
+mod cpan_test_helpers;
+use cpan_test_helpers::*;
+
+// =============================================================================
+// POSITIVE TESTS — keyword tokens before fat arrow must parse cleanly
+// (these were RED before the fix; now GREEN)
+// =============================================================================
+
+#[test]
+fn test_negative_or_before_fatarrow() {
+    // Core case: -or => value is a valid bareword hash key in Perl.
+    // Before the fix: "expected expression, found 'or' at position 11"
+    let source = "my %h = (-or => 1);";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_and_before_fatarrow() {
+    // Core case: -and => value is a valid bareword hash key in Perl.
+    // Before the fix: "expected expression, found 'and'"
+    let source = "my %h = (-and => 5);";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_xor_before_fatarrow() {
+    // Core case: -xor => value.
+    let source = "my %h = (-xor => 1);";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_not_before_fatarrow() {
+    // Core case: -not => value (WordNot).
+    let source = "my %h = (-not => 1);";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_or_in_array_literal() {
+    // -or => in anonymous array constructor.
+    let source = "my $y = [ -or => 1 ];";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_and_in_array_literal() {
+    // -and => in anonymous array constructor.
+    let source = "my $y = [ -and => 5 ];";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_keyword_as_function_argument() {
+    // -or => passed as a function argument (hash flattening).
+    let source = "func(-or => 1);";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_keyword_in_print_statement() {
+    // -or => in a print statement.
+    let source = "print -or => 1;";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_all_lowprec_ops_before_fatarrow() {
+    // All word-operator keywords used as bareword keys in the same hash.
+    let source = r#"my %h = (
+        -or  => 1,
+        -and => 2,
+        -xor => 3,
+        -not => 4,
+    );"#;
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_cmp_before_fatarrow() {
+    // cmp (StringCompare token) as a bareword key.
+    let source = "my %h = (-cmp => 1);";
+    assert_clean_parse(source);
+}
+
+// =============================================================================
+// REALISTIC PATTERN — DBIx::Class / SQL::Abstract style
+// (These patterns are heavily used in the Perl ecosystem)
+// =============================================================================
+
+#[test]
+fn test_realistic_negative_bareword_pattern() {
+    // SQL::Abstract / DBIx::Class search: -or and -and as condition combinators.
+    // Before fix: parser died at the first -or keyword.
+    let source = r#"my $rs = $schema->resultset('Foo')->search({
+        -or => [
+            name => 'bar',
+            type => 'baz',
+        ],
+        -and => [
+            active => 1,
+        ],
+    });"#;
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_dbix_class_like_search_pattern() {
+    // Variant: -or at top level of a function call.
+    let source = r#"$rs->search(-or => [ foo => 1, bar => 2 ]);"#;
+    assert_clean_parse(source);
+}
+
+// =============================================================================
+// REGRESSION GUARDS — genuine unary minus must still work
+// =============================================================================
+
+#[test]
+fn test_unary_minus_on_variable() {
+    let source = "my $z = -$x;";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_unary_minus_on_function_call() {
+    let source = "my $z = -func();";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_unary_minus_on_literal() {
+    let source = "my $v = -123;";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_unary_minus_on_array_access() {
+    let source = "my $z = -$arr[0];";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_unary_minus_on_hash_access() {
+    let source = "my $z = -$h{key};";
+    assert_clean_parse(source);
+}
+
+// =============================================================================
+// REGRESSION GUARDS — file-test operators must still work
+// =============================================================================
+
+#[test]
+fn test_file_test_operator_e() {
+    let source = "if (-e $file) { 1 }";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_file_test_operator_f() {
+    let source = "if (-f $path) { 1 }";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_file_test_operator_d() {
+    let source = "if (-d $dir) { 1 }";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_file_test_operator_s() {
+    // -s is file size test, not a substitution operator
+    let source = "my $sz = -s $file;";
+    assert_clean_parse(source);
+}
+
+// =============================================================================
+// REGRESSION GUARDS — single-char barewords before => already worked
+// =============================================================================
+
+#[test]
+fn test_negative_file_test_letter_as_bareword_before_fatarrow() {
+    // -G before => is already handled by the single-char Identifier path.
+    let source = "my %h = (-G => 1);";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_r_as_bareword_before_fatarrow() {
+    // -r before => is already handled by the single-char Identifier path.
+    let source = "my %h = (-r => 'readable');";
+    assert_clean_parse(source);
+}
+
+// =============================================================================
+// REGRESSION GUARDS — non-keyword barewords before => already worked
+// =============================================================================
+
+#[test]
+fn test_negative_nonkeyword_before_fatarrow() {
+    // -foo => already works (regular Identifier token).
+    let source = "my %h = (-foo => 1);";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_bareword_multiline_hash() {
+    // Multi-line hash with non-keyword negative barewords.
+    let source = "my %h = (-name => 'x', -type => 'y', -color => 'z');";
+    assert_clean_parse(source);
+}
+
+// =============================================================================
+// REGRESSION GUARDS — keywords as barewords in primary context already work
+// =============================================================================
+
+#[test]
+fn test_negative_if_before_fatarrow() {
+    // -if => already works (If parsed as Identifier in primary context).
+    let source = "my %h = (-if => 1);";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_unless_before_fatarrow() {
+    // -unless => already works.
+    let source = "my %h = (-unless => 1);";
+    assert_clean_parse(source);
+}
+
+// =============================================================================
+// ERROR RECOVERY — malformed input must not panic
+// =============================================================================
+
+#[test]
+fn test_error_recovery_unclosed_array_with_negative_keyword() {
+    // [ -or => 1  (missing ]) — must produce error node, not panic.
+    let source = "[ -or => 1";
+    assert_has_error(source, "");
+}
+
+#[test]
+fn test_error_recovery_unclosed_paren_with_negative_keyword() {
+    // ( -or => 1  (missing )) — must produce error node, not panic.
+    let source = "( -or => 1";
+    assert_has_error(source, "");
+}
+
+#[test]
+fn test_error_recovery_extra_closing_bracket() {
+    // Mismatched delimiters — must not panic.
+    let source = "[ -or => 1 ] ]";
+    // Parser may or may not error (extra bracket at statement level can be
+    // valid in some recovery modes), but must not panic.
+    let _ = parse(source);
+}
+
+// =============================================================================
+// EDGE CASES
+// =============================================================================
+
+#[test]
+fn test_space_between_minus_and_or() {
+    // "- or" with a space: minus and 'or' are separate tokens at this distance.
+    // This is a low-precedence logical NOT of nothing, which is a parse error.
+    // The important thing is that it does not panic.
+    let source = "my $x = - or 1;";
+    // Result may be clean (recovered) or error — just must not panic.
+    let _ = parse(source);
+}
+
+#[test]
+fn test_negative_or_not_fatarrow() {
+    // -or without a following => is not a bareword key context.
+    // Before the fix, this panicked or gave a very wrong error.
+    // After the fix it may still be an error, but a graceful one.
+    let source = "my $x = -or;";
+    // Must not panic; result may be an error node.
+    let _ = parse(source);
+}
+
+// =============================================================================
+// ORACLE VALIDATION (PARSER-3)
+// All inputs below are confirmed valid by: perl -cw -e '<source>'
+// =============================================================================
+
+#[test]
+fn test_perl_oracle_negative_barewords() {
+    // These are all confirmed valid Perl syntax:
+    // perl -cw -e 'my %h = (-or => 1);'   => OK
+    // perl -cw -e 'my %h = (-and => 2);'  => OK
+    // perl -cw -e 'my %h = (-xor => 3);'  => OK
+    // perl -cw -e 'my %h = (-not => 4);'  => OK
+    // perl -cw -e 'my %h = (-cmp => 5);'  => OK
+    let cases = vec![
+        "my %h = (-or => 1);",
+        "my %h = (-and => 2);",
+        "my %h = (-xor => 3);",
+        "my %h = (-not => 4);",
+        "my %h = (-cmp => 5);",
+        "my $y = [ -or => 1 ];",
+        "my $y = [ -and => 1, -or => 2 ];",
+        "func(-or => 1, -and => 2);",
+    ];
+    for source in cases {
+        assert_clean_parse(source);
+    }
+}
