@@ -53,14 +53,15 @@ pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> 
 
 /// Fix unused variable by removing it
 pub fn fix_unused_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
     let mut actions = Vec::new();
 
     // Find the declaration line
-    let line_start = source[..diagnostic.range.0].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let line_end = source[diagnostic.range.1..]
-        .find('\n')
-        .map(|p| diagnostic.range.1 + p)
-        .unwrap_or(source.len());
+    let line_start = source[..range_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = source[range_end..].find('\n').map(|p| range_end + p).unwrap_or(source.len());
     let delete_end = if line_end < source.len() { line_end + 1 } else { line_end };
 
     actions.push(CodeAction {
@@ -85,7 +86,7 @@ pub fn fix_unused_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec
             diagnostics: vec![DiagnosticCode::UnusedVariable.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    location: SourceLocation { start: range_start, end: range_end },
                     new_text: unused_name,
                 }],
             },
@@ -626,6 +627,72 @@ mod tests {
 
         assert!(actions.is_empty());
     }
+
+    #[test]
+    fn fix_unused_variable_empty_on_non_char_boundary_range() {
+        // U+00E9 (é) is 2 bytes: C3 A9. Offset char_start + 1 is not a char boundary.
+        let source = "my $x = \"\u{e9}\";\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic = diagnostic_for((char_start + 1, char_start + 2), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_unreachable_code_empty_on_non_char_boundary_range() {
+        let source = "sub f { return; \"\u{e9}\"; }\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic = diagnostic_for(
+            (char_start + 1, char_start + 2),
+            "Unreachable code after unconditional return",
+        );
+        let actions = fix_unreachable_code(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_assignment_in_condition_empty_on_non_char_boundary_range() {
+        let source = "if (\"\u{e9}\" = 1) {}\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic =
+            diagnostic_for((char_start + 1, char_start + 2), "Assignment in condition");
+        let actions = fix_assignment_in_condition(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_deprecated_defined_empty_on_non_char_boundary_range() {
+        let source = "defined(\"\u{e9}\");\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic = diagnostic_for(
+            (char_start + 1, char_start + 2),
+            "Useless use of defined on array/hash",
+        );
+        let actions = fix_deprecated_defined(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_numeric_undef_empty_on_non_char_boundary_range() {
+        let source = "\"\u{e9}\" == undef;\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic =
+            diagnostic_for((char_start + 1, char_start + 2), "Numeric comparison with undef");
+        let actions = fix_numeric_undef(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_bareword_empty_on_non_char_boundary_range() {
+        let source = "\u{e9}bareword;\n";
+        let char_start = 0usize; // U+00E9 starts at byte 0
+        let diagnostic = diagnostic_for(
+            (char_start + 1, char_start + 2),
+            "Bareword found where string expected",
+        );
+        let actions = fix_bareword(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
 }
 
 /// Fix assignment in condition
@@ -633,11 +700,14 @@ pub fn fix_assignment_in_condition(
     source: &str,
     diagnostic: &QuickFixDiagnostic,
 ) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
     let mut actions = Vec::new();
 
     // Change = to ==
-    let assignment_pos =
-        source[diagnostic.range.0..diagnostic.range.1].find('=').map(|p| diagnostic.range.0 + p);
+    let assignment_pos = source[range_start..range_end].find('=').map(|p| range_start + p);
 
     if let Some(pos) = assignment_pos {
         actions.push(CodeAction {
@@ -789,15 +859,19 @@ pub fn move_use_warnings_to_file_scope(
 
 /// Fix deprecated 'defined @array' or 'defined %hash'
 pub fn fix_deprecated_defined(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
     let mut actions = Vec::new();
 
     // Extract the array/hash from the diagnostic
-    if let Some(start) = source[diagnostic.range.0..diagnostic.range.1].find("defined") {
-        let defined_start = diagnostic.range.0 + start;
+    if let Some(start) = source[range_start..range_end].find("defined") {
+        let defined_start = range_start + start;
         let arg_start = defined_start + 7; // "defined".len()
 
         // Find the argument
-        let raw_arg = source[arg_start..diagnostic.range.1].trim();
+        let raw_arg = source[arg_start..range_end].trim();
         let arg_text = normalize_deprecated_defined_arg(raw_arg);
 
         actions.push(CodeAction {
@@ -806,7 +880,7 @@ pub fn fix_deprecated_defined(source: &str, diagnostic: &QuickFixDiagnostic) -> 
             diagnostics: vec![DiagnosticCode::DeprecatedDefined.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: defined_start, end: diagnostic.range.1 },
+                    location: SourceLocation { start: defined_start, end: range_end },
                     new_text: arg_text.to_string(),
                 }],
             },
@@ -827,6 +901,10 @@ fn normalize_deprecated_defined_arg(raw_arg: &str) -> &str {
 
 /// Fix numeric comparison with undef
 pub fn fix_numeric_undef(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
     let mut actions = Vec::new();
 
     // Add defined check
@@ -837,11 +915,11 @@ pub fn fix_numeric_undef(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<C
         edit: CodeActionEdit {
             changes: vec![
                 TextEdit {
-                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.0 },
+                    location: SourceLocation { start: range_start, end: range_start },
                     new_text: "defined(".to_string(),
                 },
                 TextEdit {
-                    location: SourceLocation { start: diagnostic.range.1, end: diagnostic.range.1 },
+                    location: SourceLocation { start: range_end, end: range_end },
                     new_text: ")".to_string(),
                 },
             ],
@@ -850,14 +928,14 @@ pub fn fix_numeric_undef(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<C
     });
 
     // Use // operator
-    if source[diagnostic.range.0..diagnostic.range.1].contains("==") {
+    if source[range_start..range_end].contains("==") {
         actions.push(CodeAction {
             title: "Use defined-or operator (//)".to_string(),
             kind: CodeActionKind::QuickFix,
             diagnostics: vec![DiagnosticCode::NumericComparisonWithUndef.as_str().to_string()],
             edit: CodeActionEdit {
                 changes: vec![TextEdit {
-                    location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                    location: SourceLocation { start: range_start, end: range_end },
                     new_text: "// 0".to_string(), // Default to 0
                 }],
             },
@@ -873,8 +951,11 @@ pub fn fix_native_undef_comparison(
     source: &str,
     diagnostic: &QuickFixDiagnostic,
 ) -> Vec<CodeAction> {
-    let Some(replacement) =
-        native_undef_comparison_replacement(&source[diagnostic.range.0..diagnostic.range.1])
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
+    let Some(replacement) = native_undef_comparison_replacement(&source[range_start..range_end])
     else {
         return Vec::new();
     };
@@ -885,7 +966,7 @@ pub fn fix_native_undef_comparison(
         diagnostics: vec!["native.common.undef_comparison".to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                location: SourceLocation { start: range_start, end: range_end },
                 new_text: replacement,
             }],
         },
@@ -930,10 +1011,14 @@ fn native_defined_replacement(left: &str, right: &str, equal: bool) -> Option<St
 /// 2. Quote with double quotes - wraps bareword in double quotes
 /// 3. Declare as filehandle - for uppercase barewords, adds filehandle declaration
 pub fn fix_bareword(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
     let mut actions = Vec::new();
 
     // Extract bareword text from the source at the diagnostic range
-    let bareword = &source[diagnostic.range.0..diagnostic.range.1];
+    let bareword = &source[range_start..range_end];
 
     // Check if bareword is all uppercase (filehandle convention)
     let is_uppercase = bareword.chars().all(|c| c.is_ascii_uppercase() || c == '_');
@@ -945,7 +1030,7 @@ pub fn fix_bareword(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAc
         diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                location: SourceLocation { start: range_start, end: range_end },
                 new_text: format!("'{}'", bareword),
             }],
         },
@@ -959,7 +1044,7 @@ pub fn fix_bareword(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAc
         diagnostics: vec![DiagnosticCode::UnquotedBareword.as_str().to_string()],
         edit: CodeActionEdit {
             changes: vec![TextEdit {
-                location: SourceLocation { start: diagnostic.range.0, end: diagnostic.range.1 },
+                location: SourceLocation { start: range_start, end: range_end },
                 new_text: format!("\"{}\"", bareword),
             }],
         },
@@ -969,7 +1054,7 @@ pub fn fix_bareword(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAc
     // Action 3: Declare as filehandle (only for uppercase barewords)
     if is_uppercase {
         // Find the best position to insert a filehandle declaration
-        let insert_pos = find_declaration_position(source, diagnostic.range.0);
+        let insert_pos = find_declaration_position(source, range_start);
         let indent = get_indent_at(source, insert_pos);
 
         actions.push(CodeAction {
@@ -1414,6 +1499,9 @@ pub fn fix_variable_redeclaration(
 
 fn find_duplicate_my_span(source: &str, diagnostic: &QuickFixDiagnostic) -> Option<(usize, usize)> {
     let variable_start = diagnostic.range.0.min(source.len());
+    if !source.is_char_boundary(variable_start) {
+        return None;
+    }
     let line_start = source[..variable_start].rfind('\n').map(|pos| pos + 1).unwrap_or(0);
     let before_var = &source[line_start..variable_start];
     let my_offset = before_var.rfind("my ")?;
@@ -1466,12 +1554,14 @@ pub fn fix_misspelled_pragma(source: &str, diagnostic: &QuickFixDiagnostic) -> V
 /// PL406 fires when a statement follows an unconditional exit (return, die, exit).
 /// The fix removes the entire line containing the unreachable statement.
 pub fn fix_unreachable_code(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
+    let Some((range_start, range_end)) = valid_diagnostic_range(source, diagnostic.range) else {
+        return Vec::new();
+    };
+
     // Find the full line containing the unreachable statement
-    let line_start = source[..diagnostic.range.0].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let line_end = source[diagnostic.range.1..]
-        .find('\n')
-        .map(|p| diagnostic.range.1 + p + 1)
-        .unwrap_or(source.len());
+    let line_start = source[..range_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end =
+        source[range_end..].find('\n').map(|p| range_end + p + 1).unwrap_or(source.len());
 
     vec![CodeAction {
         title: "Remove unreachable code".to_string(),
