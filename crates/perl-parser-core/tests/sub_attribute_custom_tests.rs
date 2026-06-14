@@ -1,0 +1,277 @@
+//! Tests for subroutine custom attributes (issue #1361)
+//!
+//! Verifies that custom (unknown) subroutine attributes like `:public`, `:cached(...)`,
+//! `:Path(...)`, etc. parse cleanly without false-positive error diagnostics.
+//!
+//! Perl allows arbitrary attributes via the `MODIFY_CODE_ATTRIBUTES` hook. The parser
+//! should not emit errors for unknown attributes, only for true syntax violations.
+
+mod cpan_test_helpers;
+use cpan_test_helpers::*;
+
+// ============================================================================
+// POSITIVE TESTS: Custom attributes should parse cleanly with NO errors
+// ============================================================================
+
+/// Custom attribute `:public` should not emit error diagnostic.
+#[test]
+fn test_custom_attribute_public() {
+    let code = r#"
+sub my_method :public {
+    return 1;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Multiple custom attributes on same subroutine should parse cleanly.
+#[test]
+fn test_custom_attributes_multiple() {
+    let code = r#"
+sub my_method :public :private {
+    return 1;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Custom attribute with parenthesized arguments should parse cleanly.
+#[test]
+fn test_custom_attribute_with_args() {
+    let code = r#"
+sub my_method :cached(timeout => 30) {
+    return 1;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Catalyst-style attributes (real-world pattern) should parse cleanly.
+/// :Path and :Args are custom attributes defined by Catalyst framework.
+#[test]
+fn test_catalyst_style_attributes() {
+    let code = r#"
+sub user_handler :Path('/users') :Args(1) {
+    my ($self, $id) = @_;
+    return "User $id";
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Moose-style attributes (real-world pattern) should parse cleanly.
+/// Custom attributes are used to mark methods with framework semantics.
+#[test]
+fn test_moose_style_custom_attribute() {
+    let code = r#"
+sub my_method :Moose {
+    return shift;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Custom attribute with nested parentheses/arguments should parse cleanly.
+#[test]
+fn test_custom_attribute_complex_args() {
+    let code = r#"
+sub my_method :cached(config => { timeout => 30, retries => 3 }) {
+    return 1;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Anonymous subroutine with custom attribute should parse cleanly.
+#[test]
+fn test_anonymous_sub_with_custom_attribute() {
+    let code = r#"
+my $sub = sub :public {
+    return 42;
+};
+"#;
+    assert_clean_parse(code);
+}
+
+// ============================================================================
+// REGRESSION GUARDS: Built-in attributes should continue to work unchanged
+// ============================================================================
+
+/// Built-in `:method` attribute should still work (regression guard).
+#[test]
+fn test_builtin_method_attribute_regression() {
+    let code = r#"
+sub my_method :method {
+    my ($self) = @_;
+    return $self;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Built-in `:lvalue` attribute should still work (regression guard).
+#[test]
+fn test_builtin_lvalue_attribute_regression() {
+    let code = r#"
+sub my_lvalue :lvalue {
+    return $_[0];
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Built-in `:prototype($)` attribute should still work (regression guard).
+#[test]
+fn test_builtin_prototype_attribute_regression() {
+    let code = r#"
+sub my_sub :prototype($) {
+    my ($arg) = @_;
+    return $arg;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Built-in `:const` attribute should still work (regression guard).
+#[test]
+fn test_builtin_const_attribute_regression() {
+    let code = r#"
+sub my_constant :const {
+    return 42;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Multiple built-in attributes should still work together (regression guard).
+#[test]
+fn test_builtin_multiple_attributes_regression() {
+    let code = r#"
+sub my_sub :method :lvalue {
+    return $_[0];
+}
+"#;
+    assert_clean_parse(code);
+}
+
+// ============================================================================
+// ADVERSARIAL TESTS: Verify parser.errors() is empty for all custom cases
+// ============================================================================
+
+/// Verify that parser.errors() is empty when parsing custom attributes.
+/// This directly asserts the side effect (error collection) is not triggered.
+#[test]
+fn test_custom_attributes_no_parser_errors() {
+    let code = r#"
+sub foo :public { 1 }
+sub bar :cached(x => 1) { 2 }
+sub baz :Path('/path') :Args(2) { 3 }
+"#;
+    let mut parser = perl_parser_core::Parser::new(code);
+    let _ast = perl_tdd_support::must(parser.parse());
+    let errors = parser.get_errors();
+
+    assert!(
+        errors.is_empty(),
+        "Expected no parser errors for custom attributes, but got: {:?}",
+        errors
+    );
+}
+
+/// Verify that builtin attributes do NOT trigger errors (regression).
+#[test]
+fn test_builtin_attributes_no_parser_errors() {
+    let code = r#"
+sub foo :method { 1 }
+sub bar :lvalue { 2 }
+sub baz :prototype($) { 3 }
+sub qux :const { 4 }
+"#;
+    let mut parser = perl_parser_core::Parser::new(code);
+    let _ast = perl_tdd_support::must(parser.parse());
+    let errors = parser.get_errors();
+
+    assert!(
+        errors.is_empty(),
+        "Expected no parser errors for built-in attributes, but got: {:?}",
+        errors
+    );
+}
+
+// ============================================================================
+// MALFORMED ATTRIBUTE SYNTAX: Genuine syntax errors should still be caught
+// ============================================================================
+
+/// Malformed attribute syntax (unterminated paren) should still produce an error.
+/// This verifies we don't over-suppress errors — only unknown attribute NAMES are allowed.
+#[test]
+fn test_malformed_attribute_syntax_still_errors() {
+    let code = r#"
+sub foo :cached(timeout => 30 {
+    return 1;
+}
+"#;
+    // This should have an error for unterminated parentheses, not for unknown attribute.
+    assert_has_error(code, "unterminated");
+}
+
+/// Attribute with no name after colon should still error.
+#[test]
+fn test_attribute_missing_name_still_errors() {
+    let code = r#"
+sub foo : {
+    return 1;
+}
+"#;
+    // This should have an error for missing attribute name.
+    assert_has_error(code, "expected attribute name");
+}
+
+// ============================================================================
+// EDGE CASES: Ensure comprehensive coverage per §Test-Grid
+// ============================================================================
+
+/// Variable attribute `:shared` should continue to work (not affected by sub fix).
+#[test]
+fn test_variable_shared_attribute_regression() {
+    let code = r#"
+my $x :shared;
+"#;
+    assert_clean_parse(code);
+}
+
+/// Class attribute `:isa(Parent)` should continue to work (not affected).
+#[test]
+fn test_class_isa_attribute_regression() {
+    let code = r#"
+class Point :isa(Base) {
+    field $x :param;
+    field $y :param;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Mix of custom and builtin attributes on same sub should parse cleanly.
+#[test]
+fn test_custom_and_builtin_mixed() {
+    let code = r#"
+sub my_sub :public :method :cached(x => 1) {
+    return shift;
+}
+"#;
+    assert_clean_parse(code);
+}
+
+/// Multiple subroutines with various custom attribute patterns.
+#[test]
+fn test_multiple_subs_various_custom_attributes() {
+    let code = r#"
+sub foo :public { 1 }
+sub bar :private :readonly { 2 }
+sub baz :cached(ttl => 60) { 3 }
+sub qux :Path('/api/users') :Args(1) :GET { 4 }
+sub quux :MyCustom :Attr :WithArgs(a => 1, b => 2) { 5 }
+"#;
+    assert_clean_parse(code);
+}

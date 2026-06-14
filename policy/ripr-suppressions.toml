@@ -804,3 +804,30 @@ reason = "Two newly added test files in PR #1445 are flagged as new production s
 created = "2026-06-13"
 review_after = "2026-07-13"
 expires = "2026-09-30"
+
+# Custom sub-attribute test file (PR #1361): ripr#1428-class false-positive in
+# newly added test file. Tracks EffortlessMetrics/ripr#1428 (RIPR flags
+# test-harness plumbing in newly added test files as production seams).
+#
+# PR #1361 adds one new test file:
+#   crates/perl-parser-core/tests/sub_attribute_custom_tests.rs
+#
+# This is a pure test file with 20 test functions exercising correct parser
+# behavior for custom subroutine attributes (:public, :cached(...),
+# :Path('/path'), etc.). RIPR's diff-scoped analysis flags the test function
+# scaffolding (Parser::new, parser.parse, parser.get_errors, assertions) as
+# new production seams. This is the same ripr#1428 class as
+# ripr-suppress-ux-receipt-tests and ripr-suppress-seam-proof-tests.
+#
+# Remove when ripr#1428 is fixed upstream.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-sub-attribute-custom-tests"
+kind = "test_receipt_surface"
+paths = ["crates/perl-parser-core/tests/sub_attribute_custom_tests.rs"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "sub_attribute_custom_tests.rs is a newly added test file in PR #1361 whose internal test-function scaffolding is flagged as new production seams by diff-scoped RIPR analysis. The file contains 20 test functions verifying that custom subroutine attributes (Catalyst :Path, Moose :public, etc.) parse cleanly without false-positive errors after the #1361 fix, plus 2 error-guard tests verifying genuine syntax errors (unterminated parens, missing name) still produce diagnostics. Test-function scaffolding (Parser::new, parser.parse, parser.get_errors, assertions) is classified as production seams. This is the same ripr#1428 class as ripr-suppress-ux-receipt-tests and ripr-suppress-seam-proof-tests (test-harness plumbing falsely classified as production seams when added to a test file). Remove when ripr#1428 is fixed upstream."
+created = "2026-06-13"
+review_after = "2026-07-13"
+expires = "2026-09-30"
