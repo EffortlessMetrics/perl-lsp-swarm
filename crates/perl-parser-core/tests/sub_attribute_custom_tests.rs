@@ -275,3 +275,35 @@ sub quux :MyCustom :Attr :WithArgs(a => 1, b => 2) { 5 }
 "#;
     assert_clean_parse(code);
 }
+
+// ============================================================================
+// AST CAPTURE: Verify attributes land in the AST, not just "no error"
+// ============================================================================
+
+/// Custom attributes must be captured in the AST sexp output.
+///
+/// This is a stronger assertion than `assert_clean_parse`: it confirms the
+/// attribute name actually appears in the S-expression, proving the parser
+/// records the attribute in `NodeKind::Subroutine { attributes }` and does
+/// not silently discard it.
+#[test]
+fn test_custom_attribute_captured_in_ast_sexp() {
+    let code = "sub foo :public { }";
+    let ast = parse(code);
+    let sexp = ast.to_sexp();
+    assert!(
+        sexp.contains(":public"),
+        "Expected ':public' in AST sexp to confirm attribute is recorded, got: {}",
+        sexp
+    );
+}
+
+/// Multi-attribute case: all attributes must appear in the AST.
+#[test]
+fn test_multiple_custom_attributes_captured_in_ast_sexp() {
+    let code = "sub handler :Path('/users') :Args(1) { }";
+    let ast = parse(code);
+    let sexp = ast.to_sexp();
+    assert!(sexp.contains(":Path("), "Expected ':Path(' in AST sexp, got: {}", sexp);
+    assert!(sexp.contains(":Args("), "Expected ':Args(' in AST sexp, got: {}", sexp);
+}

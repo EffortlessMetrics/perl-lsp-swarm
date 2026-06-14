@@ -373,8 +373,9 @@ impl<'a> Parser<'a> {
         }
 
         // Parse class-level attributes (e.g. `:isa(Parent)`).
-        // Pass BUILTIN_CLASS_ATTRIBUTES so `:isa` and `:does` don't produce
-        // "unknown subroutine attribute" warnings.
+        // `_extra_known` is ignored since #1361 removed the unknown-attribute
+        // diagnostic entirely — all attribute names are accepted without error.
+        // BUILTIN_CLASS_ATTRIBUTES is retained here for documentation clarity.
         let attributes =
             self.parse_declaration_attributes_with_extras(Self::BUILTIN_CLASS_ATTRIBUTES)?;
 
