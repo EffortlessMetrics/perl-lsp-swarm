@@ -1,4 +1,4 @@
-﻿# RIPR Suppressions
+# RIPR Suppressions
 #
 # Suppressions for ripr static exposure analysis findings. Each suppression
 # requires owner, reason, created, review_after, and expires. Suppressions
@@ -775,7 +775,6 @@ created = "2026-06-13"
 review_after = "2026-09-13"
 expires = "2026-09-30"
 
-<<<<<<< HEAD
 # DAP variable-reference test files (PR #1445): ripr#1428-class false-positives
 # in newly added test files. Tracks EffortlessMetrics/ripr#1428 (RIPR flags
 # test-harness plumbing in newly added test files as production seams).
