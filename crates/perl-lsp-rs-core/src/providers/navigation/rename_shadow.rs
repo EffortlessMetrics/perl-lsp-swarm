@@ -22,9 +22,9 @@
 //!   Dynamic/Unavailable → block.
 
 use perl_semantic_facts::{
-    Confidence, EntityId, PlanBlocker, PlanBlockerReason, PlannedEdit, PlannedEditCategory,
-    Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
-    ProviderFallbackState, ProviderSurface, RenamePlan,
+    Confidence, EntityId, PlanBlocker, PlanBlockerReason, PlannedEdit, Provenance,
+    ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace, ProviderFallbackState,
+    ProviderSurface, RenamePlan,
 };
 use perl_workspace::semantic::queries::SemanticQueries;
 use perl_workspace::semantic_shadow_compare::{
@@ -164,9 +164,6 @@ pub enum RenamePackagePilotIneligibleReason {
     EmptyPlan,
     /// One or more blockers prevent authorizing the edit.
     Blocked,
-    /// The plan contains edit categories outside source-backed definition and
-    /// reference replacement.
-    UnsupportedEditCategory,
 }
 
 /// Outcome of a package/compiler-backed rename pilot proof request.
@@ -271,6 +268,12 @@ fn classify_rename_result(plan: RenamePlan) -> RenameCutoverResult {
     }
 }
 
+// GA promotion (#1386): all PlannedEditCategory variants emitted by the semantic
+// analyzer are accepted — Definition, Reference, ImportList, ExportList and any
+// future variants.  The only gates that remain are an empty plan (nothing to do)
+// and the presence of blockers (DynamicBoundary, AmbiguousReference, etc.).
+// Blocker precedence is preserved: blockers are checked before edits, so a plan
+// with both cross-package edits and a DynamicBoundary blocker is still Ineligible.
 fn classify_package_pilot_result(result: RenameCutoverResult) -> RenamePackagePilotResult {
     match result {
         RenameCutoverResult::Blocked { blockers, edits } => RenamePackagePilotResult::Ineligible {
@@ -285,21 +288,8 @@ fn classify_package_pilot_result(result: RenameCutoverResult) -> RenamePackagePi
                 blockers: Vec::new(),
             }
         }
-        RenameCutoverResult::Allowed { edits }
-            if edits.iter().all(is_package_pilot_edit_category) =>
-        {
-            RenamePackagePilotResult::Eligible { edits }
-        }
-        RenameCutoverResult::Allowed { edits } => RenamePackagePilotResult::Ineligible {
-            reason: RenamePackagePilotIneligibleReason::UnsupportedEditCategory,
-            edits,
-            blockers: Vec::new(),
-        },
+        RenameCutoverResult::Allowed { edits } => RenamePackagePilotResult::Eligible { edits },
     }
-}
-
-fn is_package_pilot_edit_category(edit: &PlannedEdit) -> bool {
-    matches!(edit.category, PlannedEditCategory::Definition | PlannedEditCategory::Reference)
 }
 
 fn package_pilot_receipt_note(result: &RenamePackagePilotResult) -> String {
@@ -320,7 +310,6 @@ impl RenamePackagePilotIneligibleReason {
         match self {
             Self::EmptyPlan => "empty_plan",
             Self::Blocked => "blocked",
-            Self::UnsupportedEditCategory => "unsupported_edit_category",
         }
     }
 }
@@ -1131,8 +1120,11 @@ mod tests {
     }
 
     #[test]
-    fn rename_package_pilot_rejects_import_and_export_edits()
+    fn rename_package_pilot_accepts_import_and_export_edits()
     -> Result<(), Box<dyn std::error::Error>> {
+        // GA promotion (#1386): ImportList and ExportList edits are now accepted
+        // by the pilot.  A plan consisting only of import/export edits (with no
+        // Definition or Reference) should be Eligible.
         let edits = vec![
             make_edit(30, PlannedEditCategory::ImportList),
             make_edit(40, PlannedEditCategory::ExportList),
@@ -1141,7 +1133,7 @@ mod tests {
             EntityId(1),
             "Old::Name".to_string(),
             "New::Name".to_string(),
-            edits,
+            edits.clone(),
             vec![],
             vec![],
         );
@@ -1150,18 +1142,14 @@ mod tests {
         let outcome = rename_package_pilot_proof(true, &queries, EntityId(1), "New::Name");
 
         match &outcome.result {
-            RenamePackagePilotResult::Ineligible { reason, blockers, .. } => {
-                assert_eq!(*reason, RenamePackagePilotIneligibleReason::UnsupportedEditCategory);
-                assert!(blockers.is_empty());
+            RenamePackagePilotResult::Eligible { edits: result_edits } => {
+                assert_eq!(result_edits.len(), 2);
+                assert_eq!(*result_edits, edits);
             }
-            other => return Err(format!("expected Ineligible, got {:?}", other).into()),
+            other => return Err(format!("expected Eligible, got {:?}", other).into()),
         }
         let notes = outcome.receipt.notes.join(" ");
-        assert!(
-            notes.contains("reason=unsupported_edit_category"),
-            "missing unsupported category reason in {}",
-            notes
-        );
+        assert!(notes.contains("eligible=true"), "missing eligible note in {}", notes);
         Ok(())
     }
 
@@ -1353,7 +1341,7 @@ mod tests {
                     "Pilot should accept ImportList edits for GA, but rejected with reason: {:?}",
                     reason
                 )
-                .into())
+                .into());
             }
         }
         Ok(())
@@ -1391,7 +1379,7 @@ mod tests {
                     "Pilot should accept ExportList edits for GA, but rejected with reason: {:?}",
                     reason
                 )
-                .into())
+                .into());
             }
         }
         Ok(())
@@ -1445,13 +1433,11 @@ mod tests {
                     "Should include ExportList edit"
                 );
             }
-            RenamePackagePilotResult::Ineligible { reason, .. } => {
-                return Err(format!(
-                    "Pilot should accept all cross-package edit categories for GA, but rejected: {:?}",
-                    reason
-                )
-                .into())
-            }
+            RenamePackagePilotResult::Ineligible { reason, .. } => return Err(format!(
+                "Pilot should accept all cross-package edit categories for GA, but rejected: {:?}",
+                reason
+            )
+            .into()),
         }
         Ok(())
     }
@@ -1488,11 +1474,9 @@ mod tests {
                 // Correct - blockers take priority over accepted edit categories
                 Ok(())
             }
-            other => Err(format!(
-                "Pilot should still block on DynamicBoundary, got: {:?}",
-                other
-            )
-            .into()),
+            other => {
+                Err(format!("Pilot should still block on DynamicBoundary, got: {:?}", other).into())
+            }
         }
     }
 }
