@@ -778,4 +778,73 @@ mod hazard_invariant_tests {
             );
         }
     }
+
+    // --- Guard test: cached EvalResult is NOT short-circuited by the fix #1338 early return ---
+    //
+    // This is the scoping guard for the fix: a VALID EvalResult ref that IS in the cache
+    // must be served via the cache-hit path (line 102) and return its children — it must
+    // NOT be swallowed by the early-return short-circuit (which fires only on cache miss).
+    //
+    // Without this guard, a regression could incorrectly apply the early return to ALL
+    // EvalResult refs (cached or not), causing legitimate variable expansion to return
+    // empty. This test would fail immediately in that case.
+    //
+    // Skip when perl is not on PATH.
+    #[test]
+    fn fix_1338_cached_eval_result_is_served_not_short_circuited() {
+        // Skip if perl is not available on PATH.
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        use crate::debug_adapter::var_ref::VariableReference;
+        use crate::types::Variable;
+
+        let mut a = adapter();
+        a.seed_stopped_session_with_frames_for_test(vec![]);
+
+        // An EvalResult wire value that IS in cache (simulates a fresh evaluate result
+        // before resume — the client holds the ref and sends a variables request while
+        // the session is still stopped at the same breakpoint).
+        let eval_ref_wire: i32 =
+            VariableReference::EvalResult { counter: 42 }.encode().expect("counter=42 is valid");
+        assert!(
+            (1_000_000..=1_999_999_999).contains(&eval_ref_wire),
+            "setup: must be in EvalResult band"
+        );
+
+        // Seed a cached entry so the cache-hit path fires.
+        let cached_var = Variable {
+            name: "".to_string(),
+            value: "42".to_string(),
+            type_: Some("SCALAR".to_string()),
+            variables_reference: 0,
+            named_variables: None,
+            indexed_variables: None,
+        };
+        a.seed_eval_result_cache_for_test(eval_ref_wire, vec![cached_var]);
+
+        // Must return the cached children (non-empty), NOT the early-return empty.
+        // If the early return incorrectly fired here, this assertion would fail.
+        let msg = a.handle_request(
+            1,
+            "variables",
+            Some(serde_json::json!({ "variablesReference": eval_ref_wire as i64 })),
+        );
+        match msg {
+            DapMessage::Response { success, body, .. } => {
+                assert!(success, "cached EvalResult must succeed");
+                let vars = body
+                    .as_ref()
+                    .and_then(|b| b.get("variables"))
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                assert_eq!(
+                    vars, 1,
+                    "cached EvalResult must return its 1 cached child; got {vars} (early return was applied incorrectly)"
+                );
+            }
+            other => panic!("expected Response, got: {other:?}"),
+        }
+    }
 }
