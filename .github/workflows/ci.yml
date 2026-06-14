@@ -54,7 +54,7 @@ jobs:
             echo "::notice::Draft PR detected — skipping CI jobs until ready for review"
           else
             echo "run_ci=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Non-draft PR — running cheap merge-gate gates; supersede protection via preflight-latest-check (#1484)"
+            echo "::notice::Non-draft PR — running merge-gate (pr-smoke, conflict-markers, shards, UX tests); supersede protection via preflight-latest-check (#1484)"
           fi
 
   # ── Preflight: skip superseded SHAs to save cost ─────────────────────
@@ -489,6 +489,11 @@ jobs:
     needs: [draft-pr-check, preflight-latest-check]
     if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'
     # Run on every PR push — this is the regression prevention gate.
+    # Flakiness note: 11 active entries in .ci/ux-flakes.json (all scenario_14 / @INC
+    # conformance tests) are registered as quarantine_effect=non_blocking_pr but that
+    # registry is advisory only — it is NOT enforced here. If any scenario_14 test
+    # fails this job fails and merge-gate blocks. Quarantine enforcement (reading the
+    # registry to generate --skip flags) is a follow-up; see .ci/ux-flakes.json.
     steps:
       - uses: actions/checkout@v6
         with:
