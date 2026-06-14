@@ -22,9 +22,9 @@
 //!   Dynamic/Unavailable → block.
 
 use perl_semantic_facts::{
-    Confidence, EntityId, PlanBlocker, PlanBlockerReason, PlannedEdit, Provenance,
-    ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace, ProviderFallbackState,
-    ProviderSurface, RenamePlan,
+    Confidence, EntityId, PlanBlocker, PlanBlockerReason, PlannedEdit, PlannedEditCategory,
+    Provenance, ProviderFactFreshness, ProviderFactSourceKind, ProviderFactTrace,
+    ProviderFallbackState, ProviderSurface, RenamePlan,
 };
 use perl_workspace::semantic::queries::SemanticQueries;
 use perl_workspace::semantic_shadow_compare::{
@@ -164,6 +164,9 @@ pub enum RenamePackagePilotIneligibleReason {
     EmptyPlan,
     /// One or more blockers prevent authorizing the edit.
     Blocked,
+    /// The plan contains edit categories outside source-backed definition and
+    /// reference replacement.
+    UnsupportedEditCategory,
 }
 
 /// Outcome of a package/compiler-backed rename pilot proof request.
@@ -268,12 +271,6 @@ fn classify_rename_result(plan: RenamePlan) -> RenameCutoverResult {
     }
 }
 
-// GA promotion (#1386): all PlannedEditCategory variants emitted by the semantic
-// analyzer are accepted — Definition, Reference, ImportList, ExportList and any
-// future variants.  The only gates that remain are an empty plan (nothing to do)
-// and the presence of blockers (DynamicBoundary, AmbiguousReference, etc.).
-// Blocker precedence is preserved: blockers are checked before edits, so a plan
-// with both cross-package edits and a DynamicBoundary blocker is still Ineligible.
 fn classify_package_pilot_result(result: RenameCutoverResult) -> RenamePackagePilotResult {
     match result {
         RenameCutoverResult::Blocked { blockers, edits } => RenamePackagePilotResult::Ineligible {
@@ -288,8 +285,21 @@ fn classify_package_pilot_result(result: RenameCutoverResult) -> RenamePackagePi
                 blockers: Vec::new(),
             }
         }
-        RenameCutoverResult::Allowed { edits } => RenamePackagePilotResult::Eligible { edits },
+        RenameCutoverResult::Allowed { edits }
+            if edits.iter().all(is_package_pilot_edit_category) =>
+        {
+            RenamePackagePilotResult::Eligible { edits }
+        }
+        RenameCutoverResult::Allowed { edits } => RenamePackagePilotResult::Ineligible {
+            reason: RenamePackagePilotIneligibleReason::UnsupportedEditCategory,
+            edits,
+            blockers: Vec::new(),
+        },
     }
+}
+
+fn is_package_pilot_edit_category(edit: &PlannedEdit) -> bool {
+    matches!(edit.category, PlannedEditCategory::Definition | PlannedEditCategory::Reference)
 }
 
 fn package_pilot_receipt_note(result: &RenamePackagePilotResult) -> String {
@@ -310,6 +320,7 @@ impl RenamePackagePilotIneligibleReason {
         match self {
             Self::EmptyPlan => "empty_plan",
             Self::Blocked => "blocked",
+            Self::UnsupportedEditCategory => "unsupported_edit_category",
         }
     }
 }
@@ -1120,11 +1131,8 @@ mod tests {
     }
 
     #[test]
-    fn rename_package_pilot_accepts_import_and_export_edits()
+    fn rename_package_pilot_rejects_import_and_export_edits()
     -> Result<(), Box<dyn std::error::Error>> {
-        // GA promotion (#1386): ImportList and ExportList edits are now accepted
-        // by the pilot.  A plan consisting only of import/export edits (with no
-        // Definition or Reference) should be Eligible.
         let edits = vec![
             make_edit(30, PlannedEditCategory::ImportList),
             make_edit(40, PlannedEditCategory::ExportList),
@@ -1133,7 +1141,7 @@ mod tests {
             EntityId(1),
             "Old::Name".to_string(),
             "New::Name".to_string(),
-            edits.clone(),
+            edits,
             vec![],
             vec![],
         );
@@ -1142,14 +1150,18 @@ mod tests {
         let outcome = rename_package_pilot_proof(true, &queries, EntityId(1), "New::Name");
 
         match &outcome.result {
-            RenamePackagePilotResult::Eligible { edits: result_edits } => {
-                assert_eq!(result_edits.len(), 2);
-                assert_eq!(*result_edits, edits);
+            RenamePackagePilotResult::Ineligible { reason, blockers, .. } => {
+                assert_eq!(*reason, RenamePackagePilotIneligibleReason::UnsupportedEditCategory);
+                assert!(blockers.is_empty());
             }
-            other => return Err(format!("expected Eligible, got {:?}", other).into()),
+            other => return Err(format!("expected Ineligible, got {:?}", other).into()),
         }
         let notes = outcome.receipt.notes.join(" ");
-        assert!(notes.contains("eligible=true"), "missing eligible note in {}", notes);
+        assert!(
+            notes.contains("reason=unsupported_edit_category"),
+            "missing unsupported category reason in {}",
+            notes
+        );
         Ok(())
     }
 
@@ -1303,180 +1315,59 @@ mod tests {
         Ok(())
     }
 
-    // ── Cross-package rename GA tests (red TDD for #1386) ──
-    // These tests assert that the pilot NOW ACCEPTS ImportList and ExportList edits.
-    // Before the GA promotion, these assertions will FAIL because the pilot rejects
-    // these categories. After removing is_package_pilot_edit_category() checks,
-    // these tests will PASS.
+    // ── Focused discriminator test for edits.is_empty() seam (#1465) ──
 
     #[test]
-    fn test_rename_pilot_accepts_import_list_edits_ga() -> Result<(), Box<dyn std::error::Error>> {
-        // When the pilot encounters ImportList edits (cross-package imports),
-        // it should accept them, not reject them.
-        // This test FAILS in pilot mode (before GA). After GA, it should PASS.
-        let edits = vec![
-            make_edit(10, PlannedEditCategory::Definition),
-            make_edit(30, PlannedEditCategory::ImportList),
-        ];
-        let plan = RenamePlan::new(
-            EntityId(1),
-            "Old::greet".to_string(),
-            "New::greet".to_string(),
-            edits.clone(),
-            vec![],
-            vec![],
-        );
-        let queries = StubSemanticQueries { rename_plan_result: plan };
-
-        let outcome = rename_package_pilot_proof(true, &queries, EntityId(1), "New::greet");
-
-        // SHOULD be Eligible now (after GA). Currently FAILS because pilot rejects ImportList.
-        match &outcome.result {
-            RenamePackagePilotResult::Eligible { edits: result_edits } => {
-                assert_eq!(*result_edits, edits);
-                assert_eq!(result_edits.len(), 2, "Should accept both Definition and ImportList");
-            }
-            RenamePackagePilotResult::Ineligible { reason, .. } => {
-                return Err(format!(
-                    "Pilot should accept ImportList edits for GA, but rejected with reason: {:?}",
-                    reason
-                )
-                .into());
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_rename_pilot_accepts_export_list_edits_ga() -> Result<(), Box<dyn std::error::Error>> {
-        // When the pilot encounters ExportList edits (updating @EXPORT/@EXPORT_OK),
-        // it should accept them, not reject them.
-        // This test FAILS in pilot mode (before GA). After GA, it should PASS.
-        let edits = vec![
-            make_edit(10, PlannedEditCategory::Definition),
-            make_edit(40, PlannedEditCategory::ExportList),
-        ];
-        let plan = RenamePlan::new(
-            EntityId(1),
-            "Old::greet".to_string(),
-            "New::greet".to_string(),
-            edits.clone(),
-            vec![],
-            vec![],
-        );
-        let queries = StubSemanticQueries { rename_plan_result: plan };
-
-        let outcome = rename_package_pilot_proof(true, &queries, EntityId(1), "New::greet");
-
-        // SHOULD be Eligible now (after GA). Currently FAILS because pilot rejects ExportList.
-        match &outcome.result {
-            RenamePackagePilotResult::Eligible { edits: result_edits } => {
-                assert_eq!(*result_edits, edits);
-                assert_eq!(result_edits.len(), 2, "Should accept both Definition and ExportList");
-            }
-            RenamePackagePilotResult::Ineligible { reason, .. } => {
-                return Err(format!(
-                    "Pilot should accept ExportList edits for GA, but rejected with reason: {:?}",
-                    reason
-                )
-                .into());
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn test_rename_pilot_accepts_all_cross_package_edit_categories_ga()
+    fn classify_package_pilot_result_discriminator_empty_vs_nonempty_edits()
     -> Result<(), Box<dyn std::error::Error>> {
-        // When the pilot encounters a complete cross-package rename plan with
-        // Definition, Reference, ImportList, and ExportList edits, it should
-        // accept ALL of them.
-        // This test FAILS in pilot mode (before GA). After GA, it should PASS.
-        let edits = vec![
-            make_edit(10, PlannedEditCategory::Definition),
-            make_edit(20, PlannedEditCategory::Reference),
-            make_edit(30, PlannedEditCategory::ImportList),
-            make_edit(40, PlannedEditCategory::ExportList),
-        ];
-        let plan = RenamePlan::new(
-            EntityId(1),
-            "Old::greet".to_string(),
-            "New::greet".to_string(),
-            edits.clone(),
-            vec![],
-            vec![],
-        );
-        let queries = StubSemanticQueries { rename_plan_result: plan };
+        // Discriminator test that explicitly hits BOTH branches of edits.is_empty()
+        // in classify_package_pilot_result (line 284):
+        //   - Branch 1: edits.is_empty() == true → EmptyPlan → Ineligible
+        //   - Branch 2: edits.is_empty() == false → Eligible
 
-        let outcome = rename_package_pilot_proof(true, &queries, EntityId(1), "New::greet");
+        // Test Case 1: Allowed with NO edits → should classify as EmptyPlan/Ineligible
+        {
+            let result = RenameCutoverResult::Allowed { edits: vec![] };
+            let outcome = classify_package_pilot_result(result);
 
-        // SHOULD be Eligible with all 4 edits. Currently FAILS because pilot rejects ImportList/ExportList.
-        match &outcome.result {
-            RenamePackagePilotResult::Eligible { edits: result_edits } => {
-                assert_eq!(result_edits.len(), 4);
-                assert_eq!(*result_edits, edits);
-                // Verify each edit type is present
-                assert!(
-                    result_edits.iter().any(|e| e.category == PlannedEditCategory::Definition),
-                    "Should include Definition edit"
-                );
-                assert!(
-                    result_edits.iter().any(|e| e.category == PlannedEditCategory::Reference),
-                    "Should include Reference edit"
-                );
-                assert!(
-                    result_edits.iter().any(|e| e.category == PlannedEditCategory::ImportList),
-                    "Should include ImportList edit"
-                );
-                assert!(
-                    result_edits.iter().any(|e| e.category == PlannedEditCategory::ExportList),
-                    "Should include ExportList edit"
-                );
+            match outcome {
+                RenamePackagePilotResult::Ineligible {
+                    reason: RenamePackagePilotIneligibleReason::EmptyPlan,
+                    edits,
+                    blockers,
+                } => {
+                    assert!(edits.is_empty(), "EmptyPlan should have empty edits");
+                    assert!(blockers.is_empty(), "EmptyPlan should have empty blockers");
+                }
+                other => {
+                    return Err(format!(
+                        "Expected Ineligible(EmptyPlan) for empty edits, got {:?}",
+                        other
+                    )
+                    .into());
+                }
             }
-            RenamePackagePilotResult::Ineligible { reason, .. } => return Err(format!(
-                "Pilot should accept all cross-package edit categories for GA, but rejected: {:?}",
-                reason
-            )
-            .into()),
         }
+
+        // Test Case 2: Allowed with edits → should classify as Eligible
+        {
+            let edits = vec![make_edit(10, PlannedEditCategory::Definition)];
+            let result = RenameCutoverResult::Allowed { edits: edits.clone() };
+            let outcome = classify_package_pilot_result(result);
+
+            match outcome {
+                RenamePackagePilotResult::Eligible { edits: result_edits } => {
+                    assert_eq!(result_edits, edits, "Should preserve edit set for Eligible");
+                    assert_eq!(result_edits.len(), 1, "Should have exactly 1 edit");
+                }
+                other => {
+                    return Err(
+                        format!("Expected Eligible for non-empty edits, got {:?}", other).into()
+                    );
+                }
+            }
+        }
+
         Ok(())
-    }
-
-    #[test]
-    fn test_rename_pilot_still_blocks_on_dynamic_boundary_with_import_export_ga()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // Safety: Even after GA, the pilot should still block renames when there
-        // are DynamicBoundary blockers, even if ImportList/ExportList edits are present.
-        let edits = vec![
-            make_edit(10, PlannedEditCategory::Definition),
-            make_edit(30, PlannedEditCategory::ImportList),
-            make_edit(40, PlannedEditCategory::ExportList),
-        ];
-        let blockers = vec![make_blocker(PlanBlockerReason::DynamicBoundary)];
-        let plan = RenamePlan::new(
-            EntityId(1),
-            "Old::greet".to_string(),
-            "New::greet".to_string(),
-            edits,
-            blockers,
-            vec![],
-        );
-        let queries = StubSemanticQueries { rename_plan_result: plan };
-
-        let outcome = rename_package_pilot_proof(true, &queries, EntityId(1), "New::greet");
-
-        // SHOULD still be Blocked (safety gate). ImportList/ExportList alone don't unblock.
-        match &outcome.result {
-            RenamePackagePilotResult::Ineligible {
-                reason: RenamePackagePilotIneligibleReason::Blocked,
-                ..
-            } => {
-                // Correct - blockers take priority over accepted edit categories
-                Ok(())
-            }
-            other => {
-                Err(format!("Pilot should still block on DynamicBoundary, got: {:?}", other).into())
-            }
-        }
     }
 }
