@@ -112,6 +112,32 @@ impl DebugAdapter {
                 // Non-Scope variants and invalid refs skip the framed output fetch;
                 // EvalResult cache hits were already served above.
                 use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+
+                // Short-circuit: stale EvalResult ref (cache miss after resume).
+                //
+                // On resume (continue/next/step), variable_cache.clear() runs, making
+                // any eval_ref the client holds from the previous stop stale. A stale
+                // eval_ref is in the EvalResult band ([1_000_000, 1_999_999_999]) but is
+                // absent from the cache. Querying the debugger for a bogus scope or waiting
+                // for output that will never arrive is wasteful and semantically wrong.
+                //
+                // Protocol contract: return honest empty (success=true, variables=[])
+                // immediately. This matches the DAP spec — a ref that is no longer valid
+                // after a resume simply has no children.
+                if matches!(
+                    VariableReference::decode(variables_ref),
+                    Some(VariableReference::EvalResult { .. })
+                ) {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: true,
+                        command: "variables".to_string(),
+                        body: Some(json!({ "variables": [] })),
+                        message: None,
+                    };
+                }
+
                 let (scope_frame_id, scope_kind) = match VariableReference::decode(variables_ref) {
                     Some(VariableReference::Scope { frame_id, kind }) => (frame_id, Some(kind)),
                     _ => (0, None),
@@ -713,6 +739,42 @@ mod hazard_invariant_tests {
             assert!(
                 variables_success(&mut a, stale),
                 "never-allocated scope ref={stale} must succeed (no crash, honest empty)"
+            );
+        }
+    }
+
+    // --- Fix #1338: stale EvalResult ref with Stopped session -> early short-circuit ---
+    //
+    // This lib test covers the new early-return branch in handle_variables() added by
+    // fix #1338 (cache-miss branch, EvalResult short-circuit in variables.rs).
+    //
+    // Path exercised:
+    //   1. Session IS Stopped -> passes the Running-state guard (lines 73-92 pre-fix)
+    //   2. Cache miss for eval_ref wire -> enters else branch
+    //   3. decode yields EvalResult -> short-circuit, return honest empty immediately
+    //
+    // Without the fix, control falls through to parse_scope_variables_from_output
+    // (75ms detour via wait_for_debugger_output_window) before returning empty via
+    // fallback_scope_variables. The short-circuit removes the delay and bogus routing.
+    //
+    // Skip when perl is not on PATH (seed_stopped_session_with_frames_for_test
+    // spawns perl -e 1 as a no-op child process).
+    #[test]
+    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty() {
+        // Skip if perl is not available on PATH.
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        let mut a = adapter();
+        // Seed a Stopped session so the Running-state guard does not trigger.
+        // This exercises the cache-miss path and the new EvalResult short-circuit.
+        a.seed_stopped_session_with_frames_for_test(vec![]);
+
+        // EvalResult band wire values: stale after resume (not in cache).
+        for eval_ref_wire in [1_000_000_i64, 1_000_001, 1_000_003, 1_100_000] {
+            assert!(
+                variables_body_is_empty(&mut a, eval_ref_wire),
+                "fix #1338: stopped session + stale eval_ref={eval_ref_wire} must return honest empty"
             );
         }
     }
