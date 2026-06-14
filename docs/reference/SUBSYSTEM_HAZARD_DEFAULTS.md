@@ -290,3 +290,4 @@ When a new incident motivates a new default row, add it here AND add an entry to
 The canonical trigger for updating this file is a deep-review finding that would have
 been caught if the hazard row had been seeded in `acceptance.md`.
 
+
