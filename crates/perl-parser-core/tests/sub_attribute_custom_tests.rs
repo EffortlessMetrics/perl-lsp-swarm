@@ -307,3 +307,72 @@ fn test_multiple_custom_attributes_captured_in_ast_sexp() {
     assert!(sexp.contains(":Path("), "Expected ':Path(' in AST sexp, got: {}", sexp);
     assert!(sexp.contains(":Args("), "Expected ':Args(' in AST sexp, got: {}", sexp);
 }
+
+// ============================================================================
+// EDGE CASES: Statement modifiers, prototypes, and unusual attribute syntax
+// ============================================================================
+
+/// Statement modifier keyword (`if`) after a variable attribute must NOT be consumed
+/// as part of the attribute name.  This guards the critical safety boundary in the
+/// adjacent-attr continuation loop which only continues for Identifier/Method tokens.
+#[test]
+fn test_variable_attribute_followed_by_statement_modifier() {
+    // `my $x :shared if $cond;` — `:shared` is the attribute; `if` begins the modifier.
+    let code = "my $x :shared if (1) { 1 }";
+    assert_clean_parse(code);
+    let ast = parse(code);
+    let sexp = ast.to_sexp();
+    // Variable-declaration attributes render as `(attributes shared)` in sexp (no colon prefix).
+    // The statement modifier renders as `statement_modifier_if`.
+    assert!(
+        sexp.contains("shared"),
+        "Expected 'shared' attribute in AST sexp (variable attrs render without ':'), got: {}",
+        sexp
+    );
+    assert!(
+        sexp.contains("statement_modifier_if"),
+        "Expected 'statement_modifier_if' to confirm `if` was NOT consumed as an attribute, got: {}",
+        sexp
+    );
+}
+
+/// Custom attribute before a prototype — parser must accept both and not confuse them.
+/// Verifies the attribute-then-prototype order is handled correctly.
+#[test]
+fn test_custom_attribute_before_prototype() {
+    // Perl allows: sub foo :custom (\@) { }
+    let code = r#"sub foo :public (\@) { }"#;
+    assert_clean_parse(code);
+    let ast = parse(code);
+    let sexp = ast.to_sexp();
+    assert!(
+        sexp.contains(":public"),
+        "Expected ':public' in AST sexp when attribute precedes prototype, got: {}",
+        sexp
+    );
+}
+
+/// Numeric token (`:123`) after colon is not a valid attribute name and must error.
+/// This is a pure-syntax error — not a "unknown name" situation.
+#[test]
+fn test_numeric_after_colon_is_syntax_error() {
+    // `:123` is not a bareword attribute — it should be a syntax error
+    // because a number token is not in `can_be_sub_name`.
+    let code = "sub foo :123 { }";
+    assert_has_error(code, "expected attribute name");
+}
+
+/// Adjacent attribute names after the SAME colon (e.g. `:foo bar`) — only
+/// Identifier and Method tokens continue the inner loop.  A second colon is
+/// needed to start the next attribute.
+#[test]
+fn test_adjacent_attrs_on_same_colon_only_identifiers() {
+    // `:public` is one attribute (with its own colon); `:method` is another.
+    // `sub foo :public :method { }` — two colons, two attributes.
+    let code = "sub foo :public :method { }";
+    assert_clean_parse(code);
+    let ast = parse(code);
+    let sexp = ast.to_sexp();
+    assert!(sexp.contains(":public"), "Expected ':public' in AST sexp, got: {}", sexp);
+    assert!(sexp.contains(":method"), "Expected ':method' in AST sexp, got: {}", sexp);
+}
