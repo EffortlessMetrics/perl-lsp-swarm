@@ -2809,6 +2809,42 @@ mod tests {
     }
 
     #[test]
+    fn for_each_child_mut_nested_variable_list() {
+        // Covers lines 876-879: NestedVariableList arm in for_each_child_mut.
+        let loc = SourceLocation { start: 0, end: 10 };
+        let item_a =
+            Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "a".to_string() }, loc);
+        let item_b =
+            Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "b".to_string() }, loc);
+        let mut node = Node::new(NodeKind::NestedVariableList { items: vec![item_a, item_b] }, loc);
+        let mut count = 0;
+        node.for_each_child_mut(|_child| count += 1);
+        assert_eq!(count, 2, "for_each_child_mut should visit both items in NestedVariableList");
+    }
+
+    #[test]
+    fn for_each_child_nested_variable_list() {
+        // Covers lines 1131-1134: NestedVariableList arm in for_each_child.
+        let loc = SourceLocation { start: 0, end: 10 };
+        let item_a =
+            Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }, loc);
+        let item_b =
+            Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "y".to_string() }, loc);
+        let node = Node::new(NodeKind::NestedVariableList { items: vec![item_a, item_b] }, loc);
+        let mut names = Vec::new();
+        node.for_each_child(|child| {
+            if let NodeKind::Variable { name, .. } = &child.kind {
+                names.push(name.clone());
+            }
+        });
+        assert_eq!(
+            names,
+            vec!["x", "y"],
+            "for_each_child should visit all items in NestedVariableList"
+        );
+    }
+
+    #[test]
     fn all_kind_names_is_consistent_with_kind_name() {
         let from_enum = all_kind_names_from_variants();
         let from_const: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();

@@ -14,7 +14,7 @@ fn nested_variable_list_parses_for_security_analysis() {
     let code = "my ($a, ($b, $c)) = (1, (2, 3));";
     let mut parser = Parser::new(code);
     let _ast = must(parser.parse());
-    
+
     // If we got here, the code parsed and can be analyzed by security linter
     assert!(true);
 }
@@ -25,7 +25,7 @@ fn nested_variable_list_deep_nesting_parses() {
     let code = "my ($x, ($y, ($z, $w))) = (1, (2, (3, 4)));";
     let mut parser = Parser::new(code);
     let _ast = must(parser.parse());
-    
+
     assert!(true);
 }
 
@@ -35,6 +35,6 @@ fn nested_variable_list_with_signal_parses() {
     let code = "my ($a, ($SIG, $b)) = @_;";
     let mut parser = Parser::new(code);
     let _ast = must(parser.parse());
-    
+
     assert!(true);
 }
