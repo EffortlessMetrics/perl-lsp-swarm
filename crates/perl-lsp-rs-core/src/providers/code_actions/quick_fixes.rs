@@ -55,12 +55,18 @@ pub fn fix_undefined_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> 
 pub fn fix_unused_variable(source: &str, diagnostic: &QuickFixDiagnostic) -> Vec<CodeAction> {
     let mut actions = Vec::new();
 
+    // Guard against out-of-bounds or non-char-boundary ranges (e.g. misconverted
+    // UTF-16 LSP offsets landing mid-multibyte).  Both slices would otherwise panic.
+    let Some(before_start) = source.get(..diagnostic.range.0) else {
+        return actions;
+    };
+    let Some(after_end) = source.get(diagnostic.range.1..) else {
+        return actions;
+    };
+
     // Find the declaration line
-    let line_start = source[..diagnostic.range.0].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let line_end = source[diagnostic.range.1..]
-        .find('\n')
-        .map(|p| diagnostic.range.1 + p)
-        .unwrap_or(source.len());
+    let line_start = before_start.rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = after_end.find('\n').map(|p| diagnostic.range.1 + p).unwrap_or(source.len());
     let delete_end = if line_end < source.len() { line_end + 1 } else { line_end };
 
     actions.push(CodeAction {
@@ -346,6 +352,35 @@ mod tests {
         assert_eq!(edit.location.end, 28);
         assert!(edit.location.end <= source.len(), "edit end must not exceed source length");
         assert_eq!(edit.new_text, "");
+    }
+
+    #[test]
+    fn fix_unused_variable_returns_empty_on_non_char_boundary_range_start() {
+        // U+1F600 is a 4-byte emoji.  Byte offset 1 inside it is not a char boundary.
+        let source = "my $\u{1F600}unused = 1;\n";
+        let emoji_start = source.find('\u{1F600}').unwrap();
+        let diagnostic = diagnostic_for((emoji_start + 1, emoji_start + 3), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "must return empty when range.0 is mid-multibyte");
+    }
+
+    #[test]
+    fn fix_unused_variable_returns_empty_on_non_char_boundary_range_end() {
+        // Valid start, but range.1 lands inside the 4-byte emoji.
+        let source = "my $\u{1F600}unused = 1;\n";
+        let emoji_start = source.find('\u{1F600}').unwrap();
+        let diagnostic = diagnostic_for((emoji_start, emoji_start + 2), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "must return empty when range.1 is mid-multibyte");
+    }
+
+    #[test]
+    fn fix_unused_variable_returns_empty_on_out_of_bounds_range() {
+        let source = "my $unused = 1;\n";
+        let diagnostic =
+            diagnostic_for((source.len() + 5, source.len() + 10), "Unused variable '$unused'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "must return empty when range is beyond source len");
     }
 
     // --- fix_printf_format_arity ---

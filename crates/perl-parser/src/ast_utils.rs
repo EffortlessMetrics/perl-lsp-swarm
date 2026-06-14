@@ -91,9 +91,15 @@ pub fn find_node_at_range(node: &Node, range: (usize, usize)) -> Option<&Node> {
 }
 
 /// Get indentation at a position.
+///
+/// If `pos` falls in the interior of a multibyte UTF-8 character the function
+/// snaps backwards to the nearest valid char boundary before slicing, so it
+/// never panics on non-ASCII source text.
 #[must_use]
 pub fn get_indent_at(source: &str, pos: usize) -> String {
-    let clamped_pos = pos.min(source.len());
+    let raw = pos.min(source.len());
+    // Snap backwards to the nearest char boundary to avoid panic on mid-multibyte pos.
+    let clamped_pos = (0..=raw).rev().find(|&p| source.is_char_boundary(p)).unwrap_or(0);
     let line_start = source[..clamped_pos].rfind('\n').map_or(0, |p| p + 1);
     let line = &source[line_start..];
 
@@ -158,5 +164,33 @@ mod tests {
     fn get_indent_clamps_out_of_bounds_pos() {
         let src = "line1\n  line2";
         assert_eq!(get_indent_at(src, src.len() + 50), "  ");
+    }
+
+    #[test]
+    fn get_indent_at_mid_multibyte_does_not_panic() {
+        // "    😀" — emoji is 4 bytes at offset 4; any mid-byte pos must not panic.
+        let src = "    \u{1F600}\nfoo";
+        let emoji_start = src.find('\u{1F600}').unwrap();
+        // Positions 1, 2, 3 bytes into the 4-byte emoji are invalid char boundaries.
+        assert_eq!(get_indent_at(src, emoji_start + 1), "    ");
+        assert_eq!(get_indent_at(src, emoji_start + 2), "    ");
+        assert_eq!(get_indent_at(src, emoji_start + 3), "    ");
+    }
+
+    #[test]
+    fn get_indent_at_mid_multibyte_no_leading_whitespace() {
+        // Line starts with a multibyte char — no indent expected even at mid-char pos.
+        let src = "\u{1F600}  code\n    next";
+        let emoji_start = 0;
+        assert_eq!(get_indent_at(src, emoji_start + 2), "");
+    }
+
+    #[test]
+    fn get_indent_at_two_byte_char_mid_pos() {
+        // é is U+00E9, encoded as two bytes (0xC3 0xA9) in UTF-8.
+        let src = "  \u{00E9}foo\n    bar";
+        let e_start = src.find('\u{00E9}').unwrap();
+        // Position 1 byte into the two-byte sequence is not a char boundary.
+        assert_eq!(get_indent_at(src, e_start + 1), "  ");
     }
 }
