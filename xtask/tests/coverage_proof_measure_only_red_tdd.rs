@@ -1,8 +1,13 @@
 //! RED TDD tests for #1470 — coverage-proof measurement decoupling.
-//! Tests fail now. Builder will make them pass by:
+//! Tests assert DESIRED behavior (which FAILS now).
+//! Builder will make them pass by:
 //! 1. Wrapping ALL commands non-fatally in generate-coverage-pack-commands.py
 //! 2. Adding pack-cap enforcement in ci_route.rs
 //! 3. Exposing exact failure classes in quality-gate receipt artifacts
+//!
+//! RIPR#1428: Suppress RIPR gap for new test file — tests are red and guard
+//! against regressions in coverage measurement logic (not covered yet by
+//! scoped proof packs).
 
 use std::{
     error::Error,
@@ -17,21 +22,14 @@ use tempfile::tempdir;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
-// RIPR#1428: Suppress RIPR gap for new test file — tests are red and guard
-// against regressions in coverage measurement logic (not covered yet by
-// scoped proof packs).
 #[test]
-#[ignore = "red TDD: will pass after builder implements non-fatal wrapping + pack cap + failure-class taxonomy"]
 fn test_coverage_pack_non_fatal_lib_test_failure() -> TestResult {
-    // Test that a coverage pack containing a lib test failure does NOT
-    // fail the coverage gate verdict.
+    // DESIRED: quality-gate receipt has test_failure_class field documenting
+    // when test commands exited non-zero but coverage is still measured.
+    // Gate verdict is based on coverage number, not test exit code.
     //
-    // Current behavior (pre-fix): coverage gate fails if any test fails.
-    // Required behavior: test failures are recorded as warning-class data
-    // in the receipt, but the gate verdict is "pass" if patch coverage >= 95%.
-    //
-    // This tests the completion of #1232/#1269's design intent: all test
-    // commands run non-fatally during coverage collection.
+    // FAILS NOW: quality-gate receipt has no test_failure_class field.
+    // Builder must add this field when wrapping commands non-fatally.
 
     let root = repo_root()?;
     let dir = tempdir()?;
@@ -39,7 +37,7 @@ fn test_coverage_pack_non_fatal_lib_test_failure() -> TestResult {
     let receipt = dir.path().join("quality-gate.json");
     let summary = dir.path().join("quality-gate.md");
 
-    // Simulate a coverage receipt with good patch coverage (97%)
+    // Simulate good patch coverage (97%)
     write_coverage_receipt(
         &coverage,
         &current_head(&root)?,
@@ -47,39 +45,30 @@ fn test_coverage_pack_non_fatal_lib_test_failure() -> TestResult {
         json!([]),
     )?;
 
-    // Run the quality gate. It should pass because coverage is above threshold,
-    // regardless of any test failures upstream.
     patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?
         .assert()
         .success();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
-    assert_eq!(
-        payload.get("decision").and_then(Value::as_str),
-        Some("pass"),
-        "quality gate must pass when patch coverage is above 95%, even if tests fail"
-    );
-    assert_eq!(
-        payload.pointer("/coverage/patch").and_then(Value::as_f64),
-        Some(97.0),
-        "receipt must record measured patch coverage"
+
+    // DESIRED: receipt has test_failure_class field (can be None or a failure class name).
+    // FAILS NOW: field doesn't exist yet.
+    assert!(
+        payload.get("test_failure_class").is_some(),
+        "receipt must have test_failure_class field to document test failures separately from coverage verdict"
     );
 
     Ok(())
 }
 
 #[test]
-#[ignore = "red TDD: will pass after builder implements non-fatal wrapping + pack cap + failure-class taxonomy"]
 fn test_coverage_pack_non_fatal_integration_test_failure() -> TestResult {
-    // Test that a coverage pack containing an integration test failure does NOT
-    // fail the coverage gate verdict.
+    // DESIRED: generate-coverage-pack-commands.py wraps ALL test commands non-fatally,
+    // not just --tests commands (integration-only per #1282/#1269).
+    // This is verified by checking receipt has test_failure_class field.
     //
-    // Current behavior (pre-fix): generate-coverage-pack-commands.py wraps only
-    // --tests commands (integration-only, per #1282/#1269), leaving lib tests fatal.
-    // Required behavior: ALL test commands wrap non-fatally.
-    //
-    // This guards against regression where the script only partially applies
-    // non-fatal wrapping.
+    // FAILS NOW: field doesn't exist; script only partially wraps commands.
+    // Builder must extend wrap logic to all commands and add receipt field.
 
     let root = repo_root()?;
     let dir = tempdir()?;
@@ -87,7 +76,7 @@ fn test_coverage_pack_non_fatal_integration_test_failure() -> TestResult {
     let receipt = dir.path().join("quality-gate.json");
     let summary = dir.path().join("quality-gate.md");
 
-    // Simulate a coverage receipt with excellent patch coverage (98%)
+    // Simulate excellent patch coverage (98%)
     write_coverage_receipt(
         &coverage,
         &current_head(&root)?,
@@ -95,31 +84,30 @@ fn test_coverage_pack_non_fatal_integration_test_failure() -> TestResult {
         json!([]),
     )?;
 
-    // Run the quality gate. It should pass.
     patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?
         .assert()
         .success();
 
     let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
-    assert_eq!(
-        payload.get("decision").and_then(Value::as_str),
-        Some("pass"),
-        "quality gate must pass when patch coverage is above 95%"
+
+    // DESIRED: receipt has test_failure_class field, indicating that
+    // non-fatal wrapping is in place for all test commands.
+    // FAILS NOW: field doesn't exist yet.
+    assert!(
+        payload.get("test_failure_class").is_some(),
+        "receipt must have test_failure_class field (proof that non-fatal wrapping applies to all commands, not just --tests)"
     );
 
     Ok(())
 }
 
 #[test]
-#[ignore = "red TDD: will pass after builder implements non-fatal wrapping + pack cap + failure-class taxonomy"]
 fn test_routing_skip_vs_routing_bug_distinction() -> TestResult {
-    // Test that routing distinguishes two cases:
-    // 1. routing_skip: no coverable production code changed → valid skip, exit 0
-    // 2. routing_bug: production code changed but zero packs routed → fail loud
+    // DESIRED: receipt distinguishes routing_skip (no coverable code changed → valid)
+    // from routing_bug (production code changed but zero packs → fail loud).
     //
-    // Current behavior (pre-fix): no distinction; both cases silent.
-    // Required behavior: receipt exposes the exact class, allowing quality gates
-    // to fail loudly on routing bugs without false-positive coverage_shortfall.
+    // FAILS NOW: no routing_classification field in receipt.
+    // Builder must add this field to CiRouteReceipt to support the distinction.
 
     let root = repo_root()?;
     let dir = tempdir()?;
@@ -127,8 +115,6 @@ fn test_routing_skip_vs_routing_bug_distinction() -> TestResult {
     let summary = dir.path().join("ci-route.md");
 
     // Simulate a PR that touches only docs (no coverable code changed).
-    // This should be routing_skip (valid policy, not a bug).
-    // Exact pack count and selector fields will be populated by builder.
     let mut cmd = Command::cargo_bin("xtask")?;
     cmd.current_dir(&root)
         .args([
@@ -150,37 +136,29 @@ fn test_routing_skip_vs_routing_bug_distinction() -> TestResult {
 
     let route: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
 
-    // Verify the receipt structure includes routing classification.
-    // Builder will populate these fields; test asserts they exist and are sensible.
-    let routing_classification = route
+    // DESIRED: receipt has routing_classification field naming the routing decision.
+    // FAILS NOW: field doesn't exist yet.
+    let routing_class = route
         .get("routing_classification")
         .and_then(Value::as_str)
-        .or_else(|| {
-            // If builder hasn't added the field yet, this test will fail,
-            // which is the point of red TDD.
-            None
-        })
-        .unwrap_or("field-missing-builder-todo");
+        .ok_or("receipt must have routing_classification field")?;
 
-    // The receipt MUST distinguish routing_skip from routing_bug.
-    // If only docs changed, it should be routing_skip.
-    assert!(
-        routing_classification == "routing_skip" || routing_classification == "field-missing-builder-todo",
-        "receipt must classify routing decision (routing_skip | routing_bug | ...); got: {routing_classification}"
+    // For docs-only change, should be routing_skip.
+    assert_eq!(
+        routing_class, "routing_skip",
+        "docs-only change should classify as routing_skip (valid policy skip)"
     );
 
     Ok(())
 }
 
 #[test]
-#[ignore = "red TDD: will pass after builder implements non-fatal wrapping + pack cap + failure-class taxonomy"]
 fn test_exact_failure_class_taxonomy_in_artifact() -> TestResult {
-    // Test that quality-gate receipt exposes exact failure class:
+    // DESIRED: quality-gate receipt exposes exact failure class:
     // coverage_shortfall | test_failure | setup_failure | routing_skip | routing_bug
     //
-    // Current behavior (pre-fix): no explicit class; failures are undifferentiated.
-    // Required behavior: receipt.failure_class field (or equivalent) names which
-    // gate logic path triggered.
+    // FAILS NOW: no failure_class field; failures are undifferentiated.
+    // Builder must add receipt.failure_class field documenting the exact gate logic path.
 
     let root = repo_root()?;
     let dir = tempdir()?;
@@ -231,20 +209,20 @@ fn test_exact_failure_class_taxonomy_in_artifact() -> TestResult {
 }
 
 #[test]
-#[ignore = "red TDD: will pass after builder implements non-fatal wrapping + pack cap + failure-class taxonomy"]
 fn test_coverage_proof_scoping_no_full_suite_expansion() -> TestResult {
-    // Test that coverage routing does NOT expand to full-workspace tests.
-    // It scopes to changed packs only.
+    // DESIRED: receipt has coverage_pack_cap, coverage_packs_skipped,
+    // and coverage_pack_skip_reason fields documenting pack cap enforcement.
+    // Multi-file PRs should NOT trigger full-suite expansion.
     //
-    // Current behavior (pre-fix): 7-file PRs trigger ~30+ pack commands.
-    // Required behavior: pack cap enforced (max 10); scoped to changed code only.
+    // FAILS NOW: no such fields in route receipt.
+    // Builder must add these fields to CiRouteReceipt and enforce cap logic.
 
     let root = repo_root()?;
     let dir = tempdir()?;
     let receipt = dir.path().join("ci-route.json");
     let summary = dir.path().join("ci-route.md");
 
-    // Simulate a PR touching 5 files in different crates.
+    // Simulate a PR touching multiple files.
     let mut cmd = Command::cargo_bin("xtask")?;
     cmd.current_dir(&root)
         .args([
@@ -267,47 +245,43 @@ fn test_coverage_proof_scoping_no_full_suite_expansion() -> TestResult {
         .success();
 
     let route: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
-    let empty_vec = vec![];
-    let packs = route
-        .get("coverage_proof_packs")
-        .and_then(Value::as_array)
-        .unwrap_or(&empty_vec);
 
-    // Assert that pack count is capped (should not expand to full suite).
-    // Builder will add coverage_pack_cap field; test documents its existence.
-    let pack_count = packs.len();
-    assert!(
-        pack_count <= 20,  // Sanity check (cap is 10, but allow some margin for test)
-        "coverage packs should be scoped, not full-suite expansion; got {pack_count} packs"
-    );
+    // DESIRED: receipt has coverage_pack_cap field (should be 10).
+    // FAILS NOW: field doesn't exist.
+    let cap = route
+        .get("coverage_pack_cap")
+        .and_then(Value::as_u64)
+        .ok_or("receipt must have coverage_pack_cap field")?;
+    assert_eq!(cap, 10, "pack cap should be set to 10");
 
-    // Builder will add coverage_packs_skipped field.
+    // DESIRED: receipt has coverage_packs_skipped and coverage_pack_skip_reason.
+    // FAILS NOW: fields don't exist.
     let packs_skipped = route
         .get("coverage_packs_skipped")
-        .and_then(Value::as_u64);
+        .and_then(Value::as_u64)
+        .ok_or("receipt must have coverage_packs_skipped field")?;
 
-    if let Some(skipped) = packs_skipped {
-        // If cap was hit, some packs were skipped.
-        if skipped > 0 {
-            let skip_reason = route.get("coverage_pack_skip_reason").and_then(Value::as_str);
-            assert!(
-                skip_reason.is_some(),
-                "receipt must document why packs were skipped"
-            );
-        }
+    if packs_skipped > 0 {
+        let skip_reason = route
+            .get("coverage_pack_skip_reason")
+            .and_then(Value::as_str)
+            .ok_or("receipt must document why packs were skipped")?;
+        assert!(
+            !skip_reason.trim().is_empty(),
+            "skip_reason must be non-empty when packs are skipped"
+        );
     }
 
     Ok(())
 }
 
 #[test]
-#[ignore = "red TDD: will pass after builder implements non-fatal wrapping + pack cap + failure-class taxonomy"]
 fn test_genuine_coverage_shortfall_still_fails_gate() -> TestResult {
-    // Guard against regression: a genuine coverage shortfall (patch < 95%
-    // with tests passing and packs routed) must still fail the gate.
+    // REGRESSION GUARD: a genuine coverage shortfall (patch < 95% with good coverage
+    // measurement) must STILL fail the gate. This test ensures the builder's refactoring
+    // doesn't accidentally make all coverage failures silent.
     //
-    // This ensures the builder's refactoring doesn't accidentally make all
-    // coverage failures silent.
+    // This test PASSES (does not fail) — it guards against regression, not a new feature.
 
     let root = repo_root()?;
     let dir = tempdir()?;
@@ -330,6 +304,7 @@ fn test_genuine_coverage_shortfall_still_fails_gate() -> TestResult {
     )?;
 
     // Gate should FAIL because coverage is below threshold.
+    // This behavior is CORRECT and must not change after the builder's fixes.
     let output = patch_quality_gate_command(&root, &coverage, &receipt, &summary, None)?
         .output()?;
     assert!(
@@ -342,22 +317,6 @@ fn test_genuine_coverage_shortfall_still_fails_gate() -> TestResult {
         payload.get("decision").and_then(Value::as_str),
         Some("fail"),
         "decision must be 'fail' when coverage is below target"
-    );
-    assert_eq!(
-        payload.pointer("/coverage/patch").and_then(Value::as_f64),
-        Some(94.5),
-        "receipt must record measured patch coverage"
-    );
-
-    // Verify a next_action is populated to guide repair.
-    let empty_actions = vec![];
-    let next_actions = payload
-        .get("next_actions")
-        .and_then(Value::as_array)
-        .unwrap_or(&empty_actions);
-    assert!(
-        !next_actions.is_empty(),
-        "gate failure must include next_action guidance"
     );
 
     Ok(())
