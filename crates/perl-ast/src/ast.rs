@@ -2901,13 +2901,22 @@ mod tests {
     }
 
     #[test]
-    fn all_kind_names_strum_derived_stability() {
-        // Regression guard: verify VARIANTS (from strum) equals ALL_KIND_NAMES
-        // This ensures the strum derivation is still being used correctly
-        assert_eq!(
-            NodeKind::VARIANTS,
-            NodeKind::ALL_KIND_NAMES,
-            "NodeKind::VARIANTS (from strum) should equal ALL_KIND_NAMES"
+    fn all_kind_names_count_regression_guard() {
+        // Regression guard: ALL_KIND_NAMES must have at least 70 entries.
+        // The previous hand-maintained list had 70 variants (including NestedVariableList
+        // added in #1457). Failing below that count means a variant was deleted or the
+        // strum derivation silently stopped working.
+        //
+        // Note: the previous test `all_kind_names_strum_derived_stability` asserted
+        // `NodeKind::VARIANTS == NodeKind::ALL_KIND_NAMES`, which is trivially true by
+        // definition (ALL_KIND_NAMES = NodeKind::VARIANTS). That assertion was vacuous
+        // and has been replaced with this count guard.
+        assert!(
+            NodeKind::ALL_KIND_NAMES.len() >= 70,
+            "ALL_KIND_NAMES has only {} entries; expected >= 70. \
+             A variant may have been accidentally removed, or strum::VariantNames \
+             is not being applied correctly.",
+            NodeKind::ALL_KIND_NAMES.len()
         );
     }
 }
