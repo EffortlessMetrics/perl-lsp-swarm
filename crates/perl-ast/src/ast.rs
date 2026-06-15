@@ -2861,21 +2861,6 @@ mod tests {
     }
 
     #[test]
-    fn all_kind_names_length_matches_variants() {
-        // Regression guard: catch missing/extra variants at enum modification time
-        // ALL_KIND_NAMES must always equal the strum VARIANTS count
-        let variants_count = all_kind_names_from_variants().len();
-        assert_eq!(
-            NodeKind::ALL_KIND_NAMES.len(),
-            variants_count,
-            "ALL_KIND_NAMES length ({}) does not match variant count ({}); \
-             a NodeKind variant was added/removed without updating the enum derivation",
-            NodeKind::ALL_KIND_NAMES.len(),
-            variants_count
-        );
-    }
-
-    #[test]
     fn all_kind_names_valid_kind_names() {
         // Regression guard: every string in ALL_KIND_NAMES is a valid kind_name() output
         for (i, name) in NodeKind::ALL_KIND_NAMES.iter().enumerate() {
@@ -2899,22 +2884,6 @@ mod tests {
             from_enum, from_const,
             "ALL_KIND_NAMES set does not match variant kind_names"
         );
-    }
-
-    #[test]
-    fn kind_name_for_every_variant_in_all_kind_names() {
-        // Integration: for each name in ALL_KIND_NAMES, verify it comes from calling
-        // kind_name() on a valid variant. This ensures the strum derivation is correct.
-        let variant_names = all_kind_names_from_variants();
-        let all_names_set: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();
-
-        for name in &variant_names {
-            assert!(
-                all_names_set.contains(name),
-                "kind_name() returned '{}', but it's not in ALL_KIND_NAMES",
-                name
-            );
-        }
     }
 
     #[test]
