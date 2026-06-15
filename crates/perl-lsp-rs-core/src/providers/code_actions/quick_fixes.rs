@@ -693,6 +693,48 @@ mod tests {
         let actions = fix_bareword(source, &diagnostic);
         assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
     }
+
+    // --- ported from closed PR #1466 (three-way boundary coverage for fix_unused_variable) ---
+
+    #[test]
+    fn fix_unused_variable_empty_on_non_char_boundary_range_start() {
+        // range.0 lands mid-emoji (U+1F600, 4 bytes) → range.0 is not a char boundary.
+        let source = "my $x = \"\u{1F600}\";\n";
+        let emoji_start = must_some(source.find('\u{1F600}'));
+        let diagnostic = diagnostic_for((emoji_start + 1, emoji_start + 4), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "range.0 mid-emoji must return empty actions");
+    }
+
+    #[test]
+    fn fix_unused_variable_empty_on_non_char_boundary_range_end() {
+        // range.1 lands mid-emoji → range.1 is not a char boundary.
+        let source = "my $x = \"\u{1F600}\";\n";
+        let emoji_start = must_some(source.find('\u{1F600}'));
+        let diagnostic = diagnostic_for((emoji_start, emoji_start + 2), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "range.1 mid-emoji must return empty actions");
+    }
+
+    #[test]
+    fn fix_unused_variable_empty_on_out_of_bounds_range() {
+        // range extends past source.len().
+        let source = "my $x = 1;\n";
+        let diagnostic =
+            diagnostic_for((source.len() + 10, source.len() + 20), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(actions.is_empty(), "out-of-bounds range must return empty actions");
+    }
+
+    #[test]
+    fn fix_parse_error_empty_on_non_char_boundary_range() {
+        // fix_parse_error slices source[range_start..] — confirm it guards against mid-multibyte.
+        // U+00E9 (é) is 2 bytes.  Putting range.0 at byte 1 (mid-é) must return empty, not panic.
+        let source = "\u{e9}code missing semicolon\n";
+        let diagnostic = diagnostic_for((1, 2), "Missing semicolon");
+        let actions = fix_parse_error(source, &diagnostic, "parse-error-missingsemicolon");
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
 }
 
 /// Fix assignment in condition
@@ -1080,21 +1122,25 @@ pub fn fix_parse_error(
     diagnostic: &QuickFixDiagnostic,
     code: &str,
 ) -> Vec<CodeAction> {
+    // Guard all byte-index slice operations.  A diagnostic range that lands
+    // mid-multibyte char (e.g. from an unconverted UTF-16 LSP offset) must
+    // not panic; return no actions instead.
+    let range_start = diagnostic.range.0;
+    if range_start > source.len() || !source.is_char_boundary(range_start) {
+        return Vec::new();
+    }
+
     let mut actions = Vec::new();
 
     match code {
         "parse-error-missingsemicolon" => {
             // Add semicolon at the end
-            let line_end = source[diagnostic.range.0..]
-                .find('\n')
-                .map(|p| diagnostic.range.0 + p)
-                .unwrap_or(source.len());
+            let line_end =
+                source[range_start..].find('\n').map(|p| range_start + p).unwrap_or(source.len());
 
             // Find the actual end of the statement (before any trailing whitespace)
             let mut end_pos = line_end;
-            while end_pos > diagnostic.range.0
-                && source.as_bytes()[end_pos - 1].is_ascii_whitespace()
-            {
+            while end_pos > range_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace() {
                 end_pos -= 1;
             }
 
@@ -1116,17 +1162,16 @@ pub fn fix_parse_error(
         {
             // PL001/PL002 are general parse error codes. When the message indicates a missing
             // semicolon, apply the same fix -- but skip heredoc contexts where insertion is wrong.
-            let at_heredoc = source[diagnostic.range.0..].get(..2).is_some_and(|s| s == "<<");
+            let at_heredoc = source[range_start..].get(..2).is_some_and(|s| s == "<<");
             if !at_heredoc {
-                let line_end = source[diagnostic.range.0..]
+                let line_end = source[range_start..]
                     .find('\n')
-                    .map(|p| diagnostic.range.0 + p)
+                    .map(|p| range_start + p)
                     .unwrap_or(source.len());
 
                 // Insert before trailing whitespace
                 let mut end_pos = line_end;
-                while end_pos > diagnostic.range.0
-                    && source.as_bytes()[end_pos - 1].is_ascii_whitespace()
+                while end_pos > range_start && source.as_bytes()[end_pos - 1].is_ascii_whitespace()
                 {
                     end_pos -= 1;
                 }
