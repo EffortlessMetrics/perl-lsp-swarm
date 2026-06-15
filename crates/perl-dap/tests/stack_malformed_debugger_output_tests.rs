@@ -806,3 +806,21 @@ fn parse_frame_well_formed_context_format_still_parses() {
     assert_eq!(frame.line, 42);
     assert_eq!(frame.file_path(), Some("script.pl"));
 }
+
+#[test]
+fn parse_stack_trace_skips_blank_file_context_lines() {
+    let mut parser = PerlStackParser::new();
+    // A multi-line trace where one line is the malformed "main:: :42:" format.
+    // parse_stack_trace calls parse_frame which calls build_frame_from_context;
+    // the blank-file guard must silently drop the malformed line and still
+    // return the surrounding well-formed frames.
+    let output = "\
+$ = main::foo() called from file `script.pl' line 10\n\
+main:: :42:\n\
+$ = main::bar() called from file `other.pl' line 20";
+    let frames = parser.parse_stack_trace(output);
+    // Only the two valid frames should appear; the blank-file line is dropped.
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].file_path(), Some("script.pl"));
+    assert_eq!(frames[1].file_path(), Some("other.pl"));
+}
