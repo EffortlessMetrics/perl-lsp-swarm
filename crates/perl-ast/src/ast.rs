@@ -2800,6 +2800,43 @@ mod tests {
         );
     }
 
+    /// Construct recovery variants and return their `kind_name()` strings.
+    ///
+    /// Adding a recovery variant to `NodeKind` without updating `RECOVERY_KIND_NAMES`
+    /// will cause `recovery_kind_names_is_consistent_with_kind_name` to fail.
+    fn recovery_kind_names_from_variants() -> BTreeSet<&'static str> {
+        vec![
+            NodeKind::Error {
+                message: String::new(),
+                expected: vec![],
+                found: None,
+                partial: None,
+            },
+            NodeKind::MissingExpression,
+            NodeKind::MissingStatement,
+            NodeKind::MissingIdentifier,
+            NodeKind::MissingBlock,
+            NodeKind::UnknownRest,
+        ]
+        .iter()
+        .map(|v| v.kind_name())
+        .collect()
+    }
+
+    #[test]
+    fn recovery_kind_names_is_consistent_with_kind_name() {
+        let from_enum = recovery_kind_names_from_variants();
+        let from_const: BTreeSet<&str> = NodeKind::RECOVERY_KIND_NAMES.iter().copied().collect();
+        let only_in_enum: Vec<_> = from_enum.difference(&from_const).collect();
+        let only_in_const: Vec<_> = from_const.difference(&from_enum).collect();
+        assert!(
+            only_in_enum.is_empty() && only_in_const.is_empty(),
+            "RECOVERY_KIND_NAMES is out of sync with recovery variants:\n  \
+             in enum but not in RECOVERY_KIND_NAMES: {only_in_enum:?}\n  \
+             in RECOVERY_KIND_NAMES but not in enum: {only_in_const:?}"
+        );
+    }
+
     #[test]
     fn recovery_kind_names_is_subset_of_all() {
         let all: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();
