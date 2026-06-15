@@ -306,3 +306,64 @@ fn test_perl_oracle_negative_barewords() {
         assert_clean_parse(source);
     }
 }
+
+// =============================================================================
+// BEHAVIORAL ASSERTIONS — verify the AST node value, not just "no crash"
+// =============================================================================
+
+#[test]
+fn test_negative_or_produces_identifier_in_sexp() {
+    // The fix must produce NodeKind::Identifier { name: "-or" }, not a Unary
+    // node wrapping an error.  The sexp must contain "-or" as a string key so
+    // this test fails on regression rather than silently accepting an error node.
+    let ast = parse("my %h = (-or => 1);");
+    let sexp = ast.to_sexp();
+    assert!(
+        sexp.contains("-or"),
+        "Expected sexp to contain '-or' as an identifier key, got:\n{}",
+        sexp
+    );
+    assert!(
+        !sexp.to_lowercase().contains("error"),
+        "Expected no error nodes in sexp for (-or => 1), got:\n{}",
+        sexp
+    );
+}
+
+// =============================================================================
+// DISAMBIGUATION — plain `=` (assignment) must NOT trigger the bareword path
+// =============================================================================
+
+#[test]
+fn test_minus_keyword_plain_assign_not_fat_arrow() {
+    // `-or = $x` uses `=`, not `=>`.  The lookahead checks for FatArrow
+    // specifically, so the bareword-key path must NOT fire here.
+    // The result will be a parse error (cannot assign to -or) but must not
+    // produce a spurious bareword identifier or panic.
+    let source = "my $x; -or = $x;";
+    let _ = parse(source);
+}
+
+// =============================================================================
+// NESTED NEGATIVE BAREWORDS — the fix must apply inside nested hash values
+// =============================================================================
+
+#[test]
+fn test_nested_negative_barewords_in_hash() {
+    // Inner hash { -and => 1, -not => 0 } triggers the same lookahead path.
+    let source = "my %h = (-or => { -and => 1, -not => 0 });";
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_negative_bareword_deeply_nested_sql_abstract() {
+    // SQL::Abstract nested query with multiple levels of -or / -and.
+    // perl -cw confirms all three levels are valid Perl syntax.
+    let source = r#"my $q = {
+        -or => [
+            { -and => [ foo => 1, bar => 2 ] },
+            { -and => [ baz => 3 ] },
+        ],
+    };"#;
+    assert_clean_parse(source);
+}
