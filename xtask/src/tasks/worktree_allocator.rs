@@ -393,4 +393,29 @@ mod tests {
         assert!(candidates.contains("wt-expired-heartbeat-fresh"));
         Ok(())
     }
+
+    #[test]
+    fn force_gc_candidates_includes_all_leases_regardless_of_staleness() -> Result<()> {
+        // When stale_only=false (force-GC / `--all` mode), every lease is a
+        // candidate regardless of heartbeat or expiry times.
+        let fixture = include_str!("../../tests/fixtures/worktree-allocator/gc-stale.json");
+        let state: LeaseState = serde_json::from_str(fixture)?;
+        // Use a "now" where wt-fresh-1 would NOT be stale under stale_only=true.
+        let now = DateTime::parse_from_rfc3339("2026-04-30T12:00:00Z")?.with_timezone(&Utc);
+        let cutoff = DateTime::parse_from_rfc3339("2026-04-30T00:00:00Z")?.with_timezone(&Utc);
+        let candidates = gc_candidates(&state, false, cutoff, now);
+        // All 3 leases must appear — the fresh one is included in force-GC mode.
+        assert_eq!(
+            candidates.len(),
+            state.leases.len(),
+            "force-GC (stale_only=false) must return all leases"
+        );
+        assert!(candidates.contains("wt-stale-1"));
+        assert!(
+            candidates.contains("wt-fresh-1"),
+            "fresh lease must be included when stale_only=false"
+        );
+        assert!(candidates.contains("wt-expired-heartbeat-fresh"));
+        Ok(())
+    }
 }
