@@ -1512,14 +1512,17 @@ fn count_nodes_nested_tree() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn kind_name_covers_all_variants() -> Result<(), Box<dyn std::error::Error>> {
-    // Verify ALL_KIND_NAMES is populated and sorted
+    // Verify ALL_KIND_NAMES is populated (auto-derived via strum::VariantNames —
+    // declaration order, not alphabetical).
     assert!(!NodeKind::ALL_KIND_NAMES.is_empty());
-    let sorted: Vec<&str> = {
-        let mut v: Vec<&str> = NodeKind::ALL_KIND_NAMES.to_vec();
-        v.sort();
-        v
-    };
-    assert_eq!(NodeKind::ALL_KIND_NAMES, sorted.as_slice(), "ALL_KIND_NAMES should be sorted");
+    // Verify no duplicates
+    let unique: std::collections::BTreeSet<&str> =
+        NodeKind::ALL_KIND_NAMES.iter().copied().collect();
+    assert_eq!(
+        NodeKind::ALL_KIND_NAMES.len(),
+        unique.len(),
+        "ALL_KIND_NAMES should have no duplicates"
+    );
     Ok(())
 }
 

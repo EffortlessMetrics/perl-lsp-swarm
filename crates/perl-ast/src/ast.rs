@@ -106,6 +106,7 @@ pub use perl_position_tracking::SourceLocation;
 // Re-export Token and TokenKind from perl-token for AST error nodes
 pub use perl_token::{Token, TokenKind};
 use std::fmt;
+use strum::VariantNames as _;
 
 /// Core AST node representing any Perl language construct within parsing workflows.
 ///
@@ -1567,7 +1568,7 @@ impl Node {
 /// - Vector storage enables efficient bulk operations on child nodes
 /// - Clone operations optimized for concurrent analysis workflows
 /// - Pattern matching performance tuned for common Perl constructs
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, strum::VariantNames)]
 pub enum NodeKind {
     /// Top-level program containing all statements in an Perl script
     ///
@@ -2325,82 +2326,14 @@ impl NodeKind {
         }
     }
 
-    /// Canonical list of **all** `kind_name()` strings, in alphabetical order.
+    /// Canonical list of **all** `kind_name()` strings, in declaration order.
+    ///
+    /// Auto-derived from the `NodeKind` enum via `strum::VariantNames` — adding a new
+    /// variant automatically updates this list. No manual maintenance required.
     ///
     /// Every consumer that needs the full set of NodeKind names should reference
     /// this constant instead of maintaining a hand-written copy.
-    pub const ALL_KIND_NAMES: &[&'static str] = &[
-        "ArrayLiteral",
-        "Assignment",
-        "Binary",
-        "Block",
-        "Class",
-        "DataSection",
-        "Default",
-        "Defer",
-        "Diamond",
-        "Do",
-        "Ellipsis",
-        "Error",
-        "Eval",
-        "ExpressionStatement",
-        "For",
-        "Foreach",
-        "Format",
-        "FunctionCall",
-        "Given",
-        "Glob",
-        "Goto",
-        "HashLiteral",
-        "Heredoc",
-        "Identifier",
-        "If",
-        "IndirectCall",
-        "LabeledStatement",
-        "LoopControl",
-        "MandatoryParameter",
-        "Match",
-        "Method",
-        "MethodCall",
-        "MissingBlock",
-        "MissingExpression",
-        "MissingIdentifier",
-        "MissingStatement",
-        "NamedParameter",
-        "NestedVariableList",
-        "No",
-        "Number",
-        "OptionalParameter",
-        "Package",
-        "PhaseBlock",
-        "Program",
-        "Prototype",
-        "Readline",
-        "Regex",
-        "Return",
-        "Signature",
-        "SlurpyParameter",
-        "StatementModifier",
-        "String",
-        "Subroutine",
-        "Substitution",
-        "Ternary",
-        "Tie",
-        "Transliteration",
-        "Try",
-        "Typeglob",
-        "Unary",
-        "Undef",
-        "UnknownRest",
-        "Untie",
-        "Use",
-        "Variable",
-        "VariableDeclaration",
-        "VariableListDeclaration",
-        "VariableWithAttributes",
-        "When",
-        "While",
-    ];
+    pub const ALL_KIND_NAMES: &[&'static str] = NodeKind::VARIANTS;
 
     /// Subset of `ALL_KIND_NAMES` that represent synthetic/recovery nodes.
     ///
