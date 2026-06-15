@@ -154,14 +154,24 @@ mod tests {
     // ── apply_brace_delta negative delta ─────────────────────────────────────
 
     #[test]
-    fn apply_brace_delta_saturates_at_zero_on_close() {
+    fn apply_brace_delta_decrements_depth_on_close() {
         let mut scope = PrintAllowScope::default();
         scope.note_attribute();
-        scope.observe_line("fn foo() {");    // depth = 1
-        scope.observe_line("}");             // depth → 0
+        scope.observe_line("fn foo() {");    // pending_attr consumed; depth = 1
+        assert_eq!(scope.active_brace_depth, 1);
+        scope.observe_line("}");             // apply_brace_delta: depth → 0
         assert_eq!(scope.active_brace_depth, 0);
-        // A second close should saturate at 0, not underflow.
-        scope.observe_line("}");
+    }
+
+    #[test]
+    fn apply_brace_delta_saturates_at_zero_on_excess_closes() {
+        let mut scope = PrintAllowScope::default();
+        scope.note_attribute();
+        // Open two braces in a single line.
+        scope.observe_line("fn foo() { if true {");   // depth = 2
+        assert_eq!(scope.active_brace_depth, 2);
+        // Close three braces — more than the depth; should saturate at 0.
+        scope.observe_line("} } }");                   // depth → 0, not underflow
         assert_eq!(scope.active_brace_depth, 0);
     }
 
