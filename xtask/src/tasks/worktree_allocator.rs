@@ -379,13 +379,18 @@ mod tests {
         let fixture = include_str!("../../tests/fixtures/worktree-allocator/gc-stale.json");
         let state: LeaseState = serde_json::from_str(fixture)?;
         // Use a fixed reference time so this test does not become a date-bomb.
-        // wt-stale-1: heartbeat=2026-04-29, expiry=2026-04-29 → both before now → stale
-        // wt-fresh-1: heartbeat=2026-04-30T12:00, expiry=2026-05-01 → expiry after now → fresh
+        // wt-stale-1:              heartbeat=2026-04-29, expiry=2026-04-29 → both before now → stale
+        // wt-fresh-1:              heartbeat=2026-04-30T12:00, expiry=2026-05-01 → expiry after now → fresh
+        // wt-expired-heartbeat-fresh: heartbeat=2026-04-30T11:00 (fresh), expiry=2026-04-29 (past) → stale via expiry
         let now = DateTime::parse_from_rfc3339("2026-04-30T12:00:00Z")?.with_timezone(&Utc);
         let cutoff = DateTime::parse_from_rfc3339("2026-04-30T00:00:00Z")?.with_timezone(&Utc);
         let candidates = gc_candidates(&state, true, cutoff, now);
+        // Heartbeat stale (and expiry past) -> stale
         assert!(candidates.contains("wt-stale-1"));
+        // Heartbeat fresh, expiry future -> not stale
         assert!(!candidates.contains("wt-fresh-1"));
+        // Heartbeat fresh but expiry past -> stale (expiry condition fires)
+        assert!(candidates.contains("wt-expired-heartbeat-fresh"));
         Ok(())
     }
 }
