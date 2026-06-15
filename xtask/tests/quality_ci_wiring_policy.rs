@@ -87,9 +87,6 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "Create legacy LSP fixtures (CI-only)",
     ] {
         let step = must_some(workflow_step(coverage_job, setup_step));
-        if setup_step == "Install Rust" {
-            panic!("DEBUG STEP CONTENT:\n{}\n---END---", &step[..step.len().min(500)]);
-        }
         assert!(
             step.contains("merge_group")
                 && step.contains("pull_request")
