@@ -138,9 +138,8 @@ mod integration_tests {
 
     /// Test LSP end-to-end functionality after module restoration
     #[test]
-    #[ignore = "lsp_comprehensive_e2e_test.rs is disabled (.disabled suffix) and the package \
-                was renamed perl-lsp → perl-lsp-rs; retire or replace when the e2e suite is \
-                re-enabled (see issue #1226)"]
+    #[ignore = "this test invokes `cargo test --package perl-lsp` but the package was renamed \
+                to perl-lsp-rs; retire or replace when the e2e suite is re-enabled (see issue #1226)"]
     fn test_lsp_e2e_with_restored_modules() {
         // This test validates that LSP functionality works correctly
         // after tdd_workflow.rs and refactoring.rs are restored
