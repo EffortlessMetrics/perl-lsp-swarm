@@ -1959,4 +1959,38 @@ mod tests {
         }
         Ok(())
     }
+
+    // ── #1470 classify_patch_coverage_failure + test_failure_class tests ────
+    // Direct lib tests for new functions added in PR #1470. These give ripr
+    // direct oracle observability for the classify_patch_coverage_failure
+    // function and the test_failure_class / failure_class receipt fields.
+
+    #[test]
+    fn classify_patch_coverage_failure_returns_pass_when_not_failed() {
+        let result = classify_patch_coverage_failure(false, &[]);
+        assert_eq!(result, "pass");
+    }
+
+    #[test]
+    fn classify_patch_coverage_failure_returns_coverage_shortfall_when_below_target() {
+        let actions = vec![json!({"kind": "patch_coverage_below_target", "blocking": true})];
+        let result = classify_patch_coverage_failure(true, &actions);
+        assert_eq!(result, "coverage_shortfall");
+    }
+
+    #[test]
+    fn classify_patch_coverage_failure_returns_coverage_shortfall_for_unknown_coverage() {
+        let actions = vec![json!({"kind": "patch_coverage_unknown", "blocking": true})];
+        let result = classify_patch_coverage_failure(true, &actions);
+        assert_eq!(result, "coverage_shortfall");
+    }
+
+    #[test]
+    fn classify_patch_coverage_failure_returns_setup_failure_for_other_failures() {
+        // A failure that is not coverage_shortfall or patch_coverage_unknown
+        // should be classified as setup_failure.
+        let actions = vec![json!({"kind": "stale_receipt", "blocking": true})];
+        let result = classify_patch_coverage_failure(true, &actions);
+        assert_eq!(result, "setup_failure");
+    }
 }
