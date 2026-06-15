@@ -68,7 +68,7 @@ Merge up to 3 PRs from the candidates identified in step 1.
      gh issue edit "$CLOSING_ISSUE" --remove-label "in-build"
    fi
    ```
-   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:<number>)` → `.state` for merge verification. For label removal: read current labels with `pull_request_read`, then write back the filtered list with `mcp__github__issue_write(method:"update", issue_number:<number>, labels:[...current minus removed label])`. Note: `issue_write` labels field replaces the full list — always read current labels first before writing.
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:<number>)` → `.state` for merge verification. For label removal: read current labels with `pull_request_read`, then write back the filtered list with `mcp__github__issue_write(method:"update", issue_number:<number>, labels:[...current minus removed label])`. Note: `issue_write` labels field replaces the full list — always read current labels first before writing. For the closing issue lookup: `mcp__github__pull_request_read(method:"get")` does not return `closingIssuesReferences` — scan the PR body text for "closes #NNN"/"fixes #NNN" patterns to extract the linked issue number, then remove `in-build` from that issue via `mcp__github__issue_write`.
    Label cleanup prevents stale `merge-ready`, `deep-reviewed`, and `in-build` labels from
    misleading future orchestrator queries.
 

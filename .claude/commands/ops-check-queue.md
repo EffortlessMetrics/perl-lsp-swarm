@@ -31,6 +31,7 @@ gh pr list --search "closes #<number>" --state open --json number,title
 Classify and act:
 - **Has open PR**: skip — builder is active.
 - **No open PR, > 7 days stale**: remove `in-build` label and add a comment: `in-build label removed — no linked PR after 7 days; issue returned to queue`.
+  > **MCP alternative (web/no-gh sessions):** Read current labels with `mcp__github__issue_read(method:"get_labels", issue_number:<number>)`, then write back without `in-build` via `mcp__github__issue_write(method:"update", issue_number:<number>, labels:[...current minus "in-build"])`. Post comment with `mcp__github__add_issue_comment(issue_number:<number>, body:"in-build label removed — no linked PR after 7 days; issue returned to queue")`. Note: `issue_write` labels field replaces the full list — always read current labels first before writing.
 
 1. List all open PRs with their merge state:
    ```bash
