@@ -2818,4 +2818,127 @@ mod tests {
             "RECOVERY_KIND_NAMES contains entries not in ALL_KIND_NAMES: {not_in_all:?}"
         );
     }
+
+    #[test]
+    fn all_kind_names_not_empty() {
+        // Regression guard: ALL_KIND_NAMES should always be populated
+        assert!(
+            !NodeKind::ALL_KIND_NAMES.is_empty(),
+            "ALL_KIND_NAMES should not be empty; strum derivation failed"
+        );
+    }
+
+    #[test]
+    fn all_kind_names_no_empty_strings() {
+        // Boundary condition: no entry should be an empty string
+        for (i, name) in NodeKind::ALL_KIND_NAMES.iter().enumerate() {
+            assert!(
+                !name.is_empty(),
+                "ALL_KIND_NAMES[{}] is empty string",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn all_kind_names_starts_with_program() {
+        // Regression guard: first variant is Program (declaration order invariant)
+        assert_eq!(
+            NodeKind::ALL_KIND_NAMES.first(),
+            Some(&"Program"),
+            "First variant in ALL_KIND_NAMES should be 'Program' (declaration order)"
+        );
+    }
+
+    #[test]
+    fn all_kind_names_ends_with_unknown_rest() {
+        // Regression guard: last variant is UnknownRest (declaration order invariant)
+        assert_eq!(
+            NodeKind::ALL_KIND_NAMES.last(),
+            Some(&"UnknownRest"),
+            "Last variant in ALL_KIND_NAMES should be 'UnknownRest' (declaration order)"
+        );
+    }
+
+    #[test]
+    fn all_kind_names_length_matches_variants() {
+        // Regression guard: catch missing/extra variants at enum modification time
+        // ALL_KIND_NAMES must always equal the strum VARIANTS count
+        let variants_count = all_kind_names_from_variants().len();
+        assert_eq!(
+            NodeKind::ALL_KIND_NAMES.len(),
+            variants_count,
+            "ALL_KIND_NAMES length ({}) does not match variant count ({}); \
+             a NodeKind variant was added/removed without updating the enum derivation",
+            NodeKind::ALL_KIND_NAMES.len(),
+            variants_count
+        );
+    }
+
+    #[test]
+    fn all_kind_names_valid_kind_names() {
+        // Regression guard: every string in ALL_KIND_NAMES is a valid kind_name() output
+        for (i, name) in NodeKind::ALL_KIND_NAMES.iter().enumerate() {
+            let found = all_kind_names_from_variants().contains(name);
+            assert!(
+                found,
+                "ALL_KIND_NAMES[{}] = '{}' is not a valid kind_name() return value",
+                i,
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn all_kind_names_exact_match_with_variants_set() {
+        // Regression guard: ALL_KIND_NAMES contains exactly the same names as all variants
+        let from_enum = all_kind_names_from_variants();
+        let from_const: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();
+
+        assert_eq!(
+            from_enum, from_const,
+            "ALL_KIND_NAMES set does not match variant kind_names"
+        );
+    }
+
+    #[test]
+    fn kind_name_for_every_variant_in_all_kind_names() {
+        // Integration: for each name in ALL_KIND_NAMES, verify it comes from calling
+        // kind_name() on a valid variant. This ensures the strum derivation is correct.
+        let variant_names = all_kind_names_from_variants();
+        let all_names_set: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();
+
+        for name in &variant_names {
+            assert!(
+                all_names_set.contains(name),
+                "kind_name() returned '{}', but it's not in ALL_KIND_NAMES",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn all_kind_names_no_whitespace_padding() {
+        // Boundary condition: no leading/trailing whitespace in variant names
+        for (i, name) in NodeKind::ALL_KIND_NAMES.iter().enumerate() {
+            assert_eq!(
+                *name,
+                name.trim(),
+                "ALL_KIND_NAMES[{}] = '{}' has leading/trailing whitespace",
+                i,
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn all_kind_names_strum_derived_stability() {
+        // Regression guard: verify VARIANTS (from strum) equals ALL_KIND_NAMES
+        // This ensures the strum derivation is still being used correctly
+        assert_eq!(
+            NodeKind::VARIANTS,
+            NodeKind::ALL_KIND_NAMES,
+            "NodeKind::VARIANTS (from strum) should equal ALL_KIND_NAMES"
+        );
+    }
 }
