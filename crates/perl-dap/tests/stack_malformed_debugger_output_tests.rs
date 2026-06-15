@@ -736,3 +736,45 @@ fn parse_context_package_func_paren_format_not_matched() {
     let result = parser.parse_context("My::Mod::handler(lib/My/Mod.pm:42):");
     assert!(result.is_none());
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  9. Adversarial: blank/whitespace file in parse_context (#1497 regression)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn parse_context_blank_file_capture_returns_none() {
+    let parser = PerlStackParser::new();
+    // "main:: :42:" — regex matches but file capture is a single space; must reject
+    assert!(parser.parse_context("main:: :42:").is_none());
+    // Tab-only file token
+    assert!(parser.parse_context("main::\t:42:").is_none());
+}
+
+#[test]
+fn parse_context_whitespace_only_file_returns_none() {
+    let parser = PerlStackParser::new();
+    // Multiple spaces where the filename should be
+    assert!(parser.parse_context("main::   :42:").is_none());
+}
+
+#[test]
+fn parse_context_well_formed_paren_format_still_parses() {
+    use perl_tdd_support::must_some;
+    let parser = PerlStackParser::new();
+    // Regression guard: ensure the blank-file guard does not reject valid parens format
+    let (func, file, line) = must_some(parser.parse_context("main::(script.pl):99:"));
+    assert_eq!(func, "main");
+    assert_eq!(file, "script.pl");
+    assert_eq!(line, 99);
+}
+
+#[test]
+fn parse_context_well_formed_no_paren_format_still_parses() {
+    use perl_tdd_support::must_some;
+    let parser = PerlStackParser::new();
+    // Regression guard: "main::file.pl:42:" (no-paren context format) must still parse
+    let (func, file, line) = must_some(parser.parse_context("main::script.pl:42:"));
+    assert_eq!(func, "main");
+    assert_eq!(file, "script.pl");
+    assert_eq!(line, 42);
+}
