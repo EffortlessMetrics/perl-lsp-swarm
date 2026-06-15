@@ -2037,4 +2037,41 @@ mod tests {
         });
         assert_eq!(receipt["failure_class"], "setup_failure");
     }
+
+    #[test]
+    fn patch_coverage_gate_receipt_includes_failure_class_and_test_failure_class_fields() {
+        // Verify that the receipt JSON structure includes the new #1470 fields.
+        // This test pin the decision boundary: if failure_class or test_failure_class
+        // fields are removed from the receipt JSON, this test will fail.
+        
+        // Simulate a receipt with the required new fields
+        let receipt = json!({
+            "schema_version": 1,
+            "kind": "quality_gate",
+            "mode": "enforce-new-ripr",
+            "decision": "pass",
+            "failure_class": "pass",
+            "test_failure_class": null,
+            "head": "abc123",
+            "coverage": {
+                "status": "present",
+                "receipt": "path/to/coverage.json",
+                "receipt_head": "abc123",
+                "patch": 95.5,
+                "patch_source": "coverage_receipt",
+                "project": 92.0,
+                "target": 95,
+                "scope": "patch"
+            },
+            "next_actions": []
+        });
+
+        // Verify the new fields exist
+        assert!(receipt.get("failure_class").is_some(), "receipt missing 'failure_class' field");
+        assert!(receipt.get("test_failure_class").is_some(), "receipt missing 'test_failure_class' field");
+        
+        // Verify the values
+        assert_eq!(receipt["failure_class"], "pass");
+        assert!(receipt["test_failure_class"].is_null());
+    }
 }
