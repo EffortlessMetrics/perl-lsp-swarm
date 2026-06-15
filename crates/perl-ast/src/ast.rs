@@ -2832,11 +2832,7 @@ mod tests {
     fn all_kind_names_no_empty_strings() {
         // Boundary condition: no entry should be an empty string
         for (i, name) in NodeKind::ALL_KIND_NAMES.iter().enumerate() {
-            assert!(
-                !name.is_empty(),
-                "ALL_KIND_NAMES[{}] is empty string",
-                i
-            );
+            assert!(!name.is_empty(), "ALL_KIND_NAMES[{}] is empty string", i);
         }
     }
 
@@ -2868,8 +2864,7 @@ mod tests {
             assert!(
                 found,
                 "ALL_KIND_NAMES[{}] = '{}' is not a valid kind_name() return value",
-                i,
-                name
+                i, name
             );
         }
     }
@@ -2880,10 +2875,7 @@ mod tests {
         let from_enum = all_kind_names_from_variants();
         let from_const: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();
 
-        assert_eq!(
-            from_enum, from_const,
-            "ALL_KIND_NAMES set does not match variant kind_names"
-        );
+        assert_eq!(from_enum, from_const, "ALL_KIND_NAMES set does not match variant kind_names");
     }
 
     #[test]
