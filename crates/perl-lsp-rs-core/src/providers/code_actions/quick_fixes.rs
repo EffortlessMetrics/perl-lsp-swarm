@@ -735,6 +735,135 @@ mod tests {
         let actions = fix_parse_error(source, &diagnostic, "parse-error-missingsemicolon");
         assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
     }
+
+    // --- acceptance-path (ACCEPT): valid multibyte char-boundary ranges produce real actions ---
+    // These tests verify the ACCEPT branch of valid_diagnostic_range: when both start and end
+    // land on UTF-8 char boundaries (even in non-ASCII source), the guard passes through and
+    // the function returns a non-empty Vec<CodeAction>.
+
+    #[test]
+    fn fix_unused_variable_accept_valid_multibyte_range() {
+        // Source contains U+00E9 (é, 2 bytes) after the variable name.
+        // The diagnostic range covers '$x' at ASCII offsets — both boundaries are char boundaries.
+        let source = "my $x = \"\u{e9}\";\n";
+        let start = must_some(source.find("$x"));
+        let end = start + "$x".len();
+        let diagnostic = diagnostic_for((start, end), "Unused variable '$x'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(!actions.is_empty(), "valid char-boundary range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_assignment_in_condition_accept_valid_multibyte_range() {
+        // Source contains U+00E9 around the assignment; diagnostic range covers '= 1' at
+        // ASCII-boundary positions so the guard must pass and return actions.
+        let source = "if (\u{e9}var = 1) {}\n";
+        // Find the '= 1' segment — the '=' sign is at an ASCII byte, so boundaries are valid.
+        let eq_pos = must_some(source.find('='));
+        let end = eq_pos + "= 1".len();
+        let diagnostic = diagnostic_for((eq_pos, end), "Assignment in condition");
+        let actions = fix_assignment_in_condition(source, &diagnostic);
+        assert!(!actions.is_empty(), "valid char-boundary range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_numeric_undef_accept_valid_multibyte_range() {
+        // Source has U+00E9 but the diagnostic range is over pure ASCII.
+        let source = "\"\u{e9}\" == undef;\n";
+        // U+00E9 is 2 bytes; the '==' sign starts at byte 4.
+        let eq_pos = must_some(source.find("=="));
+        let end = eq_pos + "== undef".len();
+        let diagnostic = diagnostic_for((eq_pos, end), "Numeric comparison with undef");
+        let actions = fix_numeric_undef(source, &diagnostic);
+        assert!(!actions.is_empty(), "valid char-boundary range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_bareword_accept_valid_multibyte_range() {
+        // Source has U+00E9 before a bareword; diagnostic range covers only the ASCII bareword.
+        let source = "\u{e9}word;\n";
+        // U+00E9 is 2 bytes at offsets 0-1; 'word' starts at byte 2.
+        let word_start = 2usize;
+        let word_end = word_start + "word".len();
+        assert!(source.is_char_boundary(word_start), "word_start must be a char boundary");
+        assert!(source.is_char_boundary(word_end), "word_end must be a char boundary");
+        let diagnostic =
+            diagnostic_for((word_start, word_end), "Bareword found where string expected");
+        let actions = fix_bareword(source, &diagnostic);
+        assert!(!actions.is_empty(), "valid char-boundary range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_unused_variable_accept_multibyte_on_char_boundary() {
+        // Range covers the entire U+1F600 emoji (4 bytes) at char-boundary offsets.
+        // Verifies that a valid full-char non-ASCII range is accepted and produces actions.
+        let source = "my $emoji = \"\u{1F600}\";\n";
+        let emoji_start = must_some(source.find('\u{1F600}'));
+        let emoji_end = emoji_start + '\u{1F600}'.len_utf8(); // 4 bytes, valid char boundary
+        assert!(source.is_char_boundary(emoji_start));
+        assert!(source.is_char_boundary(emoji_end));
+        // Use the variable name range ($emoji) as the diagnostic range — char boundaries.
+        let var_start = must_some(source.find("$emoji"));
+        let var_end = var_start + "$emoji".len();
+        let diagnostic = diagnostic_for((var_start, var_end), "Unused variable '$emoji'");
+        let actions = fix_unused_variable(source, &diagnostic);
+        assert!(!actions.is_empty(), "char-boundary emoji range must return non-empty actions");
+    }
+
+    #[test]
+    fn fix_native_undef_comparison_empty_on_non_char_boundary_range() {
+        let source = "\"\u{e9}\" == undef;\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic =
+            diagnostic_for((char_start + 1, char_start + 2), "Native undef comparison");
+        let actions = fix_native_undef_comparison(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
+
+    #[test]
+    fn fix_bareword_uppercase_accept_valid_multibyte_range_declares_filehandle() {
+        let source = "\u{e9}\nFH;\n";
+        let start = must_some(source.find("FH"));
+        let end = start + "FH".len();
+        let diagnostic = diagnostic_for((start, end), "Bareword found where string expected");
+        let actions = fix_bareword(source, &diagnostic);
+        let filehandle =
+            must_some(actions.iter().find(|action| action.title.contains("filehandle")));
+        assert_eq!(filehandle.edit.changes[0].new_text, "open my $FH; \n");
+    }
+
+    #[test]
+    fn fix_parse_error_missingsemicolon_accept_valid_multibyte_range() {
+        let source = "my $x = \"\u{e9}\"   \n";
+        let diagnostic = diagnostic_for((0, source.len()), "Missing semicolon");
+        let actions = fix_parse_error(source, &diagnostic, "parse-error-missingsemicolon");
+        let action = must_some(actions.first());
+        let edit = &action.edit.changes[0];
+        assert_eq!(edit.new_text, ";");
+        assert_eq!(edit.location.start, must_some(source.find("   ")));
+        assert_eq!(edit.location.end, edit.location.start);
+    }
+
+    #[test]
+    fn fix_parse_error_pl001_missingsemicolon_accept_valid_multibyte_range() {
+        let source = "my $x = \"\u{e9}\"   \n";
+        let diagnostic = diagnostic_for((0, source.len()), "Missing semicolon near end of line");
+        let actions = fix_parse_error(source, &diagnostic, "PL001");
+        let action = must_some(actions.first());
+        let edit = &action.edit.changes[0];
+        assert_eq!(edit.new_text, ";");
+        assert_eq!(edit.location.start, must_some(source.find("   ")));
+        assert_eq!(edit.location.end, edit.location.start);
+    }
+
+    #[test]
+    fn fix_variable_redeclaration_empty_on_non_char_boundary_range() {
+        let source = "my \u{e9} = 1;\n";
+        let char_start = must_some(source.find('\u{e9}'));
+        let diagnostic = diagnostic_for((char_start + 1, char_start + 2), "Variable redeclared");
+        let actions = fix_variable_redeclaration(source, &diagnostic);
+        assert!(actions.is_empty(), "non-char-boundary range must return empty actions");
+    }
 }
 
 /// Fix assignment in condition

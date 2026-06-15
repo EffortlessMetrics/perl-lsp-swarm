@@ -165,9 +165,10 @@ mod tests {
     #[test]
     fn get_indent_at_mid_emoji_does_not_panic() {
         // U+1F600 (😀) encodes to 4 bytes: F0 9F 98 80.
-        // Offset 2 lands mid-char and must not panic.
         let src = "    \u{1F600}";
-        assert_eq!(get_indent_at(src, 2), "    ");
+        let emoji_start = 4;
+        // Offset one byte into the emoji lands mid-char and must not panic.
+        assert_eq!(get_indent_at(src, emoji_start + 1), "    ");
     }
 
     #[test]
