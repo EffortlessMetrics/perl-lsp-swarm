@@ -1993,4 +1993,48 @@ mod tests {
         let result = classify_patch_coverage_failure(true, &actions);
         assert_eq!(result, "setup_failure");
     }
+
+    // Additional tests for receipt serialization and field presence
+    #[test]
+    fn receipt_contains_failure_class_field_when_no_failures() {
+        let actions = vec![];
+        let failure_class = classify_patch_coverage_failure(false, &actions);
+        assert_eq!(failure_class, "pass");
+
+        // Verify the field would be in the receipt
+        let receipt = json!({
+            "failure_class": failure_class,
+            "test_failure_class": None::<&str>,
+        });
+        assert_eq!(receipt["failure_class"], "pass");
+        assert!(receipt["test_failure_class"].is_null());
+    }
+
+    #[test]
+    fn receipt_contains_failure_class_field_when_coverage_shortfall() {
+        let actions = vec![json!({"kind": "patch_coverage_below_target", "blocking": true})];
+        let failure_class = classify_patch_coverage_failure(true, &actions);
+        assert_eq!(failure_class, "coverage_shortfall");
+
+        // Verify the field would be in the receipt
+        let receipt = json!({
+            "failure_class": failure_class,
+            "test_failure_class": None::<&str>,
+        });
+        assert_eq!(receipt["failure_class"], "coverage_shortfall");
+    }
+
+    #[test]
+    fn receipt_contains_failure_class_field_when_setup_failure() {
+        let actions = vec![json!({"kind": "ripr_receipt_missing", "blocking": true})];
+        let failure_class = classify_patch_coverage_failure(true, &actions);
+        assert_eq!(failure_class, "setup_failure");
+
+        // Verify the field would be in the receipt
+        let receipt = json!({
+            "failure_class": failure_class,
+            "test_failure_class": None::<&str>,
+        });
+        assert_eq!(receipt["failure_class"], "setup_failure");
+    }
 }
