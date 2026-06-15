@@ -56,6 +56,14 @@ fn run_forbid_fatal_constructs(repo: &Path) -> TestResult<Output> {
     Ok(Command::new(bin).arg("forbid-fatal-constructs").current_dir(repo).output()?)
 }
 
+fn run_forbid_fatal_constructs_verbose(repo: &Path) -> TestResult<Output> {
+    let bin = perl_ci_hygiene_binary()?;
+    Ok(Command::new(bin)
+        .args(["forbid-fatal-constructs", "--verbose"])
+        .current_dir(repo)
+        .output()?)
+}
+
 /// Verifies that clean production code (no abort/exit) passes the check.
 #[test]
 fn forbid_fatal_constructs_passes_clean_code() -> TestResult {
@@ -183,6 +191,58 @@ fn forbid_fatal_constructs_ignores_test_directories() -> TestResult {
         out.status.code(),
         Some(0),
         "abort() in tests/ should be excluded from the scan\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    Ok(())
+}
+
+/// Verifies that --verbose prints the policy summary when the check passes.
+/// Covers the report_success() code path (lines 105-115 in fatal_constructs.rs).
+#[test]
+fn forbid_fatal_constructs_verbose_prints_policy_summary() -> TestResult {
+    let repo = TempRepo::new("verbose-clean")?;
+    repo.write_crate_src("my-crate", "lib.rs", "pub fn safe() {}\n")?;
+
+    let out = run_forbid_fatal_constructs_verbose(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "verbose clean code should pass\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No forbidden fatal constructs"),
+        "verbose output should mention success\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("abort()") && stdout.contains("exit()"),
+        "verbose output should print policy summary\nstdout: {stdout}"
+    );
+    Ok(())
+}
+
+/// Verifies that non-Rust files inside the crates directory are skipped.
+/// Covers the file-extension filter branch (line 27 in fatal_constructs.rs).
+#[test]
+fn forbid_fatal_constructs_skips_non_rust_files() -> TestResult {
+    let repo = TempRepo::new("non-rs-files")?;
+    // A clean .rs file so the check runs at all.
+    repo.write_crate_src("my-crate", "lib.rs", "pub fn safe() {}\n")?;
+    // A non-.rs file that contains the forbidden pattern — must be ignored.
+    let src = repo.path().join("crates").join("my-crate").join("src");
+    fs::write(
+        src.join("README.md"),
+        "Do not call std::process::abort() here.\n",
+    )?;
+
+    let out = run_forbid_fatal_constructs(repo.path())?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "abort pattern in a .md file should be ignored\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
