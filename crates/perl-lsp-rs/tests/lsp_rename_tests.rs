@@ -869,3 +869,114 @@ fn test_workspace_rename_workspace_edit_rolls_back_cleanly() -> TestResult {
 
     Ok(())
 }
+
+/// Test that renaming a subroutine to a reserved Perl keyword is rejected.
+///
+/// Reserved keywords like `if`, `while`, `for`, `sub`, `package` are not valid
+/// identifiers for subroutine names — renaming to them would produce invalid Perl syntax.
+#[test]
+fn test_rename_subroutine_to_keyword_fails() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///test_rename_sub_to_keyword.pl";
+    harness.open(
+        doc_uri,
+        r#"sub foo {
+    return 1;
+}
+
+my $x = foo();
+"#,
+    )?;
+
+    // Cursor on `foo` declaration (line 0, character 4); request rename to `if`.
+    let result = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 },
+            "newName": "if"
+        }),
+    );
+
+    match result {
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("keyword") || msg.contains("reserved") || msg.contains("32602"),
+                "renaming to reserved keyword 'if' should error with keyword rejection, got: {msg}"
+            );
+        }
+        Ok(response) => {
+            // If the server accepted it (no error), edits must not contain the keyword `if`.
+            if let Some(changes) = response.get("changes").and_then(|v| v.as_object()) {
+                for (_uri, edits) in changes {
+                    if let Some(arr) = edits.as_array() {
+                        for edit in arr {
+                            let new_text = edit["newText"].as_str().unwrap_or("");
+                            assert_ne!(
+                                new_text, "if",
+                                "renaming to 'if' (reserved keyword) must not produce edits with that keyword"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Test that renaming a variable to a reserved keyword is also rejected (Phase 1 global rule).
+#[test]
+fn test_rename_variable_to_keyword_fails() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///test_rename_var_to_keyword.pl";
+    harness.open(
+        doc_uri,
+        r#"my $count = 0;
+print $count;
+"#,
+    )?;
+
+    // Cursor on `$count` (line 0, character 4); request rename to `$while`.
+    let result = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 },
+            "newName": "$while"
+        }),
+    );
+
+    match result {
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("keyword") || msg.contains("reserved") || msg.contains("32602"),
+                "renaming to reserved keyword 'while' should error, got: {msg}"
+            );
+        }
+        Ok(response) => {
+            if let Some(changes) = response.get("changes").and_then(|v| v.as_object()) {
+                for (_uri, edits) in changes {
+                    if let Some(arr) = edits.as_array() {
+                        for edit in arr {
+                            let new_text = edit["newText"].as_str().unwrap_or("");
+                            assert!(
+                                !new_text.contains("while"),
+                                "keyword rename must not produce edits containing 'while', got: {new_text}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}

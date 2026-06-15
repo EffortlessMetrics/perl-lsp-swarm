@@ -13,6 +13,7 @@ use super::super::*;
 use crate::protocol::{req_position, req_uri};
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use perl_lexer::is_rename_keyword;
 #[cfg(feature = "workspace")]
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
@@ -568,6 +569,14 @@ impl LspServer {
                     });
                 }
 
+                if is_rename_keyword(&bare_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!("Cannot rename to reserved keyword: {}", bare_name),
+                        data: None,
+                    });
+                }
+
                 Ok(format!("{}{}", sigil, bare_name))
             }
             None => {
@@ -578,6 +587,15 @@ impl LspServer {
                         data: None,
                     });
                 }
+
+                if is_rename_keyword(requested_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!("Cannot rename to reserved keyword: {}", requested_name),
+                        data: None,
+                    });
+                }
+
                 Ok(requested_name.to_string())
             }
         }
