@@ -18,9 +18,10 @@ name: Post-Merge Corpus Ratchet
 #   and timed out again — a self-reinforcing vicious cycle.
 #
 #   Fix: split into separate actions/cache/restore + actions/cache/save steps.
-#   The save step runs immediately after a successful install (if: always(),
-#   filtered to install success) — before any downstream ratchet/sweep step
-#   can fail. One successful install permanently warm-starts all future runs.
+#   The save step runs immediately after a successful install
+#   (`if: steps.cpan-install.outcome == 'success'`) — before any downstream
+#   ratchet/sweep step can fail. One successful install permanently warm-starts
+#   all future runs.
 #
 # TIMEOUT HEADROOM (#1505):
 #   Raised from 45 min to 120 min to allow a cold seed install to complete
@@ -103,7 +104,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
+          # Shallow clone sufficient for the bounded sweep — no git commit step.
+          fetch-depth: 1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable (master)
