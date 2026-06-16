@@ -1351,6 +1351,14 @@ impl ScopeAnalyzer {
                         return true;
                     }
                 }
+                // Arrow-deref hash subscript: $ref->{key} or $self->{name}
+                // Perl auto-quotes the key in this position — it is semantically
+                // identical to $ref->{'key'} and must NOT be treated as a bareword.
+                NodeKind::Binary { op, left: _, right } if op == "->{}" => {
+                    if std::ptr::eq(right.as_ref(), current) {
+                        return true;
+                    }
+                }
                 NodeKind::HashLiteral { pairs } => {
                     // Check if current node is a key in any of the pairs
                     for (key, _value) in pairs {
