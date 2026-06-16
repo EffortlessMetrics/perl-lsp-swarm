@@ -194,6 +194,7 @@ jobs:
           name: cpan-corpus-bounded-receipt-${{ github.sha }}
           path: target/corpus-receipts/bounded-sweep.json
           retention-days: 14
+          if-no-files-found: warn
 
   # --------------------------------------------------------------------------
   # FULL mode: all 1000 distributions.
@@ -318,6 +319,7 @@ jobs:
           name: cpan-corpus-full-receipt-${{ github.sha }}
           path: .ci/cpan-corpus-baseline.json
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Commit updated corpus receipts if changed
         # TODO(#1004): Switch to creating a PR instead of direct push once a
