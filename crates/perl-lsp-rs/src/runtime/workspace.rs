@@ -10,7 +10,7 @@
 
 use super::*;
 #[cfg(feature = "workspace")]
-use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use crate::runtime::routing::{route_index_access, IndexAccessMode};
 use crate::runtime::workspace_progress::{
     send_index_ready_notification, send_progress_begin, send_progress_create, send_progress_end,
     send_progress_report,
@@ -230,7 +230,9 @@ impl LspServer {
     ///
     /// Uses routing helper for state-aware behavior:
     /// - **Ready state**: Full workspace index search with cooperative yielding
-    /// - **Building/Degraded state**: Query partial index first; fall through to open-doc
+    /// - **Building state**: Wait deterministically for index readiness (bounded spin,
+    ///   no sleep), then serve from the ready index (fix for issue #1514 race condition)
+    /// - **Degraded state**: Query partial index first; fall through to open-doc
     ///   search only when the partial index is also empty (Gap 2 fix, issue #4152)
     pub(super) fn handle_workspace_symbols_v2(
         &self,
@@ -249,6 +251,12 @@ impl LspServer {
         // Use routing helper for lifecycle-aware dispatch
         #[cfg(feature = "workspace")]
         {
+            // If the workspace is currently being indexed (Building state), wait
+            // deterministically for readiness before serving — no sleep, bounded by
+            // INDEX_READY_WAIT_MS.  This eliminates the ~60% intermittent-empty race
+            // that occurs when workspace/symbol arrives right after `initialized`.
+            self.wait_for_index_ready_if_building();
+
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
@@ -344,6 +352,105 @@ impl LspServer {
         self.search_open_documents_for_symbols(query, cap)
     }
 
+    /// Spin-wait (yield-based, no sleep) until the workspace index transitions out of
+    /// Building state or the deadline expires.
+    ///
+    /// Called by `handle_workspace_symbols_v2` before routing so that a
+    /// `workspace/symbol` request issued immediately after `initialized` always
+    /// sees a Ready index rather than an empty partial index.
+    ///
+    /// The wait is deterministic: it yields the thread on every iteration and
+    /// checks the wall-clock deadline — no `sleep` or condvar required.
+    /// Bounded by `INDEX_READY_WAIT_MS` milliseconds (default 2 s).
+    #[cfg(feature = "workspace")]
+    fn wait_for_index_ready_if_building(&self) {
+        use perl_parser::workspace_index::IndexState;
+        use std::time::Instant;
+
+        // Only wait when indexing is actively in progress.
+        if !self.indexing_in_progress.load(Ordering::Acquire) {
+            return;
+        }
+
+        const INDEX_READY_WAIT_MS: u128 = 2_000;
+        let deadline = Instant::now() + Duration::from_millis(INDEX_READY_WAIT_MS as u64);
+
+        let Some(coordinator) = self.coordinator() else {
+            return;
+        };
+
+        loop {
+            match coordinator.state() {
+                IndexState::Ready { .. } => {
+                    tracing::debug!("wait_for_index_ready: index is now Ready");
+                    break;
+                }
+                // Degraded means indexing ended early — serve what we have.
+                IndexState::Degraded { .. } => {
+                    tracing::debug!("wait_for_index_ready: index degraded, proceeding");
+                    break;
+                }
+                IndexState::Building { .. } => {
+                    if Instant::now() >= deadline {
+                        tracing::debug!(
+                            "wait_for_index_ready: deadline reached, serving partial index"
+                        );
+                        break;
+                    }
+                    // Cooperative yield — no sleep, hand the CPU back to the
+                    // indexing thread so it can make progress.
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+
+    /// Resolve the best-matching workspace folder URI for a given file URI.
+    ///
+    /// Used by the open-document fallback path to populate `workspaceFolderUri`
+    /// on symbols so that multi-root workspace disambiguation works even before
+    /// the workspace index is ready (fix for issue #1514 bug 2).
+    ///
+    /// Returns `None` when no workspace folder matches the file URI.
+    ///
+    /// # Trailing-slash normalization
+    ///
+    /// The comparison appends a `/` to each folder URI before checking
+    /// `file_uri.starts_with(folder/)` so that a folder `file:///a/svc` does
+    /// NOT accidentally match `file:///a/svc-2/lib/Foo.pm`.  The longest
+    /// matching folder wins (deepest-nesting tiebreak).
+    ///
+    /// # Windows drive-letter case
+    ///
+    /// Document URIs stored in the open-document map are normalized via
+    /// [`LspServer::normalize_uri_key`] (lowercase drive letter, e.g. `c:`).
+    /// Workspace folder URIs are stored as-is from the LSP client.  In practice
+    /// VSCode normalizes both to lowercase, so mismatches are rare; but if the
+    /// client sends a folder URI with an uppercase drive letter the comparison
+    /// may fail on Windows.  The pre-existing `workspace_folder_matches_doc_uri`
+    /// helper in `types.rs` avoids this by using `PathBuf::starts_with`
+    /// (case-insensitive on Windows).  A future cleanup should unify the two
+    /// approaches (see follow-up issue #1530).
+    #[cfg(feature = "workspace")]
+    pub(crate) fn resolve_folder_uri_for_file(&self, file_uri: &str) -> Option<String> {
+        let folders = self.workspace_folders.lock();
+        let mut best: Option<&str> = None;
+        for folder in folders.iter() {
+            let folder_with_slash = if folder.uri.ends_with('/') {
+                folder.uri.as_str().to_string()
+            } else {
+                format!("{}/", folder.uri)
+            };
+            if file_uri.starts_with(folder_with_slash.as_str()) || file_uri == folder.uri.as_str() {
+                match best {
+                    Some(existing) if existing.len() >= folder.uri.len() => {}
+                    _ => best = Some(folder.uri.as_str()),
+                }
+            }
+        }
+        best.map(ToOwned::to_owned)
+    }
+
     /// Search only open documents for symbols (degraded/fallback path)
     #[cfg(feature = "workspace")]
     fn search_open_documents_for_symbols(
@@ -394,6 +501,33 @@ impl LspServer {
                 .filter_map(|symbol| serde_json::to_value(symbol).ok()),
         );
         all_symbols.truncate(cap);
+
+        // Populate workspaceFolderUri on each symbol for multi-root disambiguation.
+        // The open-doc fallback path does not go through WorkspaceIndex, so
+        // workspace_folder_uri is never set by the provider — inject it here
+        // by matching the symbol's location URI against the server's workspace folders
+        // (fix for issue #1514 bug 2).
+        for sym in &mut all_symbols {
+            if let Some(obj) = sym.as_object_mut() {
+                // Skip symbols that already carry a workspaceFolderUri.
+                if obj.contains_key("workspaceFolderUri") {
+                    continue;
+                }
+                // Resolve from location.uri (standard LSP WorkspaceSymbol shape).
+                let file_uri = obj
+                    .get("location")
+                    .and_then(|loc| loc.get("uri"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !file_uri.is_empty() {
+                    if let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri) {
+                        obj.insert("workspaceFolderUri".to_string(), Value::String(folder_uri));
+                    }
+                }
+            }
+        }
+
         tracing::debug!(
             count = all_symbols.len(),
             "Workspace symbol: returned results from open documents"
@@ -965,7 +1099,11 @@ fn extract_perl_settings(settings: &Value) -> Option<&Value> {
         }
     }
     // Unwrapped: the settings object itself contains perl config keys directly.
-    if settings.is_object() { Some(settings) } else { None }
+    if settings.is_object() {
+        Some(settings)
+    } else {
+        None
+    }
 }
 
 impl LspServer {
@@ -2503,7 +2641,7 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 mod tests {
     #[cfg(feature = "workspace")]
     use super::read_text_with_encoding_fallback;
-    use super::{LspServer, module_name_appears_in_text};
+    use super::{module_name_appears_in_text, LspServer};
     use serde_json::json;
     #[cfg(feature = "workspace")]
     use std::io::Write;
@@ -2561,8 +2699,8 @@ mod tests {
     }
 
     #[test]
-    fn did_change_workspace_folders_clears_pending_workspace_configuration_requests()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn did_change_workspace_folders_clears_pending_workspace_configuration_requests(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let request_id =
             crate::runtime::types::ServerRequestId::new(7).ok_or("valid request id")?;
@@ -2591,8 +2729,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn watched_file_deleted_clears_raw_and_normalized_uri_state()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn watched_file_deleted_clears_raw_and_normalized_uri_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("delete_variant.pm");
@@ -2653,8 +2791,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn bulk_file_watcher_churn_drains_pressure_and_delete_state()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn bulk_file_watcher_churn_drains_pressure_and_delete_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::file_watcher_debounce::FileWatcherDebouncer;
         use std::sync::Arc;
         use std::time::{Duration, Instant};
@@ -2772,8 +2910,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn workspace_folder_removal_evicts_open_docs_under_root()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn workspace_folder_removal_evicts_open_docs_under_root(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
         let removed_root = dir.path().join("removed");
@@ -2859,21 +2997,19 @@ mod tests {
         assert!(!server.parse_cancel_flags.lock().contains_key(&removed_uri));
         assert!(server.parse_cancel_flags.lock().contains_key(&kept_uri));
         assert_eq!(server.stream_sessions().len(), 1);
-        assert!(
-            server
-                .workspace_folders
-                .lock()
-                .iter()
-                .all(|folder| { folder.uri != removed_folder_uri.to_string() })
-        );
+        assert!(server
+            .workspace_folders
+            .lock()
+            .iter()
+            .all(|folder| { folder.uri != removed_folder_uri.to_string() }));
 
         Ok(())
     }
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_decodes_utf16le_bom()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_decodes_utf16le_bom(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("utf16le.pm");
         let text = "my $x = \"π\";";
@@ -2907,8 +3043,8 @@ mod tests {
     /// reasonable to index.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16le()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_odd_length_utf16le(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16le.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
@@ -2925,8 +3061,8 @@ mod tests {
     /// bytes must not panic or silently truncate.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16be()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_odd_length_utf16be(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16be.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
@@ -2940,8 +3076,8 @@ mod tests {
     /// Edge case: empty file should decode to an empty string without panic.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_empty_file()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_empty_file(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("empty.pm");
         std::fs::write(&path, [])?;
@@ -2955,8 +3091,8 @@ mod tests {
     /// to an empty string (BOM is stripped, nothing remains).
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_bom_only_file()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_bom_only_file(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("bom_only.pm");
         std::fs::write(&path, [0xEF, 0xBB, 0xBF])?;

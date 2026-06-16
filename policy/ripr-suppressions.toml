@@ -1085,3 +1085,38 @@ reason = "Two ripr#1429-class seams in PR #1482 xtask coverage decoupling: (A) r
 created = "2026-06-15"
 review_after = "2026-07-15"
 expires = "2026-09-30"
+
+# =============================================================================
+# Arrow-deref hash key strict tests (PR #1524): ripr#1428-class false-positives
+# in newly added test code.
+#
+# PR #1524 adds ~48 weakly_exposed seams to arrow_deref_hash_key_strict_tests.rs:
+#   call_deletion, return_value, and match_arm variants in comprehensive
+#   test coverage of is_in_hash_key_context() fix for strict bareword handling
+#   with arrow-dereference syntax.
+#
+# These are test-harness call mutations and match/return variants in test setup
+# and assertion helpers, not production seams. RIPR's diff-scoped analysis treats
+# newly added test code as production seams — the same ripr#1428 class as
+# ripr-suppress-ux-receipt-tests and ripr-suppress-seam-proof-tests.
+#
+# The test functions exercise the arrow-deref hash key context detection pipeline:
+# all 13 arrow-dereferenced hash key forms (for @hash, @{$ref}, %{$ref}, ${ref}{key},
+# etc.) are tested with both strict and non-strict scopes, plus negative cases
+# (non-arrow hash access, non-hash contexts). All seams (error returns from
+# context helpers, match-arm closures in test setup) are test infrastructure.
+#
+# Suppression is minimal (single test file, test-only additions). Path scope
+# expires 2026-09-30. Remove when ripr#1428 is fixed upstream.
+# =============================================================================
+[[suppress]]
+id = "ripr-suppress-arrow-deref-hash-key-test-surface"
+kind = "test_receipt_surface"
+paths = ["crates/perl-semantic-analyzer/tests/arrow_deref_hash_key_strict_tests.rs"]
+classification = ["call_deletion", "return_value", "match_arm", "weakly_exposed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #1524 arrow_deref_hash_key_strict_tests.rs: ~48 call_deletion/return_value/match_arm weakly_exposed seams flagged as new production seams by diff-scoped RIPR analysis. These are test-harness call mutations and match-arm closures in test setup code, not production seams. The test functions comprehensively exercise is_in_hash_key_context() fix for strict bareword handling with arrow-dereference syntax: all 13 arrow-dereferenced hash key forms tested (for @hash, @{$ref}, %{$ref}, ${ref}{key}, etc.) under both strict and non-strict scopes, plus negative cases (non-arrow access, non-hash contexts). All seams are test infrastructure (error returns from context helpers, match-arm variants in test setup). This is the same ripr#1428 class as ripr-suppress-ux-receipt-tests and ripr-suppress-seam-proof-tests (newly added test files causing static-analysis false-positives). Suppression is minimal (single test file, test-only additions). Remove when ripr#1428 is fixed upstream."
+created = "2026-06-16"
+review_after = "2026-07-16"
+expires = "2026-09-30"
