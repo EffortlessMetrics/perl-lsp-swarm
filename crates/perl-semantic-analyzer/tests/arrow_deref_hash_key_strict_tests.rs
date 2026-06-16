@@ -225,3 +225,113 @@ my $v = $hash{key};
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Section D: Additional edge cases added by deep reviewer (#1524)
+// ---------------------------------------------------------------------------
+
+/// Arrow-deref as an lvalue: `$obj->{key} = value` must not flag the key.
+#[test]
+fn test_arrow_deref_lvalue_no_bareword_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+use warnings;
+my $obj = {};
+$obj->{new_key} = 42;
+"#;
+    let issues = scope_issues_strict(code);
+    let bw = bareword_issues(&issues);
+    assert!(
+        bw.is_empty(),
+        "$obj->{{new_key}} as lvalue should not emit UnquotedBareword; got: {:?}",
+        bw.iter().map(|i| &i.variable_name).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// Arrow-deref key used in boolean expression: `$obj->{enabled}` in condition.
+#[test]
+fn test_arrow_deref_in_condition_no_bareword_diagnostic() -> Result<(), Box<dyn std::error::Error>>
+{
+    let code = r#"
+use strict;
+use warnings;
+my $obj = { enabled => 1 };
+if ($obj->{enabled}) {
+    my $x = 1;
+}
+"#;
+    let issues = scope_issues_strict(code);
+    let bw = bareword_issues(&issues);
+    assert!(
+        bw.is_empty(),
+        "$obj->{{enabled}} in condition should not emit UnquotedBareword; got: {:?}",
+        bw.iter().map(|i| &i.variable_name).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// Arrow-deref with method call without parens: `$obj->method->{key}`.
+/// `->method` parses as MethodCall, then `->{key}` is Binary(->{}, MethodCall, key).
+#[test]
+fn test_arrow_deref_after_method_no_parens_no_bareword_diagnostic()
+-> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+package My::App;
+use strict;
+use warnings;
+sub run {
+    my $self = shift;
+    my $v = $self->config->{timeout};
+    return $v;
+}
+"#;
+    let issues = scope_issues_strict(code);
+    let bw = bareword_issues(&issues);
+    assert!(
+        bw.is_empty(),
+        "$self->method->{{key}} (no parens) should not emit UnquotedBareword; got: {:?}",
+        bw.iter().map(|i| &i.variable_name).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// Deeply chained: `$a->{b}{c}{d}` — first is ->{}, rest are {} ops.
+#[test]
+fn test_arrow_deref_deep_chain_no_bareword_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+use warnings;
+my $a = { b => { c => { d => 42 } } };
+my $v = $a->{b}{c}{d};
+"#;
+    let issues = scope_issues_strict(code);
+    let bw = bareword_issues(&issues);
+    assert!(
+        bw.is_empty(),
+        "$a->{{b}}{{c}}{{d}} deep chain should not emit UnquotedBareword; got: {:?}",
+        bw.iter().map(|i| &i.variable_name).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// Hash slice via deref: `@{$ref}{qw(a b)}` — keys are string literals, not barewords.
+/// This is a separate op (->%{} or parsed differently) and was never broken,
+/// but serves as a regression guard for the pre-existing slice path.
+#[test]
+fn test_hash_slice_deref_no_bareword_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+use warnings;
+my $ref = { a => 1, b => 2 };
+my @vals = @{$ref}{qw(a b)};
+"#;
+    let issues = scope_issues_strict(code);
+    let bw = bareword_issues(&issues);
+    assert!(
+        bw.is_empty(),
+        "@{{$ref}}{{qw(a b)}} hash slice should not emit UnquotedBareword; got: {:?}",
+        bw.iter().map(|i| &i.variable_name).collect::<Vec<_>>()
+    );
+    Ok(())
+}
