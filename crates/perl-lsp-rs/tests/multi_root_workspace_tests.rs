@@ -1469,3 +1469,117 @@ fn test_completion_does_not_leak_symbols_across_folders() -> TestResult {
 
     Ok(())
 }
+
+// =============================================================================
+// Test: deterministic multi-root workspace/symbol (#1514)
+//
+// Regression test for the race condition reported in issue #1514.
+// workspace/symbol must return symbols from BOTH workspace folders with correct
+// workspaceFolderUri even when issued immediately after workspace-folder init.
+//
+// Two bugs fixed:
+//   Bug 1 (race): workspace/symbol during Building state returned empty because
+//     the open-doc fallback was tried before the index was ready.
+//   Bug 2 (folder URI): workspace_folder_uri was hardcoded None in
+//     extract_symbols_recursive and never populated in the fallback path.
+// =============================================================================
+
+/// Deterministic regression test for #1514.
+///
+/// Uses the test API to:
+/// 1. Create a server and register two workspace folders.
+/// 2. Index one file from each folder while the coordinator is in Building state
+///    (simulating the post-`initialized` race where workspace/symbol arrives before
+///    the background indexing thread finishes).
+/// 3. Simulate indexing completion (clears indexing_in_progress, transitions to Ready).
+/// 4. Issue `workspace/symbol` for "run" — both folders define it.
+/// 5. Assert that both results carry the correct distinct workspaceFolderUri.
+///
+/// No sleep — the test directly exercises both the wait-for-ready path (Bug 1)
+/// and the workspace_folder_uri population (Bug 2) added by the fix.
+#[test]
+#[cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
+fn test_workspace_symbol_multi_root_deterministic_returns_both_folders() -> TestResult {
+    use perl_lsp::LspServer;
+
+    let server = LspServer::new();
+
+    // Register two workspace folders so resolve_folder_uri_for_file works.
+    // This also propagates to the workspace index via set_workspace_folders.
+    server.test_set_workspace_folder_uris(&[
+        "file:///multi_root_1514/svc-a",
+        "file:///multi_root_1514/svc-b",
+    ]);
+
+    // Index a file from svc-a while the coordinator stays in Building/Indexing state.
+    // (simulates background scan in progress when workspace/symbol arrives)
+    server
+        .test_index_file_in_building_state(
+            "file:///multi_root_1514/svc-a/lib/Runner.pm",
+            "package Runner;\nsub run { return 'from-a'; }\n1;\n",
+        )
+        .map_err(|e| e)?;
+
+    // Index a file from svc-b — still in Building state.
+    server
+        .test_index_file_in_building_state(
+            "file:///multi_root_1514/svc-b/lib/Runner.pm",
+            "package Runner;\nsub run { return 'from-b'; }\n1;\n",
+        )
+        .map_err(|e| e)?;
+
+    // Simulate background indexing completion:
+    // - Clears indexing_in_progress flag (RAII IndexingGuard normally does this).
+    // - Transitions coordinator from Building to Ready.
+    // After this, wait_for_index_ready_if_building returns immediately.
+    server.test_simulate_indexing_complete();
+
+    // Issue workspace/symbol for "run" — both folders define it.
+    // With the fix, this serves from the Ready index with populated workspaceFolderUri.
+    let result = server
+        .test_handle_workspace_symbols(Some(serde_json::json!({"query": "run"})))
+        .map_err(|e| format!("{e:?}"))?;
+
+    let symbols = result
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .ok_or("workspace/symbol must return an array")?;
+
+    // Filter to the "run" sub only.
+    let run_symbols: Vec<&serde_json::Value> =
+        symbols.iter().filter(|s| s["name"].as_str() == Some("run")).collect();
+
+    assert!(
+        run_symbols.len() >= 2,
+        "workspace/symbol must return 'run' from BOTH workspace folders (#1514 bug 1); \
+         got {} symbols: {:?}",
+        run_symbols.len(),
+        symbols
+    );
+
+    // Collect distinct workspaceFolderUri values (bug 2 check).
+    let folder_uris: std::collections::BTreeSet<&str> = run_symbols
+        .iter()
+        .filter_map(|s| s.get("workspaceFolderUri").and_then(|v| v.as_str()))
+        .collect();
+
+    assert!(
+        folder_uris.len() >= 2,
+        "workspace/symbol must carry distinct workspaceFolderUri for multi-root disambiguation \
+         (#1514 bug 2); got: {:?} (symbols: {:?})",
+        folder_uris,
+        run_symbols
+    );
+    assert!(
+        folder_uris.contains("file:///multi_root_1514/svc-a"),
+        "svc-a folder URI must be present in workspaceFolderUri; got: {:?}",
+        folder_uris
+    );
+    assert!(
+        folder_uris.contains("file:///multi_root_1514/svc-b"),
+        "svc-b folder URI must be present in workspaceFolderUri; got: {:?}",
+        folder_uris
+    );
+
+    Ok(())
+}

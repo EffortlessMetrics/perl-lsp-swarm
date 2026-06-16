@@ -230,7 +230,9 @@ impl LspServer {
     ///
     /// Uses routing helper for state-aware behavior:
     /// - **Ready state**: Full workspace index search with cooperative yielding
-    /// - **Building/Degraded state**: Query partial index first; fall through to open-doc
+    /// - **Building state**: Wait deterministically for index readiness (bounded spin,
+    ///   no sleep), then serve from the ready index (fix for issue #1514 race condition)
+    /// - **Degraded state**: Query partial index first; fall through to open-doc
     ///   search only when the partial index is also empty (Gap 2 fix, issue #4152)
     pub(super) fn handle_workspace_symbols_v2(
         &self,
@@ -249,6 +251,12 @@ impl LspServer {
         // Use routing helper for lifecycle-aware dispatch
         #[cfg(feature = "workspace")]
         {
+            // If the workspace is currently being indexed (Building state), wait
+            // deterministically for readiness before serving — no sleep, bounded by
+            // INDEX_READY_WAIT_MS.  This eliminates the ~60% intermittent-empty race
+            // that occurs when workspace/symbol arrives right after `initialized`.
+            self.wait_for_index_ready_if_building();
+
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
@@ -344,6 +352,86 @@ impl LspServer {
         self.search_open_documents_for_symbols(query, cap)
     }
 
+    /// Spin-wait (yield-based, no sleep) until the workspace index transitions out of
+    /// Building state or the deadline expires.
+    ///
+    /// Called by `handle_workspace_symbols_v2` before routing so that a
+    /// `workspace/symbol` request issued immediately after `initialized` always
+    /// sees a Ready index rather than an empty partial index.
+    ///
+    /// The wait is deterministic: it yields the thread on every iteration and
+    /// checks the wall-clock deadline — no `sleep` or condvar required.
+    /// Bounded by `INDEX_READY_WAIT_MS` milliseconds (default 2 s).
+    #[cfg(feature = "workspace")]
+    fn wait_for_index_ready_if_building(&self) {
+        use perl_parser::workspace_index::IndexState;
+        use std::time::Instant;
+
+        // Only wait when indexing is actively in progress.
+        if !self.indexing_in_progress.load(Ordering::Acquire) {
+            return;
+        }
+
+        const INDEX_READY_WAIT_MS: u128 = 2_000;
+        let deadline = Instant::now() + Duration::from_millis(INDEX_READY_WAIT_MS as u64);
+
+        let Some(coordinator) = self.coordinator() else {
+            return;
+        };
+
+        loop {
+            match coordinator.state() {
+                IndexState::Ready { .. } => {
+                    tracing::debug!("wait_for_index_ready: index is now Ready");
+                    break;
+                }
+                // Degraded means indexing ended early — serve what we have.
+                IndexState::Degraded { .. } => {
+                    tracing::debug!("wait_for_index_ready: index degraded, proceeding");
+                    break;
+                }
+                IndexState::Building { .. } => {
+                    if Instant::now() >= deadline {
+                        tracing::debug!(
+                            "wait_for_index_ready: deadline reached, serving partial index"
+                        );
+                        break;
+                    }
+                    // Cooperative yield — no sleep, hand the CPU back to the
+                    // indexing thread so it can make progress.
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+
+    /// Resolve the best-matching workspace folder URI for a given file URI.
+    ///
+    /// Used by the open-document fallback path to populate `workspaceFolderUri`
+    /// on symbols so that multi-root workspace disambiguation works even before
+    /// the workspace index is ready (fix for issue #1514 bug 2).
+    ///
+    /// Returns `None` when no workspace folder matches the file URI.
+    #[cfg(feature = "workspace")]
+    pub(crate) fn resolve_folder_uri_for_file(&self, file_uri: &str) -> Option<String> {
+        let folders = self.workspace_folders.lock();
+        let mut best: Option<&str> = None;
+        for folder in folders.iter() {
+            let folder_with_slash = if folder.uri.ends_with('/') {
+                folder.uri.as_str().to_string()
+            } else {
+                format!("{}/", folder.uri)
+            };
+            if file_uri.starts_with(folder_with_slash.as_str()) || file_uri == folder.uri.as_str() {
+                match best {
+                    Some(existing) if existing.len() >= folder.uri.len() => {}
+                    _ => best = Some(folder.uri.as_str()),
+                }
+            }
+        }
+        best.map(ToOwned::to_owned)
+    }
+
     /// Search only open documents for symbols (degraded/fallback path)
     #[cfg(feature = "workspace")]
     fn search_open_documents_for_symbols(
@@ -394,6 +482,33 @@ impl LspServer {
                 .filter_map(|symbol| serde_json::to_value(symbol).ok()),
         );
         all_symbols.truncate(cap);
+
+        // Populate workspaceFolderUri on each symbol for multi-root disambiguation.
+        // The open-doc fallback path does not go through WorkspaceIndex, so
+        // workspace_folder_uri is never set by the provider — inject it here
+        // by matching the symbol's location URI against the server's workspace folders
+        // (fix for issue #1514 bug 2).
+        for sym in &mut all_symbols {
+            if let Some(obj) = sym.as_object_mut() {
+                // Skip symbols that already carry a workspaceFolderUri.
+                if obj.contains_key("workspaceFolderUri") {
+                    continue;
+                }
+                // Resolve from location.uri (standard LSP WorkspaceSymbol shape).
+                let file_uri = obj
+                    .get("location")
+                    .and_then(|loc| loc.get("uri"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !file_uri.is_empty() {
+                    if let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri) {
+                        obj.insert("workspaceFolderUri".to_string(), Value::String(folder_uri));
+                    }
+                }
+            }
+        }
+
         tracing::debug!(
             count = all_symbols.len(),
             "Workspace symbol: returned results from open documents"
