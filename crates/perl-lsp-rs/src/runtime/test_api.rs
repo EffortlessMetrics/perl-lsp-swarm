@@ -602,4 +602,21 @@ impl LspServer {
             coordinator.transition_to_ready(file_count, symbol_count);
         }
     }
+
+    /// Set `indexing_in_progress` to `true` without spawning a background thread.
+    ///
+    /// Used by regression tests that need to simulate the race window where a
+    /// `workspace/symbol` request arrives while background indexing is still in
+    /// progress (i.e. `indexing_in_progress=true`, coordinator still Building).
+    ///
+    /// Pair with `test_simulate_indexing_complete` — called from a background thread
+    /// or after the LSP handler returns — to release the wait.
+    ///
+    /// In production this flag is set by `start_workspace_indexing` via
+    /// compare-exchange before the background thread is spawned.
+    #[cfg(feature = "workspace")]
+    pub fn test_simulate_indexing_start(&self) {
+        use std::sync::atomic::Ordering;
+        self.indexing_in_progress.store(true, Ordering::Release);
+    }
 }
