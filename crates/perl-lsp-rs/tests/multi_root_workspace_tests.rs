@@ -1513,20 +1513,16 @@ fn test_workspace_symbol_multi_root_deterministic_returns_both_folders() -> Test
 
     // Index a file from svc-a while the coordinator stays in Building/Indexing state.
     // (simulates background scan in progress when workspace/symbol arrives)
-    server
-        .test_index_file_in_building_state(
-            "file:///multi_root_1514/svc-a/lib/Runner.pm",
-            "package Runner;\nsub run { return 'from-a'; }\n1;\n",
-        )
-        .map_err(|e| e)?;
+    server.test_index_file_in_building_state(
+        "file:///multi_root_1514/svc-a/lib/Runner.pm",
+        "package Runner;\nsub run { return 'from-a'; }\n1;\n",
+    )?;
 
     // Index a file from svc-b — still in Building state.
-    server
-        .test_index_file_in_building_state(
-            "file:///multi_root_1514/svc-b/lib/Runner.pm",
-            "package Runner;\nsub run { return 'from-b'; }\n1;\n",
-        )
-        .map_err(|e| e)?;
+    server.test_index_file_in_building_state(
+        "file:///multi_root_1514/svc-b/lib/Runner.pm",
+        "package Runner;\nsub run { return 'from-b'; }\n1;\n",
+    )?;
 
     // Simulate background indexing completion:
     // - Clears indexing_in_progress flag (RAII IndexingGuard normally does this).
