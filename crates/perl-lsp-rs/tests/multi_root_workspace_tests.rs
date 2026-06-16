@@ -1586,18 +1586,28 @@ fn test_workspace_symbol_multi_root_deterministic_returns_both_folders() -> Test
 /// This test exercises the real spin-wait code path by:
 /// 1. Indexing files into the coordinator while in Building state.
 /// 2. Setting `indexing_in_progress=true` (simulating the background thread active).
-/// 3. Spawning a background thread that completes indexing after a short delay.
+/// 3. Spawning a background thread that completes indexing after a brief delay,
+///    giving the main thread time to enter the wait loop first.
 /// 4. Issuing `workspace/symbol` from the main thread — the wait loop must spin
 ///    until the background thread calls `test_simulate_indexing_complete`.
 ///
 /// Before the fix, step 4 would observe `indexing_in_progress=false` only because
 /// indexing was pre-completed.  Now `indexing_in_progress=true` at request time,
 /// so `wait_for_index_ready_if_building` actually loops.
+///
+/// Timing note: the background thread sleeps 1 ms before completing indexing.
+/// The spin-wait loop uses `yield_now()` between iterations, so 1 ms is
+/// sufficient for the main thread to enter the loop on any realistic scheduler.
+/// Even if the background thread wins the race and completes before the main
+/// thread enters the loop, the test still passes — the symbols are still
+/// returned from the Ready index.  The 1 ms sleep maximises the probability
+/// that the spin-wait path is exercised in practice.
 #[test]
 #[cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
 fn test_workspace_symbol_waits_for_index_when_building_at_request_time() -> TestResult {
     use perl_lsp::LspServer;
     use std::sync::Arc;
+    use std::time::Duration;
 
     let server = Arc::new(LspServer::new());
 
@@ -1620,13 +1630,14 @@ fn test_workspace_symbol_waits_for_index_when_building_at_request_time() -> Test
     // (In production, start_workspace_indexing sets this via compare-exchange.)
     server.test_simulate_indexing_start();
 
-    // Spawn a background thread that completes indexing after a brief yield,
-    // simulating the background scan thread finishing.
+    // Spawn a background thread that completes indexing after a 1 ms sleep,
+    // simulating the background scan thread finishing asynchronously.
     let server_bg = Arc::clone(&server);
     let bg = std::thread::spawn(move || {
-        // Give the main thread time to enter the wait loop.
-        std::thread::yield_now();
-        std::thread::yield_now();
+        // Give the main thread time to enter the wait loop before we clear
+        // indexing_in_progress.  1 ms is long enough on any realistic scheduler;
+        // the spin loop uses yield_now() so the main thread will yield quickly.
+        std::thread::sleep(Duration::from_millis(1));
         server_bg.test_simulate_indexing_complete();
     });
 

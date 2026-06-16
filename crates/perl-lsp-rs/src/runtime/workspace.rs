@@ -10,7 +10,7 @@
 
 use super::*;
 #[cfg(feature = "workspace")]
-use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use crate::runtime::routing::{route_index_access, IndexAccessMode};
 use crate::runtime::workspace_progress::{
     send_index_ready_notification, send_progress_begin, send_progress_create, send_progress_end,
     send_progress_report,
@@ -412,6 +412,25 @@ impl LspServer {
     /// the workspace index is ready (fix for issue #1514 bug 2).
     ///
     /// Returns `None` when no workspace folder matches the file URI.
+    ///
+    /// # Trailing-slash normalization
+    ///
+    /// The comparison appends a `/` to each folder URI before checking
+    /// `file_uri.starts_with(folder/)` so that a folder `file:///a/svc` does
+    /// NOT accidentally match `file:///a/svc-2/lib/Foo.pm`.  The longest
+    /// matching folder wins (deepest-nesting tiebreak).
+    ///
+    /// # Windows drive-letter case
+    ///
+    /// Document URIs stored in the open-document map are normalized via
+    /// [`LspServer::normalize_uri_key`] (lowercase drive letter, e.g. `c:`).
+    /// Workspace folder URIs are stored as-is from the LSP client.  In practice
+    /// VSCode normalizes both to lowercase, so mismatches are rare; but if the
+    /// client sends a folder URI with an uppercase drive letter the comparison
+    /// may fail on Windows.  The pre-existing `workspace_folder_matches_doc_uri`
+    /// helper in `types.rs` avoids this by using `PathBuf::starts_with`
+    /// (case-insensitive on Windows).  A future cleanup should unify the two
+    /// approaches (see follow-up issue #1530).
     #[cfg(feature = "workspace")]
     pub(crate) fn resolve_folder_uri_for_file(&self, file_uri: &str) -> Option<String> {
         let folders = self.workspace_folders.lock();
@@ -1080,7 +1099,11 @@ fn extract_perl_settings(settings: &Value) -> Option<&Value> {
         }
     }
     // Unwrapped: the settings object itself contains perl config keys directly.
-    if settings.is_object() { Some(settings) } else { None }
+    if settings.is_object() {
+        Some(settings)
+    } else {
+        None
+    }
 }
 
 impl LspServer {
@@ -2622,7 +2645,7 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 mod tests {
     #[cfg(feature = "workspace")]
     use super::read_text_with_encoding_fallback;
-    use super::{LspServer, module_name_appears_in_text};
+    use super::{module_name_appears_in_text, LspServer};
     use serde_json::json;
     #[cfg(feature = "workspace")]
     use std::io::Write;
@@ -2680,8 +2703,8 @@ mod tests {
     }
 
     #[test]
-    fn did_change_workspace_folders_clears_pending_workspace_configuration_requests()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn did_change_workspace_folders_clears_pending_workspace_configuration_requests(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let request_id =
             crate::runtime::types::ServerRequestId::new(7).ok_or("valid request id")?;
@@ -2739,8 +2762,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn watched_file_deleted_clears_raw_and_normalized_uri_state()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn watched_file_deleted_clears_raw_and_normalized_uri_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("delete_variant.pm");
@@ -2801,8 +2824,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn bulk_file_watcher_churn_drains_pressure_and_delete_state()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn bulk_file_watcher_churn_drains_pressure_and_delete_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::file_watcher_debounce::FileWatcherDebouncer;
         use std::sync::Arc;
         use std::time::{Duration, Instant};
@@ -2920,8 +2943,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn workspace_folder_removal_evicts_open_docs_under_root()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn workspace_folder_removal_evicts_open_docs_under_root(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
         let removed_root = dir.path().join("removed");
@@ -3007,21 +3030,19 @@ mod tests {
         assert!(!server.parse_cancel_flags.lock().contains_key(&removed_uri));
         assert!(server.parse_cancel_flags.lock().contains_key(&kept_uri));
         assert_eq!(server.stream_sessions().len(), 1);
-        assert!(
-            server
-                .workspace_folders
-                .lock()
-                .iter()
-                .all(|folder| { folder.uri != removed_folder_uri.to_string() })
-        );
+        assert!(server
+            .workspace_folders
+            .lock()
+            .iter()
+            .all(|folder| { folder.uri != removed_folder_uri.to_string() }));
 
         Ok(())
     }
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_decodes_utf16le_bom()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_decodes_utf16le_bom(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("utf16le.pm");
         let text = "my $x = \"π\";";
@@ -3055,8 +3076,8 @@ mod tests {
     /// reasonable to index.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16le()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_odd_length_utf16le(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16le.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
@@ -3073,8 +3094,8 @@ mod tests {
     /// bytes must not panic or silently truncate.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16be()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_odd_length_utf16be(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16be.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
@@ -3088,8 +3109,8 @@ mod tests {
     /// Edge case: empty file should decode to an empty string without panic.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_empty_file()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_empty_file(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("empty.pm");
         std::fs::write(&path, [])?;
@@ -3103,8 +3124,8 @@ mod tests {
     /// to an empty string (BOM is stripped, nothing remains).
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_bom_only_file()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_bom_only_file(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("bom_only.pm");
         std::fs::write(&path, [0xEF, 0xBB, 0xBF])?;
