@@ -1843,6 +1843,14 @@ impl InlineCompletionProvider {
             .then(|| "'test description' => sub {\n    \n};".to_string())
     }
 
+    fn preferred_try_tiny_block(&self, context: &SemanticInlineContext) -> Option<String> {
+        context
+            .imported_modules
+            .iter()
+            .any(|module| module.name == "Try::Tiny")
+            .then(|| "{\n    \n} catch {\n    \n};".to_string())
+    }
+
     fn push_unique(&self, values: &mut Vec<String>, value: String) {
         if values.iter().any(|existing| existing == &value) {
             return;
@@ -2140,6 +2148,21 @@ impl InlineCandidateSource for SyntaxCandidateSource {
                 InlineCompletionItem {
                     insert_text: binding,
                     filter_text: Some(collection),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if ends_with_keyword(prefix, "try ")
+            && let Some(block) = provider.preferred_try_tiny_block(semantic_context)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: block,
+                    filter_text: Some("try".into()),
                     range: None,
                     command: None,
                 },
@@ -5194,6 +5217,51 @@ mod tests {
                 .iter()
                 .all(|item| !item.insert_text.starts_with("'test description' => sub")),
             "non-test files should not get subtest block completions: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn try_tiny_import_suggests_try_catch_block() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Try::Tiny;\ntry ";
+        let character = "try ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "{\n    \n} catch {\n    \n};")
+            .ok_or("expected Try::Tiny try/catch block completion")?;
+
+        assert_eq!(item.filter_text.as_deref(), Some("try"));
+        Ok(())
+    }
+
+    #[test]
+    fn try_tiny_block_requires_visible_import() {
+        let provider = InlineCompletionProvider::new();
+        let source = "try ";
+        let character = source.encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 0, character);
+
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "{\n    \n} catch {\n    \n};"),
+            "Try::Tiny scaffold must not appear without an import: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn try_tiny_block_stays_quiet_in_comment() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Try::Tiny;\n# try ";
+        let character = "# try ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+
+        assert!(
+            completions.items.is_empty(),
+            "hard-reject comment context must not return Try::Tiny completions: {:?}",
             completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
         );
     }
