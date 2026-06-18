@@ -10,7 +10,7 @@
 
 use super::*;
 #[cfg(feature = "workspace")]
-use crate::runtime::routing::{route_index_access, IndexAccessMode};
+use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use crate::runtime::workspace_progress::{
     send_index_ready_notification, send_progress_begin, send_progress_create, send_progress_end,
     send_progress_report,
@@ -45,6 +45,31 @@ mod configuration_response;
 mod text_decode;
 
 const WORKSPACE_CONFIGURATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+static INDEX_READY_WAIT_ENTERED_OBSERVER: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) fn set_index_ready_wait_entered_observer(sender: std::sync::mpsc::Sender<()>) {
+    if let Ok(mut observer) = INDEX_READY_WAIT_ENTERED_OBSERVER.lock() {
+        *observer = Some(sender);
+    }
+}
+
+#[cfg(feature = "workspace")]
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+fn notify_index_ready_wait_entered() {
+    let sender =
+        INDEX_READY_WAIT_ENTERED_OBSERVER.lock().ok().and_then(|mut observer| observer.take());
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+}
+
+#[cfg(feature = "workspace")]
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+fn notify_index_ready_wait_entered() {}
+
 // Note: WalkDir logic has been extracted to super::file_discovery.
 // These helper functions are retained for potential future use by
 // other workspace operations (e.g., file watcher filtering).
@@ -391,6 +416,7 @@ impl LspServer {
                     break;
                 }
                 IndexState::Building { .. } => {
+                    notify_index_ready_wait_entered();
                     if Instant::now() >= deadline {
                         tracing::debug!(
                             "wait_for_index_ready: deadline reached, serving partial index"
@@ -1099,11 +1125,7 @@ fn extract_perl_settings(settings: &Value) -> Option<&Value> {
         }
     }
     // Unwrapped: the settings object itself contains perl config keys directly.
-    if settings.is_object() {
-        Some(settings)
-    } else {
-        None
-    }
+    if settings.is_object() { Some(settings) } else { None }
 }
 
 impl LspServer {
@@ -2645,7 +2667,7 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 mod tests {
     #[cfg(feature = "workspace")]
     use super::read_text_with_encoding_fallback;
-    use super::{module_name_appears_in_text, LspServer};
+    use super::{LspServer, module_name_appears_in_text};
     use serde_json::json;
     #[cfg(feature = "workspace")]
     use std::io::Write;
@@ -2703,8 +2725,8 @@ mod tests {
     }
 
     #[test]
-    fn did_change_workspace_folders_clears_pending_workspace_configuration_requests(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn did_change_workspace_folders_clears_pending_workspace_configuration_requests()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let request_id =
             crate::runtime::types::ServerRequestId::new(7).ok_or("valid request id")?;
@@ -2762,8 +2784,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn watched_file_deleted_clears_raw_and_normalized_uri_state(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn watched_file_deleted_clears_raw_and_normalized_uri_state()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("delete_variant.pm");
@@ -2824,8 +2846,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn bulk_file_watcher_churn_drains_pressure_and_delete_state(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn bulk_file_watcher_churn_drains_pressure_and_delete_state()
+    -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::file_watcher_debounce::FileWatcherDebouncer;
         use std::sync::Arc;
         use std::time::{Duration, Instant};
@@ -2943,8 +2965,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn workspace_folder_removal_evicts_open_docs_under_root(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn workspace_folder_removal_evicts_open_docs_under_root()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let dir = tempfile::tempdir()?;
         let removed_root = dir.path().join("removed");
@@ -3030,19 +3052,21 @@ mod tests {
         assert!(!server.parse_cancel_flags.lock().contains_key(&removed_uri));
         assert!(server.parse_cancel_flags.lock().contains_key(&kept_uri));
         assert_eq!(server.stream_sessions().len(), 1);
-        assert!(server
-            .workspace_folders
-            .lock()
-            .iter()
-            .all(|folder| { folder.uri != removed_folder_uri.to_string() }));
+        assert!(
+            server
+                .workspace_folders
+                .lock()
+                .iter()
+                .all(|folder| { folder.uri != removed_folder_uri.to_string() })
+        );
 
         Ok(())
     }
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_decodes_utf16le_bom(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_decodes_utf16le_bom()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("utf16le.pm");
         let text = "my $x = \"π\";";
@@ -3076,8 +3100,8 @@ mod tests {
     /// reasonable to index.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16le(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_odd_length_utf16le()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16le.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
@@ -3094,8 +3118,8 @@ mod tests {
     /// bytes must not panic or silently truncate.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16be(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_odd_length_utf16be()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16be.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
@@ -3109,8 +3133,8 @@ mod tests {
     /// Edge case: empty file should decode to an empty string without panic.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_empty_file(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_empty_file()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("empty.pm");
         std::fs::write(&path, [])?;
@@ -3124,8 +3148,8 @@ mod tests {
     /// to an empty string (BOM is stripped, nothing remains).
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_bom_only_file(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_with_encoding_fallback_handles_bom_only_file()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("bom_only.pm");
         std::fs::write(&path, [0xEF, 0xBB, 0xBF])?;

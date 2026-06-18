@@ -619,4 +619,15 @@ impl LspServer {
         use std::sync::atomic::Ordering;
         self.indexing_in_progress.store(true, Ordering::Release);
     }
+
+    /// Notify a test when `workspace/symbol` enters the bounded index-ready wait.
+    ///
+    /// This is intentionally test-only instrumentation for deterministic race
+    /// regressions. The observer is consumed the first time the wait loop sees
+    /// `IndexState::Building`.
+    #[cfg(feature = "workspace")]
+    pub fn test_notify_index_ready_wait_entered(&self, sender: std::sync::mpsc::Sender<()>) {
+        let _ = self;
+        super::workspace::set_index_ready_wait_entered_observer(sender);
+    }
 }

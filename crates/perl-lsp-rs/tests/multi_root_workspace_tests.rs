@@ -1232,11 +1232,15 @@ fn test_workspace_symbol_includes_folder_uri_for_disambiguation() -> TestResult 
     for json_sym in json_array {
         if json_sym["name"].as_str() == Some("run") {
             let folder_uri_field = json_sym.get("workspaceFolderUri");
-            assert!(
-                folder_uri_field.is_some() && !folder_uri_field.unwrap().is_null(),
-                "Serialized workspace symbol must include workspaceFolderUri, got: {:?}",
-                json_sym
-            );
+            match folder_uri_field {
+                Some(value) if !value.is_null() => {}
+                _ => {
+                    return Err(format!(
+                        "Serialized workspace symbol must include workspaceFolderUri, got: {json_sym:?}"
+                    )
+                    .into());
+                }
+            }
         }
     }
 
@@ -1586,23 +1590,18 @@ fn test_workspace_symbol_multi_root_deterministic_returns_both_folders() -> Test
 /// This test exercises the real spin-wait code path by:
 /// 1. Indexing files into the coordinator while in Building state.
 /// 2. Setting `indexing_in_progress=true` (simulating the background thread active).
-/// 3. Spawning a background thread that completes indexing after a brief delay,
-///    giving the main thread time to enter the wait loop first.
-/// 4. Issuing `workspace/symbol` from the main thread — the wait loop must spin
-///    until the background thread calls `test_simulate_indexing_complete`.
+/// 3. Registering a test-only wait-entry observer.
+/// 4. Issuing `workspace/symbol` from a background thread.
+/// 5. Completing indexing only after the observer confirms the wait loop entered.
 ///
 /// Before the fix, step 4 would observe `indexing_in_progress=false` only because
 /// indexing was pre-completed.  Now `indexing_in_progress=true` at request time,
 /// so `wait_for_index_ready_if_building` actually loops.
 ///
-/// Timing note: the background thread sleeps 1 ms before completing indexing.
-/// The spin-wait loop uses `yield_now()` between iterations, so 1 ms is
-/// sufficient for the main thread to enter the loop on any realistic scheduler.
-/// Even if the background thread wins the race and completes before the main
-/// thread enters the loop, the test still passes — the symbols are still
-/// returned from the Ready index.  The 1 ms sleep maximises the probability
-/// that the spin-wait path is exercised in practice.
+/// No sleep: the test uses a channel from the wait loop itself, so it proves the
+/// actual spin-wait path before releasing the simulated indexing completion.
 #[test]
+#[serial_test::serial]
 #[cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
 fn test_workspace_symbol_waits_for_index_when_building_at_request_time() -> TestResult {
     use perl_lsp::LspServer;
@@ -1611,10 +1610,7 @@ fn test_workspace_symbol_waits_for_index_when_building_at_request_time() -> Test
 
     let server = Arc::new(LspServer::new());
 
-    server.test_set_workspace_folder_uris(&[
-        "file:///bug1_1514/svc-a",
-        "file:///bug1_1514/svc-b",
-    ]);
+    server.test_set_workspace_folder_uris(&["file:///bug1_1514/svc-a", "file:///bug1_1514/svc-b"]);
 
     // Index both files in Building state.
     server.test_index_file_in_building_state(
@@ -1630,23 +1626,21 @@ fn test_workspace_symbol_waits_for_index_when_building_at_request_time() -> Test
     // (In production, start_workspace_indexing sets this via compare-exchange.)
     server.test_simulate_indexing_start();
 
-    // Spawn a background thread that completes indexing after a 1 ms sleep,
-    // simulating the background scan thread finishing asynchronously.
-    let server_bg = Arc::clone(&server);
-    let bg = std::thread::spawn(move || {
-        // Give the main thread time to enter the wait loop before we clear
-        // indexing_in_progress.  1 ms is long enough on any realistic scheduler;
-        // the spin loop uses yield_now() so the main thread will yield quickly.
-        std::thread::sleep(Duration::from_millis(1));
-        server_bg.test_simulate_indexing_complete();
+    let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
+    server.test_notify_index_ready_wait_entered(wait_entered_tx);
+
+    // Issue workspace/symbol on another thread; it must block in the wait loop
+    // until this test completes indexing below.
+    let server_req = Arc::clone(&server);
+    let request = std::thread::spawn(move || {
+        server_req.test_handle_workspace_symbols(Some(serde_json::json!({"query": "process"})))
     });
 
-    // Issue workspace/symbol — the wait loop must spin until bg completes.
-    let result = server
-        .test_handle_workspace_symbols(Some(serde_json::json!({"query": "process"})))
-        .map_err(|e| format!("{e:?}"))?;
+    wait_entered_rx.recv_timeout(Duration::from_secs(1))?;
+    server.test_simulate_indexing_complete();
 
-    bg.join().map_err(|_| "background thread panicked")?;
+    let result = request.join().map_err(|_| "workspace/symbol thread panicked")?;
+    let result = result.map_err(|e| format!("{e:?}"))?;
 
     let symbols = result
         .as_ref()
@@ -1690,10 +1684,7 @@ fn test_workspace_symbol_open_doc_fallback_populates_folder_uri() -> TestResult 
     let server = LspServer::new();
 
     // Register two workspace folders.
-    server.test_set_workspace_folder_uris(&[
-        "file:///bug2_1514/svc-a",
-        "file:///bug2_1514/svc-b",
-    ]);
+    server.test_set_workspace_folder_uris(&["file:///bug2_1514/svc-a", "file:///bug2_1514/svc-b"]);
 
     // Open two documents (one per folder) via textDocument/didOpen.
     // The server's open-doc store will hold them and the AST path will populate symbols.
@@ -1735,13 +1726,13 @@ fn test_workspace_symbol_open_doc_fallback_populates_folder_uri() -> TestResult 
     // resolves_folder_uri_for_file injected from the registered workspace folders.
     for sym in &display_syms {
         let folder_uri = sym.get("workspaceFolderUri").and_then(|v| v.as_str());
-        assert!(
-            folder_uri.is_some(),
-            "resolve_folder_uri_for_file must inject workspaceFolderUri into open-doc \
-             fallback symbols (#1514 bug 2); symbol: {:?}",
-            sym
-        );
-        let uri = folder_uri.unwrap();
+        let Some(uri) = folder_uri else {
+            return Err(format!(
+                "resolve_folder_uri_for_file must inject workspaceFolderUri into open-doc \
+                 fallback symbols (#1514 bug 2); symbol: {sym:?}"
+            )
+            .into());
+        };
         assert!(
             uri == "file:///bug2_1514/svc-a" || uri == "file:///bug2_1514/svc-b",
             "workspaceFolderUri must be one of the registered folders; got: {:?}",
