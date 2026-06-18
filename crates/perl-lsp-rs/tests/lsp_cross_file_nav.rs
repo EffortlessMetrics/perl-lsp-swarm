@@ -175,7 +175,7 @@ for my $item (1..10) {
         method: "textDocument/references".to_string(),
         params: Some(json!({
             "textDocument": {"uri": "file:///lib/Utils.pm"},
-            "position": {"line": 4, "character": 5},  // on "process_data" definition
+            "position": {"line": 4, "character": 5},  // on process_lsp_cross_file_refs_1531 definition
             "context": {"includeDeclaration": true}
         })),
     };
