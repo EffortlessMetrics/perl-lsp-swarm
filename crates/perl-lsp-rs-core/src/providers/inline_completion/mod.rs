@@ -5239,9 +5239,7 @@ mod tests {
     }
 
     #[test]
-    fn input_that_hits_boundary_module_name_eq_try_tiny_returns_try_catch_block()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // input that hits the boundary: module.name == "Try::Tiny"
+    fn preferred_try_tiny_block_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let source = "use Try::Tiny;\ntry ";
         let character = "try ".encode_utf16().count() as u32;
@@ -5261,10 +5259,7 @@ mod tests {
     }
 
     #[test]
-    fn input_that_hits_boundary_ends_with_keyword_try_calls_preferred_try_tiny_block()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // input that hits the boundary: ends_with_keyword(prefix, "try ")
-        // && let Some(block) = provider.preferred_try_tiny_block(semantic_context)
+    fn add_candidates_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let source = "use Try::Tiny;\ntry ";
         let character = "try ".encode_utf16().count() as u32;
@@ -5275,6 +5270,27 @@ mod tests {
                 && item.filter_text.as_deref() == Some("try")),
             "`try ` prefix with Try::Tiny import must activate the Try::Tiny scaffold: {:?}",
             completions.items
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn add_candidates_call_presence_observer() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Try::Tiny;\ntry ";
+        let character = "try ".encode_utf16().count() as u32;
+        let prepared = provider.prepare_context(source, 1, character).ok_or("expected context")?;
+        let semantic_context = provider.semantic_context_for_source(source, &prepared);
+        let mut sink = InlineCandidateSink::new(&semantic_context);
+
+        SyntaxCandidateSource.add_candidates(&provider, &prepared, &semantic_context, &mut sink);
+
+        let items = sink.into_items();
+        assert!(
+            items.iter().any(|ranked| ranked.item.insert_text == "{\n    \n} catch {\n    \n};"
+                && ranked.item.filter_text.as_deref() == Some("try")),
+            "syntax candidate source must push the Try::Tiny scaffold for an imported try prefix: {:?}",
+            items.iter().map(|ranked| &ranked.item).collect::<Vec<_>>()
         );
         Ok(())
     }
