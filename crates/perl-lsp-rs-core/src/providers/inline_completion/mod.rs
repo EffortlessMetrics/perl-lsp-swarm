@@ -5240,7 +5240,7 @@ mod tests {
     }
 
     #[test]
-    fn input_that_hits_the_boundary_module_name_eq_try_tiny() {
+    fn preferred_try_tiny_block_boundary_discriminator() {
         let provider = InlineCompletionProvider::new();
         let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic_context = provider.semantic_context_for_prepared_context(&prepared);
@@ -6126,7 +6126,7 @@ mod tests {
     }
 
     #[test]
-    fn input_that_hits_the_boundary_context_expected_syntax_ne_expected_syntax_use_module() {
+    fn module_candidate_bonus_boundary_discriminator() {
         let provider = InlineCompletionProvider::new();
         let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
@@ -6150,7 +6150,7 @@ mod tests {
     }
 
     #[test]
-    fn input_that_hits_the_boundary_context_expected_syntax_ne_expected_syntax_method_name() {
+    fn receiver_candidate_bonus_boundary_discriminator() {
         let provider = InlineCompletionProvider::new();
         let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
