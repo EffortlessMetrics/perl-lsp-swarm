@@ -970,51 +970,6 @@ created = "2026-06-14"
 review_after = "2026-07-14"
 expires = "2026-09-30"
 
-# Coverage pack cap enforcement predicates (PR #1470): ripr#1429-class boundary
-# predicates with missing-discriminator weakly_exposed seams in route_receipt
-# new coverage-pack-cap logic.
-#
-# PR #1470 adds pack-cap enforcement to ci_route.rs: two predicates guard the
-# cap-exceeded branch:
-#   (A) line 547: `if total_eligible > COVERAGE_PACK_CAP {`
-#   (B) line 553: `if coverage_packs_skipped > 0 {`
-#
-# RIPR flags both as weakly_exposed with missing discriminators because:
-#   - The test inputs (single changed files) select at most 1 pack
-#   - RIPR cannot statically trace that the arithmetic predicates are
-#     exercised across the test-input boundary
-#   - Same class as ripr#1429 (predicate-infection-untraceable)
-#
-# Coverage evidence: Four inline #[cfg(test)] unit tests in ci_route.rs::tests
-# verify all code paths:
-#   - routing_classification_is_routing_skip_for_docs_only_change
-#   - routing_classification_is_routed_for_rust_source_change
-#   - coverage_packs_skipped_is_zero_when_under_cap
-#   - coverage_pack_cap_field_is_always_present_in_receipt
-#
-# These tests exist and were added by deep-reviewer to provide coverage.
-# The cap-exceeded branch (total_eligible > COVERAGE_PACK_CAP) cannot be
-# easily triggered in isolated unit tests without mocking the entire
-# coverage-pack-selection routing logic. The affected code is a safety gate
-# (pack count cap) exercised end-to-end by ci_route_cli integration tests
-# in xtask/tests/ci_route_cli.rs (ci_route_cli_keeps_inline_quality_focused_,
-# ci_route_cli_maps_agent_preflight_script_to_preflight_proof_pack, etc.).
-#
-# Suppression is narrow (single production file ci_route.rs, two lines). Remove
-# when ripr#1429 is fixed upstream or when the cap can be lowered for testing.
-# -----------------------------------------------------------------------------
-[[suppress]]
-id = "ripr-suppress-ci-route-pack-cap-predicates"
-kind = "predicate_infection_untraceable"
-paths = ["xtask/src/tasks/ci_route.rs"]
-classification = ["weakly_exposed"]
-owner = "proof-lane"
-issue = "EffortlessMetrics/ripr#1429"
-reason = "Two ripr#1429-class weakly_exposed seams in PR #1470 ci_route.rs coverage-pack-cap enforcement: (A) line 547 if total_eligible > COVERAGE_PACK_CAP; (B) line 553 if coverage_packs_skipped > 0. RIPR reports missing discriminators because test inputs (single changed files) select at most 1 pack — the arithmetic-boundary predicates cannot be triggered in isolated unit tests without mocking the entire pack-selection routing logic. RIPR cannot statically trace activation through the u64 arithmetic to the predicate branches (same class as parse_quote_operator_content and quality_baseline predicates). Coverage: four inline #[cfg(test)] lib tests in ci_route.rs verify all safe paths. Cap-exceeded branch is exercised end-to-end by ci_route_cli integration tests (ci_route_cli_keeps_inline_quality_focused, ci_route_cli_maps_*_script tests). Suppression is narrow: single production file, two-line scope. Remove when ripr#1429 is fixed upstream or cap is lowered for isolated test coverage."
-created = "2026-06-15"
-review_after = "2026-07-15"
-expires = "2026-09-30"
-
 # Negative bareword fat arrow test file (PR #1355): ripr#1428-class
 # false-positive in newly added test file. Tracks EffortlessMetrics/ripr#1428
 # (RIPR flags test-harness plumbing in newly added test files as production
