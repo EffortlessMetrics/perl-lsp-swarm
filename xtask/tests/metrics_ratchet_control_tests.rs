@@ -1,13 +1,15 @@
 use std::fs;
 use std::path::PathBuf;
 
+use serde_json::Value;
+
 fn project_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     dir.pop();
     dir
 }
 
-fn committed_metric_baselines() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn committed_scorecard_baselines() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let root = project_root();
     let baseline_dir = root.join(".ci/metrics/baselines");
     let mut baselines = Vec::new();
@@ -16,6 +18,11 @@ fn committed_metric_baselines() -> Result<Vec<String>, Box<dyn std::error::Error
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)?;
+        let baseline: Value = serde_json::from_str(&raw)?;
+        if !is_scorecard_ratchet_baseline(&baseline) {
             continue;
         }
         let stem = path
@@ -29,13 +36,19 @@ fn committed_metric_baselines() -> Result<Vec<String>, Box<dyn std::error::Error
     Ok(baselines)
 }
 
+fn is_scorecard_ratchet_baseline(baseline: &Value) -> bool {
+    baseline.get("subsystem").and_then(Value::as_str).is_some()
+        && baseline.get("floor_metrics").and_then(Value::as_object).is_some()
+        && baseline.get("improvement_metrics").and_then(Value::as_object).is_some()
+}
+
 #[test]
 fn ci_metrics_ratchet_recipe_checks_every_committed_baseline()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let justfile = fs::read_to_string(root.join("justfile"))?;
 
-    for subsystem in committed_metric_baselines()? {
+    for subsystem in committed_scorecard_baselines()? {
         let command = format!("metrics ratchet-check {subsystem}");
         assert!(
             justfile.contains(&command),
@@ -51,7 +64,7 @@ fn ratchet_guide_lists_every_committed_baseline() -> Result<(), Box<dyn std::err
     let root = project_root();
     let guide = fs::read_to_string(root.join("docs/project/metrics/RATCHET.md"))?;
 
-    for subsystem in committed_metric_baselines()? {
+    for subsystem in committed_scorecard_baselines()? {
         let path = format!(".ci/metrics/baselines/{subsystem}.json");
         assert!(guide.contains(&path), "RATCHET.md must list `{path}`");
     }
