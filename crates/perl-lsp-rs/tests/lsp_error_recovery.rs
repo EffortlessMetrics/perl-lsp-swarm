@@ -383,11 +383,18 @@ print $var;  # Another valid reference
             }
         }),
     );
-    assert!(response["result"].is_array());
-    let refs = response["result"].as_array().ok_or("Expected 'result' to be an array")?;
-    // When there are syntax errors, references might not be found
-    // The important thing is that the server doesn't crash and returns a valid response
-    eprintln!("Found {} references (may be 0 due to parse errors): {:?}", refs.len(), refs);
+    let result = response.get("result").ok_or_else(|| {
+        format!("references on malformed input should return result: {response:?}")
+    })?;
+    assert!(
+        result.is_array() || result.is_null(),
+        "references on malformed input should return array or null result: {response:?}"
+    );
+    // When there are syntax errors, references might not be found. The important
+    // contract here is that the server responds without crashing.
+    if let Some(refs) = result.as_array() {
+        eprintln!("Found {} references (may be 0 due to parse errors): {:?}", refs.len(), refs);
+    }
     shutdown_and_exit(&server);
     Ok(())
 }

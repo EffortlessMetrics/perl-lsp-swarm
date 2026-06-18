@@ -631,9 +631,9 @@ fn test_completion_details() -> Result<(), Box<dyn std::error::Error>> {
     // Documentation may be in a nested structure
     if let Some(doc) = argv_item.get("documentation") {
         if doc.is_string() {
-            assert_eq!(doc, "Command line arguments");
+            assert_eq!(doc, "Command-line arguments to the script");
         } else if let Some(value) = doc.get("value") {
-            assert_eq!(value, "Command line arguments");
+            assert_eq!(value, "Command-line arguments to the script");
         }
     }
 

@@ -6,6 +6,7 @@ use perl_lsp::features::code_lens_provider::{CodeLensProvider, get_shebang_lens}
 use perl_lsp::{JsonRpcRequest, LspServer};
 use perl_parser::Parser;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -37,6 +38,32 @@ fn send_initialized(server: &LspServer) {
     server.handle_request(initialized_notification);
 }
 
+fn decoded_semantic_token_lines(data: &[Value]) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+    let mut line = 0u32;
+    let mut lines = Vec::new();
+    let mut chunks = data.chunks_exact(5);
+
+    for chunk in &mut chunks {
+        let delta_line = chunk[0].as_u64().ok_or("semantic token delta line must be numeric")?;
+        let delta_line = u32::try_from(delta_line)?;
+
+        for value in &chunk[1..] {
+            u32::try_from(value.as_u64().ok_or("semantic token value must be numeric")?)?;
+        }
+
+        if delta_line != 0 {
+            line = line.saturating_add(delta_line);
+        }
+        lines.push(line);
+    }
+
+    if !chunks.remainder().is_empty() {
+        return Err("semantic token data length must be a multiple of five".into());
+    }
+
+    Ok(lines)
+}
+
 #[test]
 fn test_lsp_initialization() -> TestResult {
     let server = create_test_server();
@@ -56,10 +83,15 @@ fn test_lsp_initialization() -> TestResult {
         capabilities["capabilities"]["textDocumentSync"].is_object()
             || capabilities["capabilities"]["textDocumentSync"] == 2
     );
-    assert_eq!(
-        capabilities["capabilities"]["completionProvider"]["triggerCharacters"],
-        json!(["$", "@", "%", ">", ":", "-"])
-    );
+    let triggers = capabilities["capabilities"]["completionProvider"]["triggerCharacters"]
+        .as_array()
+        .ok_or("completion triggerCharacters must be an array")?;
+    let trigger_set: HashSet<_> = triggers.iter().filter_map(Value::as_str).collect();
+    for trigger in ["$", "@", "%", ">", ":", "-"] {
+        assert!(trigger_set.contains(trigger), "missing completion trigger {trigger}");
+    }
+    assert!(!trigger_set.contains("->"));
+    assert!(!trigger_set.contains("::"));
     assert_eq!(capabilities["capabilities"]["hoverProvider"], true);
     // workspaceSymbolProvider can be either bool or object with resolveProvider
     match &capabilities["capabilities"]["workspaceSymbolProvider"] {
@@ -704,11 +736,12 @@ print $var3;
     assert!(tokens["data"].is_array());
     let data = tokens["data"].as_array().ok_or("Expected data array")?;
 
-    // Should only have tokens from lines 1-3, not the print statements
-    // Line 1: $var2 declaration
-    // Line 2: $var3 declaration
+    // Should only have tokens from requested lines, not the whole document.
+    let token_lines = decoded_semantic_token_lines(data)?;
+    assert!(token_lines.iter().all(|line| (1..=3).contains(line)));
+
+    // Line 1: $var2 declaration; line 2: $var3 declaration.
     assert!(!data.is_empty());
-    assert!(data.len() < 30); // Should not include all tokens
     Ok(())
 }
 

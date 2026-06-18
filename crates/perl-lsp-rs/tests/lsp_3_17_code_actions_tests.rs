@@ -5,6 +5,7 @@
 mod support;
 
 use serde_json::json;
+use std::time::Duration;
 use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -17,7 +18,7 @@ fn test_code_action_3_17() -> TestResult {
     harness.initialize(None)?;
     harness.open("file:///test.pl", "$undefined")?;
 
-    let response = harness.request(
+    let response = harness.request_with_timeout(
         "textDocument/codeAction",
         json!({
             "textDocument": { "uri": "file:///test.pl" },
@@ -31,6 +32,7 @@ fn test_code_action_3_17() -> TestResult {
                 "triggerKind": 1  // Invoked
             }
         }),
+        Duration::from_secs(2),
     )?;
 
     assert!(response.is_null() || response.is_array());

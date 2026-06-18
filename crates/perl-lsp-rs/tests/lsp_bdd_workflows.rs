@@ -821,6 +821,15 @@ my $bar = Bar::process_data();
 
     harness.wait_for_symbol("process_data", Some(&foo_uri), Duration::from_secs(10))?;
     harness.wait_for_symbol("process_data", Some(&bar_uri), Duration::from_secs(10))?;
+    let (foo_call_line, foo_call_char) = find_position(main, "process_data();");
+    wait_for_references_uris(
+        &mut harness,
+        &main_uri,
+        foo_call_line,
+        foo_call_char,
+        &[&foo_uri, &main_uri],
+        Duration::from_secs(10),
+    )?;
     harness.barrier();
 
     scenario.when("renaming Foo::process_data from the declaration in Foo.pm");

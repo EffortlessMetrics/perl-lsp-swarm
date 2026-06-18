@@ -623,6 +623,31 @@ created = "2026-06-13"
 review_after = "2026-07-13"
 expires = "2026-09-30"
 
+# -----------------------------------------------------------------------------
+# AC12 cancellation performance receipt: test-only distribution oracle.
+#
+# PR #1538 refreshes stale AC12 test expectations after the cancellation contract
+# settled on p95/p99/p99.9 distribution thresholds plus a catastrophic-outlier
+# budget, rather than a brittle per-sample latency assertion. RIPR's diff-scoped
+# analysis flags the edited assertion/reporting lines in this integration test as
+# weakly_exposed production seams even though the file is a test receipt surface.
+#
+# This is the same ripr#1428 class as ripr-suppress-lsp-smoke-envelope-tests:
+# test oracle/reporting plumbing in a test file should not block as a production
+# exposure gap. Remove when ripr can classify test-only oracle edits directly.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-ac12-cancellation-performance-test-oracle"
+kind = "test_receipt_surface"
+paths = ["crates/perl-lsp-rs/tests/lsp_cancellation_performance_tests.rs"]
+classification = ["weakly_exposed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #1538 changes AC12 cancellation-performance test oracle/reporting lines only: the stale per-sample latency assertion was replaced by the documented p95/p99/p99.9 distribution contract plus a catastrophic-outlier budget. Focused lsp_cancellation_performance_tests proof covers the test behavior; RIPR's diff-scoped analysis treats the assertion and println plumbing in this integration test as weakly_exposed production seams. Suppression is narrow to this test file and test-receipt class. Remove when ripr can classify test-only oracle edits directly."
+created = "2026-06-18"
+review_after = "2026-07-18"
+expires = "2026-09-30"
+
 # Panic-guard test files (PR #1372): ripr#1428-class false-positives in newly
 # added test files. Tracks EffortlessMetrics/ripr#1428 (RIPR flags test-harness
 # plumbing in newly added test files as production seams).
@@ -987,6 +1012,57 @@ issue = "EffortlessMetrics/ripr#1429"
 reason = "PR #624 allow_scopes.rs has 5 weakly_gripped seams that are ripr#1429-class predicate/iterator/closure patterns: (A) file_has_print_allow uses iter().take(30).any(closure) — RIPR cannot statically trace closure activation from test inputs through iterator combinators; (B) line_is_whole_line_comment uses starts_with predicate — RIPR cannot attribute boundary coverage statically; (C) observe_line/apply_brace_delta use brace counting arithmetic with saturating_sub — signed/unsigned boundary not statically traceable. All seams have inline unit tests (file_has_print_allow_detects_inner_print_stderr, _only_checks_first_30_lines, line_is_whole_line_comment_true/false, apply_brace_delta_saturates_at_zero_on_excess_closes, observe_line_while_in_brace_scope_applies_delta) and are exercised end-to-end by check_print_in_lib_test.rs integration tests. Suppression is narrow: single new production file, PR #624. Remove when ripr#1429 is fixed upstream."
 created = "2026-06-15"
 review_after = "2026-07-15"
+expires = "2026-09-30"
+
+# =============================================================================
+# PR #1538 references/folding observer seams: ripr#1429-class static tracer
+# limitation on inline proof names and closure/call activation.
+#
+# This PR changes two production files:
+#   - references.rs: removes a reentrant open-document reference fallback lock
+#     by passing the already-held document view to
+#     search_document_texts_for_references.
+#   - symbols.rs: centralizes LSP folding-range multiline guards.
+#
+# Focused inline tests cover the behavior and boundary inputs directly:
+#   - search_document_texts_for_references_*_cap_zero_returns_empty
+#   - search_document_texts_for_references_*_needle_is_empty_or_cap_zero_*
+#   - search_document_texts_for_references_*_out_len_reaches_cap_stops_scan
+#   - handle_references_inner_call_presence_observer_search_document_texts_*
+#   - push_multiline_folding_range_*_end_line_gt_start_line_*
+#   - lsp_inclusive_multiline_end_line_*_lsp_end_line_gt_start_line_*
+#   - handle_folding_range_call_presence_observer_push_multiline_folding_range_*
+#
+# Local focused proof before suppression:
+#   - rtk cargo test -p perl-lsp-rs --lib --profile agent --locked
+#     runtime::language::references::tests -- --nocapture
+#   - rtk cargo test -p perl-lsp-rs --lib --profile agent --locked
+#     runtime::language::symbols::tests -- --nocapture
+#
+# CI RIPR run 27763517480 saw the exact discriminator strings in the diff, but
+# still reported predicate_boundary/call_presence seams as uncredited. This is
+# the same static-tracing limitation tracked by ripr#1429. Suppression is narrow:
+# two touched production files, the specific RIPR classes emitted by this PR,
+# and a short review window.
+# =============================================================================
+[[suppress]]
+id = "ripr-suppress-1538-references-folding-static-proof-names"
+kind = "predicate_infection_untraceable"
+paths = [
+  "crates/perl-lsp-rs/src/runtime/language/references.rs",
+  "crates/perl-lsp-rs/src/runtime/language/symbols.rs",
+]
+classification = [
+  "predicate_boundary",
+  "call_presence",
+  "weakly_gripped",
+  "activation_unknown",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #1538 changes references.rs open-document fallback scanning and symbols.rs folding-range guard helpers. RIPR 0.9.0 continues to report predicate_boundary and call_presence seams even after focused inline tests with exact candidate discriminator strings were added: search_document_texts_for_references boundary tests for needle.is_empty() || cap == 0, cap == 0, and out.len() >= cap; handle_references_inner call-presence observer for documents.iter(), doc_uri.as_str(), and doc.text.as_str(); push_multiline_folding_range/lsp_inclusive_multiline_end_line boundary tests; and handle_folding_range call-presence observer tests for data-section and heredoc folding. Local proof passed the references and symbols inline test modules, and CI run 27763517480 showed RIPR saw the exact strings in the diff but did not credit the seams. This is a ripr#1429 static-tracing limitation for inline proof names and closure/call activation, not a missing behavioral test. Remove when RIPR can trace these inline boundary/call observers or targeted mutation replaces the static exception."
+created = "2026-06-18"
+review_after = "2026-07-18"
 expires = "2026-09-30"
 
 # =============================================================================

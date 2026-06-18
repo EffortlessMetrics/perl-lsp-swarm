@@ -1738,8 +1738,14 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_real_workspace_false_all
 
     let fresh_explanation = explain_provider_decision(&server, "rename")?;
     let fresh_receipt = request_receipt(&fresh_explanation)?;
-    assert_eq!(fresh_receipt.get("reason").and_then(Value::as_str), Some("same_file_semantic"));
-    assert_eq!(fresh_receipt.get("fallback_state").and_then(Value::as_str), Some("none"));
+    assert_eq!(
+        fresh_receipt.get("reason").and_then(Value::as_str),
+        Some("full_index_workspace_edit")
+    );
+    assert_eq!(
+        fresh_receipt.get("fallback_state").and_then(Value::as_str),
+        Some("workspace_index")
+    );
     assert_eq!(
         fresh_receipt.get("live_provider_edit_count").and_then(Value::as_u64),
         u64::try_from(fresh_edit_count).ok()
@@ -1747,9 +1753,12 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_real_workspace_false_all
     let fresh_copyable_receipt = copyable_request_receipt(&fresh_explanation)?;
     assert_eq!(
         fresh_copyable_receipt.get("reason").and_then(Value::as_str),
-        Some("same_file_semantic")
+        Some("full_index_workspace_edit")
     );
-    assert_eq!(fresh_copyable_receipt.get("fallback_state").and_then(Value::as_str), Some("none"));
+    assert_eq!(
+        fresh_copyable_receipt.get("fallback_state").and_then(Value::as_str),
+        Some("workspace_index")
+    );
     assert_eq!(
         fresh_copyable_receipt.get("live_provider_edit_count").and_then(Value::as_u64),
         u64::try_from(fresh_edit_count).ok()

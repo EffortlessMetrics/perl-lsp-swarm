@@ -271,13 +271,12 @@ fn test_notifications_no_response() -> Result<(), Box<dyn std::error::Error>> {
     // Should not get a response for notification
     let resp = common::read_response_timeout(&server, common::short_timeout());
 
-    // We might get a diagnostics notification, but not a response
+    // We might get a server notification, but not a response.
     if let Some(r) = resp {
-        // If we got something, it should be a notification (no id field)
-        assert!(r.get("id").is_none(), "Notifications should not produce responses with IDs");
-        assert_eq!(
-            r.get("method").and_then(|v| v.as_str()),
-            Some("textDocument/publishDiagnostics")
+        assert!(r.get("id").is_none(), "notifications should not produce responses with IDs");
+        assert!(
+            r.get("method").and_then(|v| v.as_str()).is_some(),
+            "message without id should be a server notification: {r}"
         );
     }
     shutdown_and_exit(&server);

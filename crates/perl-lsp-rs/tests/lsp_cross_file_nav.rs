@@ -161,7 +161,8 @@ use warnings;
 use Utils;
 
 for (1..10) {
-    print Utils::process_data($_), "\n";
+    my $value = Utils::process_data($_);
+    print "$value\n";
 }
 "#,
     );

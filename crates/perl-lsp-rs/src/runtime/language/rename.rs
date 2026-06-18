@@ -865,7 +865,9 @@ impl LspServer {
                                         None => {}
                                     }
                                 }
-                            } else if let Some(key) = workspace_symbol_key.as_ref() {
+                            }
+
+                            if let Some(key) = workspace_symbol_key.as_ref() {
                                 let edits = crate::features::workspace_rename::build_rename_edit(
                                     idx.as_ref(),
                                     key,
@@ -881,9 +883,9 @@ impl LspServer {
                                 if edits.is_empty() {
                                     // Fall through to same-file rename.
                                 } else {
-                                    let edit_count = edits.len();
                                     let ws_edit =
                                         crate::features::workspace_rename::to_workspace_edit(edits);
+                                    let edit_count = Self::workspace_edit_change_count(&ws_edit);
                                     self.record_rename_provider_decision_trace(
                                         Some(uri),
                                         current_symbol.as_deref(),

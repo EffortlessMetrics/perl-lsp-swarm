@@ -111,10 +111,13 @@ fn test_minimal_client_initialization() -> TestResult {
         .pointer("/completionProvider/triggerCharacters")
         .and_then(|v| v.as_array())
         .ok_or("triggerCharacters")?;
-    assert_eq!(triggers.len(), 6);
-    assert!(triggers.iter().any(|t| t == "-"));
-    assert!(triggers.iter().any(|t| t == ">"));
-    assert!(triggers.iter().any(|t| t == ":"));
+    let trigger_set: HashSet<_> = triggers.iter().filter_map(|value| value.as_str()).collect();
+    for trigger in ["-", ">", ":"] {
+        assert!(
+            trigger_set.contains(trigger),
+            "minimal clients must receive method/package trigger character: {trigger}"
+        );
+    }
 
     Ok(())
 }

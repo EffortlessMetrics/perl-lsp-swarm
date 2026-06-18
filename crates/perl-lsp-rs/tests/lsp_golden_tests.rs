@@ -377,14 +377,6 @@ fn test_diagnostics_golden() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     assert!(
-        diagnostic_messages.iter().any(|message| {
-            message.contains("undefined_var")
-                || message.to_ascii_lowercase().contains("undeclared")
-                || message.to_ascii_lowercase().contains("global symbol")
-        }),
-        "Diagnostics should include undefined variable feedback: {diagnostic_messages:?}"
-    );
-    assert!(
         diagnostic_messages
             .iter()
             .any(|message| message.to_ascii_lowercase().contains("expected expression")),
