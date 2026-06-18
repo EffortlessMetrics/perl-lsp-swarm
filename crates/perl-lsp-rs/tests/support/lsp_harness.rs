@@ -779,12 +779,16 @@ impl LspHarness {
         let start = Instant::now();
         let timeout = Duration::from_millis(timeout_ms);
 
-        // Wait a bit for notifications to arrive
+        // Wait for the requested notification kind to arrive. A filtered drain
+        // must not stop early just because an unrelated notification was queued.
         while start.elapsed() < timeout {
             thread::sleep(Duration::from_millis(10));
 
             let notifications = self.notification_buffer.lock();
-            if !notifications.is_empty() {
+            let matching_notification = method.map_or(!notifications.is_empty(), |filter_method| {
+                notifications.iter().any(|notif| notif["method"].as_str() == Some(filter_method))
+            });
+            if matching_notification {
                 break;
             }
         }
