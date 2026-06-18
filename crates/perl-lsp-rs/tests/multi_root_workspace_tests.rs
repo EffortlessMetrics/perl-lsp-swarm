@@ -1499,8 +1499,8 @@ fn test_completion_does_not_leak_symbols_across_folders() -> TestResult {
 /// 4. Issue `workspace/symbol` for "run" — both folders define it.
 /// 5. Assert that both results carry the correct distinct workspaceFolderUri.
 ///
-/// No sleep — the test directly exercises both the wait-for-ready path (Bug 1)
-/// and the workspace_folder_uri population (Bug 2) added by the fix.
+/// This test directly exercises both the wait-for-ready path (Bug 1) and the
+/// workspace_folder_uri population (Bug 2) added by the fix.
 #[test]
 #[cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
 fn test_workspace_symbol_multi_root_deterministic_returns_both_folders() -> TestResult {
@@ -1584,10 +1584,10 @@ fn test_workspace_symbol_multi_root_deterministic_returns_both_folders() -> Test
     Ok(())
 }
 
-/// Bug 1 regression: `wait_for_index_ready_if_building` must actually spin when
+/// Bug 1 regression: `wait_for_index_ready_if_building` must actually wait when
 /// `indexing_in_progress=true` and release once indexing completes.
 ///
-/// This test exercises the real spin-wait code path by:
+/// This test exercises the real wait code path by:
 /// 1. Indexing files into the coordinator while in Building state.
 /// 2. Setting `indexing_in_progress=true` (simulating the background thread active).
 /// 3. Registering a test-only wait-entry observer.
@@ -1598,8 +1598,8 @@ fn test_workspace_symbol_multi_root_deterministic_returns_both_folders() -> Test
 /// indexing was pre-completed.  Now `indexing_in_progress=true` at request time,
 /// so `wait_for_index_ready_if_building` actually loops.
 ///
-/// No sleep: the test uses a channel from the wait loop itself, so it proves the
-/// actual spin-wait path before releasing the simulated indexing completion.
+/// The test uses a channel from the wait loop itself, so it proves the actual
+/// wait path before releasing the simulated indexing completion.
 #[test]
 #[serial_test::serial]
 #[cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
@@ -1608,56 +1608,69 @@ fn test_workspace_symbol_waits_for_index_when_building_at_request_time() -> Test
     use std::sync::Arc;
     use std::time::Duration;
 
-    let server = Arc::new(LspServer::new());
+    for iteration in 0..100 {
+        let server = Arc::new(LspServer::new());
 
-    server.test_set_workspace_folder_uris(&["file:///bug1_1514/svc-a", "file:///bug1_1514/svc-b"]);
+        server.test_set_workspace_folder_uris(&[
+            "file:///bug1_1514/svc-a",
+            "file:///bug1_1514/svc-b",
+        ]);
 
-    // Index both files in Building state.
-    server.test_index_file_in_building_state(
-        "file:///bug1_1514/svc-a/lib/App.pm",
-        "package App;\nsub process { return 1; }\n1;\n",
-    )?;
-    server.test_index_file_in_building_state(
-        "file:///bug1_1514/svc-b/lib/App.pm",
-        "package App;\nsub process { return 2; }\n1;\n",
-    )?;
+        server.test_index_file_in_building_state(
+            "file:///bug1_1514/svc-a/lib/App.pm",
+            "package App;\nsub process { return 1; }\n1;\n",
+        )?;
+        server.test_index_file_in_building_state(
+            "file:///bug1_1514/svc-b/lib/App.pm",
+            "package App;\nsub process { return 2; }\n1;\n",
+        )?;
 
-    // Set the flag to true BEFORE calling the handler, so the wait actually spins.
-    // (In production, start_workspace_indexing sets this via compare-exchange.)
-    server.test_simulate_indexing_start();
+        server.test_simulate_indexing_start();
 
-    let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
-    server.test_notify_index_ready_wait_entered(wait_entered_tx);
+        let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
+        server.test_notify_index_ready_wait_entered(wait_entered_tx);
 
-    // Issue workspace/symbol on another thread; it must block in the wait loop
-    // until this test completes indexing below.
-    let server_req = Arc::clone(&server);
-    let request = std::thread::spawn(move || {
-        server_req.test_handle_workspace_symbols(Some(serde_json::json!({"query": "process"})))
-    });
+        let server_req = Arc::clone(&server);
+        let request = std::thread::spawn(move || {
+            server_req.test_handle_workspace_symbols(Some(serde_json::json!({"query": "process"})))
+        });
 
-    wait_entered_rx.recv_timeout(Duration::from_secs(1))?;
-    server.test_simulate_indexing_complete();
+        wait_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|e| format!("iteration {iteration}: wait loop did not start: {e}"))?;
+        server.test_simulate_indexing_complete();
 
-    let result = request.join().map_err(|_| "workspace/symbol thread panicked")?;
-    let result = result.map_err(|e| format!("{e:?}"))?;
+        let result = request
+            .join()
+            .map_err(|_| format!("iteration {iteration}: workspace/symbol thread panicked"))?;
+        let result = result.map_err(|e| format!("iteration {iteration}: {e:?}"))?;
 
-    let symbols = result
-        .as_ref()
-        .and_then(|v| v.as_array())
-        .ok_or("workspace/symbol must return an array")?;
+        let symbols = result.as_ref().and_then(|v| v.as_array()).ok_or_else(|| {
+            format!("iteration {iteration}: workspace/symbol must return an array")
+        })?;
 
-    let process_syms: Vec<&serde_json::Value> =
-        symbols.iter().filter(|s| s["name"].as_str() == Some("process")).collect();
+        let process_syms: Vec<&serde_json::Value> =
+            symbols.iter().filter(|s| s["name"].as_str() == Some("process")).collect();
 
-    assert!(
-        process_syms.len() >= 2,
-        "wait_for_index_ready_if_building must yield results from the Ready index \
-         once the background scan completes (#1514 bug 1 — spin-wait path); \
-         got {} symbols: {:?}",
-        process_syms.len(),
-        symbols
-    );
+        assert!(
+            process_syms.len() >= 2,
+            "iteration {iteration}: wait_for_index_ready_if_building must yield results from the \
+             Ready index once the background scan completes (#1514 bug 1); got {} symbols: {:?}",
+            process_syms.len(),
+            symbols
+        );
+
+        let folder_uris: std::collections::BTreeSet<&str> = process_syms
+            .iter()
+            .filter_map(|s| s.get("workspaceFolderUri").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            folder_uris.contains("file:///bug1_1514/svc-a")
+                && folder_uris.contains("file:///bug1_1514/svc-b"),
+            "iteration {iteration}: both workspace roots must be represented; got {:?}",
+            folder_uris
+        );
+    }
 
     Ok(())
 }

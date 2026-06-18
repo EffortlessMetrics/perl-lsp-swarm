@@ -255,8 +255,8 @@ impl LspServer {
     ///
     /// Uses routing helper for state-aware behavior:
     /// - **Ready state**: Full workspace index search with cooperative yielding
-    /// - **Building state**: Wait deterministically for index readiness (bounded spin,
-    ///   no sleep), then serve from the ready index (fix for issue #1514 race condition)
+    /// - **Building state**: Wait briefly for index readiness, then serve from
+    ///   the ready index when it completes (fix for issue #1514 race condition)
     /// - **Degraded state**: Query partial index first; fall through to open-doc
     ///   search only when the partial index is also empty (Gap 2 fix, issue #4152)
     pub(super) fn handle_workspace_symbols_v2(
@@ -277,8 +277,8 @@ impl LspServer {
         #[cfg(feature = "workspace")]
         {
             // If the workspace is currently being indexed (Building state), wait
-            // deterministically for readiness before serving — no sleep, bounded by
-            // INDEX_READY_WAIT_MS.  This eliminates the ~60% intermittent-empty race
+            // briefly for readiness before serving, bounded by INDEX_READY_WAIT_MS.
+            // This eliminates the ~60% intermittent-empty race
             // that occurs when workspace/symbol arrives right after `initialized`.
             self.wait_for_index_ready_if_building();
 
@@ -377,15 +377,14 @@ impl LspServer {
         self.search_open_documents_for_symbols(query, cap)
     }
 
-    /// Spin-wait (yield-based, no sleep) until the workspace index transitions out of
-    /// Building state or the deadline expires.
+    /// Wait briefly until the workspace index transitions out of Building state
+    /// or the deadline expires.
     ///
     /// Called by `handle_workspace_symbols_v2` before routing so that a
     /// `workspace/symbol` request issued immediately after `initialized` always
     /// sees a Ready index rather than an empty partial index.
     ///
-    /// The wait is deterministic: it yields the thread on every iteration and
-    /// checks the wall-clock deadline — no `sleep` or condvar required.
+    /// The wait is bounded and only polls while `indexing_in_progress` is set.
     /// Bounded by `INDEX_READY_WAIT_MS` milliseconds (default 2 s).
     #[cfg(feature = "workspace")]
     fn wait_for_index_ready_if_building(&self) {
@@ -423,9 +422,9 @@ impl LspServer {
                         );
                         break;
                     }
-                    // Cooperative yield — no sleep, hand the CPU back to the
-                    // indexing thread so it can make progress.
-                    std::thread::yield_now();
+                    // Keep the wait cheap under slow indexing while still
+                    // releasing quickly once the coordinator reaches Ready.
+                    std::thread::sleep(Duration::from_millis(1));
                 }
             }
         }
@@ -439,42 +438,13 @@ impl LspServer {
     ///
     /// Returns `None` when no workspace folder matches the file URI.
     ///
-    /// # Trailing-slash normalization
-    ///
-    /// The comparison appends a `/` to each folder URI before checking
-    /// `file_uri.starts_with(folder/)` so that a folder `file:///a/svc` does
-    /// NOT accidentally match `file:///a/svc-2/lib/Foo.pm`.  The longest
-    /// matching folder wins (deepest-nesting tiebreak).
-    ///
-    /// # Windows drive-letter case
-    ///
-    /// Document URIs stored in the open-document map are normalized via
-    /// [`LspServer::normalize_uri_key`] (lowercase drive letter, e.g. `c:`).
-    /// Workspace folder URIs are stored as-is from the LSP client.  In practice
-    /// VSCode normalizes both to lowercase, so mismatches are rare; but if the
-    /// client sends a folder URI with an uppercase drive letter the comparison
-    /// may fail on Windows.  The pre-existing `workspace_folder_matches_doc_uri`
-    /// helper in `types.rs` avoids this by using `PathBuf::starts_with`
-    /// (case-insensitive on Windows).  A future cleanup should unify the two
-    /// approaches (see follow-up issue #1530).
+    /// Delegates to the same path-aware best-folder helper used by module
+    /// resolution and completion, so nested workspaces and Windows path casing
+    /// follow the existing runtime ownership rule.
     #[cfg(feature = "workspace")]
     pub(crate) fn resolve_folder_uri_for_file(&self, file_uri: &str) -> Option<String> {
         let folders = self.workspace_folders.lock();
-        let mut best: Option<&str> = None;
-        for folder in folders.iter() {
-            let folder_with_slash = if folder.uri.ends_with('/') {
-                folder.uri.as_str().to_string()
-            } else {
-                format!("{}/", folder.uri)
-            };
-            if file_uri.starts_with(folder_with_slash.as_str()) || file_uri == folder.uri.as_str() {
-                match best {
-                    Some(existing) if existing.len() >= folder.uri.len() => {}
-                    _ => best = Some(folder.uri.as_str()),
-                }
-            }
-        }
-        best.map(ToOwned::to_owned)
+        best_workspace_folder_for_doc(&folders, file_uri).map(|folder| folder.uri.clone())
     }
 
     /// Search only open documents for symbols (degraded/fallback path)
@@ -2722,6 +2692,93 @@ mod tests {
     fn test_module_name_unicode_letter_after_rejected() {
         // Unicode letters still extend identifiers; do not match inside "BaseΔ".
         assert!(!module_name_appears_in_text("use BaseΔ;", "Base"));
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn test_api_helpers_register_workspace_folders_and_index_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+
+        server.test_set_workspace_folder_uris(&["file:///root/svc", "file:///root/svc/nested"]);
+
+        {
+            let folders = server.workspace_folders.lock();
+            if folders.len() != 2 {
+                return Err(format!("expected 2 workspace folders, got {}", folders.len()).into());
+            }
+            if folders.first().map(|folder| folder.uri.as_str()) != Some("file:///root/svc") {
+                return Err("first workspace folder URI was not registered".into());
+            }
+        }
+
+        let matched = server
+            .resolve_folder_uri_for_file("file:///root/svc/nested/lib/Foo.pm")
+            .ok_or("expected nested workspace folder match")?;
+        if matched != "file:///root/svc/nested" {
+            return Err(format!("expected longest workspace folder match, got {matched}").into());
+        }
+        if server.resolve_folder_uri_for_file("file:///root/svc-other/lib/Foo.pm").is_some() {
+            return Err("workspace folder match crossed folder-name boundary".into());
+        }
+
+        server.test_index_file_in_building_state(
+            "file:///root/svc/lib/Foo.pm",
+            "package Foo;\nsub bar { }\n",
+        )?;
+        server.test_simulate_indexing_start();
+        if !server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("indexing_in_progress was not set by test helper".into());
+        }
+
+        server.test_simulate_indexing_complete();
+        if server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("indexing_in_progress was not cleared by completion helper".into());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn wait_for_index_ready_notifies_observer_and_returns_when_ready()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.test_index_file_in_building_state(
+            "file:///ready-wait/lib/Foo.pm",
+            "package Foo;\nsub ready_symbol { }\n",
+        )?;
+        server.test_simulate_indexing_start();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        server.test_notify_index_ready_wait_entered(sender);
+
+        std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+            let waiter = scope.spawn(|| {
+                server.wait_for_index_ready_if_building();
+            });
+
+            receiver.recv_timeout(std::time::Duration::from_secs(1))?;
+            server.test_simulate_indexing_complete();
+            waiter.join().map_err(|_| "index-ready wait thread panicked")?;
+            Ok(())
+        })?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn wait_for_index_ready_returns_on_degraded_state() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.test_simulate_indexing_start();
+        let coordinator = server.coordinator().ok_or("expected workspace coordinator")?;
+        coordinator.transition_to_degraded(
+            crate::workspace_index::DegradationReason::ScanTimeout { elapsed_ms: 1 },
+        );
+
+        server.wait_for_index_ready_if_building();
+        Ok(())
     }
 
     #[test]
