@@ -179,10 +179,24 @@ fn ratchet_output_mentions_baseline_file() {
 fn output_contains_numeric_counts() {
     let (stdout, stderr, _) = run_xtask_published_crate_count();
     let combined = format!("{}\n{}", stdout, stderr);
+    let crate_count_output = combined
+        .lines()
+        .filter(|line| line.contains("published-crate-count:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !crate_count_output.trim().is_empty(),
+        "Output should contain a published-crate-count status line. \
+         Got stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
 
     // Extract all numbers from the output using regex
     let number_regex = regex::Regex::new(r"\d+").expect("Invalid number regex");
-    let numbers: Vec<&str> = number_regex.find_iter(&combined).map(|m| m.as_str()).collect();
+    let numbers: Vec<&str> =
+        number_regex.find_iter(&crate_count_output).map(|m| m.as_str()).collect();
 
     // There should be at least one number in the output (the count)
     assert!(
@@ -201,7 +215,7 @@ fn output_contains_numeric_counts() {
             num < 10000,
             "Number {} seems too large for a crate count. Output: {}",
             num,
-            combined
+            crate_count_output
         );
     }
 }
