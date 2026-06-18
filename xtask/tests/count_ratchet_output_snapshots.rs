@@ -193,7 +193,8 @@ fn output_contains_numeric_counts() {
         stderr
     );
 
-    // Extract all numbers from the output using regex
+    // Extract counts only from the xtask status line, not cargo diagnostics or
+    // build paths that can contain CI run IDs.
     let number_regex = regex::Regex::new(r"\d+").expect("Invalid number regex");
     let numbers: Vec<&str> =
         number_regex.find_iter(&crate_count_output).map(|m| m.as_str()).collect();
@@ -201,7 +202,7 @@ fn output_contains_numeric_counts() {
     // There should be at least one number in the output (the count)
     assert!(
         !numbers.is_empty(),
-        "Output should contain at least one number (the crate count). \
+        "published-crate-count status line should contain at least one number (the crate count). \
          Got stdout: {}, stderr: {}",
         stdout,
         stderr
