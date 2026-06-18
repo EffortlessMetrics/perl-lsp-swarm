@@ -5241,10 +5241,9 @@ mod tests {
     #[test]
     fn preferred_try_tiny_block_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
-        let source = "use Try::Tiny;\ntry ";
-        let character = "try ".encode_utf16().count() as u32;
-        let prepared = provider.prepare_context(source, 1, character).ok_or("expected context")?;
-        let semantic_context = provider.semantic_context_for_source(source, &prepared);
+        let prepared = provider.prepare_context("", 0, 0).ok_or("expected context")?;
+        let mut semantic_context = provider.semantic_context_for_prepared_context(&prepared);
+        semantic_context.imported_modules = vec![ModuleFact { name: "Try::Tiny".into() }];
 
         assert!(
             semantic_context.imported_modules.iter().any(|module| module.name == "Try::Tiny"),
@@ -6128,6 +6127,48 @@ mod tests {
         let score = InlineCandidateScore::for_candidate(source, priority, &item, semantic_context);
         let metadata = InlineCandidateMetadata::for_candidate(source, &item, semantic_context);
         RankedCompletionItem { score, order, metadata, item }
+    }
+
+    #[test]
+    fn module_candidate_bonus_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let prepared = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
+        let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
+        semantic.available_modules = vec![ModuleFact { name: "My::App".into() }];
+        let item = InlineCompletionItem {
+            insert_text: "My::App;".into(),
+            filter_text: Some("My::App".into()),
+            range: None,
+            command: None,
+        };
+
+        semantic.expected_syntax = ExpectedSyntax::ReturnExpression;
+        assert_eq!(module_candidate_bonus(&item, &semantic), 0);
+
+        semantic.expected_syntax = ExpectedSyntax::UseModule;
+        assert_eq!(module_candidate_bonus(&item, &semantic), 35);
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_candidate_bonus_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let prepared = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
+        let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
+        semantic.current_package_methods = vec![MethodFact { name: "save".into() }];
+        let item = InlineCompletionItem {
+            insert_text: "save()".into(),
+            filter_text: Some("save".into()),
+            range: None,
+            command: None,
+        };
+
+        semantic.expected_syntax = ExpectedSyntax::ReturnExpression;
+        assert_eq!(receiver_candidate_bonus(&item, &semantic), 0);
+
+        semantic.expected_syntax = ExpectedSyntax::MethodName;
+        assert_eq!(receiver_candidate_bonus(&item, &semantic), 30);
+        Ok(())
     }
 
     #[test]
