@@ -89,8 +89,8 @@ fn test_run_test_sub_subname_injection() -> Result<(), Box<dyn Error>> {
         ],
     );
 
-    assert!(result.is_ok(), "Command should not fail to spawn");
-    let val = result?;
+    let val = result
+        .map_err(|err| format!("Command should not fail to spawn with Perl config: {err}"))?;
     let output = val["output"].as_str().ok_or("Missing 'output' field")?;
 
     // Key assertions:
@@ -212,6 +212,10 @@ fn test_valid_file_execution() -> Result<(), Box<dyn Error>> {
     let temp_dir = TempDir::new()?;
     let file_path = temp_dir.path().join("test_valid.pl");
     fs::write(&file_path, "print 'VALID_OUTPUT';")?;
+    let config = match config_with_perl5lib(false) {
+        Some(config) => config,
+        None => return Ok(()),
+    };
 
     let config = match config_with_perl5lib(false) {
         Some(config) => config,
@@ -226,8 +230,7 @@ fn test_valid_file_execution() -> Result<(), Box<dyn Error>> {
         vec![Value::String(file_path.to_string_lossy().to_string())],
     );
 
-    assert!(result.is_ok(), "Valid file should execute successfully");
-    let val = result?;
+    let val = result.map_err(|err| format!("Valid file should execute with Perl config: {err}"))?;
     let output = val["output"].as_str().ok_or("Missing 'output' field")?;
 
     assert!(output.contains("VALID_OUTPUT"), "Output should contain expected result: {}", output);
