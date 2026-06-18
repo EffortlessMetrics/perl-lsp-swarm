@@ -374,6 +374,12 @@ fn branch_has_trusted_event_anchor(branch: &str) -> bool {
     let Some(branch) = strip_outer_parentheses(branch) else {
         return false;
     };
+    let Some(or_branches) = split_top_level(branch, "||") else {
+        return false;
+    };
+    if or_branches.len() > 1 {
+        return or_branches.iter().all(|branch| branch_has_trusted_event_anchor(branch));
+    }
     let Some(terms) = split_top_level(branch, "&&") else {
         return false;
     };
@@ -1162,6 +1168,7 @@ mod tests {
             "github.event_name == 'schedule' || github.event_name == 'pull_request'",
             "(github.event_name == 'schedule' || always()) && github.repository == 'EffortlessMetrics/perl-lsp-swarm'",
             "(github.event_name == 'schedule' || github.event_name == 'pull_request') && github.repository == 'EffortlessMetrics/perl-lsp-swarm'",
+            "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.repository == 'EffortlessMetrics/perl-lsp-swarm' || github.event_name == 'pull_request')",
             "github.event_name == 'schedule' ||",
             "(github.event_name == 'schedule'",
         ] {
