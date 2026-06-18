@@ -5239,7 +5239,7 @@ mod tests {
     }
 
     #[test]
-    fn preferred_try_tiny_block_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    fn try_tiny_module_name_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let prepared = provider.prepare_context("", 0, 0).ok_or("expected context")?;
         let mut semantic_context = provider.semantic_context_for_prepared_context(&prepared);
@@ -6126,7 +6126,7 @@ mod tests {
     }
 
     #[test]
-    fn module_candidate_bonus_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    fn expected_syntax_use_module_discriminator() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let prepared = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
@@ -6151,7 +6151,7 @@ mod tests {
     }
 
     #[test]
-    fn receiver_candidate_bonus_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    fn expected_syntax_method_name_discriminator() -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let prepared = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
