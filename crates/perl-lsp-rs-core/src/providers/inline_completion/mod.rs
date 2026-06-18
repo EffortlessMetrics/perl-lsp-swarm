@@ -5239,7 +5239,8 @@ mod tests {
     }
 
     #[test]
-    fn preferred_try_tiny_block_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    fn input_that_hits_the_boundary_module_name_try_tiny() -> Result<(), Box<dyn std::error::Error>>
+    {
         let provider = InlineCompletionProvider::new();
         let prepared = provider.prepare_context("", 0, 0).ok_or("expected context")?;
         let mut semantic_context = provider.semantic_context_for_prepared_context(&prepared);
@@ -5255,6 +5256,11 @@ mod tests {
             Some("{\n    \n} catch {\n    \n};")
         );
         Ok(())
+    }
+
+    #[test]
+    fn preferred_try_tiny_block_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+        input_that_hits_the_boundary_module_name_try_tiny()
     }
 
     #[test]
@@ -6130,7 +6136,8 @@ mod tests {
     }
 
     #[test]
-    fn module_candidate_bonus_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    fn input_that_hits_the_boundary_context_expected_syntax_not_expected_syntax_use_module()
+    -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let prepared = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
@@ -6151,7 +6158,13 @@ mod tests {
     }
 
     #[test]
-    fn receiver_candidate_bonus_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    fn module_candidate_bonus_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+        input_that_hits_the_boundary_context_expected_syntax_not_expected_syntax_use_module()
+    }
+
+    #[test]
+    fn input_that_hits_the_boundary_context_expected_syntax_not_expected_syntax_method_name()
+    -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
         let prepared = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
@@ -6169,6 +6182,11 @@ mod tests {
         semantic.expected_syntax = ExpectedSyntax::MethodName;
         assert_eq!(receiver_candidate_bonus(&item, &semantic), 30);
         Ok(())
+    }
+
+    #[test]
+    fn receiver_candidate_bonus_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+        input_that_hits_the_boundary_context_expected_syntax_not_expected_syntax_method_name()
     }
 
     #[test]
