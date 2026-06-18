@@ -100,14 +100,32 @@ fn test_update_status_is_split_into_subsystem_modules() -> Result<()> {
         "update_status must be a directory module at xtask/src/tasks/update_status/ \
          (refactor issue #4174: split from monolithic update_status.rs)"
     );
-    for name in &["mod.rs", "lsp.rs", "tests.rs", "parser.rs", "quality.rs"] {
+    let runtime_modules = [
+        "cmd.rs",
+        "dap.rs",
+        "editor_ux.rs",
+        "flaky.rs",
+        "lsp.rs",
+        "mod.rs",
+        "parser.rs",
+        "parser/accuracy.rs",
+        "parser/failure.rs",
+        "parser/render.rs",
+        "quality.rs",
+        "tests.rs",
+        "token/mod.rs",
+        "token/source.rs",
+        "workspace.rs",
+    ];
+
+    for name in runtime_modules {
         let path = status_dir.join(name);
         assert!(
             path.exists(),
             "subsystem module {name} missing at xtask/src/tasks/update_status/{name}"
         );
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let content =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         let loc = content.lines().count();
         assert!(loc <= 400, "module {name} has {loc} LOC — exceeds 400-line anti-regression gate");
     }

@@ -179,19 +179,25 @@ fn ratchet_output_mentions_baseline_file() {
 fn output_contains_numeric_counts() {
     let (stdout, stderr, _) = run_xtask_published_crate_count();
     let combined = format!("{}\n{}", stdout, stderr);
-    let status_lines: Vec<&str> = combined
+    let crate_count_output = combined
         .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("published-crate-count:"))
-        .collect();
+        .filter(|line| line.contains("published-crate-count:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        !crate_count_output.trim().is_empty(),
+        "Output should contain a published-crate-count status line. \
+         Got stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
 
     // Extract counts only from the xtask status line, not cargo diagnostics or
     // build paths that can contain CI run IDs.
     let number_regex = regex::Regex::new(r"\d+").expect("Invalid number regex");
-    let numbers: Vec<&str> = status_lines
-        .iter()
-        .flat_map(|line| number_regex.find_iter(line).map(|m| m.as_str()))
-        .collect();
+    let numbers: Vec<&str> =
+        number_regex.find_iter(&crate_count_output).map(|m| m.as_str()).collect();
 
     // There should be at least one number in the output (the count)
     assert!(
@@ -210,7 +216,7 @@ fn output_contains_numeric_counts() {
             num < 10000,
             "Number {} seems too large for a crate count. Output: {}",
             num,
-            combined
+            crate_count_output
         );
     }
 }
