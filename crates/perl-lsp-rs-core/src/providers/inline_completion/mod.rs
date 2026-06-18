@@ -3516,6 +3516,7 @@ fn is_module_fragment_char(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_tdd_support::must_some;
 
     #[test]
     fn test_after_arrow() {
@@ -5239,9 +5240,9 @@ mod tests {
     }
 
     #[test]
-    fn try_tiny_module_name_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    fn input_that_hits_the_boundary_module_name_eq_try_tiny() {
         let provider = InlineCompletionProvider::new();
-        let prepared = provider.prepare_context("", 0, 0).ok_or("expected context")?;
+        let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic_context = provider.semantic_context_for_prepared_context(&prepared);
         semantic_context.imported_modules = vec![ModuleFact { name: "Try::Tiny".into() }];
 
@@ -5250,7 +5251,6 @@ mod tests {
             Some("{\n    \n} catch {\n    \n};"),
             "input that hits the boundary: module.name == \"Try::Tiny\""
         );
-        Ok(())
     }
 
     #[test]
@@ -6126,9 +6126,9 @@ mod tests {
     }
 
     #[test]
-    fn expected_syntax_use_module_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    fn input_that_hits_the_boundary_context_expected_syntax_ne_expected_syntax_use_module() {
         let provider = InlineCompletionProvider::new();
-        let prepared = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
+        let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
         semantic.available_modules = vec![ModuleFact { name: "My::App".into() }];
         let item = InlineCompletionItem {
@@ -6147,13 +6147,12 @@ mod tests {
 
         semantic.expected_syntax = ExpectedSyntax::UseModule;
         assert_eq!(module_candidate_bonus(&item, &semantic), 35);
-        Ok(())
     }
 
     #[test]
-    fn expected_syntax_method_name_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+    fn input_that_hits_the_boundary_context_expected_syntax_ne_expected_syntax_method_name() {
         let provider = InlineCompletionProvider::new();
-        let prepared = provider.prepare_context("", 0, 0).ok_or("expected prepared context")?;
+        let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
         semantic.current_package_methods = vec![MethodFact { name: "save".into() }];
         let item = InlineCompletionItem {
@@ -6172,7 +6171,6 @@ mod tests {
 
         semantic.expected_syntax = ExpectedSyntax::MethodName;
         assert_eq!(receiver_candidate_bonus(&item, &semantic), 30);
-        Ok(())
     }
 
     #[test]
