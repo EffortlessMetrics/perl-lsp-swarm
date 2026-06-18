@@ -58,7 +58,7 @@ fn test_lsp_initialization() -> TestResult {
     );
     assert_eq!(
         capabilities["capabilities"]["completionProvider"]["triggerCharacters"],
-        json!(["$", "@", "%", ">", ":", "-"])
+        json!(["$", "@", "%", "-", ">", ":", "/", "\\", "\"", "'"])
     );
     assert_eq!(capabilities["capabilities"]["hoverProvider"], true);
     // workspaceSymbolProvider can be either bool or object with resolveProvider
