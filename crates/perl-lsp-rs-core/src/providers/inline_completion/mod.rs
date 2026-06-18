@@ -5239,6 +5239,47 @@ mod tests {
     }
 
     #[test]
+    fn input_that_hits_boundary_module_name_eq_try_tiny_returns_try_catch_block()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // input that hits the boundary: module.name == "Try::Tiny"
+        let provider = InlineCompletionProvider::new();
+        let source = "use Try::Tiny;\ntry ";
+        let character = "try ".encode_utf16().count() as u32;
+        let prepared = provider.prepare_context(source, 1, character).ok_or("expected context")?;
+        let semantic_context = provider.semantic_context_for_source(source, &prepared);
+
+        assert!(
+            semantic_context.imported_modules.iter().any(|module| module.name == "Try::Tiny"),
+            "semantic imports should include Try::Tiny: {:?}",
+            semantic_context.imported_modules
+        );
+        assert_eq!(
+            provider.preferred_try_tiny_block(&semantic_context).as_deref(),
+            Some("{\n    \n} catch {\n    \n};")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn input_that_hits_boundary_ends_with_keyword_try_calls_preferred_try_tiny_block()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // input that hits the boundary: ends_with_keyword(prefix, "try ")
+        // && let Some(block) = provider.preferred_try_tiny_block(semantic_context)
+        let provider = InlineCompletionProvider::new();
+        let source = "use Try::Tiny;\ntry ";
+        let character = "try ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+
+        assert!(
+            completions.items.iter().any(|item| item.insert_text == "{\n    \n} catch {\n    \n};"
+                && item.filter_text.as_deref() == Some("try")),
+            "`try ` prefix with Try::Tiny import must activate the Try::Tiny scaffold: {:?}",
+            completions.items
+        );
+        Ok(())
+    }
+
+    #[test]
     fn try_tiny_block_requires_visible_import() {
         let provider = InlineCompletionProvider::new();
         let source = "try ";
