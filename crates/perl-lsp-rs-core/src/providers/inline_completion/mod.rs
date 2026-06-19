@@ -1851,6 +1851,16 @@ impl InlineCompletionProvider {
             .then(|| "{\n    \n} catch {\n    \n};".to_string())
     }
 
+    fn preferred_mojolicious_route_block(&self, context: &SemanticInlineContext) -> Option<String> {
+        context
+            .imported_modules
+            .iter()
+            .any(|module| {
+                module.name == "Mojolicious::Lite" || module.name == "Mojolicious::Controller"
+            })
+            .then(|| "'/' => sub {\n    my $c = shift;\n    \n};".to_string())
+    }
+
     fn push_unique(&self, values: &mut Vec<String>, value: String) {
         if values.iter().any(|existing| existing == &value) {
             return;
@@ -2164,6 +2174,22 @@ impl InlineCandidateSource for SyntaxCandidateSource {
                 InlineCompletionItem {
                     insert_text: block,
                     filter_text: Some("try".into()),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if ends_with_keyword(prefix, "get ")
+            && line_suffix_after_prefix(full_line, prefix).trim().is_empty()
+            && let Some(block) = provider.preferred_mojolicious_route_block(semantic_context)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: block,
+                    filter_text: Some("get".into()),
                     range: None,
                     command: None,
                 },
