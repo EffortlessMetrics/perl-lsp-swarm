@@ -201,13 +201,19 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "cargo test --workspace --lib --locked",
         "cargo test -p xtask --bin xtask quality_baseline --locked",
         "cargo test -p xtask --bin xtask merge_ready --locked",
+        "cargo test -p xtask --bin xtask gates --locked",
         "cargo test -p xtask --bin xtask queue_reconciler --locked",
         "cargo test -p xtask --bin xtask ci_route --locked",
+        "cargo test -p xtask --bin xtask workflow_policy_lint --locked",
+        "cargo test -p xtask --bin xtask allocation_tracker --locked",
+        "cargo test -p xtask --bin xtask active_goal_manifest --locked",
+        "cargo test -p xtask --bin xtask file_policy --locked",
         "cargo test -p xtask --bin xtask ripr --locked",
         "cargo test -p xtask --bin xtask inline_completion_quality --locked",
         "cargo test -p xtask --bin xtask semantic_inline_receipts --locked",
         "cargo test -p xtask --bin xtask semantic_inline_next_edit --locked",
         "cargo test -p xtask --locked",
+        "--test active_goal_manifest_cli",
         "--test ci_route_cli",
         "--test quality_ci_wiring_policy",
         "--test quality_gate_patch_coverage_cli_policy",
@@ -263,8 +269,9 @@ fn docs_describe_transitional_blocking_contract() {
         status_doc.contains("quality-gate")
             && status_doc.contains("Markdown summaries")
             && status_doc.contains("Current Blocking Proof Floor")
-            && status_doc.contains("Codecov upload or")
-            && status_doc.contains("processing failures through `fail_ci_if_error: true`")
+            && status_doc.contains("coverage routing or setup")
+            && status_doc.contains("failures. Codecov upload")
+            && status_doc.contains("Codecov upload and Test Analytics telemetry are non-fatal")
             && status_doc.contains(
                 "generated quality-gate receipts are freshness-checked for patch, new-RIPR,"
             )
