@@ -147,8 +147,8 @@ impl LspServer {
                     let end_line = total_lines.saturating_sub(1);
                     if end_line > start_line {
                         lsp_ranges.push(json!({
-                            "startLine": start_line,
-                            "endLine": end_line,
+                            "startLine": marker_line + 1,
+                            "endLine": total_lines - 1,
                             "kind": "comment"
                         }));
                     }
