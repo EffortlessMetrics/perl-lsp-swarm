@@ -5078,6 +5078,32 @@ mod tests {
     }
 
     #[test]
+    fn constructor_return_context_skips_duplicate_self_boundary_discriminator()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let provider = InlineCompletionProvider::new();
+        let source = "sub new {\n    my $self = bless {}, shift;\n    return $\n}\n";
+        let character = "    return $".encode_utf16().count() as u32;
+        let prepared =
+            provider.prepare_context(source, 2, character).ok_or("expected constructor context")?;
+        let semantic_context = provider.semantic_context_for_source(source, &prepared);
+        let mut sink = InlineCandidateSink::new(&semantic_context);
+
+        SyntaxCandidateSource.add_candidates(&provider, &prepared, &semantic_context, &mut sink);
+
+        let items = sink.into_items();
+        assert!(
+            items.iter().any(|ranked| ranked.item.insert_text == "$self;"),
+            "input that hits the boundary: variable.insert_text == \"$self;\""
+        );
+        assert_eq!(
+            items.iter().filter(|ranked| ranked.item.insert_text == "$self;").count(),
+            1,
+            "input that hits the boundary: constructor_self_matches && variable.insert_text == \"$self;\""
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_file_blank_line_suggests_test_more_assertion_from_declared_variables()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = InlineCompletionProvider::new();
@@ -5624,6 +5650,17 @@ mod tests {
             completions.items.iter().all(|i| i.insert_text != "strict;"),
             "should not suggest `use strict;` inside an identifier; got {:?}",
             completions.items.iter().map(|i| &i.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn use_trigger_trimmed_prefix_boundary_discriminator() {
+        let provider = InlineCompletionProvider::new();
+        let completions = provider.get_inline_completions("use", 0, 3);
+
+        assert!(
+            completions.items.iter().any(|item| item.insert_text == "strict;"),
+            "input that hits the boundary: prefix.trim_end() == \"use\""
         );
     }
 
