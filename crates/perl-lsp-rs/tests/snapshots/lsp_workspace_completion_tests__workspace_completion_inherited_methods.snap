@@ -3,13 +3,13 @@ source: crates/perl-lsp-rs/tests/lsp_workspace_completion_tests.rs
 assertion_line: 564
 expression: inherited_snapshot
 ---
-- detail: CompletionChild method
-  documentation: "Method `CompletionChild::child_only_method` from workspace index."
+- detail: "method from CompletionChild — receiver: source-backed object"
+  documentation: "Method `CompletionChild::child_only_method`."
   insertText: child_only_method()
   kind: 3
   label: child_only_method
-- detail: CompletionChild method (from CompletionBase)
-  documentation: "Method `CompletionBase::inherited_greet` from workspace index."
+- detail: "inherited method from CompletionBase — receiver: source-backed object"
+  documentation: "Method `CompletionBase::inherited_greet`."
   insertText: inherited_greet()
   kind: 3
   label: inherited_greet
