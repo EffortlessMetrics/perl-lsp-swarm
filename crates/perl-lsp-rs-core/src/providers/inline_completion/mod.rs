@@ -2155,6 +2155,7 @@ impl InlineCandidateSource for SyntaxCandidateSource {
         }
 
         if ends_with_keyword(prefix, "try ")
+            && line_suffix_after_prefix(full_line, prefix).trim().is_empty()
             && let Some(block) = provider.preferred_try_tiny_block(semantic_context)
         {
             sink.push(
@@ -2169,6 +2170,10 @@ impl InlineCandidateSource for SyntaxCandidateSource {
             );
         }
     }
+}
+
+fn line_suffix_after_prefix<'a>(line: &'a str, prefix: &str) -> &'a str {
+    line.strip_prefix(prefix).unwrap_or("")
 }
 
 impl InlineCandidateSource for TestCandidateSource {
