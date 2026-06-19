@@ -5319,6 +5319,58 @@ mod tests {
     }
 
     #[test]
+    fn try_tiny_block_stays_quiet_in_string() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Try::Tiny;\nmy $text = \"try ";
+        let character = "my $text = \"try ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+
+        assert!(
+            completions.items.is_empty(),
+            "hard-reject string context must not return Try::Tiny completions: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn try_tiny_block_stays_quiet_in_pod() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Try::Tiny;\n=pod\ntry ";
+        let character = "try ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert!(
+            completions.items.is_empty(),
+            "hard-reject POD context must not return Try::Tiny completions: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn try_tiny_block_requires_keyword_boundary() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Try::Tiny;\nmy $try = 1;\n$try ";
+        let character = "$try ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 2, character);
+
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "{\n    \n} catch {\n    \n};"),
+            "Try::Tiny scaffold must not appear for a visible scalar named try: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+
+        let source = "use Try::Tiny;\ngettry ";
+        let character = "gettry ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+
+        assert!(
+            completions.items.iter().all(|item| item.insert_text != "{\n    \n} catch {\n    \n};"),
+            "Try::Tiny scaffold must not appear inside an identifier suffix: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn test_assertion_requires_declared_actual_and_expected_variables() {
         let provider = InlineCompletionProvider::new();
         let source = "use Test::More;\n\n$got = compute();\nmy $expected = 42;\n\n";
