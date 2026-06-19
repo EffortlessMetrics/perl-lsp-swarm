@@ -1507,22 +1507,28 @@ fn test_module_completion_has_commit_characters() -> Result<(), Box<dyn std::err
     );
     drain_until_quiet(&server, Duration::from_millis(100), Duration::from_secs(2));
 
-    let response = send_request(
-        &server,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/completion",
-            "params": {
-                "textDocument": { "uri": uri },
-                "position": { "line": 2, "character": 4 }
-            }
-        }),
-    );
+    let completion_request = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 2, "character": 4 }
+        }
+    });
+    let mut items = Vec::new();
+    for _ in 0..5 {
+        let response = send_request(&server, completion_request.clone());
+        items = completion_items(&response).clone();
+        if items.iter().any(|item| item["kind"] == 9) {
+            break;
+        }
+        drain_until_quiet(&server, Duration::from_millis(50), Duration::from_millis(500));
+    }
 
-    let items = completion_items(&response);
     // Find a Module-kind item (LSP kind 9 = Module)
     let module_item = items.iter().find(|item| item["kind"] == 9);
-    let module_item = module_item.ok_or("Should have at least one module completion")?;
+    let module_item = module_item
+        .ok_or_else(|| format!("Should have at least one module completion: {items:?}"))?;
 
     let commit_chars = module_item["commitCharacters"]
         .as_array()
