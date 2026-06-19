@@ -103,11 +103,7 @@ fn bytes_to_mb(bytes: u64) -> f64 {
 
 fn measured_memory_mb(memory_before: f64, memory_after: f64, peak_memory_mb: f64) -> f64 {
     let memory_delta = memory_after - memory_before;
-    if memory_delta > 0.0 {
-        memory_delta
-    } else {
-        peak_memory_mb
-    }
+    if memory_delta > 0.0 { memory_delta } else { peak_memory_mb }
 }
 
 #[cfg(target_os = "linux")]
