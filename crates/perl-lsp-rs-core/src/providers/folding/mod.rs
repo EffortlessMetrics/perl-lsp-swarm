@@ -433,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn program_import_block_boundary_end_idx_gt_start_idx_accepts_multiple_imports_before_statement()
+    fn program_import_block_boundary_discriminator_input_that_hits_the_boundary_end_idx_gt_start_idx_accepts_multiple_imports_before_statement()
      {
         let ranges = import_ranges(vec![
             use_node(0, 10, "strict"),
@@ -441,7 +441,15 @@ mod tests {
             variable_statement(24, 33),
         ]);
 
-        assert_eq!(import_range_count(&ranges), 1);
+        assert_eq!(
+            import_range_count(&ranges),
+            1,
+            "input that hits the boundary: end_idx > start_idx"
+        );
+        assert_eq!(
+            ranges.first().map(|range| (range.start_offset, range.end_offset)),
+            Some((0, 23))
+        );
     }
 
     #[test]
@@ -453,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn program_trailing_import_block_boundary_end_idx_gt_start_idx_accepts_multiple_trailing_imports()
+    fn program_trailing_import_block_boundary_discriminator_input_that_hits_the_boundary_end_idx_gt_start_idx_accepts_multiple_trailing_imports()
      {
         let ranges = import_ranges(vec![
             variable_statement(0, 9),
@@ -461,7 +469,15 @@ mod tests {
             use_node(21, 33, "warnings"),
         ]);
 
-        assert_eq!(import_range_count(&ranges), 1);
+        assert_eq!(
+            import_range_count(&ranges),
+            1,
+            "input that hits the boundary: end_idx > start_idx"
+        );
+        assert_eq!(
+            ranges.first().map(|range| (range.start_offset, range.end_offset)),
+            Some((10, 33))
+        );
     }
 
     #[test]
@@ -474,14 +490,17 @@ mod tests {
     }
 
     #[test]
-    fn add_range_from_node_boundary_end_offset_gt_start_offset_plus_one_accepts_multibyte_span() {
+    fn add_range_from_node_boundary_discriminator_input_that_hits_the_boundary_end_offset_gt_start_offset_plus_one_accepts_multibyte_span()
+     {
         let mut extractor = FoldingRangeExtractor::new();
 
         extractor.add_range_from_node(&empty_block(5, 7), Some(FoldingRangeKind::Region));
 
-        assert_eq!(extractor.ranges.len(), 1);
-        assert_eq!(extractor.ranges[0].start_offset, 5);
-        assert_eq!(extractor.ranges[0].end_offset, 7);
+        assert_eq!(
+            extractor.ranges.first().map(|range| (range.start_offset, range.end_offset)),
+            Some((5, 7)),
+            "input that hits the boundary: end_offset > start_offset + 1"
+        );
     }
 
     #[test]
@@ -494,15 +513,17 @@ mod tests {
     }
 
     #[test]
-    fn add_range_from_locations_boundary_end_offset_gt_start_offset_plus_one_accepts_multibyte_span()
+    fn add_range_from_locations_boundary_discriminator_input_that_hits_the_boundary_end_offset_gt_start_offset_plus_one_accepts_multibyte_span()
      {
         let mut extractor = FoldingRangeExtractor::new();
 
         extractor.add_range_from_locations(&loc(5, 6), &loc(6, 7), Some(FoldingRangeKind::Imports));
 
-        assert_eq!(extractor.ranges.len(), 1);
-        assert_eq!(extractor.ranges[0].start_offset, 5);
-        assert_eq!(extractor.ranges[0].end_offset, 7);
+        assert_eq!(
+            extractor.ranges.first().map(|range| (range.start_offset, range.end_offset)),
+            Some((5, 7)),
+            "input that hits the boundary: end_offset > start_offset + 1"
+        );
     }
 
     #[test]

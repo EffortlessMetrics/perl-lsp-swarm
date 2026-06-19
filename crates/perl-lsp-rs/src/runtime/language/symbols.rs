@@ -341,10 +341,15 @@ mod tests {
 
         push_multiline_folding_range(&mut ranges, 4, 6, "comment");
 
-        assert_eq!(ranges.len(), 1, "input that hits the boundary: end_line > start_line");
-        assert_eq!(ranges[0]["startLine"], json!(4));
-        assert_eq!(ranges[0]["endLine"], json!(6));
-        assert_eq!(ranges[0]["kind"], json!("comment"));
+        assert_eq!(
+            ranges,
+            vec![json!({
+                "startLine": 4,
+                "endLine": 6,
+                "kind": "comment"
+            })],
+            "input that hits the boundary: end_line > start_line"
+        );
     }
 
     #[test]
@@ -384,16 +389,18 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_data_section_comment()
+    fn handle_folding_range_call_presence_observer_input_that_reaches_call_push_multiline_folding_range_data_section_comment()
     -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("print \"ok\\n\";\n__DATA__\nalpha\nbeta\n")?;
+        let observed = ranges.iter().find(|range| range.get("kind") == Some(&json!("comment")));
 
-        assert!(
-            ranges.iter().any(|range| {
-                range.get("kind") == Some(&json!("comment"))
-                    && range.get("startLine") == Some(&json!(2))
-                    && range.get("endLine") == Some(&json!(3))
-            }),
+        assert_eq!(
+            observed,
+            Some(&json!({
+                "kind": "comment",
+                "startLine": 2,
+                "endLine": 3
+            })),
             "input that reaches call push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, \"comment\")"
         );
 
@@ -401,16 +408,18 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_push_multiline_folding_range_heredoc_region()
+    fn handle_folding_range_call_presence_observer_input_that_reaches_call_push_multiline_folding_range_heredoc_region()
     -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("my $text = <<'TXT';\nalpha\nbeta\nTXT\n")?;
+        let observed = ranges.iter().find(|range| range.get("kind") == Some(&json!("region")));
 
-        assert!(
-            ranges.iter().any(|range| {
-                range.get("kind") == Some(&json!("region"))
-                    && range.get("startLine") == Some(&json!(1))
-                    && range.get("endLine") == Some(&json!(2))
-            }),
+        assert_eq!(
+            observed,
+            Some(&json!({
+                "kind": "region",
+                "startLine": 1,
+                "endLine": 2
+            })),
             "input that reaches call push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, \"region\")"
         );
 
@@ -418,14 +427,16 @@ mod tests {
     }
 
     #[test]
-    fn handle_folding_range_call_presence_observer_ast_lsp_end_line_gt_start_line()
+    fn handle_folding_range_call_presence_observer_input_that_reaches_call_lsp_inclusive_multiline_end_line()
     -> Result<(), Box<dyn std::error::Error>> {
         let ranges = folding_ranges_for_source("sub full {\n    my $value = 1;\n}\n")?;
+        let observed = ranges.iter().find(|range| range.get("startLine") == Some(&json!(0)));
 
-        assert!(ranges.iter().any(|range| {
-            range.get("startLine") == Some(&json!(0))
-                && range.get("endLine").and_then(Value::as_u64).is_some_and(|end| end > 0)
-        }));
+        assert_eq!(
+            observed.and_then(|range| range.get("endLine")).and_then(Value::as_u64),
+            Some(1),
+            "input that hits the boundary: let Some(lsp_end_line) = lsp_inclusive_multiline_end_line(start_line, end_line)"
+        );
 
         Ok(())
     }
