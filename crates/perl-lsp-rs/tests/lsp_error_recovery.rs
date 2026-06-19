@@ -364,6 +364,8 @@ print $var;  # Another valid reference
         }),
     );
 
+    drain_until_quiet(&server, short_timeout(), Duration::from_secs(2));
+
     // Find references should work despite errors
     let response = send_request_with_response_timeout(
         &server,
