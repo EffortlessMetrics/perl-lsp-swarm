@@ -517,6 +517,15 @@ fn test_folding_ranges_golden() -> Result<(), Box<dyn std::error::Error>> {
             .count();
 
         assert!(sub_folds > 0, "Should have folding ranges for subroutines");
+        let has_multiline_heredoc_fold = ranges_arr.iter().any(|range| {
+            range.get("kind").and_then(|kind| kind.as_str()) == Some("region")
+                && range.get("startLine").and_then(|line| line.as_u64()) == Some(46)
+                && range.get("endLine").and_then(|line| line.as_u64()) == Some(47)
+        });
+        assert!(
+            has_multiline_heredoc_fold,
+            "Should have folding range for multi-line heredoc body"
+        );
     }
     Ok(())
 }

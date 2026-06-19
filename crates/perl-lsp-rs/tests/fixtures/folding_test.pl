@@ -34,6 +34,20 @@ if (1) {
     }
 }
 
+# Short fold candidate should not produce an invalid one-line range
+sub tiny {
+}
+
+# Heredoc bodies should be folded from body tokens
+my $single_line_heredoc = <<'ONE';
+one
+ONE
+
+my $multi_line_heredoc = <<'TWO';
+one
+two
+TWO
+
 =head1 NAME
 
 FoldingTest - Test module for folding ranges
@@ -46,3 +60,6 @@ Contains documentation that can be collapsed.
 =cut
 
 1;
+
+__DATA__
+single data line
