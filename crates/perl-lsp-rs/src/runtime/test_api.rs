@@ -172,6 +172,16 @@ impl LspServer {
         self.references_runtime_quality_receipt(params)
     }
 
+    /// Test-only entrypoint for LSP `textDocument/rename`.
+    ///
+    /// Exercises the live rename handler without needing an external transport.
+    ///
+    /// # Errors
+    /// Returns [`JsonRpcError`] if params are invalid or rename is refused.
+    pub fn test_handle_rename(&self, params: Option<Value>) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_rename_workspace(params)
+    }
+
     /// Test-only receipt for rename runtime blocker UX proof.
     ///
     /// Calls the live rename handler and compares it with the compiler-fact

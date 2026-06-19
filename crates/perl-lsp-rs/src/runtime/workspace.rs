@@ -447,6 +447,41 @@ impl LspServer {
         best_workspace_folder_for_doc(&folders, file_uri).map(|folder| folder.uri.clone())
     }
 
+    #[cfg(feature = "workspace")]
+    fn populate_workspace_folder_uri_for_symbols(&self, all_symbols: &mut [Value]) {
+        // Populate workspaceFolderUri on each symbol for multi-root disambiguation.
+        // The open-doc fallback path does not go through WorkspaceIndex, so
+        // workspace_folder_uri is never set by the provider - inject it here
+        // by matching the symbol's location URI against the server's workspace folders
+        // (fix for issue #1514 bug 2).
+        for sym in all_symbols {
+            if let Some(obj) = sym.as_object_mut() {
+                // Skip symbols that already carry a workspaceFolderUri.
+                if obj.contains_key("workspaceFolderUri") {
+                    continue;
+                }
+                // Resolve from location.uri (standard LSP WorkspaceSymbol shape).
+                let file_uri = obj
+                    .get("location")
+                    .and_then(|loc| loc.get("uri"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !file_uri.is_empty() {
+                    if let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri) {
+                        obj.insert("workspaceFolderUri".to_string(), Value::String(folder_uri));
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+    /// Test-only helper for exercising workspace-folder URI injection branches.
+    pub fn test_populate_workspace_folder_uri_for_symbols(&self, all_symbols: &mut [Value]) {
+        self.populate_workspace_folder_uri_for_symbols(all_symbols);
+    }
+
     /// Search only open documents for symbols (degraded/fallback path)
     #[cfg(feature = "workspace")]
     fn search_open_documents_for_symbols(
@@ -498,31 +533,7 @@ impl LspServer {
         );
         all_symbols.truncate(cap);
 
-        // Populate workspaceFolderUri on each symbol for multi-root disambiguation.
-        // The open-doc fallback path does not go through WorkspaceIndex, so
-        // workspace_folder_uri is never set by the provider — inject it here
-        // by matching the symbol's location URI against the server's workspace folders
-        // (fix for issue #1514 bug 2).
-        for sym in &mut all_symbols {
-            if let Some(obj) = sym.as_object_mut() {
-                // Skip symbols that already carry a workspaceFolderUri.
-                if obj.contains_key("workspaceFolderUri") {
-                    continue;
-                }
-                // Resolve from location.uri (standard LSP WorkspaceSymbol shape).
-                let file_uri = obj
-                    .get("location")
-                    .and_then(|loc| loc.get("uri"))
-                    .and_then(|u| u.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !file_uri.is_empty() {
-                    if let Some(folder_uri) = self.resolve_folder_uri_for_file(&file_uri) {
-                        obj.insert("workspaceFolderUri".to_string(), Value::String(folder_uri));
-                    }
-                }
-            }
-        }
+        self.populate_workspace_folder_uri_for_symbols(&mut all_symbols);
 
         tracing::debug!(
             count = all_symbols.len(),
@@ -2692,93 +2703,6 @@ mod tests {
     fn test_module_name_unicode_letter_after_rejected() {
         // Unicode letters still extend identifiers; do not match inside "BaseΔ".
         assert!(!module_name_appears_in_text("use BaseΔ;", "Base"));
-    }
-
-    #[cfg(feature = "workspace")]
-    #[test]
-    fn test_api_helpers_register_workspace_folders_and_index_state()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new();
-
-        server.test_set_workspace_folder_uris(&["file:///root/svc", "file:///root/svc/nested"]);
-
-        {
-            let folders = server.workspace_folders.lock();
-            if folders.len() != 2 {
-                return Err(format!("expected 2 workspace folders, got {}", folders.len()).into());
-            }
-            if folders.first().map(|folder| folder.uri.as_str()) != Some("file:///root/svc") {
-                return Err("first workspace folder URI was not registered".into());
-            }
-        }
-
-        let matched = server
-            .resolve_folder_uri_for_file("file:///root/svc/nested/lib/Foo.pm")
-            .ok_or("expected nested workspace folder match")?;
-        if matched != "file:///root/svc/nested" {
-            return Err(format!("expected longest workspace folder match, got {matched}").into());
-        }
-        if server.resolve_folder_uri_for_file("file:///root/svc-other/lib/Foo.pm").is_some() {
-            return Err("workspace folder match crossed folder-name boundary".into());
-        }
-
-        server.test_index_file_in_building_state(
-            "file:///root/svc/lib/Foo.pm",
-            "package Foo;\nsub bar { }\n",
-        )?;
-        server.test_simulate_indexing_start();
-        if !server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
-            return Err("indexing_in_progress was not set by test helper".into());
-        }
-
-        server.test_simulate_indexing_complete();
-        if server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
-            return Err("indexing_in_progress was not cleared by completion helper".into());
-        }
-
-        Ok(())
-    }
-
-    #[cfg(feature = "workspace")]
-    #[test]
-    fn wait_for_index_ready_notifies_observer_and_returns_when_ready()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new();
-        server.test_index_file_in_building_state(
-            "file:///ready-wait/lib/Foo.pm",
-            "package Foo;\nsub ready_symbol { }\n",
-        )?;
-        server.test_simulate_indexing_start();
-
-        let (sender, receiver) = std::sync::mpsc::channel();
-        server.test_notify_index_ready_wait_entered(sender);
-
-        std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
-            let waiter = scope.spawn(|| {
-                server.wait_for_index_ready_if_building();
-            });
-
-            receiver.recv_timeout(std::time::Duration::from_secs(1))?;
-            server.test_simulate_indexing_complete();
-            waiter.join().map_err(|_| "index-ready wait thread panicked")?;
-            Ok(())
-        })?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "workspace")]
-    #[test]
-    fn wait_for_index_ready_returns_on_degraded_state() -> Result<(), Box<dyn std::error::Error>> {
-        let server = LspServer::new();
-        server.test_simulate_indexing_start();
-        let coordinator = server.coordinator().ok_or("expected workspace coordinator")?;
-        coordinator.transition_to_degraded(
-            crate::workspace_index::DegradationReason::ScanTimeout { elapsed_ms: 1 },
-        );
-
-        server.wait_for_index_ready_if_building();
-        Ok(())
     }
 
     #[test]

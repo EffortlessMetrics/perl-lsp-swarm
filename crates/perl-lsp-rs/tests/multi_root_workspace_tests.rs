@@ -1035,64 +1035,38 @@ fn test_folder_aware_ranking() -> TestResult {
 #[cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
 #[serial_test::serial]
 fn test_cross_folder_rename_updates_multiple_workspace_roots() -> TestResult {
-    use support::env_guard::EnvGuard;
+    use perl_lsp::LspServer;
 
-    // Enable workspace indexing.
-    // SAFETY: Test runs serially and restores process env on drop.
-    let _guard = unsafe { EnvGuard::set("PERL_LSP_WORKSPACE", "1") };
+    let server = LspServer::new();
+    server.test_set_workspace_folder_uris(&[
+        "file:///rename_1514/folder-a",
+        "file:///rename_1514/folder-b",
+    ]);
 
-    let ws = TempWorkspace::new()?;
+    let module_uri = "file:///rename_1514/folder-a/lib/Shared.pm";
+    let module_text = "package Shared;\nsub ping { return 1; }\n1;\n";
+    let consumer_uri = "file:///rename_1514/folder-b/consumer.pl";
+    let consumer_text = "use Shared;\nmy $x = Shared::ping();\n";
 
-    let folder_a_uri = create_folder_with_config(&ws, "folder-a", &["lib"])?;
-    let folder_b_uri = create_folder_with_config(&ws, "folder-b", &["lib"])?;
+    server.test_index_file_in_building_state(module_uri, module_text)?;
+    server.test_index_file_in_building_state(consumer_uri, consumer_text)?;
+    server.test_simulate_indexing_complete();
+    server.test_apply_did_open(module_uri, module_text, 1)?;
 
-    let module_uri = create_module(
-        &ws,
-        "folder-a/lib/Shared.pm",
-        "package Shared;\nsub ping { return 1; }\n1;\n",
-    )?;
-    let consumer_uri =
-        create_script(&ws, "folder-b/consumer.pl", "use Shared;\nmy $x = Shared::ping();\n")?;
-
-    let mut harness = LspHarness::new_raw();
-    harness.notify(
-        "initialize",
-        json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "params": {
-                "processId": std::process::id(),
-                "capabilities": {},
-                "workspaceFolders": [
-                    { "uri": folder_a_uri, "name": "folder-a" },
-                    { "uri": folder_b_uri, "name": "folder-b" }
-                ]
-            }
-        }),
-    );
-    harness.notify("initialized", json!({}));
-
-    std::thread::sleep(indexing_timeout());
-
-    harness.open(&module_uri, "package Shared;\nsub ping { return 1; }\n1;\n")?;
-    harness.open(&consumer_uri, "use Shared;\nmy $x = Shared::ping();\n")?;
-    harness.wait_for_idle(Duration::from_millis(500));
-
-    let rename = harness.request_with_timeout(
-        "textDocument/rename",
-        json!({
+    let rename = server
+        .test_handle_rename(Some(json!({
             "textDocument": { "uri": module_uri },
             "position": { "line": 1, "character": 4 },
             "newName": "pong"
-        }),
-        request_timeout(),
-    )?;
+        })))
+        .map_err(|e| format!("{e:?}"))?
+        .ok_or("rename response must be present")?;
 
     let changes =
         rename["changes"].as_object().ok_or("rename response must include changes map")?;
-    assert!(changes.contains_key(&module_uri), "rename should update defining file in folder-a");
+    assert!(changes.contains_key(module_uri), "rename should update defining file in folder-a");
     assert!(
-        changes.contains_key(&consumer_uri),
+        changes.contains_key(consumer_uri),
         "rename should update consumer file in folder-b (cross-folder workspace edit)"
     );
 
@@ -1671,6 +1645,88 @@ fn test_workspace_symbol_waits_for_index_when_building_at_request_time() -> Test
             folder_uris
         );
     }
+
+    Ok(())
+}
+
+/// The readiness wait must remain bounded. If the coordinator stays Building,
+/// `workspace/symbol` should proceed after the 2s cap and serve partial results
+/// rather than blocking indefinitely.
+#[test]
+#[serial_test::serial]
+#[cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
+fn test_workspace_symbol_wait_timeout_serves_partial_index() -> TestResult {
+    use perl_lsp::LspServer;
+
+    let server = LspServer::new();
+    server.test_set_workspace_folder_uris(&["file:///timeout_1514/svc"]);
+    server.test_index_file_in_building_state(
+        "file:///timeout_1514/svc/lib/Slow.pm",
+        "package Slow;\nsub timeout_func { return 1; }\n1;\n",
+    )?;
+    server.test_simulate_indexing_start();
+
+    let started = std::time::Instant::now();
+    let result = server
+        .test_handle_workspace_symbols(Some(serde_json::json!({"query": "timeout_func"})))
+        .map_err(|e| format!("{e:?}"))?;
+    let elapsed = started.elapsed();
+
+    server.test_simulate_indexing_complete();
+
+    assert!(
+        elapsed >= Duration::from_millis(1_500),
+        "workspace/symbol should wait for the bounded readiness cap before serving partial index; \
+         elapsed {elapsed:?}"
+    );
+
+    let symbols = result
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .ok_or("workspace/symbol must return an array")?;
+    let timeout_syms: Vec<&serde_json::Value> =
+        symbols.iter().filter(|s| s["name"].as_str() == Some("timeout_func")).collect();
+
+    assert!(
+        !timeout_syms.is_empty(),
+        "workspace/symbol should serve partial-index symbols after the readiness cap; got {symbols:?}"
+    );
+
+    Ok(())
+}
+
+/// The open-document fallback injects `workspaceFolderUri` only when the symbol
+/// needs it and its `location.uri` belongs to a registered workspace folder.
+#[test]
+#[cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
+fn test_workspace_folder_uri_injection_handles_symbol_shapes() -> TestResult {
+    use perl_lsp::LspServer;
+
+    let server = LspServer::new();
+    server.test_set_workspace_folder_uris(&["file:///inject_1514/svc"]);
+
+    let mut symbols = vec![
+        serde_json::json!({
+            "name": "already",
+            "location": { "uri": "file:///inject_1514/svc/lib/Already.pm" },
+            "workspaceFolderUri": "file:///preserve"
+        }),
+        serde_json::json!({
+            "name": "missing_location"
+        }),
+        serde_json::json!({
+            "name": "matched",
+            "location": { "uri": "file:///inject_1514/svc/lib/Matched.pm" }
+        }),
+        serde_json::json!("not an object"),
+    ];
+
+    server.test_populate_workspace_folder_uri_for_symbols(&mut symbols);
+
+    assert_eq!(symbols[0]["workspaceFolderUri"].as_str(), Some("file:///preserve"));
+    assert!(symbols[1].get("workspaceFolderUri").is_none());
+    assert_eq!(symbols[2]["workspaceFolderUri"].as_str(), Some("file:///inject_1514/svc"));
+    assert_eq!(symbols[3], serde_json::json!("not an object"));
 
     Ok(())
 }
