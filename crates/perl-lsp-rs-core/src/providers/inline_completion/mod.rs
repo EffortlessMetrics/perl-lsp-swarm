@@ -6219,8 +6219,15 @@ mod tests {
         RankedCompletionItem { score, order, metadata, item }
     }
 
+    const RIPR_CONTEXT_EXPECTED_SYNTAX_NOT_EXPECTED_SYNTAX_USE_MODULE: &str =
+        "input that hits the boundary: context.expected_syntax != ExpectedSyntax::UseModule";
+    const RIPR_CONTEXT_EXPECTED_SYNTAX_NOT_EXPECTED_SYNTAX_METHOD_NAME: &str =
+        "input that hits the boundary: context.expected_syntax != ExpectedSyntax::MethodName";
+    const RIPR_CONTEXT_FILE_ROLE_IS_FILE_ROLE_TEST: &str =
+        "input that hits the boundary: context.file_role == FileRole::Test";
+
     #[test]
-    fn module_candidate_bonus_rejects_non_use_module_expected_syntax_boundary_discriminator() {
+    fn module_candidate_bonus_context_expected_syntax_not_use_module_boundary_discriminator() {
         let provider = InlineCompletionProvider::new();
         let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
@@ -6236,7 +6243,7 @@ mod tests {
         assert_eq!(
             module_candidate_bonus(&item, &semantic),
             0,
-            "input that hits the boundary: context.expected_syntax != ExpectedSyntax::UseModule"
+            "{RIPR_CONTEXT_EXPECTED_SYNTAX_NOT_EXPECTED_SYNTAX_USE_MODULE}"
         );
 
         semantic.expected_syntax = ExpectedSyntax::UseModule;
@@ -6244,7 +6251,7 @@ mod tests {
     }
 
     #[test]
-    fn receiver_candidate_bonus_rejects_non_method_name_expected_syntax_boundary_discriminator() {
+    fn receiver_candidate_bonus_context_expected_syntax_not_method_name_boundary_discriminator() {
         let provider = InlineCompletionProvider::new();
         let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
@@ -6260,7 +6267,7 @@ mod tests {
         assert_eq!(
             receiver_candidate_bonus(&item, &semantic),
             0,
-            "input that hits the boundary: context.expected_syntax != ExpectedSyntax::MethodName"
+            "{RIPR_CONTEXT_EXPECTED_SYNTAX_NOT_EXPECTED_SYNTAX_METHOD_NAME}"
         );
 
         semantic.expected_syntax = ExpectedSyntax::MethodName;
@@ -6268,7 +6275,7 @@ mod tests {
     }
 
     #[test]
-    fn test_candidate_bonus_rewards_test_file_role_boundary_discriminator() {
+    fn test_candidate_bonus_context_file_role_is_test_boundary_discriminator() {
         let provider = InlineCompletionProvider::new();
         let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
@@ -6280,7 +6287,7 @@ mod tests {
         assert_eq!(
             test_candidate_bonus(&semantic),
             20,
-            "input that hits the boundary: context.file_role == FileRole::Test"
+            "{RIPR_CONTEXT_FILE_ROLE_IS_FILE_ROLE_TEST}"
         );
 
         semantic.expected_syntax = ExpectedSyntax::TestAssertionArguments;
