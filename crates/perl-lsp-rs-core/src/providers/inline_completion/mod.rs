@@ -6219,13 +6219,6 @@ mod tests {
         RankedCompletionItem { score, order, metadata, item }
     }
 
-    const RIPR_CONTEXT_EXPECTED_SYNTAX_NOT_EXPECTED_SYNTAX_USE_MODULE: &str =
-        "input that hits the boundary: context.expected_syntax != ExpectedSyntax::UseModule";
-    const RIPR_CONTEXT_EXPECTED_SYNTAX_NOT_EXPECTED_SYNTAX_METHOD_NAME: &str =
-        "input that hits the boundary: context.expected_syntax != ExpectedSyntax::MethodName";
-    const RIPR_CONTEXT_FILE_ROLE_IS_FILE_ROLE_TEST: &str =
-        "input that hits the boundary: context.file_role == FileRole::Test";
-
     #[test]
     fn module_candidate_bonus_context_expected_syntax_not_use_module_boundary_discriminator() {
         let provider = InlineCompletionProvider::new();
@@ -6240,11 +6233,7 @@ mod tests {
         };
 
         semantic.expected_syntax = ExpectedSyntax::ReturnExpression;
-        assert_eq!(
-            module_candidate_bonus(&item, &semantic),
-            0,
-            "{RIPR_CONTEXT_EXPECTED_SYNTAX_NOT_EXPECTED_SYNTAX_USE_MODULE}"
-        );
+        assert_eq!(module_candidate_bonus(&item, &semantic), 0);
 
         semantic.expected_syntax = ExpectedSyntax::UseModule;
         assert_eq!(module_candidate_bonus(&item, &semantic), 35);
@@ -6264,11 +6253,7 @@ mod tests {
         };
 
         semantic.expected_syntax = ExpectedSyntax::ReturnExpression;
-        assert_eq!(
-            receiver_candidate_bonus(&item, &semantic),
-            0,
-            "{RIPR_CONTEXT_EXPECTED_SYNTAX_NOT_EXPECTED_SYNTAX_METHOD_NAME}"
-        );
+        assert_eq!(receiver_candidate_bonus(&item, &semantic), 0);
 
         semantic.expected_syntax = ExpectedSyntax::MethodName;
         assert_eq!(receiver_candidate_bonus(&item, &semantic), 30);
@@ -6284,11 +6269,7 @@ mod tests {
         assert_eq!(test_candidate_bonus(&semantic), 0);
 
         semantic.file_role = FileRole::Test;
-        assert_eq!(
-            test_candidate_bonus(&semantic),
-            20,
-            "{RIPR_CONTEXT_FILE_ROLE_IS_FILE_ROLE_TEST}"
-        );
+        assert_eq!(test_candidate_bonus(&semantic), 20);
 
         semantic.expected_syntax = ExpectedSyntax::TestAssertionArguments;
         assert_eq!(test_candidate_bonus(&semantic), 30);
