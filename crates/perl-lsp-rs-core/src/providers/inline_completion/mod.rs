@@ -6220,7 +6220,7 @@ mod tests {
     }
 
     #[test]
-    fn module_candidate_bonus_boundary_discriminator() {
+    fn module_candidate_bonus_rejects_non_use_module_expected_syntax_boundary_discriminator() {
         let provider = InlineCompletionProvider::new();
         let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
@@ -6244,7 +6244,7 @@ mod tests {
     }
 
     #[test]
-    fn receiver_candidate_bonus_boundary_discriminator() {
+    fn receiver_candidate_bonus_rejects_non_method_name_expected_syntax_boundary_discriminator() {
         let provider = InlineCompletionProvider::new();
         let prepared = must_some(provider.prepare_context("", 0, 0));
         let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
@@ -6265,6 +6265,26 @@ mod tests {
 
         semantic.expected_syntax = ExpectedSyntax::MethodName;
         assert_eq!(receiver_candidate_bonus(&item, &semantic), 30);
+    }
+
+    #[test]
+    fn test_candidate_bonus_rewards_test_file_role_boundary_discriminator() {
+        let provider = InlineCompletionProvider::new();
+        let prepared = must_some(provider.prepare_context("", 0, 0));
+        let mut semantic = provider.semantic_context_for_prepared_context(&prepared);
+        semantic.expected_syntax = ExpectedSyntax::Unknown;
+        semantic.file_role = FileRole::Module;
+        assert_eq!(test_candidate_bonus(&semantic), 0);
+
+        semantic.file_role = FileRole::Test;
+        assert_eq!(
+            test_candidate_bonus(&semantic),
+            20,
+            "input that hits the boundary: context.file_role == FileRole::Test"
+        );
+
+        semantic.expected_syntax = ExpectedSyntax::TestAssertionArguments;
+        assert_eq!(test_candidate_bonus(&semantic), 30);
     }
 
     #[test]
