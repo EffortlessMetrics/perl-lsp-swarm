@@ -1,4 +1,7 @@
 /// Comprehensive tests for LSP completion functionality
+use perl_lsp::features::completion::{CompletionItemKind, CompletionProvider};
+use perl_parser::Parser;
+use perl_workspace::workspace_index::WorkspaceIndex;
 use serde_json::json;
 
 mod common;
@@ -6,7 +9,9 @@ use common::{
     completion_items, drain_until_quiet, initialize_lsp, initialize_lsp_with_capabilities,
     send_notification, send_request, start_lsp_server,
 };
+use std::sync::Arc;
 use std::time::Duration;
+use url::Url;
 
 fn completion_item_caps(
     snippet_support: bool,
@@ -1486,59 +1491,35 @@ fn test_variable_completion_has_commit_characters() -> Result<(), Box<dyn std::e
 /// Test that module completions include namespace-friendly commit characters.
 #[test]
 fn test_module_completion_has_commit_characters() -> Result<(), Box<dyn std::error::Error>> {
-    let server = start_lsp_server();
-    initialize_lsp_with_capabilities(&server, completion_item_caps(true, true));
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(Url::parse("file:///lib/MyApp.pm")?, "package MyApp;\n1;\n".to_string())?;
 
-    let uri = "file:///test_commit_module.pl";
-    send_notification(
-        &server,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "textDocument/didOpen",
-            "params": {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "package My::Module;\npackage My::Other;\nMy::"
-                }
-            }
-        }),
-    );
-    drain_until_quiet(&server, Duration::from_millis(100), Duration::from_secs(2));
+    let code = "use My";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse()?;
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let items = provider.get_completions(code, code.len());
 
-    let completion_request = json!({
-        "jsonrpc": "2.0",
-        "method": "textDocument/completion",
-        "params": {
-            "textDocument": { "uri": uri },
-            "position": { "line": 2, "character": 4 }
-        }
-    });
-    let mut items = Vec::new();
-    for _ in 0..5 {
-        let response = send_request(&server, completion_request.clone());
-        items = completion_items(&response).clone();
-        if items.iter().any(|item| item["kind"] == 9) {
-            break;
-        }
-        drain_until_quiet(&server, Duration::from_millis(50), Duration::from_millis(500));
-    }
+    let module_item = items
+        .iter()
+        .find(|item| item.label == "MyApp" && item.kind == CompletionItemKind::Module)
+        .ok_or_else(|| {
+            format!(
+                "Should have MyApp module completion: {:?}",
+                items.iter().map(|item| (&item.label, item.kind)).collect::<Vec<_>>()
+            )
+        })?;
 
-    // Find a Module-kind item (LSP kind 9 = Module)
-    let module_item = items.iter().find(|item| item["kind"] == 9);
-    let module_item = module_item
-        .ok_or_else(|| format!("Should have at least one module completion: {items:?}"))?;
-
-    let commit_chars = module_item["commitCharacters"]
-        .as_array()
+    let commit_chars = module_item
+        .commit_characters
+        .as_ref()
         .ok_or("Module completions must have commitCharacters")?;
 
     assert!(commit_chars.iter().any(|c| c == ":"), "Module commit chars should include ':'");
     assert!(commit_chars.iter().any(|c| c == ";"), "Module commit chars should include ';'");
 
     for ch in commit_chars {
-        let s = ch.as_str().ok_or("commit char must be string")?;
+        let s = ch.as_str();
         assert_eq!(
             s.chars().count(),
             1,

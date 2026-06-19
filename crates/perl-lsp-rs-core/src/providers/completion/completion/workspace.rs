@@ -709,7 +709,7 @@ pub fn add_use_module_completions_with_cache(
                 filter_text: Some(name.clone()),
                 additional_edits: vec![],
                 text_edit_range: Some((context.prefix_start, context.position)),
-                commit_characters: None,
+                commit_characters: Some(vec![":".to_string(), ";".to_string()]),
                 label_details: None,
             });
         }
