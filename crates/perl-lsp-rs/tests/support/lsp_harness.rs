@@ -833,21 +833,6 @@ impl LspHarness {
         let start = Instant::now();
 
         loop {
-            // Pump any pending output into the framer and stash parsed messages.
-            {
-                let mut guard = self.output_buffer.lock();
-                if !guard.is_empty() {
-                    let chunk = std::mem::take(&mut *guard);
-                    self.output_framer.push(&chunk);
-                }
-                drop(guard);
-            }
-            while let Some(msg_bytes) = self.try_take_one_framed_message() {
-                if let Ok(msg) = serde_json::from_slice::<Value>(&msg_bytes) {
-                    self.stash_non_matching_message(msg);
-                }
-            }
-
             {
                 let mut notifications = self.notification_buffer.lock();
                 if let Some(pos) = notifications.iter().position(|n| {
