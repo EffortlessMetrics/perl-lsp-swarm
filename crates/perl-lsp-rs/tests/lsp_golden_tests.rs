@@ -526,6 +526,15 @@ fn test_folding_ranges_golden() -> Result<(), Box<dyn std::error::Error>> {
             has_multiline_heredoc_fold,
             "Should have folding range for multi-line heredoc body"
         );
+        let has_data_section_fold = ranges_arr.iter().any(|range| {
+            range.get("kind").and_then(|kind| kind.as_str()) == Some("comment")
+                && range.get("startLine").and_then(|line| line.as_u64()) == Some(64)
+                && range.get("endLine").and_then(|line| line.as_u64()) == Some(65)
+        });
+        assert!(
+            has_data_section_fold,
+            "Should have folding range for multi-line data section body with startLine 64 and endLine 65"
+        );
     }
     Ok(())
 }

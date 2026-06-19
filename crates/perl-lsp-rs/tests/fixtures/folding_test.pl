@@ -62,4 +62,5 @@ Contains documentation that can be collapsed.
 1;
 
 __DATA__
-single data line
+first data line
+second data line
