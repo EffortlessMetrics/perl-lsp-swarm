@@ -2512,21 +2512,25 @@ fn determine_overall_status(failed: u32, blocking_failures: &[String]) -> &'stat
 mod tests {
     use std::collections::{BTreeMap, HashMap, HashSet};
     use std::fs;
+    use std::path::Path;
 
     use tempfile::tempdir;
 
     use super::{
         DiffResult, FirstFailure, GateDefinition, GateMetrics, GatePlanningConfig,
         GatePlanningRole, GatePolicy, GateResult, GateRunnerConfig, GateTier, GlobalSettings,
-        MAX_GATE_OUTPUT_BYTES, MetricChange, PackageTargetIndex, Receipt,
-        blocking_failure_gate_names, build_pr_fast_plan_from_scope,
+        MAX_GATE_OUTPUT_BYTES, MetricChange, OutputFormat, PackageTargetIndex, Receipt,
+        blocking_failure_gate_names, build_agent_receipt, build_pr_fast_plan_from_scope,
         build_pr_fast_plan_from_scope_with_targets, compare_receipts, determine_overall_status,
-        extend_plan_with_non_pr_fast_static_gates, extend_plan_with_static_tiers, failure_guidance,
-        filter_gates, is_blocking_gate_status, is_cargo_test_command, load_policy_for_inspection,
-        parse_first_failure, read_gate_output, run_shell_command_with_timeout, run_single_gate,
+        extend_plan_with_non_pr_fast_static_gates, extend_plan_with_static_tiers,
+        extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
+        is_cargo_test_command, load_policy_for_inspection, load_receipt, output_diff,
+        parse_first_failure, parse_test_metrics, plan_gates, read_gate_output,
+        run_shell_command_with_timeout, run_single_gate, write_receipt,
     };
     use crate::tasks::ci_scope::{
-        ArchWidener, DirectCrate, LaneDecisions, PlatformOverrides, RevDepCrate, ScopeOutput,
+        ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
+        RevDepCrate, ScopeOutput,
     };
 
     fn gate_result(name: &str, status: &str, required: bool) -> GateResult {
@@ -3032,6 +3036,33 @@ gates:
     }
 
     #[test]
+    fn explicit_gate_filter_uses_static_plan_without_ci_scope() -> color_eyre::eyre::Result<()> {
+        let policy = policy_with_gates(vec![
+            pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
+            tier_gate("clippy_full", "merge_gate", "cargo clippy --workspace"),
+        ]);
+        let config = GateRunnerConfig {
+            tier: GateTier::All,
+            gate_filter: Some("clippy_full".to_string()),
+            base_ref: Some("origin/main".to_string()),
+            ..GateRunnerConfig::default()
+        };
+
+        let plan = plan_gates(Path::new("."), &policy, &config)?;
+
+        assert_eq!(plan.tier, GateTier::All);
+        assert_eq!(plan.base, "origin/main");
+        assert!(plan.scope.is_none(), "filtered static gate plans must not run ci-scope");
+        assert!(plan.scope_ok);
+        assert!(!plan.fallback_used);
+        assert!(plan.package_args.is_empty());
+        assert_eq!(selected_gate_names(&plan), vec!["clippy_full"]);
+        assert_eq!(plan.selected[0].role, GatePlanningRole::Static);
+        assert_eq!(plan.selected[0].reason, "selected by static policy filter");
+        Ok(())
+    }
+
+    #[test]
     fn pr_fast_scope_failure_preserves_always_on_and_uses_fallback() -> color_eyre::eyre::Result<()>
     {
         let gates = vec![
@@ -3235,6 +3266,58 @@ gates:
         };
         assert!(check_tests.gate.command.contains("-p perl-parser"));
         assert!(check_tests.gate.command.contains("-p xtask"));
+        Ok(())
+    }
+
+    #[test]
+    fn pr_fast_lib_scoped_gate_skips_when_no_selected_package_has_lib_target()
+    -> color_eyre::eyre::Result<()> {
+        let gates = vec![pr_gate(
+            "unit_scoped",
+            GatePlanningRole::RustScoped,
+            "cargo test --locked --lib {package_args}",
+        )];
+        let target_index = PackageTargetIndex { lib_packages: HashSet::new() };
+
+        let plan = build_pr_fast_plan_from_scope_with_targets(
+            GateTier::PrFast,
+            "origin/master".to_string(),
+            gates,
+            Some(scope_output("code", &["xtask"], &[], &[])),
+            true,
+            false,
+            None,
+            Some(&target_index),
+        )?;
+
+        assert!(plan.selected.is_empty());
+        assert_eq!(skipped_gate_names(&plan), vec!["unit_scoped"]);
+        assert_eq!(
+            plan.skipped[0].reason,
+            "no ci-scope selected packages have a lib target for this gate"
+        );
+        assert_eq!(plan.package_args, vec!["-p", "xtask"]);
+        Ok(())
+    }
+
+    #[test]
+    fn pr_fast_package_scoped_gate_reports_missing_configured_packages()
+    -> color_eyre::eyre::Result<()> {
+        let gates = vec![package_pr_gate("empty_package_gate", Vec::new())];
+
+        let plan = build_pr_fast_plan_from_scope(
+            GateTier::PrFast,
+            "origin/master".to_string(),
+            gates,
+            Some(scope_output("code", &["xtask"], &[], &[])),
+            true,
+            false,
+            None,
+        )?;
+
+        assert!(plan.selected.is_empty());
+        assert_eq!(skipped_gate_names(&plan), vec!["empty_package_gate"]);
+        assert_eq!(plan.skipped[0].reason, "package-scoped gate has no configured packages");
         Ok(())
     }
 
@@ -3453,6 +3536,156 @@ gates:
     }
 
     #[test]
+    fn gate_output_summary_keeps_tail_lines() {
+        let output = (1..=12).map(|idx| format!("line-{idx}")).collect::<Vec<_>>().join("\n");
+
+        let summary = extract_output_summary(&output, 4);
+
+        assert_eq!(summary, "line-9\nline-10\nline-11\nline-12");
+    }
+
+    #[test]
+    fn parse_test_metrics_reads_standard_cargo_summary() {
+        let output =
+            "test result: FAILED. 7 passed; 2 failed; 3 ignored; 0 measured; 0 filtered out";
+
+        let metrics = parse_test_metrics(output).expect("cargo test summary should parse");
+
+        assert_eq!(metrics.tests_passed, Some(7));
+        assert_eq!(metrics.tests_failed, Some(2));
+        assert_eq!(metrics.tests_ignored, Some(3));
+        assert_eq!(metrics.tests_total, Some(12));
+        assert!(parse_test_metrics("no cargo summary here").is_none());
+    }
+
+    #[test]
+    fn unresolved_package_args_gate_refuses_to_spawn() -> color_eyre::eyre::Result<()> {
+        let gate =
+            pr_gate("scoped-tests", GatePlanningRole::RustScoped, "cargo test {package_args}");
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+        let err = run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default())
+            .expect_err("unresolved package args must fail before command execution");
+        let message = format!("{err:#}");
+
+        assert!(message.contains("scoped-tests"), "gate name should be in error: {message}");
+        assert!(
+            message.contains("must be run via"),
+            "repair guidance should be present: {message}"
+        );
+        assert!(
+            !tmp.path().join("scoped-tests.log").exists(),
+            "guard should fail before creating a command log"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn quarantined_gate_skips_without_verbose_mode() -> color_eyre::eyre::Result<()> {
+        let mut gate = pr_gate("known-flake", GatePlanningRole::AlwaysOn, "exit 1");
+        gate.required = false;
+        gate.quarantine = true;
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default())?;
+
+        assert_eq!(result.status, "skip");
+        assert_eq!(result.required, Some(false));
+        assert_eq!(result.exit_code, None);
+        assert_eq!(result.output_summary.as_deref(), Some("Quarantined - skipped"));
+        assert!(result.log_path.is_none(), "skipped quarantine gates should not claim a log");
+        Ok(())
+    }
+
+    #[test]
+    fn run_single_gate_captures_test_metrics_artifacts_and_log() -> color_eyre::eyre::Result<()> {
+        let command = if cfg!(windows) {
+            "echo prelude && echo test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s"
+        } else {
+            "printf 'prelude\ntest result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.01s\n'"
+        };
+        let mut gate = pr_gate("unit-smoke", GatePlanningRole::AlwaysOn, command);
+        gate.tags.push("test".to_string());
+        gate.artifacts.push("target/receipts/unit-smoke.json".to_string());
+        let policy = policy_with_gates(vec![gate.clone()]);
+        let tmp = tempdir()?;
+
+        let result = run_single_gate(&gate, &policy, tmp.path(), &GateRunnerConfig::default())?;
+
+        assert_eq!(result.status, "pass");
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.log_path.as_deref(), Some("logs/unit-smoke.log"));
+        assert_eq!(result.artifacts, Some(vec!["target/receipts/unit-smoke.json".to_string()]));
+        let metrics = result.metrics.expect("test-tagged gate should expose test metrics");
+        assert_eq!(metrics.tests_passed, Some(3));
+        assert_eq!(metrics.tests_failed, Some(0));
+        assert_eq!(metrics.tests_ignored, Some(2));
+        assert_eq!(metrics.tests_total, Some(5));
+        assert!(
+            result
+                .output_summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("test result: ok.")),
+            "result summary should include the cargo-style test line"
+        );
+        assert!(
+            tmp.path().join("unit-smoke.log").exists(),
+            "shell gate should write the command log"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_write_and_load_roundtrip_reports_missing_file() -> color_eyre::eyre::Result<()> {
+        let tmp = tempdir()?;
+        let receipt_path = tmp.path().join("nested").join("receipt.json");
+        let receipt = test_receipt_with_metrics(GateMetrics {
+            tests_total: Some(1),
+            tests_passed: Some(1),
+            ..GateMetrics::default()
+        });
+
+        write_receipt(&receipt, &receipt_path)?;
+        let loaded = load_receipt(&receipt_path)?;
+
+        assert_eq!(loaded.schema_version, receipt.schema_version);
+        assert_eq!(loaded.gates.len(), 1);
+        assert_eq!(loaded.gates[0].gate_name, "tests");
+        let missing = tmp.path().join("missing.json");
+        let err = load_receipt(&missing).expect_err("missing baseline should be reported");
+        assert!(
+            format!("{err:#}").contains("Failed to read baseline receipt"),
+            "missing-file context should be actionable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn diff_output_accepts_json_and_human_formats() -> color_eyre::eyre::Result<()> {
+        let baseline = test_receipt_with_metrics(GateMetrics {
+            tests_total: Some(10),
+            ..GateMetrics::default()
+        });
+        let current = test_receipt_with_metrics(GateMetrics {
+            tests_total: Some(15),
+            ..GateMetrics::default()
+        });
+        let diff = compare_receipts(&baseline, &current)?;
+
+        let json_config =
+            GateRunnerConfig { output_format: OutputFormat::Json, ..GateRunnerConfig::default() };
+        output_diff(&diff, &json_config)?;
+        output_diff(&diff, &GateRunnerConfig::default())?;
+
+        assert!(
+            diff.metric_changes.iter().any(|change| change.metric_name == "tests_total"),
+            "diff should include the changed metric rendered above"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn required_gate_timeout_reports_receipt_fields_and_blocks_overall_status()
     -> color_eyre::eyre::Result<()> {
         let gate = GateDefinition {
@@ -3554,6 +3787,89 @@ gates:
                 "Reproduce and fix gate 'clippy' locally, then rerun: cargo xtask gates --gate clippy"
             ]
         );
+    }
+
+    #[test]
+    fn agent_receipt_builder_preserves_scope_status_and_plan_contract()
+    -> color_eyre::eyre::Result<()> {
+        let mut scope = scope_output("code", &["xtask"], &["perl-lsp-rs"], &["perl-dap"]);
+        scope.selected_lanes.push(LaneEntry {
+            lane: "fmt".to_string(),
+            scope: vec!["xtask".to_string()],
+            reason: "direct_crate_change".to_string(),
+        });
+        scope.selected_lanes.push(LaneEntry {
+            lane: "unit_scoped".to_string(),
+            scope: vec!["xtask".to_string()],
+            reason: "reverse_dependency".to_string(),
+        });
+        scope.selected_heavy_lanes.push(HeavyLaneEntry {
+            lane: "mutation_diff".to_string(),
+            reason: "parser risk tag".to_string(),
+        });
+        scope.explanations.insert("fmt".to_string(), "formatting policy selected".to_string());
+
+        let gates = vec![
+            pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
+            pr_gate("unit_scoped", GatePlanningRole::RustScoped, "cargo test {package_args}"),
+            pr_gate("clippy_core", GatePlanningRole::RustFallback, "cargo clippy -p perl-parser"),
+        ];
+        let plan = build_pr_fast_plan_from_scope(
+            GateTier::PrFast,
+            "origin/master".to_string(),
+            gates,
+            Some(scope),
+            true,
+            false,
+            None,
+        )?;
+        let root = crate::utils::project_root()?;
+        let receipt = build_agent_receipt(
+            &root,
+            &[gate_result("fmt", "pass", true), gate_result("mutation_diff", "fail", false)],
+            &plan,
+        );
+
+        assert!(!receipt.sha.is_empty());
+        assert_eq!(receipt.tier, "pr_fast");
+        assert_eq!(receipt.scope.diff_class.as_deref(), Some("code"));
+        assert_eq!(receipt.scope.direct_crates, vec!["xtask"]);
+        assert_eq!(receipt.scope.reverse_deps, vec!["perl-lsp-rs"]);
+        assert_eq!(receipt.scope.architecture_wideners, vec!["perl-dap"]);
+
+        assert_eq!(receipt.selected_lanes.len(), 3);
+        assert_eq!(receipt.selected_lanes[0].name, "fmt");
+        assert_eq!(receipt.selected_lanes[0].status, "pass");
+        assert!(receipt.selected_lanes[0].reason.contains("direct_crate_change"));
+        assert!(receipt.selected_lanes[0].reason.contains("formatting policy selected"));
+        assert_eq!(receipt.selected_lanes[1].name, "unit_scoped");
+        assert_eq!(receipt.selected_lanes[1].status, "not_run");
+        assert_eq!(receipt.selected_lanes[2].name, "mutation_diff");
+        assert_eq!(receipt.selected_lanes[2].status, "fail");
+
+        assert!(receipt.failures.is_empty(), "optional failing heavy lane is not blocking");
+        assert_eq!(
+            receipt.suggested_next_actions,
+            vec!["No blocking failures detected. Proceed with review or merge flow."]
+        );
+
+        let agent_plan =
+            receipt.plan.ok_or_else(|| color_eyre::eyre::eyre!("agent receipt missing plan"))?;
+        assert_eq!(agent_plan.base, "origin/master");
+        assert_eq!(agent_plan.diff_class.as_deref(), Some("code"));
+        assert!(agent_plan.scope_ok);
+        assert!(!agent_plan.fallback_used);
+        assert_eq!(
+            agent_plan.package_args,
+            vec!["-p", "perl-dap", "-p", "perl-lsp-rs", "-p", "xtask"]
+        );
+        assert_eq!(agent_plan.selected.len(), 2);
+        assert_eq!(agent_plan.selected[0].name, "fmt");
+        assert_eq!(agent_plan.selected[1].name, "unit_scoped");
+        assert_eq!(agent_plan.skipped.len(), 1);
+        assert_eq!(agent_plan.skipped[0].name, "clippy_core");
+        assert_eq!(agent_plan.skipped[0].reason, "rust scoped plan selected");
+        Ok(())
     }
 
     #[test]
