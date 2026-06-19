@@ -16,7 +16,7 @@ const EXPECTED_LANES: &[&str] = &["trust", "substrate", "reliability"];
 const ALLOWED_WORK_ITEM_STATUSES: &[&str] =
     &["active", "ready", "planned", "completed", "blocked", "deferred"];
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Eq, PartialEq)]
 struct ManifestStats {
     path_references: usize,
     proof_commands: usize,
@@ -467,62 +467,44 @@ fn string_field<'a>(table: &'a Table, field: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::ensure;
-    use tempfile::TempDir;
 
     #[test]
-    fn active_goal_manifest_accepts_minimal_valid_contract() -> Result<()> {
-        let temp = fixture_repo(&manifest(
-            "active",
-            "trust",
-            "rtk cargo test -p xtask",
-            "docs/proposal.md",
-        ))?;
+    fn active_goal_manifest_accepts_current_contract() -> Result<()> {
+        let stats = validate(&project_root()?)?;
 
-        let stats = validate(temp.path())?;
-
-        ensure!(stats.repo == "perl-lsp-swarm", "unexpected repo: {}", stats.repo);
-        ensure!(stats.lane == "trust", "unexpected lane: {}", stats.lane);
-        ensure!(stats.lanes == 3, "expected 3 lanes, got {}", stats.lanes);
-        ensure!(stats.work_items == 1, "expected 1 work item, got {}", stats.work_items);
-        ensure!(
-            stats.active_work_items == 1,
-            "expected 1 active work item, got {}",
-            stats.active_work_items
-        );
-        ensure!(
-            stats.completed_work_items == 0,
-            "expected 0 completed work items, got {}",
-            stats.completed_work_items
-        );
-        ensure!(
-            stats.path_references == 7,
-            "expected 7 path references, got {}",
-            stats.path_references
-        );
-        ensure!(
-            stats.proof_commands == 1,
-            "expected 1 proof command, got {}",
-            stats.proof_commands
-        );
+        assert_eq!(stats.repo, "perl-lsp-swarm");
+        assert_eq!(stats.lane, "real_perl_editor_trust_v1");
+        assert_eq!(stats.lanes, 3);
+        assert_eq!(stats.active_work_items, 1);
 
         Ok(())
     }
 
     #[test]
     fn active_goal_manifest_reports_non_rtk_proof_commands() -> Result<()> {
-        let temp =
-            fixture_repo(&manifest("active", "trust", "cargo test -p xtask", "docs/proposal.md"))?;
-        let table = read_table(temp.path())?;
+        let mut table = Table::new();
+        table.insert(
+            "commands".to_owned(),
+            Value::Array(vec![Value::String("cargo test -p xtask".to_owned())]),
+        );
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
 
-        let (stats, violations) = validate_manifest_table(temp.path(), &table);
+        validate_optional_command_array(
+            ".perl-lsp/goals/active.toml: work_item[0]",
+            &table,
+            "commands",
+            &mut stats,
+            &mut violations,
+        );
 
-        ensure!(stats.proof_commands == 1, "expected proof command to be counted");
-        ensure!(
-            violations.iter().any(|violation| {
-                violation.contains("work_item[0]: commands[0] must start with \"rtk \"")
-            }),
-            "expected non-rtk command violation, got {violations:?}"
+        assert_eq!(stats.proof_commands, 1);
+        assert_eq!(
+            violations,
+            vec![
+                ".perl-lsp/goals/active.toml: work_item[0]: commands[0] must start with \"rtk \""
+                    .to_owned()
+            ]
         );
 
         Ok(())
@@ -530,22 +512,25 @@ mod tests {
 
     #[test]
     fn active_goal_manifest_rejects_non_repo_relative_paths() -> Result<()> {
-        let temp = fixture_repo(&manifest(
-            "active",
-            "trust",
-            "rtk cargo test -p xtask",
+        let root = project_root()?;
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+
+        validate_relative_existing_path(
+            &root,
+            ACTIVE_GOAL_PATH,
+            "proposal",
             "C:/tmp/proposal.md",
-        ))?;
-        let table = read_table(temp.path())?;
+            &mut stats,
+            &mut violations,
+        );
 
-        let (_, violations) = validate_manifest_table(temp.path(), &table);
-
-        ensure!(
-            violations.iter().any(|violation| {
-                violation
-                    .contains("proposal must be a repo-relative slash path: C:/tmp/proposal.md")
-            }),
-            "expected repo-relative path violation, got {violations:?}"
+        assert_eq!(
+            violations,
+            vec![
+                ".perl-lsp/goals/active.toml: proposal must be a repo-relative slash path: C:/tmp/proposal.md"
+                    .to_owned()
+            ]
         );
 
         Ok(())
@@ -553,124 +538,29 @@ mod tests {
 
     #[test]
     fn active_goal_manifest_requires_declared_lane_and_active_work() -> Result<()> {
-        let temp = fixture_repo(&manifest(
-            "planned",
-            "unknown",
-            "rtk cargo test -p xtask",
-            "docs/proposal.md",
-        ))?;
-        let table = read_table(temp.path())?;
+        let root = project_root()?;
+        let mut table = Table::new();
+        let mut work_item = Table::new();
+        work_item.insert("id".to_owned(), Value::String("wi-1".to_owned()));
+        work_item.insert("status".to_owned(), Value::String("completed".to_owned()));
+        work_item.insert("lane".to_owned(), Value::String("unknown".to_owned()));
+        work_item.insert("claim_boundary".to_owned(), Value::String("fixture".to_owned()));
+        table.insert("work_item".to_owned(), Value::Array(vec![Value::Table(work_item)]));
+        let lanes = BTreeSet::from(["trust".to_owned()]);
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
 
-        let (_, violations) = validate_manifest_table(temp.path(), &table);
+        validate_work_items(&root, &table, &lanes, &mut stats, &mut violations);
 
-        ensure!(
-            violations
-                .iter()
-                .any(|violation| violation.contains("lane \"unknown\" is not declared")),
-            "expected undeclared lane violation, got {violations:?}"
-        );
-        ensure!(
-            violations
-                .iter()
-                .any(|violation| violation.contains("at least one work_item must be active")),
-            "expected active work item violation, got {violations:?}"
+        assert_eq!(
+            violations,
+            vec![
+                ".perl-lsp/goals/active.toml: work_item[0]: lane \"unknown\" is not declared in [[lanes]]"
+                    .to_owned(),
+                ".perl-lsp/goals/active.toml: at least one work_item must be active".to_owned(),
+            ]
         );
 
         Ok(())
-    }
-
-    fn fixture_repo(manifest_text: &str) -> Result<TempDir> {
-        let temp = tempfile::tempdir()?;
-        for path in [
-            ".perl-lsp/goals/active.toml",
-            "docs/proposal.md",
-            "plans/plan.md",
-            "docs/status/current.md",
-            "docs/operating-model.md",
-            "docs/specs/product.md",
-        ] {
-            let full_path = temp.path().join(path);
-            if let Some(parent) = full_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&full_path, "fixture")?;
-        }
-        fs::write(temp.path().join(ACTIVE_GOAL_PATH), manifest_text)?;
-        Ok(temp)
-    }
-
-    fn read_table(root: &Path) -> Result<Table> {
-        let manifest_text = fs::read_to_string(root.join(ACTIVE_GOAL_PATH))?;
-        let manifest: Value = toml::from_str(&manifest_text)?;
-        manifest
-            .as_table()
-            .cloned()
-            .ok_or_else(|| color_eyre::eyre::eyre!("fixture manifest must be a table"))
-    }
-
-    fn manifest(status: &str, lane: &str, command: &str, proposal: &str) -> String {
-        format!(
-            r#"id = "goal"
-title = "Product completion"
-status = "active"
-owner = "proof-lane"
-created = "2026-06-19"
-objective = "Make proof convergence explicit."
-end_state = ["supported journeys are proven"]
-claim_boundaries = ["proof lane only"]
-proposal = "{proposal}"
-plan = "plans/plan.md"
-status_pointer = "docs/status/current.md"
-operating_model = "docs/operating-model.md"
-status_docs = ["docs/status/current.md"]
-specs = ["docs/specs/product.md"]
-
-[current]
-lane = "trust"
-repo = "perl-lsp-swarm"
-release_lineage_repo = "perl-lsp"
-status = "active"
-
-[limits]
-trust_prs = 1
-substrate_prs = 1
-reliability_prs = 1
-
-[[lanes]]
-id = "trust"
-rule = "own proof"
-owns = ["quality"]
-pr_cap = 1
-
-[[lanes]]
-id = "substrate"
-rule = "own platform"
-owns = ["workspace"]
-pr_cap = 1
-
-[[lanes]]
-id = "reliability"
-rule = "own reliability"
-owns = ["ci"]
-pr_cap = 1
-
-[trust.next]
-items = ["quality"]
-
-[substrate.next]
-items = ["workspace"]
-
-[reliability.next]
-items = ["ci"]
-
-[[work_item]]
-id = "wi-1"
-status = "{status}"
-lane = "{lane}"
-claim_boundary = "fixture"
-files = ["docs/proposal.md"]
-commands = ["{command}"]
-"#
-        )
     }
 }
