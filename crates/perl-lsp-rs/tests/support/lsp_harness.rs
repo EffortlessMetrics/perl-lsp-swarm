@@ -50,6 +50,13 @@ pub struct LspHarness {
     canceled_ids: Arc<Mutex<Vec<i32>>>, // Track canceled request IDs
 }
 
+pub fn temp_workspace_tuning() -> RuntimeTuning {
+    let mut tuning = RuntimeTuning::normal_defaults();
+    tuning.eager_workspace_indexing = false;
+    tuning.file_watchers = false;
+    tuning
+}
+
 fn uri_matches(expected: &str, actual: &str) -> bool {
     if expected == actual {
         return true;
@@ -303,7 +310,7 @@ impl LspHarness {
             workspace.write(path, content)?;
         }
 
-        let mut harness = Self::new_raw();
+        let mut harness = Self::new_with_tuning(temp_workspace_tuning());
         harness.initialize_ready(&workspace.root_uri, None)?;
 
         Ok((harness, workspace))
@@ -1348,6 +1355,8 @@ impl LspHarness {
         // Send shutdown request if we have an active connection
         let shutdown_timeout = if std::env::var("CI").is_ok() {
             Duration::from_secs(2) // CI: more time for cleanup
+        } else if cfg!(windows) {
+            Duration::from_secs(2) // Windows: avoid overlapping harness threads under load
         } else {
             Duration::from_millis(500) // Local: faster cleanup
         };
@@ -1362,7 +1371,11 @@ impl LspHarness {
 
         // Wait for server thread to complete with timeout
         if let Some(handle) = self.handle.take() {
-            let join_timeout = Duration::from_secs(1);
+            let join_timeout = if std::env::var("CI").is_ok() || cfg!(windows) {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_secs(1)
+            };
             let start = Instant::now();
 
             // Use a simple timeout mechanism since we can't use thread::join with timeout in std

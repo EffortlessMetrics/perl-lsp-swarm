@@ -1,7 +1,8 @@
 mod support;
 
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 use support::lsp_harness::LspHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -394,12 +395,15 @@ fn inline_completion_use_namespace_returns_indexed_open_workspace_module() -> Te
     let script_uri = workspace.uri("script.pl");
     harness.open(&script_uri, "use My::")?;
 
-    let result = request_inline_completion_with_trigger_kind(&mut harness, &script_uri, 0, 8, 1)?;
-    let items = result
-        .get("items")
-        .and_then(Value::as_array)
-        .ok_or("inline completion result must contain items array")?;
-    let module = item_with_insert_text(items, "My::Live;")?;
+    let module = request_inline_completion_item_with_insert_text(
+        &mut harness,
+        &script_uri,
+        0,
+        8,
+        1,
+        "My::Live;",
+        Duration::from_secs(2),
+    )?;
 
     assert_eq!(module.pointer("/range/start/line"), Some(&json!(0)));
     assert_eq!(module.pointer("/range/start/character"), Some(&json!(4)));
@@ -1250,6 +1254,42 @@ fn item_with_insert_text<'a>(items: &'a [Value], insert_text: &str) -> Result<&'
         .iter()
         .find(|item| item.get("insertText").and_then(Value::as_str) == Some(insert_text))
         .ok_or_else(|| format!("expected inline completion item {insert_text}, got: {items:?}"))
+}
+
+fn request_inline_completion_item_with_insert_text(
+    harness: &mut LspHarness,
+    uri: &str,
+    line: u32,
+    character: u32,
+    trigger_kind: u8,
+    insert_text: &str,
+    budget: Duration,
+) -> Result<Value, String> {
+    let start = Instant::now();
+    let mut last_items = Vec::new();
+
+    while start.elapsed() < budget {
+        let result = request_inline_completion_with_trigger_kind(
+            harness,
+            uri,
+            line,
+            character,
+            trigger_kind,
+        )?;
+        let items = result
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or("inline completion result must contain items array")?;
+
+        if let Ok(item) = item_with_insert_text(items, insert_text) {
+            return Ok(item.clone());
+        }
+
+        last_items = items.clone();
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    Err(format!("expected inline completion item {insert_text}, got: {last_items:?}"))
 }
 
 fn assert_item_range(

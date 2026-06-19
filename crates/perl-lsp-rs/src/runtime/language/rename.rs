@@ -7,7 +7,8 @@
 //!
 //! Uses the routing module for state-aware dispatch:
 //! - **Ready state**: Full workspace rename across all indexed files
-//! - **Building/Degraded state**: Same-file rename only; logs "workspace rename unavailable while index building"
+//! - **Building state**: Bounded readiness wait before falling back
+//! - **Degraded state**: Same-file rename only for local symbols; package-scoped edits are refused
 
 use super::super::*;
 use crate::protocol::{req_position, req_uri};
@@ -24,6 +25,10 @@ use perl_semantic_facts::{EntityId, FileId, PlannedEdit};
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 #[cfg(feature = "workspace")]
 use std::collections::BTreeMap;
+#[cfg(feature = "workspace")]
+use std::sync::Arc;
+#[cfg(feature = "workspace")]
+use std::time::{Duration, Instant};
 
 /// Returns true if `c` is a Perl variable sigil (`$`, `@`, or `%`).
 fn is_perl_sigil(c: char) -> bool {
@@ -47,6 +52,126 @@ fn lexical_declaration_keyword_before(source: &str, symbol_start: usize) -> bool
 }
 
 impl LspServer {
+    #[cfg(feature = "workspace")]
+    fn package_name_before_offset(source: &str, offset: usize) -> Option<&str> {
+        let prefix = source.get(..offset.min(source.len()))?;
+        let mut current_pkg = None;
+
+        for raw_line in prefix.lines() {
+            let trimmed = raw_line.trim_start();
+            if !trimmed.starts_with("package ") {
+                continue;
+            }
+
+            let package_decl = trimmed.trim_start_matches("package ").trim_start();
+            let package_name = package_decl
+                .split(|ch: char| ch.is_whitespace() || ch == ';')
+                .next()
+                .unwrap_or_default();
+
+            if !package_name.is_empty() {
+                current_pkg = Some(package_name);
+            }
+        }
+
+        current_pkg
+    }
+
+    #[cfg(feature = "workspace")]
+    fn offset_is_sub_declaration_name(source: &str, offset: usize, symbol: &str) -> bool {
+        let Some(prefix) = source.get(..offset.min(source.len())) else {
+            return false;
+        };
+        let line_start = prefix.rfind('\n').map_or(0, |idx| idx + 1);
+        let line_end = source
+            .get(offset.min(source.len())..)
+            .and_then(|suffix| suffix.find('\n').map(|idx| offset.min(source.len()) + idx))
+            .unwrap_or(source.len());
+        let Some(line_text) = source.get(line_start..line_end) else {
+            return false;
+        };
+
+        let leading_ws = line_text.len() - line_text.trim_start().len();
+        let trimmed = &line_text[leading_ws..];
+        let Some(after_sub) = trimmed.strip_prefix("sub") else {
+            return false;
+        };
+        if !after_sub.chars().next().is_some_and(char::is_whitespace) {
+            return false;
+        }
+
+        let whitespace_bytes: usize =
+            after_sub.chars().take_while(|ch| ch.is_whitespace()).map(char::len_utf8).sum();
+        let name_start = line_start + leading_ws + "sub".len() + whitespace_bytes;
+        let Some(tail) = source.get(name_start..) else {
+            return false;
+        };
+        let declared_name = tail
+            .split(|ch: char| ch.is_whitespace() || ch == '(' || ch == '{' || ch == ';')
+            .next()
+            .unwrap_or_default();
+        if declared_name.is_empty() {
+            return false;
+        }
+
+        let name_end = name_start + declared_name.len();
+        let bare_declared_name =
+            declared_name.rsplit_once("::").map_or(declared_name, |(_, bare)| bare);
+
+        bare_declared_name == symbol && name_start <= offset && offset <= name_end
+    }
+
+    #[cfg(feature = "workspace")]
+    fn qualified_sub_key_at_offset(
+        source: &str,
+        offset: usize,
+    ) -> Option<crate::workspace_index::SymbolKey> {
+        if !source.is_char_boundary(offset) {
+            return None;
+        }
+
+        let bytes = source.as_bytes();
+        if offset >= bytes.len() {
+            return None;
+        }
+
+        fn is_qualified_name_byte(byte: u8) -> bool {
+            byte.is_ascii_alphanumeric() || byte == b'_' || byte == b':'
+        }
+
+        if !is_qualified_name_byte(bytes[offset]) {
+            return None;
+        }
+
+        let mut start = offset;
+        while start > 0 && is_qualified_name_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+
+        let mut end = offset + 1;
+        while end < bytes.len() && is_qualified_name_byte(bytes[end]) {
+            end += 1;
+        }
+
+        let token = source.get(start..end)?;
+        let (pkg, name) = token.rsplit_once("::")?;
+        if pkg.is_empty() || name.is_empty() {
+            return None;
+        }
+
+        Some(crate::workspace_index::SymbolKey {
+            pkg: Arc::from(pkg),
+            name: Arc::from(name),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        })
+    }
+
+    #[cfg(feature = "workspace")]
+    fn is_package_sub_workspace_rename_key(key: &crate::workspace_index::SymbolKey) -> bool {
+        key.kind == crate::workspace_index::SymKind::Sub && key.pkg.as_ref() != "main"
+    }
+
     #[cfg(feature = "workspace")]
     fn package_rename_pilot_entity_id<Q: SemanticQueries>(
         queries: &Q,
@@ -120,16 +245,13 @@ impl LspServer {
         new_name_bare: &str,
     ) -> Option<Result<(Value, usize), ()>> {
         let byte_offset = u32::try_from(byte_offset).ok()?;
-        workspace_index
+        let planned_edits = workspace_index
             .with_semantic_queries_for_uri(uri, |file_id, queries| {
                 let entity_id =
                     Self::package_rename_pilot_entity_id(&queries, file_id, byte_offset, symbol)?;
                 let outcome = rename_package_pilot_proof(true, &queries, entity_id, new_name_bare);
                 match outcome.result {
-                    RenamePackagePilotResult::Eligible { edits } => {
-                        Self::package_rename_pilot_edits_to_workspace_edit(workspace_index, edits)
-                            .map(Ok)
-                    }
+                    RenamePackagePilotResult::Eligible { edits } => Some(Ok(edits)),
                     RenamePackagePilotResult::Ineligible {
                         reason: RenamePackagePilotIneligibleReason::EmptyPlan,
                         ..
@@ -138,7 +260,15 @@ impl LspServer {
                     _ => None,
                 }
             })
-            .flatten()
+            .flatten();
+
+        match planned_edits {
+            Some(Ok(edits)) => {
+                Self::package_rename_pilot_edits_to_workspace_edit(workspace_index, edits).map(Ok)
+            }
+            Some(Err(())) => Some(Err(())),
+            None => None,
+        }
     }
 
     fn record_rename_provider_decision_trace(
@@ -663,6 +793,46 @@ impl LspServer {
             .unwrap_or(0)
     }
 
+    #[cfg(feature = "workspace")]
+    fn overlay_open_documents_on_workspace_index(
+        &self,
+        workspace_index: &crate::workspace_index::WorkspaceIndex,
+        open_documents: &[(String, i32, String)],
+    ) {
+        for (uri, version, text) in open_documents {
+            workspace_index.document_store().open(uri.clone(), *version, text.clone());
+
+            if let Ok(url) = url::Url::parse(uri)
+                && let Err(error) = workspace_index.index_file(url, text.clone())
+            {
+                tracing::debug!(
+                    uri,
+                    error,
+                    "Rename: open document overlay kept text but could not refresh index facts"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "workspace")]
+    fn wait_for_ready_index(
+        coordinator: &Arc<crate::workspace_index::IndexCoordinator>,
+        budget: Duration,
+    ) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < budget {
+            match coordinator.state() {
+                crate::workspace_index::IndexState::Ready { .. } => return true,
+                crate::workspace_index::IndexState::Building { .. } => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                crate::workspace_index::IndexState::Degraded { .. } => return false,
+            }
+        }
+
+        matches!(coordinator.state(), crate::workspace_index::IndexState::Ready { .. })
+    }
+
     fn package_rename_guard_accepts_workspace_edit(
         guard_workspace_edit: &Value,
         semantic_workspace_edit: &Value,
@@ -707,27 +877,44 @@ impl LspServer {
                 // Check index access mode using routing helper
                 #[cfg(feature = "workspace")]
                 {
-                    let access_mode = route_index_access(self.coordinator());
-                    let (symbol_key, rename_byte_offset, rename_is_package_scoped) = {
-                        let documents = self.documents_guard();
-                        self.get_document(&documents, uri).and_then(|doc| {
-                            doc.ast.as_ref().and_then(|ast| {
-                                let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
-                                let current_pkg =
-                                    crate::declaration::current_package_at(ast, offset);
-                                crate::declaration::symbol_at_cursor_with_source(
-                                    ast,
-                                    offset,
-                                    current_pkg,
-                                    &doc.text,
-                                )
-                                .map(|key| (key, offset, !current_pkg.is_empty()))
-                            })
-                        })
+                    let mut access_mode = route_index_access(self.coordinator());
+                    if matches!(
+                        access_mode,
+                        IndexAccessMode::Partial(reason) if reason.starts_with("index building")
+                    ) && let Some(coordinator) = self.coordinator()
+                        && Self::wait_for_ready_index(coordinator, Duration::from_secs(2))
+                    {
+                        access_mode = route_index_access(self.coordinator());
                     }
-                    .map_or((None, None, false), |(key, offset, package_scoped)| {
-                        (Some(key), Some(offset), package_scoped)
-                    });
+
+                    let (symbol_key, rename_byte_offset, rename_is_package_scoped, package_scope) =
+                        {
+                            let documents = self.documents_guard();
+                            self.get_document(&documents, uri).and_then(|doc| {
+                                doc.ast.as_ref().map(|ast| {
+                                    let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
+                                    let current_pkg =
+                                        crate::declaration::current_package_at(ast, offset);
+                                    let source_pkg =
+                                        Self::package_name_before_offset(&doc.text, offset);
+                                    let package_scope =
+                                        source_pkg.unwrap_or(current_pkg).to_string();
+                                    let key = crate::declaration::symbol_at_cursor_with_source(
+                                        ast,
+                                        offset,
+                                        current_pkg,
+                                        &doc.text,
+                                    );
+                                    (key, offset, !package_scope.is_empty(), package_scope)
+                                })
+                            })
+                        }
+                        .map_or(
+                            (None, None, false, None),
+                            |(key, offset, package_scoped, package_scope)| {
+                                (key, Some(offset), package_scoped, Some(package_scope))
+                            },
+                        );
                     let current_symbol = {
                         let documents = self.documents_guard();
                         self.get_document(&documents, uri).map(|doc| {
@@ -738,8 +925,36 @@ impl LspServer {
                     let normalized_name =
                         self.normalize_rename_target(current_symbol.as_deref(), new_name)?;
                     let normalized_bare = strip_perl_sigil(&normalized_name);
-                    let workspace_symbol_key =
-                        symbol_key.as_ref().map(super::to_workspace_symbol_key);
+                    let workspace_symbol_key = symbol_key
+                        .as_ref()
+                        .map(super::to_workspace_symbol_key)
+                        .or_else(|| {
+                            let offset = rename_byte_offset?;
+                            let documents = self.documents_guard();
+                            let doc = self.get_document(&documents, uri)?;
+                            Self::qualified_sub_key_at_offset(&doc.text, offset)
+                        })
+                        .or_else(|| {
+                            let symbol = current_symbol.as_deref()?;
+                            if symbol.is_empty() || symbol.chars().next().is_some_and(is_perl_sigil)
+                            {
+                                return None;
+                            }
+                            let package = package_scope.as_deref()?;
+                            let offset = rename_byte_offset?;
+                            let documents = self.documents_guard();
+                            let doc = self.get_document(&documents, uri)?;
+                            if !Self::offset_is_sub_declaration_name(&doc.text, offset, symbol) {
+                                return None;
+                            }
+
+                            Some(crate::workspace_index::SymbolKey {
+                                pkg: Arc::from(package),
+                                name: Arc::from(symbol),
+                                sigil: None,
+                                kind: crate::workspace_index::SymKind::Sub,
+                            })
+                        });
 
                     match access_mode {
                         IndexAccessMode::Partial(reason) => {
@@ -754,6 +969,19 @@ impl LspServer {
                                 0,
                                 "same_file",
                             );
+                            if workspace_symbol_key
+                                .as_ref()
+                                .is_some_and(Self::is_package_sub_workspace_rename_key)
+                            {
+                                self.record_rename_provider_decision_trace(
+                                    Some(uri),
+                                    current_symbol.as_deref(),
+                                    "partial_index_workspace_rename_blocked",
+                                    0,
+                                    "partial_index",
+                                );
+                                return Ok(Some(json!({"changes": {}})));
+                            }
                             // Fall through to same-file rename
                         }
                         IndexAccessMode::None => {
@@ -762,6 +990,61 @@ impl LspServer {
                         }
                         IndexAccessMode::Full(coordinator) => {
                             let idx = coordinator.index();
+                            let open_document_snapshot: Vec<(String, i32, String)> = {
+                                let documents = self.documents_guard();
+                                documents
+                                    .iter()
+                                    .map(|(uri, doc)| (uri.clone(), doc.version, doc.text.clone()))
+                                    .collect()
+                            };
+                            let open_documents: Vec<(String, String)> = open_document_snapshot
+                                .iter()
+                                .map(|(uri, _, text)| (uri.clone(), text.clone()))
+                                .collect();
+                            self.overlay_open_documents_on_workspace_index(
+                                idx.as_ref(),
+                                &open_document_snapshot,
+                            );
+                            if let Some(key) = workspace_symbol_key.as_ref() {
+                                let edits = match crate::features::workspace_rename::build_rename_edit_with_open_documents(
+                                        idx.as_ref(),
+                                        key,
+                                        normalized_bare,
+                                        &open_documents,
+                                    ) {
+                                        Ok(edits) => edits,
+                                        Err(refusal) => {
+                                            self.record_rename_provider_decision_trace(
+                                                Some(uri),
+                                                current_symbol.as_deref(),
+                                                "package_local_live_pilot_ambiguous",
+                                                0,
+                                                "ambiguous_identity",
+                                            );
+                                            return Err(JsonRpcError {
+                                                code: -32602,
+                                                message: refusal.to_string(),
+                                                data: None,
+                                            });
+                                        }
+                                    };
+                                if !edits.is_empty() {
+                                    let ws_edit =
+                                        crate::features::workspace_rename::to_workspace_edit(edits);
+                                    let edit_count = Self::workspace_edit_change_count(&ws_edit);
+                                    if edit_count > 1 {
+                                        self.record_rename_provider_decision_trace(
+                                            Some(uri),
+                                            current_symbol.as_deref(),
+                                            "full_index_workspace_edit",
+                                            edit_count,
+                                            "workspace_index",
+                                        );
+                                        return Ok(Some(ws_edit));
+                                    }
+                                }
+                            }
+
                             if package_local_live_pilot_enabled {
                                 if let (Some(offset), Some(symbol)) =
                                     (rename_byte_offset, current_symbol.as_deref())
@@ -789,10 +1072,11 @@ impl LspServer {
                                             };
 
                                             let guard_edits =
-                                                crate::features::workspace_rename::build_rename_edit(
+                                                crate::features::workspace_rename::build_rename_edit_with_open_documents(
                                                     idx.as_ref(),
                                                     key,
                                                     normalized_bare,
+                                                    &open_documents,
                                                 )
                                                 .map_err(|refusal| {
                                                     self.record_rename_provider_decision_trace(
@@ -865,11 +1149,14 @@ impl LspServer {
                                         None => {}
                                     }
                                 }
-                            } else if let Some(key) = workspace_symbol_key.as_ref() {
-                                let edits = crate::features::workspace_rename::build_rename_edit(
+                            }
+
+                            if let Some(key) = workspace_symbol_key.as_ref() {
+                                let edits = crate::features::workspace_rename::build_rename_edit_with_open_documents(
                                     idx.as_ref(),
                                     key,
                                     normalized_bare,
+                                    &open_documents,
                                 )
                                 .map_err(|refusal| {
                                     JsonRpcError {
@@ -881,9 +1168,9 @@ impl LspServer {
                                 if edits.is_empty() {
                                     // Fall through to same-file rename.
                                 } else {
-                                    let edit_count = edits.len();
                                     let ws_edit =
                                         crate::features::workspace_rename::to_workspace_edit(edits);
+                                    let edit_count = Self::workspace_edit_change_count(&ws_edit);
                                     self.record_rename_provider_decision_trace(
                                         Some(uri),
                                         current_symbol.as_deref(),
@@ -1026,6 +1313,8 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "workspace")]
+    use std::sync::Arc;
 
     #[test]
     fn token_helpers_support_cursor_on_sigil() -> Result<(), Box<dyn std::error::Error>> {
@@ -1040,6 +1329,109 @@ mod tests {
         // bounds are byte offsets; slice with &text[start..end]
         assert_eq!(&text[start..end], "$value");
         Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn offset_is_sub_declaration_name_accepts_offset_eq_name_end_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (label, text) in [
+            ("space-brace", "package Foo;\nsub process_data { 1 }\n"),
+            ("paren", "package Foo;\nsub process_data() { 1 }\n"),
+            ("semicolon", "package Foo;\nsub process_data;\n"),
+            ("newline", "package Foo;\nsub process_data\n"),
+            ("qualified", "package Foo;\nsub Foo::process_data { 1 }\n"),
+        ] {
+            let declared_name =
+                if label == "qualified" { "Foo::process_data" } else { "process_data" };
+            let declared_start = text.find(declared_name).ok_or("missing sub name")?;
+            let bare_start = text.find("process_data").ok_or("missing bare sub name")?;
+            let bare_end = bare_start + "process_data".len();
+            let before_name = declared_start.checked_sub(1).ok_or("name starts at byte zero")?;
+
+            assert_eq!(
+                LspServer::offset_is_sub_declaration_name(text, before_name, "process_data"),
+                false,
+                "{label}: byte before sub name must not match"
+            );
+            assert_eq!(
+                LspServer::offset_is_sub_declaration_name(text, bare_start, "process_data"),
+                true,
+                "{label}: start byte must match"
+            );
+            assert_eq!(
+                LspServer::offset_is_sub_declaration_name(text, bare_end, "process_data"),
+                true,
+                "{label}: end byte boundary must match"
+            );
+            assert_eq!(
+                LspServer::offset_is_sub_declaration_name(text, bare_end + 1, "process_data"),
+                false,
+                "{label}: byte after delimiter must not match"
+            );
+        }
+
+        let longer_name = "package Foo;\nsub process_data_extra { 1 }\n";
+        let process_data_end = longer_name.find("process_data").ok_or("missing longer sub name")?
+            + "process_data".len();
+        assert_eq!(
+            LspServer::offset_is_sub_declaration_name(
+                longer_name,
+                process_data_end,
+                "process_data"
+            ),
+            false,
+            "partial prefix of a longer sub declaration must not match"
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn qualified_sub_key_at_offset_accepts_colon_and_underscore_boundaries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let text = "my $value = Foo::process_data();";
+        let colon_offset = text.find("::").ok_or("missing package separator")?;
+        let underscore_offset = text.find('_').ok_or("missing underscore")?;
+
+        let colon_key = LspServer::qualified_sub_key_at_offset(text, colon_offset)
+            .ok_or("colon should still resolve the qualified sub token")?;
+        let underscore_key = LspServer::qualified_sub_key_at_offset(text, underscore_offset)
+            .ok_or("underscore should still resolve the qualified sub token")?;
+
+        for key in [colon_key, underscore_key] {
+            assert_eq!(key.pkg.as_ref(), "Foo");
+            assert_eq!(key.name.as_ref(), "process_data");
+            assert!(matches!(key.kind, crate::workspace_index::SymKind::Sub));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn package_sub_workspace_rename_key_requires_sub_kind_outside_main() {
+        let package_sub = crate::workspace_index::SymbolKey {
+            pkg: Arc::from("Foo"),
+            name: Arc::from("process_data"),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        };
+        let main_sub = crate::workspace_index::SymbolKey {
+            pkg: Arc::from("main"),
+            name: Arc::from("process_data"),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        };
+        let package_var = crate::workspace_index::SymbolKey {
+            pkg: Arc::from("Foo"),
+            name: Arc::from("process_data"),
+            sigil: Some('$'),
+            kind: crate::workspace_index::SymKind::Var,
+        };
+
+        assert_eq!(LspServer::is_package_sub_workspace_rename_key(&package_sub), true);
+        assert_eq!(LspServer::is_package_sub_workspace_rename_key(&main_sub), false);
+        assert_eq!(LspServer::is_package_sub_workspace_rename_key(&package_var), false);
     }
 
     #[test]

@@ -1581,22 +1581,34 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_blocks_real_workspace_im
     let util = files.get("lib/RealBaseline/Util.pm").ok_or("missing RealBaseline Util fixture")?;
 
     let (helper_line, helper_character) = position_of(util, "helper {")?;
-    let rename_result = server
-        .handle_rename_workspace(Some(json!({
-            "textDocument": {"uri": REAL_BASELINE_UTIL_URI},
-            "position": {"line": helper_line, "character": helper_character},
-            "newName": "renamed_helper"
-        })))?
-        .ok_or("missing package-local live rename blocker result")?;
-
-    let edit_count = rename_result
-        .get("changes")
-        .and_then(Value::as_object)
-        .map(|changes| changes.values().filter_map(Value::as_array).map(Vec::len).sum::<usize>())
-        .ok_or("missing package-local live rename blocker changes")?;
+    let rename_request = json!({
+        "textDocument": {"uri": REAL_BASELINE_UTIL_URI},
+        "position": {"line": helper_line, "character": helper_character},
+        "newName": "renamed_helper"
+    });
+    let live_result = match server.handle_rename_workspace(Some(rename_request)) {
+        Ok(Some(result)) => {
+            let edit_count = workspace_edit_change_count(&result)?;
+            assert_eq!(
+                edit_count, 0,
+                "imported/exported real-workspace package symbol must not be falsely allowed as a package-local edit: {result}"
+            );
+            Some(result)
+        }
+        Ok(None) => return Err("missing package-local live rename blocker result".into()),
+        Err(error) => {
+            assert_eq!(error.code, -32602);
+            assert!(
+                error.message.contains("ambiguous symbol identity"),
+                "imported/exported false-allow refusal should explain ambiguous identity: {error:?}"
+            );
+            None
+        }
+    };
+    let live_edit_count = live_result.as_ref().map_or(Ok(0), workspace_edit_change_count)?;
     assert_eq!(
-        edit_count, 0,
-        "imported/exported real-workspace package symbol must not be falsely allowed as a package-local edit: {rename_result}"
+        live_edit_count, 0,
+        "imported/exported real-workspace package symbol must not return edits: {live_result:?}"
     );
 
     let explanation = explain_provider_decision(&server, "rename")?;
@@ -1608,9 +1620,12 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_blocks_real_workspace_im
     );
     assert_eq!(
         request_receipt.get("reason").and_then(Value::as_str),
-        Some("package_local_live_pilot_blocked")
+        Some("package_local_live_pilot_ambiguous")
     );
-    assert_eq!(request_receipt.get("fallback_state").and_then(Value::as_str), Some("no_edit"));
+    assert_eq!(
+        request_receipt.get("fallback_state").and_then(Value::as_str),
+        Some("ambiguous_identity")
+    );
     assert_eq!(request_receipt.get("live_provider_edit_count").and_then(Value::as_u64), Some(0));
     assert_eq!(request_receipt.get("symbol").and_then(Value::as_str), Some("helper"));
     assert!(
@@ -1738,8 +1753,14 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_real_workspace_false_all
 
     let fresh_explanation = explain_provider_decision(&server, "rename")?;
     let fresh_receipt = request_receipt(&fresh_explanation)?;
-    assert_eq!(fresh_receipt.get("reason").and_then(Value::as_str), Some("same_file_semantic"));
-    assert_eq!(fresh_receipt.get("fallback_state").and_then(Value::as_str), Some("none"));
+    assert_eq!(
+        fresh_receipt.get("reason").and_then(Value::as_str),
+        Some("full_index_workspace_edit")
+    );
+    assert_eq!(
+        fresh_receipt.get("fallback_state").and_then(Value::as_str),
+        Some("workspace_index")
+    );
     assert_eq!(
         fresh_receipt.get("live_provider_edit_count").and_then(Value::as_u64),
         u64::try_from(fresh_edit_count).ok()
@@ -1747,9 +1768,12 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_real_workspace_false_all
     let fresh_copyable_receipt = copyable_request_receipt(&fresh_explanation)?;
     assert_eq!(
         fresh_copyable_receipt.get("reason").and_then(Value::as_str),
-        Some("same_file_semantic")
+        Some("full_index_workspace_edit")
     );
-    assert_eq!(fresh_copyable_receipt.get("fallback_state").and_then(Value::as_str), Some("none"));
+    assert_eq!(
+        fresh_copyable_receipt.get("fallback_state").and_then(Value::as_str),
+        Some("workspace_index")
+    );
     assert_eq!(
         fresh_copyable_receipt.get("live_provider_edit_count").and_then(Value::as_u64),
         u64::try_from(fresh_edit_count).ok()

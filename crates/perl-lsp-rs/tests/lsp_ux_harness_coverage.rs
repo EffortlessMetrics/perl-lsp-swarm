@@ -70,7 +70,25 @@ fn harness_with_workspace_and_wait_for_symbol_matches_file_uri() -> Result<(), S
         ("main.pl", "use lib 'lib';\nuse MyApp::Greeting;\nprint MyApp::Greeting::greet();\n"),
     ])?;
 
+    let module = "package MyApp::Greeting;\nsub greet {\n    return 'hi';\n}\n1;\n";
+    let main = "use lib 'lib';\nuse MyApp::Greeting;\nprint MyApp::Greeting::greet();\n";
     let target_uri = workspace.uri("lib/MyApp/Greeting.pm");
+    let main_uri = workspace.uri("main.pl");
+    assert!(
+        target_uri.ends_with("/lib/MyApp/Greeting.pm"),
+        "with_workspace should map module fixture to lib/MyApp/Greeting.pm URI, got {target_uri}"
+    );
+    assert!(
+        main_uri.ends_with("/main.pl"),
+        "with_workspace should map script fixture to main.pl URI, got {main_uri}"
+    );
+    assert_ne!(
+        target_uri, main_uri,
+        "with_workspace should allocate distinct URIs for module and script fixtures"
+    );
+
+    harness.open(&target_uri, module)?;
+    harness.open(&main_uri, main)?;
     harness.wait_for_symbol("greet", Some(&target_uri), Duration::from_secs(4))?;
 
     let symbols = harness.request(
@@ -86,9 +104,10 @@ fn harness_with_workspace_and_wait_for_symbol_matches_file_uri() -> Result<(), S
         })
     });
 
-    if !found {
-        return Err(format!("Expected workspace/symbol to include {target_uri}"));
-    }
+    assert!(
+        found,
+        "workspace/symbol should include opened module URI {target_uri}, got {symbols:?}"
+    );
 
     Ok(())
 }

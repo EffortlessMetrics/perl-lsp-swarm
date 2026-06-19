@@ -35,7 +35,9 @@ pub fn compute_links(uri: &str, text: &str, _roots: &[Url]) -> Vec<Value> {
                 }
                 ModuleImportKind::Require => {
                     match import.require_form() {
-                        Some(RequireForm::FilePath) if import.token.ends_with(".pm") => {
+                        Some(RequireForm::FilePath)
+                            if import.token.ends_with(".pm") && !import.token.contains('\\') =>
+                        {
                             // Quoted .pm require → treat as a module link (Foo/Bar.pm → Foo::Bar)
                             let module_name = import.token_as_module_name();
                             if !is_pragma(&module_name) {
@@ -289,6 +291,16 @@ mod tests {
         if let Some(link) = links.first() {
             assert_eq!(link.pointer("/data/type").and_then(Value::as_str), Some("module"));
             assert_eq!(link.pointer("/data/module").and_then(Value::as_str), Some("lib::helper"));
+        }
+    }
+
+    #[test]
+    fn emits_file_link_for_require_with_windows_path_separators() {
+        let links = compute_links(uri(), r#"require "lib\\Thing.pm";"#, &[]);
+        assert_eq!(links.len(), 1, "Windows-style quoted require path should emit a file link");
+        if let Some(link) = links.first() {
+            assert_eq!(link.pointer("/data/type").and_then(Value::as_str), Some("file"));
+            assert_eq!(link.pointer("/data/path").and_then(Value::as_str), Some(r"lib\\Thing.pm"));
         }
     }
 

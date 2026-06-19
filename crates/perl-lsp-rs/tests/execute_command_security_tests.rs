@@ -216,11 +216,6 @@ fn test_valid_file_execution() -> Result<(), Box<dyn Error>> {
         Some(config) => config,
         None => return Ok(()),
     };
-
-    let config = match config_with_perl5lib(false) {
-        Some(config) => config,
-        None => return Ok(()),
-    };
     let provider =
         ExecuteCommandProvider::with_workspace_roots(vec![temp_dir.path().to_path_buf()])
             .with_workspace_config(config);

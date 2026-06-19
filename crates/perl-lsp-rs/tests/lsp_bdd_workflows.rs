@@ -10,7 +10,7 @@ use serial_test::serial;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 use support::bdd_diagnostics::{BddScenario, DocumentDiagnosticFlow};
-use support::lsp_harness::{LspHarness, TempWorkspace};
+use support::lsp_harness::{LspHarness, TempWorkspace, temp_workspace_tuning};
 
 fn find_position(text: &str, needle: &str) -> (u32, u32) {
     perl_tdd_support::must_some(
@@ -174,6 +174,7 @@ fn wait_for_references_uris(
             Ok(response) => {
                 let uris = ref_uris(&response);
                 if want_uris.iter().all(|want_uri| uri_set_contains(&uris, want_uri)) {
+                    harness.barrier();
                     return Ok(response);
                 }
                 last_response = Some(response);
@@ -203,6 +204,7 @@ fn wait_for_rename_edit_uris(
     let start = Instant::now();
     let mut last_response = None;
     let mut last_error = None;
+    let request_timeout = workspace_rename_request_timeout(budget);
 
     while start.elapsed() < budget {
         match harness.request_with_timeout(
@@ -212,7 +214,7 @@ fn wait_for_rename_edit_uris(
                 "position": { "line": line, "character": character },
                 "newName": new_name
             }),
-            Duration::from_secs(2),
+            request_timeout,
         ) {
             Ok(response) => {
                 let uris = workspace_edit_uris(&response);
@@ -232,6 +234,15 @@ fn wait_for_rename_edit_uris(
         "rename did not touch {:?} within {:?}; last response: {:?}; last error: {:?}",
         want_uris, budget, last_response, last_error
     ))
+}
+
+fn workspace_rename_budget() -> Duration {
+    if cfg!(windows) { Duration::from_secs(45) } else { Duration::from_secs(10) }
+}
+
+fn workspace_rename_request_timeout(budget: Duration) -> Duration {
+    let cap = if cfg!(windows) { Duration::from_secs(45) } else { Duration::from_secs(2) };
+    budget.min(cap)
 }
 
 fn location_start_line(response: &Value) -> Option<u64> {
@@ -451,7 +462,7 @@ fn setup_workspace_with_capabilities(
         workspace.write(path, content)?;
     }
 
-    let mut harness = LspHarness::new_raw();
+    let mut harness = LspHarness::new_with_tuning(temp_workspace_tuning());
     harness.initialize_ready(&workspace.root_uri, Some(capabilities))?;
     harness.barrier();
 
@@ -498,6 +509,21 @@ fn call_hierarchy_edge_names(response: &Value, edge_name_pointer: &str) -> BTree
         .collect()
 }
 
+fn call_hierarchy_name_matches_symbol(name: &str, symbol: &str) -> bool {
+    name == symbol || name.strip_suffix(symbol).is_some_and(|prefix| prefix.ends_with("::"))
+}
+
+fn call_hierarchy_edge_names_include_symbols(
+    response: &Value,
+    edge_name_pointer: &str,
+    want_symbols: &[&str],
+) -> bool {
+    let names = call_hierarchy_edge_names(response, edge_name_pointer);
+    want_symbols
+        .iter()
+        .all(|want| names.iter().any(|name| call_hierarchy_name_matches_symbol(name, want)))
+}
+
 fn wait_for_call_hierarchy_edge_names(
     harness: &mut LspHarness,
     method: &str,
@@ -530,6 +556,44 @@ fn wait_for_call_hierarchy_edge_names(
     Err(format!(
         "{method} did not include {:?} within {:?}; last response: {:?}; last error: {:?}",
         want_names, budget, last_response, last_error
+    ))
+}
+
+fn wait_for_call_hierarchy_edge_symbols(
+    harness: &mut LspHarness,
+    method: &str,
+    item: &Value,
+    edge_name_pointer: &str,
+    want_symbols: &[&str],
+    budget: Duration,
+) -> Result<Value, String> {
+    let start = Instant::now();
+    let mut last_response = None;
+    let mut last_error = None;
+
+    while start.elapsed() < budget {
+        match harness.request_with_timeout(method, json!({ "item": item }), Duration::from_secs(2))
+        {
+            Ok(response) => {
+                if call_hierarchy_edge_names_include_symbols(
+                    &response,
+                    edge_name_pointer,
+                    want_symbols,
+                ) {
+                    return Ok(response);
+                }
+                last_response = Some(response);
+            }
+            Err(error) => last_error = Some(error),
+        }
+
+        harness.barrier();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    Err(format!(
+        "{method} did not include symbols {:?} within {:?}; last response: {:?}; last error: {:?}",
+        want_symbols, budget, last_response, last_error
     ))
 }
 
@@ -732,11 +796,21 @@ my $also = Foo::process_data();
     harness.open(&module_uri, module)?;
     harness.open(&main_uri, main)?;
 
+    let _ = harness.document_symbols(&main_uri)?;
+    harness.barrier();
     harness.wait_for_symbol("process_data", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("renaming the function at its declaration");
     let (def_line, def_char) = find_position(module, "process_data");
+    wait_for_references_uris(
+        &mut harness,
+        &module_uri,
+        def_line,
+        def_char,
+        &[&module_uri, &main_uri],
+        workspace_rename_budget(),
+    )?;
     let edit = wait_for_rename_edit_uris(
         &mut harness,
         &module_uri,
@@ -744,7 +818,7 @@ my $also = Foo::process_data();
         def_char,
         "process_records",
         &[&module_uri, &main_uri],
-        Duration::from_secs(10),
+        workspace_rename_budget(),
     )?;
 
     scenario.then("the workspace edit touches both files");
@@ -819,12 +893,22 @@ my $bar = Bar::process_data();
     harness.open(&bar_uri, bar_module)?;
     harness.open(&main_uri, main)?;
 
+    let _ = harness.document_symbols(&main_uri)?;
+    harness.barrier();
     harness.wait_for_symbol("process_data", Some(&foo_uri), Duration::from_secs(10))?;
     harness.wait_for_symbol("process_data", Some(&bar_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("renaming Foo::process_data from the declaration in Foo.pm");
     let (def_line, def_char) = find_position(foo_module, "process_data");
+    wait_for_references_uris(
+        &mut harness,
+        &foo_uri,
+        def_line,
+        def_char,
+        &[&foo_uri, &main_uri],
+        workspace_rename_budget(),
+    )?;
     let edit = wait_for_rename_edit_uris(
         &mut harness,
         &foo_uri,
@@ -832,7 +916,7 @@ my $bar = Bar::process_data();
         def_char,
         "process_records",
         &[&foo_uri, &main_uri],
-        Duration::from_secs(10),
+        workspace_rename_budget(),
     )?;
 
     scenario.then("rename edits target Foo.pm and main.pl only");
@@ -1365,10 +1449,20 @@ my $result = Foo::process_data();
 
     harness.open(&module_uri, module)?;
     harness.open(&main_uri, main)?;
+    let _ = harness.document_symbols(&main_uri)?;
+    harness.barrier();
     harness.wait_for_symbol("process_data", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     let (line, character) = find_position(main, "process_data()");
+    wait_for_references_uris(
+        &mut harness,
+        &main_uri,
+        line,
+        character,
+        &[&module_uri, &main_uri],
+        workspace_rename_budget(),
+    )?;
 
     scenario.when("checking prepareRename at the call site");
     let prepare = harness.request(
@@ -1390,7 +1484,7 @@ my $result = Foo::process_data();
         character,
         "process_records",
         &[&module_uri, &main_uri],
-        Duration::from_secs(10),
+        workspace_rename_budget(),
     )?;
 
     scenario.then("rename returns edits affecting both declaration and usage files");
@@ -1877,6 +1971,7 @@ print $value;
     Ok(())
 }
 #[test]
+#[serial]
 fn bdd_goto_definition_with_multiple_declarations() -> Result<(), Box<dyn std::error::Error>> {
     let scenario = BddScenario::new("Go-to-definition with multiple declarations in scope");
     scenario.given("a script with multiple variables of the same name in different scopes");
@@ -1945,6 +2040,7 @@ print $x;
 }
 
 #[test]
+#[serial]
 fn bdd_hover_displays_module_documentation() -> Result<(), Box<dyn std::error::Error>> {
     let scenario = BddScenario::new("Hover displays module links");
     scenario.given("a workspace with a module and a script that uses it");
@@ -2016,6 +2112,7 @@ Foo::do_foo();
 }
 
 #[test]
+#[serial]
 fn bdd_document_symbols_handles_nested_packages() -> Result<(), Box<dyn std::error::Error>> {
     let scenario = BddScenario::new("Document symbols handles nested packages");
     scenario.given("a script with multiple nested package declarations");
@@ -3769,7 +3866,7 @@ main();
     );
 
     scenario.then("outgoing calls identify both helper callees");
-    let outgoing = wait_for_call_hierarchy_edge_names(
+    let outgoing = wait_for_call_hierarchy_edge_symbols(
         &mut harness,
         "callHierarchy/outgoingCalls",
         &process_item,
@@ -3906,7 +4003,7 @@ process();
         prepare_call_hierarchy_item(&mut harness, &app_uri, line, character + 4, "process")?;
 
     scenario.then("outgoing calls include format_string in the module, not the script");
-    let outgoing = wait_for_call_hierarchy_edge_names(
+    let outgoing = wait_for_call_hierarchy_edge_symbols(
         &mut harness,
         "callHierarchy/outgoingCalls",
         &process_item,

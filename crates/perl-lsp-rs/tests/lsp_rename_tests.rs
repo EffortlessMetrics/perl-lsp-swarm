@@ -747,19 +747,23 @@ fn test_workspace_rename_blocks_ambiguous_symbol_identity() -> TestResult {
     // Bar calls process_data without qualification — ambiguous cross-package reference.
     harness.open(bar_uri, "package Bar;\nsub run { return process_data(); }\n1;\n")?;
 
-    let error = harness
-        .request(
-            "textDocument/rename",
-            json!({
-                "textDocument": { "uri": foo_uri },
-                "position": { "line": 1, "character": 5 },
-                "newName": "process_records"
-            }),
+    let response = harness.request_raw(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "textDocument/rename",
+        "params": {
+            "textDocument": { "uri": foo_uri },
+            "position": { "line": 1, "character": 5 },
+            "newName": "process_records"
+        }
+    }));
+    let error = response.get("error").ok_or("ambiguous workspace identity must be refused")?;
+    assert_eq!(error.get("code"), Some(&json!(-32602)));
+    assert_eq!(
+        error.get("message").and_then(|message| message.as_str()),
+        Some(
+            "Workspace rename refused: ambiguous symbol identity (unqualified `process_data` reference outside package `Foo`)"
         )
-        .expect_err("ambiguous workspace identity must be refused");
-    assert!(
-        error.contains("ambiguous symbol identity"),
-        "ambiguous workspace identity error should explain the refusal: {error}"
     );
 
     Ok(())

@@ -703,6 +703,18 @@ print $var3;
     // Check that we got data array
     assert!(tokens["data"].is_array());
     let data = tokens["data"].as_array().ok_or("Expected data array")?;
+    let full_result = send_request(
+        &server,
+        "textDocument/semanticTokens/full",
+        Some(json!({
+            "textDocument": {
+                "uri": "file:///test_range.pl"
+            }
+        })),
+    )
+    .ok_or("Failed to get full semantic tokens")?;
+    let full_data =
+        full_result["data"].as_array().ok_or("Expected full semantic tokens data array")?;
 
     // Should only have tokens from the half-open range [line 1, line 3),
     // not the print statements that start at line 3.
@@ -733,6 +745,13 @@ print $var3;
     assert!(
         token_positions.iter().all(|(line, _)| *line >= 1 && *line < 3),
         "range tokens must stay within lines 1..3, got {token_positions:?}"
+    );
+    assert_eq!(data.len() % 5, 0, "semantic token data is encoded in 5-field chunks");
+    assert!(
+        data.len() < full_data.len(),
+        "range tokens should not include the full document token set; range={} full={}",
+        data.len(),
+        full_data.len()
     );
     Ok(())
 }

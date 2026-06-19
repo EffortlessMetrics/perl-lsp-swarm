@@ -2,7 +2,9 @@
 //!
 //! Provides cross-file renaming functionality using the workspace index.
 
-use perl_parser::workspace_index::{SymKind, SymbolKey, WorkspaceIndex};
+use perl_parser::position::{Position, Range};
+use perl_parser::workspace_index::{Location, SymKind, SymbolKey, WorkspaceIndex};
+use perl_parser_core::line_index::LineIndex;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -67,6 +69,20 @@ pub fn build_rename_edit(
     key: &SymbolKey,
     new_name_bare: &str,
 ) -> Result<Vec<RenameEdit>, RenameRefusal> {
+    build_rename_edit_with_open_documents(idx, key, new_name_bare, &[])
+}
+
+/// Build a workspace rename edit using both indexed facts and fresh open-document text.
+///
+/// `open_documents` is a `(uri, text)` snapshot supplied by the LSP runtime. It is used
+/// only as a freshness backstop for exact qualified call sites when the workspace index
+/// has stale or incomplete document-store text.
+pub fn build_rename_edit_with_open_documents(
+    idx: &WorkspaceIndex,
+    key: &SymbolKey,
+    new_name_bare: &str,
+    open_documents: &[(String, String)],
+) -> Result<Vec<RenameEdit>, RenameRefusal> {
     // Only Sub symbols have stable enough workspace identity for cross-file rename.
     // Var/Pack fall through to same-file rename.
     if key.kind != SymKind::Sub {
@@ -87,6 +103,8 @@ pub fn build_rename_edit(
 
     // 1) Get all references across the workspace
     let mut locs = idx.find_refs(key);
+    add_qualified_open_document_refs(idx, key, &mut locs);
+    add_qualified_document_text_refs(key, open_documents, &mut locs);
 
     // 2) Also include the definition itself
     locs.push(def);
@@ -179,6 +197,98 @@ pub fn build_rename_edit(
     }
 
     Ok(grouped.into_iter().map(|(uri, edits)| RenameEdit { uri, edits }).collect())
+}
+
+fn add_qualified_open_document_refs(
+    idx: &WorkspaceIndex,
+    key: &SymbolKey,
+    locs: &mut Vec<Location>,
+) {
+    let documents: Vec<(String, String)> =
+        idx.document_store().all_documents().into_iter().map(|doc| (doc.uri, doc.text)).collect();
+    add_qualified_document_text_refs(key, &documents, locs);
+}
+
+fn add_qualified_document_text_refs(
+    key: &SymbolKey,
+    documents: &[(String, String)],
+    locs: &mut Vec<Location>,
+) {
+    let qualified_name = format!("{}::{}", key.pkg, key.name);
+    if qualified_name.is_empty() {
+        return;
+    }
+
+    for (uri, text) in documents {
+        let line_index = LineIndex::new(text.clone());
+        let mut search_from = 0;
+        while let Some(haystack) = text.get(search_from..) {
+            let Some(relative_start) = haystack.find(&qualified_name) else {
+                break;
+            };
+
+            let start = search_from + relative_start;
+            let end = start + qualified_name.len();
+            search_from = end;
+
+            if !has_qualified_name_boundaries(text, start, end) {
+                continue;
+            }
+
+            let (start_line, start_col) = line_index.offset_to_position(start);
+            let (end_line, end_col) = line_index.offset_to_position(end);
+            let candidate = Location {
+                uri: uri.clone(),
+                range: Range::new(
+                    Position::new(start, start_line, start_col),
+                    Position::new(end, end_line, end_col),
+                ),
+            };
+
+            if !contains_location(locs, &candidate) {
+                locs.push(candidate);
+            }
+        }
+    }
+}
+
+fn contains_location(locs: &[Location], candidate: &Location) -> bool {
+    locs.iter().any(|loc| loc.uri == candidate.uri && location_ranges_overlap(loc, candidate))
+}
+
+fn location_ranges_overlap(left: &Location, right: &Location) -> bool {
+    position_before(
+        left.range.start.line,
+        left.range.start.column,
+        right.range.end.line,
+        right.range.end.column,
+    ) && position_before(
+        right.range.start.line,
+        right.range.start.column,
+        left.range.end.line,
+        left.range.end.column,
+    )
+}
+
+fn position_before(left_line: u32, left_col: u32, right_line: u32, right_col: u32) -> bool {
+    left_line < right_line || (left_line == right_line && left_col < right_col)
+}
+
+fn has_qualified_name_boundaries(text: &str, start: usize, end: usize) -> bool {
+    let before_ok = text
+        .get(..start)
+        .and_then(|prefix| prefix.chars().next_back())
+        .is_none_or(|ch| !is_qualified_name_char(ch));
+    let after_ok = text
+        .get(end..)
+        .and_then(|suffix| suffix.chars().next())
+        .is_none_or(|ch| !is_qualified_name_char(ch));
+
+    before_ok && after_ok
+}
+
+fn is_qualified_name_char(ch: char) -> bool {
+    is_ident_char(ch) || ch == ':'
 }
 
 /// Returns true when `loc` is an unqualified bare call to `key.name` from a
@@ -428,6 +538,48 @@ mod tests {
         Ok(())
     }
 
+    fn assert_ambiguous_identity(refusal: &RenameRefusal, expected_reason: &str) {
+        let RenameRefusal::AmbiguousIdentity(reason) = refusal;
+        assert_eq!(reason, expected_reason);
+        assert_eq!(
+            refusal.to_string(),
+            format!("Workspace rename refused: ambiguous symbol identity ({expected_reason})")
+        );
+    }
+
+    #[test]
+    fn position_before_left_line_eq_right_line_requires_lower_column() {
+        assert!(position_before(7, 3, 7, 4));
+        assert!(!position_before(7, 4, 7, 4));
+        assert!(!position_before(7, 5, 7, 4));
+    }
+
+    #[test]
+    fn location_ranges_overlap_accepts_same_line_column_intersection() {
+        let uri = "file:///same-line.pl".to_string();
+        let left = Location {
+            uri: uri.clone(),
+            range: Range::new(Position::new(10, 7, 2), Position::new(15, 7, 7)),
+        };
+        let right =
+            Location { uri, range: Range::new(Position::new(14, 7, 6), Position::new(20, 7, 12)) };
+
+        assert!(location_ranges_overlap(&left, &right));
+    }
+
+    #[test]
+    fn location_ranges_overlap_rejects_same_line_touching_boundary() {
+        let uri = "file:///same-line.pl".to_string();
+        let left = Location {
+            uri: uri.clone(),
+            range: Range::new(Position::new(10, 7, 2), Position::new(15, 7, 7)),
+        };
+        let right =
+            Location { uri, range: Range::new(Position::new(15, 7, 7), Position::new(20, 7, 12)) };
+
+        assert!(!location_ranges_overlap(&left, &right));
+    }
+
     #[test]
     fn rename_sub_preserves_package_qualifier() -> Result<(), Box<dyn std::error::Error>> {
         let idx = WorkspaceIndex::new();
@@ -561,6 +713,110 @@ $var;
     }
 
     #[test]
+    fn rename_includes_qualified_open_document_call_when_index_refs_lag()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+
+        let foo_uri = "file:///lib/Foo.pm";
+        let foo_text = "package Foo;\nsub process_data { return 1; }\n1;\n";
+        index_text(&idx, foo_uri, foo_text)?;
+
+        let main_uri = "file:///main.pl";
+        let main_text = concat!(
+            "use Foo;\n",
+            "my $value = Foo::process_data();\n",
+            "my $other = Foo::process_data_extra();\n",
+            "my $nested = Other::Foo::process_data();\n",
+        );
+        idx.document_store().open(main_uri.to_string(), 1, main_text.to_string());
+
+        let key = SymbolKey {
+            pkg: Arc::from("Foo"),
+            name: Arc::from("process_data"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        let edits = build_rename_edit(&idx, &key, "process_records")?;
+
+        let foo_edit = edits.iter().find(|edit| edit.uri == foo_uri);
+        assert!(
+            foo_edit.is_some(),
+            "workspace rename must still include the indexed definition; got URIs: {:?}",
+            edits.iter().map(|edit| &edit.uri).collect::<Vec<_>>()
+        );
+
+        let main_edit = edits
+            .iter()
+            .find(|edit| edit.uri == main_uri)
+            .ok_or("workspace rename should include qualified open-document call site")?;
+        assert_eq!(
+            main_edit.edits.len(),
+            1,
+            "only the exact qualified call should be renamed; got edits: {:?}",
+            main_edit.edits
+        );
+        assert_eq!(main_edit.edits[0].new_text, "process_records");
+
+        let doc = idx.document_store().get(main_uri).ok_or("main document not found")?;
+        let edit = &main_edit.edits[0];
+        let start = doc
+            .line_index
+            .position_to_offset(edit.start.0, edit.start.1)
+            .ok_or("edit start should resolve")?;
+        let end = doc
+            .line_index
+            .position_to_offset(edit.end.0, edit.end.1)
+            .ok_or("edit end should resolve")?;
+        let mut renamed = main_text.to_string();
+        renamed.replace_range(start..end, &edit.new_text);
+
+        assert!(renamed.contains("Foo::process_records()"));
+        assert!(renamed.contains("Foo::process_data_extra()"));
+        assert!(renamed.contains("Other::Foo::process_data()"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_uses_open_document_snapshot_when_index_store_lacks_caller()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let idx = WorkspaceIndex::new();
+
+        let foo_uri = "file:///lib/Foo.pm";
+        let foo_text = "package Foo;\nsub process_data { return 1; }\n1;\n";
+        index_text(&idx, foo_uri, foo_text)?;
+
+        let main_uri = "file:///main.pl";
+        let main_text = "use Foo;\nmy $value = Foo::process_data();\n";
+        let open_documents = vec![(main_uri.to_string(), main_text.to_string())];
+
+        let key = SymbolKey {
+            pkg: Arc::from("Foo"),
+            name: Arc::from("process_data"),
+            sigil: None,
+            kind: SymKind::Sub,
+        };
+
+        let edits =
+            build_rename_edit_with_open_documents(&idx, &key, "process_records", &open_documents)?;
+
+        assert!(
+            edits.iter().any(|edit| edit.uri == foo_uri),
+            "workspace rename must include indexed definition; got URIs: {:?}",
+            edits.iter().map(|edit| &edit.uri).collect::<Vec<_>>()
+        );
+        let main_edit = edits
+            .iter()
+            .find(|edit| edit.uri == main_uri)
+            .ok_or("workspace rename should include caller from open-document snapshot")?;
+        assert_eq!(main_edit.edits.len(), 1);
+        assert_eq!(main_edit.edits[0].new_text, "process_records");
+
+        Ok(())
+    }
+
+    #[test]
     fn is_sub_declaration_line_handles_forward_declaration() {
         // "sub foo;" is a valid Perl forward declaration — semicolon must be treated
         // as a delimiter so the name is extracted correctly.
@@ -635,9 +891,9 @@ $var;
 
         let refusal = build_rename_edit(&idx, &key, "process_records")
             .expect_err("workspace rename should refuse ambiguous unqualified cross-package refs");
-        assert!(
-            matches!(refusal, RenameRefusal::AmbiguousIdentity(_)),
-            "expected AmbiguousIdentity refusal, got: {refusal:?}"
+        assert_ambiguous_identity(
+            &refusal,
+            "unqualified `process_data` reference outside package `Foo`",
         );
 
         Ok(())
@@ -667,9 +923,9 @@ $var;
 
         let refusal = build_rename_edit(&idx, &key, "process_records")
             .expect_err("workspace rename should refuse ambiguous &name cross-package refs");
-        assert!(
-            matches!(refusal, RenameRefusal::AmbiguousIdentity(_)),
-            "expected AmbiguousIdentity refusal for &name cross-package call, got: {refusal:?}"
+        assert_ambiguous_identity(
+            &refusal,
+            "unqualified `process_data` reference outside package `Foo`",
         );
 
         Ok(())

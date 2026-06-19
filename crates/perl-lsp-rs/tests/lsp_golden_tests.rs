@@ -21,6 +21,35 @@ fn path_to_uri(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
         .to_string())
 }
 
+fn fold_range_key(range: &Value) -> Option<(&str, u64, u64)> {
+    Some((
+        range.get("kind").and_then(|kind| kind.as_str())?,
+        range.get("startLine").and_then(|line| line.as_u64())?,
+        range.get("endLine").and_then(|line| line.as_u64())?,
+    ))
+}
+
+fn assert_has_fold_range(
+    ranges: &[Value],
+    expected_kind: &str,
+    expected_start: u64,
+    expected_end: u64,
+    label: &str,
+) {
+    let matches: Vec<&Value> = ranges
+        .iter()
+        .filter(|range| {
+            fold_range_key(range) == Some((expected_kind, expected_start, expected_end))
+        })
+        .collect();
+    let actual: Vec<_> = ranges.iter().filter_map(fold_range_key).collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one {label} folding range ({expected_kind}, {expected_start}, {expected_end}); got {actual:?}"
+    );
+}
+
 /// Test context that manages the LSP server lifecycle
 struct TestContext {
     server: std::process::Child,
@@ -517,24 +546,8 @@ fn test_folding_ranges_golden() -> Result<(), Box<dyn std::error::Error>> {
             .count();
 
         assert!(sub_folds > 0, "Should have folding ranges for subroutines");
-        let has_multiline_heredoc_fold = ranges_arr.iter().any(|range| {
-            range.get("kind").and_then(|kind| kind.as_str()) == Some("region")
-                && range.get("startLine").and_then(|line| line.as_u64()) == Some(46)
-                && range.get("endLine").and_then(|line| line.as_u64()) == Some(47)
-        });
-        assert!(
-            has_multiline_heredoc_fold,
-            "Should have folding range for multi-line heredoc body"
-        );
-        let has_data_section_fold = ranges_arr.iter().any(|range| {
-            range.get("kind").and_then(|kind| kind.as_str()) == Some("comment")
-                && range.get("startLine").and_then(|line| line.as_u64()) == Some(64)
-                && range.get("endLine").and_then(|line| line.as_u64()) == Some(65)
-        });
-        assert!(
-            has_data_section_fold,
-            "Should have folding range for multi-line data section body from \"startLine\": start_line to \"endLine\": end_line"
-        );
+        assert_has_fold_range(ranges_arr, "region", 46, 47, "multi-line heredoc body");
+        assert_has_fold_range(ranges_arr, "comment", 64, 65, "multi-line data section body");
     }
     Ok(())
 }

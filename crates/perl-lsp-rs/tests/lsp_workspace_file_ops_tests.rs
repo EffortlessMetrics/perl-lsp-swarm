@@ -3,6 +3,7 @@
 use parking_lot::Mutex;
 use perl_lsp::{JsonRpcRequest, LspServer};
 use serde_json::{Value, json};
+use serial_test::serial;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -121,6 +122,7 @@ fn send_initialized(server: &LspServer) {
 }
 
 #[test]
+#[serial]
 fn test_did_change_watched_files_created() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -152,6 +154,7 @@ fn test_did_change_watched_files_created() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+#[serial]
 fn test_did_change_watched_files_changed() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -194,6 +197,7 @@ fn test_did_change_watched_files_changed() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+#[serial]
 fn test_did_change_watched_files_deleted() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -242,6 +246,7 @@ fn test_did_change_watched_files_deleted() -> Result<(), Box<dyn std::error::Err
 /// Uses `test_has_document` which requires the `expose_lsp_test_api` feature.
 #[cfg(feature = "expose_lsp_test_api")]
 #[test]
+#[serial]
 fn test_did_change_watched_files_deleted_removes_from_store()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
@@ -289,6 +294,7 @@ fn test_did_change_watched_files_deleted_removes_from_store()
 ///
 /// Acceptance criterion: "Only Perl source files trigger re-indexing."
 #[test]
+#[serial]
 fn test_did_change_watched_files_non_perl_files_handled_gracefully()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
@@ -326,6 +332,7 @@ fn test_did_change_watched_files_non_perl_files_handled_gracefully()
 ///
 /// Acceptance criterion: multiple events in one notification (create + change + delete).
 #[test]
+#[serial]
 fn test_did_change_watched_files_multiple_mixed_events() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -378,6 +385,7 @@ fn test_did_change_watched_files_multiple_mixed_events() -> Result<(), Box<dyn s
 /// Requires the `expose_lsp_test_api` feature for `test_has_document`.
 #[cfg(feature = "expose_lsp_test_api")]
 #[test]
+#[serial]
 fn test_did_change_watched_files_mixed_batch_deleted_removed()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
@@ -426,6 +434,7 @@ fn test_did_change_watched_files_mixed_batch_deleted_removed()
 
 /// Verify that an empty changes array is handled gracefully.
 #[test]
+#[serial]
 fn test_did_change_watched_files_empty_changes_array() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -448,6 +457,7 @@ fn test_did_change_watched_files_empty_changes_array() -> Result<(), Box<dyn std
 /// Verify that a DELETED event for a URI that was never opened is handled
 /// gracefully (no panic or error).
 #[test]
+#[serial]
 fn test_did_change_watched_files_delete_unknown_file() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -471,6 +481,7 @@ fn test_did_change_watched_files_delete_unknown_file() -> Result<(), Box<dyn std
 }
 
 #[test]
+#[serial]
 fn test_did_change_watched_files_invalid_uri() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -501,6 +512,7 @@ fn test_did_change_watched_files_invalid_uri() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
+#[serial]
 fn test_will_rename_files() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -544,6 +556,7 @@ fn test_will_rename_files() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[serial]
 fn test_will_rename_files_returns_module_import_edits() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -618,6 +631,7 @@ fn test_will_rename_files_returns_module_import_edits() -> Result<(), Box<dyn st
 }
 
 #[test]
+#[serial]
 fn test_will_rename_files_coalesces_multi_rename_edits_per_line()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
@@ -696,6 +710,7 @@ fn test_will_rename_files_coalesces_multi_rename_edits_per_line()
 }
 
 #[test]
+#[serial]
 fn test_will_rename_files_missing_uri() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -727,6 +742,7 @@ fn test_will_rename_files_missing_uri() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[test]
+#[serial]
 fn test_did_delete_files() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -768,6 +784,7 @@ fn test_did_delete_files() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[serial]
 fn test_did_delete_files_invalid_uri() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -798,6 +815,7 @@ fn test_did_delete_files_invalid_uri() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
+#[serial]
 fn test_will_delete_files_skips_warnings_for_co_deleted_dependents()
 -> Result<(), Box<dyn std::error::Error>> {
     let (server, output) = create_test_server_with_output();
@@ -851,6 +869,7 @@ fn test_will_delete_files_skips_warnings_for_co_deleted_dependents()
 }
 
 #[test]
+#[serial]
 fn test_will_delete_files_aggregates_warning_for_multiple_unsafe_deletes()
 -> Result<(), Box<dyn std::error::Error>> {
     let (server, output) = create_test_server_with_output();
@@ -929,6 +948,7 @@ fn test_will_delete_files_aggregates_warning_for_multiple_unsafe_deletes()
 }
 
 #[test]
+#[serial]
 fn test_will_delete_files_warns_for_cross_file_symbol_usage_without_module_import()
 -> Result<(), Box<dyn std::error::Error>> {
     let (server, output) = create_test_server_with_output();
@@ -989,6 +1009,7 @@ fn test_will_delete_files_warns_for_cross_file_symbol_usage_without_module_impor
 }
 
 #[test]
+#[serial]
 fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -1038,6 +1059,7 @@ fn test_apply_edit_single_line() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[serial]
 fn test_apply_edit_multi_line() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -1087,6 +1109,7 @@ fn test_apply_edit_multi_line() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[serial]
 fn test_apply_edit_no_document() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -1125,6 +1148,7 @@ fn test_apply_edit_no_document() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[serial]
 fn test_apply_edit_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -1150,6 +1174,7 @@ fn test_apply_edit_invalid_params() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[serial]
 fn test_path_to_module_name() -> Result<(), Box<dyn std::error::Error>> {
     // Test the path_to_module_name function indirectly through willRenameFiles
     let server = create_test_server();
@@ -1193,6 +1218,7 @@ fn test_path_to_module_name() -> Result<(), Box<dyn std::error::Error>> {
 /// Regression test for #2747: a file that only has `use parent 'Mod'` (no direct `use Mod`)
 /// must be discovered by find_dependents and appear in the willRenameFiles edit response.
 #[test]
+#[serial]
 fn test_will_rename_files_pure_parent_only() -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
 
@@ -1259,6 +1285,7 @@ fn test_will_rename_files_pure_parent_only() -> Result<(), Box<dyn std::error::E
 /// Regression: Moo/Moose inheritance/role DSL (`extends`/`with`) should also be
 /// discovered as dependency edges and rewritten during workspace/willRenameFiles.
 #[test]
+#[serial]
 fn test_will_rename_files_rewrites_moose_extends_and_with() -> Result<(), Box<dyn std::error::Error>>
 {
     let server = create_test_server();
@@ -1357,6 +1384,7 @@ fn test_will_rename_files_rewrites_moose_extends_and_with() -> Result<(), Box<dy
 /// Regression test: renaming a module whose own file is open should include
 /// package declaration edits for the renamed module file itself.
 #[test]
+#[serial]
 fn test_will_rename_files_updates_package_declaration_in_renamed_file()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_test_server();
@@ -1420,6 +1448,7 @@ fn test_will_rename_files_updates_package_declaration_in_renamed_file()
 /// store → disk) ensures those files receive edits.  This test validates the
 /// open-then-close lifecycle does not break the handler for other open files.
 #[test]
+#[serial]
 fn test_will_rename_files_graceful_with_closed_dependent() -> Result<(), Box<dyn std::error::Error>>
 {
     let server = create_test_server();
