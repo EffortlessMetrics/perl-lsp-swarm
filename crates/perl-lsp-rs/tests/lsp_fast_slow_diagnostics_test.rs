@@ -14,9 +14,51 @@ use support::lsp_harness::LspHarness;
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn wait_for_publish_diagnostics(harness: &mut LspHarness, context: &str) -> Result<Value, String> {
+    wait_for_publish_diagnostics_with_timeout(harness, context, DIAGNOSTIC_TIMEOUT)
+}
+
+fn wait_for_publish_diagnostics_with_timeout(
+    harness: &mut LspHarness,
+    context: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
     harness
-        .wait_for_notification("textDocument/publishDiagnostics", DIAGNOSTIC_TIMEOUT)
+        .wait_for_notification("textDocument/publishDiagnostics", timeout)
         .map_err(|err| format!("{context}: {err}"))
+}
+
+#[test]
+fn diagnostic_timeout_discriminator_keeps_publish_diagnostics_wait_bounded() {
+    assert_eq!(
+        DIAGNOSTIC_TIMEOUT,
+        Duration::from_secs(2),
+        "DIAGNOSTIC_TIMEOUT must keep textDocument/publishDiagnostics waits bounded"
+    );
+}
+
+#[test]
+fn wait_for_publish_diagnostics_timeout_error_includes_context_and_method() -> Result<(), String> {
+    let mut harness = LspHarness::new();
+
+    let err = match wait_for_publish_diagnostics_with_timeout(
+        &mut harness,
+        "diagnostic timeout probe",
+        Duration::from_millis(1),
+    ) {
+        Ok(value) => return Err(format!("expected publishDiagnostics timeout, got {value:?}")),
+        Err(err) => err,
+    };
+
+    assert!(
+        err.contains("diagnostic timeout probe"),
+        "timeout error must preserve caller context: {err}"
+    );
+    assert!(
+        err.contains("textDocument/publishDiagnostics"),
+        "timeout error must identify the publishDiagnostics wait: {err}"
+    );
+
+    Ok(())
 }
 
 /// Fast path: the first publishDiagnostics notification after didChange must
