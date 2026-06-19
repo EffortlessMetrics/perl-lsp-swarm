@@ -533,7 +533,7 @@ fn test_folding_ranges_golden() -> Result<(), Box<dyn std::error::Error>> {
         });
         assert!(
             has_data_section_fold,
-            "Should have folding range for multi-line data section body with startLine 64 and endLine 65"
+            "Should have folding range for multi-line data section body from \"startLine\": start_line to \"endLine\": end_line"
         );
     }
     Ok(())
