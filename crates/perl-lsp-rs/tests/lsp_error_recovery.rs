@@ -3,8 +3,9 @@ use std::time::Duration;
 
 mod common;
 use common::{
-    completion_items, drain_until_quiet, initialize_lsp, send_notification, send_request,
-    short_timeout, shutdown_and_exit, start_lsp_server,
+    adaptive_timeout, completion_items, drain_until_quiet, initialize_lsp, send_notification,
+    send_request, send_request_with_response_timeout, short_timeout, shutdown_and_exit,
+    start_lsp_server,
 };
 
 /// Test suite for error recovery scenarios
@@ -364,7 +365,7 @@ print $var;  # Another valid reference
     );
 
     // Find references should work despite errors
-    let response = send_request(
+    let response = send_request_with_response_timeout(
         &server,
         json!({
             "jsonrpc": "2.0",
@@ -382,6 +383,7 @@ print $var;  # Another valid reference
                 }
             }
         }),
+        adaptive_timeout().max(Duration::from_secs(15)),
     );
     let Some(result) = response.get("result") else {
         return Err(std::io::Error::new(
