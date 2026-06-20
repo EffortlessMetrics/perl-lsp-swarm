@@ -5167,3 +5167,64 @@ fn test_special_var_count_at_least_40() {
 
     assert!(total >= 40, "expected at least 40 special variables across all sigils, got {total}");
 }
+
+// -------------------------------------------------------------------------
+// Package-qualified method completion (issue #1606)
+//
+// When completing `Foo::method`, the completion system should provide
+// inherited methods from @ISA chains, not just direct package members.
+// This ensures parity with arrow-form method completion `Foo->method`.
+// -------------------------------------------------------------------------
+
+#[test]
+fn package_qualified_method_completion_includes_inherited() -> Result<(), Box<dyn std::error::Error>>
+{
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/Parent.pm")?,
+        r#"package Parent;
+sub inherited_method { }
+1;
+"#
+        .to_string(),
+    )?;
+    index.index_file(
+        Url::parse("file:///workspace/Child.pm")?,
+        r#"package Child;
+our @ISA = ('Parent');
+sub own_method { }
+1;
+"#
+        .to_string(),
+    )?;
+
+    let code = "Child::";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    // Both own and inherited methods should appear
+    let own = completions.iter().find(|c| c.label == "own_method");
+    let inherited = completions.iter().find(|c| c.label == "inherited_method");
+
+    assert!(
+        own.is_some(),
+        "Package-qualified method completion for Child:: should include own_method"
+    );
+    assert!(
+        inherited.is_some(),
+        "Package-qualified method completion for Child:: should include inherited_method from Parent"
+    );
+
+    // Own methods should rank higher (tier 2 vs tier 3)
+    let own_sort = own.and_then(|c| c.sort_text.as_deref()).unwrap_or("");
+    let inherited_sort = inherited.and_then(|c| c.sort_text.as_deref()).unwrap_or("");
+    assert!(own_sort.starts_with("2_"), "own method should use tier 2, got {own_sort:?}");
+    assert!(
+        inherited_sort.starts_with("3_"),
+        "inherited method should use tier 3, got {inherited_sort:?}"
+    );
+
+    Ok(())
+}
