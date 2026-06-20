@@ -5228,3 +5228,57 @@ sub own_method { }
 
     Ok(())
 }
+
+#[test]
+fn package_qualified_completion_includes_own_constants_and_variables()
+-> Result<(), Box<dyn std::error::Error>>
+{
+    // Regression test: constants and package variables must still appear when
+    // completing `Foo::` after the @ISA-chain BFS was introduced.  The BFS
+    // (`collect_all_package_members`) filters to Subroutine|Method only;
+    // without the supplemental `get_package_members` call these would silently
+    // vanish.
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/Config.pm")?,
+        r#"package Config;
+use constant PI => 3.14159;
+use constant MAX_RETRIES => 3;
+our $VERSION = '1.0';
+sub helper { }
+1;
+"#
+        .to_string(),
+    )?;
+
+    let code = "Config::";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let labels: Vec<&str> = completions.iter().map(|c| c.label.as_str()).collect();
+
+    assert!(
+        completions.iter().any(|c| c.label == "PI"),
+        "Package-qualified completion must include own constants; got: {labels:?}"
+    );
+    assert!(
+        completions.iter().any(|c| c.label == "MAX_RETRIES"),
+        "Package-qualified completion must include own constants; got: {labels:?}"
+    );
+    assert!(
+        completions.iter().any(|c| c.label == "helper"),
+        "Package-qualified completion must include own subroutines; got: {labels:?}"
+    );
+
+    // Constants should have Constant kind
+    let pi = completions.iter().find(|c| c.label == "PI").unwrap();
+    assert_eq!(
+        pi.kind,
+        crate::providers::completion_item::CompletionItemKind::Constant,
+        "PI should be offered as a Constant completion item"
+    );
+
+    Ok(())
+}

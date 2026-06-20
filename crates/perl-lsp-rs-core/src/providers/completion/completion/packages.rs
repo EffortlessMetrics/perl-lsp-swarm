@@ -350,9 +350,22 @@ pub fn add_package_completions(
     // Query workspace index for members of the package (if available)
     let mut workspace_member_count = 0;
     if let Some(index) = workspace_index {
-        // Include inherited methods by collecting all package members (including from @ISA chain)
-        let members = workspace::collect_all_package_members(index, &package_name);
-        for symbol in members {
+        // Phase 1: collect subroutines and methods from the full @ISA chain so that
+        // inherited methods appear (e.g. Child:: shows methods from Parent).
+        // `collect_all_package_members` intentionally filters to callable kinds; it
+        // does NOT return Constants or Variables.
+        let method_members = workspace::collect_all_package_members(index, &package_name);
+
+        // Phase 2: collect direct (own-package) non-callable members — Constants,
+        // Variables, and Exports — that are not traversed by the BFS above.
+        // Using `get_package_members` for the own package only preserves the
+        // pre-existing behavior for these kinds; we intentionally do NOT inherit
+        // constants/variables through @ISA (that would be surprising UX).
+        let direct_members = index.get_package_members(&package_name);
+
+        let all_members = method_members.into_iter().chain(direct_members);
+
+        for symbol in all_members {
             let item_kind = match symbol.kind {
                 WsSymbolKind::Export | WsSymbolKind::Subroutine | WsSymbolKind::Method => {
                     CompletionItemKind::Function
