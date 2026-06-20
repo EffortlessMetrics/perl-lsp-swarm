@@ -135,11 +135,28 @@ fn is_method_arrow_context(context: &CompletionContext) -> bool {
 
 /// Statement-level keywords and I/O builtins that look like a bareword method
 /// at a statement start but are never a user-defined indirect-method call we
-/// want to complete (`my $x`, `return $foo`, `print $fh`, ...).
+/// want to complete (`my $x`, `return $foo`, `print $fh`, `die $e`, ...).
+///
+/// The dual gate (classify_receiver + workspace probe) already filters most
+/// false positives, but these builtins are excluded eagerly to prevent
+/// spurious method completions in the very common `die $exception_obj` and
+/// `warn $obj` patterns where the receiver resolves to a real class.
 const INDIRECT_METHOD_EXCLUDED: &[&str] = &[
     "my", "our", "local", "state", "sub", "return", "if", "unless", "while", "until", "for",
     "foreach", "do", "use", "no", "require", "else", "elsif", "print", "printf", "say", "and",
     "or", "not", "eq", "ne", "lt", "gt", "le", "ge", "cmp", "x", "package", "qw",
+    // Exception/error builtins — very commonly called with exception objects
+    // (`die $e`, `warn $msg`), triggering false method completions otherwise.
+    "die", "warn", "eval",
+    // Object-inspection builtins — `ref $obj`, `defined $obj`, `bless $ref`
+    // take an object as argument but are not method calls.
+    "ref", "defined", "bless",
+    // List/array builtins that may take a variable-length list starting with
+    // what looks like a receiver.
+    "push", "pop", "shift", "unshift", "splice", "grep", "map", "sort",
+    // File/IO builtins not already covered by `print`/`printf`/`say`.
+    "open", "close", "read", "write", "seek", "tell", "eof", "binmode",
+    "chomp", "chop", "chdir", "stat", "unlink", "rename", "chmod", "undef",
 ];
 
 /// True when `word` is a plausible indirect-method name: a lowercase-initial

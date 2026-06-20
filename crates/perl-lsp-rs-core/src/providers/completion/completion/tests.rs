@@ -7897,3 +7897,50 @@ fn test_indirect_print_filehandle_does_not_offer_methods() -> Result<(), Box<dyn
     );
     Ok(())
 }
+
+#[test]
+fn test_indirect_die_exception_object_does_not_offer_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `die $e` is an exception throw, not an indirect method call.
+    // Even when $e is assigned from a class constructor, method completions
+    // must NOT fire because `die` is a Perl builtin (per #1758 exclusion list).
+    let index = indirect_child_parent_index()?;
+
+    let code = "my $e = Child->new;
+die $e";
+    let pos = code.find("die").ok_or("missing die")? + "die".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        !completions.iter().any(|c| c.label == "run" || c.label == "speak"),
+        "`die $e` must not offer class methods even when $e is a class instance; got {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_indirect_warn_object_does_not_offer_methods()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `warn $obj` is a diagnostic output call, not an indirect method call.
+    let index = indirect_child_parent_index()?;
+
+    let code = "my $obj = Child->new;
+warn $obj";
+    let pos = code.find("warn").ok_or("missing warn")? + "warn".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        !completions.iter().any(|c| c.label == "run" || c.label == "speak"),
+        "`warn $obj` must not offer class methods; got {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
