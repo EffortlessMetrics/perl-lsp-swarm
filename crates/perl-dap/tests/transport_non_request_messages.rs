@@ -231,13 +231,33 @@ fn message_label(message: &DapMessage) -> String {
     }
 }
 
-/// Test that a Response message from the client does not crash the adapter.
-/// The adapter should handle it gracefully (log it but continue accepting requests).
+/// Returns None if no message arrives within the given timeout, Err on
+/// reader failure.  Used to assert that non-request messages produce zero
+/// adapter output.
+fn try_recv_any(
+    rx: &Receiver<std::result::Result<DapMessage, String>>,
+    timeout: Duration,
+) -> Result<Option<DapMessage>> {
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(msg)) => Ok(Some(msg)),
+        Ok(Err(e)) => Err(anyhow!("DAP reader failed: {e}")),
+        Err(RecvTimeoutError::Timeout) => Ok(None),
+        Err(RecvTimeoutError::Disconnected) => Err(anyhow!("DAP reader disconnected")),
+    }
+}
+
+/// Test that a Response message from the client does not crash the adapter AND
+/// does not produce any spurious output on the adapter's stdout.
+///
+/// Before the fix, non-request messages were silently dropped with `continue`.
+/// After the fix they are explicitly matched and logged.  In both cases the
+/// adapter must produce zero output for a Response message — this test locks
+/// that contract AND verifies the adapter keeps processing subsequent requests.
 #[test]
 fn transport_receives_response_message_without_crashing() -> Result<()> {
     let mut dap = DapProcess::spawn()?;
 
-    // Initialize first so the adapter is in a known state
+    // Initialize first so the adapter is in a known state.
     dap.send_request(
         1,
         "initialize",
@@ -252,35 +272,41 @@ fn transport_receives_response_message_without_crashing() -> Result<()> {
     dap.wait_for_response(1, "initialize")?;
     dap.wait_for_event("initialized")?;
 
-    // Now send a Response message (which normally comes from client as a reply to a server request).
-    // This should NOT crash the adapter. We expect it to silently handle or log.
+    // Send a Response message (client reply to a server-initiated request, which we
+    // currently never send).  The adapter must NOT reply to this — any output here
+    // would indicate a regression where the adapter echoes or error-responds to
+    // unsolicited messages.
     dap.send_response(2, 999, "someServerInitiatedRequest", true)?;
 
-    // Wait a short time to verify adapter doesn't crash
-    thread::sleep(Duration::from_millis(100));
-
-    // Send a normal request to verify adapter is still alive and responsive.
-    dap.send_request(3, "threads", None)?;
-    let threads_resp = dap.wait_for_response(3, "threads")?;
+    // Assert no spurious output within 150 ms.  A regression (e.g. sending back an
+    // error response for the unknown message) would appear here.
+    let spurious = try_recv_any(&dap.rx, Duration::from_millis(150))?;
     assert!(
-        threads_resp.is_some(),
-        "adapter should still respond after receiving a Response message"
+        spurious.is_none(),
+        "adapter must NOT emit any output for a client Response message; got: {spurious:?}"
     );
 
-    // Verify we can disconnect cleanly
+    // Send a normal request immediately after — no sleep needed — to verify the adapter
+    // is still alive and processing the request queue correctly.
+    dap.send_request(3, "threads", None)?;
+    // wait_for_response returns Err if success==false or if timed out, so reaching
+    // this line proves the adapter is alive AND returned a successful threads response.
+    let _threads_body = dap.wait_for_response(3, "threads")?;
+
+    // Verify we can disconnect cleanly.
     dap.send_request(4, "disconnect", Some(json!({})))?;
     dap.wait_for_response(4, "disconnect")?;
 
     Ok(())
 }
 
-/// Test that an Event message from the client does not crash the adapter.
-/// The adapter should handle it gracefully (log it but continue accepting requests).
+/// Test that an Event message from the client does not crash the adapter AND
+/// does not produce any spurious output on the adapter's stdout.
 #[test]
 fn transport_receives_event_message_without_crashing() -> Result<()> {
     let mut dap = DapProcess::spawn()?;
 
-    // Initialize first
+    // Initialize first.
     dap.send_request(
         1,
         "initialize",
@@ -295,34 +321,36 @@ fn transport_receives_event_message_without_crashing() -> Result<()> {
     dap.wait_for_response(1, "initialize")?;
     dap.wait_for_event("initialized")?;
 
-    // Send an Event message from the client (normally events flow from adapter to client,
-    // but the DAP spec permits bidirectional flow for advanced features).
+    // Send an Event message from the client (normally events flow from adapter to
+    // client, but the DAP spec permits bidirectional flow for advanced features).
+    // The adapter must NOT reply to this.
     dap.send_event(2, "clientEvent")?;
 
-    // Wait a short time to verify adapter doesn't crash
-    thread::sleep(Duration::from_millis(100));
-
-    // Send a normal request to verify adapter is still alive and responsive.
-    dap.send_request(3, "threads", None)?;
-    let threads_resp = dap.wait_for_response(3, "threads")?;
+    // Assert no spurious output within 150 ms.
+    let spurious = try_recv_any(&dap.rx, Duration::from_millis(150))?;
     assert!(
-        threads_resp.is_some(),
-        "adapter should still respond after receiving an Event message"
+        spurious.is_none(),
+        "adapter must NOT emit any output for a client Event message; got: {spurious:?}"
     );
 
-    // Verify we can disconnect cleanly
+    // Verify the adapter still processes normal requests.
+    dap.send_request(3, "threads", None)?;
+    let _threads_body = dap.wait_for_response(3, "threads")?;
+
+    // Verify we can disconnect cleanly.
     dap.send_request(4, "disconnect", Some(json!({})))?;
     dap.wait_for_response(4, "disconnect")?;
 
     Ok(())
 }
 
-/// Test that Response and Event messages can be received in sequence without crashing.
+/// Test that Response and Event messages can be received in sequence without
+/// crashing and without any spurious adapter output.
 #[test]
 fn transport_receives_mixed_non_request_messages_without_crashing() -> Result<()> {
     let mut dap = DapProcess::spawn()?;
 
-    // Initialize
+    // Initialize.
     dap.send_request(
         1,
         "initialize",
@@ -337,24 +365,24 @@ fn transport_receives_mixed_non_request_messages_without_crashing() -> Result<()
     dap.wait_for_response(1, "initialize")?;
     dap.wait_for_event("initialized")?;
 
-    // Send multiple non-request messages
+    // Send four consecutive non-request messages.
     dap.send_response(2, 999, "request1", true)?;
     dap.send_event(3, "event1")?;
     dap.send_response(4, 1000, "request2", false)?;
     dap.send_event(5, "event2")?;
 
-    // Wait a bit for processing
-    thread::sleep(Duration::from_millis(100));
-
-    // Send a normal request and verify adapter responds
-    dap.send_request(6, "threads", None)?;
-    let threads_resp = dap.wait_for_response(6, "threads")?;
+    // Assert zero adapter output for all four non-request messages combined.
+    let spurious = try_recv_any(&dap.rx, Duration::from_millis(150))?;
     assert!(
-        threads_resp.is_some(),
-        "adapter should still respond after receiving multiple non-request messages"
+        spurious.is_none(),
+        "adapter must NOT emit any output for non-request messages; got: {spurious:?}"
     );
 
-    // Clean disconnect
+    // Send a normal request immediately after and verify the adapter responds.
+    dap.send_request(6, "threads", None)?;
+    let _threads_body = dap.wait_for_response(6, "threads")?;
+
+    // Clean disconnect.
     dap.send_request(7, "disconnect", Some(json!({})))?;
     dap.wait_for_response(7, "disconnect")?;
 
