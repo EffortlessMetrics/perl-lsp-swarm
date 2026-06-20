@@ -863,6 +863,116 @@ print $n;
     Ok(())
 }
 
+#[test]
+fn scope_state_redeclaration_error() -> Result<(), Box<dyn std::error::Error>> {
+    // Redeclaring a `state` variable in the same scope must trigger VariableRedeclaration error.
+    // This is the core fix for #1654: state should NOT allow redeclaration like our does.
+    let code = r#"
+sub counter {
+    state $x = 0;
+    state $x = 1;
+}
+"#;
+    let issues = scope_issues(code);
+    assert!(
+        has_issue(&issues, IssueKind::VariableRedeclaration, "x"),
+        "state redeclaration in same scope must trigger VariableRedeclaration error; issues: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn scope_state_in_nested_blocks_allowed() -> Result<(), Box<dyn std::error::Error>> {
+    // `state` in outer and inner blocks should be tracked as separate variables.
+    // State follows block-scoping like my.
+    let code = r#"
+sub nested {
+    state $n = 1;
+    {
+        state $n = 2;
+        print $n;
+    }
+    print $n;
+}
+"#;
+    let issues = scope_issues(code);
+    // Both declarations should be allowed (different scopes).
+    // If implementation is correct, there should be no redeclaration error.
+    let redecl_count = issues
+        .iter()
+        .filter(|i| i.kind == IssueKind::VariableRedeclaration && i.variable_name.contains("n"))
+        .count();
+    assert_eq!(
+        redecl_count,
+        0,
+        "state in nested blocks should be allowed; got {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn scope_state_initialization_tracking() -> Result<(), Box<dyn std::error::Error>> {
+    // `state` variables with initializers should be marked as initialized.
+    let code = r#"
+sub init_test {
+    state $initialized = 42;
+    state $uninitialized;
+    print $initialized;
+    print $uninitialized;
+}
+"#;
+    let issues = scope_issues(code);
+    // Only the uninitialized state variable should trigger UninitializedVariable.
+    assert!(
+        has_issue(&issues, IssueKind::UninitializedVariable, "uninitialized"),
+        "state without initializer should trigger UninitializedVariable; issues: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    assert!(
+        !has_issue(&issues, IssueKind::UninitializedVariable, "initialized"),
+        "state with initializer should not trigger UninitializedVariable; issues: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn scope_my_redeclaration_still_errors() -> Result<(), Box<dyn std::error::Error>> {
+    // Regression test: my variable redeclaration should still error (unchanged behavior).
+    let code = r#"
+sub test {
+    my $x = 1;
+    my $x = 2;
+}
+"#;
+    let issues = scope_issues(code);
+    assert!(
+        has_issue(&issues, IssueKind::VariableRedeclaration, "x"),
+        "my redeclaration should still trigger VariableRedeclaration error; issues: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn scope_our_redeclaration_still_accepted() -> Result<(), Box<dyn std::error::Error>> {
+    // Regression test: our variable redeclaration should still be silently accepted (unchanged behavior).
+    let code = r#"
+our $global = 1;
+our $global = 2;
+"#;
+    let issues = scope_issues(code);
+    // our allows redeclaration, so there should be NO VariableRedeclaration error.
+    assert!(
+        !has_issue(&issues, IssueKind::VariableRedeclaration, "global"),
+        "our redeclaration should NOT error; issues: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
 // ===========================================================================
 // 5. Package-Qualified Symbol Resolution
 // ===========================================================================
