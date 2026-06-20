@@ -93,6 +93,16 @@ Any change touching `crates/perl-dap/`, `crates/perl-dap-*/`, or the DAP bridge
 | **Required action** | Decision documented in `acceptance.md` before builder starts. CI receipt from `ripr+ New Gap Gate` is the verification artifact — not local ripr output (local may run a different ripr version; CI pins `RIPR_VERSION=0.5.0`). |
 | **Ref** | [ripr#1428](https://github.com/nickel-lang/ripr/issues/1428), [ripr#1429](https://github.com/nickel-lang/ripr/issues/1429), xtask gap #1346; RIPR pin in `.github/workflows/ripr.yml` |
 
+### DAP-8: tagged-range ID-space codec (variablesReference wire-band)
+
+| Field | Value |
+|---|---|
+| **Invariant** | Any new `variablesReference`-like ID space in the DAP layer MUST use (a) **pairwise-disjoint wire bands** with named constant boundaries, (b) **fallible encode** (`-> Option<i32>`) that returns `None` rather than producing a wire value outside the declared band, and (c) **pure-range decode** with no residue or modulo-based disambiguation between bands. An allocation convention ("we never put those values there") is NOT enforcement. |
+| **Trigger** | Any change that introduces a new numeric reference type, a new allocator for an existing reference type, or any arithmetic on `variablesReference` / `frameId` / scope-ID integers outside the codec module (`var_ref.rs`) |
+| **Required adversarial test** | For each band boundary: (1) encode at the exact maximum of band N and assert `Some`; (2) encode one step beyond and assert `None`; (3) decode a wire value from band N and assert the correct variant; (4) decode a wire value of 0 and assert `None`. |
+| **Motivating incidents** | Three band-overflow bugs in PR #1430 / #1444 (green-tdd caught bug 1: residue overlap between EvalResult counter=1 and Scope; deep-review caught bugs 2 and 3: counter overflow into Child band and negative parent into EvalResult band). Issue #1445 tracks one surviving unmigrated site. |
+| **Ref** | [docs/reference/DAP_CONTRACTS.md §1](DAP_CONTRACTS.md), [docs/concepts/type-level-id-space-promotion.md](../concepts/type-level-id-space-promotion.md), [docs/learnings/2026-06-tagged-range-codec-band-overflow.md](../learnings/2026-06-tagged-range-codec-band-overflow.md) |
+
 ---
 
 ## Parser / scanner subsystem
@@ -134,6 +144,16 @@ or any other crate whose primary job is tokenizing or parsing Perl source text.
 | **Trigger** | Any change to error-recovery logic, or any new snapshot test that includes `Error` / `Invalid` / `Malformed` AST nodes |
 | **Required adversarial test** | Run the recovery test input through the current parser (not a cached snapshot) and confirm the variant is reachable before treating the snapshot as a positive assertion. Add a comment in the test naming the recovery path that produces each error node. |
 | **Ref** | Class 5 (test-encodes-the-bug) in [docs/concepts/hazard-class-invariants.md](../concepts/hazard-class-invariants.md); incident: [docs/learnings/2026-06-test-encodes-the-bug.md](../learnings/2026-06-test-encodes-the-bug.md) |
+
+### PARSER-5: New NodeKind variant — audit non-exhaustive consumers
+
+| Field | Value |
+|---|---|
+| **Invariant** | Adding a new `NodeKind` variant requires auditing the **non-exhaustive consumer surface**, not just the exhaustive `match` arms the compiler enforces. Two patterns are invisible to the exhaustiveness checker and silently drop new variants: (a) `if let NodeKind::X { .. } = node` inside a loop with no `else` branch — the new variant is skipped; (b) `_ => { /* no children */ }` wildcard arms in traversal/extraction functions (e.g. `visit_children`, semantic-token emitters, symbol extractors, declaration mappers) — the new variant falls into the no-op. Each silent drop equals one missing LSP feature (tokens, hover, go-to-definition, rename, reference tracking) for the new construct. |
+| **Trigger** | Any change that adds a new `NodeKind` variant to `crates/perl-ast/src/ast.rs` |
+| **Required adversarial test** | For each new variant: (1) grep `if let NodeKind::` across all consumer crates and verify every loop that matches sibling variants also matches the new variant or has an explicit else branch; (2) grep `_ =>` wildcard arms in `visit_children`, semantic-token dispatch, symbol extraction, and declaration-mapping functions — add an explicit arm for the new variant in each; (3) write an integration test asserting that LSP semantic tokens, hover, go-to-definition, and workspace symbols all return non-empty results for a Perl snippet that uses the new construct. |
+| **Motivating incident** | [docs/learnings/2026-06-nodekind-variant-silent-consumer-drop.md](../learnings/2026-06-nodekind-variant-silent-consumer-drop.md): PR #1457 (`NodeKind::NestedVariableList`) silently dropped in 3 consumers — `node_analysis` `if let` loop (no semantic tokens/hover), `variable_decl_from_node` (no workspace symbols → no goto/rename), `visit_children` wildcard arm (no reference tracking). Deep-review caught all three in commit `c5c8f6bf8`. |
+| **Ref** | [docs/reference/PARSER_CONTRACTS.md §4](PARSER_CONTRACTS.md) (NodeKind Classification drift guard) |
 
 ---
 
@@ -217,6 +237,55 @@ transform (`coverage-filter`, `lcov.info` post-processors, ripr configuration, t
 | **Required action** | Pre-declare the handling strategy in `acceptance.md`. CI receipt from `ripr+ New Gap Gate` (not local ripr output) is the verification artifact — local ripr installs may differ from the CI-pinned `RIPR_VERSION=0.5.0`. |
 | **Ref** | [ripr#1428](https://github.com/nickel-lang/ripr/issues/1428), [ripr#1429](https://github.com/nickel-lang/ripr/issues/1429), xtask gap #1346; incident: [docs/learnings/2026-06-ripr-output-schema-break.md](../learnings/2026-06-ripr-output-schema-break.md) |
 
+### COV-5: Coverage-integrity (integration-test gap is a measurement problem, not a coverage problem)
+
+| Field | Value |
+|---|---|
+| **Invariant** | Patch coverage MUST count the coverage contributed by integration tests (`crates/*/tests/`). The `Codecov / Patch 95` gate is currently satisfied by `--lib` profdata only; integration tests do not count toward patch coverage. Satisfying the patch gate by adding inline `#[cfg(test)]` tests in `src/` (or by adding a ripr suppression) when the real gap is in integration-test measurement is a MEASUREMENT WORKAROUND — it does not improve the correctness guarantee. Fix the measurement, then fix the gap. |
+| **Trigger** | Any PR where the builder adds inline `#[cfg(test)]` blocks primarily to satisfy Codecov patch coverage (rather than to improve correctness assurance), or any PR that proposes lowering a coverage threshold |
+| **Required action** | If patch coverage is below 95% for a new code path: (1) first check whether the path is exercised by integration tests whose coverage is not counted; (2) if so, the correct fix is to fix the measurement (see issue #1282); (3) inline lib tests are acceptable only when they add genuine correctness value — document that reasoning in `acceptance.md` rather than treating them as a coverage-padding workaround. |
+| **Motivating incident** | Issue #1282 — patch coverage was satisfied by inline `#[cfg(test)]` tests + a ripr suppression, but the new code paths were already exercised by integration tests that were not counted. The padding improved the measurement, not the coverage. |
+| **Ref** | [docs/learnings/2026-06-codecov-false-low.md](../learnings/2026-06-codecov-false-low.md) |
+
+### COV-6: Coverage jobs must not be the only place test failures are caught
+
+| Field | Value |
+|---|---|
+| **Invariant** | A coverage-measurement job (one that gathers LLVM-cov data by running tests) must fail only on measurement/transformation correctness, never on test failures. Test failures must be caught by dedicated, correctly-named gates (e.g. "test-all-libs", "test-integration") that report failures under the name of the thing being tested, not the measurement tool. Decoupling measurement from validation prevents agents from misdiagnosing test failures as coverage shortfalls. |
+| **Trigger** | Any change to CI workflows where a coverage job (running `just coverage-proof`, `cargo llvm-cov`, etc.) is the sole gate that runs the test suite or is the primary way test failures are caught |
+| **Required action** | Ensure test failures are caught by a separate, earlier CI gate with an honest name. Coverage gates should be measurement-only: they fail on measurement correctness (tool crashes, corrupted profdata, filter errors) but not on test assertion failures. The routing implication: if a "Codecov / Patch 95" check fails, agents must FIRST classify the failure (test failure vs. patch % vs. tool error) by reading the job log before assuming patch coverage is the issue. |
+| **Motivating incident** | [docs/learnings/2026-06-coverage-job-ran-tests.md](../learnings/2026-06-coverage-job-ran-tests.md): PR #1457 had a test fixture off-by-one; the failure surfaced in the "Codecov / Patch 95" gate because coverage-proof ran the test suite. Multiple agents chased patch-coverage improvements instead of fixing the test. |
+| **Ref** | Observability/misclassification anti-pattern — agents route based on check names; lying names cause misrouting. |
+
+### COV-7: Coverage-check names must not hide test failures (agent diagnostic rule)
+
+| Field | Value |
+|---|---|
+| **Invariant** | When a coverage-named check (e.g. `Codecov / Patch 95`, `Code Coverage Report`) fails, agents diagnosing the failure must FIRST classify the failure class before assuming patch-coverage shortfall. The five failure classes are: (a) coverage shortfall (patch % below threshold), (b) a TEST FAILURE hidden inside the coverage job, (c) tool failure (profdata corruption, llvm-cov crash, upload error), (d) CI routing skip (e.g. skipped for draft PR), (e) artifact-upload/infrastructure failure. Reading the job log is the first diagnostic step — do NOT assume the check name alone explains the failure. |
+| **Trigger** | Every time a PR has a failing coverage-named check as the blocker to green CI |
+| **Required diagnostic steps** (for green-ci, reviewer-deep, pr-responder agents) | (1) Read the full coverage job log. (2) Scan for `FAILED` / `ERROR` / `panic` / `test assertion` keywords indicating a test failure inside the coverage job. (3) If a test failure is found, classify it as a test-correctness issue, not a coverage-measurement issue. (4) Route back to builder or pr-responder with a comment like "Coverage job failed on test failure in `test_foo`, not patch coverage." (5) If no test failure: then diagnose patch % shortfall or tool error. |
+| **Motivating incident** | [docs/learnings/2026-06-coverage-job-ran-tests.md](../learnings/2026-06-coverage-job-ran-tests.md): PR #1457 test fixture failure in `all_kind_names_contains_every_variant` was hidden inside the "Codecov / Patch 95" check name, causing agents to misdiagnose the failure class. |
+| **Ref** | Measuring-the-instrument-is-the-bug anti-pattern; doctrinal guidance for CI diagnostic agents. |
+### COV-8: Coverage routing must distinguish skip from routing bug
+
+| Field | Value |
+|---|---|
+| **Invariant** | When a coverage gate's routing logic selects zero packs to run (empty coverage test set), the gate output must distinguish two scenarios: (1) routing_skip — no coverable code changed (valid, gate skips legitimately), and (2) routing_bug — production code changed but routing logic failed to select it (a bug, gate must fail loud). Silently skipping when production code changed masks a routing infrastructure failure. |
+| **Trigger** | Any change to coverage routing logic (`xtask/src/tasks/coverage.rs` or equivalent) or any gate that selectively routed coverage test packs |
+| **Required adversarial test** | (1) Scenario A: change only test files or comments (no production code touched) → routing selects zero packs → gate must skip silently (routing_skip). (2) Scenario B: change `crates/perl-parser/src/lib.rs` but the routing filter is misconfigured → routing selects zero packs → gate must FAIL and output "production code changed but no packs routed: routing BUG" (routing_bug). Distinguish the two in gate output. |
+| **Motivating incident** | Coverage gate routing silent-skipped when production code was changed but the pack selection was empty due to a filter regex error. Agents thought no coverage-relevant code was touched. Patch coverage gaps shipped to master undetected. |
+| **Ref** | [docs/concepts/gate-names-must-match-failure-classes.md](../concepts/gate-names-must-match-failure-classes.md) (routing_skip vs routing_bug) |
+
+### CI-1: Runner policy — Linux-only default, Windows/Mac for OS-specific necessity
+
+| Field | Value |
+|---|---|
+| **Invariant** | CI runs on **self-hosted Ubuntu/Linux runners only** (free pool). Any Windows/macOS job falls back to **GitHub-hosted runners (billed)**. Linux coverage is sufficient for OS-agnostic code (parser, AST, lexer, LSP, DAP). Windows/macOS runner jobs are reserved for genuinely OS-specific code paths (`cfg(windows)` / `cfg(target_os = "macos")`) with real, user-impacting risk that cannot be exercised on Linux. General or redundant cross-platform re-testing does **not** qualify as an "extenuating circumstance." Adding a Windows/Mac runner job requires explicit justification naming the OS-specific divergence it guards. |
+| **Trigger** | Any proposal to add a Windows or macOS runner job to a PR-triggered CI workflow (`.github/workflows/ci.yml`, `.github/workflows/pr-*.yml`, etc.) |
+| **Required justification** | Before adding a billed runner job: (1) name the `cfg(windows)` / `cfg(target_os = "macos")` code path or feature being guarded; (2) explain why the divergence cannot be tested on Linux (e.g., UNC paths, registry access, Mach API); (3) confirm the risk is real and user-impacting, not redundant coverage. Exception: release-artifact builds on tag and scheduled (non-PR) post-publish smoke tests are accepted without justification. |
+| **Motivating incident** | [#1484](https://github.com/EffortlessMetrics/perl-lsp/issues/1484) / [#1485](https://github.com/EffortlessMetrics/perl-lsp/pull/1485): Per-PR Windows-runner jobs (`windows-canary`, `windows-full-guardrails`) were removed from merge-gate because they redundantly re-tested cross-platform logic already covered by Linux gates, incurring billed GitHub-hosted cost for no additional safety signal. |
+| **Ref** | [docs/reference/CI_ARCHITECTURE.md §4.5](CI_ARCHITECTURE.md#section-45--runner-policy) |
+
 ---
 
 ## Cross-subsystem rows (apply to any change)
@@ -239,3 +308,6 @@ When a new incident motivates a new default row, add it here AND add an entry to
 
 The canonical trigger for updating this file is a deep-review finding that would have
 been caught if the hazard row had been seeded in `acceptance.md`.
+
+
+

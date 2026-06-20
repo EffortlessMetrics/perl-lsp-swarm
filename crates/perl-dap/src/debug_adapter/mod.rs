@@ -20,6 +20,7 @@ pub(crate) mod safe_eval;
 mod session;
 mod sync_utils;
 mod transport;
+pub mod var_ref;
 mod variable_cache;
 
 use crate::breakpoint::{AstBreakpointValidator, BreakpointValidator};
@@ -513,6 +514,52 @@ impl DebugAdapter {
     fn stack_frames_snapshot_for_test(&self) -> Vec<StackFrame> {
         let session = lock_or_recover(&self.session, "debug_adapter.snapshot_frames");
         session.as_ref().map(|s| s.stack_frames.clone()).unwrap_or_default()
+    }
+
+    /// Seed the active session's variable_cache with an EvalResult entry for testing.
+    ///
+    /// Used by the fix #1338 guard test: a CACHED EvalResult ref must serve its children
+    /// via the cache-hit path, NOT be swallowed by the early-return short-circuit added
+    /// for stale (cache-miss) EvalResult refs.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    #[cfg(test)]
+    pub fn seed_eval_result_cache_for_test(
+        &self,
+        eval_ref_wire: i32,
+        variables: Vec<crate::types::Variable>,
+    ) {
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_eval_result_cache");
+        if let Some(ref mut sess) = *session {
+            sess.variable_cache.upsert(eval_ref_wire, VariableCacheKind::EvaluateResult, variables);
+        }
+    }
+
+    /// Seed a stopped DebugSession with a given set of stack frames for testing
+    /// frameId validation paths in handle_evaluate.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    pub fn seed_stopped_session_with_frames_for_test(&self, frames: Vec<crate::types::StackFrame>) {
+        use std::process::{Command, Stdio};
+        let Ok(child) = Command::new("perl")
+            .arg("-e")
+            .arg("1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        else {
+            return;
+        };
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_stopped_session");
+        *session = Some(DebugSession {
+            process: child,
+            state: DebugState::Stopped,
+            stack_frames: frames,
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            last_resume_mode: ResumeMode::Unknown,
+        });
     }
 }
 #[cfg(test)]

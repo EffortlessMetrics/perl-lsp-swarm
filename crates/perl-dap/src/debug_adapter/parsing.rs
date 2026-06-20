@@ -121,7 +121,18 @@ impl DebugAdapter {
         start: usize,
         count: usize,
     ) -> (Vec<Variable>, HashMap<i32, Vec<Variable>>) {
-        let scope_type = variables_ref % 10;
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+        // Decode the scope kind from the variablesReference using the codec.
+        // scope_variables::parse_assignments still expects i32 discriminant (1/2/3).
+        // Invalid (non-Scope or None) refs return empty results — no crash.
+        let scope_type = match VariableReference::decode(variables_ref) {
+            Some(VariableReference::Scope { kind, .. }) => match kind {
+                ScopeKind::Locals => 1_i32,
+                ScopeKind::Package => 2_i32,
+                ScopeKind::Globals => 3_i32,
+            },
+            _ => return (Vec::new(), HashMap::new()),
+        };
         let parsed = scope_variables::parse_assignments(lines, scope_type);
         let page = scope_variables::sort_and_paginate(parsed, start, count);
 
@@ -225,42 +236,64 @@ impl DebugAdapter {
         start: usize,
         count: usize,
     ) -> Vec<Variable> {
-        let variables = match variables_ref % 10 {
-            1 => vec![
-                Variable {
-                    name: "$self".to_string(),
-                    value: "blessed(My::Module)".to_string(),
-                    type_: Some("hash".to_string()),
-                    variables_reference: variables_ref.saturating_mul(100) + 2,
-                    named_variables: Some(5),
-                    indexed_variables: None,
-                },
-                Variable {
-                    name: "@_".to_string(),
-                    value: "array(size=0)".to_string(),
-                    type_: Some("array".to_string()),
-                    variables_reference: variables_ref.saturating_mul(100) + 1,
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+        // Decode scope kind via codec; None/non-Scope → empty fallback (no crash).
+        let variables = match VariableReference::decode(variables_ref) {
+            Some(VariableReference::Scope { kind, .. }) => match kind {
+                ScopeKind::Locals => vec![
+                    Variable {
+                        name: "$self".to_string(),
+                        value: "blessed(My::Module)".to_string(),
+                        type_: Some("hash".to_string()),
+                        // Child band [2_000_000_000, i32::MAX]: disjoint from EvalResult band.
+                        // index=0: $self is position 0 in the fallback vec.
+                        // .unwrap_or(0): 0 = DAP "no children" sentinel; safe fallback if
+                        // variables_ref is somehow negative (invariant violation guard).
+                        variables_reference: VariableReference::Child {
+                            parent: variables_ref,
+                            index: 0,
+                        }
+                        .encode()
+                        .unwrap_or(0),
+                        named_variables: Some(5),
+                        indexed_variables: None,
+                    },
+                    Variable {
+                        name: "@_".to_string(),
+                        value: "array(size=0)".to_string(),
+                        type_: Some("array".to_string()),
+                        // Child band [2_000_000_000, i32::MAX]: disjoint from EvalResult band.
+                        // index=1: @_ is position 1 in the fallback vec.
+                        // .unwrap_or(0): 0 = DAP "no children" sentinel; safe fallback if
+                        // variables_ref is somehow negative (invariant violation guard).
+                        variables_reference: VariableReference::Child {
+                            parent: variables_ref,
+                            index: 1,
+                        }
+                        .encode()
+                        .unwrap_or(0),
+                        named_variables: None,
+                        indexed_variables: Some(0),
+                    },
+                ],
+                ScopeKind::Package => vec![Variable {
+                    name: "$VERSION".to_string(),
+                    value: "\"1.0.0\"".to_string(),
+                    type_: Some("scalar".to_string()),
+                    variables_reference: 0,
                     named_variables: None,
-                    indexed_variables: Some(0),
-                },
-            ],
-            2 => vec![Variable {
-                name: "$VERSION".to_string(),
-                value: "\"1.0.0\"".to_string(),
-                type_: Some("scalar".to_string()),
-                variables_reference: 0,
-                named_variables: None,
-                indexed_variables: None,
-            }],
-            3 => vec![Variable {
-                name: "$_".to_string(),
-                value: "undef".to_string(),
-                type_: Some("scalar".to_string()),
-                variables_reference: 0,
-                named_variables: None,
-                indexed_variables: None,
-            }],
-            _ => Vec::new(),
+                    indexed_variables: None,
+                }],
+                ScopeKind::Globals => vec![Variable {
+                    name: "$_".to_string(),
+                    value: "undef".to_string(),
+                    type_: Some("scalar".to_string()),
+                    variables_reference: 0,
+                    named_variables: None,
+                    indexed_variables: None,
+                }],
+            },
+            _ => Vec::new(), // Invalid or non-Scope varref → honest empty fallback
         };
 
         variables.into_iter().skip(start).take(count).collect()
@@ -1008,6 +1041,75 @@ DB<1>"#;
             }
             _ => return Err("Expected response with body".into()),
         }
+        Ok(())
+    }
+
+    /// Regression test for #1445: fallback_scope_variables child refs must be in the Child band.
+    ///
+    /// Directly calls `fallback_scope_variables` (the fixed code path) with a deep-frame
+    /// Scope ref and asserts that every expandable variable's `variables_reference` is in
+    /// the Child band `[2_000_000_000, i32::MAX]` and decodes as `VariableReference::Child`.
+    ///
+    /// Before the fix: frame_id=10_000 produced scope_wire=100_001, and child refs were
+    /// `100_001 * 100 + {1,2}` = ~10_000_102 -- inside the EvalResult band [1_000_000, 1_999_999_999].
+    ///
+    /// After the fix: child refs use `VariableReference::Child::encode()` and land in
+    /// `[2_000_000_000, i32::MAX]` -- provably disjoint from EvalResult.
+    #[test]
+    pub(super) fn test_fallback_scope_variables_deep_frame_child_refs_in_child_band()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+
+        const CHILD_BASE: i32 = 2_000_000_000;
+        const EVAL_BASE: i32 = 1_000_000;
+        const EVAL_MAX: i32 = 1_999_999_999;
+
+        // Encode a Scope ref with the exact frame_id from the bug report: 10_000.
+        // The buggy formula produced child refs in the EvalResult band for this input.
+        let scope_ref = VariableReference::Scope { frame_id: 10_000, kind: ScopeKind::Locals };
+        let scope_wire = scope_ref.encode().ok_or("Scope{frame_id:10_000} should encode")?;
+        assert_eq!(scope_wire, 100_001, "scope wire must be 100_001 (10_000*10+1)");
+
+        // Call the actual fixed function.
+        let vars = DebugAdapter::fallback_scope_variables(scope_wire, 0, 10);
+
+        // There must be at least one expandable variable (Locals returns $self, @_).
+        let expandable: Vec<_> = vars.iter().filter(|v| v.variables_reference != 0).collect();
+        assert!(
+            !expandable.is_empty(),
+            "Locals scope fallback must include at least one expandable variable"
+        );
+
+        for var in &expandable {
+            let child_wire = var.variables_reference;
+
+            // REGRESSION GUARD: child ref must NOT be in EvalResult band.
+            assert!(
+                !(EVAL_BASE..=EVAL_MAX).contains(&child_wire),
+                "#1445 regression: child ref {child_wire} for variable '{}' is in EvalResult band \
+                 [{EVAL_BASE}, {EVAL_MAX}] -- fallback_scope_variables is producing colliding refs again",
+                var.name,
+            );
+
+            // Child ref must be in the Child band.
+            assert!(
+                child_wire >= CHILD_BASE,
+                "child ref {child_wire} for variable '{}' must be in Child band \
+                 [{CHILD_BASE}, i32::MAX]",
+                var.name,
+            );
+
+            // Decode must return Child variant, never EvalResult.
+            let decoded = VariableReference::decode(child_wire).ok_or_else(|| {
+                format!("child ref {child_wire} must decode to Some(_), got None")
+            })?;
+            assert!(
+                matches!(decoded, VariableReference::Child { .. }),
+                "child ref {child_wire} for '{}' must decode as Child, got {decoded:?}",
+                var.name,
+            );
+        }
+
         Ok(())
     }
 }

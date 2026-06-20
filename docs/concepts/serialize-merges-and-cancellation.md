@@ -68,6 +68,51 @@ Do not add artificial sleeps to work around cancellation. Sleeps hide the sympto
 without fixing the cause and make the pipeline harder to reason about. Use the monitor
 pattern (wait for a specific completion signal) instead of polling.
 
+## Parallel builds, paced merges
+
+Serialization does not mean single-threaded work. The correct model is:
+
+**Build in parallel** — multiple agents working different changes simultaneously is
+correct and efficient, especially in multi-crate or independent-feature repos. Parallel
+builds do not cancel each other's CI because they target different branches.
+
+**Merge in paced batches** — merging is the step that causes CI cascades. Merge one
+small batch (e.g., 3 PRs), wait for all required checks to be green on the merged SHAs,
+then merge the next batch. Never rebase a PR while its CI run is in progress — that
+cancels the in-progress run and restarts from zero.
+
+The anti-pattern is rapid-fire merging: merging several PRs in quick succession causes
+each merge's CI run to be cancelled by the next merge, leaving all of them stuck at
+partial green. None reaches the required check count, and the queue stalls.
+
+Concrete rules:
+1. Never update-branch (rebase) a PR while its CI is running (checks < required green)
+2. Merge in batches of 3 or fewer; wait for all required checks before the next batch
+3. Do not race all open PRs simultaneously toward merge; focus on one priority at a time
+
+## The config tension: high-velocity main + strict-up-to-date + slow CI
+
+In a repo where:
+- many independent changes merge rapidly (high-velocity main)
+- branch-protection requires the PR's base to be up-to-date before merge
+- CI is slow (15–30+ minutes)
+
+...a slow PR's CI run completes while main has advanced, the branch is now "behind,"
+and the PR must be rebased — which cancels the just-completed CI run. This is the
+rebase treadmill: a PR can cycle indefinitely if main moves faster than CI completes.
+
+The structural fix is not more serialization — it is configuration:
+
+- **Enable the merge queue**: the queue handles up-to-date enforcement automatically,
+  merging PRs in sequence without requiring manual rebase
+- **Relax strict-up-to-date**: allow merging a PR that is slightly behind main (N commits)
+  when all required checks are green — the risk is small and bounded; the throughput
+  gain is large
+
+Either fix removes the treadmill at the config layer. Manual serialization (holding
+PRs to keep main still) is futile in a multi-thread repo where main advances
+regardless.
+
 ## Relation to other patterns
 
 - **Cache-aware agent lanes** (cache-aware-agent-lanes.md) -- independent concern;
@@ -75,3 +120,32 @@ pattern (wait for a specific completion signal) instead of polling.
 - **Re-create over untangle** (re-create-over-untangle.md) -- if a branch became
   tangled through multiple concurrent agents, serialization would have prevented the
   tangle; re-creation is the recovery path.
+- **Orchestrator substrate model** (`orchestrator-substrate-model.md`) -- rapid-merge
+  starvation and the rebase treadmill are substrate failure modes caused by a wrong
+  model of CI timing and branch-protection semantics; the config tension above is the
+  substrate-level diagnosis.
+
+---
+
+## Current repo state: merge-queue available, strict-up-to-date relaxed (2026-06-13)
+
+As of 2026-06-13, the rebase treadmill described above was broken by relaxing the
+strict-up-to-date branch-protection rule on `main`. The current configuration:
+
+- **`strict-up-to-date` is OFF.** PRs may merge when their branch is slightly behind `main`,
+  provided all required CI checks are green on the current HEAD SHA. This removes the
+  "CI completed, main advanced, must rebase, CI cancelled" cycle.
+
+- **Merge queue is AVAILABLE but not FORCED.** The GitHub merge queue ruleset exists and
+  `merge_group` CI triggers are wired. The queue is not currently enforced as mandatory;
+  it is available for future enforcement without additional CI plumbing work.
+
+- **Verified-treadmill-break admin-merge criteria.** If the queue stalls due to a known
+  measurement artifact (such as the integration-test coverage gap described in #1282), an
+  admin merge may proceed when: (a) the PR has `deep-reviewed`, (b) at least 2 of 3 required
+  checks are green on the current SHA, and (c) the failing check is confirmed to be a
+  measurement artifact. This path should become RARE once #1282 is resolved.
+
+- **Batch-of-3 cadence remains in effect.** Even with strict-up-to-date off, rapid-fire
+  merges still cancel each other's CI runs. Continue merging in batches of 3 or fewer and
+  waiting for required checks before the next batch.

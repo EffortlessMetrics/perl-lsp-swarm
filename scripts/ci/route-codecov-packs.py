@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,13 @@ except ModuleNotFoundError:  # pragma: no cover - CI uses Python 3.11+.
 FALLBACK_PACK_ID = "patch-coverage-rust-focused"
 NON_LCOV_SKIP_REASON = "non-LCOV CI policy/routing surface; covered by focused CI gates"
 NON_SOURCE_LCOV_SKIP_REASON = "LCOV coverage pack matched only non-source files; covered by focused CI gates"
+TEST_SUPPORT_CRATE_PREFIXES = (
+    "crates/perl-lsp-ux-tests/",
+    "crates/perl-tdd-support/",
+    "crates/perl-test-generators/",
+    "crates/perl-test-must/",
+)
+FEATURE_CFG_RE = re.compile(r'feature\s*=\s*"([^"]+)"')
 
 
 def crate_name_from_source_path(path: str) -> str | None:
@@ -45,13 +53,60 @@ def changed_crates(paths: list[str]) -> list[str]:
     return result
 
 
+def changed_integration_test_targets(paths: list[str]) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
+    """Return changed top-level integration test targets by crate name."""
+    result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for path in paths:
+        parts = path.split("/")
+        if len(parts) != 4 or parts[0] != "crates" or parts[2] != "tests":
+            continue
+        filename = parts[3]
+        if not filename.endswith(".rs"):
+            continue
+        crate_name = parts[1]
+        target = Path(filename).stem
+        key = (crate_name, target)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.setdefault(crate_name, []).append((target, tuple(required_features_for_test(path))))
+    return result
+
+
+def required_features_for_test(path: str) -> list[str]:
+    """Return crate features gated by a changed integration test target."""
+    test_path = Path(path)
+    if not test_path.exists():
+        return []
+    try:
+        source = test_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    features: set[str] = set()
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#![cfg("):
+            continue
+        features.update(FEATURE_CFG_RE.findall(stripped))
+    return sorted(features)
+
+
 def augment_rust_focused_commands(base_commands: list[str], paths: list[str]) -> list[str]:
     """Append per-crate integration-test commands to the rust-focused pack.
 
-    The static pack command only runs ``--lib`` tests.  DAP-style crates
-    (e.g. ``perl-dap``) prove patch coverage exclusively through integration
-    tests in ``tests/``.  Without the extra ``--tests`` invocations those
-    lines show 0 % patch coverage even though the tests exist and pass.
+    The fallback pack is intentionally crate-scoped.  Workspace-wide coverage
+    is too expensive for Patch 95 and can turn a focused Rust change into a
+    timeout before a coverage receipt is produced.  DAP-style crates (e.g.
+    ``perl-dap``) prove patch coverage through integration tests in ``tests/``,
+    while ordinary library paths need a registered ``--lib`` binary.
+
+    Root cause (#1282): plain ``cargo test`` does NOT register the binary with
+    cargo-llvm-cov's tracking file.  When ``cargo llvm-cov report`` runs it
+    only symbolises registered binaries, so integration-test profdata is
+    silently dropped and those source lines appear uncovered (false-low patch
+    %).  Using ``cargo llvm-cov test --no-report`` registers the binary while
+    deferring LCOV generation to the single ``cargo llvm-cov report`` call.
 
     ``-- --test-threads=1`` forces serial execution within the test binary.
     Integration tests in this workspace mutate global/process state (env vars,
@@ -68,12 +123,47 @@ def augment_rust_focused_commands(base_commands: list[str], paths: list[str]) ->
     coverage NUMBER, not test pass/fail.  Pre-existing test-debt (tracked in
     #1269) can no longer block PRs by surfacing in this lane.
     """
-    commands = list(base_commands)
+    commands: list[str] = []
+    for cmd in base_commands:
+        if _is_deprecated_rust_focused_command(cmd):
+            continue
+        if cmd not in commands:
+            commands.append(cmd)
+    test_targets_by_crate = changed_integration_test_targets(paths)
     for crate_name in changed_crates(paths):
-        cmd = f"cargo test -p {crate_name} --tests --profile agent --locked -- --test-threads=1"
+        lib_cmd = f"cargo llvm-cov test --no-report -p {crate_name} --lib --profile agent --locked"
+        if lib_cmd not in commands:
+            commands.append(lib_cmd)
+        test_targets = test_targets_by_crate.get(crate_name, [])
+        if test_targets:
+            integration_cmds = [
+                targeted_test_command(crate_name, target, features)
+                for target, features in test_targets
+            ]
+        else:
+            integration_cmds = [
+                f"cargo llvm-cov test --no-report -p {crate_name} --tests --profile agent --locked -- --test-threads=1"
+            ]
+        for cmd in integration_cmds:
+            if cmd not in commands:
+                commands.append(cmd)
+    if has_xtask_source_change(paths):
+        cmd = "cargo llvm-cov test --no-report -p xtask --bin xtask --profile agent --locked"
         if cmd not in commands:
             commands.append(cmd)
     return commands
+
+
+def _is_deprecated_rust_focused_command(cmd: str) -> bool:
+    """Drop pre-#1529 broad commands if an older manifest is used."""
+    return cmd.startswith("cargo llvm-cov test --no-report --workspace --lib ") or cmd.startswith(
+        "cargo check --workspace "
+    )
+
+
+def has_xtask_source_change(paths: list[str]) -> bool:
+    """Return whether the fallback pack owns an xtask source change."""
+    return any(is_lcov_source_path(path) and path.startswith("xtask/src/") for path in paths)
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,7 +211,22 @@ def is_lcov_source_path(path: str) -> bool:
         return False
     if path.startswith("xtask/tests/") or "/tests/" in path:
         return False
+    if is_test_support_crate_path(path):
+        return False
     return path.startswith("xtask/src/") or path.startswith("crates/")
+
+
+def is_test_support_crate_path(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return any(normalized.startswith(prefix) for prefix in TEST_SUPPORT_CRATE_PREFIXES)
+
+
+def targeted_test_command(crate_name: str, target: str, features: tuple[str, ...]) -> str:
+    feature_arg = f" --features {','.join(features)}" if features else ""
+    return (
+        f"cargo llvm-cov test --no-report -p {crate_name}{feature_arg} "
+        f"--test {target} --profile agent --locked -- --test-threads=1"
+    )
 
 
 def pack_matches_lcov_source(pack: dict[str, object], paths: list[str]) -> bool:
@@ -174,8 +279,11 @@ def selected_packs(packs: list[dict[str, object]], paths: list[str]) -> list[dic
         and pack_matches(pack, paths)
         and pack_matches_lcov_source(pack, paths)
     ]
+    non_lcov_selected = non_lcov_matches(packs, paths)
     selected_needs_fallback = fallback is not None and any(
-        is_lcov_source_path(path) and not any(pack_matches(pack, [path]) for pack in selected)
+        is_lcov_source_path(path)
+        and not any(pack_matches(pack, [path]) for pack in selected)
+        and not any(pack_matches(pack, [path]) for pack in non_lcov_selected)
         for path in paths
     )
     if selected_needs_fallback:

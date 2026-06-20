@@ -6,7 +6,10 @@ search. Future agents: grep for the exact symbol, error string, PR number, or ha
 class you are investigating.
 
 For the portable, repo-agnostic patterns behind these incidents, see
-[docs/concepts/](../concepts/).
+[docs/concepts/](../concepts/). The 2026-06-11→13 campaign's meta-orchestration
+learnings (substrate-model, model-conformance, human-corrects-substrate, paced-merges,
+lane-relevance, spawn-guards) are distilled into three new concept docs:
+`orchestrator-substrate-model.md`, `model-conformance.md`, `human-corrects-substrate.md`.
 
 For spec contracts and hazard-class acceptance criteria, see
 [docs/reference/PARSER_CONTRACTS.md](../reference/PARSER_CONTRACTS.md) and
@@ -32,6 +35,16 @@ To add a new incident: copy [TEMPLATE.md](TEMPLATE.md) and fill in all sections.
 | [2026-06-deep-review-net-for-novel-gate-logic.md](2026-06-deep-review-net-for-novel-gate-logic.md) | Deep-review remains the net for novel gate/infra logic even after shift-left | coverage-integrity, ripr, deep-review, gate-logic | #1349 |
 | [2026-06-merged-before-review-fix-forward.md](2026-06-merged-before-review-fix-forward.md) | PR merged on 3-green before in-flight deep-review completed; fix landed as fix-forward | multi-agent, dap, deep-review, fix-forward | #1240, #1363, #1364 |
 | [2026-06-serialize-merges-misframe.md](2026-06-serialize-merges-misframe.md) | "Hold main still" misframe: parallel velocity + rebase-robustness is the correct doctrine | multi-agent, ci, serialization, merge-velocity | #1206, #1230 |
+| [2026-06-tagged-range-codec-band-overflow.md](2026-06-tagged-range-codec-band-overflow.md) | Type-enum promotion re-introduced ID-collision through the wire codec (band-overflow, residue-disambiguation) | id-collision, bounds, dap, codec, band-overflow | #1219, #1351, #1430 |
+| [2026-06-nodekind-variant-silent-consumer-drop.md](2026-06-nodekind-variant-silent-consumer-drop.md) | New NodeKind variant silently dropped by three non-exhaustive consumers (if-let loop, wildcard arm) | parser, ast, nodekind, exhaustiveness, silent-drop, lsp-feature-gap | #1457, #1362 |
+| [2026-06-rerunning-broken-gates.md](2026-06-rerunning-broken-gates.md) | A gate that fails repeatedly on verified-correct content is the bug | ci, gate-logic, stochastic-pipeline, verification, instrument, observability | #1457, #1470, #1469 |
+| [2026-06-agent-claims-vs-ground-truth.md](2026-06-agent-claims-vs-ground-truth.md) | Agent claims must be verified against ground-truth facts before routing | ci, agent-claims, verification, ground-truth, observability, multi-agent, stochastic-pipeline | #1474 |
+
+| [2026-06-red-tdd-invalid-red.md](2026-06-red-tdd-invalid-red.md) | Red-TDD produced invalid red: tests that passed immediately or failed for wrong reasons | tdd, red-tdd, verification, stochastic-pipeline, test-validity | #1372, #1445, #1338 |
+| [2026-06-substrate-tax-and-red-is-a-smell.md](2026-06-substrate-tax-and-red-is-a-smell.md) | Substrate tax and red-is-a-smell: two recalibrated operating principles from the 2026-06 campaign | substrate, ci, merge, economics, anti-pattern, incident | #651, #1282, #1453, #1458 |
+
+| [2026-06-coverage-job-ran-tests.md](2026-06-coverage-job-ran-tests.md) | Coverage-named checks must not hide test failures — decoupling measurement from validation | ci, coverage, observability, misclassification | #1457, #1470, #1469 |
+| [2026-06-substrate-self-validation-bootstrap.md](2026-06-substrate-self-validation-bootstrap.md) | You cannot validate a gate-fix through the broken gate | ci, substrate, bootstrap, recursion, incident, gate-logic, self-validation | #1469, #1477, #1478, #1479, #1484, #1485 |
 
 ---
 
@@ -57,3 +70,32 @@ To add a new incident: copy [TEMPLATE.md](TEMPLATE.md) and fill in all sections.
 | deep-review | Deep-review as correctness net |
 | fix-forward | Fix-forward recovery after merged-before-review |
 | merge-velocity | Merge pacing / rebase-robustness |
+| codec | Wire/serialization codec correctness |
+| band-overflow | Encoded value crosses its declared wire band |
+| tagged-range | Tagged-range codec with disjoint-band design |
+| ast | AST node structure / NodeKind variants |
+| nodekind | NodeKind enum variant addition or consumer audit |
+| exhaustiveness | Rust exhaustiveness checker blind spots (if-let, wildcard arm) |
+| silent-drop | Variant or case silently skipped by non-exhaustive consumer |
+| lsp-feature-gap | Missing LSP feature (tokens, hover, goto, rename, refs) caused by consumer gap |
+
+| tdd | TDD stage (red-tdd, green-tdd) correctness and validity |
+| red-tdd | Red-TDD stage specifically: test validity before builder starts |
+| verification | Pipeline artifact verification / ground-truth check |
+| stochastic-pipeline | Stochastic-pipeline posture / reliability profile |
+| test-validity | Test correctly red/green for the right reason |
+| substrate | CI gate scope, required-check list, instrument configuration |
+| economics | Token cost, CI cost, amortization, leverage arithmetic |
+| anti-pattern | Operating anti-pattern (merge-past-red, routine-override)
+
+| observability | Observable failure / gate output clarity and naming honesty |
+| misclassification | Failure routed to wrong subsystem due to check name or output lying |
+
+
+
+| instrument | Measurement instrument failure / scope misconfiguration |
+| agent-claims | Agent output reliability / claims verification |
+| ground-truth | Ground-truth fact verification / trust-but-verify |
+| bootstrap | Bootstrap recursion / self-validating layer circularity |
+| self-validation | Layer validating its own correctness or fixes |
+

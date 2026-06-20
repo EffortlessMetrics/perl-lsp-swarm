@@ -1,4 +1,4 @@
-﻿//! REPL and expression evaluation: evaluate, set expression, completions.
+//! REPL and expression evaluation: evaluate, set expression, completions.
 
 use super::*;
 use std::sync::LazyLock;
@@ -85,6 +85,54 @@ impl DebugAdapter {
                         body: None,
                         message: Some(error.to_string()),
                     };
+                }
+            }
+        }
+
+        // Validate frameId when provided: the frame must exist in the current session and
+        // the session must be stopped.  frameId = None means "no frame context" — skip.
+        if let Some(requested_frame_id) = args.frame_id {
+            let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+            match *session_guard {
+                None => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "evaluate".to_string(),
+                        body: None,
+                        message: Some("No debugger session".to_string()),
+                    };
+                }
+                Some(ref session) => {
+                    if session.state != DebugState::Stopped {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "evaluate".to_string(),
+                            body: None,
+                            message: Some(
+                                "Cannot evaluate in frame context: session is not stopped"
+                                    .to_string(),
+                            ),
+                        };
+                    }
+                    let frame_found =
+                        session.stack_frames.iter().any(|f| i64::from(f.id) == requested_frame_id);
+                    if !frame_found {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: false,
+                            command: "evaluate".to_string(),
+                            body: None,
+                            message: Some(format!(
+                                "Frame not found: frameId {requested_frame_id} does not match any \
+                                 current stack frame"
+                            )),
+                        };
+                    }
                 }
             }
         }
@@ -517,8 +565,10 @@ impl DebugAdapter {
             *lock_or_recover(&self.session, "debug_adapter.allocate_evaluate_result_ref")
         {
             let raw_counter = self.debugger_output_marker.fetch_add(1, Ordering::Relaxed);
-            let eval_ref =
-                1_000_000_i32.saturating_add(Self::i64_to_i32_saturating(raw_counter as i64));
+            let counter = Self::i64_to_i32_saturating(raw_counter as i64);
+            let eval_ref = crate::debug_adapter::var_ref::VariableReference::EvalResult { counter }
+                .encode()
+                .unwrap_or(0);
             let placeholder = Variable {
                 name: expression.to_string(),
                 value: result.to_string(),
