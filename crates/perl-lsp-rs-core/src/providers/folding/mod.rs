@@ -102,6 +102,54 @@ impl FoldingRangeExtractor {
         ranges
     }
 
+    /// Extract POD block folding ranges from source text.
+    ///
+    /// Scans for =pod...=cut and =begin...=end blocks and returns their ranges.
+    /// POD blocks are classified as Comment kind since they are documentation.
+    pub fn extract_pod_ranges(text: &str) -> Vec<FoldingRange> {
+        let mut ranges = Vec::new();
+        let mut lines = text.lines().enumerate().peekable();
+
+        while let Some((line_idx, line)) = lines.next() {
+            let trimmed = line.trim_start();
+
+            // Check for =pod or =begin at line start
+            if trimmed.starts_with("=pod") || trimmed.starts_with("=begin") {
+                let pod_start_byte = calculate_line_start_offset(text, line_idx);
+
+                // Find the matching =cut or =end
+                let mut pod_end_byte = calculate_line_end_offset(text, line_idx);
+                let mut found_end = false;
+
+                while let Some((end_line_idx, end_line)) = lines.next() {
+                    let end_trimmed = end_line.trim_start();
+                    pod_end_byte = calculate_line_end_offset(text, end_line_idx);
+
+                    if end_trimmed.starts_with("=cut") || end_trimmed.starts_with("=end") {
+                        found_end = true;
+                        break;
+                    }
+                }
+
+                // If no explicit end marker, extend to EOF
+                if !found_end {
+                    pod_end_byte = text.len();
+                }
+
+                // Only add if it spans multiple lines
+                if pod_end_byte > pod_start_byte {
+                    ranges.push(FoldingRange {
+                        start_offset: pod_start_byte,
+                        end_offset: pod_end_byte,
+                        kind: Some(FoldingRangeKind::Comment),
+                    });
+                }
+            }
+        }
+
+        ranges
+    }
+
     /// Visit a node and extract folding ranges
     fn visit_node(&mut self, node: &Node) {
         match &node.kind {
@@ -339,6 +387,19 @@ impl FoldingRangeExtractor {
             self.ranges.push(FoldingRange { start_offset, end_offset, kind });
         }
     }
+}
+
+/// Calculate the byte offset for the start of a given line
+fn calculate_line_start_offset(text: &str, line_idx: usize) -> usize {
+    text.lines().take(line_idx).fold(0, |acc, line| acc + line.len() + 1) // +1 for newline
+}
+
+/// Calculate the byte offset for the end of a given line (inclusive)
+fn calculate_line_end_offset(text: &str, line_idx: usize) -> usize {
+    text.lines()
+        .take(line_idx + 1)
+        .fold(0, |acc, line| acc + line.len() + 1) // +1 for newline
+        .saturating_sub(1) // Point to last char of line, not newline
 }
 
 #[cfg(test)]

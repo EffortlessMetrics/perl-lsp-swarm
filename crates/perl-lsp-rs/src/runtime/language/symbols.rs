@@ -160,6 +160,17 @@ impl LspServer {
                     push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
                 }
 
+                // Add POD folding ranges from text
+                let pod_ranges =
+                    crate::folding::FoldingRangeExtractor::extract_pod_ranges(&doc.text);
+                for range in pod_ranges {
+                    let (start_line, _) = self.offset_to_pos16(doc, range.start_offset);
+                    let (end_line, _) =
+                        self.offset_to_pos16(doc, range.end_offset.saturating_sub(1));
+
+                    push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "comment");
+                }
+
                 if let Some(ref ast) = doc.ast {
                     // Extract folding ranges from AST
                     let mut extractor = crate::folding::FoldingRangeExtractor::new();

@@ -463,3 +463,82 @@ fn test_folding_range_ast_boundary_lsp_end_line_gt_start_line() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn test_folding_range_pod_blocks() -> TestResult {
+    // Test multi-line POD block (=pod...=cut)
+    let pod_content = r#"package Foo;
+
+=pod
+
+This is a POD documentation block
+with multiple lines.
+
+It should be foldable.
+
+=cut
+
+sub bar {
+    print "Hello\n";
+}
+"#;
+    let ranges = folding_ranges_for("file:///pod.pl", pod_content)?;
+
+    // Should have a POD folding range with kind=comment
+    let has_pod_fold = ranges.iter().any(|range| {
+        range.get("kind").and_then(|kind| kind.as_str()) == Some("comment")
+            && range_lines(range).is_some_and(|(start, end)| start == 2 && end == 8)
+    });
+    assert!(has_pod_fold, "should have POD folding range with kind=comment: {ranges:?}");
+
+    Ok(())
+}
+
+#[test]
+fn test_folding_range_pod_without_cut() -> TestResult {
+    // Test POD without =cut (extends to EOF)
+    let pod_no_cut = r#"sub main {
+    print "Code\n";
+}
+
+=pod
+
+This POD extends to the end of file
+with no explicit =cut marker.
+"#;
+    let ranges = folding_ranges_for("file:///pod-no-cut.pl", pod_no_cut)?;
+
+    // Should have a POD folding range
+    let has_pod_fold = ranges.iter().any(|range| {
+        range.get("kind").and_then(|kind| kind.as_str()) == Some("comment")
+            && range_lines(range).is_some_and(|(_, end)| end >= 6)
+    });
+    assert!(has_pod_fold, "POD without =cut should fold to EOF: {ranges:?}");
+
+    Ok(())
+}
+
+#[test]
+fn test_folding_range_pod_begin_end() -> TestResult {
+    // Test =begin...=end POD blocks
+    let pod_begin_end = r#"=begin html
+
+<p>This is HTML POD</p>
+<p>Multiple lines</p>
+
+=end html
+
+sub code {
+    print "Code\n";
+}
+"#;
+    let ranges = folding_ranges_for("file:///pod-begin-end.pl", pod_begin_end)?;
+
+    // Should have a POD folding range for =begin...=end
+    let has_pod_fold = ranges
+        .iter()
+        .any(|range| range.get("kind").and_then(|kind| kind.as_str()) == Some("comment"));
+    assert!(has_pod_fold, "=begin...=end blocks should be foldable: {ranges:?}");
+
+    Ok(())
+}
