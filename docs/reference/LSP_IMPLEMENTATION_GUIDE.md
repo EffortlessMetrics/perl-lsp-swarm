@@ -5125,8 +5125,9 @@ perltidy's conventional search order:
 
 ```text
 1. <workspace_root>/.perltidyrc, then <workspace_root>/perltidyrc
-2. $HOME/.perltidyrc
-3. The file named by the PERLTIDYRC environment variable
+2. The file named by the PERLTIDY environment variable (perltidy's documented
+   override, searched before the home profile)
+3. $HOME/.perltidyrc
 4. None — let the formatter fall back to its own defaults
 ```
 

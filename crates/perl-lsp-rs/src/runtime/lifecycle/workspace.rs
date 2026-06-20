@@ -20,9 +20,8 @@ impl LspServer {
     /// formatter config is built.
     pub(crate) fn set_root_uri(&self, root_uri: &str) {
         let root_path = super::super::source_path_from_uri(root_uri);
-        let discovered = root_path
-            .as_deref()
-            .and_then(perl_lsp_rs_core::config::discover_perltidy_profile);
+        let discovered =
+            root_path.as_deref().and_then(perl_lsp_rs_core::config::discover_perltidy_profile);
         *self.root_path.lock() = root_path;
         *self.discovered_perltidy_profile.lock() = discovered;
     }
@@ -218,11 +217,11 @@ mod tests {
     }
 
     #[test]
-    fn set_root_uri_discovers_workspace_perltidyrc() {
+    fn set_root_uri_discovers_workspace_perltidyrc() -> std::io::Result<()> {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = tempfile::tempdir()?;
         let profile = temp.path().join(".perltidyrc");
-        std::fs::write(&profile, "-l=100\n").expect("failed to write .perltidyrc");
+        std::fs::write(&profile, "-l=100\n")?;
 
         server.set_root_uri(&format!("file://{}", temp.path().display()));
 
@@ -231,12 +230,13 @@ mod tests {
             profile.to_str(),
             "workspace .perltidyrc should be discovered and cached at initialize"
         );
+        Ok(())
     }
 
     #[test]
-    fn set_root_uri_caches_none_when_no_perltidyrc() {
+    fn set_root_uri_caches_none_when_no_perltidyrc() -> std::io::Result<()> {
         let server = LspServer::new();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = tempfile::tempdir()?;
 
         server.set_root_uri(&format!("file://{}", temp.path().display()));
 
@@ -244,6 +244,7 @@ mod tests {
             server.discovered_perltidy_profile.lock().is_none(),
             "no profile should be cached when the workspace has no .perltidyrc"
         );
+        Ok(())
     }
 
     #[test]
