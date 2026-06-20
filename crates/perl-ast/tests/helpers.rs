@@ -187,7 +187,12 @@ pub fn all_nodekind_instances() -> Vec<NodeKind> {
         NodeKind::No { module: String::new(), args: vec![], has_filter_risk: false },
         NodeKind::PhaseBlock { phase: String::new(), phase_span: None, block: Box::new(dummy()) },
         NodeKind::DataSection { marker: String::new(), body: None },
-        NodeKind::Class { name: String::new(), parents: vec![], body: Box::new(dummy()) },
+        NodeKind::Class {
+            name: String::new(),
+            name_span: None,
+            parents: vec![],
+            body: Box::new(dummy()),
+        },
         NodeKind::Format { name: String::new(), body: String::new() },
         NodeKind::Identifier { name: String::new() },
         NodeKind::Error { message: String::new(), expected: vec![], found: None, partial: None },
