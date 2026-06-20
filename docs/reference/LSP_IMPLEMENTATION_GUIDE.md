@@ -5143,10 +5143,13 @@ Per-field precedence: an explicitly configured field
 (`perltidy_maximum_line_length`, `perltidy_indent_columns`, `perltidy_tabs`,
 `perltidy_opening_brace_on_new_line`, `perltidy_cuddled_else`,
 `perltidy_space_after_keyword`, `perltidy_add_trailing_commas`) wins; otherwise
-the discovered profile's value fills the gap. A discovered profile's options are
-applied only when no explicit `perltidy_profile` is configured, so an explicit
-profile is never mixed with a discovered one. Options that native formatting
-cannot represent are reported by the `native-format perltidy-compat` receipt.
+the effective profile's value fills the gap. The effective profile is the
+explicit `perltidy_profile` when configured, otherwise the discovered one — the
+two are never mixed. An **explicitly configured** profile's contents are parsed
+the same way (cached by path, re-read only when the configured path changes), so
+the native formatter honors an explicit profile too, not only a discovered one.
+Options that native formatting cannot represent are reported by the
+`native-format perltidy-compat` receipt.
 
 #### Error Handling and User Guidance (*Diataxis: How-to*)
 

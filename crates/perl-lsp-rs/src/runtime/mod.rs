@@ -6,7 +6,8 @@
 use crate::runtime::diagnostics::PullDiagnosticsOrchestrator;
 use crate::runtime::types::{
     DocumentScanView, PendingWorkspaceConfigurationRequest, ServerRequestId,
-    best_workspace_folder_for_doc, source_path_from_uri, workspace_folder_path,
+    best_workspace_folder_for_doc, read_perltidy_native_options, source_path_from_uri,
+    workspace_folder_path,
 };
 use crate::runtime::workspace_folder::WorkspaceFolderState;
 
@@ -186,6 +187,19 @@ pub struct LspServer {
     /// directly, so the default native formatter honors a project-local profile.
     discovered_perltidy_options: Arc<
         Mutex<Option<perl_lsp_rs_core::tooling::native_compat::PerltidyNativeConfigSuggestion>>,
+    >,
+    /// Native-formatter scalar options parsed from an *explicitly configured*
+    /// `perltidy_profile`, cached by the profile path so the file is read only
+    /// when the configured path changes (an explicit profile can change at
+    /// runtime via `didChangeConfiguration`). Lets the native formatter honor an
+    /// explicit profile's contents, mirroring the discovered-profile path.
+    explicit_perltidy_options: Arc<
+        Mutex<
+            Option<(
+                String,
+                perl_lsp_rs_core::tooling::native_compat::PerltidyNativeConfigSuggestion,
+            )>,
+        >,
     >,
     /// Advertised server capabilities
     advertised_features: Mutex<crate::protocol::capabilities::AdvertisedFeatures>,

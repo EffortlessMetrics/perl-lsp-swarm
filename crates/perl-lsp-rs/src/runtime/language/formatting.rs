@@ -34,31 +34,57 @@ fn document_not_open_error(uri: &str) -> JsonRpcError {
 }
 
 impl LspServer {
+    /// Parse the native scalar options for an explicitly configured
+    /// `perltidy_profile`, cached by path so the file is read only when the
+    /// configured path changes. Returns `None` if the file cannot be read.
+    fn explicit_perltidy_native_options(
+        &self,
+        path: &str,
+    ) -> Option<perl_lsp_rs_core::tooling::native_compat::PerltidyNativeConfigSuggestion> {
+        if let Some((cached_path, options)) = self.explicit_perltidy_options.lock().as_ref() {
+            if cached_path == path {
+                return Some(options.clone());
+            }
+        }
+        let options = super::super::read_perltidy_native_options(path)?;
+        *self.explicit_perltidy_options.lock() = Some((path.to_string(), options.clone()));
+        Some(options)
+    }
+
     /// Build a `PerlTidyConfig` from the current server configuration.
     ///
-    /// An explicitly configured `perltidy_profile` always wins. When no profile
-    /// is configured, the `.perltidyrc` discovered from the workspace root at
-    /// initialization is used so project-local formatting rules apply
-    /// automatically — both its path (for the external adapter) and its parsed
-    /// scalar options (so the default native formatter honors it). When neither
-    /// is present, `None` lets the formatter fall back to its own defaults.
+    /// An explicitly configured `perltidy_profile` is used as-is, and its
+    /// contents are parsed to fill native scalar fields the user has not set.
+    /// When no profile is configured, the `.perltidyrc` discovered from the
+    /// workspace root at initialization is used so project-local formatting
+    /// rules apply automatically — both its path (for the external adapter) and
+    /// its parsed scalar options (so the default native formatter honors it).
+    /// When neither is present, `None` lets the formatter fall back to its own
+    /// defaults.
     ///
     /// Precedence per field: an explicitly set value wins; otherwise the
-    /// discovered profile's value fills the gap. The discovered profile's parsed
-    /// options apply only when no explicit `perltidy_profile` is configured, so
-    /// an explicit profile is never mixed with a discovered one.
+    /// effective profile's parsed value fills the gap. The effective profile is
+    /// the explicit `perltidy_profile` when configured, else the discovered one —
+    /// the two are never mixed.
     fn build_perltidy_config(&self) -> PerlTidyConfig {
-        let config = self.config.lock();
-        let (profile, discovered_options) = match config.perltidy_profile.clone() {
-            // Explicit profile configured: use it, and do not mix in options
-            // parsed from a different (discovered) profile.
-            explicit @ Some(_) => (explicit, None),
+        // Resolve the effective profile and its parsed native options without
+        // holding the config lock across the (possible) file read.
+        let explicit_profile = self.config.lock().perltidy_profile.clone();
+        let (profile, profile_options) = match explicit_profile {
+            // Explicit profile configured: use it, and parse *its* contents for
+            // native scalar fills (cached by path). Never mix in options from a
+            // different discovered profile.
+            Some(explicit) => {
+                let options = self.explicit_perltidy_native_options(&explicit);
+                (Some(explicit), options)
+            }
             None => (
                 self.discovered_perltidy_profile.lock().clone(),
                 self.discovered_perltidy_options.lock().clone(),
             ),
         };
-        let discovered = discovered_options.as_ref();
+        let config = self.config.lock();
+        let discovered = profile_options.as_ref();
         PerlTidyConfig {
             maximum_line_length: config
                 .perltidy_maximum_line_length
@@ -550,8 +576,57 @@ mod tests {
         assert_eq!(config.profile.as_deref(), Some("/explicit/.perltidyrc"));
         assert!(
             config.maximum_line_length.is_none(),
-            "discovered options must not be mixed in when an explicit profile is configured"
+            "discovered options must not be mixed in when an explicit profile is configured \
+             (and the non-existent explicit profile contributes nothing)"
         );
+    }
+
+    #[test]
+    fn build_perltidy_config_applies_explicit_profile_native_options() -> std::io::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let profile = temp.path().join(".perltidyrc");
+        std::fs::write(&profile, "-l=120\n-i 3\n")?;
+        {
+            let mut config = server.config.lock();
+            config.perltidy_profile = profile.to_str().map(ToOwned::to_owned);
+            config.perltidy_maximum_line_length = None;
+            config.perltidy_indent_columns = None;
+        }
+
+        let config = server.build_perltidy_config();
+
+        assert_eq!(config.profile.as_deref(), profile.to_str());
+        assert_eq!(
+            config.maximum_line_length,
+            Some(120),
+            "native formatter should honor an explicitly configured profile's options"
+        );
+        assert_eq!(config.indent_columns, Some(3));
+        Ok(())
+    }
+
+    #[test]
+    fn build_perltidy_config_explicit_field_wins_over_explicit_profile_options()
+    -> std::io::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let profile = temp.path().join(".perltidyrc");
+        std::fs::write(&profile, "-l=120\n")?;
+        {
+            let mut config = server.config.lock();
+            config.perltidy_profile = profile.to_str().map(ToOwned::to_owned);
+            config.perltidy_maximum_line_length = Some(80);
+        }
+
+        let config = server.build_perltidy_config();
+
+        assert_eq!(
+            config.maximum_line_length,
+            Some(80),
+            "an explicitly set field must win over the explicit profile's parsed option"
+        );
+        Ok(())
     }
 
     #[test]

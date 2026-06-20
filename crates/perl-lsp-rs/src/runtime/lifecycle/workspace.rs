@@ -10,20 +10,6 @@ use std::sync::Once;
 /// Fires at most once per LSP session, when Perl is not found anywhere.
 static PERL_NOT_FOUND_WARNED: Once = Once::new();
 
-/// Read a `.perltidyrc` profile and extract the native-formatter scalar options
-/// it maps to (line width, indent, tab/brace/else/keyword/trailing-comma).
-///
-/// Returns `None` if the file cannot be read; an unreadable or empty profile
-/// simply contributes no options. The parsing/classification is delegated to
-/// the shared `classify_perltidy_profile` machinery so the editor and the
-/// `native-format perltidy-compat` report agree on the mapping.
-fn read_perltidy_native_options(
-    path: &str,
-) -> Option<perl_lsp_rs_core::tooling::native_compat::PerltidyNativeConfigSuggestion> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    Some(perl_lsp_rs_core::tooling::native_compat::classify_perltidy_profile(&raw).suggested_config)
-}
-
 impl LspServer {
     /// Set the root path from the root URI during initialization
     ///
@@ -39,7 +25,8 @@ impl LspServer {
         // Parse the discovered profile's supported scalar options once so the
         // default native formatter can honor them (the external path passes the
         // profile via --profile; the native path consumes scalar config fields).
-        let discovered_options = discovered.as_deref().and_then(read_perltidy_native_options);
+        let discovered_options =
+            discovered.as_deref().and_then(super::super::read_perltidy_native_options);
         *self.root_path.lock() = root_path;
         *self.discovered_perltidy_profile.lock() = discovered;
         *self.discovered_perltidy_options.lock() = discovered_options;

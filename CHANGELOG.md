@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the default engine — not just `external-legacy` mode. Explicitly configured
   fields still win per option; a discovered profile is never mixed with an
   explicitly configured `perltidy_profile`. (#1953)
+- **Native formatter honors an explicitly configured `perltidy_profile`.** When
+  `perltidy_profile` points at a `.perltidyrc`, its supported scalar options now
+  also feed the native formatter (parsed once and cached by path, re-read only
+  when the configured path changes), mirroring the discovered-profile behavior.
+  An explicitly set field still wins over the profile's value.
 - **Workspace method signature help for `->method()` calls.** Triggering
   signature help (or hovering) on an OO method call now resolves the signature
   from the workspace symbol index for methods defined in the same project,
