@@ -277,7 +277,14 @@ fn test_transport_sequential_requests_all_succeed() -> Result<()> {
 }
 
 /// Test that when an unknown command is sent, the adapter responds with an error
-/// (not silence).
+/// response — not silence or timeout.
+///
+/// Note: unknown commands are handled by `dispatch_request` which returns
+/// `success: false` directly (before any serialization). This test exercises
+/// the transport's end-to-end path for error responses, verifying the full
+/// framing round-trip. The serialization-error path (fix #1605) is harder to
+/// trigger in an integration test since `DapMessage` serialization never fails
+/// for well-typed values; the unit-level fix is validated in transport.rs itself.
 #[test]
 fn test_transport_unknown_command_gets_error_response() -> Result<()> {
     let mut dap = DapProcess::spawn()?;
@@ -297,16 +304,37 @@ fn test_transport_unknown_command_gets_error_response() -> Result<()> {
     dap.wait_for_response(1, "initialize")?;
     dap.wait_for_event("initialized")?;
 
-    // Send an unknown command
+    // Send an unknown command.
     dap.send_request(2, "unknownCommand", None)?;
 
-    // The key assertion: we MUST receive a response (even if it's an error)
-    // not silence/timeout. The transport should send an error response.
-    let wait_result = dap.wait_for_response(2, "unknownCommand");
+    // Wait for the frame reader to observe any message with matching
+    // (request_seq=2, command="unknownCommand"). We use wait_for_message
+    // directly so we can distinguish a received error response from a timeout
+    // (wait_for_response returns Err for both, masking timeouts).
+    let received =
+        wait_for_message(&dap.rx, "error response for unknownCommand".to_string(), |msg| {
+            matches!(
+                msg,
+                DapMessage::Response {
+                    request_seq: 2,
+                    command,
+                    ..
+                } if command == "unknownCommand"
+            )
+        });
 
-    // If this times out, it means the transport silently dropped the response
-    // (the bug we're fixing).
-    assert!(wait_result.is_err(), "unknown command should receive an error response (not timeout)");
+    // The frame reader must have received a response — not a timeout.
+    // Timeout would mean the transport silently dropped the request.
+    let msg = received
+        .map_err(|e| anyhow!("transport did not send any response for unknownCommand: {e}"))?;
+
+    // The response must indicate failure (unknown command is not supported).
+    match msg {
+        DapMessage::Response { success, .. } => {
+            assert!(!success, "unknown command must return success: false");
+        }
+        other => return Err(anyhow!("expected Response, got {other:?}")),
+    }
 
     Ok(())
 }

@@ -141,11 +141,21 @@ impl DebugAdapter {
                 };
 
                 let response = self.dispatch_request(seq, &command, arguments);
+                // Track whether the original (successful) response was sent, or whether
+                // we fell back to an error response. This matters for the `initialize`
+                // command: the `initialized` event must only be sent if the client
+                // actually received a successful `initialize` response.
+                let mut sent_original_response = false;
                 let payload = match serde_json::to_vec(&response) {
-                    Ok(payload) => payload,
+                    Ok(payload) => {
+                        sent_original_response = true;
+                        payload
+                    }
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to serialize DAP response");
-                        // Send an error response to the client instead of silent failure
+                        // Send an error response to the client instead of silent failure.
+                        // Do NOT set sent_original_response — the client got an error, not
+                        // the original (potentially successful) response.
                         let error_response = DapMessage::Response {
                             seq: self.next_seq(),
                             request_seq: seq,
@@ -171,7 +181,10 @@ impl DebugAdapter {
                 writer.flush()?;
 
                 // DAP requires this event only after initialize response is sent.
-                if command == "initialize"
+                // Only emit if the client received the original (successful) response,
+                // not if we fell back to an error response due to serialization failure.
+                if sent_original_response
+                    && command == "initialize"
                     && Self::response_succeeded_for_command(&response, "initialize")
                 {
                     self.send_event("initialized", None);
