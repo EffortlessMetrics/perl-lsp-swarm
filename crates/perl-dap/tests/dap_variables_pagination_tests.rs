@@ -1,79 +1,82 @@
 //! Tests for DAP variables response pagination support.
 //!
-//! Verifies that the variables response includes the totalVariables field
-//! to enable proper pagination UX in debugger clients.
+//! Verifies that `VariablesResponseBody` correctly serializes `totalVariables`,
+//! and that the field is omitted (not `null`) when the count is not known.
 
-use serde_json::json;
+use perl_dap::protocol::{ProtocolVariable, VariablesResponseBody};
 
+fn make_variable(name: &str) -> ProtocolVariable {
+    ProtocolVariable {
+        name: name.to_string(),
+        value: "test".to_string(),
+        type_: None,
+        variables_reference: 0,
+        named_variables: None,
+        indexed_variables: None,
+    }
+}
+
+/// When `total_variables` is `Some(n)`, the serialized JSON must include
+/// `"totalVariables": n`.
 #[test]
-fn variables_response_body_includes_total_variables_field() -> Result<(), Box<dyn std::error::Error>>
-{
-    // Verify that VariablesResponseBody struct has totalVariables field
-    let response_body = json!({
-        "variables": [
-            {
-                "name": "var1",
-                "value": "42",
-                "type": "int"
-            }
-        ],
-        "totalVariables": 100
-    });
+fn variables_response_body_total_variables_present_when_some(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let body = VariablesResponseBody {
+        variables: vec![make_variable("$x")],
+        total_variables: Some(42),
+    };
 
-    // Extract totalVariables field from response
-    let total_vars = response_body.get("totalVariables");
-    assert!(total_vars.is_some(), "totalVariables field should be present in response");
-    assert_eq!(total_vars.unwrap().as_i64(), Some(100));
+    let json = serde_json::to_string(&body)?;
+    let parsed: serde_json::Value = serde_json::from_str(&json)?;
+
+    let total = parsed.get("totalVariables").and_then(|v| v.as_i64());
+    assert_eq!(total, Some(42), "totalVariables must be 42 when Some(42) is set");
     Ok(())
 }
 
+/// When `total_variables` is `None`, the serialized JSON must NOT include the
+/// `"totalVariables"` key at all — not even as `null`. DAP spec treats the
+/// field as optional; emitting `null` is semantically wrong and confuses
+/// clients that use presence-checks for pagination UI.
 #[test]
-fn variables_response_serialization_respects_skip_serializing_if()
--> Result<(), Box<dyn std::error::Error>> {
-    // When totalVariables is None, it should not be serialized
-    let response_without_total = json!({
-        "variables": [
-            {
-                "name": "var1",
-                "value": "42",
-                "type": "int"
-            }
-        ]
-    });
+fn variables_response_body_total_variables_absent_when_none(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let body = VariablesResponseBody {
+        variables: vec![make_variable("$y")],
+        total_variables: None,
+    };
 
-    // Verify the field is not present when None
+    let json = serde_json::to_string(&body)?;
+    let parsed: serde_json::Value = serde_json::from_str(&json)?;
+
     assert!(
-        response_without_total.get("totalVariables").is_none(),
-        "totalVariables should not be serialized when None"
+        parsed.get("totalVariables").is_none(),
+        "totalVariables must be absent (not null) when None; got: {json}"
     );
     Ok(())
 }
 
+/// Round-trip serde: a body with `totalVariables` deserializes correctly.
 #[test]
-fn variables_response_pagination_with_total_count() -> Result<(), Box<dyn std::error::Error>> {
-    // Simulate a paginated response where totalVariables > paginated window
-    let paginated_response = json!({
-        "variables": [
-            { "name": "var1", "value": "1", "type": "int" },
-            { "name": "var2", "value": "2", "type": "int" },
-            { "name": "var3", "value": "3", "type": "int" }
-        ],
-        "totalVariables": 150
-    });
+fn variables_response_body_round_trip_with_total_variables(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let original = VariablesResponseBody {
+        variables: vec![make_variable("$a"), make_variable("$b"), make_variable("$c")],
+        total_variables: Some(150),
+    };
 
-    let paginated_count = paginated_response["variables"].as_array().unwrap().len();
-    let total_count = paginated_response["totalVariables"].as_i64().unwrap();
+    let json = serde_json::to_string(&original)?;
+    let deserialized: VariablesResponseBody = serde_json::from_str(&json)?;
 
-    // Verify that paginated count is less than or equal to total
+    assert_eq!(deserialized.variables.len(), 3);
+    assert_eq!(deserialized.total_variables, Some(150));
+
+    // Pagination invariant: returned window <= total
     assert!(
-        paginated_count as i64 <= total_count,
-        "Paginated count ({}) should be <= total count ({})",
-        paginated_count,
-        total_count
+        deserialized.variables.len() as i64 <= deserialized.total_variables.unwrap(),
+        "window ({}) must be <= total ({})",
+        deserialized.variables.len(),
+        deserialized.total_variables.unwrap()
     );
-
-    // Specific case: 3 returned, 150 available
-    assert_eq!(paginated_count, 3);
-    assert_eq!(total_count, 150);
     Ok(())
 }
