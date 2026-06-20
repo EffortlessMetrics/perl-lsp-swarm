@@ -168,13 +168,13 @@ fn evaluate_simple_condition(condition: &str, variables: &HashMap<String, i64>) 
 
             if let Ok(rhs) = val_part.parse::<i64>() {
                 if let Some(&lhs) = variables.get(var_name) {
+                    // `op` is always one of the five literals from the outer loop.
                     let result = match op {
                         ">=" => lhs >= rhs,
                         "<=" => lhs <= rhs,
                         "==" => lhs == rhs,
                         ">" => lhs > rhs,
-                        "<" => lhs < rhs,
-                        _ => unreachable!("op is one of the five literals above"),
+                        _ => lhs < rhs, // only "<" reaches here
                     };
                     return Some(result);
                 }
