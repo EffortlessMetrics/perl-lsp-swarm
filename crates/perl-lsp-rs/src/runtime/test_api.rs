@@ -386,6 +386,23 @@ impl LspServer {
         self.handle_document_diagnostic(params)
     }
 
+    /// Test-only entrypoint for LSP `workspace/diagnostic`.
+    ///
+    /// This method exercises the pull-style workspace diagnostics handler
+    /// without needing an external transport.
+    ///
+    /// # Parameters
+    /// - `params`: JSON-RPC params containing `previousResultIds` (optional array).
+    ///
+    /// # Errors
+    /// Returns [`JsonRpcError`] if params are invalid or the handler fails.
+    pub fn test_handle_workspace_diagnostic(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_workspace_diagnostic(params)
+    }
+
     /// Test-only entrypoint for `workspace/didChangeConfiguration`.
     ///
     /// Applies the same configuration-update path as a real client notification.
