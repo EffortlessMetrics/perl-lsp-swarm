@@ -41,5 +41,89 @@ pub(super) fn complete_regex_context(
         return Some(sort::deduplicate_and_sort(std::mem::take(completions)));
     }
 
+    // Inside a regex with a sigil prefix: suppress variable completions.
+    // Variables like $1, $2 can be used in regex, but general variable completion
+    // (offering all variables in scope) is noise and should be suppressed.
+    if context.in_regex && matches!(context.prefix.chars().next(), Some('$' | '@' | '%')) {
+        return Some(vec![]);
+    }
+
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_no_variable_completion_inside_regex_with_dollar_sigil() {
+        let context = CompletionContext {
+            position: 25,
+            trigger_character: None,
+            in_string: false,
+            in_regex: true,
+            in_comment: false,
+            in_use_statement: false,
+            current_package: "main".to_string(),
+            prefix: "$m".to_string(),
+            prefix_start: 23,
+            cursor_scope_id: 0,
+        };
+        let mut completions = vec![];
+        let source = "if ($str =~ /match $m/) {";
+
+        let result = complete_regex_context(&mut completions, &context, source);
+
+        // Should return Some(empty vec) to suppress variable completions inside regex
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_no_variable_completion_inside_regex_with_at_sigil() {
+        let context = CompletionContext {
+            position: 25,
+            trigger_character: None,
+            in_string: false,
+            in_regex: true,
+            in_comment: false,
+            in_use_statement: false,
+            current_package: "main".to_string(),
+            prefix: "@a".to_string(),
+            prefix_start: 23,
+            cursor_scope_id: 0,
+        };
+        let mut completions = vec![];
+        let source = "if ($str =~ /pattern @a/) {";
+
+        let result = complete_regex_context(&mut completions, &context, source);
+
+        // Should return Some(empty vec) to suppress array completions inside regex
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_no_variable_completion_inside_regex_with_percent_sigil() {
+        let context = CompletionContext {
+            position: 25,
+            trigger_character: None,
+            in_string: false,
+            in_regex: true,
+            in_comment: false,
+            in_use_statement: false,
+            current_package: "main".to_string(),
+            prefix: "%h".to_string(),
+            prefix_start: 23,
+            cursor_scope_id: 0,
+        };
+        let mut completions = vec![];
+        let source = "if ($str =~ /pattern %h/) {";
+
+        let result = complete_regex_context(&mut completions, &context, source);
+
+        // Should return Some(empty vec) to suppress hash completions inside regex
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+    }
 }

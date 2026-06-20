@@ -1116,9 +1116,10 @@ fn test_is_not_in_regex_division() {
 }
 
 #[test]
-fn test_regex_completion_preserves_sigil_completions_in_interpolation() {
+fn test_regex_completion_suppresses_sigil_completions_in_patterns() {
     // Cursor is inside the regex body at the end of `$fo` — before the
-    // closing `/`. Variable completions must be offered, not flag completions.
+    // closing `/`. Variable completions should NOT be offered inside regex patterns
+    // to avoid noise. Users should use regex-specific completions instead.
     let code = r#"my $foo = 1; my $bar = qr/^$fo/"#;
     // Position just before the closing '/'
     let pos = code.len() - 1;
@@ -1129,8 +1130,8 @@ fn test_regex_completion_preserves_sigil_completions_in_interpolation() {
     let completions = provider.get_completions(code, pos);
 
     assert!(
-        completions.iter().any(|item| item.label == "$foo"),
-        "expected interpolated regex variables to keep scalar completions"
+        !completions.iter().any(|item| item.label == "$foo"),
+        "expected variable completions to be suppressed inside regex patterns"
     );
 }
 
