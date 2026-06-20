@@ -523,6 +523,7 @@ mod to_sexp_edges {
         let node = Node::new(
             NodeKind::Method {
                 name: "do_thing".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(body),
@@ -541,6 +542,7 @@ mod to_sexp_edges {
         let node = Node::new(
             NodeKind::Method {
                 name: "foo".to_string(),
+                name_span: None,
                 signature: Some(Box::new(sig)),
                 attributes: vec![],
                 body: Box::new(block_of(vec![])),
@@ -560,6 +562,7 @@ mod to_sexp_edges {
         let node = Node::new(
             NodeKind::Method {
                 name: "bare".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(block_of(vec![])),
@@ -578,6 +581,7 @@ mod to_sexp_edges {
         let node = Node::new(
             NodeKind::Class {
                 name: "Dog".to_string(),
+                name_span: None,
                 parents: vec!["Animal".to_string(), "Speakable".to_string()],
                 body: Box::new(block_of(vec![])),
             },
@@ -1015,6 +1019,7 @@ mod false_branch_coverage {
         let node = Node::new(
             NodeKind::Method {
                 name: "run".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(block_of(vec![])),
@@ -1101,6 +1106,7 @@ mod false_branch_coverage {
         let mut node = Node::new(
             NodeKind::Method {
                 name: "run".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(block_of(vec![])),

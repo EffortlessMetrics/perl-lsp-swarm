@@ -144,6 +144,7 @@ pub fn all_nodekind_instances() -> Vec<NodeKind> {
         NodeKind::NamedParameter { variable: Box::new(dummy()) },
         NodeKind::Method {
             name: String::new(),
+            name_span: None,
             signature: None,
             attributes: vec![],
             body: Box::new(dummy()),
@@ -193,7 +194,7 @@ pub fn all_nodekind_instances() -> Vec<NodeKind> {
             parents: vec![],
             body: Box::new(dummy()),
         },
-        NodeKind::Format { name: String::new(), body: String::new() },
+        NodeKind::Format { name: String::new(), name_span: None, body: String::new() },
         NodeKind::Identifier { name: String::new() },
         NodeKind::Error { message: String::new(), expected: vec![], found: None, partial: None },
         NodeKind::MissingExpression,

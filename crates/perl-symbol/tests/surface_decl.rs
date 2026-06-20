@@ -513,7 +513,7 @@ fn test_format_produces_symbol_decl() {
     // format REPORT =
     // .
     let format_node = Node::new(
-        NodeKind::Format { name: "REPORT".to_string(), body: "@<<<".to_string() },
+        NodeKind::Format { name: "REPORT".to_string(), name_span: None, body: "@<<<".to_string() },
         loc(0, 18),
     );
     let program = Node::new(NodeKind::Program { statements: vec![format_node] }, loc(0, 18));
