@@ -508,6 +508,8 @@ proptest! {
             presentation_hint: presentation_hint.clone(),
             variables_reference,
             expensive,
+            named_variables: None,
+            indexed_variables: None,
         };
 
         let json_str = serde_json::to_string(&scope)
