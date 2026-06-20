@@ -15,6 +15,10 @@ pub struct CompletionContext {
     pub in_regex: bool,
     /// Whether we're in a comment
     pub in_comment: bool,
+    /// Whether we're in a heredoc literal
+    pub in_heredoc: bool,
+    /// Whether we're in a POD block
+    pub in_pod: bool,
     /// Whether we're completing a module name after `use` or `require`
     pub in_use_statement: bool,
     /// Current package context
@@ -75,6 +79,7 @@ impl CompletionContext {
         current
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         symbol_table: &SymbolTable,
         position: usize,
@@ -82,6 +87,8 @@ impl CompletionContext {
         in_string: bool,
         in_regex: bool,
         in_comment: bool,
+        in_heredoc: bool,
+        in_pod: bool,
         prefix: String,
         prefix_start: usize,
     ) -> Self {
@@ -92,6 +99,8 @@ impl CompletionContext {
             in_string,
             in_regex,
             in_comment,
+            in_heredoc,
+            in_pod,
             in_use_statement: false,
             current_package,
             prefix,

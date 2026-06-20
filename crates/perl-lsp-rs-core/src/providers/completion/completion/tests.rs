@@ -2854,6 +2854,8 @@ fn ctx_for(prefix: &str, current_package: &str, source_position: usize) -> Compl
         in_string: false,
         in_regex: false,
         in_comment: false,
+        in_heredoc: false,
+        in_pod: false,
         in_use_statement: false,
         current_package: current_package.to_string(),
         prefix: prefix.to_string(),
@@ -5080,4 +5082,78 @@ fn test_special_var_count_at_least_40() {
     }
 
     assert!(total >= 40, "expected at least 40 special variables across all sigils, got {total}");
+}
+
+/// Completion is suppressed inside heredoc blocks
+#[test]
+fn test_no_completion_inside_heredoc() {
+    let code = r#"my $text = <<EOF;
+This is a $var literal
+and this is @array
+EOF
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    // Position inside heredoc (cursor on "var" in "$var literal")
+    let position = code.find("$var").unwrap();
+    let completions = provider.get_completions(code, position);
+
+    // Should NOT suggest variable completions inside heredoc
+    assert!(
+        !completions.iter().any(|c| c.label.starts_with('$')),
+        "should not complete variables inside heredoc"
+    );
+}
+
+/// Completion is suppressed inside POD blocks
+#[test]
+fn test_no_completion_inside_pod_block() {
+    let code = r#"=pod
+
+This is documentation about a $special variable
+and @array references
+
+=cut
+
+my $real_var = 1;
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    // Position inside POD block (cursor on "special" in "$special")
+    let position = code.find("$special").unwrap();
+    let completions = provider.get_completions(code, position);
+
+    // Should NOT suggest variable completions inside POD
+    assert!(
+        !completions.iter().any(|c| c.label.starts_with('$')),
+        "should not complete variables inside POD block"
+    );
+}
+
+/// Completion works normally after POD block ends
+#[test]
+fn test_completion_after_pod_block() {
+    let code = r#"=pod
+Documentation here
+=cut
+
+my $real_var = 1;
+$real
+"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+
+    // Position after POD, at cursor position completing "$real"
+    let completions = provider.get_completions(code, code.len() - 1);
+
+    // Should suggest variables after POD block
+    assert!(
+        completions.iter().any(|c| c.label == "$real_var"),
+        "should complete variables after POD block ends"
+    );
 }

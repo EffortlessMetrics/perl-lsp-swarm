@@ -53,6 +53,8 @@ mod tests {
             in_string: false,
             in_regex: false,
             in_comment: false,
+            in_heredoc: false,
+            in_pod: false,
             in_use_statement: false,
             current_package: "main".to_string(),
             prefix: prefix.to_string(),

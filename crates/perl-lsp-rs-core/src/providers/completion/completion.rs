@@ -780,6 +780,8 @@ impl CompletionProvider {
         let in_string = self.is_in_string(source, position);
         let in_regex = Self::is_in_regex(source, position);
         let in_comment = self.is_in_comment(source, position);
+        let in_heredoc = Self::is_in_heredoc(source, position);
+        let in_pod = Self::is_in_pod(source, position);
 
         let mut context = CompletionContext::new(
             &self.symbol_table,
@@ -788,6 +790,8 @@ impl CompletionProvider {
             in_string,
             in_regex,
             in_comment,
+            in_heredoc,
+            in_pod,
             word_prefix,
             prefix_start,
         );
@@ -1539,6 +1543,14 @@ impl CompletionProvider {
 
     fn is_in_comment(&self, source: &str, position: usize) -> bool {
         lexical_context::is_in_comment(source, position)
+    }
+
+    fn is_in_heredoc(source: &str, position: usize) -> bool {
+        lexical_context::is_in_heredoc(source, position)
+    }
+
+    fn is_in_pod(source: &str, position: usize) -> bool {
+        lexical_context::is_in_pod(source, position)
     }
 
     /// Check if we're in a test context

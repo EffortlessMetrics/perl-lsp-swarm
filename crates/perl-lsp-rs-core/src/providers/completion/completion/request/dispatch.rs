@@ -14,6 +14,11 @@ pub(super) fn complete_dispatch(
     filepath: Option<&str>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> CompletionFlow {
+    // Suppress completion entirely inside heredoc or POD blocks
+    if context.in_heredoc || context.in_pod {
+        return CompletionFlow::SortAndReturn;
+    }
+
     if complete_use_or_structural_context(
         provider,
         completions,

@@ -431,7 +431,7 @@ mod tests {
 
     fn make_context(prefix: &str) -> CompletionContext {
         let st = SymbolTable::default();
-        CompletionContext::new(&st, prefix.len(), None, false, false, false, prefix.to_string(), 0)
+        CompletionContext::new(&st, prefix.len(), None, false, false, false, false, false, prefix.to_string(), 0)
     }
 
     #[test]

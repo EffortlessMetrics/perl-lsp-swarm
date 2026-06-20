@@ -142,3 +142,126 @@ pub(super) fn is_in_comment(source: &str, position: usize) -> bool {
     let line = &source[line_start..position];
     line.contains('#')
 }
+
+/// Check if position is inside a heredoc literal.
+///
+/// A heredoc starts with `<<DELIMITER` or `<<'DELIMITER'` or `<<"DELIMITER"` and
+/// ends when a line contains only the delimiter (and optional trailing whitespace/newline).
+pub(super) fn is_in_heredoc(source: &str, position: usize) -> bool {
+    if position == 0 {
+        return false;
+    }
+
+    let before = &source[..position];
+
+    // Find the last occurrence of << which could start a heredoc
+    let Some(heredoc_start) = before.rfind("<<") else {
+        return false;
+    };
+
+    // Extract the delimiter
+    let after_heredoc = &source[heredoc_start + 2..];
+    let Some(delimiter) = extract_heredoc_delimiter(after_heredoc) else {
+        return false;
+    };
+
+    if delimiter.is_empty() {
+        return false;
+    }
+
+    // Find the opening line (where << appears)
+    let open_line_end = source[heredoc_start..]
+        .find('\n')
+        .map(|p| heredoc_start + p)
+        .unwrap_or(source.len());
+
+    // After the opening line, look for the closing delimiter
+    let after_open_line = &source[open_line_end..];
+
+    // The closing delimiter must be on its own line (with optional trailing whitespace)
+    for line in after_open_line.lines() {
+        let trimmed = line.trim_end();
+        if trimmed == delimiter {
+            // Found the closing line. Now check if position is between opening and closing.
+            let closing_pos = source[..open_line_end].len()
+                + after_open_line[..after_open_line.len() - line.len()].len()
+                + 1; // +1 for the opening newline
+            return position > open_line_end && position < closing_pos + delimiter.len();
+        }
+    }
+
+    // If no closing delimiter found, assume we're in the heredoc if position is after the opening
+    position > open_line_end
+}
+
+/// Extract the heredoc delimiter from text immediately after `<<`
+fn extract_heredoc_delimiter(text: &str) -> Option<String> {
+    let first_char = text.chars().next()?;
+
+    match first_char {
+        // Quoted forms: <<'EOF', <<"EOF", etc.
+        '\'' | '"' => {
+            let close_quote = text[first_char.len_utf8()..]
+                .find(first_char)
+                .map(|p| first_char.len_utf8() + p)?;
+            Some(text[first_char.len_utf8()..close_quote].to_string())
+        }
+        // Bare form: <<EOF
+        _ if first_char.is_ascii_alphabetic() || first_char == '_' => {
+            let end = text
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(text.len());
+            Some(text[..end].to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Check if position is inside a POD block.
+///
+/// POD blocks start with a POD directive like `=pod`, `=head1`, `=head2`, etc.
+/// at the beginning of a line and end with `=cut` at the beginning of a line.
+pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
+    if position == 0 {
+        return false;
+    }
+
+    let before = &source[..position];
+
+    // Find all line starts in the text before cursor
+    let mut in_pod_block = false;
+
+    for line in before.lines() {
+        // Check if this line starts a POD block
+        if is_pod_start_marker(line) {
+            in_pod_block = true;
+        }
+
+        // Check if this line ends a POD block
+        if is_pod_end_marker(line) {
+            in_pod_block = false;
+        }
+    }
+
+    // After iterating through all lines before cursor, check if we're in a POD block
+    in_pod_block
+}
+
+fn is_pod_start_marker(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("=pod")
+        || trimmed.starts_with("=head1")
+        || trimmed.starts_with("=head2")
+        || trimmed.starts_with("=head3")
+        || trimmed.starts_with("=head4")
+        || trimmed.starts_with("=over")
+        || trimmed.starts_with("=item")
+        || trimmed.starts_with("=back")
+        || trimmed.starts_with("=for")
+        || trimmed.starts_with("=begin")
+}
+
+fn is_pod_end_marker(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("=cut")
+}
