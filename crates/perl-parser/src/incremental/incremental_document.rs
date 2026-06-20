@@ -13,6 +13,7 @@ use perl_parser_core::{
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 use tracing::debug;
 
@@ -77,6 +78,18 @@ pub struct ParseMetrics {
 }
 
 impl IncrementalDocument {
+    /// Build a parser for `source`, honoring an optional cancellation flag.
+    ///
+    /// When `cancel` is `Some`, the parser checks the flag cooperatively (every
+    /// 64 statements) and returns `Err(ParseError::Cancelled)` once it is set,
+    /// so a superseded warm reparse can abort instead of running to completion.
+    fn make_parser<'a>(source: &'a str, cancel: Option<&Arc<AtomicBool>>) -> Parser<'a> {
+        match cancel {
+            Some(flag) => Parser::new_with_cancellation(source, Arc::clone(flag)),
+            None => Parser::new(source),
+        }
+    }
+
     /// Create a new incremental document
     pub fn new(source: String) -> ParseResult<Self> {
         let start = Instant::now();
@@ -135,8 +148,24 @@ impl IncrementalDocument {
         Ok(())
     }
 
-    /// Apply multiple edits in a batch
+    /// Apply multiple edits in a batch.
+    ///
+    /// Equivalent to [`Self::apply_edits_cancellable`] with no cancellation flag.
     pub fn apply_edits(&mut self, edits: &IncrementalEditSet) -> ParseResult<()> {
+        self.apply_edits_cancellable(edits, None)
+    }
+
+    /// Apply multiple edits in a batch, optionally honoring a cancellation flag.
+    ///
+    /// When `cancel` is `Some` and the flag is set while the batch is parsing,
+    /// the underlying parse returns `Err(ParseError::Cancelled)` so a superseded
+    /// edit can abort instead of running to completion. On cancellation the
+    /// document is left unchanged (the caller should discard it).
+    pub fn apply_edits_cancellable(
+        &mut self,
+        edits: &IncrementalEditSet,
+        cancel: Option<&Arc<AtomicBool>>,
+    ) -> ParseResult<()> {
         let start = Instant::now();
         self.version += 1;
 
@@ -144,7 +173,7 @@ impl IncrementalDocument {
         self.metrics = ParseMetrics::default();
 
         let Some(sorted_edits) = edits.normalize_for_source(&self.source) else {
-            return self.fallback_parse_batch(edits, start);
+            return self.fallback_parse_batch(edits, start, cancel);
         };
 
         // Apply all edits to source in-place.
@@ -153,7 +182,7 @@ impl IncrementalDocument {
         let mut new_source = self.source.clone();
         for edit in &sorted_edits {
             if !self.apply_edit_in_place(&mut new_source, edit) {
-                return self.fallback_parse_batch(edits, start);
+                return self.fallback_parse_batch(edits, start, cancel);
             }
         }
 
@@ -168,11 +197,11 @@ impl IncrementalDocument {
         // the grafted tree against a fresh parse to catch divergence. When no
         // reuse candidates exist, skip the second parse entirely.
         let new_root = if !reusable.is_empty() {
-            let reused_root = self.parse_with_reuse(&new_source, reusable)?;
+            let reused_root = self.parse_with_reuse(&new_source, reusable, cancel)?;
             // parse_with_reuse already ran a full parse internally; run a second
             // one only to verify the graft produced a consistent tree. The fresh
             // parse is authoritative for soft errors of `new_source`.
-            let mut parser = Parser::new(&new_source);
+            let mut parser = Self::make_parser(&new_source, cancel);
             let fresh_root = parser.parse()?;
             self.errors = parser.errors().to_vec();
             if Self::nodes_match(&reused_root, &fresh_root) {
@@ -182,7 +211,7 @@ impl IncrementalDocument {
                 fresh_root
             }
         } else {
-            let mut parser = Parser::new(&new_source);
+            let mut parser = Self::make_parser(&new_source, cancel);
             let root = parser.parse()?;
             self.errors = parser.errors().to_vec();
             root
@@ -202,9 +231,10 @@ impl IncrementalDocument {
         &mut self,
         edits: &IncrementalEditSet,
         start: Instant,
+        cancel: Option<&Arc<AtomicBool>>,
     ) -> ParseResult<()> {
         let new_source = edits.apply_to_string(&self.source);
-        let mut parser = Parser::new(&new_source);
+        let mut parser = Self::make_parser(&new_source, cancel);
         let new_root = parser.parse()?;
         self.errors = parser.errors().to_vec();
         self.source = new_source;
@@ -342,8 +372,9 @@ impl IncrementalDocument {
             }
         }
 
-        // Otherwise use partial parsing with reuse
-        let node = self.parse_with_reuse(source, _reusable)?;
+        // Otherwise use partial parsing with reuse. The single-edit path is not
+        // cancellation-aware (it targets sub-ms latency), so pass no flag.
+        let node = self.parse_with_reuse(source, _reusable, None)?;
         Ok((node, false))
     }
 
@@ -530,9 +561,14 @@ impl IncrementalDocument {
     }
 
     /// Parse with reusable subtrees
-    fn parse_with_reuse(&mut self, source: &str, reusable: Vec<Arc<Node>>) -> ParseResult<Node> {
+    fn parse_with_reuse(
+        &mut self,
+        source: &str,
+        reusable: Vec<Arc<Node>>,
+        cancel: Option<&Arc<AtomicBool>>,
+    ) -> ParseResult<Node> {
         // Start with a fresh parse of the new source
-        let mut parser = Parser::new(source);
+        let mut parser = Self::make_parser(source, cancel);
         let mut root = parser.parse()?;
         self.errors = parser.errors().to_vec();
 
@@ -1236,6 +1272,38 @@ mod tests {
             doc.errors()
         );
         Ok(())
+    }
+
+    #[test]
+    fn apply_edits_cancellable_returns_cancelled_when_flag_set() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut doc = match IncrementalDocument::new("my $x = 1;\n".to_string()) {
+            Ok(d) => d,
+            Err(e) => panic!("setup parse failed: {e:?}"),
+        };
+        let source_before = doc.source.clone();
+
+        let flag = Arc::new(AtomicBool::new(true));
+        let mut edits = IncrementalEditSet::new();
+        edits.add(IncrementalEdit::new(8, 9, "2".to_string()));
+
+        let result = doc.apply_edits_cancellable(&edits, Some(&flag));
+        assert!(
+            matches!(result, Err(perl_parser_core::error::ParseError::Cancelled)),
+            "a set cancellation flag must abort the warm parse with Cancelled; got {result:?}"
+        );
+        // On cancellation the document is left unchanged for the caller to discard.
+        assert_eq!(doc.source, source_before, "source must be untouched on cancellation");
+
+        // A clear flag applies normally.
+        flag.store(false, Ordering::SeqCst);
+        let mut edits2 = IncrementalEditSet::new();
+        edits2.add(IncrementalEdit::new(8, 9, "2".to_string()));
+        match doc.apply_edits_cancellable(&edits2, Some(&flag)) {
+            Ok(()) => assert!(doc.source.contains("= 2;"), "edit must apply when flag is clear"),
+            Err(e) => panic!("apply_edits with clear flag must succeed; got {e:?}"),
+        }
     }
 
     #[test]

@@ -614,6 +614,17 @@ impl LspServer {
                     coordinator.notify_change(uri);
                 }
 
+                // If a newer didChange already superseded this one, skip the warm
+                // reparse entirely rather than parsing to completion just to have
+                // the result discarded by the generation guard below (#1374).
+                #[cfg(feature = "incremental")]
+                if let Some(ref token) = cancellation_token {
+                    if token.load(Ordering::SeqCst) {
+                        tracing::debug!("Skipping superseded didChange parse for {}", uri);
+                        return Ok(());
+                    }
+                }
+
                 // Maintain the incremental document across this edit (#1374). The
                 // edit set is computed from the OLD source, so the incremental_state
                 // block below also needs it — clone before the match consumes it.
@@ -652,29 +663,40 @@ impl LspServer {
                         }
                     };
                     match (doc_state.incremental_doc.take(), incremental_edits_opt) {
-                        (Some(mut inc), Some(edits)) => match inc.apply_edits(&edits) {
-                            // Warm path: the edited source matches the cold parser's
-                            // input exactly, so `inc.root` is the authoritative AST.
-                            Ok(()) if inc.source.as_str() == code_text => Some(inc),
-                            // Edit applied but the source diverged from the code slice
-                            // (e.g. interacting with a __DATA__/__END__ boundary).
-                            // Reinitialize so this round and the next are correct.
-                            Ok(()) => {
-                                tracing::debug!(
-                                    "Incremental source diverged from code slice for {}, reinitializing",
-                                    uri
-                                );
-                                reinit()
+                        (Some(mut inc), Some(edits)) => {
+                            match inc.apply_edits_cancellable(&edits, cancellation_token.as_ref()) {
+                                // Warm path: the edited source matches the cold parser's
+                                // input exactly, so `inc.root` is the authoritative AST.
+                                Ok(()) if inc.source.as_str() == code_text => Some(inc),
+                                // Edit applied but the source diverged from the code slice
+                                // (e.g. interacting with a __DATA__/__END__ boundary).
+                                // Reinitialize so this round and the next are correct.
+                                Ok(()) => {
+                                    tracing::debug!(
+                                        "Incremental source diverged from code slice for {}, reinitializing",
+                                        uri
+                                    );
+                                    reinit()
+                                }
+                                // A newer change superseded this one mid-parse; drop the
+                                // result and let the next didChange reinitialize.
+                                Err(perl_parser::error::ParseError::Cancelled) => {
+                                    tracing::debug!(
+                                        "Incremental parse cancelled for {} — newer change pending",
+                                        uri
+                                    );
+                                    return Ok(());
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Incremental edit application failed for {}, reinitializing: {}",
+                                        uri,
+                                        e
+                                    );
+                                    reinit()
+                                }
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Incremental edit application failed for {}, reinitializing: {}",
-                                    uri,
-                                    e
-                                );
-                                reinit()
-                            }
-                        },
+                        }
                         // Full-document replace or no prior incremental state.
                         _ => reinit(),
                     }
