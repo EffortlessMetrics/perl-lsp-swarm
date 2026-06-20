@@ -1679,7 +1679,7 @@ mod tests {
             }),
             n(NodeKind::Return { value: Some(Box::new(leaf())) }),
             n(NodeKind::LoopControl { op: "next".to_string(), label: None }),
-            n(NodeKind::Goto { target: Box::new(leaf()) }),
+            n(NodeKind::Goto { target: Box::new(leaf()), form: GotoTargetForm::Label }),
             n(NodeKind::MethodCall {
                 object: Box::new(leaf()),
                 method: "foo".to_string(),

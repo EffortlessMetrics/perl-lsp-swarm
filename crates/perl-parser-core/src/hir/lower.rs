@@ -857,7 +857,7 @@ impl Lowerer {
                     Some(self.current_scope()),
                 );
             }
-            NodeKind::Goto { target } => {
+            NodeKind::Goto { target, .. } => {
                 self.push_item(
                     node,
                     None,
