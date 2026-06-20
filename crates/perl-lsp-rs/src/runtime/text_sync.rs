@@ -4,9 +4,12 @@
 //!
 //! We advertise `TextDocumentSyncKind::Incremental` (2): the client sends
 //! range-based text edits which are applied to the in-memory Rope via
-//! [`apply_changes`].  After applying the edits the *entire* document is
-//! reparsed — incremental *parsing* is future work.  The sync kind is about
-//! how document text is transferred, not the parsing strategy.
+//! [`apply_changes`].  When the `incremental` feature is enabled, ranged edits
+//! are reparsed warmly through `IncrementalDocument::apply_edits` and the
+//! resulting AST + soft errors are consumed directly (#1374); a full
+//! `Parser::new` reparse is the fallback (feature off, full-document replace,
+//! or the incremental document is unavailable).  The sync kind is about how
+//! document text is transferred, not the parsing strategy.
 
 use super::*;
 use crate::protocol::invalid_params;
@@ -611,10 +614,91 @@ impl LspServer {
                     coordinator.notify_change(uri);
                 }
 
-                // Check cache first
+                // Maintain the incremental document across this edit (#1374). The
+                // edit set is computed from the OLD source, so the incremental_state
+                // block below also needs it — clone before the match consumes it.
+                #[cfg(feature = "incremental")]
+                let incremental_edits_opt_clone = incremental_edits_opt.clone();
+
+                // Warm AST + soft errors captured from the incremental document.
+                // Consumed below when there is no exact AST-cache hit. Stays `None`
+                // when the `incremental` feature is disabled or the document could
+                // not be (re)built, in which case the cold parser produces the AST.
+                #[cfg_attr(not(feature = "incremental"), allow(unused_mut))]
+                let mut warm_parse: Option<(
+                    perl_parser::ast::Node,
+                    Vec<perl_parser::error::ParseError>,
+                )> = None;
+
+                // Update or reinitialize the IncrementalDocument for the new text.
+                // INVARIANT: every `Some(doc)` returned here has
+                // `doc.source == code_slice(text)` — either because the ranged
+                // edit applied cleanly and matched, or because it was reinitialized
+                // from exactly that slice. That lets us reuse `doc.root` as the
+                // document AST below without re-parsing.
+                #[cfg(feature = "incremental")]
+                let incremental_doc = {
+                    use perl_parser::incremental::incremental_document::IncrementalDocument;
+                    let code_text = crate::util::code_slice(&text);
+                    let reinit = || match IncrementalDocument::new(code_text.to_string()) {
+                        Ok(doc) => Some(doc),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Incremental parsing reinit failed for {}, falling back to full parsing: {}",
+                                uri,
+                                e
+                            );
+                            None
+                        }
+                    };
+                    match (doc_state.incremental_doc.take(), incremental_edits_opt) {
+                        (Some(mut inc), Some(edits)) => match inc.apply_edits(&edits) {
+                            // Warm path: the edited source matches the cold parser's
+                            // input exactly, so `inc.root` is the authoritative AST.
+                            Ok(()) if inc.source.as_str() == code_text => Some(inc),
+                            // Edit applied but the source diverged from the code slice
+                            // (e.g. interacting with a __DATA__/__END__ boundary).
+                            // Reinitialize so this round and the next are correct.
+                            Ok(()) => {
+                                tracing::debug!(
+                                    "Incremental source diverged from code slice for {}, reinitializing",
+                                    uri
+                                );
+                                reinit()
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Incremental edit application failed for {}, reinitializing: {}",
+                                    uri,
+                                    e
+                                );
+                                reinit()
+                            }
+                        },
+                        // Full-document replace or no prior incremental state.
+                        _ => reinit(),
+                    }
+                };
+
+                // Capture the warm AST + soft errors from the (invariant-holding)
+                // incremental document so they can be consumed in place of a cold
+                // parse below.
+                #[cfg(feature = "incremental")]
+                if let Some(ref inc) = incremental_doc {
+                    warm_parse = Some(((*inc.root).clone(), inc.errors().to_vec()));
+                }
+
+                // AST source priority: exact AST-cache hit, then the warm
+                // incremental parse, then a cold parse (feature disabled or the
+                // incremental document was unavailable).
                 let (ast, errors) = if let Some(cached_ast) = self.ast_cache.get(uri, &text) {
                     tracing::debug!("Using cached AST for {}", uri);
                     (Some((*cached_ast).clone()), vec![])
+                } else if let Some((warm_ast, warm_errors)) = warm_parse.take() {
+                    tracing::debug!("Using warm incremental AST for {}", uri);
+                    let arc_ast = Arc::new(warm_ast);
+                    self.ast_cache.put(uri.to_string(), &text, Arc::clone(&arc_ast));
+                    (Some((*arc_ast).clone()), warm_errors)
                 } else {
                     // Parse the document up to __DATA__ or __END__ marker
                     let code_text = crate::util::code_slice(&text);
@@ -655,57 +739,6 @@ impl LspServer {
 
                 // Compute degradation tier before moving errors
                 let degradation_tier = DegradationTier::from_parse_result(&ast_arc, &errors);
-
-                // Update or reinitialize IncrementalDocument for the new text.
-                // - Ranged edits: apply to existing incremental_doc (fast path).
-                // - Full replace or no existing doc: reinitialize from new text (fallback).
-                // Clone the edit set so that the incremental_state block below can also use it.
-                #[cfg(feature = "incremental")]
-                let incremental_edits_opt_clone = incremental_edits_opt.clone();
-                #[cfg(feature = "incremental")]
-                let incremental_doc = {
-                    use perl_parser::incremental::incremental_document::IncrementalDocument;
-                    let code_text = crate::util::code_slice(&text);
-                    match (doc_state.incremental_doc.take(), incremental_edits_opt) {
-                        (Some(mut inc), Some(edits)) => {
-                            // Try applying the incremental edits to the existing tree
-                            match inc.apply_edits(&edits) {
-                                Ok(()) => Some(inc),
-                                Err(e) => {
-                                    // Fallback: reinitialize from the post-change source
-                                    tracing::warn!(
-                                        "Incremental edit application failed for {}, reinitializing: {}",
-                                        uri,
-                                        e
-                                    );
-                                    match IncrementalDocument::new(code_text.to_string()) {
-                                        Ok(doc) => Some(doc),
-                                        Err(e2) => {
-                                            tracing::warn!(
-                                                "Incremental parsing reinit failed for {}, falling back to full parsing: {}",
-                                                uri,
-                                                e2
-                                            );
-                                            None
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Full-document replace or no prior incremental state: reinitialize
-                        _ => match IncrementalDocument::new(code_text.to_string()) {
-                            Ok(doc) => Some(doc),
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Incremental parsing reinit failed for {}, falling back to full parsing: {}",
-                                    uri,
-                                    e
-                                );
-                                None
-                            }
-                        },
-                    }
-                };
 
                 // Apply edits to the checkpoint-based IncrementalState (Gap A, #2080).
                 //

@@ -133,22 +133,26 @@ pub struct DocumentState {
     /// providers should check this before attempting AST-dependent operations.
     pub degradation_tier: DegradationTier,
 
-    /// Incremental document state for fast re-parsing on keystrokes.
+    /// Incremental document used to reparse warmly on keystrokes (#1374).
     ///
-    /// Initialized on didOpen and updated on every didChange. When `None`
-    /// the LSP falls back to a full reparse. Only compiled when the
-    /// `incremental` feature is enabled.
+    /// Initialized on didOpen and updated on every ranged didChange via
+    /// `IncrementalDocument::apply_edits`. When the edited source matches the
+    /// cold parser's input (`code_slice` of the new text), its `root` is reused
+    /// directly as [`Self::ast`] and its `errors()` as [`Self::parse_errors`],
+    /// avoiding a separate cold parse. The LSP falls back to a full `Parser`
+    /// reparse when this is `None` (feature disabled or the document could not
+    /// be rebuilt). Only compiled when the `incremental` feature is enabled.
     #[cfg(feature = "incremental")]
     pub incremental_doc:
         Option<perl_parser::incremental::incremental_document::IncrementalDocument>,
 
     /// Checkpoint-based incremental lexer state for the didChange fast path.
     ///
-    /// On every ranged edit, the LSP server first attempts to apply the edit
-    /// via `perl_parser::incremental::apply_edits`, which resumes
-    /// lexing from the nearest checkpoint before the edit site instead of
-    /// re-lexing from offset 0. On success the updated AST replaces the full
-    /// parse result. Falls back to a full `Parser::new` parse when:
+    /// On every ranged edit, the LSP server applies the edit via
+    /// `perl_parser::incremental::apply_edits`, which resumes lexing from the
+    /// nearest checkpoint before the edit site instead of re-lexing from offset
+    /// 0. This accelerates the *lexer* pass; the document AST itself is produced
+    /// by [`Self::incremental_doc`]. The state is reinitialized when:
     /// - The field is `None` (not yet initialized or previous apply failed).
     /// - The edit is a full-document replace (no range).
     /// - `apply_edits` returns `Err` (e.g. edit > 64 KB or > 10 changed lines).

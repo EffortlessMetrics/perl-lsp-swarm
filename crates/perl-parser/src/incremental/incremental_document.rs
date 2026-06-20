@@ -8,7 +8,7 @@
 use super::incremental_edit::{IncrementalEdit, IncrementalEditSet};
 use perl_parser_core::{
     ast::{Node, NodeKind},
-    error::ParseResult,
+    error::{ParseError, ParseResult},
     parser::Parser,
 };
 use std::collections::{HashMap, VecDeque};
@@ -29,6 +29,13 @@ pub struct IncrementalDocument {
     pub subtree_cache: SubtreeCache,
     /// Performance metrics
     pub metrics: ParseMetrics,
+    /// Soft (recoverable) parse errors from the most recent parse.
+    ///
+    /// Populated on construction and refreshed on every `apply_edit` /
+    /// `apply_edits`. Lets callers (e.g. the LSP `didChange` handler) surface
+    /// diagnostics from the warm incremental parse instead of issuing a
+    /// separate cold parse purely to collect errors.
+    pub errors: Vec<ParseError>,
 }
 
 /// Cache for reusable subtrees
@@ -71,6 +78,7 @@ impl IncrementalDocument {
         let start = Instant::now();
         let mut parser = Parser::new(&source);
         let root = parser.parse()?;
+        let errors = parser.errors().to_vec();
 
         let mut doc = IncrementalDocument {
             root: Arc::new(root),
@@ -78,6 +86,7 @@ impl IncrementalDocument {
             version: 0,
             subtree_cache: SubtreeCache::new(1000),
             metrics: ParseMetrics::default(),
+            errors,
         };
 
         doc.metrics.last_parse_time_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -157,9 +166,11 @@ impl IncrementalDocument {
         let new_root = if !reusable.is_empty() {
             let reused_root = self.parse_with_reuse(&new_source, reusable)?;
             // parse_with_reuse already ran a full parse internally; run a second
-            // one only to verify the graft produced a consistent tree.
+            // one only to verify the graft produced a consistent tree. The fresh
+            // parse is authoritative for soft errors of `new_source`.
             let mut parser = Parser::new(&new_source);
             let fresh_root = parser.parse()?;
+            self.errors = parser.errors().to_vec();
             if Self::nodes_match(&reused_root, &fresh_root) {
                 reused_root
             } else {
@@ -168,7 +179,9 @@ impl IncrementalDocument {
             }
         } else {
             let mut parser = Parser::new(&new_source);
-            parser.parse()?
+            let root = parser.parse()?;
+            self.errors = parser.errors().to_vec();
+            root
         };
 
         // Update state
@@ -189,6 +202,7 @@ impl IncrementalDocument {
         let new_source = edits.apply_to_string(&self.source);
         let mut parser = Parser::new(&new_source);
         let new_root = parser.parse()?;
+        self.errors = parser.errors().to_vec();
         self.source = new_source;
         self.root = Arc::new(new_root);
         self.cache_subtrees();
@@ -516,6 +530,7 @@ impl IncrementalDocument {
         // Start with a fresh parse of the new source
         let mut parser = Parser::new(source);
         let mut root = parser.parse()?;
+        self.errors = parser.errors().to_vec();
 
         // Try to splice in any reusable subtrees by matching on byte ranges
         for node in reusable {
@@ -1058,6 +1073,15 @@ impl IncrementalDocument {
         &self.metrics
     }
 
+    /// Soft (recoverable) parse errors from the most recent parse.
+    ///
+    /// Empty when the current source parses cleanly. Single-token fast-path
+    /// edits (`apply_edit` on a numeric/string/identifier literal) preserve the
+    /// previous error set because such edits do not change the structural parse.
+    pub fn errors(&self) -> &[ParseError] {
+        &self.errors
+    }
+
     /// Set maximum cache size
     pub fn set_cache_max_size(&mut self, max_size: usize) {
         self.subtree_cache.set_max_size(max_size);
@@ -1142,6 +1166,73 @@ impl SubtreeCache {
 mod tests {
     use super::super::incremental_edit::IncrementalEdit;
     use super::*;
+
+    #[test]
+    fn errors_empty_on_clean_parse() -> ParseResult<()> {
+        let doc = IncrementalDocument::new("my $x = 42;\n".to_string())?;
+        assert!(doc.errors().is_empty(), "clean source must report no soft errors");
+        Ok(())
+    }
+
+    #[test]
+    fn errors_populated_on_construction_with_soft_error() -> ParseResult<()> {
+        // `my $x = ;` parses (recoverably) with one soft error.
+        let doc = IncrementalDocument::new("my $x = ;\n".to_string())?;
+        assert!(!doc.errors().is_empty(), "recoverable syntax error must surface via errors()");
+        Ok(())
+    }
+
+    #[test]
+    fn errors_match_direct_parser_on_construction() -> ParseResult<()> {
+        let source = "my $x = ;\n";
+        let doc = IncrementalDocument::new(source.to_string())?;
+        let mut parser = Parser::new(source);
+        let _ = parser.parse()?;
+        assert_eq!(
+            doc.errors(),
+            parser.errors(),
+            "incremental errors() must match a direct parse of the same source"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn errors_refreshed_after_apply_edits_introducing_and_fixing() -> ParseResult<()> {
+        let source = "my $x = 42;\n";
+        let mut doc = IncrementalDocument::new(source.to_string())?;
+        assert!(doc.errors().is_empty(), "baseline must be clean");
+
+        // Introduce a soft error by replacing `42` with empty (`my $x = ;`).
+        let pos =
+            source.find("42").ok_or_else(|| perl_parser_core::error::ParseError::SyntaxError {
+                message: "test source should contain '42'".to_string(),
+                location: 0,
+            })?;
+        let mut edits = IncrementalEditSet::new();
+        edits.add(IncrementalEdit::new(pos, pos + 2, String::new()));
+        doc.apply_edits(&edits)?;
+        assert!(
+            !doc.errors().is_empty(),
+            "introducing a syntax error via apply_edits must surface soft errors"
+        );
+
+        // Fix it back by inserting `42` again.
+        let pos2 = doc.source.find("= ;").ok_or_else(|| {
+            perl_parser_core::error::ParseError::SyntaxError {
+                message: "edited source should contain '= ;'".to_string(),
+                location: 0,
+            }
+        })? + 2;
+        let mut fix = IncrementalEditSet::new();
+        fix.add(IncrementalEdit::new(pos2, pos2, "42".to_string()));
+        doc.apply_edits(&fix)?;
+        assert!(
+            doc.errors().is_empty(),
+            "fixing the syntax error via apply_edits must clear soft errors; got {:?}",
+            doc.errors()
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_incremental_single_token_edit() -> ParseResult<()> {

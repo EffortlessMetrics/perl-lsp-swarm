@@ -13,7 +13,7 @@ The correct claim boundary is:
 
 - fast lean mode now
 - normal rich mode unchanged
-- incremental parsing later
+- incremental AST reuse on ranged `didChange` now (#1374)
 
 ## Lean Profile
 
@@ -114,9 +114,20 @@ server starts in the lean profile, advertises the locked LSP 3.18 editor-facing
 capabilities, and completes core editor requests without waiting on full
 diagnostic, watcher, or eager-indexing behavior.
 
+## Incremental AST Reuse
+
+Ranged `textDocument/didChange` notifications now reuse the warm incremental
+parse instead of issuing a cold `Parser::new` reparse (#1374). The LSP server
+maintains an `IncrementalDocument` per open file; on a ranged edit it applies
+the byte-level edit set and, when the edited source matches the cold parser's
+input exactly, consumes that document's `root` as the AST and its `errors()` as
+the published diagnostics. A cold reparse remains the fallback for full-document
+replaces, oversized/binary content, `__DATA__`/`__END__` boundary divergence, or
+when the `incremental` feature is disabled. This reuse applies to both the lean
+and normal profiles, since it sits on the shared parse path.
+
 ## What This Does Not Prove
 
-- No incremental AST reuse is provided by this profile.
 - CI wall-clock timing is not a benchmark receipt.
 - Full semantic/module/native critic/dead-code diagnostics are not enabled in
   syntax-only mode.

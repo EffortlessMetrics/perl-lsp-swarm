@@ -1871,3 +1871,179 @@ fn did_open_normalizes_plain_windows_path_uri() -> Result<(), Box<dyn std::error
     );
     Ok(())
 }
+
+// ----------------------------------------------------------------------------
+// #1374: incremental AST reuse is genuinely consumed on didChange.
+//
+// The document AST stored after a ranged didChange must come from the warm
+// incremental document (not a separate cold parse), it must stay byte-for-byte
+// correct versus a cold parse of the same source, and soft parse errors must
+// flow through the warm path into the published diagnostics.
+// ----------------------------------------------------------------------------
+
+/// The stored AST after a ranged edit must equal a cold parse of the new source.
+/// This is the correctness regression guard for consuming the warm AST.
+#[cfg(feature = "incremental")]
+#[test]
+fn test_warm_ast_matches_cold_parse_after_ranged_change() -> Result<(), Box<dyn std::error::Error>>
+{
+    use perl_parser::Parser;
+
+    let server = LspServer::new();
+    let uri = "file:///test_warm_match.pl";
+    let text = "my $count = 1;\nsub greet { return \"hi\"; }\nmy $total = $count + 2;\n";
+
+    server.did_open(json!({
+        "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
+    }))?;
+
+    // Replace "greet" with "hello" (a ranged, single-line edit).
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 1, "character": 4 },
+                "end":   { "line": 1, "character": 9 }
+            },
+            "text": "hello"
+        }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("document not stored after didChange")?;
+    let stored = doc.ast.as_ref().ok_or("AST must be present after warm change")?;
+
+    // Cold-parse the post-edit source the same way the cold path would.
+    let code = crate::util::code_slice(&doc.text);
+    let mut parser = Parser::new(code);
+    let cold = parser.parse()?;
+
+    assert_eq!(
+        stored.to_sexp(),
+        cold.to_sexp(),
+        "warm incremental AST must be structurally identical to a cold parse"
+    );
+
+    // And it must equal the incremental document's own tree (proving it was the
+    // source of the stored AST, not an independent cold parse).
+    let inc = doc.incremental_doc.as_ref().ok_or("incremental_doc must be present")?;
+    assert_eq!(
+        stored.to_sexp(),
+        inc.root.to_sexp(),
+        "stored AST must be the warm incremental tree"
+    );
+    Ok(())
+}
+
+/// A ranged edit that introduces a recoverable syntax error must surface soft
+/// errors through the warm path, both in `parse_errors` and in the incremental
+/// document's own `errors()`.
+#[cfg(feature = "incremental")]
+#[test]
+fn test_warm_path_surfaces_soft_errors_on_ranged_change() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = LspServer::new();
+    let uri = "file:///test_warm_errors.pl";
+    let text = "my $x = 42;\n";
+
+    server.did_open(json!({
+        "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
+    }))?;
+
+    // Delete "42" → "my $x = ;" which parses recoverably with a soft error.
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 8 },
+                "end":   { "line": 0, "character": 10 }
+            },
+            "text": ""
+        }]
+    })))?;
+
+    {
+        let docs = server.documents.lock();
+        let doc = docs.get(uri).ok_or("document not stored after didChange")?;
+        assert!(
+            doc.text.contains("= ;"),
+            "edit must produce the recoverable-error source; got {:?}",
+            doc.text
+        );
+        assert!(
+            !doc.parse_errors.is_empty(),
+            "soft parse errors must surface in DocumentState after a warm change"
+        );
+        let inc = doc.incremental_doc.as_ref().ok_or("incremental_doc must be present")?;
+        assert!(
+            !inc.errors().is_empty(),
+            "warm incremental document must carry the soft errors it reported"
+        );
+    }
+
+    // Fixing the error via another ranged edit must clear the diagnostics.
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 8 },
+                "end":   { "line": 0, "character": 8 }
+            },
+            "text": "7"
+        }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("document not stored after fix")?;
+    assert!(doc.text.contains("= 7;"), "fix edit must restore valid source; got {:?}", doc.text);
+    assert!(
+        doc.parse_errors.is_empty(),
+        "fixing the syntax error via a warm change must clear parse_errors; got {:?}",
+        doc.parse_errors
+    );
+    Ok(())
+}
+
+/// A file with a `__DATA__` section must stay correct across ranged edits: the
+/// warm-path divergence guard reinitializes from the code slice when the edited
+/// incremental source no longer matches, so the stored AST never parses trailing
+/// data as code.
+#[cfg(feature = "incremental")]
+#[test]
+fn test_warm_path_correct_with_data_section() -> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser::Parser;
+
+    let server = LspServer::new();
+    let uri = "file:///test_warm_data.pl";
+    let text = "my $name = \"a\";\n__DATA__\nraw payload not perl ;;;\n";
+
+    server.did_open(json!({
+        "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
+    }))?;
+
+    // Edit the code region above __DATA__: replace "a" with "abc".
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 12 },
+                "end":   { "line": 0, "character": 13 }
+            },
+            "text": "abc"
+        }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("document not stored after didChange")?;
+    let stored = doc.ast.as_ref().ok_or("AST must be present")?;
+
+    let code = crate::util::code_slice(&doc.text);
+    let mut parser = Parser::new(code);
+    let cold = parser.parse()?;
+    assert_eq!(
+        stored.to_sexp(),
+        cold.to_sexp(),
+        "AST for a file with __DATA__ must match a cold parse of just the code slice"
+    );
+    Ok(())
+}
