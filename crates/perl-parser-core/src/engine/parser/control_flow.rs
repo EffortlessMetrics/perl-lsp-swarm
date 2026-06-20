@@ -731,6 +731,8 @@ impl<'a> Parser<'a> {
         let mut statements = Vec::new();
 
         while self.peek_kind() != Some(TokenKind::RightBrace) && !self.tokens.is_eof() {
+            self.check_cancelled()?;
+
             match self.peek_kind() {
                 Some(TokenKind::When) => {
                     statements.push(self.parse_when_statement()?);

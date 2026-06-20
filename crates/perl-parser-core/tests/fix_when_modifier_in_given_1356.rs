@@ -60,3 +60,74 @@ given ($x) {
 "#;
     assert_clean_parse(source);
 }
+
+// --- Edge cases added by deep review ---
+
+#[test]
+fn test_empty_given_block() {
+    // An empty given block must not infinite-loop or panic.
+    let source = r#"
+given ($x) {
+}
+"#;
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_nested_given_blocks() {
+    // A nested `given` falls through the general parse_statement path of the
+    // outer given's fallback arm.
+    let source = r#"
+given ($x) {
+    given ($y) {
+        when (1) { print "inner one\n"; }
+        default  { print "inner other\n"; }
+    }
+    when (0) { print "outer zero\n"; }
+}
+"#;
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_when_block_then_trailing_statement() {
+    // A `when` block followed by an ordinary statement exercises the
+    // transition between the when-block arm and the fallback arm.
+    let source = r#"
+given ($x) {
+    when (1) { print "one\n"; }
+    my $done = 1;
+}
+"#;
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_lone_semicolons_in_given_block() {
+    // Lone semicolons inside a given block must be silently dropped (they
+    // become empty blocks that the filter skips) without corrupting the
+    // surrounding when/default arms.
+    let source = r#"
+given ($x) {
+    ;
+    when (1) { print "one\n"; }
+    ;
+    default  { print "other\n"; }
+    ;
+}
+"#;
+    assert_clean_parse(source);
+}
+
+#[test]
+fn test_statement_modifier_when_complex_condition() {
+    // when modifier with a complex boolean condition — exercises the full
+    // expression parser from the fallback arm.
+    let source = r#"
+given ($x) {
+    print "in range\n" when $_ >= 1 && $_ <= 10;
+    print "out of range\n" when $_ < 1 || $_ > 10;
+}
+"#;
+    assert_clean_parse(source);
+}
