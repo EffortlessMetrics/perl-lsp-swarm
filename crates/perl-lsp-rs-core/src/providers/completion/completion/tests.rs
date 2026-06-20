@@ -3737,6 +3737,30 @@ fn unknown_receiver_fallback_completion_observes_auto_import_seam()
 }
 
 #[test]
+fn extract_fat_comma_keys_grips_quote_and_bareword_branches() {
+    // Call-observation coverage for the single-quoted, double-quoted, and
+    // bareword key branches in `CompletionProvider::extract_fat_comma_keys`.
+    // These branches are otherwise exercised only by integration tests, which
+    // the coverage job's `--lib` run does not execute.
+    let mut keys: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    CompletionProvider::extract_fat_comma_keys(
+        "'db-host' => 1, \"db.port\" => 2, host => 3",
+        &mut keys,
+        &mut seen,
+    );
+    assert!(
+        keys.contains(&"db-host".to_string()),
+        "single-quoted key should be extracted; got {keys:?}"
+    );
+    assert!(
+        keys.contains(&"db.port".to_string()),
+        "double-quoted key should be extracted; got {keys:?}"
+    );
+    assert!(keys.contains(&"host".to_string()), "bareword key should be extracted; got {keys:?}");
+}
+
+#[test]
 fn test_require_statement_triggers_module_completion() -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(Url::parse("file:///lib/Utils.pm")?, "package Utils;\n1;\n".to_string())?;
