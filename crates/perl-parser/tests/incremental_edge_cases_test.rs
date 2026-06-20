@@ -527,7 +527,11 @@ fn test_rapid_fire_edits() -> TestResult {
 
     // Simulate rapid typing by making many small edits in quick succession
     for i in 0..50 {
-        let old_val = if i == 0 { "0" } else { &(i - 1).to_string() };
+        // Each iteration independently edits `base_source` (which contains the
+        // literal `0`), so the value searched for is always `0`. Using the prior
+        // iteration's number here was a fixture bug: `base_source` never contains
+        // `1`, `2`, ... so `find` returned `None` and the test panicked at i == 2.
+        let old_val = "0";
         let new_val = i.to_string();
 
         let (new_source, edit) =
