@@ -1,9 +1,11 @@
 //! Transport layer: run (stdin/stdout), run_socket, run_with_io.
 
 use super::*;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
 
 const EVENT_WRITE_BATCH_MAX: usize = 64;
+const WRITE_FAILURE_THRESHOLD: usize = 3;
 
 fn write_framed_payload<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<()> {
     writer.write_all(b"Content-Length: ")?;
@@ -48,8 +50,18 @@ impl DebugAdapter {
         let (tx, rx) = channel::<DapMessage>();
         self.event_sender = Some(tx.clone());
 
+        // Clone transport_broken flag to pass to the event handler thread.
+        let transport_broken = Arc::clone(&self.transport_broken);
+
         thread::spawn(move || {
+            let mut consecutive_write_failures = 0;
+
             while let Ok(first_msg) = rx.recv() {
+                // Check if transport is already marked broken
+                if transport_broken.load(Ordering::Acquire) {
+                    break;
+                }
+
                 let mut batch = Vec::with_capacity(EVENT_WRITE_BATCH_MAX);
                 batch.push(first_msg);
 
@@ -92,18 +104,37 @@ impl DebugAdapter {
                     if let Err(e) = write_framed_payload(&mut *writer, payload) {
                         tracing::error!(error = %e, "Failed to write DAP frame in event handler");
                         write_failed = true;
+                        consecutive_write_failures += 1;
                         break;
                     }
                 }
-                if !write_failed && let Err(e) = writer.flush() {
-                    tracing::error!(error = %e, "Failed to flush DAP frame in event handler");
+                if !write_failed {
+                    if let Err(e) = writer.flush() {
+                        tracing::error!(error = %e, "Failed to flush DAP frame in event handler");
+                        write_failed = true;
+                        consecutive_write_failures += 1;
+                    } else {
+                        // Reset failure counter on successful write
+                        consecutive_write_failures = 0;
+                    }
+                }
+
+                // If write failed, check if we've hit the threshold
+                if write_failed && consecutive_write_failures >= WRITE_FAILURE_THRESHOLD {
+                    tracing::error!(
+                        failure_count = consecutive_write_failures,
+                        threshold = WRITE_FAILURE_THRESHOLD,
+                        "Event handler detected persistent write failure; marking transport broken"
+                    );
+                    transport_broken.store(true, Ordering::Release);
+                    break;
                 }
 
                 if disconnected {
                     break;
                 }
             }
-            tracing::debug!("Event handler thread terminating - channel closed");
+            tracing::debug!("Event handler thread terminating");
         });
 
         let mut reader = BufReader::new(input);
@@ -111,6 +142,17 @@ impl DebugAdapter {
         let mut read_buf = [0u8; 8 * 1024];
 
         loop {
+            // Check if transport has been marked broken by the event handler
+            if self.transport_broken.load(Ordering::Acquire) {
+                tracing::error!(
+                    "Transport is broken; event handler detected persistent write failure"
+                );
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Event handler detected persistent write failure; transport is broken",
+                ));
+            }
+
             let bytes_read = reader.read(&mut read_buf)?;
             if bytes_read == 0 {
                 return Ok(());
