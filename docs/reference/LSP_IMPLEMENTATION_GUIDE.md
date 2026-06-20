@@ -5114,14 +5114,39 @@ let perltidy_cmd = self.find_perltidy_command();
 
 **Configuration File Support**: `.perltidyrc` is now primarily a compatibility
 input. Native compatibility reports classify common options against native
-support, and explicit external mode can still pass a profile to `perltidy`:
+support, and explicit external mode can still pass a profile to `perltidy`.
 
-```rust
-// Searches in order:
-// 1. Current workspace directory and parents
-// 2. User home directory (~/.perltidyrc)
-// 3. Fallback to built-in settings
+**Automatic profile discovery (initialize-time)**: when `perltidy_profile` is
+not explicitly configured, the server discovers a `.perltidyrc` once during
+`initialize` (in `set_root_uri`) and caches it for the session, so a
+project-local profile applies without any editor configuration. Discovery is
+implemented by `perl_lsp_rs_core::config::discover_perltidy_profile` and follows
+perltidy's conventional search order:
+
+```text
+1. <workspace_root>/.perltidyrc, then <workspace_root>/perltidyrc
+2. The file named by the PERLTIDY environment variable (perltidy's documented
+   override, searched before the home profile)
+3. $HOME/.perltidyrc
+4. None — let the formatter fall back to its own defaults
 ```
+
+An explicitly configured `perltidy_profile` (via `.perl-lsp.toml` or
+`didChangeConfiguration`) always takes precedence over the discovered profile;
+discovery runs at initialize time rather than on every format request.
+
+The discovered profile's **supported scalar options** are also parsed once at
+initialize (via the shared `classify_perltidy_profile` mapping) and feed the
+**default native formatter**, so a project-local `.perltidyrc` shapes formatting
+in the native engine — not only when `external-legacy` mode passes `--profile`.
+Per-field precedence: an explicitly configured field
+(`perltidy_maximum_line_length`, `perltidy_indent_columns`, `perltidy_tabs`,
+`perltidy_opening_brace_on_new_line`, `perltidy_cuddled_else`,
+`perltidy_space_after_keyword`, `perltidy_add_trailing_commas`) wins; otherwise
+the discovered profile's value fills the gap. A discovered profile's options are
+applied only when no explicit `perltidy_profile` is configured, so an explicit
+profile is never mixed with a discovered one. Options that native formatting
+cannot represent are reported by the `native-format perltidy-compat` receipt.
 
 #### Error Handling and User Guidance (*Diataxis: How-to*)
 

@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automatic `.perltidyrc` discovery at the workspace root.** When no
+  `perltidy_profile` is explicitly configured, the server now discovers a
+  project-local `.perltidyrc` once during `initialize` — searching the
+  workspace root, then perltidy's documented `PERLTIDY` environment override,
+  then `$HOME/.perltidyrc` — and uses it when building the formatter config.
+  Explicit configuration always takes precedence. (#1777)
+- **Default native formatter honors the discovered `.perltidyrc`.** The
+  supported scalar options in a discovered profile (line width, indent, tabs,
+  brace/else placement, keyword spacing, trailing commas) are parsed once at
+  `initialize` and feed the native formatter, so project formatting applies in
+  the default engine — not just `external-legacy` mode. Explicitly configured
+  fields still win per option; a discovered profile is never mixed with an
+  explicitly configured `perltidy_profile`. (#1953)
 - **Workspace method signature help for `->method()` calls.** Triggering
   signature help (or hovering) on an OO method call now resolves the signature
   from the workspace symbol index for methods defined in the same project,
@@ -215,6 +228,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Under the hood (not user-facing)
 
+- **TextMate grammar visual regression tests.** The VS Code extension's static
+  syntax highlighting (`syntaxes/perl.tmLanguage.json`) is now locked down by
+  scope snapshots under `vscode-extension/test/grammar/`, run via
+  `npm run test:grammar` and enforced in the Extension Jest CI job. Any
+  unintended change to highlighting surfaces as an explicit per-token diff.
+  Closes the long-standing "visual regression testing for UI features" item in
+  the E2E test strategy.
 - **Parser contract index.** Lexer and parser-core paired-delimiter and
   balanced-segment behavior is now covered by a conformance matrix and documented
   in `docs/reference/PARSER_CONTRACTS.md`. (#1319, #1321, #1324)
