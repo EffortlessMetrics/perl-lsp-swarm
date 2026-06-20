@@ -179,6 +179,21 @@ fn nested_labeled_loops_keep_their_own_labels() {
 }
 
 #[test]
+fn label_on_bare_block_does_not_propagate_to_inner_loop() {
+    // `OUTER: { while (...) { } }` — label is on the bare block, not the while.
+    // The while inside the block should NOT receive the label; `last OUTER`
+    // from inside the while exits the outer block, not the while's own iteration.
+    let file = lower_source("OUTER: { while ($x) { body() } }
+");
+    let shells = loops(&file);
+    assert_eq!(shells.len(), 1);
+    assert_eq!(
+        shells[0].label, None,
+        "label on an enclosing bare block must not propagate to the inner loop"
+    );
+}
+
+#[test]
 fn return_with_and_without_value() {
     let with_value = lower_source("sub f { return 42; }\n");
     let bare = lower_source("sub f { return; }\n");

@@ -108,6 +108,13 @@ impl Lowerer {
                 }
             }
             NodeKind::Block { statements } => {
+                // A `LABEL: { ... }` labeled bare block absorbs the pending
+                // label here.  `BlockShell` does not carry a label field, so if
+                // the pending label were left alive it would silently propagate
+                // to the first loop found inside the block — which is the thing
+                // *inside* the labeled block, not the labeled block itself.
+                // Drop it so the loop gets no spurious label.
+                let _ = self.pending_label.take();
                 let scope_id =
                     self.enter_scope(ScopeKind::Block, node.location, self.package_context.clone());
                 self.push_item(
