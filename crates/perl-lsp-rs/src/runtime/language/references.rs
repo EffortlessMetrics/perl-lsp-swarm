@@ -27,6 +27,52 @@ use crate::runtime::routing::{IndexAccessMode, route_index_access};
 
 static QUALIFIED_NAME_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
+fn search_document_texts_for_references(
+    docs: &[(String, String)],
+    needle: &str,
+    cap: usize,
+) -> Vec<Value> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let needle_bytes = needle.as_bytes();
+    let mut out = Vec::new();
+    'doc_loop: for (doc_uri, doc_text) in docs {
+        for (line_num, line) in doc_text.lines().enumerate() {
+            let line_bytes = line.as_bytes();
+            let mut start = 0usize;
+            while let Some(idx) = line[start..].find(needle) {
+                let byte_pos = start + idx;
+                if is_word_boundary(line_bytes, byte_pos, needle_bytes.len()) {
+                    let start_utf16 = byte_to_utf16_col(line, byte_pos);
+                    let end_utf16 = byte_to_utf16_col(line, byte_pos + needle_bytes.len());
+                    out.push(json!({
+                        "uri": doc_uri,
+                        "range": {
+                            "start": { "line": line_num, "character": start_utf16 },
+                            "end": { "line": line_num, "character": end_utf16 },
+                        },
+                    }));
+                    if out.len() >= cap {
+                        break 'doc_loop;
+                    }
+                }
+                start = byte_pos + needle_bytes.len();
+            }
+        }
+    }
+    out.sort_by_key(|loc| {
+        (
+            loc["uri"].as_str().unwrap_or("").to_string(),
+            loc["range"]["start"]["line"].as_u64().unwrap_or(0),
+            loc["range"]["start"]["character"].as_u64().unwrap_or(0),
+        )
+    });
+    out.dedup();
+    out.truncate(cap);
+    out
+}
+
 fn lsp_location_count(value: Option<&Value>) -> usize {
     match value {
         Some(Value::Array(items)) => items.len(),
@@ -509,8 +555,15 @@ impl LspServer {
 
                                 tracing::debug!(reason, "References: using same-file fallback");
                                 if !needle.is_empty() {
-                                    let open_doc_locations =
-                                        self.search_open_document_references(&needle, cap);
+                                    let docs_snapshot: Vec<(String, String)> = documents
+                                        .iter()
+                                        .map(|(k, v)| (k.clone(), v.text.clone()))
+                                        .collect();
+                                    let open_doc_locations = search_document_texts_for_references(
+                                        &docs_snapshot,
+                                        &needle,
+                                        cap,
+                                    );
                                     if !open_doc_locations.is_empty() {
                                         tracing::debug!(
                                             count = open_doc_locations.len(),
@@ -571,66 +624,6 @@ impl LspServer {
         }
 
         Ok(Some(json!([])))
-    }
-
-    /// Search open documents for references to a token using word-boundary matching.
-    #[cfg(feature = "workspace")]
-    fn search_open_document_references(&self, needle: &str, cap: usize) -> Vec<Value> {
-        if needle.is_empty() {
-            return Vec::new();
-        }
-
-        let needle_bytes = needle.as_bytes();
-        let mut out = Vec::new();
-
-        for (doc_uri, doc_text) in self.iter_open_buffers() {
-            if out.len() >= cap {
-                break;
-            }
-
-            for (line_num, line) in doc_text.lines().enumerate() {
-                let line_bytes = line.as_bytes();
-                let mut start = 0usize;
-                while let Some(idx) = line[start..].find(needle) {
-                    let byte_pos = start + idx;
-                    if is_word_boundary(line_bytes, byte_pos, needle_bytes.len()) {
-                        let start_utf16 = byte_to_utf16_col(line, byte_pos);
-                        let end_utf16 = byte_to_utf16_col(line, byte_pos + needle_bytes.len());
-                        out.push(json!({
-                            "uri": doc_uri,
-                            "range": {
-                                "start": {
-                                    "line": line_num,
-                                    "character": start_utf16,
-                                },
-                                "end": {
-                                    "line": line_num,
-                                    "character": end_utf16,
-                                },
-                            },
-                        }));
-                        if out.len() >= cap {
-                            break;
-                        }
-                    }
-                    start = byte_pos + needle_bytes.len();
-                }
-                if out.len() >= cap {
-                    break;
-                }
-            }
-        }
-
-        out.sort_by_key(|loc| {
-            (
-                loc["uri"].as_str().unwrap_or("").to_string(),
-                loc["range"]["start"]["line"].as_u64().unwrap_or(0),
-                loc["range"]["start"]["character"].as_u64().unwrap_or(0),
-            )
-        });
-        out.dedup();
-        out.truncate(cap);
-        out
     }
 
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -946,5 +939,34 @@ impl LspServer {
         out.dedup();
 
         Ok(serde_json::Value::Array(out))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_document_texts_for_references_word_boundary() {
+        let docs = vec![("file:///test.pl".to_string(), "my $foo = $foo + 1;\n".to_string())];
+        let results = search_document_texts_for_references(&docs, "foo", 10);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["uri"], "file:///test.pl");
+        assert_eq!(results[0]["range"]["start"]["character"], 4);
+        assert_eq!(results[1]["range"]["start"]["character"], 11);
+    }
+
+    #[test]
+    fn search_document_texts_for_references_cap_respected() {
+        let docs = vec![("file:///test.pl".to_string(), "foo foo foo foo foo\n".to_string())];
+        let results = search_document_texts_for_references(&docs, "foo", 2);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn search_document_texts_for_references_empty_needle() {
+        let docs = vec![("file:///test.pl".to_string(), "foo\n".to_string())];
+        let results = search_document_texts_for_references(&docs, "", 10);
+        assert!(results.is_empty());
     }
 }
