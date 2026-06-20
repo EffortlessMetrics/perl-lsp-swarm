@@ -63,6 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Malformed debugger stack contexts reject blank file names.** Stack parsing
   no longer accepts whitespace-only file fields as a real frame location.
   (#1498)
+- **DAP request ordering fails with explicit protocol errors.** `launch` now
+  requires a prior `initialize`, and `configurationDone` now requires an
+  active launch or attach session instead of accepting out-of-sequence clients.
+  (#1806)
+- **DAP scopes expose pagination hint fields.** Scope responses now carry the
+  optional `namedVariables` and `indexedVariables` fields from the DAP
+  specification, preserving compatibility when counts are unavailable. (#1810)
+- **DAP capability flags match implemented handlers.** The initialize response
+  now advertises restart frame, step-in targets, and terminate-threads support
+  when those routed handlers exist, so clients can discover the implemented
+  operations. (#1759)
 
 #### Editor settings
 
@@ -104,6 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now exposes module/core-pragma and same-document POD section references from
   real POD blocks, and `documentLink/resolve` validates same-document section
   fragments before returning `#section` targets. (#1795)
+- **POD hover refreshes after external module edits.** Hover documentation
+  cached from a resolved module file is refreshed when that file's mtime
+  changes outside the LSP document lifecycle, so hover no longer serves stale
+  POD after on-disk edits. (#1882)
 - **Context-specific completions keep semantic groups together.** Hash-key,
   Moo/Moose type and option, and Object::Pad constructor-parameter completions
   now use separate sort tiers so clients do not interleave unrelated suggestions
@@ -175,6 +190,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AST kind inventories are compiler-derived.** `ALL_KIND_NAMES` now derives
   from `NodeKind::VARIANTS`, removing a hand-maintained mirror list that could
   drift from the enum. (#1491)
+- **File-local semantic fact IDs include file identity.** Stable semantic IDs
+  for anchors, entities, occurrences, and file-scoped edges now include
+  `FileId`, preventing identical source in different files from colliding while
+  preserving the file-neutral reference-source sentinel. (#1876)
+- **LSP transport framing uses checked body-offset arithmetic.**
+  `Content-Length` frame parsing now guards the `body_start` offset calculation
+  with checked arithmetic and recovers through the existing invalid-length path
+  on overflow. (#1793)
 - **Coverage and test gates are separated.** Patch coverage now reports
   coverage shortfall/setup/routing failures separately from routed test
   failures, so a latent unrelated routed test belongs to a test-named gate
@@ -186,6 +209,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routing now treats disk hygiene as a preflight invariant and falls back only
   for disk-preflight failures, without masking real test or gate failures.
   (#1528)
+- **Self-hosted CI removes stale workspace `target/` before checkout.** CX43
+  and CX53 Rust Small, RIPR, and UB-review jobs now delete the gitignored
+  workspace `target/` during pre-checkout ownership cleanup. Real Cargo output
+  remains on `/mnt/ci-scratch`, while stale root-owned workspace receipts no
+  longer block checkout or `target` creation. (#1886)
 - **Workflow privilege analysis fails closed for untrusted event expressions.**
   Jobs with write permissions must prove every event-expression branch is
   anchored to a trusted event. (#1539)

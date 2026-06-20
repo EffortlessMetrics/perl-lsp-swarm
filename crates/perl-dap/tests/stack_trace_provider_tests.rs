@@ -4,7 +4,7 @@
 //! - Frame filtering (hiding DB:: and shim frames)
 //! - Accurate line and column reporting
 //! - Function name package qualification
-//! - Placeholder frame support for infrastructure testing
+//! - Empty stackFrames on no-session path (DAP spec compliant)
 //!
 //! Specification: GitHub Issue #453 - AC8.2, AC8.2.1, AC8.2.4
 //!
@@ -150,9 +150,10 @@ fn test_stack_trace_response_sequence_numbers() -> Result<(), Box<dyn std::error
 /// The total number of frames available in the stack"). This test locks the
 /// invariant that totalFrames >= the number of frames in the response.
 ///
-/// The no-session path returns an empty stackFrames array (PR #1212 removed the
-/// fabricated placeholder frame). With levels=1 and an empty stack, both
-/// totalFrames and the returned frame count must equal 0.
+/// The no-session path returns an empty stackFrames array (DAP spec allows this;
+/// PR #1212 removed the fabricated placeholder frame). With levels=1 and an empty
+/// stack, both totalFrames and the returned frame count must equal 0 — not some
+/// value derived from the `levels` window parameter.
 #[test]
 // AC:963
 fn test_total_frames_is_not_window_size() -> Result<(), Box<dyn std::error::Error>> {
@@ -172,7 +173,7 @@ fn test_total_frames_is_not_window_size() -> Result<(), Box<dyn std::error::Erro
     let total =
         body.get("totalFrames").and_then(|v| v.as_u64()).ok_or("Expected totalFrames number")?;
 
-    // The core invariant: totalFrames must always be >= the returned window size.
+    // The invariant: totalFrames >= returned window size (DAP spec §StackTraceResponse).
     // This is what PR #963 fixed — totalFrames was being set to the paginated slice
     // length rather than the full stack depth.
     assert!(
@@ -180,11 +181,13 @@ fn test_total_frames_is_not_window_size() -> Result<(), Box<dyn std::error::Erro
         "totalFrames ({total}) must be >= returned frame count ({})",
         frames.len()
     );
-    // No active session returns an empty stack (PR #1212 removed the fabricated
-    // placeholder frame as it violated the DAP spec). With levels=1 and depth=0,
-    // both counters must be 0.
-    assert_eq!(frames.len(), 0, "no-session stack must be empty (no fabricated placeholder)");
-    assert_eq!(total, 0, "totalFrames must reflect real depth (0 when no session)");
+    // No-session path: empty stack — totalFrames must be 0, not the levels window (1).
+    // PR #1212 removed the fabricated placeholder frame as it violated DAP spec.
+    // With levels=1 and depth=0, both counters must be 0.
+    // Regression guard: if totalFrames were set to `levels` instead of pre-pagination
+    // depth, it would incorrectly report 1 here.
+    assert_eq!(frames.len(), 0, "no-session path returns empty stackFrames");
+    assert_eq!(total, 0, "totalFrames must be 0 for empty stack, not the levels window");
     Ok(())
 }
 
