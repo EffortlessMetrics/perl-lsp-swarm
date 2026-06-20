@@ -149,36 +149,32 @@ fn evaluate_hit_condition(raw: Option<&str>, hit_count: u64) -> Option<bool> {
 
 /// Evaluate a simple Perl condition expression against test variable context.
 ///
-/// This is primarily for testing. In production, conditions are evaluated by
-/// the Perl debugger itself.
+/// This is a test-only helper; production condition evaluation is delegated to
+/// the Perl debugger via the `b line condition` command and is never evaluated
+/// here at runtime.
 ///
 /// Supported patterns: `$var > num`, `$var < num`, `$var >= num`, `$var <= num`, `$var == num`
 fn evaluate_simple_condition(condition: &str, variables: &HashMap<String, i64>) -> Option<bool> {
     let expr = condition.trim();
 
-    // Check for comparison operators
-    for op in &[">=", "<=", "==", ">", "<"] {
+    // Check for comparison operators (longest match first so `>=` beats `>`).
+    for &op in &[">=", "<=", "==", ">", "<"] {
         if let Some(idx) = expr.find(op) {
             let var_part = expr[..idx].trim();
             let val_part = expr[idx + op.len()..].trim();
 
-            // Extract variable name (e.g., "$x" -> "x")
-            let var_name = if var_part.starts_with('$') {
-                &var_part[1..]
-            } else {
-                var_part
-            };
+            // Strip the sigil: "$x" -> "x"
+            let var_name = var_part.strip_prefix('$').unwrap_or(var_part);
 
-            // Parse the right-hand value
             if let Ok(rhs) = val_part.parse::<i64>() {
                 if let Some(&lhs) = variables.get(var_name) {
-                    let result = match *op {
+                    let result = match op {
                         ">=" => lhs >= rhs,
                         "<=" => lhs <= rhs,
                         "==" => lhs == rhs,
                         ">" => lhs > rhs,
                         "<" => lhs < rhs,
-                        _ => false,
+                        _ => unreachable!("op is one of the five literals above"),
                     };
                     return Some(result);
                 }
@@ -188,7 +184,6 @@ fn evaluate_simple_condition(condition: &str, variables: &HashMap<String, i64>) 
 
     None
 }
-
 
 fn file_paths_match(stored: &str, observed: &str) -> bool {
     if stored == observed {
@@ -210,7 +205,12 @@ pub struct BreakpointStore {
     breakpoints: Arc<Mutex<HashMap<String, Vec<BreakpointRecord>>>>,
     /// Next breakpoint ID (monotonically increasing)
     next_id: Arc<Mutex<i64>>,
-    /// Test-only: variable context for condition evaluation during testing
+    /// Variable context for condition evaluation in tests.
+    ///
+    /// In production this map is always empty; condition evaluation is
+    /// delegated to the Perl debugger.  Test code populates it via
+    /// `set_test_variable` so receipt tests can assert stop/continue behavior
+    /// without spawning a real debugger session.
     test_variables: Arc<Mutex<HashMap<String, i64>>>,
 }
 
@@ -498,12 +498,13 @@ impl BreakpointStore {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
         let mut outcome = BreakpointHitOutcome::default();
 
-        // Get test variables if available
-        let test_vars = self
-            .test_variables
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        // Snapshot the test-variable map before entering the breakpoint loop so
+        // we release that lock before we need the breakpoints lock.  In
+        // production the map is always empty and condition evaluation is
+        // delegated to the Perl debugger; in test builds `set_test_variable`
+        // populates it so receipt tests can verify stop/continue behavior
+        // without a live debugger session.
+        let test_vars = self.test_variables.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
         for (stored_path, records) in &mut *breakpoints_map {
             if !file_paths_match(stored_path, source_path) {
@@ -526,12 +527,11 @@ impl BreakpointStore {
                     continue;
                 }
 
-                // Check condition (if present)
+                // Check condition against test_variables (always empty in
+                // production, so `evaluate_simple_condition` returns `None`
+                // and execution falls through to `should_stop`).
                 if let Some(ref condition) = record.condition {
-                    // Try to evaluate the condition using test variables
-                    let condition_match = evaluate_simple_condition(condition, &test_vars);
-                    if let Some(false) = condition_match {
-                        // Condition evaluated to false, skip this breakpoint
+                    if let Some(false) = evaluate_simple_condition(condition, &test_vars) {
                         continue;
                     }
                 }
@@ -580,10 +580,12 @@ impl BreakpointStore {
         }
     }
 
-    /// Set a test variable for condition evaluation (test-only).
+    /// Set a test variable for condition evaluation.
     ///
-    /// Used by tests to provide variable context for evaluating conditions.
-    /// In production, conditions are evaluated by the debugger.
+    /// Provides variable context for receipt tests that need to verify
+    /// conditional-breakpoint stop/continue behavior without launching a real
+    /// Perl debugger.  In production the map is always empty and this method
+    /// is never called; condition evaluation is done by the Perl debugger.
     pub fn set_test_variable(&self, name: &str, value: i64) {
         let mut vars = self.test_variables.lock().unwrap_or_else(|e| e.into_inner());
         vars.insert(name.to_string(), value);
