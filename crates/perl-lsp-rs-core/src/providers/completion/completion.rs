@@ -1262,7 +1262,9 @@ impl CompletionProvider {
                 .and_then(|t| t.strip_suffix('\''))
                 .or_else(|| token.strip_prefix('"').and_then(|t| t.strip_suffix('"')))
                 .unwrap_or(token);
-            if !token.is_empty() && token.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            // Accept any non-empty key string, including quoted keys with special characters
+            // (hyphens, dots, spaces, etc.). Bareword keys are still valid (alphanumeric + _).
+            if !token.is_empty() {
                 let key_str = token.to_string();
                 if seen.insert(key_str.clone()) {
                     keys.push(key_str);

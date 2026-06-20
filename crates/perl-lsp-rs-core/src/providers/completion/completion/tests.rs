@@ -4227,6 +4227,64 @@ fn test_hash_key_completion_unknown_variable_returns_empty_for_that_hash() {
 }
 
 #[test]
+fn test_hash_key_completion_quoted_keys_with_special_characters() {
+    // Test that quoted keys with hyphens, dots, spaces, and other special characters
+    // are included in hash key completions.
+    let code = r#"my %data = ('db-host' => 'localhost', 'api.key' => 'secret', 'api key' => 'value', 'foo_bar' => 'normal');
+$data{db"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // 'db-host' should be suggested (starts with 'db' prefix)
+    assert!(
+        completions.iter().any(|c| c.label == "db-host"),
+        "expected 'db-host' (quoted key with hyphen) in completions for prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // 'api.key' should NOT be suggested (doesn't start with 'db')
+    assert!(
+        !completions.iter().any(|c| c.label == "api.key"),
+        "expected 'api.key' filtered out by prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // 'foo_bar' should NOT be suggested (doesn't start with 'db')
+    assert!(
+        !completions.iter().any(|c| c.label == "foo_bar"),
+        "expected 'foo_bar' filtered out by prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_hash_key_completion_quoted_keys_with_dots_and_spaces() {
+    // Test completion with dot and space separators in keys
+    let code = r#"my %config = ('db.host' => 1, 'api key' => 2);
+$config{api"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // 'api key' should be suggested (starts with 'api' prefix)
+    assert!(
+        completions.iter().any(|c| c.label == "api key"),
+        "expected 'api key' (quoted key with space) in completions for prefix 'api'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // 'db.host' should NOT be suggested (doesn't start with 'api')
+    assert!(
+        !completions.iter().any(|c| c.label == "db.host"),
+        "expected 'db.host' filtered out by prefix 'api'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_detect_hash_key_context_unicode_non_ident_after_brace_no_panic() {
     let source = "$config{☃ho";
     let result = CompletionProvider::detect_hash_key_context(source, source.len());
