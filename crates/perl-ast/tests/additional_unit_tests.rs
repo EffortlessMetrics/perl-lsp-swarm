@@ -661,7 +661,7 @@ fn sexp_unary_operators_comprehensive() {
         ("!", "unary_not"),
         ("not", "unary_not"),
         ("~", "unary_complement"),
-        ("\\", "unary_ref"),
+        ("\\\\", "unary_ref"),
         ("++", "unary_++"),
         ("--", "unary_--"),
         ("-f", "unary_-f"),
@@ -748,7 +748,7 @@ fn sexp_string_escapes_backslashes() {
         loc(0, 15),
     );
     let sexp = node.to_sexp();
-    assert!(sexp.contains("\\\\"), "backslashes should be escaped, got: {sexp}");
+    assert!(sexp.contains("\\\\\\\\"), "backslashes should be escaped, got: {sexp}");
 }
 
 #[test]
