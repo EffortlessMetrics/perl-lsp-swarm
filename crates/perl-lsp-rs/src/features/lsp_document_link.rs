@@ -48,19 +48,7 @@ fn to_range(content: &str, start: usize, end: usize) -> Range {
 
 fn metacpan_document_link_target(module_name: &str) -> Option<Uri> {
     let target = metacpan_pod_uri(module_name)?;
-    Url::parse(&target)
-        .map_err(|e| {
-            tracing::debug!(module = %module_name, error = %e, "document link: failed to build MetaCPAN URL");
-        })
-        .ok()
-        .and_then(|url| {
-            url.to_string()
-                .parse::<Uri>()
-                .map_err(|e| {
-                    tracing::debug!(module = %module_name, error = %e, "document link: failed to parse MetaCPAN URI");
-                })
-                .ok()
-        })
+    Url::parse(&target).ok()?.to_string().parse::<Uri>().ok()
 }
 
 /// Collects clickable document links from Perl source code.

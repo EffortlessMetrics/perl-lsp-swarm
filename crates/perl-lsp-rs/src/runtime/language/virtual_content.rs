@@ -103,14 +103,13 @@ impl LspServer {
 }
 
 fn enrich_core_pragma_perldoc(module_name: &str, content: String) -> String {
-    let related_uri = match module_name {
-        "strict" => perldoc_uri("warnings"),
-        "warnings" => perldoc_uri("strict"),
+    let related_name = match module_name {
+        "strict" => "warnings",
+        "warnings" => "strict",
         _ => return content,
     };
-    let Some(related_uri) = related_uri else {
-        return content;
-    };
+    let fallback_uri = format!("perldoc://{related_name}");
+    let related_uri = perldoc_uri(related_name).unwrap_or(fallback_uri);
 
     format!("Related virtual perldoc:\n- {related_uri}\n\n{content}")
 }
