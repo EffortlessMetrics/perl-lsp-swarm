@@ -863,6 +863,73 @@ print $n;
     Ok(())
 }
 
+#[test]
+fn state_variable_without_initializer_not_uninitialized() {
+    // state variables are implicitly initialized to undef on first call,
+    // so they should not trigger UninitializedVariable warnings.
+    let code = r#"
+use feature 'state';
+
+sub test {
+    state $x;
+    print $x;  // Should NOT warn: state is initialized to undef
+}
+"#;
+    let issues = scope_issues(code);
+    let uninitialized: Vec<_> = issues
+        .iter()
+        .filter(|i| i.kind == IssueKind::UninitializedVariable && i.variable_name.contains("x"))
+        .collect();
+    assert!(
+        uninitialized.is_empty(),
+        "state without initializer should not be reported as uninitialized; found: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn my_variable_without_initializer_is_uninitialized() {
+    // my variables without initializers ARE truly uninitialized,
+    // so they SHOULD trigger UninitializedVariable warnings.
+    let code = r#"
+sub test {
+    my $y;
+    print $y;  // SHOULD warn: my is uninitialized
+}
+"#;
+    let issues = scope_issues(code);
+    let uninitialized: Vec<_> = issues
+        .iter()
+        .filter(|i| i.kind == IssueKind::UninitializedVariable && i.variable_name.contains("y"))
+        .collect();
+    assert!(
+        !uninitialized.is_empty(),
+        "my without initializer should be reported as uninitialized"
+    );
+}
+
+#[test]
+fn state_with_initializer_not_uninitialized() {
+    // state variables with explicit initializers should never warn.
+    let code = r#"
+use feature 'state';
+
+sub test {
+    state $x = 42;
+    print $x;  // Should NOT warn: state with initializer
+}
+"#;
+    let issues = scope_issues(code);
+    let uninitialized: Vec<_> = issues
+        .iter()
+        .filter(|i| i.kind == IssueKind::UninitializedVariable && i.variable_name.contains("x"))
+        .collect();
+    assert!(
+        uninitialized.is_empty(),
+        "state with initializer should not be reported as uninitialized"
+    );
+}
+
 // ===========================================================================
 // 5. Package-Qualified Symbol Resolution
 // ===========================================================================
