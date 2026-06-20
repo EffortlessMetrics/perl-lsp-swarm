@@ -643,4 +643,168 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn arc_deref_transparency() -> Result<(), Box<dyn std::error::Error>> {
+        let mut index = ReferenceIndex::new();
+        index.add_file(&sample_shard());
+        let refs = index.get_by_name("Foo::bar");
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].symbol_key, "Foo::bar");
+        assert_eq!(refs[0].file_id, FileId(1));
+        Ok(())
+    }
+
+    #[test]
+    fn multiple_entity_entries_same_arc() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(6);
+        let occ_id = OccurrenceId(1200);
+        let anchor_id = AnchorId(90);
+        let targets = vec![EntityId(500), EntityId(501), EntityId(502)];
+        let mut entities = vec![];
+        let mut edges = vec![];
+        for (idx, &entity_id) in targets.iter().enumerate() {
+            entities.push(EntityFact {
+                id: entity_id,
+                kind: EntityKind::Subroutine,
+                canonical_name: "many_targets".to_string(),
+                anchor_id: None,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            });
+            edges.push(EdgeFact {
+                id: EdgeId((2000 + idx) as u64),
+                kind: EdgeKind::References,
+                from_entity_id: EntityId(0),
+                to_entity_id: entity_id,
+                via_occurrence_id: Some(occ_id),
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            });
+        }
+        let shard = FileFactShard {
+            source_uri: "file:///lib/ManyTargets.pm".to_string(),
+            file_id,
+            content_hash: 555,
+            anchors_hash: None,
+            entities_hash: None,
+            occurrences_hash: None,
+            edges_hash: None,
+            anchors: vec![AnchorFact {
+                id: anchor_id,
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 5,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            entities,
+            occurrences: vec![OccurrenceFact {
+                id: occ_id,
+                kind: OccurrenceKind::Call,
+                entity_id: Some(targets[0]),
+                anchor_id,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            edges,
+        };
+        let mut index = ReferenceIndex::new();
+        index.add_file(&shard);
+        for &entity_id in &targets {
+            let refs = index.get_by_entity(entity_id);
+            assert_eq!(refs.len(), 1);
+            assert_eq!(refs[0].target_candidates.len(), 3);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn arc_concurrent_access() -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::{Arc as StdArc, Mutex};
+        use std::thread;
+        let index = StdArc::new(Mutex::new(ReferenceIndex::new()));
+        let shard = sample_shard();
+        {
+            let mut idx = index.lock().unwrap();
+            idx.add_file(&shard);
+        }
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let index_clone = StdArc::clone(&index);
+            let handle = thread::spawn(move || {
+                let idx = index_clone.lock().unwrap();
+                for _ in 0..50 {
+                    let refs = idx.get_by_entity(EntityId(100));
+                    assert_eq!(refs.len(), 1);
+                }
+            });
+            handles.push(handle);
+        }
+        for handle in handles {
+            handle.join().expect("thread panicked");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn arc_with_remove_file() -> Result<(), Box<dyn std::error::Error>> {
+        let entity_id = EntityId(600);
+        let shard_1 = FileFactShard {
+            source_uri: "file:///lib/Test1.pm".to_string(),
+            file_id: FileId(7),
+            content_hash: 666,
+            anchors_hash: None,
+            entities_hash: None,
+            occurrences_hash: None,
+            edges_hash: None,
+            anchors: vec![AnchorFact {
+                id: AnchorId(100),
+                file_id: FileId(7),
+                span_start_byte: 0,
+                span_end_byte: 5,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            entities: vec![EntityFact {
+                id: entity_id,
+                kind: EntityKind::Subroutine,
+                canonical_name: "test_fn".to_string(),
+                anchor_id: None,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            occurrences: vec![OccurrenceFact {
+                id: OccurrenceId(1300),
+                kind: OccurrenceKind::Call,
+                entity_id: Some(entity_id),
+                anchor_id: AnchorId(100),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            edges: vec![EdgeFact {
+                id: EdgeId(2100),
+                kind: EdgeKind::References,
+                from_entity_id: EntityId(0),
+                to_entity_id: entity_id,
+                via_occurrence_id: Some(OccurrenceId(1300)),
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+        };
+        let mut index = ReferenceIndex::new();
+        index.add_file(&shard_1);
+        let refs = index.get_by_entity(entity_id);
+        assert_eq!(refs.len(), 1);
+        index.remove_file("file:///lib/Test1.pm");
+        let refs = index.get_by_entity(entity_id);
+        assert_eq!(refs.len(), 0);
+        Ok(())
+    }
 }
