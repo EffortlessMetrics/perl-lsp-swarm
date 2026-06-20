@@ -43,7 +43,8 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             3,
         ),
         (
-            Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }, loc()),
+            Node::new(
+                NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }, loc()),
             "Variable",
             0,
         ),
