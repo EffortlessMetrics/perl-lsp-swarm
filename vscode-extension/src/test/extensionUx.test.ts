@@ -1405,6 +1405,26 @@ describe('suggestAiCompletionIfSupported (#1634)', () => {
     await suggestAiCompletionIfSupported(context, undefined);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
+
+  test('stays silent when inlineCompletionProvider is false (server explicitly opt-out)', async () => {
+    mountConfig(false);
+    const context: any = { workspaceState: makeWorkspaceState(false) };
+    const clientExplicitlyOff: any = {
+      initializeResult: { capabilities: { inlineCompletionProvider: false } },
+    };
+    await suggestAiCompletionIfSupported(context, clientExplicitlyOff);
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  test('stays silent when inlineCompletionProvider is null', async () => {
+    mountConfig(false);
+    const context: any = { workspaceState: makeWorkspaceState(false) };
+    const clientNull: any = {
+      initializeResult: { capabilities: { inlineCompletionProvider: null } },
+    };
+    await suggestAiCompletionIfSupported(context, clientNull);
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

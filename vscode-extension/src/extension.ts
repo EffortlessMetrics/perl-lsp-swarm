@@ -2754,10 +2754,14 @@ export async function suggestAiCompletionIfSupported(
     }
 
     const capabilities = client.initializeResult?.capabilities;
-    const supportsInline =
-        !!capabilities &&
-        typeof capabilities === 'object' &&
-        (capabilities as Record<string, unknown>).inlineCompletionProvider !== undefined;
+    // Per LSP 3.18 spec, inlineCompletionProvider is boolean | InlineCompletionOptions.
+    // A value of false or null means the server explicitly does NOT support inline
+    // completion; only a truthy / non-null object value indicates real support.
+    const inlineProvider =
+        !!capabilities && typeof capabilities === 'object'
+            ? (capabilities as Record<string, unknown>).inlineCompletionProvider
+            : undefined;
+    const supportsInline = inlineProvider !== undefined && inlineProvider !== false && inlineProvider !== null;
     if (!supportsInline) {
         return; // server cannot deliver inline completions
     }
