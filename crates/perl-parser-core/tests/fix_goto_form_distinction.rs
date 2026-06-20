@@ -7,7 +7,7 @@
 //!
 //! These tests verify the parser populates `NodeKind::Goto { form, .. }` with
 //! the correct `GotoTargetForm` discriminant so that semantic analysis and DAP
-//! can distinguish the tail-call form from a label jump.
+//! can distinguish the tail-call form from a layer jump.
 
 mod cpan_test_helpers;
 
@@ -122,6 +122,25 @@ sub run { goto $target; }
     assert!(
         matches!(form, GotoTargetForm::Expr),
         "goto $target should produce GotoTargetForm::Expr, got: {form:?}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// goto $expr form — additional edge cases
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_goto_paren_expr_produces_expr_form() {
+    // `goto +($cond ? $a : $b)` — prefix `+` forces Expr interpretation.
+    // The unary `+` token is not BitwiseAnd or Identifier, so the form is Expr.
+    let form = find_goto_form(
+        r#"
+sub run { goto +($flag ? $a : $b); }
+"#,
+    );
+    assert!(
+        matches!(form, GotoTargetForm::Expr),
+        "goto +(expr) should produce GotoTargetForm::Expr, got: {form:?}"
     );
 }
 
