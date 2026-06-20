@@ -241,7 +241,7 @@ cargo test --workspace --lib          # Run all tests
 
 ## Crate Structure
 
-134 workspace members across 135 crate directories (see `cargo metadata --no-deps`). Key crates:
+39 workspace members across 38 crate directories under `crates/` plus `xtask/` at the root (see `cargo metadata --no-deps`). The pre-v0.13.0 count of ~135 reflected the original microcrate split; successive collapse waves (D, G1a/G1b, G2, G3, Final-PR-B, H) absorbed those crates into larger units. Key crates:
 
 | Crate | Path | Purpose |
 |-------|------|---------|
@@ -253,7 +253,7 @@ cargo test --workspace --lib          # Run all tests
 | **perl-workspace** | `crates/perl-workspace/` | Workspace symbol indexing |
 | **perl-semantic-analyzer** | `crates/perl-semantic-analyzer/` | Semantic analysis |
 
-Families: `perl-module-*` (module resolution), `perl-lsp-*` (LSP providers), `perl-lsp-feature-*` (feature governance), `perl-dap-*` (DAP), `perl-ts-*` (tree-sitter), `perl-workspace-*` (workspace discovery), core leaf crates (token, AST, quote, regex, heredoc, error).
+Active crate groups: `perl-parser*` (parser family), `perl-lsp-rs*` (LSP server), `perl-semantic-*` (semantic analysis), `perl-tdd-*` / `perl-test-*` (test infrastructure), `tree-sitter-perl-*` (tree-sitter bindings), core leaf crates (`perl-token`, `perl-ast`, `perl-regex`, `perl-lexer`, `perl-pod`, `perl-uri`).
 
 ## Essential Commands
 
@@ -390,13 +390,13 @@ Invoke `/coding-standards` for full detail.
 
 [Status Overview](docs/project/status/index.md) | [CURRENT_STATUS.md](docs/project/CURRENT_STATUS.md) (stub) | [ROADMAP.md](docs/project/ROADMAP.md) | [COMMANDS_REFERENCE.md](docs/reference/COMMANDS_REFERENCE.md) | [LSP_IMPLEMENTATION_GUIDE.md](docs/reference/LSP_IMPLEMENTATION_GUIDE.md) | [FAILURE_MODES.md](docs/reference/FAILURE_MODES.md) | [CI_ARCHITECTURE.md](docs/reference/CI_ARCHITECTURE.md) | [features.toml](features.toml)
 
-**Learnings**: [docs/learnings/README.md](docs/learnings/README.md) (repo-specific incidents, greppable by symbol/PR/hazard-class/tag) | [docs/concepts/](docs/concepts/) (portable patterns: shift-left-ladder, cache-aware-agent-lanes, hazard-class-invariants, multi-angle-haiku-early-spec, serialize-merges-and-cancellation, re-create-over-untangle, orchestrator-substrate-model, model-conformance, human-corrects-substrate, type-level-id-space-promotion)
+**Learnings**: [docs/learnings/README.md](docs/learnings/README.md) (repo-specific incidents, greppable by symbol/PR/hazard-class/tag; key 2026-06 incidents: [2026-06-rerunning-broken-gates.md](docs/learnings/2026-06-rerunning-broken-gates.md), [2026-06-agent-claims-vs-ground-truth.md](docs/learnings/2026-06-agent-claims-vs-ground-truth.md), [2026-06-coverage-job-ran-tests.md](docs/learnings/2026-06-coverage-job-ran-tests.md), [2026-06-substrate-self-validation-bootstrap.md](docs/learnings/2026-06-substrate-self-validation-bootstrap.md)) | [docs/concepts/](docs/concepts/) (portable patterns: shift-left-ladder, cache-aware-agent-lanes, hazard-class-invariants, multi-angle-haiku-early-spec, serialize-merges-and-cancellation, re-create-over-untangle, orchestrator-substrate-model, model-conformance, human-corrects-substrate, type-level-id-space-promotion, slow-stochastic-compiler, stochastic-ready-pipelines, verify-the-instrument, gate-names-must-match-failure-classes, triage-as-claim-audit, non-exhaustive-check-silent-drop, enforcement-over-doctrine, doctrine-is-a-hypothesis)
 
 **Spec hazard defaults**: [SUBSYSTEM_HAZARD_DEFAULTS.md](docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md) — per-subsystem hazard rows (DAP, Parser, LSP, Coverage/CI) that spec-planner should seed into `acceptance.md`; extends SPEC_UPDATE_CHECKLIST §8 with subsystem-specific invariants and adversarial test obligations.
 
 **Spec system**: [SPEC_TEMPLATE.md](docs/reference/SPEC_TEMPLATE.md) — canonical `.spec/<issue#>-<slug>/` structure (checklist.md / acceptance.md with §Behavior §Hazards §Contracts §API-Shape §Test-Grid §Blast-Radius / context.md) with three worked shapes (parser-fix, LSP-feature, test-only). The [spec-builder workflow](.claude/workflows/spec-builder.js) populates the rich acceptance.md sections via six parallel haiku angles; spec-planner invokes it for non-trivial issues.
 
-**SDLC positioning**: [DISTRIBUTED_ENGINEERING_LINEAGE.md](docs/reference/DISTRIBUTED_ENGINEERING_LINEAGE.md) — situates the Octopus Cluster in classical engineering practice (Kanban, code review, trunk-health, CI/CD, SRE) with Beowulf contrast and SDLC-mapping table. | **Campaign narrative**: [docs/writeups/2026-06-agentic-maintenance-field-notes.md](docs/writeups/2026-06-agentic-maintenance-field-notes.md) — article-grade field notes from the June 2026 autonomous campaign (concrete incidents, isomorphic failure modes, shift-left evidence, instrument-is-the-bug recursion).
+**SDLC positioning**: [DISTRIBUTED_ENGINEERING_LINEAGE.md](docs/reference/DISTRIBUTED_ENGINEERING_LINEAGE.md) — situates the Octopus Cluster in classical engineering practice (Kanban, code review, trunk-health, CI/CD, SRE) with Beowulf contrast and SDLC-mapping table. | **Campaign narratives**: [docs/writeups/2026-06-agentic-maintenance-field-notes.md](docs/writeups/2026-06-agentic-maintenance-field-notes.md) (field notes from the June 2026 autonomous campaign: concrete incidents, isomorphic failure modes, shift-left evidence, instrument-is-the-bug recursion), [docs/writeups/2026-06-agentic-development-observations.md](docs/writeups/2026-06-agentic-development-observations.md) (central isomorphism: self-report unreliable at code/CI/cognitive layers; economics inversion; branch contamination; observability buggier than logic).
 
 ## Contributing
 
@@ -413,3 +413,5 @@ Start with `/swarm all`. Orchestrator spawns scoped agents from the catalog in w
 **PR lifecycle**: Draft PR -> reviewer agent -> `/pr-ready` -> CI -> ops agent merges.
 
 **Files**: `.ops-perl-lsp/` (metrics), `.claude/agents/` (agent defs and catalog), `.claude/commands/` (step skills and shared ops).
+
+

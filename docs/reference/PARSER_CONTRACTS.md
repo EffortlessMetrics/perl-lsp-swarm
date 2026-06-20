@@ -13,6 +13,8 @@ This document is kept factual and citable. Claims without a primary artifact
 **Related**: For repo-specific incidents motivating scanner and coverage contracts, see
 [docs/learnings/README.md](../learnings/README.md) (especially 2026-06-coverage-gate-measurement.md,
 2026-06-ripr-output-schema-break.md). For portable patterns, see [docs/concepts/](../concepts/).
+For the parallel DAP wire-protocol contract index (variablesReference wire-band codec), see
+[docs/reference/DAP_CONTRACTS.md](DAP_CONTRACTS.md).
 
 ---
 
@@ -286,7 +288,7 @@ Enum definitions: `NodeKindCategory` (line ~53), `NodeKindFlags` (line ~82).
 | Gate | Consumer | Status |
 |---|---|---|
 | Phase 7 (NOW) | Document-symbols provider, semantic-tokens provider | MAY consume `NodeKindCategory` |
-| Phase 8 (BLOCKED on #1297) | DAP breakpoint validator | MUST NOT consume `safe_for_breakpoint` yet |
+| Phase 8 (ready after #1297) | DAP breakpoint validator | MAY consume `safe_for_breakpoint` as prefilter; MUST apply instance-dependent checks (see §Breakpoint contract below) |
 
 ### Proof
 
@@ -314,20 +316,35 @@ placement. It does **not** mean "always stop here." DAP consumers must
 additionally inspect instance-level facts (is this cursor inside a heredoc body?
 a POD block? after `__DATA__`?) and verify with the runtime/debugger.
 
-**`safe_for_breakpoint` and `introduces_scope` for several variants are
-research-gated by open issue #1297.** Specifically:
+### §Breakpoint and Scope Classification Contract (ratified issue #1297, PR #1452)
 
-| Variant | Flag | Baseline | Open question |
+**Issue #1297 ratification (ChatGPT-Pro + Perl 5.40.1 debugger probe) is now merged.**
+The following table documents all ratified flag values and the instance-dependent rows
+that DAP consumers must handle with AST-structure or metadata checks.
+
+**Static (variant-level, no instance check needed):**
+
+| Variant | Flag | Ratified value | Evidence |
 |---|---|---|---|
-| `PhaseBlock` | `safe_for_breakpoint` | `true` | `BEGIN`/`CHECK`/`UNITCHECK` run at compile time — not stoppable in a DAP session; `END`/`INIT` may differ |
-| `PhaseBlock` | `introduces_scope` | `true` | Debugger-observable lexical scope? |
-| `Use` / `No` | `safe_for_breakpoint` | `true` | `use Module LIST` is equivalent to `BEGIN { require ...; ->import }` — compile-time; can the debugger stop on it? |
-| `Eval` | `introduces_scope` | `true` | `eval BLOCK` introduces scope; `eval STRING` does not — this is instance-dependent, not variant-level |
-| `Package` | `introduces_scope` | `true` | Block-form (`package Foo { }`) introduces scope; statement-form (`package Foo;`) does not — instance-dependent |
+| `Use` | `safe_for_breakpoint` | **`false`** | `use Module LIST` is `BEGIN { require; import }` — compile-time; Perl 5.40.1 probe reports "not breakable". |
+| `No` | `safe_for_breakpoint` | **`false`** | `no Module LIST` is `BEGIN { unimport }` — compile-time; Perl 5.40.1 probe reports "not breakable". |
+| `Class` | `safe_for_breakpoint` | `true` | `class Foo { }` header line is stoppable in runtime debugger; probe confirms. |
+| `Goto` | `safe_for_breakpoint` | `true` | Executable statement before control transfer; stoppable. |
+| `Typeglob` | `safe_for_breakpoint` | `false` | Typeglob reference/assignment introduces no lexical scope; not a runtime statement. |
 
-Phase 8 DAP breakpoint migration **waits on issue #1297** resolution. Until
-#1297 is closed, no production DAP breakpoint validator should consume
-`safe_for_breakpoint` for these variants.
+**Instance-dependent (variant flag is a conservative prefilter; DAP consumer must verify):**
+
+| Variant | Flag | Variant-level value | Consumer must check |
+|---|---|---|---|
+| `Eval` | `introduces_scope` | `true` (prefilter) | Whether `block` child is `NodeKind::Block` — `eval STRING`/`eval EXPR` introduce no static scope. |
+| `Package` | `introduces_scope` | `true` (prefilter) | Whether `block.is_some()` — `package Foo;` (no block) creates no lexical scope. |
+| `Package` | `safe_for_breakpoint` | `true` (prefilter) | Whether `block.is_some()` — statement form differs from block form at runtime. |
+| `PhaseBlock` | `safe_for_breakpoint` | `true` (prefilter) | `phase` field: `BEGIN`/`CHECK`/`UNITCHECK` are compile-time (not stoppable); `END` is stoppable; `INIT` may depend on attach timing. |
+
+Phase 8 DAP breakpoint validator **may now consume `safe_for_breakpoint`** as a prefilter,
+but MUST apply the instance-dependent checks in the table above before accepting a
+breakpoint request. The prefilter eliminates obvious non-candidates (recovery nodes,
+literals, compile-time pragmas); the instance checks handle variant-level ambiguity.
 
 **Naming note.** The flag is currently named `safe_for_breakpoint`. A future
 rename or split to something like `can_host_executable_code` vs
@@ -351,6 +368,40 @@ for future use. No variants currently map to either category.
 - Mutation of the classification table for new variants is mandatory (compile
   error guard). A PR adding a new `NodeKind` variant must add the corresponding
   arm to both `category()` and `flags()`.
+
+### Non-exhaustive consumer audit (REQUIRED for every new variant)
+
+The exhaustive `match self { ... }` arms in `classification.rs` are the compiler-enforced
+drift guard — they catch the obvious case. However, two consumer patterns are **invisible
+to the exhaustiveness checker** and must be audited manually whenever a new variant is added:
+
+1. **`if let NodeKind::X { .. } = node` in loops without an else branch** — the loop body
+   runs for matched variants and silently skips new variants. The compiler sees no problem.
+
+2. **`_ => { /* no children */ }` wildcard arms** in traversal and extraction functions
+   (especially `visit_children`, semantic-token dispatch, symbol extractors, declaration
+   mappers) — new variants fall into the no-op arm. The match remains exhaustive; the new
+   variant is silently dropped.
+
+In PR #1457 (`NodeKind::NestedVariableList`, issue #1362), both patterns caused three
+silent consumer drops: the `node_analysis` `if let` loop (no semantic tokens or hover for
+inner variables), the `variable_decl_from_node` declaration mapper (no workspace symbols,
+breaking go-to-definition and rename), and the `visit_children` wildcard arm (no reference
+tracking). Deep-review caught and fixed all three in commit `c5c8f6bf8`.
+
+**The required audit for any new `NodeKind` variant:**
+
+```
+grep -r "if let NodeKind::" crates/ -- look for loops with no else
+grep -r "_ =>" crates/perl-semantic-analyzer crates/perl-symbol crates/perl-workspace -- look for wildcard arms in traversal/extraction
+```
+
+For each hit: add an explicit arm or else branch for the new variant. Write an integration
+test asserting that semantic tokens, hover, go-to-definition, and workspace symbols all
+return results for a Perl snippet using the new construct.
+
+**See**: [docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md PARSER-5](SUBSYSTEM_HAZARD_DEFAULTS.md)
+and [docs/learnings/2026-06-nodekind-variant-silent-consumer-drop.md](../learnings/2026-06-nodekind-variant-silent-consumer-drop.md).
 
 ---
 
@@ -525,5 +576,9 @@ that span line boundaries.
 | Indirect-object ambiguity | `perl-parser-core` | `crates/perl-parser/tests/parser_regressions.rs` | #1296, #1214 |
 | Embedded code (`s///e`) | `perl-ast`, `perl-parser-core` | `crates/perl-parser-core/tests/fix_subst_e_has_embedded_code_975.rs` | #1238 |
 | NodeKind classification | `perl-ast` | `crates/perl-ast/tests/classification_tests.rs` | #1295 |
+| NodeKind non-exhaustive consumer audit | `perl-semantic-analyzer`, `perl-symbol`, `perl-workspace` | grep `if let NodeKind::` + `_ =>` wildcard arms | #1457 deep-review |
 | Recovery node decision | `perl-ast` | (not fixture-coverable — never emitted) | open #915 |
 | Formatting preserve gates | `perl-lsp-perltidy` | `crates/perl-lsp-perltidy/tests/native_formatter_parse_gate_tests.rs` | #1314 |
+
+**DAP contracts** are in a separate index: [docs/reference/DAP_CONTRACTS.md](DAP_CONTRACTS.md)
+(variablesReference wire-band codec, governing PRs #1430 / #1444, open #1445).

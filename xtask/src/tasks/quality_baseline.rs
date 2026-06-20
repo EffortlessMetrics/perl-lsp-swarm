@@ -12,6 +12,12 @@ use serde_json::{Value as JsonValue, json};
 use serde_yaml_ng::Value as YamlValue;
 
 const COVERAGE_TARGET: f64 = 95.0;
+const TEST_SUPPORT_CRATE_PREFIXES: &[&str] = &[
+    "crates/perl-lsp-ux-tests/",
+    "crates/perl-tdd-support/",
+    "crates/perl-test-generators/",
+    "crates/perl-test-must/",
+];
 
 // ---------------------------------------------------------------------------
 // cfg(test) line detection
@@ -71,17 +77,13 @@ fn structural_brace_delta(line: &str) -> i32 {
         }
 
         // Raw byte string `br#"..."#` — must be checked before `b"..."`.
-        if ch == 'b'
-            && i + 1 < n
-            && chars[i + 1] == 'r'
-            && {
-                let mut k = i + 2;
-                while k < n && chars[k] == '#' {
-                    k += 1;
-                }
-                k < n && chars[k] == '"'
+        if ch == 'b' && i + 1 < n && chars[i + 1] == 'r' && {
+            let mut k = i + 2;
+            while k < n && chars[k] == '#' {
+                k += 1;
             }
-        {
+            k < n && chars[k] == '"'
+        } {
             let mut hash_count = 0usize;
             let mut k = i + 2;
             while k < n && chars[k] == '#' {
@@ -111,15 +113,13 @@ fn structural_brace_delta(line: &str) -> i32 {
         }
 
         // Raw string literal `r#"..."#`.
-        if ch == 'r'
-            && {
-                let mut k = i + 1;
-                while k < n && chars[k] == '#' {
-                    k += 1;
-                }
-                k < n && chars[k] == '"'
+        if ch == 'r' && {
+            let mut k = i + 1;
+            while k < n && chars[k] == '#' {
+                k += 1;
             }
-        {
+            k < n && chars[k] == '"'
+        } {
             let mut hash_count = 0usize;
             let mut k = i + 1;
             while k < n && chars[k] == '#' {
@@ -202,9 +202,8 @@ fn structural_brace_delta(line: &str) -> i32 {
         if ch == '\'' {
             // Lifetime or label heuristic: `'` followed by an identifier char
             // with no closing `'` after the identifier means it is a lifetime.
-            let is_lifetime = i + 1 < n
-                && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_')
-                && {
+            let is_lifetime =
+                i + 1 < n && (chars[i + 1].is_ascii_alphabetic() || chars[i + 1] == '_') && {
                     let mut k = i + 1;
                     while k < n && (chars[k].is_ascii_alphanumeric() || chars[k] == '_') {
                         k += 1;
@@ -689,10 +688,41 @@ fn changed_lines_for_lcov_file<'a>(
     path: &str,
     changed_lines: &'a BTreeMap<String, BTreeSet<u64>>,
 ) -> Option<&'a BTreeSet<u64>> {
-    changed_lines.get(path).or_else(|| {
+    changed_lines_for_candidate(path, changed_lines).or_else(|| {
         root.and_then(|root| relative_lcov_path(root, path))
-            .and_then(|relative| changed_lines.get(&relative))
+            .and_then(|relative| changed_lines_for_candidate(&relative, changed_lines))
     })
+}
+
+fn changed_lines_for_candidate<'a>(
+    path: &str,
+    changed_lines: &'a BTreeMap<String, BTreeSet<u64>>,
+) -> Option<&'a BTreeSet<u64>> {
+    if is_repo_relative_rust_path(path) && !is_patch_coverage_source_path(path) {
+        return None;
+    }
+    changed_lines.get(path)
+}
+
+fn is_repo_relative_rust_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.ends_with(".rs")
+        && (normalized.starts_with("crates/")
+            || normalized.starts_with("xtask/src/")
+            || normalized.starts_with("xtask/tests/"))
+}
+
+fn is_patch_coverage_source_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.ends_with(".rs")
+        && !normalized.starts_with("xtask/tests/")
+        && !normalized.contains("/tests/")
+        && !is_test_support_crate_path(&normalized)
+        && (normalized.starts_with("xtask/src/") || normalized.starts_with("crates/"))
+}
+
+fn is_test_support_crate_path(path: &str) -> bool {
+    TEST_SUPPORT_CRATE_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
 }
 
 fn relative_lcov_path(root: &Path, path: &str) -> Option<String> {
@@ -1606,19 +1636,13 @@ coverage:
     fn structural_brace_delta_skips_char_literal_open_brace() {
         // The classic dangerous pattern: assert!(s.starts_with('{'));
         // The '{' is a char literal; net structural delta must be 0, not +1.
-        assert_eq!(
-            structural_brace_delta("        assert!(s.starts_with('{'));"),
-            0
-        );
+        assert_eq!(structural_brace_delta("        assert!(s.starts_with('{'));"), 0);
     }
 
     #[test]
     fn structural_brace_delta_skips_char_literal_close_brace() {
         // A '}' char literal must not decrement depth.
-        assert_eq!(
-            structural_brace_delta("        assert!(s.ends_with('}'));"),
-            0
-        );
+        assert_eq!(structural_brace_delta("        assert!(s.ends_with('}'));"), 0);
     }
 
     #[test]
@@ -1657,10 +1681,7 @@ coverage:
         // Lifetime annotations ('a, 'static) must not suppress the next
         // structural brace.
         assert_eq!(structural_brace_delta("    fn t<'a>() {"), 1);
-        assert_eq!(
-            structural_brace_delta("        let _: &'static str = \"hi\";"),
-            0
-        );
+        assert_eq!(structural_brace_delta("        let _: &'static str = \"hi\";"), 0);
     }
 
     // ------------------------------------------------------------------
@@ -1677,47 +1698,35 @@ coverage:
         // With `structural_brace_delta` the char literal is skipped, so the
         // module correctly closes at the real `}` on line 10.
         let source = [
-            "pub fn prod() -> bool { true }\n", // 1
-            "\n",                               // 2
-            "#[cfg(test)]\n",                   // 3
-            "mod tests {\n",                    // 4
-            "    #[test]\n",                    // 5
-            "    fn t() {\n",                   // 6
-            "        let s = \"{\";\n",       // 7
+            "pub fn prod() -> bool { true }\n",       // 1
+            "\n",                                     // 2
+            "#[cfg(test)]\n",                         // 3
+            "mod tests {\n",                          // 4
+            "    #[test]\n",                          // 5
+            "    fn t() {\n",                         // 6
+            "        let s = \"{\";\n",               // 7
             "        assert!(s.starts_with('{'));\n", // 8 char literal {
-            "    }\n",                          // 9
-            "}\n",                              // 10 real module close
-            "\n",                               // 11
-            "pub fn prod_after() -> bool {\n",  // 12 must NOT be in set
-            "    false\n",                      // 13
-            "}\n",                              // 14
+            "    }\n",                                // 9
+            "}\n",                                    // 10 real module close
+            "\n",                                     // 11
+            "pub fn prod_after() -> bool {\n",        // 12 must NOT be in set
+            "    false\n",                            // 13
+            "}\n",                                    // 14
         ]
         .concat();
 
         let test_lines = cfg_test_line_numbers(&source);
 
-        assert!(
-            !test_lines.contains(&1),
-            "prod fn before must not be in test set"
-        );
+        assert!(!test_lines.contains(&1), "prod fn before must not be in test set");
         assert!(
             !test_lines.contains(&12),
             "prod fn after must not be in test set (naive scanner bug)"
         );
-        assert!(
-            !test_lines.contains(&13),
-            "prod fn body must not be in test set"
-        );
-        assert!(
-            !test_lines.contains(&14),
-            "prod fn close must not be in test set"
-        );
+        assert!(!test_lines.contains(&13), "prod fn body must not be in test set");
+        assert!(!test_lines.contains(&14), "prod fn close must not be in test set");
         assert!(test_lines.contains(&3), "cfg(test) attr must be in test set");
         assert!(test_lines.contains(&4), "mod tests open must be in test set");
-        assert!(
-            test_lines.contains(&8),
-            "assert! line with char literal must be in test set"
-        );
+        assert!(test_lines.contains(&8), "assert! line with char literal must be in test set");
         assert!(test_lines.contains(&10), "mod tests close must be in test set");
     }
 
@@ -1743,10 +1752,7 @@ coverage:
             !test_lines.contains(&7),
             "prod after must not be in test set (comment brace regression)"
         );
-        assert!(
-            test_lines.contains(&6),
-            "real module close must be in test set"
-        );
+        assert!(test_lines.contains(&6), "real module close must be in test set");
     }
 
     // ------------------------------------------------------------------
@@ -1982,6 +1988,37 @@ mod tests {\n\
         let patch =
             patch_coverage_from_changed_lines_for_root(Some(temp.path()), &summary, &changed);
         assert_eq!(patch, 100.0, "test-only PR patch coverage must be 100.0 after stripping");
+        Ok(())
+    }
+
+    #[test]
+    fn patch_coverage_ignores_test_support_crate_sources() -> TestResult {
+        let lcov = LcovSummary {
+            line_hit: 0,
+            line_found: 2,
+            files: vec![FileCoverage {
+                path: "crates/perl-lsp-ux-tests/src/lib.rs".to_string(),
+                line_hit: 0,
+                line_found: 2,
+                uncovered_lines: vec![1, 2],
+                lines: vec![
+                    LcovLine { number: 1, hit_count: 0 },
+                    LcovLine { number: 2, hit_count: 0 },
+                ],
+            }],
+        };
+        let changed: BTreeMap<String, BTreeSet<u64>> = BTreeMap::from([(
+            "crates/perl-lsp-ux-tests/src/lib.rs".to_string(),
+            BTreeSet::from([1u64, 2]),
+        )]);
+
+        let patch =
+            patch_coverage_from_changed_lines_for_root(Some(Path::new(".")), &lcov, &changed);
+        assert_eq!(patch, 100.0, "test-support crates must not affect Patch95");
+        assert!(
+            patch_file_gaps_for_root(Some(Path::new(".")), &lcov, &changed).is_empty(),
+            "test-support crates must not appear in patch gap next actions"
+        );
         Ok(())
     }
 }

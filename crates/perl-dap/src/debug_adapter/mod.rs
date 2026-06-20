@@ -20,6 +20,7 @@ pub(crate) mod safe_eval;
 mod session;
 mod sync_utils;
 mod transport;
+pub mod var_ref;
 mod variable_cache;
 
 use crate::breakpoint::{AstBreakpointValidator, BreakpointValidator};
@@ -513,6 +514,25 @@ impl DebugAdapter {
     fn stack_frames_snapshot_for_test(&self) -> Vec<StackFrame> {
         let session = lock_or_recover(&self.session, "debug_adapter.snapshot_frames");
         session.as_ref().map(|s| s.stack_frames.clone()).unwrap_or_default()
+    }
+
+    /// Seed the active session's variable_cache with an EvalResult entry for testing.
+    ///
+    /// Used by the fix #1338 guard test: a CACHED EvalResult ref must serve its children
+    /// via the cache-hit path, NOT be swallowed by the early-return short-circuit added
+    /// for stale (cache-miss) EvalResult refs.
+    ///
+    /// Only for use in tests; not part of the public API contract.
+    #[cfg(test)]
+    pub fn seed_eval_result_cache_for_test(
+        &self,
+        eval_ref_wire: i32,
+        variables: Vec<crate::types::Variable>,
+    ) {
+        let mut session = lock_or_recover(&self.session, "debug_adapter.seed_eval_result_cache");
+        if let Some(ref mut sess) = *session {
+            sess.variable_cache.upsert(eval_ref_wire, VariableCacheKind::EvaluateResult, variables);
+        }
     }
 
     /// Seed a stopped DebugSession with a given set of stack frames for testing

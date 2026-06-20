@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Generate coverage-pack-commands.sh from the CI route receipt.
 
-Integration-test commands (``cargo test ... --tests ...``) are run
-NON-FATALLY for coverage collection.  The instrumented binaries write LLVM
-coverage data even when their assertions fail, so coverage IS collected from
-them.  The quality-gate verdict comes from the coverage NUMBER (patch >= 95 %),
-not from test pass/fail.
+Integration-test commands (those containing ``--tests``) are run NON-FATALLY
+for coverage collection.  The instrumented binaries write LLVM coverage data
+even when their assertions fail, so coverage IS collected from them.  The
+quality-gate verdict comes from the coverage NUMBER (patch >= 95 %), not from
+test pass/fail.
+
+Since #1282, integration commands use ``cargo llvm-cov test --no-report``
+instead of ``cargo test`` so that cargo-llvm-cov registers the binary in its
+tracking file.  Without this registration, ``cargo llvm-cov report`` does not
+know which binary files to symbolise for integration-test profdata, causing
+integration-test-covered source lines to appear uncovered (false-low patch %).
 
 Context (issue #1269 / epic #1232):
   perl-dap integration tests (tests/) have pre-existing correctness debt and
@@ -25,21 +31,31 @@ import sys
 from pathlib import Path
 
 
-def is_integration_test_command(command: str) -> bool:
-    """Return True if this is an integration-test invocation (tests/ suite).
+def is_test_command(command: str) -> bool:
+    """Return True if this is a test invocation (cargo test or cargo llvm-cov test).
 
-    Integration tests are identified by containing ``--tests`` in the cargo
-    invocation.  These are run non-fatally because they may have pre-existing
-    assertion failures that are tracked as test-debt in issue #1269.
+    ALL test commands are run non-fatally (#1470/#1232/#1269).  Coverage
+    collection does not depend on test correctness: the LLVM instrumentation
+    data is written by the binary before it exits, so cargo-llvm-cov collects
+    coverage regardless of whether assertions pass.  The quality-gate verdict
+    is the coverage NUMBER, not test pass/fail.
+
+    Test correctness is owned by the separate correctness gate (#1469).
+
+    Since #1282, integration commands use ``cargo llvm-cov test --no-report``
+    instead of ``cargo test`` so that cargo-llvm-cov registers the binary for
+    the final ``cargo llvm-cov report`` step (fixing the false-low patch
+    coverage for integration-tested code paths).
     """
-    return "--tests" in command and command.lstrip().startswith("cargo test")
+    stripped = command.lstrip()
+    return stripped.startswith("cargo test") or stripped.startswith("cargo llvm-cov test")
 
 
 def render_command_block(command: str) -> str:
     """Render a single command as a bash block in the generated script."""
-    if is_integration_test_command(command):
+    if is_test_command(command):
         label = shlex.quote(
-            ">>> routed coverage (non-fatal -- assertion failures are pre-existing test-debt #1269): "
+            ">>> routed coverage (non-fatal -- test correctness is a separate gate #1469): "
             + command
         )
         # Run the test but suppress non-zero exit so coverage-pack-commands.sh
@@ -50,8 +66,8 @@ def render_command_block(command: str) -> str:
         return (
             f"echo {label}\n"
             f"{command} || {{\n"
-            f"  echo '::warning::coverage-lane integration test exited non-zero"
-            f" (tracked as test-debt in #1269; coverage data still collected)'\n"
+            f"  echo '::warning::coverage-lane test exited non-zero"
+            f" (test correctness is a separate gate #1469; coverage data still collected)'\n"
             f"}}\n"
         )
     else:

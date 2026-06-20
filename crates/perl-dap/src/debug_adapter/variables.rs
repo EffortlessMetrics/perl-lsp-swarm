@@ -4,7 +4,7 @@ use super::*;
 
 impl DebugAdapter {
     /// Handle variables request
-    pub(super) fn handle_variables(
+    pub fn handle_variables(
         &self,
         seq: i64,
         request_seq: i64,
@@ -107,19 +107,43 @@ impl DebugAdapter {
 
                 // Request fresh scope output from Perl debugger for scope roots only.
                 //
-                // Scope encoding: variables_ref % 10 indicates the scope kind:
-                //   1 = Locals  (lexical `my` variables in the current frame)
-                //   2 = Package (package/`our` variables, fully-qualified names)
-                //   3 = Globals (Perl built-in global variables)
+                // Decode the variablesReference using the VariableReference codec.
+                // Scope variants map to their kind (Locals/Package/Globals) and frame_id.
+                // Non-Scope variants and invalid refs skip the framed output fetch;
+                // EvalResult cache hits were already served above.
+                use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+
+                // Short-circuit: stale EvalResult ref (cache miss after resume).
                 //
-                // Frame index (variables_ref / 10) is used only for Package/Globals
-                // lookups where `V <pkg>` is appropriate.  For Locals, the `V` command
-                // is unsuitable because it only shows package-symbol-table entries —
-                // `my` lexicals are NOT in the symbol table.  Instead, we use a
-                // B-module eval that walks the current pad directly.
-                let frame_id = variables_ref / 10;
-                match variables_ref % 10 {
-                    1 => {
+                // On resume (continue/next/step), variable_cache.clear() runs, making
+                // any eval_ref the client holds from the previous stop stale. A stale
+                // eval_ref is in the EvalResult band ([1_000_000, 1_999_999_999]) but is
+                // absent from the cache. Querying the debugger for a bogus scope or waiting
+                // for output that will never arrive is wasteful and semantically wrong.
+                //
+                // Protocol contract: return honest empty (success=true, variables=[])
+                // immediately. This matches the DAP spec — a ref that is no longer valid
+                // after a resume simply has no children.
+                if matches!(
+                    VariableReference::decode(variables_ref),
+                    Some(VariableReference::EvalResult { .. })
+                ) {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: true,
+                        command: "variables".to_string(),
+                        body: Some(json!({ "variables": [] })),
+                        message: None,
+                    };
+                }
+
+                let (scope_frame_id, scope_kind) = match VariableReference::decode(variables_ref) {
+                    Some(VariableReference::Scope { frame_id, kind }) => (frame_id, Some(kind)),
+                    _ => (0, None),
+                };
+                match scope_kind {
+                    Some(ScopeKind::Locals) => {
                         // Locals scope: enumerate lexical `my` variables in the current
                         // executing frame's pad using the B introspection module.
                         //
@@ -178,9 +202,9 @@ impl DebugAdapter {
                             }
                         }
                     }
-                    2 => {
+                    Some(ScopeKind::Package) => {
                         if let Some(stdin) = session.process.stdin.as_mut() {
-                            let commands = vec![format!("V {} ::", frame_id)];
+                            let commands = vec![format!("V {} ::", scope_frame_id)];
                             match self.send_framed_debugger_commands(stdin, &commands) {
                                 Ok((begin, end)) => {
                                     framed_scope_lines = self.capture_framed_debugger_output(
@@ -191,16 +215,16 @@ impl DebugAdapter {
                                 }
                                 Err(error) => {
                                     tracing::warn!(%error, "Failed to send framed variables command, falling back");
-                                    let cmd = format!("V {} ::\n", frame_id);
+                                    let cmd = format!("V {} ::\n", scope_frame_id);
                                     let _ = stdin.write_all(cmd.as_bytes());
                                     let _ = stdin.flush();
                                 }
                             }
                         }
                     }
-                    3 => {
+                    Some(ScopeKind::Globals) => {
                         if let Some(stdin) = session.process.stdin.as_mut() {
-                            let commands = vec![format!("V {} *", frame_id)];
+                            let commands = vec![format!("V {} *", scope_frame_id)];
                             match self.send_framed_debugger_commands(stdin, &commands) {
                                 Ok((begin, end)) => {
                                     framed_scope_lines = self.capture_framed_debugger_output(
@@ -211,14 +235,21 @@ impl DebugAdapter {
                                 }
                                 Err(error) => {
                                     tracing::warn!(%error, "Failed to send framed variables command, falling back");
-                                    let cmd = format!("V {} *\n", frame_id);
+                                    let cmd = format!("V {} *\n", scope_frame_id);
                                     let _ = stdin.write_all(cmd.as_bytes());
                                     let _ = stdin.flush();
                                 }
                             }
                         }
                     }
-                    _ => {}
+                    None => {
+                        // Non-Scope variablesReference — no framed output to fetch.
+                        // Cache hits were already returned via variable_cache above.
+                        // Stale EvalResult refs short-circuit to an empty response
+                        // before reaching this branch (see the early return above).
+                        // A stale Child ref on cache miss silently produces an empty
+                        // list here; that gap is tracked in issue #1445.
+                    }
                 }
 
                 let (full_roots, child_cache) = if let Some(lines) = framed_scope_lines.as_ref() {
@@ -712,6 +743,111 @@ mod hazard_invariant_tests {
                 variables_success(&mut a, stale),
                 "never-allocated scope ref={stale} must succeed (no crash, honest empty)"
             );
+        }
+    }
+
+    // --- Fix #1338: stale EvalResult ref with Stopped session -> early short-circuit ---
+    //
+    // This lib test covers the new early-return branch in handle_variables() added by
+    // fix #1338 (cache-miss branch, EvalResult short-circuit in variables.rs).
+    //
+    // Path exercised:
+    //   1. Session IS Stopped -> passes the Running-state guard (lines 73-92 pre-fix)
+    //   2. Cache miss for eval_ref wire -> enters else branch
+    //   3. decode yields EvalResult -> short-circuit, return honest empty immediately
+    //
+    // Without the fix, control falls through to parse_scope_variables_from_output
+    // (75ms detour via wait_for_debugger_output_window) before returning empty via
+    // fallback_scope_variables. The short-circuit removes the delay and bogus routing.
+    //
+    // Skip when perl is not on PATH (seed_stopped_session_with_frames_for_test
+    // spawns perl -e 1 as a no-op child process).
+    #[test]
+    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty() {
+        // Skip if perl is not available on PATH.
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        let mut a = adapter();
+        // Seed a Stopped session so the Running-state guard does not trigger.
+        // This exercises the cache-miss path and the new EvalResult short-circuit.
+        a.seed_stopped_session_with_frames_for_test(vec![]);
+
+        // EvalResult band wire values: stale after resume (not in cache).
+        for eval_ref_wire in [1_000_000_i64, 1_000_001, 1_000_003, 1_100_000] {
+            assert!(
+                variables_body_is_empty(&mut a, eval_ref_wire),
+                "fix #1338: stopped session + stale eval_ref={eval_ref_wire} must return honest empty"
+            );
+        }
+    }
+
+    // --- Guard test: cached EvalResult is NOT short-circuited by the fix #1338 early return ---
+    //
+    // This is the scoping guard for the fix: a VALID EvalResult ref that IS in the cache
+    // must be served via the cache-hit path (line 102) and return its children — it must
+    // NOT be swallowed by the early-return short-circuit (which fires only on cache miss).
+    //
+    // Without this guard, a regression could incorrectly apply the early return to ALL
+    // EvalResult refs (cached or not), causing legitimate variable expansion to return
+    // empty. This test would fail immediately in that case.
+    //
+    // Skip when perl is not on PATH.
+    #[test]
+    fn fix_1338_cached_eval_result_is_served_not_short_circuited() {
+        // Skip if perl is not available on PATH.
+        if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
+            return;
+        }
+        use crate::debug_adapter::var_ref::VariableReference;
+        use crate::types::Variable;
+
+        let mut a = adapter();
+        a.seed_stopped_session_with_frames_for_test(vec![]);
+
+        // An EvalResult wire value that IS in cache (simulates a fresh evaluate result
+        // before resume — the client holds the ref and sends a variables request while
+        // the session is still stopped at the same breakpoint).
+        let eval_ref_wire: i32 =
+            VariableReference::EvalResult { counter: 42 }.encode().expect("counter=42 is valid");
+        assert!(
+            (1_000_000..=1_999_999_999).contains(&eval_ref_wire),
+            "setup: must be in EvalResult band"
+        );
+
+        // Seed a cached entry so the cache-hit path fires.
+        let cached_var = Variable {
+            name: "".to_string(),
+            value: "42".to_string(),
+            type_: Some("SCALAR".to_string()),
+            variables_reference: 0,
+            named_variables: None,
+            indexed_variables: None,
+        };
+        a.seed_eval_result_cache_for_test(eval_ref_wire, vec![cached_var]);
+
+        // Must return the cached children (non-empty), NOT the early-return empty.
+        // If the early return incorrectly fired here, this assertion would fail.
+        let msg = a.handle_request(
+            1,
+            "variables",
+            Some(serde_json::json!({ "variablesReference": eval_ref_wire as i64 })),
+        );
+        match msg {
+            DapMessage::Response { success, body, .. } => {
+                assert!(success, "cached EvalResult must succeed");
+                let vars = body
+                    .as_ref()
+                    .and_then(|b| b.get("variables"))
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                assert_eq!(
+                    vars, 1,
+                    "cached EvalResult must return its 1 cached child; got {vars} (early return was applied incorrectly)"
+                );
+            }
+            other => panic!("expected Response, got: {other:?}"),
         }
     }
 }

@@ -88,21 +88,22 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
     ] {
         let step = must_some(workflow_step(coverage_job, setup_step));
         assert!(
-            step.contains(
-                "if: github.event_name != 'pull_request' || steps.coverage_route.outputs.coverage_required == 'true'"
-            ),
-            "coverage setup step `{setup_step}` must run only when routed coverage is required"
+            step.contains("merge_group")
+                && step.contains("pull_request")
+                && step.contains("coverage_required"),
+            "coverage setup step `{setup_step}` must run only when routed coverage is required (including merge_group support)"
         );
     }
     let codecov_upload_start = must_some(coverage_job.find("- name: Upload coverage to Codecov"));
+    let enforced_coverage_steps = &coverage_job[..codecov_upload_start];
     let after_codecov_upload = &coverage_job[codecov_upload_start..];
     let codecov_upload_end =
         must_some(after_codecov_upload.find("\n      - name: Upload coverage proof artifacts"));
     let codecov_upload_step = &after_codecov_upload[..codecov_upload_end];
     assert_eq!(
-        codecov_upload_step.matches("fail_ci_if_error: true").count(),
+        codecov_upload_step.matches("continue-on-error: true").count(),
         1,
-        "Codecov upload must fail the job when coverage upload/status integration errors"
+        "Codecov upload must not fail the job on integration errors (non-fatal telemetry)"
     );
     assert!(
         codecov_upload_step.contains("uses: codecov/codecov-action@")
@@ -110,7 +111,7 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "Codecov upload step must upload the workspace library plus xtask proof-lane LCOV receipt"
     );
     for required in [
-        "BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}",
+        "BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}",
         "base_ref=\"$BASE_REF\"",
         "id: coverage_route",
         "coverage_required=$coverage_required",
@@ -119,7 +120,7 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "just coverage-proof-routed \"origin/$base_ref\" \"HEAD\"",
         "changed-file routing selected no LCOV coverage proof packs",
         "if: github.event_name != 'pull_request'",
-        "if: github.event_name != 'pull_request' || steps.coverage_route.outputs.coverage_required == 'true'",
+        "github.event_name != 'pull_request' && github.event_name != 'merge_group'",
         "just coverage-proof \"origin/$base_ref\"",
         "cache-targets: false",
         "RUSTFLAGS: \"-Cdebuginfo=0\"",
@@ -149,8 +150,8 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "coverage proof artifact upload must pin the action SHA"
     );
     assert!(
-        !coverage_job.contains("continue-on-error: true"),
-        "coverage patch proof must not make Codecov upload advisory"
+        !enforced_coverage_steps.contains("continue-on-error: true"),
+        "coverage patch proof must stay enforced before non-fatal Codecov telemetry upload"
     );
     assert!(
         codecov_router.contains("CI-enforced lightweight Codecov coverage-pack route")
@@ -164,7 +165,7 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "--receipt target/receipts/quality/ci-route.json",
         "--summary target/receipts/quality/ci-route.md",
         "coverage-pack-commands.sh",
-        "coverage-route-selected-packs.txt",
+        "scripts/ci/generate-coverage-pack-commands.py",
         "changed-file routing selected no coverage proof packs",
         "cargo llvm-cov report --profile agent --lcov --output-path target/lcov.info",
         "--scope routed-coverage-packs",
@@ -200,13 +201,19 @@ fn coverage_workflow_blocks_patch_coverage_and_requires_receipts() {
         "cargo test --workspace --lib --locked",
         "cargo test -p xtask --bin xtask quality_baseline --locked",
         "cargo test -p xtask --bin xtask merge_ready --locked",
+        "cargo test -p xtask --bin xtask gates --locked",
         "cargo test -p xtask --bin xtask queue_reconciler --locked",
         "cargo test -p xtask --bin xtask ci_route --locked",
+        "cargo test -p xtask --bin xtask workflow_policy_lint --locked",
+        "cargo test -p xtask --bin xtask allocation_tracker --locked",
+        "cargo test -p xtask --bin xtask active_goal_manifest --locked",
+        "cargo test -p xtask --bin xtask file_policy --locked",
         "cargo test -p xtask --bin xtask ripr --locked",
         "cargo test -p xtask --bin xtask inline_completion_quality --locked",
         "cargo test -p xtask --bin xtask semantic_inline_receipts --locked",
         "cargo test -p xtask --bin xtask semantic_inline_next_edit --locked",
         "cargo test -p xtask --locked",
+        "--test active_goal_manifest_cli",
         "--test ci_route_cli",
         "--test quality_ci_wiring_policy",
         "--test quality_gate_patch_coverage_cli_policy",
@@ -262,8 +269,9 @@ fn docs_describe_transitional_blocking_contract() {
         status_doc.contains("quality-gate")
             && status_doc.contains("Markdown summaries")
             && status_doc.contains("Current Blocking Proof Floor")
-            && status_doc.contains("Codecov upload or")
-            && status_doc.contains("processing failures through `fail_ci_if_error: true`")
+            && status_doc.contains("coverage routing or setup")
+            && status_doc.contains("failures. Codecov upload")
+            && status_doc.contains("Codecov upload and Test Analytics telemetry are non-fatal")
             && status_doc.contains(
                 "generated quality-gate receipts are freshness-checked for patch, new-RIPR,"
             )
