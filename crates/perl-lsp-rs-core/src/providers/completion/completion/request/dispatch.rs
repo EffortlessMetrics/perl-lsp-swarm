@@ -157,12 +157,17 @@ const INDIRECT_METHOD_EXCLUDED: &[&str] = &[
     // File/IO builtins not already covered by `print`/`printf`/`say`.
     "open", "close", "read", "write", "seek", "tell", "eof", "binmode", "chomp", "chop", "chdir",
     "stat", "unlink", "rename", "chmod", "undef",
+    // Carp exporters — `croak $obj` / `confess $msg` are diagnostic calls, not
+    // method calls. These are imported subs, so the lexer's builtin set below
+    // does not cover them; list them explicitly.
+    "croak", "carp", "confess", "cluck",
 ];
 
 /// True when `word` is a plausible indirect-method name: a lowercase-initial
-/// bareword (`new`, `process`, ...) that is not a statement keyword or I/O
-/// builtin. Uppercase-initial words (`Foo`, `STDOUT`) and sigil/`::` tokens are
-/// rejected so we only fire on the method slot of `method RECEIVER ...`.
+/// bareword (`new`, `process`, ...) that is not a statement keyword, Carp
+/// exporter, or Perl builtin function. Uppercase-initial words (`Foo`,
+/// `STDOUT`) and sigil/`::` tokens are rejected so we only fire on the method
+/// slot of `method RECEIVER ...`.
 fn is_indirect_method_word(word: &str) -> bool {
     let mut chars = word.chars();
     let Some(first) = chars.next() else {
@@ -174,7 +179,14 @@ fn is_indirect_method_word(word: &str) -> bool {
     if !word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return false;
     }
-    !INDIRECT_METHOD_EXCLUDED.contains(&word)
+    if INDIRECT_METHOD_EXCLUDED.contains(&word) {
+        return false;
+    }
+    // Perl builtin functions (`length $s`, `keys %h`, `scalar @a`, `delete
+    // $h{k}`, ...) take their argument as a list, not an indirect-object
+    // receiver. Defer to the lexer's authoritative builtin set so we don't
+    // hand-maintain every name; `new` and user subs are not builtins and pass.
+    !perl_lexer::builtins::builtin_signatures_phf::is_builtin(word)
 }
 
 /// Advance over `[A-Za-z0-9_]` from `from`, returning the byte offset of the
@@ -295,6 +307,7 @@ fn complete_indirect_method_context(
         return false;
     }
 
+    let inserted_start = completions.len();
     methods::add_method_completions(completions, &synth, source, &provider.symbol_table);
     workspace::add_workspace_method_completions(
         completions,
@@ -304,6 +317,15 @@ fn complete_indirect_method_context(
         &provider.workspace_index,
         &provider.used_modules,
     );
+
+    // The arrow-form providers emit parenthesized insert text (`run()`), which is
+    // correct for `$obj->run()` but invalid in indirect syntax: accepting it in
+    // `new Child` would produce `run() Child`. The edit range only replaces the
+    // method token, so normalize the inserted items to the bare method name
+    // (`run`) — yielding the valid indirect call `run Child` / `run $obj`.
+    for item in completions.iter_mut().skip(inserted_start) {
+        item.insert_text = Some(item.label.clone());
+    }
     true
 }
 

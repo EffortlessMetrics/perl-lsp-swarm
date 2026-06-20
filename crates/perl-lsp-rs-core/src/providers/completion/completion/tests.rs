@@ -7942,3 +7942,66 @@ warn $obj";
     );
     Ok(())
 }
+
+#[test]
+fn test_indirect_completion_inserts_bare_method_name() -> Result<(), Box<dyn std::error::Error>> {
+    // In indirect syntax the inserted method must be bare (`run`), not the
+    // arrow-form parenthesized `run()` which would yield invalid `run() Child`.
+    let index = indirect_child_parent_index()?;
+
+    let code = "new Child";
+    let pos = "new".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+
+    let run = must_some(completions.iter().find(|c| c.label == "run"));
+    assert_eq!(
+        run.insert_text.as_deref(),
+        Some("run"),
+        "indirect-call completion must insert the bare method name, got {:?}",
+        run.insert_text
+    );
+    let speak = must_some(completions.iter().find(|c| c.label == "speak"));
+    assert_eq!(speak.insert_text.as_deref(), Some("speak"));
+    Ok(())
+}
+
+#[test]
+fn test_indirect_length_builtin_does_not_offer_methods() -> Result<(), Box<dyn std::error::Error>> {
+    // `length $obj` is a builtin call, not an indirect method call — even when
+    // `$obj` resolves to a workspace class.
+    let index = indirect_child_parent_index()?;
+
+    let code = "my $obj = Child->new;\nlength $obj";
+    let pos = code.find("length").ok_or("missing length")? + "length".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        !completions.iter().any(|c| c.label == "run" || c.label == "speak"),
+        "`length $obj` builtin must not offer class methods"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_indirect_delete_builtin_does_not_offer_methods() -> Result<(), Box<dyn std::error::Error>> {
+    let index = indirect_child_parent_index()?;
+
+    let code = "my $obj = Child->new;\ndelete $obj";
+    let pos = code.find("delete").ok_or("missing delete")? + "delete".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        !completions.iter().any(|c| c.label == "run" || c.label == "speak"),
+        "`delete $obj` builtin must not offer class methods"
+    );
+    Ok(())
+}
