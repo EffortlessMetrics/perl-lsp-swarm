@@ -131,3 +131,53 @@ given ($x) {
 "#;
     assert_clean_parse(source);
 }
+
+// --- Error-recovery path of the fallback arm ---
+//
+// When a statement inside a `given` block fails to parse (parse_statement
+// returns Err), the fallback arm records the error, builds a recovery node,
+// and calls synchronize() so the rest of the block — including later
+// when/default arms — still parses. These tests drive that Err arm directly
+// (an "exact error-variant" + "call-observation" of the recovery seam).
+
+#[test]
+fn test_malformed_statement_in_given_block_recovers() {
+    // A statement starting with `=` cannot parse as an expression, so
+    // parse_statement returns Err and the recovery arm runs. The trailing
+    // `when` arm must still be parsed after recovery.
+    let source = r#"
+given ($x) {
+    = 5 ;
+    when (1) { print "one\n"; }
+}
+"#;
+    // An error is reported for the malformed statement...
+    assert_has_error(source, "expected expression");
+    // ...and recovery keeps the surrounding given/when structure intact.
+    let sexp = parse(source).to_sexp();
+    assert!(
+        sexp.contains("given") && sexp.contains("when"),
+        "expected recovery to preserve given/when structure, got:\n{}",
+        sexp
+    );
+}
+
+#[test]
+fn test_malformed_then_default_in_given_block_recovers() {
+    // A bare `,` is not a valid statement start; the recovery arm runs and the
+    // following `default` block must still be parsed.
+    let source = r#"
+given ($x) {
+    , ;
+    when (1) { print "one\n"; }
+    default  { print "other\n"; }
+}
+"#;
+    assert_has_error(source, "expected expression");
+    let sexp = parse(source).to_sexp();
+    assert!(
+        sexp.contains("when") && sexp.contains("default"),
+        "expected recovery to preserve when/default arms, got:\n{}",
+        sexp
+    );
+}
