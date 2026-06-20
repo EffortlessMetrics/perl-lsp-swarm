@@ -1140,6 +1140,7 @@ mod tests {
             NodeKind::NamedParameter { variable: Box::new(leaf()) },
             NodeKind::Method {
                 name: "bar".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(block_node()),
@@ -1197,10 +1198,11 @@ mod tests {
             NodeKind::DataSection { marker: "__DATA__".to_string(), body: None },
             NodeKind::Class {
                 name: "Foo".to_string(),
+                name_span: None,
                 parents: vec![],
                 body: Box::new(block_node()),
             },
-            NodeKind::Format { name: "STDOUT".to_string(), body: "".to_string() },
+            NodeKind::Format { name: "STDOUT".to_string(), name_span: None, body: "".to_string() },
             NodeKind::Identifier { name: "foo".to_string() },
             NodeKind::Error {
                 message: "oops".to_string(),
