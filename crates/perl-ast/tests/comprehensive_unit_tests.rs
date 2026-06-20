@@ -249,6 +249,7 @@ fn subroutine_named_and_anonymous() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Subroutine {
             name: Some("greet".to_string()),
             name_span: Some(loc(4, 9)),
+            declarator: None,
             prototype: None,
             signature: None,
             attributes: vec![],
@@ -260,6 +261,7 @@ fn subroutine_named_and_anonymous() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Subroutine {
             name: None,
             name_span: None,
+            declarator: None,
             prototype: None,
             signature: None,
             attributes: vec![],
@@ -984,6 +986,7 @@ fn sexp_named_subroutine() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Subroutine {
             name: Some("hello".to_string()),
             name_span: Some(loc(4, 9)),
+            declarator: None,
             prototype: None,
             signature: None,
             attributes: vec![],
@@ -1002,6 +1005,7 @@ fn sexp_subroutine_with_attributes() -> Result<(), Box<dyn std::error::Error>> {
         NodeKind::Subroutine {
             name: Some("foo".to_string()),
             name_span: Some(loc(4, 7)),
+            declarator: None,
             prototype: None,
             signature: None,
             attributes: vec!["lvalue".to_string()],
@@ -1168,6 +1172,7 @@ fn sexp_inner_keeps_anon_sub_wrapped() -> Result<(), Box<dyn std::error::Error>>
         NodeKind::Subroutine {
             name: None,
             name_span: None,
+            declarator: None,
             prototype: None,
             signature: None,
             attributes: vec![],
@@ -1394,6 +1399,7 @@ fn for_each_child_visits_subroutine_body() -> Result<(), Box<dyn std::error::Err
         NodeKind::Subroutine {
             name: Some("foo".to_string()),
             name_span: None,
+            declarator: None,
             prototype: None,
             signature: Some(Box::new(Node::new(
                 NodeKind::Signature { parameters: vec![] },
@@ -1558,6 +1564,7 @@ fn kind_name_covers_all_variants() -> Result<(), Box<dyn std::error::Error>> {
             NodeKind::Subroutine {
                 name: None,
                 name_span: None,
+                declarator: None,
                 prototype: None,
                 signature: None,
                 attributes: vec![],

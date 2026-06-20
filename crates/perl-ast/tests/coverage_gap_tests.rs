@@ -298,6 +298,7 @@ mod for_each_child_mut {
             NodeKind::Subroutine {
                 name: Some("foo".to_string()),
                 name_span: None,
+                declarator: None,
                 prototype: Some(Box::new(proto)),
                 signature: Some(Box::new(sig)),
                 attributes: vec![],
@@ -315,6 +316,7 @@ mod for_each_child_mut {
             NodeKind::Subroutine {
                 name: None,
                 name_span: None,
+                declarator: None,
                 prototype: None,
                 signature: None,
                 attributes: vec![],
@@ -461,6 +463,7 @@ mod to_sexp_edges {
             NodeKind::Subroutine {
                 name: Some("myfunc".to_string()),
                 name_span: None,
+                declarator: None,
                 prototype: None,
                 signature: Some(Box::new(sig)),
                 attributes: vec![],
@@ -483,6 +486,7 @@ mod to_sexp_edges {
             NodeKind::Subroutine {
                 name: None,
                 name_span: None,
+                declarator: None,
                 prototype: Some(Box::new(proto)),
                 signature: None,
                 attributes: vec![],
@@ -503,6 +507,7 @@ mod to_sexp_edges {
             NodeKind::Subroutine {
                 name: None,
                 name_span: None,
+                declarator: None,
                 prototype: None,
                 signature: Some(Box::new(sig)),
                 attributes: vec![],
@@ -718,6 +723,7 @@ mod to_sexp_inner_edges {
             NodeKind::Subroutine {
                 name: Some("named_func".to_string()),
                 name_span: None,
+                declarator: None,
                 prototype: None,
                 signature: None,
                 attributes: vec![],
@@ -748,6 +754,7 @@ mod to_sexp_inner_edges {
             NodeKind::Subroutine {
                 name: None,
                 name_span: None,
+                declarator: None,
                 prototype: None,
                 signature: None,
                 attributes: vec![],
@@ -837,6 +844,7 @@ mod for_each_child_immutable {
             NodeKind::Subroutine {
                 name: Some("foo".to_string()),
                 name_span: None,
+                declarator: None,
                 prototype: Some(Box::new(proto)),
                 signature: Some(Box::new(sig)),
                 attributes: vec![],
@@ -938,13 +946,14 @@ mod false_branch_coverage {
     -> Result<(), Box<dyn std::error::Error>> {
         // Named subroutine with prototype and attributes - the parts array has:
         // [name, :attr, "(prototype_sexp)", body_sexp]
-        // so `parts[parts.len()-2]` is the prototype node sexp, NOT `"()"`,
+        // so `parts[parts.len()-2]` is the prototype node sexp, NOT `"()"``,
         // which triggers the `else` branch at line 526.
         let proto = Node::new(NodeKind::Prototype { content: "$$".to_string() }, loc());
         let node = Node::new(
             NodeKind::Subroutine {
                 name: Some("myfunc".to_string()),
                 name_span: None,
+                declarator: None,
                 prototype: Some(Box::new(proto)),
                 signature: None,
                 attributes: vec!["lvalue".to_string()],

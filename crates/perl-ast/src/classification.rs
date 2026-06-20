@@ -1140,6 +1140,7 @@ mod tests {
             NodeKind::Subroutine {
                 name: Some("foo".to_string()),
                 name_span: None,
+                declarator: None,
                 prototype: None,
                 signature: None,
                 attributes: vec![],
@@ -1274,6 +1275,7 @@ mod tests {
             NodeKind::Subroutine {
                 name: Some("foo".to_string()),
                 name_span: None,
+                declarator: None,
                 prototype: None,
                 signature: None,
                 attributes: vec![],
@@ -1644,6 +1646,7 @@ mod tests {
             n(NodeKind::Subroutine {
                 name: Some("foo".to_string()),
                 name_span: None,
+                declarator: None,
                 prototype: Some(Box::new(Node::new(
                     NodeKind::Prototype { content: "$@".to_string() },
                     loc(),
