@@ -320,3 +320,86 @@ fn node_lookup_round_trips() {
     }
     assert!(graph.node(perl_parser_core::pir::PirId::from_index(9999)).is_none());
 }
+
+#[test]
+fn multi_variable_declaration_produces_one_write_per_variable() {
+    // `my ($a, $b) = (1, 2)` must produce two LexicalWrite nodes (one for each
+    // variable) plus one Assign node for the initialiser.
+    let graph = lower("my ($a, $b) = (1, 2);");
+    let writes: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.operation, PirOperation::LexicalWrite { .. }))
+        .collect();
+    assert_eq!(writes.len(), 2, "expected one LexicalWrite per variable");
+
+    let names: Vec<&str> = writes
+        .iter()
+        .map(|n| match &n.operation {
+            PirOperation::LexicalWrite { name } => name.name.as_str(),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert!(names.contains(&"a"), "expected write for $a");
+    assert!(names.contains(&"b"), "expected write for $b");
+
+    // Every write is an lvalue; the assignment is void.
+    assert!(writes.iter().all(|n| n.context == PirContext::Lvalue));
+
+    let assigns: Vec<_> =
+        graph.nodes.iter().filter(|n| matches!(n.operation, PirOperation::Assign)).collect();
+    assert_eq!(assigns.len(), 1);
+    assert_eq!(assigns[0].context, PirContext::Void);
+}
+
+#[test]
+fn named_callee_leading_colons_do_not_produce_empty_package() {
+    // `::foo` has a leading `::` that `rsplit_once("::")` splits into ("", "foo").
+    // The guard `!package.is_empty()` must reject the empty-string package half,
+    // so the callee becomes `Named { name: "foo", package: None }` rather than
+    // `Named { name: "foo", package: Some("") }`. An empty-string package qualifier
+    // would be a confusing artifact; bare-name is the conservative fallback.
+    let graph = lower("::foo();");
+    let callee = first_op(&graph, |op| match op {
+        PirOperation::Call { callee, .. } => Some(callee.clone()),
+        _ => None,
+    });
+    // package must be None (not Some("")) — the empty part is dropped.
+    assert_eq!(callee, PirCallee::Named { name: "foo".to_string(), package: None });
+}
+
+#[test]
+fn two_consecutive_coderef_calls_each_link_to_their_own_boundary() {
+    // Two back-to-back coderef calls must each link to their own
+    // DynamicBoundary, not share one. The pending_dynamic_callee state machine
+    // must be cleared after each linkage.
+    let graph = lower("my ($a, $b); $a->(); $b->();");
+
+    let dynamic_calls: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.operation, PirOperation::Call { callee: PirCallee::Dynamic, .. }))
+        .collect();
+    assert_eq!(dynamic_calls.len(), 2, "expected two coderef calls");
+
+    // Both calls must carry a dynamic_boundary link.
+    let b0 = must_some(dynamic_calls[0].dynamic_boundary);
+    let b1 = must_some(dynamic_calls[1].dynamic_boundary);
+
+    // The two boundary nodes must be distinct.
+    assert_ne!(b0, b1, "each coderef call must link to its own boundary node");
+
+    // Both boundaries must be DynamicCallee kind.
+    let node_b0 = must_some(graph.node(b0));
+    let node_b1 = must_some(graph.node(b1));
+    assert!(matches!(
+        node_b0.operation,
+        PirOperation::DynamicBoundary { kind: PirDynamicBoundaryKind::DynamicCallee, .. }
+    ));
+    assert!(matches!(
+        node_b1.operation,
+        PirOperation::DynamicBoundary { kind: PirDynamicBoundaryKind::DynamicCallee, .. }
+    ));
+    // Receipt must count two DynamicCallee boundaries.
+    assert_eq!(graph.receipt.dynamic_boundary_counts.get("DynamicCallee"), Some(&2));
+}
