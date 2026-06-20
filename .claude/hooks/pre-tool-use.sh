@@ -6,8 +6,19 @@
 INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
 
-if echo "$CMD" | grep -qE 'git push --force($|[[:space:]])|git push -f |git checkout \.|git reset --hard|rm -rf /|cargo publish|git clean -fd'; then
+if echo "$CMD" | grep -qE 'git push --force($|[[:space:]])|git push -f |git checkout \.|git reset --hard|cargo publish|git clean -fd'; then
   echo "Blocked: dangerous command '$CMD'. Use safer alternatives." >&2
+  exit 2
+fi
+
+# Block recursive deletes that target the filesystem root or a whole top-level
+# system directory. Subpath deletes (e.g. `rm -rf /tmp/foo`, `rm -rf /home/user/proj/target`)
+# are allowed — the previous bare `rm -rf /` substring match blocked every absolute path.
+# Matched: `rm -rf /`, `rm -rf /*`, `rm -rf /etc`, `rm -rf /home/`, `rm -rf /usr/*`.
+# Not matched: `rm -rf /tmp/x`, `rm -rf /home/user/...`, `rm -rf ./target`.
+if echo "$CMD" | grep -qE 'rm +(-[[:alnum:]]+ +)*/(\*?|(bin|boot|dev|etc|home|lib|lib64|opt|proc|root|sbin|srv|sys|usr|var|mnt)/?\*?)([[:space:]]|$)'; then
+  echo "Blocked: refusing to recursively delete the filesystem root or a whole system directory." >&2
+  echo "Deleting a specific subpath (e.g. /tmp/foo, ./target) is allowed." >&2
   exit 2
 fi
 
