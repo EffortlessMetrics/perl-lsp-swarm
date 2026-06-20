@@ -497,14 +497,24 @@ Relevant code:
 
 ### Contract
 
-Three classes of source region are **non-executable positional boundaries** that
-the parser deliberately does *not* model as syntax-tree structure: **POD blocks**,
-**heredoc bodies**, and **data sections** (`__DATA__` / `__END__`). Detecting them
-is the **consumer's responsibility**, layered on top of the variant-level
-`NodeKind` classification of §4. Any consumer that filters nodes or source
-positions by executability — a breakpoint validator, a formatter preserve-gate, a
-completion-context filter, a semantic-token painter — MUST apply the relevant
-boundary check for its own domain. The classification API is explicit about this
+Three classes of source region are **non-executable positional boundaries**:
+**POD blocks**, **heredoc bodies**, and **data sections** (`__DATA__` / `__END__`).
+The parser does not enforce them as *execution* boundaries, and **the degree of AST
+support varies**:
+
+- **data sections** are a first-class `NodeKind::DataSection { marker, body }` node,
+- **heredoc bodies** are recorded as `Heredoc.body_span` metadata on the
+  `NodeKind::Heredoc` node, and
+- **POD has no AST node at all** — it is purely consumer-detected.
+
+Any consumer that filters nodes or source positions by executability — a breakpoint
+validator, a formatter preserve-gate, a completion-context filter, a semantic-token
+painter — MUST apply the relevant positional check for its own domain, layered on
+top of the variant-level `NodeKind` classification of §4. Where an authoritative AST
+representation exists (the `DataSection` node, the `Heredoc.body_span` metadata),
+consumers **SHOULD prefer it** over reimplementing a source scan; a raw positional
+scan is the correct path only for POD and for pre-parse callers that have no AST yet.
+The classification API is explicit about the positional-layering requirement
 (`crates/perl-ast/src/classification.rs:5-7`):
 
 ```
@@ -530,16 +540,26 @@ boundary check for its own domain. The classification API is explicit about this
    `drain_pending_heredocs`; an empty body yields `None`. Consumers MAY use this AST
    metadata directly OR scan the source.
 
-3. **Data sections.** From a `__DATA__` or `__END__` marker at **column 0** to EOF.
-   Everything after the marker is data, not code. The lexer recognizes this as a
-   `TokenType::DataMarker` token.
+3. **Data sections.** From a `__DATA__` or `__END__` marker at **column 0** to EOF;
+   everything after the marker is data, not code. The parser models this as a
+   first-class `NodeKind::DataSection { marker, body }` node
+   (`crates/perl-ast/src/ast.rs:2158`), classified `NodeKindCategory::Declaration`
+   with `executable = false` and `safe_for_breakpoint = false`
+   (`crates/perl-ast/src/classification.rs:256,836`). AST and semantic consumers
+   **should read this node directly** rather than rescanning the source. The lexer's
+   `find_data_marker_byte_lexed` is the **pre-parse** path: it recognizes the marker
+   as a `TokenType::DataMarker` token at the source level, for callers that must
+   split code from data *before* (or without) a full parse.
 
 ### Owner module
 
 **Distributed — there is no single owner.** Each subsystem owns boundary detection
 for its own domain; this section is the canonical rule set they must agree on. The
-parser does **not** enforce these boundaries at parse time — they are *positional
-metadata* applied by consumers.
+parser does **not** enforce these regions as *execution* boundaries at parse time,
+but it does provide authoritative AST representation for two of the three (the
+`NodeKind::DataSection` node and `Heredoc.body_span`); POD is purely
+consumer-detected. Consumers prefer the AST representation where it exists and fall
+back to positional source scans otherwise.
 
 ### Consumers
 
@@ -550,7 +570,8 @@ metadata* applied by consumers.
 | Native formatter | POD | `crates/perl-lsp-perltidy/src/native.rs:1655` (`literal_preserve_region`) + `:1817` (`is_pod_start`) | line scan; `trim_start()` then a **closed set** of standard directives | **no** (lenient) | implicit (scans every line) |
 | Native formatter | data section | `crates/perl-lsp-perltidy/src/native.rs:1661` | exact `__DATA__`/`__END__` match after `trim_start().trim_end()` | **no** (lenient) | n/a |
 | Native formatter | heredoc / regex / subst / qw | `crates/perl-lsp-perltidy/src/native.rs:1754` (`token_literal_preserve_region_overlapping`) | token byte-span overlap (`token.start < range_end && token.end > range_start`) | n/a | n/a |
-| Lexer | data marker | `crates/perl-lexer/src/tokenizer/util.rs:22` (`find_data_marker_byte_lexed`) + `:14` (`marker_is_unindented_line_start`) | lexes to a `DataMarker` token, then verifies column 0 | **yes** (strict) | n/a |
+| Parser → AST / semantic consumers | data section | `crates/perl-parser-core/src/engine/parser/declarations.rs:1164` (`parse_data_section`) → `NodeKind::DataSection` | authoritative AST node, classified `Declaration` / non-executable | yes (marker is column-0) | n/a |
+| Lexer (pre-parse) | data marker | `crates/perl-lexer/src/tokenizer/util.rs:22` (`find_data_marker_byte_lexed`) + `:14` (`marker_is_unindented_line_start`) | lexes to a `DataMarker` token, then verifies column 0 | **yes** (strict) | n/a |
 
 ### Critical boundary: canonical rule vs. consumer risk posture
 
@@ -632,10 +653,12 @@ executable and outside the boundary.
 
 ### Non-goals / future migrations
 
-- **The parser does not emit `PodBlock` / `DataBlock` nodes.** These regions are not
-  executable and do not belong in the syntax tree; the lexer already handles them.
-  (Rejected alternative in issue #1627; see also the `DataSection` corpus-coverage
-  decision and recovery-node decision in §5.)
+- **The parser does not emit a `PodBlock` node.** POD is not executable and is
+  detected by consumers positionally; issue #1627 rejected adding a POD syntax node.
+  This is the *opposite* of data sections, which **are** a first-class
+  `NodeKind::DataSection` node, and of heredocs, whose bodies are recorded as
+  `Heredoc.body_span` metadata — POD is the sole boundary type of the three with no
+  AST representation.
 
 - **No centralized boundary-detection helper exists today**, and adding one is out of
   scope for this contract. If a fourth consumer needs POD detection, consider
