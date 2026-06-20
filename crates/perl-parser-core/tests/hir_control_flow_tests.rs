@@ -6,9 +6,12 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    BranchKeyword, ControlTransferKind, HirFile, HirItem, HirKind, LoopKind, RecoveryConfidence,
-    StatementModifierKind, lower_ast,
+    BranchKeyword, BranchShell, ControlTransfer, ControlTransferKind, HirFile, HirItem, HirKind,
+    LoopKind, LoopShell, RecoveryConfidence, StatementModifierKind, StatementModifierShell,
+    lower_ast,
 };
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn lower_source(source: &str) -> HirFile {
     let mut parser = Parser::new(source);
@@ -16,17 +19,29 @@ fn lower_source(source: &str) -> HirFile {
     lower_ast(&output.ast)
 }
 
-fn first_branch(file: &HirFile) -> &perl_parser_core::hir::BranchShell {
+fn first_branch(file: &HirFile) -> Result<&BranchShell, Box<dyn std::error::Error>> {
     file.items
         .iter()
         .find_map(|item| match &item.kind {
             HirKind::BranchShell(shell) => Some(shell),
             _ => None,
         })
-        .expect("expected a branch shell")
+        .ok_or_else(|| "expected a branch shell".into())
 }
 
-fn loops(file: &HirFile) -> Vec<&perl_parser_core::hir::LoopShell> {
+fn first_statement_modifier(
+    file: &HirFile,
+) -> Result<&StatementModifierShell, Box<dyn std::error::Error>> {
+    file.items
+        .iter()
+        .find_map(|item| match &item.kind {
+            HirKind::StatementModifierShell(shell) => Some(shell),
+            _ => None,
+        })
+        .ok_or_else(|| "expected a statement-modifier shell".into())
+}
+
+fn loops(file: &HirFile) -> Vec<&LoopShell> {
     file.items
         .iter()
         .filter_map(|item| match &item.kind {
@@ -36,7 +51,7 @@ fn loops(file: &HirFile) -> Vec<&perl_parser_core::hir::LoopShell> {
         .collect()
 }
 
-fn transfers(file: &HirFile) -> Vec<&perl_parser_core::hir::ControlTransfer> {
+fn transfers(file: &HirFile) -> Vec<&ControlTransfer> {
     file.items
         .iter()
         .filter_map(|item| match &item.kind {
@@ -46,18 +61,18 @@ fn transfers(file: &HirFile) -> Vec<&perl_parser_core::hir::ControlTransfer> {
         .collect()
 }
 
-fn branch_item(file: &HirFile) -> &HirItem {
+fn branch_item(file: &HirFile) -> Result<&HirItem, Box<dyn std::error::Error>> {
     file.items
         .iter()
         .find(|item| matches!(item.kind, HirKind::BranchShell(_)))
-        .expect("expected a branch item")
+        .ok_or_else(|| "expected a branch item".into())
 }
 
 #[test]
-fn if_elsif_else_lowers_to_branch_shell_with_condition_anchor() {
+fn if_elsif_else_lowers_to_branch_shell_with_condition_anchor() -> TestResult {
     let source = "if ($x > 1) { 1 } elsif ($y) { 2 } elsif ($z) { 3 } else { 4 }\n";
     let file = lower_source(source);
-    let branch = first_branch(&file);
+    let branch = first_branch(&file)?;
 
     assert_eq!(branch.keyword, BranchKeyword::If);
     assert_eq!(branch.elsif_count, 2);
@@ -66,31 +81,35 @@ fn if_elsif_else_lowers_to_branch_shell_with_condition_anchor() {
     // Source anchor points at the primary condition expression.
     let condition = &source[branch.condition_range.start..branch.condition_range.end];
     assert!(condition.contains("$x"), "condition anchor was {condition:?}");
+    Ok(())
 }
 
 #[test]
-fn plain_if_without_else_records_no_fallthrough() {
+fn plain_if_without_else_records_no_fallthrough() -> TestResult {
     let file = lower_source("if ($ready) { go() }\n");
-    let branch = first_branch(&file);
+    let branch = first_branch(&file)?;
     assert_eq!(branch.keyword, BranchKeyword::If);
     assert_eq!(branch.elsif_count, 0);
     assert!(!branch.has_else);
+    Ok(())
 }
 
 #[test]
-fn unless_block_keeps_its_surface_keyword() {
+fn unless_block_keeps_its_surface_keyword() -> TestResult {
     let file = lower_source("unless ($done) { wait() }\n");
-    let branch = first_branch(&file);
+    let branch = first_branch(&file)?;
     assert_eq!(branch.keyword, BranchKeyword::Unless);
+    Ok(())
 }
 
 #[test]
-fn ternary_lowers_to_branch_shell_with_both_arms() {
+fn ternary_lowers_to_branch_shell_with_both_arms() -> TestResult {
     let file = lower_source("my $v = $cond ? 1 : 2;\n");
-    let branch = first_branch(&file);
+    let branch = first_branch(&file)?;
     assert_eq!(branch.keyword, BranchKeyword::Ternary);
     assert_eq!(branch.elsif_count, 0);
     assert!(branch.has_else, "ternary always has an else arm");
+    Ok(())
 }
 
 #[test]
@@ -183,8 +202,7 @@ fn label_on_bare_block_does_not_propagate_to_inner_loop() {
     // `OUTER: { while (...) { } }` — label is on the bare block, not the while.
     // The while inside the block should NOT receive the label; `last OUTER`
     // from inside the while exits the outer block, not the while's own iteration.
-    let file = lower_source("OUTER: { while ($x) { body() } }
-");
+    let file = lower_source("OUTER: { while ($x) { body() } }\n");
     let shells = loops(&file);
     assert_eq!(shells.len(), 1);
     assert_eq!(
@@ -234,7 +252,7 @@ fn goto_label_target_is_preserved() {
 }
 
 #[test]
-fn statement_modifiers_lower_with_modifier_kind_and_anchor() {
+fn statement_modifiers_lower_with_modifier_kind_and_anchor() -> TestResult {
     let cases = [
         ("print 1 if $cond;\n", StatementModifierKind::If),
         ("print 1 unless $cond;\n", StatementModifierKind::Unless),
@@ -246,24 +264,47 @@ fn statement_modifiers_lower_with_modifier_kind_and_anchor() {
 
     for (source, expected) in cases {
         let file = lower_source(source);
-        let shell = file
-            .items
-            .iter()
-            .find_map(|item| match &item.kind {
-                HirKind::StatementModifierShell(shell) => Some(shell),
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("expected modifier shell for {source:?}"));
+        let shell = first_statement_modifier(&file)
+            .map_err(|_| format!("expected modifier shell for {source:?}"))?;
         assert_eq!(shell.modifier, expected, "source: {source:?}");
         assert!(
             shell.condition_range.end >= shell.condition_range.start,
             "condition anchor should be ordered for {source:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn control_flow_items_preserve_source_anchor_and_parse_confidence() {
+fn labeled_postfix_loop_modifier_preserves_label() -> TestResult {
+    // `LABEL: STMT while COND` — the label belongs to the postfix loop, so the
+    // loop-form modifier shell preserves it for labeled control-transfer edges.
+    for (source, expected) in [
+        ("OUTER: print 1 while $cond;\n", StatementModifierKind::While),
+        ("LOOP: step() until $done;\n", StatementModifierKind::Until),
+        ("EACH: use_it($_) for @list;\n", StatementModifierKind::Foreach),
+    ] {
+        let file = lower_source(source);
+        let shell = first_statement_modifier(&file)?;
+        assert_eq!(shell.modifier, expected, "source: {source:?}");
+        assert!(shell.label.is_some(), "expected a preserved label for {source:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn branch_form_modifier_does_not_capture_label() -> TestResult {
+    // `if`/`unless` modifiers are not loop targets, so they never carry a label,
+    // even when an enclosing label is syntactically present.
+    let file = lower_source("DONE: print 1 if $cond;\n");
+    let shell = first_statement_modifier(&file)?;
+    assert_eq!(shell.modifier, StatementModifierKind::If);
+    assert_eq!(shell.label, None, "branch-form modifiers must not capture labels");
+    Ok(())
+}
+
+#[test]
+fn control_flow_items_preserve_source_anchor_and_parse_confidence() -> TestResult {
     let file = lower_source("if ($x) { return 1 } else { return 2 }\n");
     for item in &file.items {
         assert!(item.range.end >= item.range.start, "HIR item range should be ordered: {item:?}");
@@ -272,7 +313,8 @@ fn control_flow_items_preserve_source_anchor_and_parse_confidence() {
     }
 
     // The branch shell anchors back to the parser `If` node.
-    assert_eq!(branch_item(&file).anchor.node_kind, "If");
+    assert_eq!(branch_item(&file)?.anchor.node_kind, "If");
+    Ok(())
 }
 
 #[test]

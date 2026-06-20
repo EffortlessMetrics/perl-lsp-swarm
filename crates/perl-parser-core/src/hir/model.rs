@@ -3093,6 +3093,10 @@ pub struct StatementModifierShell {
     pub modifier: StatementModifierKind,
     /// Source range of the controlling condition/list expression.
     pub condition_range: SourceLocation,
+    /// Controlling label from an enclosing `LABEL:` statement, preserved for
+    /// loop-form modifiers (`while`/`until`/`for`). `None` for branch-form
+    /// modifiers (`if`/`unless`), which are not loop targets.
+    pub label: Option<String>,
 }
 
 /// Postfix statement-modifier verb for a [`StatementModifierShell`].

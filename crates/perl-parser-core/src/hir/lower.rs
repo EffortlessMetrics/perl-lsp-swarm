@@ -856,6 +856,16 @@ impl Lowerer {
                     "for" | "foreach" => StatementModifierKind::Foreach,
                     _ => StatementModifierKind::Other,
                 };
+                // Loop-form modifiers can inherit an enclosing `LABEL:`; branch
+                // forms are not loop targets, so they must not consume it.
+                let label = match modifier_kind {
+                    StatementModifierKind::While
+                    | StatementModifierKind::Until
+                    | StatementModifierKind::Foreach => self.pending_label.take(),
+                    StatementModifierKind::If
+                    | StatementModifierKind::Unless
+                    | StatementModifierKind::Other => None,
+                };
                 self.push_item(
                     node,
                     None,
@@ -863,6 +873,7 @@ impl Lowerer {
                     HirKind::StatementModifierShell(StatementModifierShell {
                         modifier: modifier_kind,
                         condition_range: condition.location,
+                        label,
                     }),
                     self.package_context.clone(),
                     Some(self.current_scope()),

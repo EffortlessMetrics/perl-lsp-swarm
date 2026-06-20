@@ -117,9 +117,11 @@ fn render_item(item: &perl_parser_core::hir::HirItem) -> String {
             transfer.label.as_deref().unwrap_or("<none>"),
             transfer.has_value
         ),
-        HirKind::StatementModifierShell(shell) => {
-            format!("StatementModifierShell {:?}", shell.modifier)
-        }
+        HirKind::StatementModifierShell(shell) => format!(
+            "StatementModifierShell {:?} label={}",
+            shell.modifier,
+            shell.label.as_deref().unwrap_or("<none>")
+        ),
         HirKind::DynamicBoundary(boundary) => {
             format!("DynamicBoundary {:?} reason={}", boundary.kind, boundary.reason)
         }
