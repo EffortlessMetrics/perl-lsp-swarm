@@ -942,7 +942,7 @@ mod false_branch_coverage {
     -> Result<(), Box<dyn std::error::Error>> {
         // Named subroutine with prototype and attributes - the parts array has:
         // [name, :attr, "(prototype_sexp)", body_sexp]
-        // so `parts[parts.len()-2]` is the prototype node sexp, NOT `"()"`,
+        // so `parts[parts.len()-2]` is the prototype node sexp, NOT `"()"``,
         // which triggers the `else` branch at line 526.
         let proto = Node::new(NodeKind::Prototype { content: "$$".to_string() }, loc());
         let node = Node::new(
