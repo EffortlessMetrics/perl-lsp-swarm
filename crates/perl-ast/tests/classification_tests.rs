@@ -615,3 +615,59 @@ fn no_not_safe_for_breakpoint() {
         "No must have safe_for_breakpoint=false (compile-time unimport)"
     );
 }
+
+// ────────────────────────────────────────────────────────
+// Test: Error node with partial child has contains_children=true
+//
+// Per issue #1621: Error variant has an Option<Box<Node>> field (partial),
+// but its classification flagged contains_children=false. This test asserts
+// that the classification correctly identifies that Error CAN have children,
+// and that traversal methods visit the partial child.
+// ────────────────────────────────────────────────────────
+
+#[test]
+fn error_with_partial_child_has_contains_children_true() {
+    // Create an Error node with a partial child
+    let partial_child = Node::new(NodeKind::Identifier { name: "x".to_string() }, loc());
+    let error_kind = NodeKind::Error {
+        message: "unexpected token".to_string(),
+        expected: vec![],
+        found: None,
+        partial: Some(Box::new(partial_child)),
+    };
+
+    // Assert that contains_children flag is true
+    let flags = error_kind.flags();
+    assert!(
+        flags.contains_children,
+        "Error node with partial child must have contains_children=true, got false"
+    );
+}
+
+#[test]
+fn error_for_each_child_visits_partial() {
+    // Create an Error node with a partial child
+    let partial_child = Node::new(NodeKind::Identifier { name: "x".to_string() }, loc());
+    let error_node = Node::new(
+        NodeKind::Error {
+            message: "unexpected token".to_string(),
+            expected: vec![],
+            found: None,
+            partial: Some(Box::new(partial_child)),
+        },
+        loc(),
+    );
+
+    // Track whether for_each_child visits the partial child
+    let mut visited_count = 0;
+    error_node.for_each_child(|_child| {
+        visited_count += 1;
+    });
+
+    // Assert that the partial child was visited
+    assert_eq!(
+        visited_count, 1,
+        "Error node with partial child should visit exactly 1 child, but visited {}",
+        visited_count
+    );
+}

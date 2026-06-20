@@ -874,7 +874,7 @@ impl NodeKind {
                 scope = false,
                 decl = false,
                 refs = false,
-                children = false,
+                children = true,
                 recovery = true,
                 bp = false
             ),
