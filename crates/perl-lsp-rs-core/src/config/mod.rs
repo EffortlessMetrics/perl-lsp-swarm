@@ -1433,6 +1433,28 @@ mod tests {
     }
 
     #[test]
+    fn discover_perltidy_profile_ignores_env_var_pointing_to_directory() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        // $PERLTIDYRC is sometimes mis-configured to point to a directory rather
+        // than a file (e.g. `PERLTIDYRC=/home/user/` instead of
+        // `PERLTIDYRC=/home/user/.perltidyrc`). The env-var candidate must not be
+        // treated as a profile when it resolves to a directory.
+        let env_dir = tempfile::tempdir()?;
+
+        let discovered = discover_perltidy_profile_from(
+            workspace.path(),
+            None,
+            Some(env_dir.path().to_path_buf()),
+        );
+
+        assert!(
+            discovered.is_none(),
+            "a directory passed via PERLTIDYRC must not be returned as a profile"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn load_project_config_returns_parse_error_for_invalid_toml() -> TestResult {
         let temp = tempfile::tempdir()?;
         std::fs::write(temp.path().join(".perl-lsp.toml"), "[perl\ninclude_paths = [\"lib\"]")?;
