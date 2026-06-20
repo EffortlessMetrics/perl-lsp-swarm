@@ -4,6 +4,7 @@
 //! like perldoc:// URIs for Perl documentation.
 
 use super::super::*;
+use crate::documentation_targets::perldoc_uri;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_lsp_rs_core::config::WorkspaceConfig;
@@ -103,9 +104,12 @@ impl LspServer {
 
 fn enrich_core_pragma_perldoc(module_name: &str, content: String) -> String {
     let related_uri = match module_name {
-        "strict" => "perldoc://warnings",
-        "warnings" => "perldoc://strict",
+        "strict" => perldoc_uri("warnings"),
+        "warnings" => perldoc_uri("strict"),
         _ => return content,
+    };
+    let Some(related_uri) = related_uri else {
+        return content;
     };
 
     format!("Related virtual perldoc:\n- {related_uri}\n\n{content}")
@@ -174,7 +178,7 @@ fn workspace_pod_related_perldoc_uris(module_name: &str, source: &str) -> Vec<St
         collect_simple_pod_module_links(line, module_name, &mut modules);
     }
 
-    modules.into_iter().map(|module| format!("perldoc://{module}")).collect()
+    modules.into_iter().filter_map(|module| perldoc_uri(&module)).collect()
 }
 
 fn starts_pod_block(line: &str) -> bool {
