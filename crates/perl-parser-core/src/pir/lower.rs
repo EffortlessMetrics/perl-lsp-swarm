@@ -62,6 +62,17 @@ impl Lowerer {
     }
 
     fn lower_item(&mut self, item: &HirItem) {
+        // HIR emits a `DynamicBoundary(CoderefCall)` immediately before its
+        // `CallExpr { form: Coderef }`, so the pending boundary is consumed by
+        // the very next item. Clear it before any other item so a boundary can
+        // never mis-link to a later, unrelated coderef call even if HIR's
+        // emission order changes.
+        let consumes_pending_callee =
+            matches!(&item.kind, HirKind::CallExpr(call) if matches!(call.form, CallForm::Coderef));
+        if !consumes_pending_callee {
+            self.pending_dynamic_callee = None;
+        }
+
         match &item.kind {
             HirKind::VariableDecl(decl) => self.lower_variable_decl(item, decl),
             HirKind::CallExpr(call) => self.lower_call(item, call),

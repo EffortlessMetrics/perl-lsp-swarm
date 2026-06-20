@@ -143,6 +143,41 @@ fn coderef_call_links_to_dynamic_boundary() {
 }
 
 #[test]
+fn each_coderef_call_links_its_own_boundary() {
+    // Two independent coderef calls and a nested one. Each dynamic Call must
+    // link to a distinct DynamicCallee boundary — never a stale one from an
+    // earlier or unrelated call.
+    let graph = lower("$a->(); $b->($c->());");
+
+    let dynamic_calls: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(node.operation, PirOperation::Call { callee: PirCallee::Dynamic, .. })
+        })
+        .collect();
+    assert_eq!(dynamic_calls.len(), 3);
+
+    let mut linked_boundaries = Vec::new();
+    for call in dynamic_calls {
+        let boundary_id = must_some(call.dynamic_boundary);
+        let boundary = must_some(graph.node(boundary_id));
+        let kind = must_some(match &boundary.operation {
+            PirOperation::DynamicBoundary { kind, .. } => Some(*kind),
+            _ => None,
+        });
+        assert_eq!(kind, PirDynamicBoundaryKind::DynamicCallee);
+        linked_boundaries.push(boundary_id);
+    }
+
+    // Every link is to a distinct boundary node — no stale reuse.
+    linked_boundaries.sort_by_key(|id| id.index());
+    linked_boundaries.dedup();
+    assert_eq!(linked_boundaries.len(), 3);
+    assert_eq!(graph.receipt.dynamic_boundary_counts.get("DynamicCallee"), Some(&3));
+}
+
+#[test]
 fn eval_string_is_a_dynamic_boundary() {
     let graph = lower(r#"eval "$code";"#);
     assert_eq!(graph.receipt.dynamic_boundary_counts.get("EvalExpression"), Some(&1));
