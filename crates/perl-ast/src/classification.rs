@@ -259,6 +259,7 @@ impl NodeKind {
 
             NodeKind::Number { .. }
             | NodeKind::String { .. }
+            | NodeKind::VString { .. }
             | NodeKind::Heredoc { .. }
             | NodeKind::Regex { .. }
             | NodeKind::Undef => NodeKindCategory::Literal,
@@ -450,6 +451,15 @@ impl NodeKind {
                 bp = false
             ),
             NodeKind::String { .. } => flags!(
+                exec = false,
+                scope = false,
+                decl = false,
+                refs = false,
+                children = false,
+                recovery = false,
+                bp = false
+            ),
+            NodeKind::VString { .. } => flags!(
                 exec = false,
                 scope = false,
                 decl = false,
