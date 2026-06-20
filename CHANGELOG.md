@@ -203,7 +203,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the extension engine floor is aligned with the checked-in VS Code API
   typings so `npm run verify:marketplace` can package the release candidate
   from an agent worktree. First-run reinstall also no longer races activation
-  into stale language-client state. (#0000)
+  into stale language-client state. (#1867)
 - **Draft PR ripr routing treats skipped routers as neutral.** Draft pull
   requests no longer fail the ripr aggregate solely because the router
   intentionally skipped execution. (#1689)
