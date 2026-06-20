@@ -142,19 +142,27 @@ impl PerlToolchainProfile {
     /// `PERL5OPT` / `local::lib` so the reported version is deterministic
     /// regardless of the editor's environment (the #8688 contract).
     ///
-    /// Results are cached process-wide, keyed by the binary path and guarded by
-    /// the binary's fingerprint (length + mtime), so the subprocess runs at most
-    /// once per distinct interpreter build. Returns `None` when the binary
-    /// cannot be stat'd, the probe fails, or the output is not valid UTF-8.
+    /// Absolute, stat-able interpreters are cached process-wide, keyed by the
+    /// binary path and guarded by the binary's fingerprint (length + mtime), so
+    /// the subprocess runs at most once per distinct interpreter build. A bare
+    /// command name (e.g. `perl_path = "perl"`, resolved on `PATH` by the
+    /// subprocess) cannot be stat'd from the cwd and therefore has no
+    /// fingerprint — it is still probed, but uncached. Returns `None` only when
+    /// the probe itself fails or its output is not valid UTF-8.
     ///
     /// [`PerlOracleEnv::for_version_probe`]: super::PerlOracleEnv::for_version_probe
     #[cfg(not(target_arch = "wasm32"))]
     pub fn version(&self) -> Option<String> {
-        let fingerprint = perl_binary_fingerprint(&self.perl_binary)?;
+        // A bare command name has no fingerprint (cannot be stat'd from the
+        // cwd). We still probe it — `for_version_probe` resolves the name on
+        // PATH — but skip the cache, since there is no fingerprint to guard an
+        // entry against an interpreter swap.
+        let fingerprint = perl_binary_fingerprint(&self.perl_binary);
 
-        if let Ok(cache) = PERL_VERSION_CACHE.lock()
+        if let Some(ref fingerprint) = fingerprint
+            && let Ok(cache) = PERL_VERSION_CACHE.lock()
             && let Some((cached_fingerprint, cached_version)) = cache.get(&self.perl_binary)
-            && *cached_fingerprint == fingerprint
+            && cached_fingerprint == fingerprint
         {
             return cached_version.clone();
         }
@@ -166,7 +174,9 @@ impl PerlToolchainProfile {
                 if out.status.success() { String::from_utf8(out.stdout).ok() } else { None }
             });
 
-        if let Ok(mut cache) = PERL_VERSION_CACHE.lock() {
+        if let Some(fingerprint) = fingerprint
+            && let Ok(mut cache) = PERL_VERSION_CACHE.lock()
+        {
             cache.insert(self.perl_binary.clone(), (fingerprint, detected_version.clone()));
         }
 
@@ -271,6 +281,31 @@ mod tests {
 
         // Second call must agree with the first (fingerprint cache hit).
         assert_eq!(profile.version(), first, "cached version must match the first probe");
+        Ok(())
+    }
+
+    /// A bare command name (`"perl"`) cannot be stat'd from the cwd, so it has
+    /// no fingerprint — `version` must still probe it via PATH (uncached) rather
+    /// than short-circuiting to `None`. Regression guard for the #1978 review.
+    #[test]
+    fn version_probes_bare_command_name_via_path() -> TestResult {
+        // Deterministic precondition: only assert when a bare `perl` actually
+        // runs from PATH (mirrors what `for_version_probe` will do).
+        let perl_on_path = std::process::Command::new("perl")
+            .arg("-e")
+            .arg("print 1")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        if !perl_on_path {
+            return Ok(());
+        }
+
+        let profile = PerlToolchainProfile::from_binary(PathBuf::from("perl"));
+        assert!(
+            profile.version().is_some(),
+            "bare-name `perl` must probe via PATH and return a version, not None"
+        );
         Ok(())
     }
 }
