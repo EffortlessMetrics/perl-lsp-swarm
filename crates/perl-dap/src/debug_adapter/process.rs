@@ -234,7 +234,6 @@ impl DebugAdapter {
         }
     }
 
-    /// Launch the Perl debugger
     /// Resolve the Perl interpreter for a debug launch.
     ///
     /// An explicit, non-empty launch.json `perl` value is honored verbatim. When
@@ -260,6 +259,11 @@ impl DebugAdapter {
         .unwrap_or_else(|| "perl".to_string())
     }
 
+    /// Launch the Perl debugger for the given script.
+    ///
+    /// Validates the program path and interpreter, runs a pre-launch `perl -c`
+    /// syntax check, then spawns `perl -d` with the supplied arguments and
+    /// environment overrides. Returns the thread ID on success.
     pub(super) fn launch_debugger(
         &mut self,
         program: &str,
