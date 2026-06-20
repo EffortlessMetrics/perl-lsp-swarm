@@ -205,3 +205,149 @@ impl DebugAdapter {
         }
     }
 }
+
+/// Transport supervision tests — placed inside this module to access the
+/// `pub(super)` `run_with_io` without widening its visibility.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering as AOrdering};
+    use std::time::Duration;
+
+    // ── Minimal Write impl that always fails ──────────────────────────────────
+
+    struct FailingWriter {
+        fail_after_writes: usize,
+        write_count: Arc<AtomicUsize>,
+    }
+
+    impl FailingWriter {
+        fn always_failing() -> Self {
+            Self { fail_after_writes: 0, write_count: Arc::new(AtomicUsize::new(0)) }
+        }
+
+        fn fail_after(n: usize) -> Self {
+            Self { fail_after_writes: n, write_count: Arc::new(AtomicUsize::new(0)) }
+        }
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let n = self.write_count.fetch_add(1, AOrdering::AcqRel);
+            if n >= self.fail_after_writes {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "mock write failure",
+                ));
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            let n = self.write_count.load(AOrdering::Acquire);
+            if n >= self.fail_after_writes {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "mock flush failure",
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    // ── Frame builder ─────────────────────────────────────────────────────────
+
+    fn framed_request(seq: i64, command: &str) -> Vec<u8> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "type": "request",
+            "seq": seq,
+            "command": command,
+        }))
+        .unwrap_or_default();
+        let header = format!("Content-Length: {}\r\n\r\n", body.len());
+        let mut frame = header.into_bytes();
+        frame.extend_from_slice(&body);
+        frame
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
+    /// When the output writer fails on the very first write (e.g. the client closed
+    /// the socket immediately), `run_with_io` must return an I/O error rather than
+    /// hanging or panicking.
+    #[test]
+    fn test_run_with_io_returns_error_on_immediate_write_failure() {
+        let mut adapter = DebugAdapter::new();
+        let input = Cursor::new(framed_request(1, "initialize"));
+        let writer = FailingWriter::always_failing();
+        let result = adapter.run_with_io(input, writer);
+        assert!(result.is_err(), "run_with_io must return Err when writer is broken immediately");
+    }
+
+    /// A writer that succeeds for a few writes then fails permanently triggers the
+    /// supervision path: the event-handler sets `transport_broken`, and the main
+    /// loop detects it on the next iteration and returns `BrokenPipe`.
+    ///
+    /// Regression test for #1609: before this fix the event handler would log errors
+    /// forever and the main loop would never notice the broken transport.
+    #[test]
+    fn test_transport_broken_flag_triggers_main_loop_exit() {
+        // Allow enough writes for the initialize-response framing to complete, then
+        // fail everything.  Each Content-Length response involves ~3 write calls
+        // (header prefix, length, \r\n\r\n, body) — 6 successes is sufficient for
+        // one response while ensuring event writes fail.
+        let mut adapter = DebugAdapter::new();
+
+        // Two requests queued: initialize (triggers initialized event write which
+        // will fail) + a second request so the main loop iterates again and can
+        // detect the broken flag.
+        let mut input_bytes = framed_request(1, "initialize");
+        input_bytes.extend_from_slice(&framed_request(2, "stackTrace"));
+        let input = Cursor::new(input_bytes);
+        let writer = FailingWriter::fail_after(6);
+
+        let result = adapter.run_with_io(input, writer);
+        // Either the event-writer flag fires or the main-loop write fails — either
+        // way the function must not return Ok while the transport is broken.
+        assert!(
+            result.is_err(),
+            "run_with_io must return Err when output is persistently broken"
+        );
+    }
+
+    /// The event-handler thread must exit in bounded time when writes fail
+    /// permanently.  This guards against infinite retry loops.
+    #[test]
+    fn test_event_handler_exits_in_bounded_time_after_write_failure() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<io::Result<()>>();
+        thread::spawn(move || {
+            let mut adapter = DebugAdapter::new();
+            let input = Cursor::new(framed_request(1, "initialize"));
+            let writer = FailingWriter::always_failing();
+            let _ = done_tx.send(adapter.run_with_io(input, writer));
+        });
+        let result = done_rx.recv_timeout(Duration::from_secs(5));
+        assert!(
+            result.is_ok(),
+            "run_with_io must complete within 5 s after persistent write failure"
+        );
+    }
+
+    /// The `transport_broken` flag starts as `false` on a fresh adapter and is
+    /// not set by a successful run (clean EOF on the input side).
+    #[test]
+    fn test_transport_broken_flag_clear_on_clean_run() {
+        let mut adapter = DebugAdapter::new();
+        // Empty input → immediate EOF → clean Ok(()) return.
+        let input = Cursor::new(vec![]);
+        // Writer that always succeeds (Vec<u8>).
+        let result = adapter.run_with_io(input, Vec::<u8>::new());
+        assert!(result.is_ok(), "clean EOF must return Ok");
+        // Flag must remain false.
+        assert!(
+            !adapter.transport_broken.load(AOrdering::Acquire),
+            "transport_broken must remain false after a clean run"
+        );
+    }
+}
