@@ -96,6 +96,9 @@ default = ["dap-phase1", "dap-phase2", "dap-phase3"]
 dap-phase1 = []  # AC1-AC4: Bridge to Perl::LanguageServer
 dap-phase2 = []  # AC5-AC16: Native adapter, integration tests, performance, security
 dap-phase3 = []  # AC17-AC19: Non-regression, dependency management, packaging
+# Exposes test-seed helper methods for integration test crates that live outside
+# the perl-dap crate boundary and therefore cannot rely on cfg(test) alone.
+test-helpers = []
 
 # Test targets with acceptance criteria mapping
 [[test]]
@@ -216,7 +219,7 @@ path = "tests/dap_stdio_transport_e2e.rs"
 [[test]]
 name = "dap_scorecard_harness"
 path = "tests/dap_scorecard_harness.rs"
-# AC:4069 DAP launch-success scorecard: 5 fixtures, ≥80% pass rate, p50/p95 latency
+# AC:4069 DAP launch-success scorecard: 5 fixtures, >=80% pass rate, p50/p95 latency
 
 [[test]]
 name = "wave_h_collapse_integration"
@@ -382,6 +385,26 @@ path = "tests/wave_h_external_red_tests.rs"
 name = "prop_dap_protocol_roundtrip"
 path = "tests/prop_dap_protocol_roundtrip.rs"
 # Property tests: DAP protocol message JSON round-trip invariants
+
+[[test]]
+name = "eval_ref_cache_miss_resume_tests"
+path = "tests/eval_ref_cache_miss_resume_tests.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "dap_evaluate_comprehensive_tests"
+path = "tests/dap_evaluate_comprehensive_tests.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "dap_variable_reference_hardening_tests"
+path = "tests/dap_variable_reference_hardening_tests.rs"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "pause_signal_delivery_tests"
+path = "tests/pause_signal_delivery_tests.rs"
+required-features = ["test-helpers"]
 
 [[bench]]
 name = "dap_benchmarks"
