@@ -2,9 +2,12 @@
 
 **Status**: release-staged, maintainer-held. Do not tag, publish, or dispatch a release without Steven's explicit approval.
 **Updated**: 2026-06-20
-**Main SHA**: `c4a31c346e6b55ef6c5c4609c3910d64a86824ab`
+**Release payload SHA**: `c4a31c346e6b55ef6c5c4609c3910d64a86824ab`
+**Readiness bundle merge SHA**: `6dd58b2ba7f084a2de7545c159c57397350e7370`
 **Workspace version (`Cargo.toml`)**: `0.16.0`
 **Last release tag**: `v0.16.0` at `b6d9f12b995ad8ad78ca641940bd73e4b1a3c26d` (2026-06-06)
+
+Note: the release payload SHA is the last merged closeout commit that changed release-facing product, CI, or changelog scope. The readiness bundle merge SHA records the doc-only staging bundle that captured those claims. Verify the current `origin/main` SHA again at dispatch time; later doc-only clarification commits do not expand the product claim.
 
 Note: `v0.16.0` is a real tag, but it is not on current `origin/main` ancestry (`git describe origin/main` resolves from `v0.15.0`). Do not use a naive "commits since v0.16.0" count as release evidence without resolving that tag-lineage question.
 
@@ -22,16 +25,18 @@ Note: `v0.16.0` is a real tag, but it is not on current `origin/main` ancestry (
 
 ## Gate State
 
-Latest merged release-staging PR checked: [#1419](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1419), merge commit `c4a31c346e6b55ef6c5c4609c3910d64a86824ab`, merged 2026-06-20T07:37:45Z. The docs/assets-only CI skip was repaired and proven by [#1817](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1817), merge commit `f5f63fbf8df4e7aacddde13abf7e815a2e8f4160`, merged 2026-06-20T07:06:11Z.
+Latest merged release-staging PR checked: [#1837](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1837), merge commit `6dd58b2ba7f084a2de7545c159c57397350e7370`, merged 2026-06-20T08:08:54Z. It refreshed the readiness bundle after [#1419](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1419), merge commit `c4a31c346e6b55ef6c5c4609c3910d64a86824ab`, merged 2026-06-20T07:37:45Z. The docs/assets-only CI skip was repaired and proven by [#1817](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/1817), merge commit `f5f63fbf8df4e7aacddde13abf7e815a2e8f4160`, merged 2026-06-20T07:06:11Z.
 
 | Required / decision gate | Status | Notes |
 |--------------------------|-----------------|-------|
-| `Perl LSP Rust Small Result` | PASS | #1419 GitHub check completed 2026-06-20T07:15:21Z. |
-| `ripr+ New Gap Gate` | PASS | #1419 GitHub check completed 2026-06-20T07:30:09Z. |
-| `Codecov / Patch 95` | PASS | #1419 GitHub check completed 2026-06-20T07:12:35Z. |
-| `Workflow Trigger Lint` | PASS | #1419 GitHub check completed 2026-06-20T07:17:15Z after #1816/#1817 removed required-workflow path filters. |
-| `PR Smoke (Fast Feedback)` | SKIPPED | #1419 is docs/assets-only; the always-triggered CI workflow classified it via `draft-pr-check` and skipped heavy Rust jobs. |
-| `CI Gate (Merge-Blocking)` | SKIPPED | Same docs/assets-only guard as above. #1817's own CI repair PR passed `CI Gate (Merge-Blocking)` at 2026-06-20T06:50:13Z. |
+| `Perl LSP Rust Small Result` | PASS | #1837 GitHub check completed 2026-06-20T07:47:24Z after CX43 disk-preflight fallback passed. |
+| `ripr+ New Gap Gate` | PASS | #1837 GitHub check completed 2026-06-20T08:01:58Z. |
+| `Codecov / Patch 95` | PASS | #1837 GitHub check completed 2026-06-20T07:45:57Z. |
+| `Workflow Trigger Lint` | PASS | #1837 GitHub check completed 2026-06-20T07:50:35Z after #1816/#1817 removed required-workflow path filters. |
+| `UB Review Advisory` | PASS | #1837 GitHub-hosted advisory completed 2026-06-20T08:07:28Z. |
+| `droid-review` | PASS | #1837 GitHub check completed 2026-06-20T07:57:38Z. |
+| `PR Smoke (Fast Feedback)` | SKIPPED | #1837 is docs-only; the always-triggered CI workflow classified it via `draft-pr-check` and skipped heavy Rust jobs. |
+| `CI Gate (Merge-Blocking)` | SKIPPED | Same docs-only guard as above. #1817's own CI repair PR passed `CI Gate (Merge-Blocking)` at 2026-06-20T06:50:13Z. |
 
 Coverage semantics after #1482/#1549/#1576/#1581/#1586: coverage verdicts are scoped to coverage shortfall/setup/routing failures. Routed test failures belong to test-named gates, not the Codecov/Patch-95 verdict.
 
@@ -62,7 +67,7 @@ Correction from earlier draft: #1524 is closed, not merged. The arrow-deref diag
 
 ## Product Smoke Receipts
 
-All product-smoke commands below were run locally on Windows against `origin/main`/`c94d50e8` lineage during the 2026-06-20 closeout pass unless noted. Later main commits through `c4a31c346e6b55ef6c5c4609c3910d64a86824ab` were docs/CI release-staging changes, not product-code changes. Cargo target output was redirected outside the worktree under `D:\cargo-target\perl-lsp-release-smoke*`.
+All product-smoke commands below were run locally on Windows against `origin/main`/`c94d50e8` lineage during the 2026-06-20 closeout pass unless noted. Later main commits through readiness bundle merge `6dd58b2ba7f084a2de7545c159c57397350e7370` were docs/CI release-staging changes, not product-code changes. Cargo target output was redirected outside the worktree under `D:\cargo-target\perl-lsp-release-smoke*`.
 
 ### Parser / Robustness
 
@@ -135,7 +140,7 @@ Release wording may say "bounded CPAN top-50 profile passed" with the counts abo
 
 ## Release Channel Checklist
 
-- [x] Main SHA recorded.
+- [x] Release payload SHA and readiness bundle merge SHA recorded.
 - [x] Required gate state recorded from latest merged PR.
 - [x] Coverage/test gate semantics recorded after #1482/#1549 and follow-ups.
 - [x] Parser, LSP, DAP, and easy-path smoke receipts recorded.
@@ -153,4 +158,4 @@ This document does not authorize or initiate a release. No tag, no `crates.io` p
 
 ---
 
-Generated from current repo/GitHub state through `c4a31c346e6b55ef6c5c4609c3910d64a86824ab` and local smoke receipts on 2026-06-20. Claims above are limited to the commands and receipts named in this file.
+Generated from current repo/GitHub state through readiness bundle merge `6dd58b2ba7f084a2de7545c159c57397350e7370` and local smoke receipts on 2026-06-20. Claims above are limited to the commands and receipts named in this file. Verify the current `origin/main` SHA again before dispatch.
