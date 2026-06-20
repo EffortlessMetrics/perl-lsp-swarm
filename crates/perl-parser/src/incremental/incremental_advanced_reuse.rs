@@ -592,6 +592,7 @@ impl AdvancedReuseAnalyzer {
                 interpolated.hash(&mut hasher);
                 "string".hash(&mut hasher);
             }
+            NodeKind::VString { .. } => "vstring".hash(&mut hasher),
             NodeKind::Variable { sigil, .. } => {
                 sigil.hash(&mut hasher);
                 "variable".hash(&mut hasher);
@@ -610,6 +611,7 @@ impl AdvancedReuseAnalyzer {
         match &node.kind {
             NodeKind::Number { value } => value.hash(&mut hasher),
             NodeKind::String { value, .. } => value.hash(&mut hasher),
+            NodeKind::VString { value } => value.hash(&mut hasher),
             NodeKind::Variable { name, .. } => name.hash(&mut hasher),
             NodeKind::Identifier { name } => name.hash(&mut hasher),
             _ => {

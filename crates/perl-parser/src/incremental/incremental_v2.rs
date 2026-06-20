@@ -1130,6 +1130,8 @@ impl IncrementalParserV2 {
                 NodeKind::String { value: v1, interpolated: i1 },
                 NodeKind::String { value: v2, interpolated: i2 },
             ) => v1 == v2 && i1 == i2,
+            // VString nodes - version value must match exactly
+            (NodeKind::VString { value: v1 }, NodeKind::VString { value: v2 }) => v1 == v2,
 
             // Variable nodes - sigil and name must match
             (

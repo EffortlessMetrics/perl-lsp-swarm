@@ -181,6 +181,7 @@ impl SimpleIncrementalParser {
         match (&node1.kind, &node2.kind) {
             (NodeKind::Number { value: v1 }, NodeKind::Number { value: v2 }) => v1 == v2,
             (NodeKind::String { value: v1, .. }, NodeKind::String { value: v2, .. }) => v1 == v2,
+            (NodeKind::VString { value: v1 }, NodeKind::VString { value: v2 }) => v1 == v2,
             (
                 NodeKind::Variable { sigil: s1, name: n1 },
                 NodeKind::Variable { sigil: s2, name: n2 },

@@ -63,3 +63,30 @@ fn test_ordinary_float_is_not_vstring() {
         sexp
     );
 }
+
+#[test]
+fn test_range_is_not_vstring() {
+    // Ranges like 1..10 must not be misclassified as version strings
+    let source = r#"my @r = 1..10;"#;
+    let ast = parse(source);
+    let sexp = ast.to_sexp();
+    assert!(
+        !sexp.contains("vstring"),
+        "range 1..10 must not contain a vstring node, but got: {}",
+        sexp
+    );
+}
+
+#[test]
+fn test_vstring_no_dot_single_component() {
+    // Bare single-component v-string: v5 is chr(5) in Perl — must parse cleanly
+    // and be classified as VString, not Identifier or Number.
+    let source = r#"my $chr5 = v5;"#;
+    let ast = parse(source);
+    let sexp = ast.to_sexp();
+    assert!(
+        sexp.contains("(vstring \"v5\")"),
+        "single-component vstring v5 should produce (vstring \"v5\") but got: {}",
+        sexp
+    );
+}
