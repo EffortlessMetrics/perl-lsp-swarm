@@ -4,12 +4,17 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use color_eyre::eyre::{Context, Result, bail};
 use serde_json::{Value as JsonValue, json};
 use serde_yaml_ng::Value as YamlValue;
+
+#[cfg(test)]
+use crate::tasks::git_context::git_stdout_with_mount_root;
+use crate::tasks::git_context::{
+    default_windows_drive_mount_root, git_output_with_mount_root, git_stdout_with_worktree_fallback,
+};
 
 const COVERAGE_TARGET: f64 = 95.0;
 const TEST_SUPPORT_CRATE_PREFIXES: &[&str] = &[
@@ -550,11 +555,17 @@ fn finish_file(summary: &mut LcovSummary, current: &mut FileCoverage) {
 }
 
 fn changed_lines_since(root: &Path, base: &str) -> Result<BTreeMap<String, BTreeSet<u64>>> {
+    changed_lines_since_with_mount_root(root, base, default_windows_drive_mount_root())
+}
+
+fn changed_lines_since_with_mount_root(
+    root: &Path,
+    base: &str,
+    windows_drive_mount_root: &Path,
+) -> Result<BTreeMap<String, BTreeSet<u64>>> {
     let diff_range = format!("{base}...HEAD");
-    let output = Command::new("git")
-        .args(["diff", "--unified=0", "--no-ext-diff", &diff_range, "--", ":(glob)**/*.rs"])
-        .current_dir(root)
-        .output()
+    let args = ["diff", "--unified=0", "--no-ext-diff", &diff_range, "--", ":(glob)**/*.rs"];
+    let output = git_output_with_mount_root(root, &args, windows_drive_mount_root)
         .with_context(|| format!("running git diff for patch coverage against {base}"))?;
     if !output.status.success() {
         bail!("git diff for patch coverage failed with status {}", output.status);
@@ -975,18 +986,14 @@ impl ProjectClusterRecommendation {
 }
 
 fn current_head(root: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(root)
-        .output()
-        .context("running git rev-parse HEAD")?;
-    if !output.status.success() {
-        bail!("git rev-parse HEAD failed with status {}", output.status);
-    }
-    Ok(String::from_utf8(output.stdout)
-        .context("git rev-parse HEAD returned non-UTF8 output")?
-        .trim()
-        .to_string())
+    git_stdout_with_worktree_fallback(root, &["rev-parse", "HEAD"])
+        .context("running git rev-parse HEAD")
+}
+
+#[cfg(test)]
+fn current_head_with_mount_root(root: &Path, windows_drive_mount_root: &Path) -> Result<String> {
+    git_stdout_with_mount_root(root, &["rev-parse", "HEAD"], windows_drive_mount_root)
+        .context("running git rev-parse HEAD")
 }
 
 fn percent(hit: u64, found: u64) -> f64 {
@@ -1041,6 +1048,7 @@ fn coverage_baseline_command(args: &CoverageBaselineArgs, check: bool) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -1571,6 +1579,46 @@ coverage:
     }
 
     #[test]
+    fn git_context_fallback_reports_invalid_fallback_gitdir() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo)?;
+        fs::write(repo.join(".git"), "gitdir: missing-git-dir\n")?;
+
+        let head_err = current_head(&repo).expect_err("invalid fallback gitdir should fail");
+        assert!(format!("{head_err:#}").contains("git rev-parse HEAD failed"));
+        let diff_err =
+            changed_lines_since(&repo, "HEAD").expect_err("invalid fallback gitdir should fail");
+        assert!(format!("{diff_err:#}").contains("git diff for patch coverage failed"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_context_fallback_handles_windows_gitdir_with_mount_root() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let mount_root = temp.path().join("mnt");
+        let git_dir = mount_root.join("z/repo.git");
+        fs::create_dir_all(&repo)?;
+        run_git(&repo, &["init"])?;
+        run_git(&repo, &["config", "user.email", "agent@example.invalid"])?;
+        run_git(&repo, &["config", "user.name", "Agent Test"])?;
+        fs::write(repo.join("covered.rs"), "fn covered() {}\n")?;
+        run_git(&repo, &["add", "covered.rs"])?;
+        run_git(&repo, &["commit", "-m", "initial"])?;
+        let head = run_git(&repo, &["rev-parse", "HEAD"])?.trim().to_string();
+
+        fs::create_dir_all(git_dir.parent().ok_or("git dir missing parent")?)?;
+        fs::rename(repo.join(".git"), &git_dir)?;
+        fs::write(repo.join(".git"), "gitdir: Z:/repo.git\n")?;
+
+        assert_eq!(current_head_with_mount_root(&repo, &mount_root)?, head);
+        assert!(changed_lines_since_with_mount_root(&repo, "HEAD", &mount_root)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn check_mode_reports_full_regeneration_command_for_stale_receipt() -> TestResult {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
@@ -1597,7 +1645,10 @@ coverage:
         let err = run(args).expect_err("stale receipt should fail check mode");
         let message = err.to_string();
 
-        assert!(message.contains("coverage baseline receipt is stale"));
+        assert!(
+            message.contains("coverage baseline receipt is stale"),
+            "unexpected error: {message}"
+        );
         assert!(message.contains("rtk cargo xtask coverage-baseline"));
         assert!(message.contains("--patch-coverage 94.00"));
         assert!(message.contains("--scope workspace-lib-xtask-quality"));
