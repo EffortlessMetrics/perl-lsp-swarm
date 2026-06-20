@@ -72,6 +72,19 @@ fn our_declaration_is_a_stash_write_with_package() {
 }
 
 #[test]
+fn local_declaration_is_a_stash_write() {
+    // `local` dynamically scopes a package/global slot, so it lowers to a stash
+    // write, not a lexical write (unlike `my`/`state`).
+    let graph = lower("local $x;");
+    let symbol = first_op(&graph, |op| match op {
+        PirOperation::StashWrite { symbol } => Some(symbol.clone()),
+        _ => None,
+    });
+    assert_eq!(symbol.sigil, "$");
+    assert_eq!(symbol.name, "x");
+}
+
+#[test]
 fn named_call_splits_package_qualifier() {
     let graph = lower("Bar::baz();");
     let callee = first_op(&graph, |op| match op {
@@ -81,6 +94,21 @@ fn named_call_splits_package_qualifier() {
     assert_eq!(
         callee,
         PirCallee::Named { name: "baz".to_string(), package: Some("Bar".to_string()) }
+    );
+}
+
+#[test]
+fn deep_qualified_call_preserves_full_package_path() {
+    // The qualifier split keeps the full package path (`rsplit_once`), so the
+    // method name is just the final segment and the package is everything else.
+    let graph = lower("A::B::foo();");
+    let callee = first_op(&graph, |op| match op {
+        PirOperation::Call { callee, .. } => Some(callee.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        callee,
+        PirCallee::Named { name: "foo".to_string(), package: Some("A::B".to_string()) }
     );
 }
 

@@ -226,6 +226,15 @@ impl Lowerer {
     }
 
     fn finish(self) -> PirGraph {
+        // A DynamicCallee boundary is always consumed by the coderef call HIR
+        // emits next, so nothing should be pending here. If a future HIR change
+        // emits a boundary without its call, this catches the invariant break in
+        // debug builds rather than silently leaving a boundary unlinked.
+        debug_assert!(
+            self.pending_dynamic_callee.is_none(),
+            "pending_dynamic_callee was not consumed: HIR emitted a DynamicCallee \
+             boundary without a following coderef CallExpr",
+        );
         let receipt =
             build_receipt(&self.nodes, self.edges.len(), self.unsupported, self.source_identity);
         PirGraph { nodes: self.nodes, edges: self.edges, receipt }

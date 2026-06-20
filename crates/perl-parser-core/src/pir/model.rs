@@ -543,6 +543,10 @@ impl PirGraph {
     }
 
     /// Look up a node by id.
+    ///
+    /// This is O(1): lowering pushes nodes in stable index order, so `nodes[k]`
+    /// always has `id.index() == k`. Lowerings must preserve that invariant —
+    /// do not store nodes out of order or assign non-sequential ids.
     #[must_use]
     pub fn node(&self, id: PirId) -> Option<&PirNode> {
         self.nodes.get(id.index() as usize)
