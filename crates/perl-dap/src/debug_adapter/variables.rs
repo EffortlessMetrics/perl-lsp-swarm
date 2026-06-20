@@ -294,6 +294,8 @@ impl DebugAdapter {
             // Fresh parse: total is the full root list length before pagination.
             Some(parsed_full_roots.len() as i64)
         } else {
+            // Cache hit (the cache stores the original full list, so root_count is reliable)
+            // maps to Some; the fallback/unknown path stays None and omits the field.
             cached_total.map(|n| n as i64)
         };
 
