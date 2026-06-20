@@ -272,7 +272,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Gate-list rendering has CLI contract coverage.** The `cargo xtask gates
   --list` path now has tests for PR-fast tier filtering, explicit gate
   filtering, and actionable unknown-gate errors without executing configured
-  gates. (#1939)
+  gates. (#1939, issue #1942)
 - **Corpus gold fixtures avoid invalid Perl syntax.** Two parser gold fixtures
   that were invalid under Perl 5 were corrected so corpus accuracy metrics no
   longer count fixture bugs as parser false negatives. (#1903)
