@@ -85,11 +85,11 @@ different spans produce different `EntityId` values. Cross-file identity is the 
 
 The hash function must incorporate a file-identity component (e.g. the canonical file path
 or a stable file hash) so that structurally identical symbols in different files diverge.
-Implemented by #1600.
+Implemented by #1600 (merged in #1876, commit 801f507).
 
-Current state (pre-#1600): `EntityId` is hashed from `(namespace, name, span)` without a
+Previous state (pre-#1600): `EntityId` was hashed from `(namespace, name, span)` without a
 file-identity component — see `perl-semantic-facts/src/lib.rs:22` and
-`perl-symbol/src/surface/facts.rs:279-293`. This is the defect #1600 corrects.
+`perl-symbol/src/surface/facts.rs:279-293`. This defect has been corrected by #1600.
 
 ### Resolution produces cross-file identity
 
@@ -154,11 +154,11 @@ The active snapshot is stored in an `Arc<SemanticSnapshot>` behind a single `Arc
 equivalent atomic pointer). Publication is a single pointer swap; there is no multi-step
 update sequence that a concurrent reader can observe in a partial state.
 
-Current state (pre-#1601): publication is **not atomic**. `index_file` updates legacy maps
+Current state (pre-#1601): publication is **not yet atomic**. `index_file` updates legacy maps
 and fact shards in one lock block (`workspace_index.rs:1738-1769`) then updates
 import/export in a **separate** lock block (`workspace_index.rs:1777-1782`). A concurrent
-reader can observe a new shard with stale import visibility. This is the race #1601
-corrects.
+reader can observe a new shard with stale import visibility. This is the race that #1601
+will correct when it ships.
 
 ### Off-thread construction
 
