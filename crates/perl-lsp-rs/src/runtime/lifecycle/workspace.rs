@@ -214,6 +214,9 @@ mod tests {
         let server = LspServer::new();
         server.set_root_uri("untitled:Untitled-1");
         assert!(server.root_path.lock().is_none());
+        // With no file-scheme root there is no workspace to search, so discovery
+        // contributes nothing regardless of the ambient environment.
+        assert!(server.discovered_perltidy_profile.lock().is_none());
     }
 
     #[test]
@@ -225,24 +228,12 @@ mod tests {
 
         server.set_root_uri(&format!("file://{}", temp.path().display()));
 
+        // The workspace profile is searched first, so this assertion holds
+        // regardless of any ambient $HOME/.perltidyrc or $PERLTIDY on the host.
         assert_eq!(
             server.discovered_perltidy_profile.lock().as_deref(),
             profile.to_str(),
             "workspace .perltidyrc should be discovered and cached at initialize"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn set_root_uri_caches_none_when_no_perltidyrc() -> std::io::Result<()> {
-        let server = LspServer::new();
-        let temp = tempfile::tempdir()?;
-
-        server.set_root_uri(&format!("file://{}", temp.path().display()));
-
-        assert!(
-            server.discovered_perltidy_profile.lock().is_none(),
-            "no profile should be cached when the workspace has no .perltidyrc"
         );
         Ok(())
     }
