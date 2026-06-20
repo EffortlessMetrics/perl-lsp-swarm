@@ -33,7 +33,7 @@ fn block_node() -> Node {
 // The canonical fixture lives in tests/helpers.rs. When a new NodeKind
 // variant is added, update helpers.rs (one place for all integration tests).
 fn all_variants() -> Vec<NodeKind> {
-    helpers::all_nodekind_instances()
+    helpers::all_nodekind_instances().into_iter().map(|n| n.kind).collect()
 }
 
 // ────────────────────────────────────────────────────────

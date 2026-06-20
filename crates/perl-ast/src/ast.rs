@@ -500,7 +500,15 @@ impl Node {
                 )
             }
 
-            NodeKind::Subroutine { name, prototype, signature, attributes, body, name_span: _, declarator: _ } => {
+            NodeKind::Subroutine {
+                name,
+                prototype,
+                signature,
+                attributes,
+                body,
+                name_span: _,
+                declarator: _,
+            } => {
                 if let Some(sub_name) = name {
                     // Named subroutine - bless test expected format: (sub name () block)
                     let mut parts = vec![sub_name.clone()];

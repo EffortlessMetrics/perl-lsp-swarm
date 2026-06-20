@@ -47,11 +47,7 @@ pub fn all_nodekind_instances() -> Vec<Node> {
     vec![
         Node::new(NodeKind::Number { value: "42".to_string() }, loc()),
         Node::new(NodeKind::String { value: "hello".to_string(), interpolated: false }, loc()),
-        Node::new(NodeKind::String { value: "hi $x".to_string(), interpolated: true }, loc()),
-        Node::new(
-            NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() },
-            loc(),
-        ),
+        Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }, loc()),
         Node::new(NodeKind::Identifier { name: "foo".to_string() }, loc()),
         Node::new(NodeKind::Block { statements: vec![] }, loc()),
         Node::new(NodeKind::Program { statements: vec![] }, loc()),
@@ -81,10 +77,7 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             },
             loc(),
         ),
-        Node::new(
-            NodeKind::Unary { op: "-".to_string(), operand: Box::new(num("1")) },
-            loc(),
-        ),
+        Node::new(NodeKind::Unary { op: "-".to_string(), operand: Box::new(num("1")) }, loc()),
         Node::new(
             NodeKind::If {
                 condition: Box::new(num("1")),
@@ -135,14 +128,8 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             },
             loc(),
         ),
-        Node::new(
-            NodeKind::Return { value: Some(Box::new(num("1"))) },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::FunctionCall { name: "print".to_string(), args: vec![] },
-            loc(),
-        ),
+        Node::new(NodeKind::Return { value: Some(Box::new(num("1"))) }, loc()),
+        Node::new(NodeKind::FunctionCall { name: "print".to_string(), args: vec![] }, loc()),
         Node::new(
             NodeKind::MethodCall {
                 object: Box::new(var("$", "obj")),
@@ -167,61 +154,24 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             },
             loc(),
         ),
-        Node::new(
-            NodeKind::ArrayLiteral { elements: vec![] },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::HashLiteral { pairs: vec![] },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::ArrayAccess {
-                array: Box::new(var("@", "arr")),
-                index: Box::new(num("0")),
-            },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::HashAccess {
-                hash: Box::new(var("%", "h")),
-                key: Box::new(Node::new(
-                    NodeKind::String { value: "k".to_string(), interpolated: false },
-                    loc(),
-                )),
-            },
-            loc(),
-        ),
+        Node::new(NodeKind::ArrayLiteral { elements: vec![] }, loc()),
+        Node::new(NodeKind::HashLiteral { pairs: vec![] }, loc()),
         Node::new(
             NodeKind::Use { module: "strict".to_string(), args: vec![], has_filter_risk: false },
             loc(),
         ),
         Node::new(
-            NodeKind::No {
-                module: "warnings".to_string(),
-                args: vec![],
-                has_filter_risk: false,
-            },
+            NodeKind::No { module: "warnings".to_string(), args: vec![], has_filter_risk: false },
             loc(),
         ),
         Node::new(
             NodeKind::Package { name: "Foo".to_string(), name_span: loc2(8, 11), block: None },
             loc(),
         ),
+        Node::new(NodeKind::Eval { block: Box::new(block()) }, loc()),
+        Node::new(NodeKind::Do { block: Box::new(block()) }, loc()),
         Node::new(
-            NodeKind::Eval { block: Box::new(block()) },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::Do { block: Box::new(block()) },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::Try {
-                body: Box::new(block()),
-                catch_blocks: vec![],
-                finally_block: None,
-            },
+            NodeKind::Try { body: Box::new(block()), catch_blocks: vec![], finally_block: None },
             loc(),
         ),
         Node::new(
@@ -244,10 +194,7 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             },
             loc(),
         ),
-        Node::new(
-            NodeKind::LoopControl { op: "next".to_string(), label: None },
-            loc(),
-        ),
+        Node::new(NodeKind::LoopControl { op: "next".to_string(), label: None }, loc()),
         Node::new(
             NodeKind::Error {
                 message: "err".to_string(),
@@ -268,25 +215,12 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         Node::new(NodeKind::Readline { filehandle: None }, loc()),
         Node::new(NodeKind::Glob { pattern: "*".to_string() }, loc()),
         Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc()),
+        Node::new(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }, loc()),
         Node::new(
-            NodeKind::DataSection {
-                marker: "__DATA__".to_string(),
-                body: None,
-            },
+            NodeKind::Class { name: "Foo".to_string(), parents: vec![], body: Box::new(block()) },
             loc(),
         ),
-        Node::new(
-            NodeKind::Class {
-                name: "Foo".to_string(),
-                parents: vec![],
-                body: Box::new(block()),
-            },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::ExpressionStatement { expression: Box::new(num("1")) },
-            loc(),
-        ),
+        Node::new(NodeKind::ExpressionStatement { expression: Box::new(num("1")) }, loc()),
         Node::new(
             NodeKind::StatementModifier {
                 statement: Box::new(num("1")),
@@ -310,18 +244,9 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             },
             loc(),
         ),
-        Node::new(
-            NodeKind::Given { expr: Box::new(num("1")), body: Box::new(block()) },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::When { condition: Box::new(num("1")), body: Box::new(block()) },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::Default { body: Box::new(block()) },
-            loc(),
-        ),
+        Node::new(NodeKind::Given { expr: Box::new(num("1")), body: Box::new(block()) }, loc()),
+        Node::new(NodeKind::When { condition: Box::new(num("1")), body: Box::new(block()) }, loc()),
+        Node::new(NodeKind::Default { body: Box::new(block()) }, loc()),
         Node::new(
             NodeKind::PhaseBlock {
                 phase: "BEGIN".to_string(),
@@ -364,19 +289,16 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         Node::new(
             NodeKind::IndirectCall {
                 method: "new".to_string(),
-                object: Box::new(Node::new(NodeKind::Identifier { name: "Foo".to_string() }, loc())),
+                object: Box::new(Node::new(
+                    NodeKind::Identifier { name: "Foo".to_string() },
+                    loc(),
+                )),
                 args: vec![],
             },
             loc(),
         ),
-        Node::new(
-            NodeKind::Signature { parameters: vec![] },
-            loc(),
-        ),
-        Node::new(
-            NodeKind::MandatoryParameter { variable: Box::new(var("$", "x")) },
-            loc(),
-        ),
+        Node::new(NodeKind::Signature { parameters: vec![] }, loc()),
+        Node::new(NodeKind::MandatoryParameter { variable: Box::new(var("$", "x")) }, loc()),
         Node::new(
             NodeKind::OptionalParameter {
                 variable: Box::new(var("$", "x")),
@@ -384,26 +306,40 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             },
             loc(),
         ),
-        Node::new(
-            NodeKind::SlurpyParameter { variable: Box::new(var("@", "rest")) },
-            loc(),
-        ),
+        Node::new(NodeKind::SlurpyParameter { variable: Box::new(var("@", "rest")) }, loc()),
         Node::new(
             NodeKind::Tie {
                 variable: Box::new(var("%", "h")),
-                package: Box::new(Node::new(NodeKind::Identifier { name: "DB_File".to_string() }, loc())),
+                package: Box::new(Node::new(
+                    NodeKind::Identifier { name: "DB_File".to_string() },
+                    loc(),
+                )),
                 args: vec![],
             },
             loc(),
         ),
+        Node::new(NodeKind::Untie { variable: Box::new(var("%", "h")) }, loc()),
+        Node::new(NodeKind::Format { name: "STDOUT".to_string(), body: "".to_string() }, loc()),
+        Node::new(NodeKind::NestedVariableList { items: vec![] }, loc()),
         Node::new(
-            NodeKind::Untie { variable: Box::new(var("%", "h")) },
+            NodeKind::VariableWithAttributes {
+                variable: Box::new(var("$", "x")),
+                attributes: vec![":lvalue".to_string()],
+            },
             loc(),
         ),
+        Node::new(NodeKind::Defer { block: Box::new(block()) }, loc()),
+        Node::new(NodeKind::Prototype { content: "$@".to_string() }, loc()),
+        Node::new(NodeKind::NamedParameter { variable: Box::new(var("$", "x")) }, loc()),
         Node::new(
-            NodeKind::Format { name: "STDOUT".to_string(), body: "".to_string() },
+            NodeKind::Method {
+                name: "foo".to_string(),
+                signature: None,
+                attributes: vec![],
+                body: Box::new(block()),
+            },
             loc(),
         ),
-        NodeKind::UnknownRest,
+        Node::new(NodeKind::Goto { target: Box::new(var("$", "sub_ref")) }, loc()),
     ]
 }

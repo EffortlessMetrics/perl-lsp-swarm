@@ -9,12 +9,7 @@ fn extract_subroutine_declarator(ast: &Node) -> Option<String> {
     match &ast.kind {
         NodeKind::Program { statements } => {
             for stmt in statements {
-                if let NodeKind::Subroutine {
-                    declarator,
-                    name,
-                    ..
-                } = &stmt.kind
-                {
+                if let NodeKind::Subroutine { declarator, name, .. } = &stmt.kind {
                     if name.is_some() {
                         return declarator.clone();
                     }
@@ -49,7 +44,11 @@ fn test_my_sub_declarator() {
     assert_clean_parse(source);
     let ast = parse(source);
     let declarator = extract_subroutine_declarator(&ast);
-    assert_eq!(declarator, Some("my".to_string()), "my sub should have declarator field set to 'my'");
+    assert_eq!(
+        declarator,
+        Some("my".to_string()),
+        "my sub should have declarator field set to 'my'"
+    );
 }
 
 #[test]
@@ -84,11 +83,7 @@ fn test_regular_sub_no_declarator() {
     assert_clean_parse(source);
     let ast = parse(source);
     let declarator = extract_subroutine_declarator(&ast);
-    assert_eq!(
-        declarator,
-        None,
-        "regular sub should have no declarator (None)"
-    );
+    assert_eq!(declarator, None, "regular sub should have no declarator (None)");
 }
 
 // ── Edge cases ───────────────────────────────────────────────────────────────
@@ -154,14 +149,25 @@ sub plain { 4 }
     let subs = extract_all_subroutine_declarators(&ast);
 
     assert_eq!(subs.len(), 4, "expected 4 subroutines, got {}", subs.len());
-    assert_eq!(subs[0], ("lexical".to_string(), Some("my".to_string())),
-        "first sub (my) wrong: {:?}", subs[0]);
-    assert_eq!(subs[1], ("exported".to_string(), Some("our".to_string())),
-        "second sub (our) wrong: {:?}", subs[1]);
-    assert_eq!(subs[2], ("memoized".to_string(), Some("state".to_string())),
-        "third sub (state) wrong: {:?}", subs[2]);
-    assert_eq!(subs[3], ("plain".to_string(), None),
-        "fourth sub (plain) wrong: {:?}", subs[3]);
+    assert_eq!(
+        subs[0],
+        ("lexical".to_string(), Some("my".to_string())),
+        "first sub (my) wrong: {:?}",
+        subs[0]
+    );
+    assert_eq!(
+        subs[1],
+        ("exported".to_string(), Some("our".to_string())),
+        "second sub (our) wrong: {:?}",
+        subs[1]
+    );
+    assert_eq!(
+        subs[2],
+        ("memoized".to_string(), Some("state".to_string())),
+        "third sub (state) wrong: {:?}",
+        subs[2]
+    );
+    assert_eq!(subs[3], ("plain".to_string(), None), "fourth sub (plain) wrong: {:?}", subs[3]);
 }
 
 /// A `my sub` nested inside a closure should not corrupt the outer closure's
@@ -179,8 +185,7 @@ sub outer {
     // outer is a plain sub — no declarator
     let declarator = extract_subroutine_declarator(&ast);
     assert_eq!(
-        declarator,
-        None,
+        declarator, None,
         "outer plain sub should have no declarator even when it contains a my sub"
     );
 }

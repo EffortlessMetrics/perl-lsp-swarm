@@ -1442,7 +1442,7 @@ fn all_kind_names_contains_every_variant() -> Result<(), Box<dyn std::error::Err
         NodeKind::ALL_KIND_NAMES.iter().copied().collect();
 
     for variant in &all_variants {
-        let name = variant.kind_name();
+        let name = variant.kind.kind_name();
         assert!(all_names.contains(name), "kind_name {:?} not found in ALL_KIND_NAMES", name);
     }
 
