@@ -649,20 +649,21 @@ mod tests {
         assert!(!facts.entities.is_empty(), "facts should have entities");
         assert!(!facts.anchors.is_empty(), "facts should have anchors");
 
-        // For each entity, verify that its anchor_id matches an anchor in the facts,
-        // and that anchor carries the correct file_id.
+        // For each entity with an anchor, verify that the anchor carries the correct file_id.
         for entity in &facts.entities {
-            let matching_anchor = facts
-                .anchors
-                .iter()
-                .find(|anchor| anchor.id == entity.anchor_id)
-                .expect("entity's anchor_id must match an anchor in facts");
+            if let Some(anchor_id) = entity.anchor_id {
+                let matching_anchor = facts
+                    .anchors
+                    .iter()
+                    .find(|anchor| anchor.id == anchor_id)
+                    .expect("entity's anchor_id must match an anchor in facts");
 
-            // Key assertion: the anchor's file_id must match the file_id passed in.
-            assert_eq!(
-                matching_anchor.file_id, test_file_id,
-                "anchor's file_id must match the input file_id"
-            );
+                // Key assertion: the anchor's file_id must match the file_id passed in.
+                assert_eq!(
+                    matching_anchor.file_id, test_file_id,
+                    "anchor's file_id must match the input file_id"
+                );
+            }
         }
     }
 }
