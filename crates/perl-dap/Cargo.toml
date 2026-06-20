@@ -96,6 +96,8 @@ default = ["dap-phase1", "dap-phase2", "dap-phase3"]
 dap-phase1 = []  # AC1-AC4: Bridge to Perl::LanguageServer
 dap-phase2 = []  # AC5-AC16: Native adapter, integration tests, performance, security
 dap-phase3 = []  # AC17-AC19: Non-regression, dependency management, packaging
+# Exposes test-seed helpers for integration tests and benchmarks that link against perl-dap
+test-helpers = []
 
 # Test targets with acceptance criteria mapping
 [[test]]
@@ -207,6 +209,7 @@ path = "tests/dap_lifecycle_matrix_tests.rs"
 name = "dap_scope_filtering_tests"
 path = "tests/dap_scope_filtering_tests.rs"
 # AC:#782 Content-level scope filtering: locals/package/globals with no cross-contamination
+required-features = ["test-helpers"]
 
 [[test]]
 name = "dap_stdio_transport_e2e"
@@ -382,6 +385,31 @@ path = "tests/wave_h_external_red_tests.rs"
 name = "prop_dap_protocol_roundtrip"
 path = "tests/prop_dap_protocol_roundtrip.rs"
 # Property tests: DAP protocol message JSON round-trip invariants
+
+# Tests that call test-seed helpers (require the test-helpers feature)
+[[test]]
+name = "eval_ref_cache_miss_resume_tests"
+path = "tests/eval_ref_cache_miss_resume_tests.rs"
+# #1338 guard: CACHED EvalResult ref must serve children via cache-hit path
+required-features = ["test-helpers"]
+
+[[test]]
+name = "dap_evaluate_comprehensive_tests"
+path = "tests/dap_evaluate_comprehensive_tests.rs"
+# Comprehensive evaluate request coverage including frameId and session-state paths
+required-features = ["test-helpers"]
+
+[[test]]
+name = "dap_variable_reference_hardening_tests"
+path = "tests/dap_variable_reference_hardening_tests.rs"
+# Variable reference edge cases and hardening
+required-features = ["test-helpers"]
+
+[[test]]
+name = "pause_signal_delivery_tests"
+path = "tests/pause_signal_delivery_tests.rs"
+# Pause/signal delivery: attached_pid stale-ref and signal failure paths
+required-features = ["test-helpers"]
 
 [[bench]]
 name = "dap_benchmarks"
