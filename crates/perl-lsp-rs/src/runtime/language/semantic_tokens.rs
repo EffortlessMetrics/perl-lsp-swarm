@@ -351,6 +351,18 @@ impl LspServer {
                 "scoped compiler lexical-variable use class cutover proof only; lexical variable uses may count as compiler-token identities only when their source-backed span already matches existing live parser/HIR variable tokens, and no new token output is emitted",
             ));
         }
+        if let Some(candidate) = semantic_token_our_variable_declaration_candidate(&doc.text) {
+            receipts.push(Self::semantic_tokens_class_specific_expansion_receipt(
+                live_provider_result,
+                candidate,
+                "our_variable_declaration",
+                "variable",
+                "matched_existing_live_variable_token",
+                "unmatched_existing_live_variable_token",
+                true,
+                "scoped compiler our-variable declaration class cutover proof only; package-scoped our variable declarations may count as compiler-token identities only when their source-backed span already matches existing live parser/HIR variable tokens, and no new token output is emitted",
+            ));
+        }
 
         receipts
     }
@@ -891,11 +903,45 @@ fn semantic_token_lexical_variable_use_candidate(
     ))
 }
 
+fn semantic_token_our_variable_declaration_candidate(
+    source: &str,
+) -> Option<crate::semantic_tokens::SemanticTokenShadowCandidate> {
+    const MARKER: &str = "our ";
+    let marker_start = source.find(MARKER)?;
+    let line_start = source[..marker_start].rfind('\n').map_or(0, |offset| offset + 1);
+    if !source[line_start..marker_start].chars().all(char::is_whitespace) {
+        return None;
+    }
+
+    let (name_start, name_end) = variable_name_after_marker(source, marker_start + MARKER.len())?;
+
+    let name = &source[name_start..name_end];
+    let span = crate::semantic_tokens::SemanticTokenShadowSpan::from_byte_offsets(
+        source, name_start, name_end,
+    )?;
+
+    Some(crate::semantic_tokens::SemanticTokenShadowCandidate::source_backed_shadow(
+        format!("token:our_variable_declaration:{name}:compiler"),
+        ProviderFactSourceKind::CompilerFact,
+        Provenance::SemanticAnalyzer,
+        Confidence::Medium,
+        ProviderFactFreshness::Fresh,
+        span,
+    ))
+}
+
 fn lexical_variable_name_after_my_marker(
     source: &str,
     marker_start: usize,
 ) -> Option<(usize, usize)> {
-    let mut name_start = marker_start + "my ".len();
+    variable_name_after_marker(source, marker_start + "my ".len())
+}
+
+/// Scan the sigiled variable name starting at `name_search_start`, skipping any
+/// leading whitespace. Shared by the `my`/`our` declaration and use detectors so
+/// each compiler-token class extracts the same source-backed span shape.
+fn variable_name_after_marker(source: &str, name_search_start: usize) -> Option<(usize, usize)> {
+    let mut name_start = name_search_start;
 
     while let Some(ch) = source[name_start..].chars().next() {
         if ch.is_whitespace() {
@@ -1115,6 +1161,25 @@ fn semantic_tokens_live_slice_provider_trace(
             source_backed_state: "source_backed_lexical_variable_use_live_token_match",
             user_message: "Semantic tokens exposed the source-backed compiler lexical-variable use live trace because it matched the existing parser/HIR variable token. No new semantic tokens were emitted.",
             claim_boundary: "only source-backed compiler lexical-variable use spans that exactly match existing live parser/HIR variable tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader variable classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
+        },
+    ) {
+        return trace;
+    }
+
+    let our_variable_declaration_candidate =
+        semantic_token_our_variable_declaration_candidate(source);
+    saw_compiler_token_candidate |= our_variable_declaration_candidate.is_some();
+    if let Some(trace) = semantic_tokens_live_slice_provider_trace_for_candidate(
+        our_variable_declaration_candidate,
+        Some(live_provider_result),
+        live_token_count,
+        provider_action,
+        SemanticTokenLiveSliceTraceSpec {
+            live_token_type: "variable",
+            compiler_token_class: "our_variable_declaration",
+            source_backed_state: "source_backed_our_variable_declaration_live_token_match",
+            user_message: "Semantic tokens exposed the source-backed compiler our-variable declaration live trace because it matched the existing parser/HIR variable token. No new semantic tokens were emitted.",
+            claim_boundary: "only source-backed compiler our-variable declaration spans that exactly match existing live parser/HIR variable tokens participate; generated/no-source, stale, dynamic-boundary, low-confidence, fallback, broader variable classes, and unmatched compiler candidates remain blocked, fallback-only, or shadowed",
         },
     ) {
         return trace;
