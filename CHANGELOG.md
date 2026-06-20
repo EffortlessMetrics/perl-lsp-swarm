@@ -95,6 +95,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reference fallback avoids document-lock re-entry.** Partial-index reference
   fallback no longer re-enters the documents lock while searching open files.
   (#1597)
+- **Perl documentation links share one validated target resolver.** Hover,
+  document-link, resolve, and virtual perldoc surfaces now build MetaCPAN,
+  `perldoc://`, and perldoc.perl.org targets through the same resolver, and
+  malformed module payloads are rejected instead of turned into bad URLs.
+  (#1638)
 
 #### Formatting
 
@@ -179,6 +184,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Execute-command routed-suite expectations were refreshed to the tightened
   contract.** The stale test setup was corrected without loosening the
   execute-command assertions. (#1530)
+- **Docs-only PRs no longer run the full Rust matrix.** Pull requests that
+  touch only documentation paths skip the expensive Rust CI workflow while
+  mixed code/doc PRs still run the full matrix. (#1688)
+- **Draft PR ripr routing treats skipped routers as neutral.** Draft pull
+  requests no longer fail the ripr aggregate solely because the router
+  intentionally skipped execution. (#1689)
 
 ---
 
