@@ -39,7 +39,11 @@ fixtures/
 
 Each fixture targets a distinct entry in the grammar's pattern repository
 (`comments`, `pod`, `strings`, `interpolation`, `numbers`, `variables`,
-`keywords`, `operators`, `functions`, `regex`).
+`keywords`, `operators`, `functions`, `regex`). The grammar also contains a
+`swig` repository key for SWIG interface-file keywords (`keyword.other.perl.swig`);
+it is intentionally not covered here because SWIG `.i` files are rarely mixed
+with Perl test content, and the scope uses a distinct `.swig` suffix that
+isolates it from scope renames affecting the main Perl keyword rules.
 
 ## Running
 
