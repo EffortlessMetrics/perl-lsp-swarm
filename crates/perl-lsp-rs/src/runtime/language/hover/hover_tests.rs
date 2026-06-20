@@ -117,6 +117,8 @@ fn pod_hover_cache_refreshes_after_external_file_edit() -> Result<(), Box<dyn st
         first_hover.contains("Original POD"),
         "initial POD hover should be cached: {first_hover}"
     );
+    let cached_hover = server.format_pod_for_hover(&path);
+    assert_eq!(cached_hover, first_hover, "unchanged POD hover should use the cached document");
 
     write_after_mtime_tick(
         &path,
