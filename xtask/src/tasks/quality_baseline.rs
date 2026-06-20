@@ -550,13 +550,23 @@ fn finish_file(summary: &mut LcovSummary, current: &mut FileCoverage) {
 }
 
 fn changed_lines_since(root: &Path, base: &str) -> Result<BTreeMap<String, BTreeSet<u64>>> {
+    changed_lines_since_with_mount_root(root, base, default_windows_drive_mount_root())
+}
+
+fn changed_lines_since_with_mount_root(
+    root: &Path,
+    base: &str,
+    windows_drive_mount_root: &Path,
+) -> Result<BTreeMap<String, BTreeSet<u64>>> {
     let diff_range = format!("{base}...HEAD");
     let args = ["diff", "--unified=0", "--no-ext-diff", &diff_range, "--", ":(glob)**/*.rs"];
     let output = git_output(root, &args, None)
         .with_context(|| format!("running git diff for patch coverage against {base}"))?;
     let output = if output.status.success() {
         output
-    } else if let Some(context) = worktree_git_context(root)? {
+    } else if let Some(context) =
+        worktree_git_context_with_mount_root(root, windows_drive_mount_root)?
+    {
         let fallback = git_output(&context.work_tree, &args, Some(&context.git_dir))
             .with_context(|| format!("running git diff for patch coverage against {base}"))?;
         if fallback.status.success() {
@@ -983,10 +993,16 @@ impl ProjectClusterRecommendation {
 }
 
 fn current_head(root: &Path) -> Result<String> {
+    current_head_with_mount_root(root, default_windows_drive_mount_root())
+}
+
+fn current_head_with_mount_root(root: &Path, windows_drive_mount_root: &Path) -> Result<String> {
     match git_rev_parse_head(root, None)? {
         GitHeadResult::Found(head) => Ok(head),
         GitHeadResult::Failed(status) => {
-            if let Some(context) = worktree_git_context(root)? {
+            if let Some(context) =
+                worktree_git_context_with_mount_root(root, windows_drive_mount_root)?
+            {
                 match git_rev_parse_head(&context.work_tree, Some(&context.git_dir))? {
                     GitHeadResult::Found(head) => return Ok(head),
                     GitHeadResult::Failed(_) => {}
@@ -1030,8 +1046,18 @@ struct WorktreeGitContext {
 }
 
 fn worktree_git_context(root: &Path) -> Result<Option<WorktreeGitContext>> {
+    worktree_git_context_with_mount_root(root, default_windows_drive_mount_root())
+}
+
+fn worktree_git_context_with_mount_root(
+    root: &Path,
+    windows_drive_mount_root: &Path,
+) -> Result<Option<WorktreeGitContext>> {
     for work_tree in root.ancestors() {
         let git_file = work_tree.join(".git");
+        if git_file.is_dir() {
+            return Ok(None);
+        }
         let contents = match fs::read_to_string(&git_file) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -1040,10 +1066,14 @@ fn worktree_git_context(root: &Path) -> Result<Option<WorktreeGitContext>> {
             }
         };
         let Some(raw_git_dir) = contents.trim().strip_prefix("gitdir:") else {
-            continue;
+            return Ok(None);
         };
         return Ok(Some(WorktreeGitContext {
-            git_dir: resolve_git_dir(work_tree, raw_git_dir.trim()),
+            git_dir: resolve_git_dir_with_mount_root(
+                work_tree,
+                raw_git_dir.trim(),
+                windows_drive_mount_root,
+            ),
             work_tree: work_tree.to_path_buf(),
         }));
     }
@@ -1051,29 +1081,49 @@ fn worktree_git_context(root: &Path) -> Result<Option<WorktreeGitContext>> {
 }
 
 fn resolve_git_dir(work_tree: &Path, raw_git_dir: &str) -> PathBuf {
+    resolve_git_dir_with_mount_root(work_tree, raw_git_dir, default_windows_drive_mount_root())
+}
+
+fn resolve_git_dir_with_mount_root(
+    work_tree: &Path,
+    raw_git_dir: &str,
+    windows_drive_mount_root: &Path,
+) -> PathBuf {
     let direct = PathBuf::from(raw_git_dir);
     if direct.is_absolute() || direct.exists() {
         return direct;
     }
-    if let Some(translated) = translate_windows_git_dir_for_unix(raw_git_dir) {
+    if let Some(translated) =
+        translate_windows_git_dir_for_unix(raw_git_dir, windows_drive_mount_root)
+    {
         return translated;
     }
     work_tree.join(raw_git_dir)
 }
 
 #[cfg(unix)]
-fn translate_windows_git_dir_for_unix(raw: &str) -> Option<PathBuf> {
+fn default_windows_drive_mount_root() -> &'static Path {
+    Path::new("/mnt")
+}
+
+#[cfg(not(unix))]
+fn default_windows_drive_mount_root() -> &'static Path {
+    Path::new("")
+}
+
+#[cfg(unix)]
+fn translate_windows_git_dir_for_unix(raw: &str, mount_root: &Path) -> Option<PathBuf> {
     let mut chars = raw.chars();
     let drive = chars.next()?;
     if !drive.is_ascii_alphabetic() || chars.next()? != ':' {
         return None;
     }
     let rest = chars.as_str().trim_start_matches(['/', '\\']).replace('\\', "/");
-    Some(PathBuf::from(format!("/mnt/{}/{}", drive.to_ascii_lowercase(), rest)))
+    Some(mount_root.join(drive.to_ascii_lowercase().to_string()).join(rest))
 }
 
 #[cfg(not(unix))]
-fn translate_windows_git_dir_for_unix(_raw: &str) -> Option<PathBuf> {
+fn translate_windows_git_dir_for_unix(_raw: &str, _mount_root: &Path) -> Option<PathBuf> {
     None
 }
 
@@ -1697,11 +1747,11 @@ coverage:
     #[test]
     fn translate_windows_git_dir_for_unix_maps_drive_paths() -> TestResult {
         assert_eq!(
-            translate_windows_git_dir_for_unix("H:/Code/Rust2/repo/.git")
+            translate_windows_git_dir_for_unix("H:/Code/Rust2/repo/.git", Path::new("/mnt"))
                 .ok_or("drive path did not translate")?,
             PathBuf::from("/mnt/h/Code/Rust2/repo/.git")
         );
-        assert!(translate_windows_git_dir_for_unix("relative/.git").is_none());
+        assert!(translate_windows_git_dir_for_unix("relative/.git", Path::new("/mnt")).is_none());
         Ok(())
     }
 
@@ -1711,7 +1761,11 @@ coverage:
         let temp = tempfile::tempdir()?;
 
         assert_eq!(
-            resolve_git_dir(temp.path(), "H:/Code/Rust2/repo/.git"),
+            resolve_git_dir_with_mount_root(
+                temp.path(),
+                "H:/Code/Rust2/repo/.git",
+                Path::new("/mnt")
+            ),
             PathBuf::from("/mnt/h/Code/Rust2/repo/.git")
         );
         Ok(())
@@ -1721,23 +1775,39 @@ coverage:
     fn git_context_fallback_reports_invalid_fallback_gitdir() -> TestResult {
         let temp = tempfile::tempdir()?;
         let repo = temp.path().join("repo");
-        let nested = repo.join("nested");
-        fs::create_dir_all(&nested)?;
+        fs::create_dir_all(&repo)?;
         fs::write(repo.join(".git"), "gitdir: missing-git-dir\n")?;
-        fs::write(nested.join(".git"), "not a gitdir\n")?;
 
-        let head_err = current_head(&nested).expect_err("invalid fallback gitdir should fail");
+        let head_err = current_head(&repo).expect_err("invalid fallback gitdir should fail");
         assert!(head_err.to_string().contains("git rev-parse HEAD failed"));
         let diff_err =
-            changed_lines_since(&nested, "HEAD").expect_err("invalid fallback gitdir should fail");
+            changed_lines_since(&repo, "HEAD").expect_err("invalid fallback gitdir should fail");
         assert!(diff_err.to_string().contains("git diff for patch coverage failed"));
         Ok(())
     }
 
     #[test]
-    fn git_context_fallback_handles_shadowed_nested_git_file() -> TestResult {
+    fn worktree_git_context_stops_at_malformed_nearest_git_file() -> TestResult {
         let temp = tempfile::tempdir()?;
         let repo = temp.path().join("repo");
+        let nested = repo.join("nested");
+        let git_dir = temp.path().join("repo.git");
+        fs::create_dir_all(&nested)?;
+        fs::create_dir_all(&git_dir)?;
+        fs::write(repo.join(".git"), format!("gitdir: {}\n", git_dir.display()))?;
+        fs::write(nested.join(".git"), "not a gitdir\n")?;
+
+        assert!(worktree_git_context(&nested)?.is_none());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_context_fallback_handles_windows_gitdir_with_mount_root() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let mount_root = temp.path().join("mnt");
+        let git_dir = mount_root.join("z/repo.git");
         fs::create_dir_all(&repo)?;
         run_git(&repo, &["init"])?;
         run_git(&repo, &["config", "user.email", "agent@example.invalid"])?;
@@ -1747,16 +1817,12 @@ coverage:
         run_git(&repo, &["commit", "-m", "initial"])?;
         let head = run_git(&repo, &["rev-parse", "HEAD"])?.trim().to_string();
 
-        let git_dir = temp.path().join("repo.git");
+        fs::create_dir_all(git_dir.parent().ok_or("git dir missing parent")?)?;
         fs::rename(repo.join(".git"), &git_dir)?;
-        fs::write(repo.join(".git"), format!("gitdir: {}\n", git_dir.display()))?;
+        fs::write(repo.join(".git"), "gitdir: Z:/repo.git\n")?;
 
-        let nested = repo.join("nested");
-        fs::create_dir_all(&nested)?;
-        fs::write(nested.join(".git"), "not a gitdir\n")?;
-
-        assert_eq!(current_head(&nested)?, head);
-        assert!(changed_lines_since(&nested, "HEAD")?.is_empty());
+        assert_eq!(current_head_with_mount_root(&repo, &mount_root)?, head);
+        assert!(changed_lines_since_with_mount_root(&repo, "HEAD", &mount_root)?.is_empty());
         Ok(())
     }
 
