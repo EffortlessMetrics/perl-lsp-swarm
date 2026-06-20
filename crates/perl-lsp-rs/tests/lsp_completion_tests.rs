@@ -1964,10 +1964,7 @@ my @result = @name
 
     // Should suggest @names but NOT $name or %name_map
     assert!(labels.contains(&"@names".to_string()), "Should suggest @names");
-    assert!(
-        !labels.contains(&"$name".to_string()),
-        "Should NOT suggest $name when using @ sigil"
-    );
+    assert!(!labels.contains(&"$name".to_string()), "Should NOT suggest $name when using @ sigil");
     assert!(
         !labels.contains(&"%name_map".to_string()),
         "Should NOT suggest %name_map when using @ sigil"
@@ -2026,10 +2023,7 @@ my %result = %name
 
     // Should suggest %name_map but NOT $name or @names
     assert!(labels.contains(&"%name_map".to_string()), "Should suggest %name_map");
-    assert!(
-        !labels.contains(&"$name".to_string()),
-        "Should NOT suggest $name when using % sigil"
-    );
+    assert!(!labels.contains(&"$name".to_string()), "Should NOT suggest $name when using % sigil");
     assert!(
         !labels.contains(&"@names".to_string()),
         "Should NOT suggest @names when using % sigil"
