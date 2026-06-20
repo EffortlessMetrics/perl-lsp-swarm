@@ -1590,6 +1590,7 @@ mod tests {
             n(NodeKind::Typeglob { name: "foo".to_string() }),
             n(NodeKind::Number { value: "42".to_string() }),
             n(NodeKind::String { value: "hello".to_string(), interpolated: false }),
+            n(NodeKind::VString { value: "v1.2.3".to_string() }),
             n(NodeKind::Heredoc {
                 delimiter: "EOF".to_string(),
                 content: "body".to_string(),
