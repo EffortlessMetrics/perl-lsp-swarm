@@ -266,7 +266,23 @@ fn is_perl_module_segment(segment: &str) -> bool {
 }
 
 fn current_package_name(text: &str) -> Option<String> {
+    let mut in_pod = false;
+
     for line in text.lines() {
+        if in_pod && line.starts_with("=cut") {
+            in_pod = false;
+            continue;
+        }
+
+        if starts_pod_block(line) {
+            in_pod = true;
+            continue;
+        }
+
+        if in_pod {
+            continue;
+        }
+
         let Some(rest) = line.trim_start().strip_prefix("package ") else {
             continue;
         };
@@ -605,6 +621,18 @@ mod tests {
         let links = compute_links(uri(), text, &[]);
 
         assert!(links.is_empty(), "malformed POD targets must stay quiet: {links:#?}");
+    }
+
+    #[test]
+    fn pod_package_example_does_not_suppress_matching_link() {
+        let text = "=pod\npackage Example::Module;\nSee L<Example::Module>.\n=cut\n";
+
+        let links = compute_links(uri(), text, &[]);
+
+        assert!(
+            links.iter().any(|link| data_str(link, "/data/module") == Some("Example::Module")),
+            "POD package examples must not be treated as the current code package: {links:#?}"
+        );
     }
 
     #[test]
