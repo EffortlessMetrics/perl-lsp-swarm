@@ -1589,6 +1589,161 @@ mod tests {
     }
 
     #[test]
+    fn completion_item_serializer_maps_remaining_kinds() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/completion_filter_text_serializer_kinds.pl";
+
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use strict;\n"
+            }
+        })))?;
+
+        let documents = server.documents_guard();
+        let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
+        let cases = [
+            (CompletionItemKind::Variable, 6),
+            (CompletionItemKind::Function, 3),
+            (CompletionItemKind::Module, 9),
+            (CompletionItemKind::File, 17),
+            (CompletionItemKind::Constant, 14),
+            (CompletionItemKind::Property, 7),
+        ];
+
+        for (kind, expected_kind) in cases {
+            let item = crate::completion::CompletionItem {
+                label: format!("{kind:?}"),
+                kind,
+                detail: None,
+                documentation: None,
+                insert_text: None,
+                additional_edits: Vec::new(),
+                sort_text: None,
+                filter_text: None,
+                text_edit_range: None,
+                commit_characters: None,
+                label_details: None,
+            };
+
+            let value = server.completion_item_to_lsp_value(doc, item, false, false, false);
+            assert_eq!(
+                value.get("kind").and_then(Value::as_i64),
+                Some(expected_kind),
+                "unexpected LSP kind for {kind:?}: {value:?}"
+            );
+            assert!(value.get("insertText").is_none());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn completion_item_serializer_emits_optional_lsp_fields()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_parser_core::SourceLocation;
+
+        let server = LspServer::default();
+        let uri = "file:///workspace/completion_filter_text_serializer_optional.pl";
+
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "use strict;\n"
+            }
+        })))?;
+
+        let documents = server.documents_guard();
+        let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
+        let item = crate::completion::CompletionItem {
+            label: "render".to_string(),
+            kind: CompletionItemKind::Function,
+            detail: Some("render($ctx)".to_string()),
+            documentation: Some("Render the current context.".to_string()),
+            insert_text: Some("render($ctx)".to_string()),
+            additional_edits: vec![(
+                SourceLocation { start: 0, end: 0 },
+                "use Demo::Renderer;\n".to_string(),
+            )],
+            sort_text: Some("2_render".to_string()),
+            filter_text: Some("render".to_string()),
+            text_edit_range: None,
+            commit_characters: None,
+            label_details: Some(
+                perl_lsp_rs_core::providers::completion_item::CompletionItemLabelDetails {
+                    detail: Some("($ctx)".to_string()),
+                    description: Some("Demo::Renderer".to_string()),
+                },
+            ),
+        };
+
+        let value = server.completion_item_to_lsp_value(doc, item, false, true, true);
+
+        assert_eq!(value.get("detail").and_then(Value::as_str), Some("render($ctx)"));
+        assert_eq!(
+            value.pointer("/documentation/value").and_then(Value::as_str),
+            Some("Render the current context.")
+        );
+        assert_eq!(value.get("filterText").and_then(Value::as_str), Some("render"));
+        assert!(value.get("commitCharacters").and_then(Value::as_array).is_some());
+        assert_eq!(value.pointer("/labelDetails/detail").and_then(Value::as_str), Some("($ctx)"));
+        assert_eq!(
+            value.pointer("/labelDetails/description").and_then(Value::as_str),
+            Some("Demo::Renderer")
+        );
+        assert_eq!(
+            value.pointer("/additionalTextEdits/0/newText").and_then(Value::as_str),
+            Some("use Demo::Renderer;\n")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_item_serializer_degrades_snippet_without_client_support()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/completion_filter_text_serializer_plain.pl";
+
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "fo"
+            }
+        })))?;
+
+        let documents = server.documents_guard();
+        let doc = server.get_document(&documents, uri).ok_or("missing test document")?;
+        let item = crate::completion::CompletionItem {
+            label: "foreach".to_string(),
+            kind: CompletionItemKind::Snippet,
+            detail: None,
+            documentation: None,
+            insert_text: Some("foreach my ${1:$item} (@${2:list}) {\n\t$0\n}".to_string()),
+            additional_edits: Vec::new(),
+            sort_text: None,
+            filter_text: Some("foreach".to_string()),
+            text_edit_range: None,
+            commit_characters: None,
+            label_details: None,
+        };
+
+        let value = server.completion_item_to_lsp_value(doc, item, false, false, false);
+
+        assert_eq!(value.get("insertTextFormat").and_then(Value::as_i64), Some(1));
+        assert_eq!(
+            value.get("insertText").and_then(Value::as_str),
+            Some("foreach my $item (@list) {\n\t\n}")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn completion_provider_decision_replays_live_completion_trace()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
