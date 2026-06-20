@@ -208,19 +208,22 @@ pub fn interpolate_logpoint_message(
             }
 
             if found_close {
-                // Try to parse as a Perl variable ($name, @name, %name)
+                // Only scalar variables ($name) are interpolated; @array/%hash and
+                // arithmetic expressions are kept verbatim (full expression evaluation
+                // requires a live debugger context and is deferred to a follow-up).
                 let trimmed = expr.trim();
                 if let Some(var_name) = trimmed.strip_prefix('$') {
                     if let Some(value) = variables.get(var_name) {
                         result.push_str(value);
                     } else {
-                        // Variable not found, keep original expression
+                        // Variable not found in caller-supplied map: keep original
+                        // expression so the template remains readable in the output.
                         result.push('{');
                         result.push_str(trimmed);
                         result.push('}');
                     }
                 } else {
-                    // Not a Perl variable, keep as-is
+                    // Non-scalar expression (arithmetic, @array, etc.): keep verbatim.
                     result.push('{');
                     result.push_str(&expr);
                     result.push('}');
@@ -1279,6 +1282,21 @@ print "result: $final\n";
         let vars = std::collections::HashMap::new();
         // { $y } → trimmed → "$y" → not found → emitted as {$y} (trimmed, no extra spaces)
         assert_eq!(interpolate_logpoint_message("val: { $y }", &vars), "val: {$y}");
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_bare_dollar_sign() {
+        // {$} — dollar sign with empty name: not found → kept as-is
+        let vars = std::collections::HashMap::new();
+        assert_eq!(interpolate_logpoint_message("{$}", &vars), "{$}");
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_array_syntax_kept_verbatim() {
+        // {@arr} — only $scalar is interpolated; @array syntax is not handled and kept as-is
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("arr".to_string(), "should_not_appear".to_string());
+        assert_eq!(interpolate_logpoint_message("{@arr}", &vars), "{@arr}");
     }
 
     #[test]
