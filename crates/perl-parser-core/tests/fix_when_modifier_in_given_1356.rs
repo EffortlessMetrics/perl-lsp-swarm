@@ -230,8 +230,9 @@ given ($x) {
     let ast = parse(source);
     let sexp = ast.to_sexp();
 
-    // Both malformed statements should generate error nodes
-    let error_count = sexp.matches("error").count();
+    // Both malformed statements should generate error nodes (the sexp renders
+    // them as uppercase `ERROR`, so match case-insensitively).
+    let error_count = sexp.to_lowercase().matches("error").count();
     assert!(
         error_count >= 2,
         "expected at least 2 error nodes in AST, found {}, sexp:\n{}",
