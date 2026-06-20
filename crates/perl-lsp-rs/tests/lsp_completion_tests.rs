@@ -1951,7 +1951,7 @@ my @result = @name
             "method": "textDocument/completion",
             "params": {
                 "textDocument": { "uri": uri },
-                "position": { "line": 5, "character": 15 }
+                "position": { "line": 5, "character": 16 }
             }
         }),
     );
