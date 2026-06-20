@@ -44,13 +44,16 @@ which produces a `HirFile` carrying every layer's facts:
 | L1 Scope / pad | `ScopeGraph`, `ScopeFrame`, `ScopeKind`, `Binding`, `StorageClass`, `BindingReference` | `HirFile::scope_graph` |
 | L2 Package / stash | `StashGraph`, `PackageStash`, `GlobSlot`, `PackageInheritanceEdge`, `ExportDeclaration`, `StashDynamicBoundary` | `HirFile::stash_graph` |
 | L3 Compile environment | `CompileEnvironment`, `PragmaStateFact`, `PragmaEffect`, `IncRootFact`, `ModuleRequest`, `CompilePhaseBlock`, `DynamicBoundary` | `HirFile::compile_environment` |
-| L4 Import / export / visible symbols | `ImportSpec`, `ExportSet`, `VisibleSymbol` (`perl-semantic-facts`); projections via `StashGraph::export_sets`, `CompileEnvironment::import_specs` | projected |
-| L5 Compile-time effects | `CompileEffect`, `CompileEffectKind`, `CompileEffectSourceKind`, `CompileEffectFactKind`, `COMPILE_EFFECT_MODEL_VERSION` | `HirFile::compile_effects` |
-| L6 Framework adapters | `FrameworkAdapterRegistry`, `FrameworkFactGraph`, `FrameworkExportedSymbolFact` | `HirFile::framework_facts` |
+| L4 Import / export / visible symbols | `ImportSpec`, `ExportSet`, `VisibleSymbol` (`perl-semantic-facts`); projections via `StashGraph::export_sets`, `CompileEnvironment::import_specs` | projected (method) |
+| L5 Compile-time effects | `CompileEffect`, `CompileEffectKind`, `CompileEffectSourceKind`, `CompileEffectFactKind`, `COMPILE_EFFECT_MODEL_VERSION` | `HirFile::compile_effects()` (method) |
+| L6 Framework adapters | `FrameworkAdapterRegistry`, `FrameworkFactGraph`, `FrameworkExportedSymbolFact` | `HirFile::framework_facts()` (method) |
 
-Adjacent source-backed tables (`PrototypeTable`, `BarewordTable`) and the
-prototype/bareword fact classes are part of the same substrate and follow the
-same shared obligations below.
+Layers L0–L3 are stored fields on `HirFile`; layers L4–L6 are projected on
+demand by the methods named above (`HirFile::compile_effects()`,
+`HirFile::framework_facts()`, and the `StashGraph` / `CompileEnvironment`
+projections), not stored fields. Adjacent source-backed tables (`PrototypeTable`,
+`BarewordTable`) and the prototype/bareword fact classes are part of the same
+substrate and follow the same shared obligations below.
 
 Every layer above is `fixture-backed` per the
 [compiler fact substrate](../project/status/compiler_facts.md); none is `live`.

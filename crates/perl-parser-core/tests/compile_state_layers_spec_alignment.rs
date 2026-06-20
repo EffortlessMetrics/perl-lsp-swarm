@@ -75,13 +75,23 @@ fn compile_state_layers_all_present_from_single_pass() {
         "L3: expected pragma state facts from use strict/warnings/feature"
     );
 
+    // L4 import/export/visible symbols: the static `our @EXPORT_OK = (...)`
+    // declaration projects into at least one canonical export set.
+    assert!(
+        !file.stash_graph.export_sets().is_empty(),
+        "L4: expected export sets from static @EXPORT_OK"
+    );
+
     // L5 compile-time effects: the effect log is non-empty.
     assert!(!file.compile_effects().is_empty(), "L5: expected a non-empty compile-effect log");
 
-    // L6 framework adapters: the registry projects without panicking and the
-    // Exporter-family shape is readable (facts may be empty, the call is the
-    // proof the layer is wired through `HirFile`).
-    let _ = file.framework_facts();
+    // L6 framework adapters: the Exporter-family adapter reads the fixture's
+    // `use Exporter` + `@EXPORT_OK` shape and projects at least one exported
+    // symbol fact through `HirFile::framework_facts`.
+    assert!(
+        !file.framework_facts().exported_symbols.is_empty(),
+        "L6: expected Exporter-family exported-symbol facts"
+    );
 }
 
 /// C3: the compile-effect log is source-ordered with contiguous ordinals from 0
