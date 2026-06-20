@@ -562,16 +562,57 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse goto statement: `goto LABEL`, `goto &sub`, `goto EXPR`
+    ///
+    /// Perl has three semantically distinct goto forms:
+    ///
+    /// - `goto LABEL`  — transfer control to a named label; target is a bare identifier.
+    /// - `goto &sub`   — **frame replacement** (tail call); the `&` sigil is the marker.
+    ///   Forms: `goto &name`, `goto &Pkg::name`, `goto &$coderef`.
+    /// - `goto EXPR`   — dynamic target; all other forms (variables, expressions).
+    ///
+    /// The `form` field is populated by peeking at the first token of the target
+    /// **before** consuming it, so the caller never has to inspect the target's node kind.
     fn parse_goto(&mut self) -> ParseResult<Node> {
         let start = self.consume_token()?.start; // consume 'goto'
         self.mark_not_stmt_start();
+
+        // Detect the goto form by peeking at the first token of the target expression.
+        //
+        // `goto &sub` (any ampersand-prefixed form) → Sub (frame replacement)
+        // `goto LABEL` (bare plain identifier, no sigil prefix) → Label
+        // Everything else (sigil variables, computed expressions) → Expr
+        //
+        // NOTE: We peek rather than post-hoc classify the target node kind to avoid
+        // coupling downstream consumers to the internal representation of the target.
+        //
+        // The lexer may emit variables as a single `Identifier` token with text starting
+        // with a sigil character (e.g., `$target` → `Identifier("$target")`). We must
+        // distinguish these from bare label identifiers (no leading sigil).
+        let form = match self.peek_kind() {
+            Some(TokenKind::BitwiseAnd) => GotoTargetForm::Sub,
+            Some(TokenKind::Identifier) => {
+                // Bare identifier with no leading sigil → Label.
+                // Identifier with a leading '$', '@', or '%' is a variable → Expr.
+                let is_plain_label = self
+                    .tokens
+                    .peek()
+                    .ok()
+                    .is_some_and(|tok| !tok.text.starts_with(['$', '@', '%']));
+                if is_plain_label {
+                    GotoTargetForm::Label
+                } else {
+                    GotoTargetForm::Expr
+                }
+            }
+            _ => GotoTargetForm::Expr,
+        };
 
         // Parse the target as an assignment-level expression (not full comma
         // expression) to avoid consuming surrounding list separators.
         let target = self.parse_assignment()?;
         let end = target.location.end;
         Ok(Node::new(
-            NodeKind::Goto { target: Box::new(target) },
+            NodeKind::Goto { target: Box::new(target), form },
             SourceLocation { start, end },
         ))
     }

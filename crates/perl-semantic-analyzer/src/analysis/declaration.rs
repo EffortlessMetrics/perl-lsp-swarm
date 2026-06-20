@@ -3,7 +3,7 @@
 //! Provides go-to-declaration functionality for finding where symbols are declared.
 //! Supports LocationLink for enhanced client experience.
 
-use crate::ast::{Node, NodeKind};
+use crate::ast::{GotoTargetForm, Node, NodeKind};
 use crate::symbol::is_universal_method;
 use crate::workspace_index::{SymKind, SymbolKey};
 use rustc_hash::FxHashMap;
@@ -338,12 +338,26 @@ impl<'a> DeclarationProvider<'a> {
                 self.find_method_declaration(node, method, object)
             }
             NodeKind::Identifier { name } => self.find_identifier_declaration(node, name),
-            NodeKind::Goto { target } => {
-                if let NodeKind::Identifier { name } = &target.kind {
-                    self.find_label_declaration(node, name)
-                        .or_else(|| self.find_subroutine_declaration(node, name))
-                } else {
-                    None
+            NodeKind::Goto { target, form } => {
+                match form {
+                    GotoTargetForm::Label => {
+                        if let NodeKind::Identifier { name } = &target.kind {
+                            self.find_label_declaration(node, name)
+                                .or_else(|| self.find_subroutine_declaration(node, name))
+                        } else {
+                            None
+                        }
+                    }
+                    GotoTargetForm::Sub => {
+                        // goto &sub — navigate to the subroutine declaration.
+                        match &target.kind {
+                            NodeKind::FunctionCall { name, .. } => {
+                                self.find_subroutine_declaration(node, name)
+                            }
+                            _ => None,
+                        }
+                    }
+                    GotoTargetForm::Expr => None,
                 }
             }
             // Cursor on a `method` name at its declaration site — self-location.
@@ -708,7 +722,7 @@ impl<'a> DeclarationProvider<'a> {
         };
 
         match &parent.kind {
-            NodeKind::Goto { target } => std::ptr::eq(target.as_ref(), node),
+            NodeKind::Goto { target, .. } => std::ptr::eq(target.as_ref(), node),
             _ => false,
         }
     }

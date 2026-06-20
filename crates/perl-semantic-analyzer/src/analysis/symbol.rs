@@ -25,7 +25,7 @@
 //! ```
 
 use crate::SourceLocation;
-use crate::ast::{Node, NodeKind};
+use crate::ast::{GotoTargetForm, Node, NodeKind};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -1017,26 +1017,44 @@ impl SymbolExtractor {
                 self.visit_node(variable);
             }
 
-            NodeKind::Goto { target } => match &target.kind {
-                NodeKind::Identifier { name } => {
-                    self.table.add_reference(SymbolReference {
-                        name: name.clone(),
-                        kind: SymbolKind::Label,
-                        location: target.location,
-                        scope_id: self.table.current_scope(),
-                        is_write: false,
-                    });
+            NodeKind::Goto { target, form } => match form {
+                GotoTargetForm::Label => {
+                    // goto LABEL — record the label as a reference for jump-to-definition.
+                    if let NodeKind::Identifier { name } = &target.kind {
+                        self.table.add_reference(SymbolReference {
+                            name: name.clone(),
+                            kind: SymbolKind::Label,
+                            location: target.location,
+                            scope_id: self.table.current_scope(),
+                            is_write: false,
+                        });
+                    } else {
+                        self.visit_node(target);
+                    }
                 }
-                NodeKind::Variable { sigil, name } if sigil == "&" => {
-                    self.table.add_reference(SymbolReference {
-                        name: name.clone(),
-                        kind: SymbolKind::Subroutine,
-                        location: target.location,
-                        scope_id: self.table.current_scope(),
-                        is_write: false,
-                    });
+                GotoTargetForm::Sub => {
+                    // goto &sub — frame replacement (tail call); record a subroutine reference
+                    // so that find-references and call-hierarchy can trace the tail-call edge.
+                    // The target is a FunctionCall node (produced by the & sigil handler);
+                    // extract the name directly from it.
+                    match &target.kind {
+                        NodeKind::FunctionCall { name, .. } => {
+                            self.table.add_reference(SymbolReference {
+                                name: name.clone(),
+                                kind: SymbolKind::Subroutine,
+                                location: target.location,
+                                scope_id: self.table.current_scope(),
+                                is_write: false,
+                            });
+                        }
+                        _ => self.visit_node(target),
+                    }
                 }
-                _ => self.visit_node(target),
+                GotoTargetForm::Expr => {
+                    // goto $expr / goto EXPR — dynamic target; recurse to analyse
+                    // any sub-expressions (variable uses, method calls, etc.).
+                    self.visit_node(target);
+                }
             },
 
             // Regex related nodes - we recurse into expression
