@@ -181,3 +181,154 @@ given ($x) {
         sexp
     );
 }
+
+// --- Extended error-recovery coverage ---
+//
+// Additional tests to ensure that error recovery paths in parse_given_block
+// achieve patch-coverage thresholds. These exercise the error node creation,
+// AST integrity preservation, and synchronization logic.
+
+#[test]
+fn test_error_node_created_on_malformed_statement() {
+    // Verify that a malformed statement produces an explicit Error node in
+    // the AST (not just a parser diagnostic).
+    let source = r#"
+given ($x) {
+    = missing_operand;
+    when (0) { }
+}
+"#;
+    let ast = parse(source);
+    let sexp = ast.to_sexp();
+
+    // Confirm an error node exists in the AST
+    assert!(
+        sexp.to_lowercase().contains("error"),
+        "expected error node in AST for malformed statement, got:\n{}",
+        sexp
+    );
+
+    // Confirm that despite the error, the when block is still present
+    assert!(
+        sexp.contains("when"),
+        "expected when block preserved after error recovery, got:\n{}",
+        sexp
+    );
+}
+
+#[test]
+fn test_multiple_errors_in_given_block_with_recovery() {
+    // Two separate malformed statements, both should recover and the block
+    // should continue parsing subsequent when arms.
+    let source = r#"
+given ($x) {
+    = bad ;
+    , also_bad ;
+    when (1) { print "survived\n"; }
+}
+"#;
+    let ast = parse(source);
+    let sexp = ast.to_sexp();
+
+    // Both malformed statements should generate error nodes
+    let error_count = sexp.matches("error").count();
+    assert!(
+        error_count >= 2,
+        "expected at least 2 error nodes in AST, found {}, sexp:\n{}",
+        error_count,
+        sexp
+    );
+
+    // The when block must still be present and parseable
+    assert!(
+        sexp.contains("when"),
+        "expected when block to survive multiple error recoveries, got:\n{}",
+        sexp
+    );
+}
+
+#[test]
+fn test_error_recovery_preserves_ast_structure() {
+    // Ensure that the overall `given` statement structure is preserved
+    // even when the block contains malformed statements. The AST should
+    // still reflect a proper Given node containing the error nodes.
+    let source = r#"
+given ($input) {
+    bad_stmt;
+    when (42) { print "found\n"; }
+    default  { print "nope\n"; }
+}
+"#;
+    let ast = parse(source);
+    let sexp = ast.to_sexp();
+
+    // The given statement itself must be intact
+    assert!(
+        sexp.contains("given"),
+        "expected given statement in AST after recovery, got:\n{}",
+        sexp
+    );
+
+    // Both when and default must be present
+    assert!(
+        sexp.contains("when") && sexp.contains("default"),
+        "expected when/default arms intact after recovery, got:\n{}",
+        sexp
+    );
+}
+
+#[test]
+fn test_statement_recovery_after_incomplete_expression() {
+    // An incomplete expression that starts like a method call but ends
+    // prematurely should trigger error recovery in the fallback arm.
+    let source = r#"
+given ($obj) {
+    $obj->;
+    when (0) { print "recovered\n"; }
+}
+"#;
+    let ast = parse(source);
+    let sexp = ast.to_sexp();
+
+    // The block should contain an error node from recovery
+    assert!(
+        sexp.to_lowercase().contains("error") || sexp.to_lowercase().contains("missing"),
+        "expected error or missing node from incomplete expression, got:\n{}",
+        sexp
+    );
+
+    // The when block must still be parsed despite the error
+    assert!(
+        sexp.contains("when"),
+        "expected when block after recovery from incomplete expression, got:\n{}",
+        sexp
+    );
+}
+
+#[test]
+fn test_error_recovery_with_trailing_stray_tokens() {
+    // A malformed statement with trailing stray tokens that don't form a
+    // complete statement should still allow synchronization and recovery.
+    let source = r#"
+given ($x) {
+    & * @ $ % ;
+    when (1) { print "ok\n"; }
+}
+"#;
+    let ast = parse(source);
+    let sexp = ast.to_sexp();
+
+    // An error node should be generated
+    assert!(
+        sexp.to_lowercase().contains("error") || sexp.to_lowercase().contains("missing"),
+        "expected error from stray tokens, got:\n{}",
+        sexp
+    );
+
+    // Recovery must allow subsequent when to be parsed
+    assert!(
+        sexp.contains("when"),
+        "expected when block parsed after stray-token error, got:\n{}",
+        sexp
+    );
+}
