@@ -132,7 +132,8 @@ impl DebugAdapter {
                 Some(args.clone());
 
             let program = args.get("program").and_then(|p| p.as_str()).unwrap_or("");
-            let perl_interpreter = args.get("perl").and_then(|p| p.as_str()).unwrap_or("perl");
+            let perl_interpreter =
+                Self::resolve_launch_interpreter(args.get("perl").and_then(|p| p.as_str()));
 
             // Set workspace root for path validation (prefer cwd, fall back to program's parent)
             let workspace = args
@@ -171,7 +172,7 @@ impl DebugAdapter {
             // Launch Perl debugger
             match self.launch_debugger(
                 program,
-                perl_interpreter,
+                &perl_interpreter,
                 perl_args,
                 stop_on_entry,
                 env_overrides,
@@ -234,6 +235,31 @@ impl DebugAdapter {
     }
 
     /// Launch the Perl debugger
+    /// Resolve the Perl interpreter for a debug launch.
+    ///
+    /// An explicit, non-empty launch.json `perl` value is honored verbatim. When
+    /// it is absent or empty, the interpreter is resolved through the shared
+    /// [`PerlToolchainProfile`] so the debug session uses the same
+    /// toolchain-detected interpreter (perlbrew → plenv → `PATH`) that the LSP
+    /// analyzes with, rather than a bare `"perl"` that ignores the active
+    /// toolchain — closing the DAP/LSP "which perl?" gap (#1929). Falls back to
+    /// `"perl"` when no interpreter can be resolved (e.g. WASM, or no Perl
+    /// found), preserving the previous default so the launch still produces the
+    /// usual "perl not on PATH" diagnostic.
+    ///
+    /// [`PerlToolchainProfile`]: perl_lsp_rs_core::config::PerlToolchainProfile
+    fn resolve_launch_interpreter(explicit: Option<&str>) -> String {
+        if let Some(path) = explicit.filter(|p| !p.is_empty()) {
+            return path.to_string();
+        }
+
+        perl_lsp_rs_core::config::PerlToolchainProfile::resolve(
+            &perl_lsp_rs_core::config::WorkspaceConfig::default(),
+        )
+        .map(|profile| profile.into_perl_binary().to_string_lossy().into_owned())
+        .unwrap_or_else(|| "perl".to_string())
+    }
+
     pub(super) fn launch_debugger(
         &mut self,
         program: &str,
@@ -1731,6 +1757,40 @@ mod tests {
     use super::{
         DebugAdapter, detect_perl_info, format_perl_spawn_error, is_valid_perl_interpreter,
     };
+
+    /// An explicit, non-empty launch.json `perl` value is honored verbatim —
+    /// the toolchain resolver must not override the user's deliberate choice.
+    #[test]
+    fn resolve_launch_interpreter_honors_explicit_value() {
+        assert_eq!(DebugAdapter::resolve_launch_interpreter(Some("perl")), "perl");
+        assert_eq!(
+            DebugAdapter::resolve_launch_interpreter(Some("/usr/bin/perl")),
+            "/usr/bin/perl"
+        );
+        assert_eq!(
+            DebugAdapter::resolve_launch_interpreter(Some("/opt/perlbrew/perls/x/bin/perl")),
+            "/opt/perlbrew/perls/x/bin/perl"
+        );
+    }
+
+    /// With no explicit launch.json `perl` (None or empty), the interpreter is
+    /// resolved through the shared toolchain profile rather than defaulting to a
+    /// bare `"perl"`. The result is never empty: it is either a real resolved
+    /// path or the `"perl"` fallback when nothing can be found.
+    #[test]
+    fn resolve_launch_interpreter_resolves_default_via_profile() {
+        for explicit in [None, Some("")] {
+            let resolved = DebugAdapter::resolve_launch_interpreter(explicit);
+            assert!(!resolved.is_empty(), "resolved interpreter must never be empty");
+            // When a real Perl is on the host, the default must resolve to a
+            // concrete path that ends in a perl-family binary name (not stay an
+            // empty string); when none is found it falls back to "perl".
+            assert!(
+                resolved == "perl" || resolved.to_lowercase().contains("perl"),
+                "resolved default should be a perl interpreter; got: {resolved:?}"
+            );
+        }
+    }
 
     #[test]
     fn missing_module_name_parses_standard_module_path() {
