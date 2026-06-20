@@ -55,9 +55,11 @@ impl LspServer {
                     crate::semantic_tokens::collect_semantic_tokens(ast, &doc.text, &|off| {
                         self.offset_to_pos16(doc, off)
                     });
-                let flat_data: Vec<_> = data.into_iter().flatten().collect();
+                let flat_data: Vec<u32> = data.into_iter().flatten().collect();
                 let live_token_count = flat_data.len() / 5;
-                let live_result = json!({ "data": flat_data });
+                let result_id = self.next_semantic_tokens_result_id();
+                self.store_semantic_tokens_result(uri, &result_id, flat_data.clone());
+                let live_result = json!({ "resultId": result_id, "data": flat_data });
                 let provider_trace = semantic_tokens_live_slice_provider_trace(
                     &doc.text,
                     &live_result,
@@ -88,6 +90,89 @@ impl LspServer {
             ),
         );
         Ok(Some(json!({ "data": [] })))
+    }
+
+    /// Mint a unique `resultId` for a semantic-tokens result.
+    ///
+    /// Monotonic per server process; used to correlate a full result with the
+    /// later `textDocument/semanticTokens/full/delta` request that references it.
+    fn next_semantic_tokens_result_id(&self) -> String {
+        let seq =
+            self.semantic_tokens_result_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        seq.to_string()
+    }
+
+    /// Record the latest semantic-tokens result for `uri` so a subsequent delta
+    /// request can diff against it.
+    fn store_semantic_tokens_result(&self, uri: &str, result_id: &str, data: Vec<u32>) {
+        let mut cache = self.semantic_tokens_cache.lock();
+        cache.insert(
+            uri.to_string(),
+            SemanticTokensCacheEntry { result_id: result_id.to_string(), data },
+        );
+    }
+
+    /// Handle the `textDocument/semanticTokens/full/delta` request (LSP 3.17).
+    ///
+    /// Computes the current full token set, then returns the minimal set of
+    /// edits transforming the client's previously cached result (identified by
+    /// `previousResultId`) into the current one. When `previousResultId` is
+    /// missing or no longer cached, falls back to a full token response so the
+    /// client can resynchronize.
+    pub(crate) fn handle_semantic_tokens_delta(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        let Some(params) = params else {
+            return Ok(Some(json!({ "data": [] })));
+        };
+        let uri = req_uri(&params)?;
+        let previous_result_id =
+            params.get("previousResultId").and_then(Value::as_str).map(str::to_string);
+
+        tracing::debug!(uri, ?previous_result_id, "Getting semantic tokens delta");
+
+        // Compute the current full token set from the live AST (same source as
+        // `textDocument/semanticTokens/full`).
+        let current: Vec<u32> = {
+            let documents = self.documents_guard();
+            let doc = self
+                .get_document(&documents, uri)
+                .ok_or_else(|| semantic_tokens_document_not_open(uri))?;
+            match doc.ast {
+                Some(ref ast) => {
+                    crate::semantic_tokens::collect_semantic_tokens(ast, &doc.text, &|off| {
+                        self.offset_to_pos16(doc, off)
+                    })
+                    .into_iter()
+                    .flatten()
+                    .collect()
+                }
+                None => Vec::new(),
+            }
+        };
+
+        // Look up the cached prior result; only usable when its resultId matches
+        // the client's `previousResultId`.
+        let previous = previous_result_id.as_deref().and_then(|prev_id| {
+            let cache = self.semantic_tokens_cache.lock();
+            cache
+                .get(uri)
+                .filter(|entry| entry.result_id == prev_id)
+                .map(|entry| entry.data.clone())
+        });
+
+        // Record the current result so the next delta request can diff against it.
+        let result_id = self.next_semantic_tokens_result_id();
+        self.store_semantic_tokens_result(uri, &result_id, current.clone());
+
+        match previous {
+            Some(prev_data) => {
+                let edits = compute_semantic_tokens_delta_edits(&prev_data, &current);
+                Ok(Some(json!({ "resultId": result_id, "edits": edits })))
+            }
+            None => Ok(Some(json!({ "resultId": result_id, "data": current }))),
+        }
     }
 
     /// Semantic tokens runtime quality receipt.
@@ -483,6 +568,42 @@ impl LspServer {
     }
 }
 
+/// Compute the minimal LSP semantic-tokens delta edits that transform `old`
+/// into `new`.
+///
+/// Both slices are flat encoded token arrays (groups of 5 `u32`). The result is
+/// a single contiguous `SemanticTokensEdit` covering the changed middle region,
+/// found by stripping the longest common prefix and suffix. An empty `Vec`
+/// means the two results are identical and no edit is required.
+fn compute_semantic_tokens_delta_edits(old: &[u32], new: &[u32]) -> Vec<Value> {
+    let max_prefix = old.len().min(new.len());
+    let mut prefix = 0;
+    while prefix < max_prefix && old[prefix] == new[prefix] {
+        prefix += 1;
+    }
+
+    // Common suffix length, never overlapping the shared prefix.
+    let max_suffix = max_prefix - prefix;
+    let mut suffix = 0;
+    while suffix < max_suffix && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix] {
+        suffix += 1;
+    }
+
+    let delete_count = old.len() - prefix - suffix;
+    let data: Vec<u32> = new[prefix..new.len() - suffix].to_vec();
+
+    // Identical results need no edit.
+    if delete_count == 0 && data.is_empty() {
+        return Vec::new();
+    }
+
+    vec![json!({
+        "start": prefix,
+        "deleteCount": delete_count,
+        "data": data,
+    })]
+}
+
 fn filter_encoded_semantic_tokens_by_range(
     tokens: Vec<crate::semantic_tokens::EncodedToken>,
     start_line: u32,
@@ -606,6 +727,47 @@ mod tests {
         assert!(filter_encoded_semantic_tokens_by_range(tokens, 3, 0, 4, 0).is_empty());
 
         Ok(())
+    }
+
+    #[test]
+    fn compute_semantic_tokens_delta_edits_detects_no_change() {
+        let tokens = vec![0u32, 0, 5, 1, 0, 1, 2, 3, 2, 0];
+        assert!(compute_semantic_tokens_delta_edits(&tokens, &tokens).is_empty());
+        assert!(compute_semantic_tokens_delta_edits(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn compute_semantic_tokens_delta_edits_handles_append() {
+        let old = vec![0u32, 0, 5, 1, 0];
+        let new = vec![0u32, 0, 5, 1, 0, 1, 2, 3, 2, 0];
+        let edits = compute_semantic_tokens_delta_edits(&old, &new);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0]["start"], json!(5));
+        assert_eq!(edits[0]["deleteCount"], json!(0));
+        assert_eq!(edits[0]["data"], json!([1, 2, 3, 2, 0]));
+    }
+
+    #[test]
+    fn compute_semantic_tokens_delta_edits_handles_trailing_delete() {
+        let old = vec![0u32, 0, 5, 1, 0, 1, 2, 3, 2, 0];
+        let new = vec![0u32, 0, 5, 1, 0];
+        let edits = compute_semantic_tokens_delta_edits(&old, &new);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0]["start"], json!(5));
+        assert_eq!(edits[0]["deleteCount"], json!(5));
+        assert_eq!(edits[0]["data"], json!([]));
+    }
+
+    #[test]
+    fn compute_semantic_tokens_delta_edits_handles_middle_replacement() {
+        // Common prefix [0,0,5,1,0], changed middle, common suffix [9,9,9,9,9].
+        let old = vec![0u32, 0, 5, 1, 0, 1, 1, 1, 1, 1, 9, 9, 9, 9, 9];
+        let new = vec![0u32, 0, 5, 1, 0, 2, 2, 2, 2, 2, 9, 9, 9, 9, 9];
+        let edits = compute_semantic_tokens_delta_edits(&old, &new);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0]["start"], json!(5));
+        assert_eq!(edits[0]["deleteCount"], json!(5));
+        assert_eq!(edits[0]["data"], json!([2, 2, 2, 2, 2]));
     }
 
     #[test]

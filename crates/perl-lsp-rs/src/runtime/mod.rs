@@ -245,6 +245,15 @@ pub struct LspServer {
     /// `perl.explainProviderDecision` can attach these transient per-server
     /// receipts when the caller does not provide a request-local receipt.
     pub(crate) provider_decision_traces: Arc<Mutex<HashMap<String, Value>>>,
+    /// Most recent semantic-tokens result per document URI.
+    ///
+    /// Keyed by document URI, each entry records the `resultId` returned to the
+    /// client and the flat encoded token data. This backs
+    /// `textDocument/semanticTokens/full/delta`, which computes minimal edits
+    /// against the previously returned result.
+    pub(crate) semantic_tokens_cache: Arc<Mutex<HashMap<String, SemanticTokensCacheEntry>>>,
+    /// Monotonic sequence for minting unique semantic-tokens `resultId`s.
+    pub(crate) semantic_tokens_result_seq: Arc<std::sync::atomic::AtomicU64>,
     /// Short-TTL cache for module prefix directory scans (issue #8514).
     ///
     /// Typing a multi-segment `use` prefix (e.g. `use Mojo::Cont|`) triggers a
@@ -366,6 +375,16 @@ pub struct LspServer {
 struct PodCacheEntry {
     modified: Option<std::time::SystemTime>,
     doc: perl_pod::PodDoc,
+}
+
+/// A cached semantic-tokens result, used to answer
+/// `textDocument/semanticTokens/full/delta` requests.
+#[derive(Clone)]
+pub(crate) struct SemanticTokensCacheEntry {
+    /// The `resultId` that was returned to the client for this result.
+    pub(crate) result_id: String,
+    /// The flat encoded token data (LSP groups of 5 `u32` per token).
+    pub(crate) data: Vec<u32>,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
