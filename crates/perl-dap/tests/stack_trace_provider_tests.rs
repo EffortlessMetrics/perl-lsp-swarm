@@ -4,7 +4,7 @@
 //! - Frame filtering (hiding DB:: and shim frames)
 //! - Accurate line and column reporting
 //! - Function name package qualification
-//! - Placeholder frame support for infrastructure testing
+//! - Empty stackFrames on no-session path (DAP spec compliant)
 //!
 //! Specification: GitHub Issue #453 - AC8.2, AC8.2.1, AC8.2.4
 //!
@@ -150,16 +150,16 @@ fn test_stack_trace_response_sequence_numbers() -> Result<(), Box<dyn std::error
 /// The total number of frames available in the stack"). This test locks the
 /// invariant that totalFrames >= the number of frames in the response.
 ///
-/// With no active session the code returns an empty frame list (per PR #1212 which
-/// removed the placeholder frame in favour of an honest empty response). Requesting
-/// levels=1 against zero frames must still satisfy totalFrames >= paginated window,
-/// and both must equal 0.
+/// The no-session path returns an empty stackFrames array (DAP spec allows this;
+/// PR #1212 removed the fabricated placeholder that was here before). With an
+/// empty stack, totalFrames must equal 0 — not some value derived from the
+/// `levels` window parameter.
 #[test]
 // AC:963
 fn test_total_frames_is_not_window_size() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = create_test_adapter();
 
-    // Request only 1 frame (paginated window of 1) with no active session.
+    // Request only 1 frame (paginated window of 1).
     let args = serde_json::json!({"threadId": 1, "startFrame": 0, "levels": 1});
     let response = adapter.handle_request(1, "stackTrace", Some(args));
 
@@ -173,15 +173,17 @@ fn test_total_frames_is_not_window_size() -> Result<(), Box<dyn std::error::Erro
     let total =
         body.get("totalFrames").and_then(|v| v.as_u64()).ok_or("Expected totalFrames number")?;
 
-    // The invariant: totalFrames >= returned window size (must hold even when both are 0)
+    // The invariant: totalFrames >= returned window size (DAP spec §StackTraceResponse)
     assert!(
         total >= frames.len() as u64,
         "totalFrames ({total}) must be >= returned frame count ({})",
         frames.len()
     );
-    // No session → empty list; pagination of 0 frames with levels=1 returns 0 frames.
-    assert_eq!(frames.len(), 0, "no session must return empty stackFrames");
-    assert_eq!(total, 0, "totalFrames must reflect full depth (0 with no session)");
+    // No-session path: empty stack — totalFrames must be 0, not the levels window (1).
+    // Regression guard: if totalFrames were set to `levels` instead of pre-pagination
+    // depth, it would incorrectly report 1 here.
+    assert_eq!(frames.len(), 0, "no-session path returns empty stackFrames");
+    assert_eq!(total, 0, "totalFrames must be 0 for empty stack, not the levels window");
     Ok(())
 }
 
