@@ -7689,7 +7689,8 @@ my ($a, ($b, $c)) = (1, (2, 3));
     // with an optional cap parameter. Tests will fail until the cap parameter is implemented.
 
     #[test]
-    fn test_search_source_symbols_returns_cap_when_exact_match() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_search_source_symbols_returns_cap_when_exact_match()
+    -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/SearchTest.pm";
         let code = r#"package SearchTest;
@@ -7708,13 +7709,18 @@ sub get_quux { 5 }
 
         // Now search with cap=5 and verify we get exactly 5 (or fewer if fewer exist)
         let capped_symbols = index.search_source_symbols("get", Some(5));
-        assert_eq!(capped_symbols.len(), 5, "should return exactly 5 symbols when cap=5 and 5 match");
+        assert_eq!(
+            capped_symbols.len(),
+            5,
+            "should return exactly 5 symbols when cap=5 and 5 match"
+        );
 
         Ok(())
     }
 
     #[test]
-    fn test_search_source_symbols_returns_all_when_fewer_than_cap() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_search_source_symbols_returns_all_when_fewer_than_cap()
+    -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/SmallSearch.pm";
         let code = r#"package SmallSearch;
@@ -7733,7 +7739,8 @@ sub helper_three { 3 }
     }
 
     #[test]
-    fn test_search_source_symbols_truncates_excess_results() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_search_source_symbols_truncates_excess_results()
+    -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/LargeSearch.pm";
         // Create 25 matching symbols
@@ -7747,13 +7754,18 @@ sub helper_three { 3 }
 
         // 25 matches but cap is 10
         let capped_symbols = index.search_source_symbols("new_item", Some(10));
-        assert_eq!(capped_symbols.len(), 10, "should return exactly 10 symbols when cap=10 and 25 match");
+        assert_eq!(
+            capped_symbols.len(),
+            10,
+            "should return exactly 10 symbols when cap=10 and 25 match"
+        );
 
         Ok(())
     }
 
     #[test]
-    fn test_search_source_symbols_empty_query_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_search_source_symbols_empty_query_returns_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/EmptyQueryTest.pm";
         let code = r#"package EmptyQueryTest;
@@ -7770,7 +7782,8 @@ sub foo { 1 }
     }
 
     #[test]
-    fn test_search_source_symbols_whitespace_only_query() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_search_source_symbols_whitespace_only_query() -> Result<(), Box<dyn std::error::Error>>
+    {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/WhitespaceTest.pm";
         let code = r#"package WhitespaceTest;
@@ -7781,7 +7794,10 @@ sub test_func { 1 }
 
         // Whitespace-only query should return empty after trim
         let whitespace_results = index.search_source_symbols("   ", Some(10));
-        assert!(whitespace_results.is_empty(), "whitespace-only query should return empty after trim");
+        assert!(
+            whitespace_results.is_empty(),
+            "whitespace-only query should return empty after trim"
+        );
 
         Ok(())
     }
@@ -7807,7 +7823,8 @@ sub test_func { 1 }
     }
 
     #[test]
-    fn test_search_source_symbols_cap_zero_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_search_source_symbols_cap_zero_returns_empty() -> Result<(), Box<dyn std::error::Error>>
+    {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/ZeroCap.pm";
         let code = r#"package ZeroCap;
@@ -7824,7 +7841,8 @@ sub item { 1 }
     }
 
     #[test]
-    fn test_search_source_symbols_cap_boundary_minus_one() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_search_source_symbols_cap_boundary_minus_one() -> Result<(), Box<dyn std::error::Error>>
+    {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/BoundaryMinus.pm";
         // Create exactly 199 matching symbols (cap-1)
@@ -7844,7 +7862,8 @@ sub item { 1 }
     }
 
     #[test]
-    fn test_search_source_symbols_cap_boundary_plus_one() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_search_source_symbols_cap_boundary_plus_one() -> Result<(), Box<dyn std::error::Error>>
+    {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/BoundaryPlus.pm";
         // Create exactly 201 matching symbols (cap+1)
@@ -7886,7 +7905,8 @@ has field_e => (is => 'rw');
     }
 
     #[test]
-    fn test_workspace_symbol_combined_sources_respects_cap() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_workspace_symbol_combined_sources_respects_cap()
+    -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/Combined.pm";
         let code = r#"package Combined;
@@ -7932,7 +7952,8 @@ has query_attr => (is => 'rw');
     }
 
     #[test]
-    fn test_search_source_symbols_capped_results_deterministic() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_search_source_symbols_capped_results_deterministic()
+    -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let uri = "file:///lib/Determinism.pm";
         // Create 50 matching symbols
@@ -7982,7 +8003,11 @@ has query_attr => (is => 'rw');
 
         assert_eq!(capped_results.len(), 200, "should return 200 symbols when capped at 200");
         // Should complete in well under 5ms even on 1000-symbol index
-        assert!(elapsed.as_millis() < 5, "capped search should complete in <5ms, took {:?}", elapsed);
+        assert!(
+            elapsed.as_millis() < 5,
+            "capped search should complete in <5ms, took {:?}",
+            elapsed
+        );
 
         Ok(())
     }
