@@ -61,7 +61,7 @@ impl DebugAdapter {
                 request_seq,
                 success: true,
                 command: "variables".to_string(),
-                body: Some(json!({ "variables": [] })),
+                body: Some(json!({ "variables": [], "totalVariables": 0 })),
                 message: None,
             };
         }
@@ -84,7 +84,7 @@ impl DebugAdapter {
                         request_seq,
                         success: true,
                         command: "variables".to_string(),
-                        body: Some(json!({ "variables": [] })),
+                        body: Some(json!({ "variables": [], "totalVariables": 0 })),
                         message: None,
                     };
                 }
@@ -133,7 +133,7 @@ impl DebugAdapter {
                         request_seq,
                         success: true,
                         command: "variables".to_string(),
-                        body: Some(json!({ "variables": [] })),
+                        body: Some(json!({ "variables": [], "totalVariables": 0 })),
                         message: None,
                     };
                 }
@@ -276,6 +276,19 @@ impl DebugAdapter {
             parsed_from_output = slice_variables(&full_roots, start, count);
         }
 
+        // Capture total count before pagination (pre-slice length)
+        // for proper pagination UX reporting via totalVariables field
+        let total_variables = if !parsed_full_roots.is_empty() {
+            Some(parsed_full_roots.len() as i64)
+        } else if parsed_from_output.is_empty() {
+            // If fallback was used, we don't have the full count; leave it None
+            None
+        } else {
+            // If we had paginated output from cache or parse, we don't have the full count
+            // Leave it None to match the optional semantics
+            None
+        };
+
         let variables = if parsed_from_output.is_empty() {
             Self::fallback_scope_variables(variables_ref, start, count)
         } else {
@@ -304,7 +317,8 @@ impl DebugAdapter {
             success: true,
             command: "variables".to_string(),
             body: Some(json!({
-                "variables": variables
+                "variables": variables,
+                "totalVariables": total_variables
             })),
             message: None,
         }
