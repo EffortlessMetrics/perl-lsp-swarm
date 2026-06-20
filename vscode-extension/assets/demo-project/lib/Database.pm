@@ -1,7 +1,6 @@
 package Database;
 use strict;
 use warnings;
-use DBI;
 
 sub connect {
     # Database connection logic
