@@ -621,7 +621,7 @@ fn lookup_workspace_definition(
     None
 }
 
-const UNIVERSAL_METHODS: [&str; 4] = ["can", "isa", "DOES", "VERSION"];
+const UNIVERSAL_METHODS: [&str; 6] = ["can", "isa", "DOES", "VERSION", "DESTROY", "AUTOLOAD"];
 
 fn is_universal_method(name: &str) -> bool {
     UNIVERSAL_METHODS.contains(&name)
