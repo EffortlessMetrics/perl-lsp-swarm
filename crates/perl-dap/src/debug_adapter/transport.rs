@@ -162,4 +162,18 @@ impl DebugAdapter {
             }
         }
     }
+
+    /// Test helper that exposes the transport loop for integration tests.
+    ///
+    /// Delegates to `run_with_io` so external `tests/` integration files can
+    /// drive the loop with in-memory readers (e.g. `std::io::Cursor`) without
+    /// making the internal `run_with_io` method `pub`. Not part of the stable API.
+    #[doc(hidden)]
+    pub fn run_with_io_for_test<R, W>(&mut self, input: R, output: W) -> io::Result<()>
+    where
+        R: Read,
+        W: Write + Send + 'static,
+    {
+        self.run_with_io(input, output)
+    }
 }

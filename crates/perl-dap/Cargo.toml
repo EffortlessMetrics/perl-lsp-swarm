@@ -204,6 +204,11 @@ path = "tests/dap_lifecycle_matrix_tests.rs"
 # DAP lifecycle matrix: full protocol-ordered lifecycle e2e coverage (phase 2)
 
 [[test]]
+name = "dap_stdio_transport_edge_cases"
+path = "tests/dap_stdio_transport_edge_cases.rs"
+# Stdio transport framing edge cases: malformed headers, bad JSON, multi-message, EOF scenarios (#903)
+
+[[test]]
 name = "dap_scope_filtering_tests"
 path = "tests/dap_scope_filtering_tests.rs"
 # AC:#782 Content-level scope filtering: locals/package/globals with no cross-contamination
