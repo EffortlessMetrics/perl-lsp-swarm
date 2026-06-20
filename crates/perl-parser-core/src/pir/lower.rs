@@ -325,6 +325,14 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::BarewordExpr(_) => "BarewordExpr",
         HirKind::LiteralExpr(_) => "LiteralExpr",
         HirKind::BlockShell(_) => "BlockShell",
+        // Control-flow variants added by #1902. PIR v0 does not yet lower
+        // branch/loop/return — they fall through to unsupported_construct_counts
+        // where the gap is visible in every receipt, consistent with the PR's
+        // stated scope ("Branch/Loop/Return reserved but not yet populated").
+        HirKind::BranchShell(_) => "BranchShell",
+        HirKind::LoopShell(_) => "LoopShell",
+        HirKind::ControlTransfer(_) => "ControlTransfer",
+        HirKind::StatementModifierShell(_) => "StatementModifierShell",
         HirKind::DynamicBoundary(_) => "DynamicBoundary",
     }
 }
