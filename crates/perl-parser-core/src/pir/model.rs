@@ -552,3 +552,381 @@ impl PirGraph {
         self.nodes.get(id.index() as usize)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pir_context_has_stable_names() {
+        assert_eq!(PirContext::Scalar.name(), "Scalar");
+        assert_eq!(PirContext::List.name(), "List");
+        assert_eq!(PirContext::Void.name(), "Void");
+        assert_eq!(PirContext::Lvalue.name(), "Lvalue");
+        assert_eq!(PirContext::Unknown.name(), "Unknown");
+    }
+
+    #[test]
+    fn pir_anchor_kind_has_stable_names() {
+        assert_eq!(PirAnchorKind::ExplicitSource.name(), "ExplicitSource");
+        assert_eq!(PirAnchorKind::SourceBackedGenerated.name(), "SourceBackedGenerated");
+        assert_eq!(PirAnchorKind::GeneratedNoSource.name(), "GeneratedNoSource");
+        assert_eq!(PirAnchorKind::DynamicBoundary.name(), "DynamicBoundary");
+        assert_eq!(PirAnchorKind::AmbientInput.name(), "AmbientInput");
+        assert_eq!(PirAnchorKind::Unknown.name(), "Unknown");
+    }
+
+    #[test]
+    fn pir_anchor_kind_is_source_backed() {
+        assert!(PirAnchorKind::ExplicitSource.is_source_backed());
+        assert!(PirAnchorKind::SourceBackedGenerated.is_source_backed());
+        assert!(!PirAnchorKind::GeneratedNoSource.is_source_backed());
+        assert!(PirAnchorKind::DynamicBoundary.is_source_backed());
+        assert!(!PirAnchorKind::AmbientInput.is_source_backed());
+        assert!(!PirAnchorKind::Unknown.is_source_backed());
+    }
+
+    #[test]
+    fn pir_source_anchor_explicit_creates_anchored() {
+        let loc = SourceLocation { start: 0, end: 5 };
+        let anchor = PirSourceAnchor::explicit(loc, HirId::from_index(1));
+        assert!(anchor.is_anchored());
+        assert_eq!(anchor.kind, PirAnchorKind::ExplicitSource);
+        assert_eq!(anchor.range, Some(loc));
+    }
+
+    #[test]
+    fn pir_source_anchor_dynamic_boundary_creates_anchored() {
+        let loc = SourceLocation { start: 10, end: 20 };
+        let anchor = PirSourceAnchor::dynamic_boundary(loc, HirId::from_index(2));
+        assert!(anchor.is_anchored());
+        assert_eq!(anchor.kind, PirAnchorKind::DynamicBoundary);
+        assert_eq!(anchor.range, Some(loc));
+    }
+
+    #[test]
+    fn pir_callee_named_equality() {
+        let callee1 =
+            PirCallee::Named { name: "foo".to_string(), package: Some("Bar".to_string()) };
+        let callee2 =
+            PirCallee::Named { name: "foo".to_string(), package: Some("Bar".to_string()) };
+        assert_eq!(callee1, callee2);
+    }
+
+    #[test]
+    fn pir_callee_dynamic_equality() {
+        assert_eq!(PirCallee::Dynamic, PirCallee::Dynamic);
+    }
+
+    #[test]
+    fn pir_method_named_equality() {
+        assert_eq!(PirMethod::Named("foo".to_string()), PirMethod::Named("foo".to_string()));
+    }
+
+    #[test]
+    fn pir_operation_has_all_names() {
+        let expected = vec![
+            "Assign",
+            "Branch",
+            "Call",
+            "DynamicBoundary",
+            "LexicalRead",
+            "LexicalWrite",
+            "Loop",
+            "MethodCall",
+            "Return",
+            "StashRead",
+            "StashWrite",
+        ];
+        let actual: Vec<_> = PirOperation::ALL_OPERATION_NAMES.to_vec();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn pir_operation_lexical_read_name() {
+        let op = PirOperation::LexicalRead {
+            name: LexicalName { sigil: "$".to_string(), name: "x".to_string() },
+        };
+        assert_eq!(op.name(), "LexicalRead");
+    }
+
+    #[test]
+    fn pir_operation_lexical_write_name() {
+        let op = PirOperation::LexicalWrite {
+            name: LexicalName { sigil: "$".to_string(), name: "x".to_string() },
+        };
+        assert_eq!(op.name(), "LexicalWrite");
+    }
+
+    #[test]
+    fn pir_operation_stash_read_name() {
+        let op = PirOperation::StashRead {
+            symbol: SymbolName { sigil: "$".to_string(), name: "x".to_string(), package: None },
+        };
+        assert_eq!(op.name(), "StashRead");
+    }
+
+    #[test]
+    fn pir_operation_stash_write_name() {
+        let op = PirOperation::StashWrite {
+            symbol: SymbolName {
+                sigil: "@".to_string(),
+                name: "items".to_string(),
+                package: Some("Acme".to_string()),
+            },
+        };
+        assert_eq!(op.name(), "StashWrite");
+    }
+
+    #[test]
+    fn pir_operation_assign_name() {
+        let op = PirOperation::Assign;
+        assert_eq!(op.name(), "Assign");
+    }
+
+    #[test]
+    fn pir_operation_call_name() {
+        let op = PirOperation::Call {
+            callee: PirCallee::Named { name: "foo".to_string(), package: None },
+            arg_count: 2,
+        };
+        assert_eq!(op.name(), "Call");
+    }
+
+    #[test]
+    fn pir_operation_method_call_name() {
+        let op = PirOperation::MethodCall {
+            receiver: PirReceiver::Expression { kind: "Variable" },
+            method: PirMethod::Named("foo".to_string()),
+            arg_count: 1,
+        };
+        assert_eq!(op.name(), "MethodCall");
+    }
+
+    #[test]
+    fn pir_operation_branch_name() {
+        let op = PirOperation::Branch { condition: None };
+        assert_eq!(op.name(), "Branch");
+    }
+
+    #[test]
+    fn pir_operation_loop_name() {
+        let op = PirOperation::Loop { condition: None };
+        assert_eq!(op.name(), "Loop");
+    }
+
+    #[test]
+    fn pir_operation_return_name() {
+        let op = PirOperation::Return;
+        assert_eq!(op.name(), "Return");
+    }
+
+    #[test]
+    fn pir_operation_dynamic_boundary_name() {
+        let op = PirOperation::DynamicBoundary {
+            kind: PirDynamicBoundaryKind::DynamicCallee,
+            reason: "test".to_string(),
+        };
+        assert_eq!(op.name(), "DynamicBoundary");
+    }
+
+    #[test]
+    fn pir_dynamic_boundary_kind_has_stable_names() {
+        assert_eq!(PirDynamicBoundaryKind::DynamicCallee.name(), "DynamicCallee");
+        assert_eq!(PirDynamicBoundaryKind::DynamicReceiver.name(), "DynamicReceiver");
+        assert_eq!(PirDynamicBoundaryKind::DynamicMethodName.name(), "DynamicMethodName");
+        assert_eq!(PirDynamicBoundaryKind::SymbolicReference.name(), "SymbolicReference");
+        assert_eq!(PirDynamicBoundaryKind::TypeglobAccess.name(), "TypeglobAccess");
+        assert_eq!(PirDynamicBoundaryKind::DynamicDereference.name(), "DynamicDereference");
+        assert_eq!(PirDynamicBoundaryKind::RuntimeStashMutation.name(), "RuntimeStashMutation");
+        assert_eq!(PirDynamicBoundaryKind::EvalExpression.name(), "EvalExpression");
+        assert_eq!(PirDynamicBoundaryKind::DoExpression.name(), "DoExpression");
+        assert_eq!(PirDynamicBoundaryKind::Autoload.name(), "Autoload");
+        assert_eq!(PirDynamicBoundaryKind::Unknown.name(), "Unknown");
+    }
+
+    #[test]
+    fn pir_edge_kind_has_stable_names() {
+        assert_eq!(PirEdgeKind::Fallthrough.name(), "Fallthrough");
+        assert_eq!(PirEdgeKind::Branch.name(), "Branch");
+        assert_eq!(PirEdgeKind::Loop.name(), "Loop");
+        assert_eq!(PirEdgeKind::Return.name(), "Return");
+        assert_eq!(PirEdgeKind::DynamicExit.name(), "DynamicExit");
+        assert_eq!(PirEdgeKind::Unknown.name(), "Unknown");
+    }
+
+    #[test]
+    fn pir_lowering_mode_has_stable_name() {
+        assert_eq!(PirLoweringMode::HirV0.name(), "HirV0");
+    }
+
+    #[test]
+    fn pir_anchor_coverage_total() {
+        let coverage = PirAnchorCoverage { anchored: 5, unanchored: 3 };
+        assert_eq!(coverage.total(), 8);
+    }
+
+    #[test]
+    fn pir_anchor_coverage_default() {
+        let coverage = PirAnchorCoverage::default();
+        assert_eq!(coverage.anchored, 0);
+        assert_eq!(coverage.unanchored, 0);
+        assert_eq!(coverage.total(), 0);
+    }
+
+    #[test]
+    fn pir_id_from_index_round_trip() {
+        let id = PirId::from_index(42);
+        assert_eq!(id.index(), 42);
+    }
+
+    #[test]
+    fn pir_graph_empty_returns_true_for_no_nodes() {
+        let graph = PirGraph {
+            nodes: vec![],
+            edges: vec![],
+            receipt: PirReceipt {
+                schema_version: 1,
+                source_identity: None,
+                lowering_mode: PirLoweringMode::HirV0,
+                node_count: 0,
+                edge_count: 0,
+                operation_counts: Default::default(),
+                context_counts: Default::default(),
+                source_anchor_coverage: Default::default(),
+                dynamic_boundary_counts: Default::default(),
+                unsupported_construct_counts: Default::default(),
+                ambient_inputs: vec![],
+                provider_behavior_changed: false,
+            },
+        };
+        assert!(graph.is_empty());
+    }
+
+    #[test]
+    fn pir_graph_empty_returns_false_for_nodes() {
+        let loc = SourceLocation { start: 0, end: 1 };
+        let node = PirNode {
+            id: PirId::from_index(0),
+            source_anchor: PirSourceAnchor::explicit(loc, HirId::from_index(1)),
+            operation: PirOperation::Assign,
+            context: PirContext::Void,
+            dynamic_boundary: None,
+            scope: None,
+            package_context: None,
+        };
+        let graph = PirGraph {
+            nodes: vec![node],
+            edges: vec![],
+            receipt: PirReceipt {
+                schema_version: 1,
+                source_identity: None,
+                lowering_mode: PirLoweringMode::HirV0,
+                node_count: 1,
+                edge_count: 0,
+                operation_counts: Default::default(),
+                context_counts: Default::default(),
+                source_anchor_coverage: Default::default(),
+                dynamic_boundary_counts: Default::default(),
+                unsupported_construct_counts: Default::default(),
+                ambient_inputs: vec![],
+                provider_behavior_changed: false,
+            },
+        };
+        assert!(!graph.is_empty());
+    }
+
+    #[test]
+    fn pir_graph_node_lookup() {
+        let loc = SourceLocation { start: 0, end: 1 };
+        let node = PirNode {
+            id: PirId::from_index(0),
+            source_anchor: PirSourceAnchor::explicit(loc, HirId::from_index(1)),
+            operation: PirOperation::Assign,
+            context: PirContext::Void,
+            dynamic_boundary: None,
+            scope: None,
+            package_context: None,
+        };
+        let graph = PirGraph {
+            nodes: vec![node.clone()],
+            edges: vec![],
+            receipt: PirReceipt {
+                schema_version: 1,
+                source_identity: None,
+                lowering_mode: PirLoweringMode::HirV0,
+                node_count: 1,
+                edge_count: 0,
+                operation_counts: Default::default(),
+                context_counts: Default::default(),
+                source_anchor_coverage: Default::default(),
+                dynamic_boundary_counts: Default::default(),
+                unsupported_construct_counts: Default::default(),
+                ambient_inputs: vec![],
+                provider_behavior_changed: false,
+            },
+        };
+        let found = graph.node(PirId::from_index(0));
+        assert_eq!(found, Some(&node));
+    }
+
+    #[test]
+    fn pir_graph_node_lookup_invalid_id() {
+        let graph = PirGraph {
+            nodes: vec![],
+            edges: vec![],
+            receipt: PirReceipt {
+                schema_version: 1,
+                source_identity: None,
+                lowering_mode: PirLoweringMode::HirV0,
+                node_count: 0,
+                edge_count: 0,
+                operation_counts: Default::default(),
+                context_counts: Default::default(),
+                source_anchor_coverage: Default::default(),
+                dynamic_boundary_counts: Default::default(),
+                unsupported_construct_counts: Default::default(),
+                ambient_inputs: vec![],
+                provider_behavior_changed: false,
+            },
+        };
+        let found = graph.node(PirId::from_index(42));
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn lexical_name_structure() {
+        let name = LexicalName { sigil: "$".to_string(), name: "x".to_string() };
+        assert_eq!(name.sigil, "$");
+        assert_eq!(name.name, "x");
+    }
+
+    #[test]
+    fn symbol_name_with_package() {
+        let symbol = SymbolName {
+            sigil: "@".to_string(),
+            name: "items".to_string(),
+            package: Some("Acme".to_string()),
+        };
+        assert_eq!(symbol.sigil, "@");
+        assert_eq!(symbol.name, "items");
+        assert_eq!(symbol.package.as_deref(), Some("Acme"));
+    }
+
+    #[test]
+    fn pir_receiver_class() {
+        let receiver = PirReceiver::Class("Foo".to_string());
+        assert_eq!(format!("{:?}", receiver), "Class(\"Foo\")");
+    }
+
+    #[test]
+    fn pir_receiver_expression() {
+        let receiver = PirReceiver::Expression { kind: "Variable" };
+        assert_eq!(format!("{:?}", receiver), "Expression { kind: \"Variable\" }");
+    }
+
+    #[test]
+    fn pir_receiver_dynamic() {
+        assert_eq!(format!("{:?}", PirReceiver::Dynamic), "Dynamic");
+    }
+}

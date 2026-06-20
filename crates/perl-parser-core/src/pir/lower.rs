@@ -336,3 +336,374 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::DynamicBoundary(_) => "DynamicBoundary",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::model::PirAnchorKind;
+    use super::*;
+    use crate::Parser;
+    use crate::hir::lower_ast;
+    use perl_tdd_support::must_some;
+
+    fn lower(source: &str) -> PirGraph {
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        let hir = lower_ast(&output.ast);
+        lower_hir(&hir)
+    }
+
+    #[test]
+    fn empty_source_yields_empty_graph() {
+        let graph = lower("");
+        assert!(graph.is_empty());
+        assert_eq!(graph.nodes.len(), 0);
+        assert_eq!(graph.edges.len(), 0);
+        assert_eq!(graph.receipt.node_count, 0);
+        assert_eq!(graph.receipt.edge_count, 0);
+    }
+
+    #[test]
+    fn lexical_declaration_creates_write_and_assign() {
+        let graph = lower("my $x = 1;");
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.nodes[0].operation.name(), "LexicalWrite");
+        assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
+        assert_eq!(graph.nodes[1].operation.name(), "Assign");
+        assert_eq!(graph.nodes[1].context, PirContext::Void);
+    }
+
+    #[test]
+    fn our_declaration_is_stash_write() {
+        let graph = lower("package Acme; our @items = (1, 2);");
+        let stash = must_some(
+            graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::StashWrite { .. })),
+        );
+        if let PirOperation::StashWrite { symbol } = &stash.operation {
+            assert_eq!(symbol.sigil, "@");
+            assert_eq!(symbol.name, "items");
+            assert_eq!(symbol.package.as_deref(), Some("Acme"));
+        } else {
+            panic!("expected StashWrite");
+        }
+    }
+
+    #[test]
+    fn local_declaration_is_stash_write() {
+        let graph = lower("local $x;");
+        let stash = must_some(
+            graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::StashWrite { .. })),
+        );
+        if let PirOperation::StashWrite { symbol } = &stash.operation {
+            assert_eq!(symbol.sigil, "$");
+            assert_eq!(symbol.name, "x");
+        } else {
+            panic!("expected StashWrite");
+        }
+    }
+
+    #[test]
+    fn named_call_with_package_qualifier() {
+        let graph = lower("Bar::baz();");
+        let call = must_some(
+            graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::Call { .. })),
+        );
+        if let PirOperation::Call { callee, arg_count } = &call.operation {
+            assert_eq!(
+                *callee,
+                PirCallee::Named { name: "baz".to_string(), package: Some("Bar".to_string()) }
+            );
+            assert_eq!(*arg_count, 0);
+        } else {
+            panic!("expected Call");
+        }
+    }
+
+    #[test]
+    fn deep_package_qualified_call() {
+        let graph = lower("A::B::foo();");
+        let call = must_some(
+            graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::Call { .. })),
+        );
+        if let PirOperation::Call { callee, .. } = &call.operation {
+            assert_eq!(
+                *callee,
+                PirCallee::Named { name: "foo".to_string(), package: Some("A::B".to_string()) }
+            );
+        } else {
+            panic!("expected Call");
+        }
+    }
+
+    #[test]
+    fn unqualified_call_has_no_package() {
+        let graph = lower("foo(1, 2, 3);");
+        let call = must_some(
+            graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::Call { .. })),
+        );
+        if let PirOperation::Call { callee, arg_count } = &call.operation {
+            assert_eq!(*callee, PirCallee::Named { name: "foo".to_string(), package: None });
+            assert_eq!(*arg_count, 3);
+        } else {
+            panic!("expected Call");
+        }
+    }
+
+    #[test]
+    fn method_call_preserves_method_and_args() {
+        let graph = lower("$obj->frobnicate(1, 2);");
+        let method = must_some(
+            graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::MethodCall { .. })),
+        );
+        if let PirOperation::MethodCall { method, arg_count, .. } = &method.operation {
+            assert_eq!(*method, PirMethod::Named("frobnicate".to_string()));
+            assert_eq!(*arg_count, 2);
+        } else {
+            panic!("expected MethodCall");
+        }
+    }
+
+    #[test]
+    fn coderef_call_links_to_dynamic_boundary() {
+        let graph = lower("my $cb; $cb->(1);");
+        let call = must_some(graph.nodes.iter().find(|n| {
+            matches!(n.operation, PirOperation::Call { callee: PirCallee::Dynamic, .. })
+        }));
+        let boundary_id = must_some(call.dynamic_boundary);
+        let boundary = must_some(graph.node(boundary_id));
+        if let PirOperation::DynamicBoundary { kind, .. } = &boundary.operation {
+            assert_eq!(*kind, PirDynamicBoundaryKind::DynamicCallee);
+        } else {
+            panic!("expected DynamicBoundary");
+        }
+    }
+
+    #[test]
+    fn multiple_coderef_calls_have_separate_boundaries() {
+        let graph = lower("my ($a, $b); $a->(); $b->();");
+        let calls: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|n| {
+                matches!(n.operation, PirOperation::Call { callee: PirCallee::Dynamic, .. })
+            })
+            .collect();
+        assert_eq!(calls.len(), 2);
+        let b0 = must_some(calls[0].dynamic_boundary);
+        let b1 = must_some(calls[1].dynamic_boundary);
+        assert_ne!(b0, b1);
+    }
+
+    #[test]
+    fn eval_creates_dynamic_boundary() {
+        let graph = lower(r#"eval "$code";"#);
+        assert_eq!(graph.receipt.dynamic_boundary_counts.get("EvalExpression"), Some(&1));
+    }
+
+    #[test]
+    fn symbolic_reference_creates_boundary() {
+        let graph = lower("no strict 'refs'; my $v = ${$name};");
+        assert_eq!(graph.receipt.dynamic_boundary_counts.get("SymbolicReference"), Some(&1));
+    }
+
+    #[test]
+    fn typeglob_creates_dynamic_boundary() {
+        let graph = lower("*alias = $thing;");
+        assert_eq!(graph.receipt.dynamic_boundary_counts.get("RuntimeStashMutation"), Some(&1));
+    }
+
+    #[test]
+    fn autoload_creates_dynamic_boundary() {
+        let graph = lower("sub AUTOLOAD { }");
+        assert_eq!(graph.receipt.dynamic_boundary_counts.get("Autoload"), Some(&1));
+    }
+
+    #[test]
+    fn dynamic_boundary_has_correct_anchor_kind() {
+        let graph = lower(r#"eval "$code";"#);
+        let boundary = must_some(
+            graph
+                .nodes
+                .iter()
+                .find(|n| matches!(n.operation, PirOperation::DynamicBoundary { .. })),
+        );
+        assert_eq!(boundary.source_anchor.kind, PirAnchorKind::DynamicBoundary);
+    }
+
+    #[test]
+    fn all_nodes_have_source_anchors() {
+        let graph = lower("package Foo; my $x = bar(); $obj->m(); our $y;");
+        for node in &graph.nodes {
+            assert!(node.source_anchor.is_anchored());
+        }
+        assert_eq!(graph.receipt.source_anchor_coverage.unanchored, 0);
+    }
+
+    #[test]
+    fn branch_shell_counted_in_receipt() {
+        let graph = lower("if (1) { 1 }");
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), Some(&1));
+    }
+
+    #[test]
+    fn loop_shell_counted_in_receipt() {
+        let graph = lower("while (1) { last; }");
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), Some(&1));
+    }
+
+    #[test]
+    fn control_transfer_counted_in_receipt() {
+        let graph = lower("sub f { return 1; }");
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&1));
+    }
+
+    #[test]
+    fn statement_modifier_counted_in_receipt() {
+        let graph = lower("$x = 1 if $y;");
+        assert_eq!(
+            graph.receipt.unsupported_construct_counts.get("StatementModifierShell"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn all_four_control_flow_constructs() {
+        let graph = lower(
+            r#"
+if (1) { 1 }
+while (1) { last; }
+sub f { return 1; }
+$x = 1 if $y;
+"#,
+        );
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), Some(&1));
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), Some(&1));
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&2));
+        assert_eq!(
+            graph.receipt.unsupported_construct_counts.get("StatementModifierShell"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn receipt_operation_counts_match_nodes() {
+        let graph = lower("my $x = 1; foo(); $obj->m(); eval '1';");
+        let op_total: usize = graph.receipt.operation_counts.values().sum();
+        assert_eq!(op_total, graph.nodes.len());
+        assert_eq!(graph.receipt.node_count, graph.nodes.len());
+    }
+
+    #[test]
+    fn receipt_context_counts_match_nodes() {
+        let graph = lower("my $x = 1; foo(); $obj->m(); eval '1';");
+        let ctx_total: usize = graph.receipt.context_counts.values().sum();
+        assert_eq!(ctx_total, graph.nodes.len());
+    }
+
+    #[test]
+    fn fallthrough_edges_between_statements() {
+        let graph = lower("foo(); bar(); baz();");
+        let count = graph.edges.iter().filter(|e| e.kind == PirEdgeKind::Fallthrough).count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn lowering_is_deterministic() {
+        let mut parser = Parser::new("package Foo; my $x = bar(); $obj->m(); eval '1'; our @z;");
+        let output = parser.parse_with_recovery();
+        let hir = lower_ast(&output.ast);
+        let first = lower_hir(&hir);
+        let second = lower_hir(&hir);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn source_identity_threaded_to_receipt() {
+        let mut parser = Parser::new("my $x = 1;");
+        let output = parser.parse_with_recovery();
+        let hir = lower_ast(&output.ast);
+        let graph = lower_hir_with_identity(&hir, Some("fixture://demo.pl".to_string()));
+        assert_eq!(graph.receipt.source_identity.as_deref(), Some("fixture://demo.pl"));
+    }
+
+    #[test]
+    fn node_id_lookup_round_trips() {
+        let graph = lower("my $x = 1;");
+        for node in &graph.nodes {
+            let found = must_some(graph.node(node.id));
+            assert_eq!(found.id, node.id);
+        }
+    }
+
+    #[test]
+    fn multi_variable_declaration_creates_multiple_writes() {
+        let graph = lower("my ($a, $b) = (1, 2);");
+        let writes: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.operation, PirOperation::LexicalWrite { .. }))
+            .collect();
+        assert_eq!(writes.len(), 2);
+    }
+
+    #[test]
+    fn leading_colons_not_empty_package() {
+        let graph = lower("::foo();");
+        let call = must_some(
+            graph.nodes.iter().find(|n| matches!(n.operation, PirOperation::Call { .. })),
+        );
+        if let PirOperation::Call { callee, .. } = &call.operation {
+            assert_eq!(*callee, PirCallee::Named { name: "foo".to_string(), package: None });
+        } else {
+            panic!("expected Call");
+        }
+    }
+
+    #[test]
+    fn receipt_edge_count_matches() {
+        let graph = lower("my $x = 1; foo(); bar();");
+        assert_eq!(graph.receipt.edge_count, graph.edges.len());
+    }
+
+    #[test]
+    fn lowering_mode_is_hir_v0() {
+        let graph = lower("my $x = 1;");
+        assert_eq!(graph.receipt.lowering_mode, PirLoweringMode::HirV0);
+    }
+
+    #[test]
+    fn unsupported_constructs_visible() {
+        let graph = lower("package Foo; use strict; sub f {}");
+        let unsupported = &graph.receipt.unsupported_construct_counts;
+        assert_eq!(unsupported.get("PackageDecl"), Some(&1));
+        assert_eq!(unsupported.get("UseDecl"), Some(&1));
+        assert_eq!(unsupported.get("SubDecl"), Some(&1));
+    }
+
+    #[test]
+    fn multiple_dynamic_boundary_types() {
+        let graph = lower(
+            r#"
+eval "$code";
+no strict 'refs'; ${$name};
+*alias = $thing;
+sub AUTOLOAD {}
+"#,
+        );
+        assert_eq!(graph.receipt.dynamic_boundary_counts.get("EvalExpression"), Some(&1));
+        assert_eq!(graph.receipt.dynamic_boundary_counts.get("SymbolicReference"), Some(&1));
+        assert_eq!(graph.receipt.dynamic_boundary_counts.get("RuntimeStashMutation"), Some(&1));
+        assert_eq!(graph.receipt.dynamic_boundary_counts.get("Autoload"), Some(&1));
+    }
+
+    #[test]
+    fn provider_behavior_not_changed() {
+        let graph = lower("my $x = 1;");
+        assert!(!graph.receipt.provider_behavior_changed);
+    }
+
+    #[test]
+    fn ambient_inputs_empty() {
+        let graph = lower("my $x = 1;");
+        assert!(graph.receipt.ambient_inputs.is_empty());
+    }
+}
