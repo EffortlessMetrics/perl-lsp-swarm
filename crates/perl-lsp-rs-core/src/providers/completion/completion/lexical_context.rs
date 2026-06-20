@@ -175,19 +175,27 @@ pub(super) fn is_in_heredoc(source: &str, position: usize) -> bool {
         .map(|p| heredoc_start + p)
         .unwrap_or(source.len());
 
-    // After the opening line, look for the closing delimiter
+    // After the opening line, look for the closing delimiter.
+    // We walk the lines manually with a byte-offset tracker so we can compute
+    // the exact start position of the closing line without the off-by-N errors
+    // that arise from `after_open_line.len() - line.len()` (which is wrong when
+    // the closing line is not the very last bytes of the slice).
     let after_open_line = &source[open_line_end..];
 
-    // The closing delimiter must be on its own line (with optional trailing whitespace)
+    let mut byte_offset = 0usize;
     for line in after_open_line.lines() {
         let trimmed = line.trim_end();
         if trimmed == delimiter {
-            // Found the closing line. Now check if position is between opening and closing.
-            let closing_pos = source[..open_line_end].len()
-                + after_open_line[..after_open_line.len() - line.len()].len()
-                + 1; // +1 for the opening newline
-            return position > open_line_end && position < closing_pos + delimiter.len();
+            // `byte_offset` is now the start of the closing delimiter line
+            // within `after_open_line`.  The heredoc body is the region
+            // strictly between `open_line_end` (the opening `\n`) and the
+            // first byte of the closing delimiter line.
+            let closing_line_start = open_line_end + byte_offset;
+            return position > open_line_end && position < closing_line_start;
         }
+        // Advance past this line and its line separator (1 byte for `\n`; the
+        // lines() iterator strips the separator, so we add it back).
+        byte_offset += line.len() + 1;
     }
 
     // If no closing delimiter found, assume we're in the heredoc if position is after the opening
@@ -220,7 +228,12 @@ fn extract_heredoc_delimiter(text: &str) -> Option<String> {
 /// Check if position is inside a POD block.
 ///
 /// POD blocks start with a POD directive like `=pod`, `=head1`, `=head2`, etc.
-/// at the beginning of a line and end with `=cut` at the beginning of a line.
+/// at the **beginning** of a line (column 0) and end with `=cut` at the beginning
+/// of a line.  Per the perlpod spec, leading whitespace disqualifies a line from
+/// being a POD command — `  =pod` is plain text, not a POD directive.
+///
+/// Lines that fall inside a heredoc are skipped so that heredoc bodies containing
+/// `=pod`-like content cannot corrupt the POD state machine.
 pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
     if position == 0 {
         return false;
@@ -228,40 +241,67 @@ pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
 
     let before = &source[..position];
 
-    // Find all line starts in the text before cursor
     let mut in_pod_block = false;
+    // Track whether we are inside a heredoc body while scanning lines.
+    // We open a heredoc when we see <<DELIM and close it when we see the
+    // delimiter alone on a line.  This prevents heredoc bodies that happen
+    // to contain `=pod` from poisoning the POD state machine.
+    let mut heredoc_delimiter: Option<String> = None;
 
     for line in before.lines() {
-        // Check if this line starts a POD block
+        // If we are inside a heredoc, check for the closing delimiter first.
+        if let Some(ref delim) = heredoc_delimiter {
+            if line.trim_end() == delim.as_str() {
+                heredoc_delimiter = None;
+            }
+            // Either way, skip POD checks for this line — it is heredoc content.
+            continue;
+        }
+
+        // Check whether this line opens a heredoc.
+        if let Some(hd_pos) = line.find("<<") {
+            let after = &line[hd_pos + 2..];
+            if let Some(delim) = extract_heredoc_delimiter(after) {
+                if !delim.is_empty() {
+                    heredoc_delimiter = Some(delim);
+                    // The opening line itself is code, not heredoc body — fall
+                    // through to POD checks (unlikely to be =pod, but correct).
+                }
+            }
+        }
+
+        // POD commands must start at column 0 (no leading whitespace).
         if is_pod_start_marker(line) {
             in_pod_block = true;
         }
-
-        // Check if this line ends a POD block
         if is_pod_end_marker(line) {
             in_pod_block = false;
         }
     }
 
-    // After iterating through all lines before cursor, check if we're in a POD block
     in_pod_block
 }
 
 fn is_pod_start_marker(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("=pod")
-        || trimmed.starts_with("=head1")
-        || trimmed.starts_with("=head2")
-        || trimmed.starts_with("=head3")
-        || trimmed.starts_with("=head4")
-        || trimmed.starts_with("=over")
-        || trimmed.starts_with("=item")
-        || trimmed.starts_with("=back")
-        || trimmed.starts_with("=for")
-        || trimmed.starts_with("=begin")
+    // Per perlpod: the command paragraph must begin at column 0.
+    // Do NOT use trim_start() here — indented `=pod` is not a POD directive.
+    line.starts_with("=pod")
+        || line.starts_with("=head1")
+        || line.starts_with("=head2")
+        || line.starts_with("=head3")
+        || line.starts_with("=head4")
+        || line.starts_with("=over")
+        || line.starts_with("=item")
+        || line.starts_with("=back")
+        || line.starts_with("=for")
+        || line.starts_with("=begin")
+        || line.starts_with("=encoding")
+        || line.starts_with("=attr")
+        || line.starts_with("=method")
+        || line.starts_with("=func")
 }
 
 fn is_pod_end_marker(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("=cut")
+    // Per perlpod: `=cut` must also appear at column 0.
+    line.starts_with("=cut")
 }
