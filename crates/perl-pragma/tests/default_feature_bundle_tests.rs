@@ -18,6 +18,8 @@ use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};
 use perl_pragma::{PragmaState, PragmaTracker};
 
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -92,15 +94,16 @@ fn assert_has_none(state: &PragmaState, names: &[&str]) {
 // ===========================================================================
 
 #[test]
-fn default_state_enables_the_default_bundle() {
+fn default_state_enables_the_default_bundle() -> TestResult {
     let state = PragmaState::default();
     assert_has_all(&state, DEFAULT_BUNDLE);
     // No version-bundle features leak into the baseline.
     assert_has_none(&state, &["say", "state", "signatures", "isa", "module_true", "try"]);
+    Ok(())
 }
 
 #[test]
-fn default_state_leaves_non_feature_flags_cleared() {
+fn default_state_leaves_non_feature_flags_cleared() -> TestResult {
     let state = PragmaState::default();
     assert!(!state.strict_vars);
     assert!(!state.strict_subs);
@@ -112,10 +115,11 @@ fn default_state_leaves_non_feature_flags_cleared() {
     assert!(!state.locale);
     assert!(state.builtin_imports.is_empty());
     assert!(state.disabled_warning_categories.is_empty());
+    Ok(())
 }
 
 #[test]
-fn plain_file_with_no_pragmas_reports_default_bundle() {
+fn plain_file_with_no_pragmas_reports_default_bundle() -> TestResult {
     // A program with content but no `use`/`no` produces an empty transition
     // map; queries fall back to the baseline, which is the `:default` bundle.
     let ast = program(vec![function_call("print", 0, 12)]);
@@ -124,23 +128,26 @@ fn plain_file_with_no_pragmas_reports_default_bundle() {
     let state = PragmaTracker::state_for_offset(&map, 6);
     assert_has_all(&state, DEFAULT_BUNDLE);
     assert!(!state.has_feature("say"));
+    Ok(())
 }
 
 #[test]
-fn all_strict_keeps_the_default_bundle() {
+fn all_strict_keeps_the_default_bundle() -> TestResult {
     let state = PragmaState::all_strict();
     assert!(state.strict_vars && state.strict_subs && state.strict_refs);
     assert!(!state.warnings, "all_strict must not enable warnings");
     assert_has_all(&state, DEFAULT_BUNDLE);
+    Ok(())
 }
 
 #[test]
-fn use_strict_final_state_matches_all_strict() {
+fn use_strict_final_state_matches_all_strict() -> TestResult {
     // `use strict` only toggles the strict categories; the `:default` feature
     // bundle is untouched, so the effective state equals `all_strict()`.
     let state = final_state(vec![use_node("strict", &[], 0, 11)]);
     assert_eq!(state, PragmaState::all_strict());
     assert_has_all(&state, DEFAULT_BUNDLE);
+    Ok(())
 }
 
 // ===========================================================================
@@ -148,7 +155,7 @@ fn use_strict_final_state_matches_all_strict() {
 // ===========================================================================
 
 #[test]
-fn use_v5_36_disables_indirect_and_multidimensional() {
+fn use_v5_36_disables_indirect_and_multidimensional() -> TestResult {
     let state = final_state(vec![use_node("v5.36", &[], 0, 9)]);
     // Disabled by the 5.36 bundle:
     assert_has_none(&state, &["indirect", "multidimensional", "switch"]);
@@ -162,17 +169,19 @@ fn use_v5_36_disables_indirect_and_multidimensional() {
     // v5.36 implies strict + warnings.
     assert!(state.strict_vars && state.strict_subs && state.strict_refs);
     assert!(state.warnings);
+    Ok(())
 }
 
 #[test]
-fn use_v5_38_additionally_disables_bareword_filehandles() {
+fn use_v5_38_additionally_disables_bareword_filehandles() -> TestResult {
     let state = final_state(vec![use_node("v5.38", &[], 0, 9)]);
     assert_has_none(&state, &["indirect", "multidimensional", "bareword_filehandles"]);
     assert_has_all(&state, &["apostrophe_as_package_separator", "smartmatch", "module_true"]);
+    Ok(())
 }
 
 #[test]
-fn use_v5_42_disables_apostrophe_separator_and_smartmatch() {
+fn use_v5_42_disables_apostrophe_separator_and_smartmatch() -> TestResult {
     let state = final_state(vec![use_node("v5.42", &[], 0, 9)]);
     assert_has_none(
         &state,
@@ -185,6 +194,7 @@ fn use_v5_42_disables_apostrophe_separator_and_smartmatch() {
         ],
     );
     assert_has_all(&state, &["say", "signatures", "try", "module_true"]);
+    Ok(())
 }
 
 // ===========================================================================
@@ -192,7 +202,7 @@ fn use_v5_42_disables_apostrophe_separator_and_smartmatch() {
 // ===========================================================================
 
 #[test]
-fn no_feature_disables_a_single_default_on_feature() {
+fn no_feature_disables_a_single_default_on_feature() -> TestResult {
     // `no feature 'multidimensional';` lexically turns off one baseline feature
     // while leaving the rest of the `:default` bundle intact.
     let state = final_state(vec![no_node("feature", &["multidimensional"], 0, 30)]);
@@ -201,22 +211,25 @@ fn no_feature_disables_a_single_default_on_feature() {
         &state,
         &["indirect", "bareword_filehandles", "apostrophe_as_package_separator", "smartmatch"],
     );
+    Ok(())
 }
 
 #[test]
-fn bare_no_feature_resets_to_default_bundle() {
+fn bare_no_feature_resets_to_default_bundle() -> TestResult {
     // `use feature 'say'; no feature;` should drop the explicit `say` and leave
     // the `:default` bundle restored.
     let state =
         final_state(vec![use_node("feature", &["say"], 0, 18), no_node("feature", &[], 18, 28)]);
     assert!(!state.has_feature("say"), "bare `no feature` resets the explicit 'say'");
     assert_has_all(&state, DEFAULT_BUNDLE);
+    Ok(())
 }
 
 #[test]
-fn use_feature_say_adds_to_the_default_bundle() {
+fn use_feature_say_adds_to_the_default_bundle() -> TestResult {
     // Explicitly enabling a feature augments — not replaces — the baseline.
     let state = final_state(vec![use_node("feature", &["say"], 0, 18)]);
     assert!(state.has_feature("say"));
     assert_has_all(&state, DEFAULT_BUNDLE);
+    Ok(())
 }
