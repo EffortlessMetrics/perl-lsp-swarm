@@ -796,4 +796,36 @@ mod tests {
         let escaped = escape_markdown_text(text);
         assert_eq!(escaped, text);
     }
+
+    #[test]
+    fn escape_markdown_text_escapes_dash() {
+        // Dashes are escaped conservatively (they can start list items at line
+        // start or form setext headings `---`). The output renders identically
+        // in all markdown renderers — `read\-only` displays as `read-only`.
+        let text = "read-only access";
+        let escaped = escape_markdown_text(text);
+        assert_eq!(escaped, r"read\-only access");
+    }
+
+    #[test]
+    fn escape_markdown_text_escapes_backslash() {
+        // Backslashes are escaped so they render as literal backslashes.
+        // A comment like `C:\path\to\file` becomes `C:\\path\\to\\file`.
+        let text = r"C:\path\file";
+        let escaped = escape_markdown_text(text);
+        assert_eq!(escaped, r"C:\\path\\file");
+    }
+
+    #[test]
+    fn escape_markdown_text_handles_empty_string() {
+        assert_eq!(escape_markdown_text(""), "");
+    }
+
+    #[test]
+    fn escape_markdown_text_handles_unicode() {
+        // Multi-byte UTF-8 should pass through unchanged.
+        let text = "Résumé: *important*";
+        let escaped = escape_markdown_text(text);
+        assert_eq!(escaped, r"Résumé: \*important\*");
+    }
 }

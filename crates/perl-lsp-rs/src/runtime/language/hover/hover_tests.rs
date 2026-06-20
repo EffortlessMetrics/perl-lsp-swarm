@@ -671,10 +671,7 @@ my $var = 42;
         }
     }))?;
 
-    // Find offset of $var
-    let offset = must_some(text.find("$var"));
-
-    // Get hover at this position
+    // Get hover at $var position (line 2, character 4 = inside '$var')
     let hover = server.handle_hover(Some(json!({
         "textDocument": { "uri": uri },
         "position": { "line": 2, "character": 4 }
@@ -698,4 +695,37 @@ my $var = 42;
     );
 
     Ok(())
+}
+
+#[test]
+fn method_modifier_hover_escapes_doc_markdown() {
+    // Verify that method modifier hover cards escape markdown in the user-supplied
+    // documentation string, while preserving intentional markdown in the hardcoded
+    // kind_label (e.g. the "runs **before** the method" descriptions).
+    let hover = super::hover_cards::method_modifier_hover(
+        "before",
+        "validate_input",
+        "Checks that *all* args are [valid] before calling the real method",
+    );
+    let value = must_some(hover["contents"]["value"].as_str());
+
+    // User-supplied doc should have markdown chars escaped
+    assert!(
+        value.contains(r"\*all\*"),
+        "asterisks in user doc should be escaped: {value}"
+    );
+    assert!(
+        value.contains(r"\[valid\]"),
+        "brackets in user doc should be escaped: {value}"
+    );
+    // The hardcoded kind_label **before** formatting should remain as-is
+    assert!(
+        value.contains("**before**"),
+        "hardcoded kind_label markdown should be preserved: {value}"
+    );
+    // Method name should appear in backtick span (not escaped — it's code)
+    assert!(
+        value.contains("`validate_input`"),
+        "method name should appear in code span: {value}"
+    );
 }
