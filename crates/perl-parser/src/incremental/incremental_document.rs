@@ -31,10 +31,14 @@ pub struct IncrementalDocument {
     pub metrics: ParseMetrics,
     /// Soft (recoverable) parse errors from the most recent parse.
     ///
-    /// Populated on construction and refreshed on every `apply_edit` /
-    /// `apply_edits`. Lets callers (e.g. the LSP `didChange` handler) surface
-    /// diagnostics from the warm incremental parse instead of issuing a
-    /// separate cold parse purely to collect errors.
+    /// Populated on construction and refreshed whenever a parse runs: every
+    /// `apply_edits` batch and every `apply_edit` that takes the reparse path.
+    /// The single-token `apply_edit` fast path (an in-place
+    /// Number/String/Identifier update) preserves the previous error set,
+    /// since such an edit does not change the structural parse. Lets callers
+    /// (e.g. the LSP `didChange` handler, which always uses `apply_edits`)
+    /// surface diagnostics from the warm incremental parse instead of issuing
+    /// a separate cold parse purely to collect errors.
     pub errors: Vec<ParseError>,
 }
 
