@@ -178,6 +178,63 @@ $x++;
 }
 
 #[test]
+fn preview_conditional_breakpoint_receipt() -> TestResult {
+    let workspace = tempdir()?;
+    let script = workspace.path().join("conditional_receipt.pl");
+    write(
+        &script,
+        r#"use strict;
+use warnings;
+my $x = 0;
+$x++;
+$x++;
+$x++;
+"#,
+    )?;
+    let script_path = script.to_string_lossy().to_string();
+
+    let store = BreakpointStore::new();
+    let response = store.set_breakpoints(&SetBreakpointsArguments {
+        source: Source {
+            path: Some(script_path.clone()),
+            name: Some("conditional_receipt.pl".to_string()),
+        },
+        breakpoints: Some(vec![SourceBreakpoint {
+            line: 4,
+            column: None,
+            condition: Some("$x > 2".to_string()),
+            hit_condition: None,
+            log_message: None,
+        }]),
+        source_modified: None,
+    });
+
+    assert_eq!(response.len(), 1);
+    assert!(response[0].verified, "conditional breakpoint should verify on executable line");
+
+    // First hit when $x=1: condition "$x > 2" is false, should NOT stop
+    store.set_test_variable("x", 1);
+    let first = store.register_breakpoint_hit(&script_path, 4);
+    assert!(first.matched, "first hit should match breakpoint");
+    assert!(!first.should_stop, "first hit should not stop when condition is false");
+    assert!(first.log_messages.is_empty(), "conditional breakpoint should not emit logpoint");
+
+    // Second hit when $x=2: condition "$x > 2" is false, should NOT stop
+    store.set_test_variable("x", 2);
+    let second = store.register_breakpoint_hit(&script_path, 4);
+    assert!(second.matched, "second hit should match breakpoint");
+    assert!(!second.should_stop, "second hit should not stop when condition is false");
+
+    // Third hit when $x=3: condition "$x > 2" is true, should stop
+    store.set_test_variable("x", 3);
+    let third = store.register_breakpoint_hit(&script_path, 4);
+    assert!(third.matched, "third hit should match breakpoint");
+    assert!(third.should_stop, "third hit should stop when condition is true");
+
+    Ok(())
+}
+
+#[test]
 fn preview_set_exception_breakpoints_receipt() -> TestResult {
     let mut adapter = DebugAdapter::new();
 

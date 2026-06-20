@@ -147,6 +147,49 @@ fn evaluate_hit_condition(raw: Option<&str>, hit_count: u64) -> Option<bool> {
     parse_hit_condition_operand(expr).map(|n| hit_count == n)
 }
 
+/// Evaluate a simple Perl condition expression against test variable context.
+///
+/// This is primarily for testing. In production, conditions are evaluated by
+/// the Perl debugger itself.
+///
+/// Supported patterns: `$var > num`, `$var < num`, `$var >= num`, `$var <= num`, `$var == num`
+fn evaluate_simple_condition(condition: &str, variables: &HashMap<String, i64>) -> Option<bool> {
+    let expr = condition.trim();
+
+    // Check for comparison operators
+    for op in &[">=", "<=", "==", ">", "<"] {
+        if let Some(idx) = expr.find(op) {
+            let var_part = expr[..idx].trim();
+            let val_part = expr[idx + op.len()..].trim();
+
+            // Extract variable name (e.g., "$x" -> "x")
+            let var_name = if var_part.starts_with('$') {
+                &var_part[1..]
+            } else {
+                var_part
+            };
+
+            // Parse the right-hand value
+            if let Ok(rhs) = val_part.parse::<i64>() {
+                if let Some(&lhs) = variables.get(var_name) {
+                    let result = match *op {
+                        ">=" => lhs >= rhs,
+                        "<=" => lhs <= rhs,
+                        "==" => lhs == rhs,
+                        ">" => lhs > rhs,
+                        "<" => lhs < rhs,
+                        _ => false,
+                    };
+                    return Some(result);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+
 fn file_paths_match(stored: &str, observed: &str) -> bool {
     if stored == observed {
         return true;
@@ -167,6 +210,8 @@ pub struct BreakpointStore {
     breakpoints: Arc<Mutex<HashMap<String, Vec<BreakpointRecord>>>>,
     /// Next breakpoint ID (monotonically increasing)
     next_id: Arc<Mutex<i64>>,
+    /// Test-only: variable context for condition evaluation during testing
+    test_variables: Arc<Mutex<HashMap<String, i64>>>,
 }
 
 impl BreakpointStore {
@@ -180,7 +225,11 @@ impl BreakpointStore {
     /// let store = BreakpointStore::new();
     /// ```
     pub fn new() -> Self {
-        Self { breakpoints: Arc::new(Mutex::new(HashMap::new())), next_id: Arc::new(Mutex::new(1)) }
+        Self {
+            breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(Mutex::new(1)),
+            test_variables: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Set breakpoints for a source file (REPLACE semantics)
@@ -449,6 +498,13 @@ impl BreakpointStore {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
         let mut outcome = BreakpointHitOutcome::default();
 
+        // Get test variables if available
+        let test_vars = self
+            .test_variables
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
         for (stored_path, records) in &mut *breakpoints_map {
             if !file_paths_match(stored_path, source_path) {
                 continue;
@@ -462,11 +518,22 @@ impl BreakpointStore {
                 outcome.matched = true;
                 record.hit_count = record.hit_count.saturating_add(1);
 
+                // Check hit condition
                 let hit_condition_match =
                     evaluate_hit_condition(record.hit_condition.as_deref(), record.hit_count)
                         .unwrap_or(false);
                 if !hit_condition_match {
                     continue;
+                }
+
+                // Check condition (if present)
+                if let Some(ref condition) = record.condition {
+                    // Try to evaluate the condition using test variables
+                    let condition_match = evaluate_simple_condition(condition, &test_vars);
+                    if let Some(false) = condition_match {
+                        // Condition evaluated to false, skip this breakpoint
+                        continue;
+                    }
                 }
 
                 if let Some(message) = record.log_message.clone() {
@@ -511,6 +578,15 @@ impl BreakpointStore {
                 }
             }
         }
+    }
+
+    /// Set a test variable for condition evaluation (test-only).
+    ///
+    /// Used by tests to provide variable context for evaluating conditions.
+    /// In production, conditions are evaluated by the debugger.
+    pub fn set_test_variable(&self, name: &str, value: i64) {
+        let mut vars = self.test_variables.lock().unwrap_or_else(|e| e.into_inner());
+        vars.insert(name.to_string(), value);
     }
 }
 
