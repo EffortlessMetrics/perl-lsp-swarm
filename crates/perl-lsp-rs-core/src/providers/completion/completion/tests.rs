@@ -3681,6 +3681,62 @@ fn workspace_variable_completion_auto_imports_module() -> Result<(), Box<dyn std
 }
 
 #[test]
+fn qualified_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+    // Qualified `Foo::bar` completions are served by add_package_completions
+    // (the `::` path), not add_workspace_symbol_completions. Observe that this
+    // path auto-imports the unimported defining module.
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nsub barley { }\n1;\n".to_string(),
+    )?;
+    let code = "use strict;\nFoo::bar";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    if let Some(item) = completions.iter().find(|c| c.label.contains("barley")) {
+        let edit_text = item.additional_edits.first().map(|(_, t)| t.as_str()).unwrap_or("");
+        assert_eq!(
+            edit_text, "use Foo;\n",
+            "qualified subroutine completion must auto-insert `use Foo;`; got: {:?}",
+            item.additional_edits
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn unknown_receiver_fallback_completion_observes_auto_import_seam()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Drive the unknown-receiver method fallback so its auto-import seam is
+    // observed. `Foo` is already imported, so the fallback completion carries
+    // no duplicate `use Foo;` edit.
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///workspace/Foo.pm")?,
+        "package Foo;\nsub bark { }\n1;\n".to_string(),
+    )?;
+    let code = "use Foo;\n1;\n$obj->";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let bark = completions
+        .iter()
+        .find(|c| c.label == "bark")
+        .ok_or("unknown-receiver fallback should surface Foo::bark")?;
+    assert!(
+        bark.additional_edits.is_empty(),
+        "fallback completion for an already-imported package must not add a use edit; got: {:?}",
+        bark.additional_edits
+    );
+    Ok(())
+}
+
+#[test]
 fn test_require_statement_triggers_module_completion() -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(Url::parse("file:///lib/Utils.pm")?, "package Utils;\n1;\n".to_string())?;
