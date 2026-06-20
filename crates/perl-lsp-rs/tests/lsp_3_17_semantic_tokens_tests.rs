@@ -54,3 +54,35 @@ fn test_semantic_tokens_range_3_17() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn test_semantic_tokens_delta_3_17() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+    harness.open("file:///test.pl", "package Foo;\nsub bar { my $var = 1; }")?;
+
+    // First, request full tokens to get a result ID
+    let full_response = harness.request(
+        "textDocument/semanticTokens/full",
+        json!({
+            "textDocument": { "uri": "file:///test.pl" }
+        }),
+    )?;
+
+    // Extract resultId from the full response (should be present if delta is supported)
+    let result_id = full_response.get("resultId").and_then(|v| v.as_str());
+
+    // Now request delta (this should succeed, either with delta result or an error if not supported)
+    let delta_response = harness.request(
+        "textDocument/semanticTokens/delta",
+        json!({
+            "textDocument": { "uri": "file:///test.pl" },
+            "previousResultId": result_id.unwrap_or("1")
+        }),
+    );
+
+    // The handler should exist and respond (either with delta data or an error code)
+    // It should NOT hang or be missing
+    assert!(delta_response.is_ok(), "Delta handler should exist and respond");
+    Ok(())
+}

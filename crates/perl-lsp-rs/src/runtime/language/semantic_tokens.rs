@@ -448,6 +448,36 @@ impl LspServer {
             "data": []
         })))
     }
+
+    /// Handle textDocument/semanticTokens/delta request
+    ///
+    /// Per LSP spec, clients may request delta-encoded token updates if the server
+    /// advertises delta support. This is a stub implementation that returns the full
+    /// token set rather than computing a true delta. Clients will handle the delta
+    /// computation using the resultId from previous requests.
+    ///
+    /// For a full delta implementation, the server would need to:
+    /// - Track previous token results with a resultId hash
+    /// - Compute the difference between the previous and current result
+    /// - Return only the changed tokens in delta format
+    pub(crate) fn handle_semantic_tokens_delta(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        if let Some(params) = params {
+            let uri = req_uri(&params)?;
+
+            tracing::debug!(uri, "Getting semantic tokens delta");
+
+            // For now, return the full tokens. A full implementation would compute
+            // the delta based on the previousResultId and return a delta response.
+            // Clients that receive a full response when they request delta will
+            // fall back to full token processing.
+            self.handle_semantic_tokens(params.into())
+        } else {
+            Ok(Some(json!({ "data": [] })))
+        }
+    }
 }
 
 fn filter_encoded_semantic_tokens_by_range(
