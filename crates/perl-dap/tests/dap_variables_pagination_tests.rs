@@ -19,12 +19,10 @@ fn make_variable(name: &str) -> ProtocolVariable {
 /// When `total_variables` is `Some(n)`, the serialized JSON must include
 /// `"totalVariables": n`.
 #[test]
-fn variables_response_body_total_variables_present_when_some(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let body = VariablesResponseBody {
-        variables: vec![make_variable("$x")],
-        total_variables: Some(42),
-    };
+fn variables_response_body_total_variables_present_when_some()
+-> Result<(), Box<dyn std::error::Error>> {
+    let body =
+        VariablesResponseBody { variables: vec![make_variable("$x")], total_variables: Some(42) };
 
     let json = serde_json::to_string(&body)?;
     let parsed: serde_json::Value = serde_json::from_str(&json)?;
@@ -39,12 +37,10 @@ fn variables_response_body_total_variables_present_when_some(
 /// field as optional; emitting `null` is semantically wrong and confuses
 /// clients that use presence-checks for pagination UI.
 #[test]
-fn variables_response_body_total_variables_absent_when_none(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let body = VariablesResponseBody {
-        variables: vec![make_variable("$y")],
-        total_variables: None,
-    };
+fn variables_response_body_total_variables_absent_when_none()
+-> Result<(), Box<dyn std::error::Error>> {
+    let body =
+        VariablesResponseBody { variables: vec![make_variable("$y")], total_variables: None };
 
     let json = serde_json::to_string(&body)?;
     let parsed: serde_json::Value = serde_json::from_str(&json)?;
@@ -58,8 +54,8 @@ fn variables_response_body_total_variables_absent_when_none(
 
 /// Round-trip serde: a body with `totalVariables` deserializes correctly.
 #[test]
-fn variables_response_body_round_trip_with_total_variables(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn variables_response_body_round_trip_with_total_variables()
+-> Result<(), Box<dyn std::error::Error>> {
     let original = VariablesResponseBody {
         variables: vec![make_variable("$a"), make_variable("$b"), make_variable("$c")],
         total_variables: Some(150),
