@@ -1454,9 +1454,10 @@ impl DebugAdapter {
 
     /// Handle configurationDone request
     pub(super) fn handle_configuration_done(&self, seq: i64, request_seq: i64) -> DapMessage {
-        // Validate state machine: launch (or attach) must be called before configurationDone
-        let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
-        let has_session = session_guard.is_some();
+        // Validate state machine: launch (or attach) must be called before configurationDone.
+        // NOTE: Each lock_or_recover call must complete and drop its guard before the next one
+        // to avoid re-entrancy deadlock on std::sync::Mutex (which is non-reentrant).
+        let has_session = lock_or_recover(&self.session, "debug_adapter.session").is_some();
         let has_attached_pid =
             lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid").is_some();
         let has_tcp_session =
