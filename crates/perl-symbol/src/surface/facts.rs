@@ -73,6 +73,7 @@ pub fn symbol_refs_to_semantic_facts(
             &symbol_ref.qualified_name,
             anchor_span.0,
             anchor_span.1,
+            file_id,
         ));
         anchors.push(AnchorFact {
             id: anchor_id,
@@ -90,6 +91,7 @@ pub fn symbol_refs_to_semantic_facts(
             &symbol_ref.qualified_name,
             symbol_ref.full_span.0,
             symbol_ref.full_span.1,
+            file_id,
         ));
         occurrences.push(OccurrenceFact {
             id: occurrence_id,
@@ -103,13 +105,18 @@ pub fn symbol_refs_to_semantic_facts(
 
         if let Some(to_entity_id) = entity_id {
             let from_entity_id =
-                EntityId(stable_id("ref-source", &symbol_ref.qualified_name, 0, 0));
+                // IMPORTANT: file-neutral sentinel (FileId(0)) — this synthetic "ref-source"
+                // entity acts as the "from" node for cross-file References edges and must
+                // resolve to the same ID regardless of which file the reference appears in.
+                // Do NOT change this to use `file_id`. See plan-review Risk 1 in #1600.
+                EntityId(stable_id("ref-source", &symbol_ref.qualified_name, 0, 0, FileId(0)));
             reference_edges.push(EdgeFact {
                 id: EdgeId(stable_id(
                     "references",
                     &symbol_ref.qualified_name,
                     from_entity_id.0 as usize,
                     to_entity_id.0 as usize,
+                    file_id,
                 )),
                 kind: EdgeKind::References,
                 from_entity_id,
@@ -178,8 +185,13 @@ pub fn symbol_decls_to_semantic_facts(
         };
 
         let anchor_span = decl.anchor_span.unwrap_or(decl.full_span);
-        let anchor_id =
-            AnchorId(stable_id("anchor", &decl.qualified_name, anchor_span.0, anchor_span.1));
+        let anchor_id = AnchorId(stable_id(
+            "anchor",
+            &decl.qualified_name,
+            anchor_span.0,
+            anchor_span.1,
+            file_id,
+        ));
         anchors.push(AnchorFact {
             id: anchor_id,
             file_id,
@@ -190,8 +202,13 @@ pub fn symbol_decls_to_semantic_facts(
             confidence: Confidence::High,
         });
 
-        let entity_id =
-            EntityId(stable_id("entity", &decl.qualified_name, decl.full_span.0, decl.full_span.1));
+        let entity_id = EntityId(stable_id(
+            "entity",
+            &decl.qualified_name,
+            decl.full_span.0,
+            decl.full_span.1,
+            file_id,
+        ));
         entity_by_name.insert(decl.qualified_name.clone(), entity_id);
         entities.push(EntityFact {
             id: entity_id,
@@ -247,6 +264,7 @@ pub fn symbol_decls_to_semantic_facts(
             &decl.qualified_name,
             from_entity_id.0 as usize,
             to_entity_id.0 as usize,
+            file_id,
         ));
         defines_edges.push(EdgeFact {
             id: edge_id,
@@ -276,7 +294,19 @@ fn symbol_kind_to_entity_kind(kind: SymbolKind) -> Option<EntityKind> {
     }
 }
 
-fn stable_id(namespace: &str, name: &str, start: usize, end: usize) -> u64 {
+/// Compute a file-scoped stable ID by hashing namespace, name, span, and
+/// the [`FileId`] of the containing file.
+///
+/// Including `file_id` in the hash ensures that two files with identical
+/// content and byte offsets produce distinct IDs for the same qualified name,
+/// preventing collision in multi-root workspaces.
+///
+/// **Exception — file-neutral pointers**: callers that need a cross-file
+/// stable ID (e.g. the synthetic `ref-source` entity that acts as the
+/// "from" node for a `References` edge) should pass `FileId(0)` as a
+/// sentinel so that all files agree on the same entity ID for the same
+/// qualified name.
+fn stable_id(namespace: &str, name: &str, start: usize, end: usize, file_id: FileId) -> u64 {
     let mut hash = 14695981039346656037u64;
     for byte in namespace
         .as_bytes()
@@ -286,6 +316,8 @@ fn stable_id(namespace: &str, name: &str, start: usize, end: usize) -> u64 {
         .chain([0xff].iter())
         .chain(start.to_le_bytes().iter())
         .chain(end.to_le_bytes().iter())
+        .chain([0xff].iter())
+        .chain(file_id.0.to_le_bytes().iter())
     {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(1099511628211);
