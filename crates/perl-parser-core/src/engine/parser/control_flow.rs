@@ -570,47 +570,39 @@ impl<'a> Parser<'a> {
     ///   Forms: `goto &name`, `goto &Pkg::name`, `goto &$coderef`.
     /// - `goto EXPR`   — dynamic target; all other forms (variables, expressions).
     ///
-    /// The `form` field is populated by peeking at the first token of the target
-    /// **before** consuming it, so the caller never has to inspect the target's node kind.
+    /// The `form` field is determined by a two-phase approach:
+    /// 1. Peek at the first token to detect `&` (which always means Sub form) or
+    ///    a plain Identifier (which may be Label, but could be part of a larger expression).
+    /// 2. For the plain-Identifier case, inspect the fully-parsed target to distinguish
+    ///    Label (plain Identifier node) from Expr (complex expression like `E . $suffix`).
     fn parse_goto(&mut self) -> ParseResult<Node> {
         let start = self.consume_token()?.start; // consume 'goto'
         self.mark_not_stmt_start();
 
-        // Detect the goto form by peeking at the first token of the target expression.
-        //
-        // `goto &sub` (any ampersand-prefixed form) → Sub (frame replacement)
-        // `goto LABEL` (bare plain identifier, no sigil prefix) → Label
-        // Everything else (sigil variables, computed expressions) → Expr
-        //
-        // NOTE: We peek rather than post-hoc classify the target node kind to avoid
-        // coupling downstream consumers to the internal representation of the target.
-        //
-        // The lexer may emit variables as a single `Identifier` token with text starting
-        // with a sigil character (e.g., `$target` → `Identifier("$target")`). We must
-        // distinguish these from bare label identifiers (no leading sigil).
-        let form = match self.peek_kind() {
-            Some(TokenKind::BitwiseAnd) => GotoTargetForm::Sub,
-            Some(TokenKind::Identifier) => {
-                // Bare identifier with no leading sigil → Label.
-                // Identifier with a leading '$', '@', or '%' is a variable → Expr.
-                let is_plain_label = self
-                    .tokens
-                    .peek()
-                    .ok()
-                    .is_some_and(|tok| !tok.text.starts_with(['$', '@', '%']));
-                if is_plain_label {
-                    GotoTargetForm::Label
-                } else {
-                    GotoTargetForm::Expr
-                }
-            }
-            _ => GotoTargetForm::Expr,
-        };
+        // Phase 1: Quick detection of & (always Sub form)
+        let starts_with_ampersand = self.peek_kind() == Some(TokenKind::BitwiseAnd);
 
         // Parse the target as an assignment-level expression (not full comma
         // expression) to avoid consuming surrounding list separators.
         let target = self.parse_assignment()?;
         let end = target.location.end;
+
+        // Phase 2: Determine form based on parsed target (and whether it started with &)
+        let form = if starts_with_ampersand {
+            // Leading & always means Sub form (goto &foo, goto &$var, goto &{ code })
+            GotoTargetForm::Sub
+        } else {
+            // No leading &, so classify based on target node kind
+            match &target.kind {
+                // Plain identifier → Label form (goto LABEL)
+                NodeKind::Identifier { name } if !name.starts_with(['$', '@', '%']) => {
+                    GotoTargetForm::Label
+                }
+                // Everything else → Expr form (variables, function calls, expressions, etc.)
+                _ => GotoTargetForm::Expr,
+            }
+        };
+
         Ok(Node::new(
             NodeKind::Goto { target: Box::new(target), form },
             SourceLocation { start, end },

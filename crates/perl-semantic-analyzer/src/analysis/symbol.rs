@@ -1035,10 +1035,17 @@ impl SymbolExtractor {
                 GotoTargetForm::Sub => {
                     // goto &sub — frame replacement (tail call); record a subroutine reference
                     // so that find-references and call-hierarchy can trace the tail-call edge.
-                    // The target is a FunctionCall node (produced by the & sigil handler);
-                    // extract the name directly from it.
+                    // The target may be:
+                    //   - FunctionCall { name: "foo", .. } for goto &foo or goto &Pkg::bar
+                    //   - FunctionCall { name: "$dispatch", .. } for goto &$var (NOT a subroutine ref)
+                    //   - Unary { op: "&{}", .. } for goto &{ code } (NOT a subroutine ref)
+                    // Only record a subroutine reference for FunctionCall with a plain name
+                    // (no leading sigil), which indicates a real named subroutine.
                     match &target.kind {
-                        NodeKind::FunctionCall { name, .. } => {
+                        NodeKind::FunctionCall { name, .. }
+                            if !name.is_empty() && !name.starts_with(['$', '@', '%']) =>
+                        {
+                            // Real named subroutine: goto &foo or goto &Pkg::bar
                             self.table.add_reference(SymbolReference {
                                 name: name.clone(),
                                 kind: SymbolKind::Subroutine,
@@ -1047,6 +1054,8 @@ impl SymbolExtractor {
                                 is_write: false,
                             });
                         }
+                        // goto &$var or goto &{ code }: not a named subroutine reference,
+                        // but visit the target to record variable uses or other references
                         _ => self.visit_node(target),
                     }
                 }
