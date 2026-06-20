@@ -1303,6 +1303,69 @@ mod tests {
             payload.get("workspace_root_hash").and_then(serde_json::Value::as_str).is_some(),
             "workspace identity must be represented by a hash"
         );
+        // PLSP-SPEC-0016: `blocker` and `claim_boundary` are explanation-level fields only;
+        // they are absent from the copyable_payload schema and must not appear there.
+        assert!(
+            payload.get("blocker").is_none(),
+            "blocker must not appear in copyable_payload — it is explanation-level only"
+        );
+        assert!(
+            payload.get("claim_boundary").is_none(),
+            "claim_boundary must not appear in copyable_payload — it is explanation-level only"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn provider_decision_blocker_not_leaked_into_copyable_payload() -> TestResult {
+        // Regression guard: when an explanation carries a blocker and claim_boundary,
+        // from_explanation must NOT copy them into the copyable payload.
+        // The copyable_payload schema does not define these fields, so they must
+        // remain absent even when the parent explanation has them set.
+        let explanation = ProviderDecisionExplanation::new(
+            ProviderDecisionProvider::Rename,
+            ProviderDecisionOutcome::Blocked,
+            ProviderDecisionReason::DynamicBoundary,
+            ProviderDecisionFactSource::DynamicBoundary,
+            ProviderDecisionConfidence::Low,
+            ProviderDecisionFreshness::Unknown,
+            true,
+            ProviderDecisionFallback::NoEdit,
+        )
+        .with_blocker(ProviderDecisionBlocker::TypeglobAlias)
+        .with_claim_boundary("rename is blocked at typeglob alias boundaries");
+
+        // Confirm the explanation itself carries the fields.
+        assert_eq!(explanation.blocker, Some(ProviderDecisionBlocker::TypeglobAlias));
+        assert!(explanation.claim_boundary.is_some());
+
+        let payload = ProviderDecisionCopyablePayload::from_explanation(
+            &explanation,
+            "0.16.0",
+            "single_root",
+            None,
+            None,
+            "docs/project/status/SUPPORT_TIERS.md#claim-rows",
+        );
+        let payload_value = serde_json::to_value(&payload)?;
+
+        assert!(
+            payload_value.get("blocker").is_none(),
+            "blocker must not be copied into copyable_payload by from_explanation"
+        );
+        assert!(
+            payload_value.get("claim_boundary").is_none(),
+            "claim_boundary must not be copied into copyable_payload by from_explanation"
+        );
+        // Core fields must still be present and correct.
+        assert_eq!(
+            payload_value.get("provider").and_then(serde_json::Value::as_str),
+            Some("rename")
+        );
+        assert_eq!(
+            payload_value.get("decision").and_then(serde_json::Value::as_str),
+            Some("blocked")
+        );
         Ok(())
     }
 }
