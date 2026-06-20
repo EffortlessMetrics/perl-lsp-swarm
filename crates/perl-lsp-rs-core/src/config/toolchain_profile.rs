@@ -25,6 +25,9 @@
 //! [`PerlOracleEnv`]: super::PerlOracleEnv
 //! [`resolve_perl_path_with_toolchain`]: crate::platform::resolve_perl_path_with_toolchain
 
+// On WASM, `resolve` always returns `None` and a `PerlToolchainProfile` is
+// therefore never constructed, leaving `perl_binary` provably unread. Silence
+// the resulting dead-code lint rather than littering each field with `cfg`.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 use std::path::{Path, PathBuf};
@@ -115,7 +118,7 @@ mod tests {
     /// An empty-string `perl_path` is treated as unset and falls through to the
     /// toolchain resolver (matching `.filter(|p| !p.is_empty())`).
     #[test]
-    fn resolve_treats_empty_perl_path_as_unset() {
+    fn resolve_treats_empty_perl_path_as_unset() -> TestResult {
         let config =
             WorkspaceConfig { perl_path: Some(String::new()), ..WorkspaceConfig::default() };
 
@@ -124,6 +127,7 @@ mod tests {
         if let Some(profile) = PerlToolchainProfile::resolve(&config) {
             assert_ne!(profile.perl_binary(), Path::new(""));
         }
+        Ok(())
     }
 
     /// `into_perl_binary` returns the same path that `perl_binary` borrows.
