@@ -1862,3 +1862,235 @@ fn wire_range_serde_empty_range() -> Result<(), serde_json::Error> {
     assert_eq!(back.start, back.end);
     Ok(())
 }
+
+// ─── LineStartsCache: UTF-16 Mid-Surrogate Clamping Tests ─────────────────────
+// These tests verify that mid-surrogate positions are clamped to character start,
+// matching the behavior of PositionMapper::lsp_pos_to_byte (issue #1853).
+
+#[test]
+fn test_line_starts_cache_position_to_offset_mid_surrogate_clamp() {
+    // Test mid-surrogate clamping in position_to_offset with string input.
+    // Text layout: 'a' (1 UTF-16 unit) + '😀' (2 UTF-16 units) + 'b' (1 UTF-16 unit)
+    // Byte layout: 'a' (1 byte) + '😀' (4 bytes) + 'b' (1 byte)
+    let text = "a😀b";
+    let cache = LineStartsCache::new(text);
+
+    // UTF-16 column 0: 'a' at byte 0
+    assert_eq!(cache.position_to_offset(text, 0, 0), 0);
+
+    // UTF-16 column 1: start of '😀' at byte 1
+    assert_eq!(cache.position_to_offset(text, 0, 1), 1);
+
+    // UTF-16 column 2: mid-surrogate inside '😀'; must clamp to byte 1
+    // (Currently fails — returns byte 5 before fix)
+    assert_eq!(cache.position_to_offset(text, 0, 2), 1);
+
+    // UTF-16 column 3: start of 'b' at byte 5
+    assert_eq!(cache.position_to_offset(text, 0, 3), 5);
+
+    // UTF-16 column 4: end of line at byte 6
+    assert_eq!(cache.position_to_offset(text, 0, 4), 6);
+}
+
+#[test]
+fn test_line_starts_cache_position_to_offset_rope_mid_surrogate_clamp() {
+    // Test mid-surrogate clamping in position_to_offset_rope with rope input.
+    use ropey::Rope;
+
+    let text = "a😀b";
+    let rope = Rope::from_str(text);
+    let cache = LineStartsCache::new_rope(&rope);
+
+    // UTF-16 column 0: 'a' at byte 0
+    assert_eq!(cache.position_to_offset_rope(&rope, 0, 0), 0);
+
+    // UTF-16 column 1: start of '😀' at byte 1
+    assert_eq!(cache.position_to_offset_rope(&rope, 0, 1), 1);
+
+    // UTF-16 column 2: mid-surrogate inside '😀'; must clamp to byte 1
+    // (Currently fails — returns byte 5 before fix)
+    assert_eq!(cache.position_to_offset_rope(&rope, 0, 2), 1);
+
+    // UTF-16 column 3: start of 'b' at byte 5
+    assert_eq!(cache.position_to_offset_rope(&rope, 0, 3), 5);
+
+    // UTF-16 column 4: end of line at byte 6
+    assert_eq!(cache.position_to_offset_rope(&rope, 0, 4), 6);
+}
+
+#[test]
+fn test_line_starts_cache_consecutive_surrogates() {
+    // Test consecutive surrogate pairs: "💖💖"
+    // Each emoji spans 2 UTF-16 units and 4 bytes.
+    let text = "💖💖";
+    let cache = LineStartsCache::new(text);
+
+    // UTF-16 column 0: start of first emoji at byte 0
+    assert_eq!(cache.position_to_offset(text, 0, 0), 0);
+
+    // UTF-16 column 1: mid-surrogate in first emoji; clamp to byte 0
+    assert_eq!(cache.position_to_offset(text, 0, 1), 0);
+
+    // UTF-16 column 2: start of second emoji at byte 4
+    assert_eq!(cache.position_to_offset(text, 0, 2), 4);
+
+    // UTF-16 column 3: mid-surrogate in second emoji; clamp to byte 4
+    assert_eq!(cache.position_to_offset(text, 0, 3), 4);
+
+    // UTF-16 column 4: end of line at byte 8
+    assert_eq!(cache.position_to_offset(text, 0, 4), 8);
+}
+
+#[test]
+fn test_line_starts_cache_mixed_bmp_supplementary() {
+    // Test mixed BMP and supplementary characters.
+    // Text: "aé💖ñ🎉b"
+    // 'a' = 1 byte, 1 UTF-16 unit
+    // 'é' = 2 bytes, 1 UTF-16 unit (BMP)
+    // '💖' = 4 bytes, 2 UTF-16 units (supplementary)
+    // 'ñ' = 2 bytes, 1 UTF-16 unit (BMP)
+    // '🎉' = 4 bytes, 2 UTF-16 units (supplementary)
+    // 'b' = 1 byte, 1 UTF-16 unit
+    let text = "aé💖ñ🎉b";
+    let cache = LineStartsCache::new(text);
+
+    // Column 0: 'a' at byte 0
+    assert_eq!(cache.position_to_offset(text, 0, 0), 0);
+    // Column 1: 'é' at byte 1
+    assert_eq!(cache.position_to_offset(text, 0, 1), 1);
+    // Column 2: '💖' at byte 3
+    assert_eq!(cache.position_to_offset(text, 0, 2), 3);
+    // Column 3: mid-surrogate in '💖'; clamp to byte 3
+    assert_eq!(cache.position_to_offset(text, 0, 3), 3);
+    // Column 4: 'ñ' at byte 7
+    assert_eq!(cache.position_to_offset(text, 0, 4), 7);
+    // Column 5: '🎉' at byte 9
+    assert_eq!(cache.position_to_offset(text, 0, 5), 9);
+    // Column 6: mid-surrogate in '🎉'; clamp to byte 9
+    assert_eq!(cache.position_to_offset(text, 0, 6), 9);
+    // Column 7: 'b' at byte 13
+    assert_eq!(cache.position_to_offset(text, 0, 7), 13);
+}
+
+#[test]
+fn test_line_starts_cache_max_unicode() {
+    // Test max Unicode code point U+10FFFF (requires surrogate pair in UTF-16).
+    let max_char = '\u{10FFFF}';
+    let text = format!("a{max_char}b");
+    let cache = LineStartsCache::new(&text);
+
+    // Column 0: 'a' at byte 0
+    assert_eq!(cache.position_to_offset(&text, 0, 0), 0);
+    // Column 1: U+10FFFF at byte 1
+    assert_eq!(cache.position_to_offset(&text, 0, 1), 1);
+    // Column 2: mid-surrogate in U+10FFFF; clamp to byte 1
+    assert_eq!(cache.position_to_offset(&text, 0, 2), 1);
+    // Column 3: 'b' at byte 5
+    assert_eq!(cache.position_to_offset(&text, 0, 3), 5);
+}
+
+#[test]
+fn test_line_starts_cache_zero_length() {
+    // Test empty string; should not panic.
+    let text = "";
+    let cache = LineStartsCache::new(text);
+
+    // Any column on empty text should return byte 0
+    assert_eq!(cache.position_to_offset(text, 0, 0), 0);
+    assert_eq!(cache.position_to_offset(text, 0, 1), 0);
+    assert_eq!(cache.position_to_offset(text, 0, 10), 0);
+}
+
+#[test]
+fn test_line_starts_cache_parity_with_mapper() {
+    // Test that LineStartsCache::position_to_offset and PositionMapper::lsp_pos_to_byte
+    // produce identical byte offsets for all valid UTF-16 columns.
+    let text = "a😀b💖c";
+    let cache = LineStartsCache::new(text);
+    let mapper = PositionMapper::new(text);
+
+    // Iterate through all meaningful UTF-16 columns (including mid-surrogates).
+    for col in 0..10 {
+        let cache_offset = cache.position_to_offset(text, 0, col);
+        let mapper_offset = mapper
+            .lsp_pos_to_byte(WirePosition {
+                line: 0,
+                character: col,
+            })
+            .unwrap_or(text.len());
+
+        assert_eq!(
+            cache_offset, mapper_offset,
+            "Parity failure at column {}: cache={}, mapper={}",
+            col, cache_offset, mapper_offset
+        );
+    }
+}
+
+#[test]
+fn test_line_starts_cache_back_to_back_supplementary() {
+    // Test back-to-back supplementary characters: "🔥💧🎉"
+    let text = "🔥💧🎉";
+    let cache = LineStartsCache::new(text);
+    let mapper = PositionMapper::new(text);
+
+    // Every column 0..7 (covering all 3 emojis and their mid-surrogates)
+    for col in 0..8 {
+        let cache_offset = cache.position_to_offset(text, 0, col);
+        let mapper_offset = mapper
+            .lsp_pos_to_byte(WirePosition {
+                line: 0,
+                character: col,
+            })
+            .unwrap_or(text.len());
+
+        assert_eq!(
+            cache_offset, mapper_offset,
+            "Back-to-back surrogate pair parity failure at column {}: cache={}, mapper={}",
+            col, cache_offset, mapper_offset
+        );
+    }
+}
+
+#[test]
+fn test_line_starts_cache_crlf_with_surrogates() {
+    // Test CRLF line endings with surrogate pairs.
+    let text = "a😀\r\nb💖c";
+    let cache = LineStartsCache::new(text);
+    let mapper = PositionMapper::new(text);
+
+    // Line 0: "a😀"
+    // UTF-16: 'a'=1 unit, '😀'=2 units
+    for col in 0..5 {
+        let cache_offset = cache.position_to_offset(text, 0, col);
+        let mapper_offset = mapper
+            .lsp_pos_to_byte(WirePosition {
+                line: 0,
+                character: col,
+            })
+            .unwrap_or(text.len());
+
+        assert_eq!(
+            cache_offset, mapper_offset,
+            "CRLF line 0 column {}: cache={}, mapper={}",
+            col, cache_offset, mapper_offset
+        );
+    }
+
+    // Line 1: "b💖c"
+    for col in 0..6 {
+        let cache_offset = cache.position_to_offset(text, 1, col);
+        let mapper_offset = mapper
+            .lsp_pos_to_byte(WirePosition {
+                line: 1,
+                character: col,
+            })
+            .unwrap_or(text.len());
+
+        assert_eq!(
+            cache_offset, mapper_offset,
+            "CRLF line 1 column {}: cache={}, mapper={}",
+            col, cache_offset, mapper_offset
+        );
+    }
+}
