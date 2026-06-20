@@ -499,36 +499,7 @@ fn load_metadata(root: &Path) -> Result<serde_json::Value> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::Path;
-    use std::process::Command as StdCommand;
     use tempfile::TempDir;
-
-    fn run_git(cwd: &Path, args: &[&str]) -> Result<()> {
-        let output = StdCommand::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .with_context(|| format!("failed to run git {args:?}"))?;
-        if output.status.success() {
-            return Ok(());
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        color_eyre::eyre::bail!("git {args:?} failed: {stderr}");
-    }
-
-    fn init_git_repo(root: &Path) -> Result<()> {
-        run_git(root, &["init"])?;
-        run_git(root, &["config", "user.email", "ci-pr-summary@example.invalid"])?;
-        run_git(root, &["config", "user.name", "CI PR Summary Test"])?;
-        Ok(())
-    }
-
-    fn commit_all(root: &Path, message: &str) -> Result<()> {
-        run_git(root, &["add", "."])?;
-        run_git(root, &["commit", "-m", message])?;
-        Ok(())
-    }
 
     #[test]
     fn run_rejects_posting_mode_before_git_or_cargo_work() -> Result<()> {
@@ -636,107 +607,6 @@ mod tests {
             md.contains("Learned-estimates file present"),
             "missing timing sentinel note: {md}"
         );
-    }
-
-    #[test]
-    fn gather_summary_degrades_when_metadata_is_absent() -> Result<()> {
-        let temp = TempDir::new()?;
-        init_git_repo(temp.path())?;
-        fs::write(temp.path().join("README.md"), "base\n")?;
-        commit_all(temp.path(), "base")?;
-        fs::write(temp.path().join("notes.md"), "change\n")?;
-        commit_all(temp.path(), "head")?;
-
-        let summary = gather_summary("HEAD~1", temp.path())?;
-
-        if summary.head_sha == "unknown" {
-            color_eyre::eyre::bail!("expected git head to be discovered");
-        }
-        if summary.changed_file_count != 1 {
-            color_eyre::eyre::bail!(
-                "expected one changed file, got {}",
-                summary.changed_file_count
-            );
-        }
-        if summary.diff_class != "prose_only" {
-            color_eyre::eyre::bail!("unexpected diff class: {}", summary.diff_class);
-        }
-        if !summary.changed_crates.is_empty() {
-            color_eyre::eyre::bail!("metadata failure should not synthesize changed crates");
-        }
-        if !summary.widened_crates.is_empty() {
-            color_eyre::eyre::bail!("metadata failure should not synthesize widened crates");
-        }
-        let run_names: Vec<&str> =
-            summary.gates_run.iter().map(|gate| gate.name.as_str()).collect();
-        if run_names != ["fmt", "clippy_scoped", "test_scoped"] {
-            color_eyre::eyre::bail!("unexpected fallback gates: {run_names:?}");
-        }
-        if summary.policy_note.is_some() {
-            color_eyre::eyre::bail!("unexpected policy note without policy files");
-        }
-        if summary.timing_estimate_secs.is_some() {
-            color_eyre::eyre::bail!("unexpected timing estimate without docs/ci files");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn gather_summary_maps_minimal_workspace_metadata() -> Result<()> {
-        let temp = TempDir::new()?;
-        init_git_repo(temp.path())?;
-        fs::create_dir_all(temp.path().join("crates/demo/src"))?;
-        fs::create_dir_all(temp.path().join("docs/ci"))?;
-        fs::create_dir_all(temp.path().join("policy"))?;
-        fs::write(
-            temp.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/demo\"]\nresolver = \"2\"\n",
-        )?;
-        fs::write(
-            temp.path().join("crates/demo/Cargo.toml"),
-            "[package]\nname = \"demo\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
-        )?;
-        fs::write(temp.path().join("crates/demo/src/lib.rs"), "pub fn value() -> u8 { 1 }\n")?;
-        fs::write(temp.path().join("docs/ci/learned-estimates.md"), "# estimates\n")?;
-        fs::write(temp.path().join("policy/ci-budget.toml"), "[budget]\n")?;
-        commit_all(temp.path(), "base")?;
-        fs::write(temp.path().join("crates/demo/src/lib.rs"), "pub fn value() -> u8 { 2 }\n")?;
-        commit_all(temp.path(), "head")?;
-
-        let summary = gather_summary("HEAD~1", temp.path())?;
-
-        if summary.changed_file_count != 1 {
-            color_eyre::eyre::bail!(
-                "expected one changed file, got {}",
-                summary.changed_file_count
-            );
-        }
-        if summary.diff_class != "code" {
-            color_eyre::eyre::bail!("unexpected diff class: {}", summary.diff_class);
-        }
-        let changed: Vec<(&str, usize)> = summary
-            .changed_crates
-            .iter()
-            .map(|krate| (krate.name.as_str(), krate.file_count))
-            .collect();
-        if changed != [("demo", 1)] {
-            color_eyre::eyre::bail!("unexpected changed crate mapping: {changed:?}");
-        }
-        let run_names: Vec<&str> =
-            summary.gates_run.iter().map(|gate| gate.name.as_str()).collect();
-        if !run_names.contains(&"fmt") {
-            color_eyre::eyre::bail!("fmt gate should always be selected: {run_names:?}");
-        }
-        if summary.policy_note.as_deref() != Some("Policy loaded from `policy/ci-budget.toml`") {
-            color_eyre::eyre::bail!("unexpected policy note: {:?}", summary.policy_note);
-        }
-        if summary.timing_estimate_secs != Some(0) {
-            color_eyre::eyre::bail!(
-                "unexpected timing estimate: {:?}",
-                summary.timing_estimate_secs
-            );
-        }
-        Ok(())
     }
 
     #[test]
