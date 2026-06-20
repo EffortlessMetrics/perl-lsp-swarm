@@ -1337,6 +1337,12 @@ mod tests {
                 kind.kind_name()
             );
             assert_eq!(
+                kind.contains_children(),
+                flags.contains_children,
+                "{}: contains_children() != flags.contains_children",
+                kind.kind_name()
+            );
+            assert_eq!(
                 kind.safe_for_breakpoint(),
                 flags.safe_for_breakpoint,
                 "{}: safe_for_breakpoint() != flags.safe_for_breakpoint",
@@ -1447,6 +1453,69 @@ mod tests {
             safe_for_breakpoint: true, // INVALID: recovery AND breakpoint
         };
         assert!(bad.validate().is_err());
+    }
+
+    // ── Test 6.5: contains_children() accessor returns correct values ──────────
+    //
+    // Direct coverage of the new `contains_children()` public accessor method.
+    // Tests leaf variants (expect false) and parent variants (expect true).
+
+    #[test]
+    fn contains_children_accessor_leaf_variants() {
+        // Leaf variants with no Node-typed fields
+        assert!(
+            !NodeKind::Number { value: "42".to_string() }.contains_children(),
+            "Number should not contain children"
+        );
+        assert!(
+            !NodeKind::String { value: "hello".to_string(), interpolated: false }
+                .contains_children(),
+            "String should not contain children"
+        );
+        assert!(
+            !NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }
+                .contains_children(),
+            "Variable should not contain children"
+        );
+        assert!(!NodeKind::Diamond.contains_children(), "Diamond should not contain children");
+        assert!(!NodeKind::Undef.contains_children(), "Undef should not contain children");
+    }
+
+    #[test]
+    fn contains_children_accessor_parent_variants() {
+        // Parent variants with Node-typed fields
+        assert!(
+            NodeKind::Block { statements: vec![leaf()] }.contains_children(),
+            "Block with statements should contain children"
+        );
+        assert!(
+            NodeKind::Program { statements: vec![leaf()] }.contains_children(),
+            "Program should contain children"
+        );
+        assert!(
+            NodeKind::VariableDeclaration {
+                declarator: "my".to_string(),
+                variable: Box::new(leaf()),
+                attributes: vec![],
+                initializer: None,
+            }
+            .contains_children(),
+            "VariableDeclaration with variable should contain children"
+        );
+        assert!(
+            NodeKind::Binary {
+                op: "+".to_string(),
+                left: Box::new(leaf()),
+                right: Box::new(leaf()),
+            }
+            .contains_children(),
+            "Binary should contain children"
+        );
+        assert!(
+            NodeKind::FunctionCall { name: "print".to_string(), args: vec![leaf()] }
+                .contains_children(),
+            "FunctionCall with args should contain children"
+        );
     }
 
     // ── Test 7: contains_children matches the real for_each_child traversal ────
