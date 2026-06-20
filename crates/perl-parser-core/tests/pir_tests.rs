@@ -403,3 +403,112 @@ fn two_consecutive_coderef_calls_each_link_to_their_own_boundary() {
     // Receipt must count two DynamicCallee boundaries.
     assert_eq!(graph.receipt.dynamic_boundary_counts.get("DynamicCallee"), Some(&2));
 }
+
+#[test]
+fn control_flow_branch_shell_is_counted_not_dropped() {
+    // PIR v0 reserves but does not yet lower BranchShell (if/unless block form).
+    // When lowering code with branches, they must be counted in
+    // unsupported_construct_counts so the gap is visible in the receipt, not
+    // silently dropped (per PR #1900's stated scope: "Branch/Loop/Return
+    // reserved but not yet populated").
+    let graph = lower("if (1) { 1 }");
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), Some(&1));
+    // No PIR nodes produced — branches don't lower in v0.
+    assert!(graph.is_empty());
+}
+
+#[test]
+fn control_flow_loop_shell_is_counted_not_dropped() {
+    // PIR v0 reserves but does not yet lower LoopShell (while/for/foreach).
+    let graph = lower("while (1) { last; }");
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), Some(&1));
+    assert!(graph.is_empty());
+}
+
+#[test]
+fn control_flow_control_transfer_is_counted_not_dropped() {
+    // PIR v0 reserves but does not yet lower ControlTransfer (return/next/last/goto).
+    let graph = lower("sub f { return 1; }");
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&1));
+    assert!(graph.is_empty());
+}
+
+#[test]
+fn control_flow_statement_modifier_is_counted_not_dropped() {
+    // PIR v0 reserves but does not yet lower StatementModifierShell
+    // (postfix if/unless/while/etc).
+    let graph = lower("$x = 1 if $y;");
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("StatementModifierShell"), Some(&1));
+    assert!(graph.is_empty());
+}
+
+#[test]
+fn all_four_control_flow_kinds_counted_in_same_fixture() {
+    // Verify that a fixture exercising all four control-flow HIR variants
+    // (BranchShell, LoopShell, ControlTransfer, StatementModifierShell)
+    // correctly counts each distinct occurrence.
+    let graph = lower(
+        r#"
+if (1) { 1 }                    # BranchShell
+while (1) { last; }             # LoopShell + ControlTransfer (in last)
+sub f { return 1; }             # ControlTransfer (in return)
+$x = 1 if $y;                   # StatementModifierShell
+"#,
+    );
+
+    // All four kinds must be present and counted.
+    assert_eq!(
+        graph.receipt.unsupported_construct_counts.get("BranchShell"),
+        Some(&1),
+        "BranchShell count mismatch"
+    );
+    assert_eq!(
+        graph.receipt.unsupported_construct_counts.get("LoopShell"),
+        Some(&1),
+        "LoopShell count mismatch"
+    );
+    // Two ControlTransfers: one from `return 1;` in sub f, one from `last;` in while.
+    assert_eq!(
+        graph.receipt.unsupported_construct_counts.get("ControlTransfer"),
+        Some(&2),
+        "ControlTransfer count mismatch"
+    );
+    assert_eq!(
+        graph.receipt.unsupported_construct_counts.get("StatementModifierShell"),
+        Some(&1),
+        "StatementModifierShell count mismatch"
+    );
+
+    // Graph should be empty because none of these lower to PIR operations in v0.
+    assert!(graph.is_empty(), "graph should have no lowered nodes");
+}
+
+#[test]
+fn unless_block_is_branch_shell() {
+    // `unless` block form (not postfix) lowers to BranchShell, not
+    // StatementModifierShell.
+    let graph = lower("unless (0) { 1 }");
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), Some(&1));
+    assert!(!graph.receipt.unsupported_construct_counts.contains_key("StatementModifierShell"));
+}
+
+#[test]
+fn foreach_loop_is_loop_shell() {
+    // `for my $x (LIST)` and `foreach` forms lower to LoopShell.
+    let graph = lower("for my $x (1..10) { next; }");
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), Some(&1));
+    // `next` is a ControlTransfer.
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&1));
+}
+
+#[test]
+fn multiple_statement_modifiers_each_counted() {
+    // Each postfix modifier is a separate StatementModifierShell node, so they
+    // accumulate in the count.
+    let graph = lower("foo() if 1; bar() unless 0; baz() while $x;");
+    assert_eq!(
+        graph.receipt.unsupported_construct_counts.get("StatementModifierShell"),
+        Some(&3),
+        "expected three postfix modifiers"
+    );
+}
