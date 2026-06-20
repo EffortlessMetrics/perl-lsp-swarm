@@ -32,8 +32,8 @@ fn pragma_hover_links_external_and_virtual_perldoc() {
 }
 
 #[test]
-fn pod_hover_cache_prunes_at_cap_and_evicts_active_document_path()
--> Result<(), Box<dyn std::error::Error>> {
+fn pod_hover_cache_prunes_at_cap_and_evicts_active_document_path(
+) -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
     let dir = tempfile::tempdir()?;
 
@@ -159,10 +159,11 @@ fn resolved_module_hover_links_virtual_perldoc() -> Result<(), Box<dyn std::erro
 
     let workspace_uri =
         url::Url::from_directory_path(&root).map_err(|_| "failed to create workspace URI")?;
-    *server.workspace_folders.lock() = vec![
-        crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
-            .with_path(root.clone()),
-    ];
+    *server.workspace_folders.lock() =
+        vec![crate::runtime::workspace_folder::WorkspaceFolderState::new(
+            workspace_uri.to_string(),
+        )
+        .with_path(root.clone())];
     {
         let mut config = server.workspace_config.lock();
         config.include_paths = vec!["lib".to_string()];
@@ -594,4 +595,238 @@ fn find_phase_block_at_offset_recurses_through_program_to_find_phase_block() {
         None,
         "offset not in any PhaseBlock must return None even when inside Program"
     );
+}
+
+/// Test that external file modification invalidates the POD cache via mtime check.
+/// When a file is modified externally (mtime changes), the cache should return updated POD.
+#[test]
+fn test_pod_cache_external_modification_invalidates_on_mtime_change(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ModuleTest.pm");
+
+    // Write initial POD
+    std::fs::write(
+        &path,
+        "package ModuleTest;\n\n=head1 NAME\n\nModuleTest\n\n=head1 DESCRIPTION\n\nInitial POD.\n\n=cut\n\n1;\n"
+    )?;
+
+    // First hover: cache miss, extract and cache with mtime
+    let hover1 = server.format_pod_for_hover(&path);
+    perl_tdd_support::must(
+        hover1.contains("Initial POD"),
+        "First hover should extract initial POD",
+    );
+
+    // Verify cache entry exists
+    let cache_size_1 = server.memory_state_snapshot().pod_cache_entries;
+    perl_tdd_support::must(
+        cache_size_1 > 0,
+        "Cache should have at least one entry after first hover",
+    );
+
+    // Wait to ensure filesystem mtime granularity, then modify file externally
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(
+        &path,
+        "package ModuleTest;\n\n=head1 NAME\n\nModuleTest\n\n=head1 DESCRIPTION\n\nUpdated POD.\n\n=cut\n\n1;\n"
+    )?;
+
+    // Second hover: mtime differs, should re-extract updated POD
+    let hover2 = server.format_pod_for_hover(&path);
+    perl_tdd_support::must(
+        hover2.contains("Updated POD"),
+        "Second hover should return updated POD after file modification",
+    );
+
+    Ok(())
+}
+
+/// Test that cache returns same entry when mtime matches (fast path).
+#[test]
+fn test_pod_cache_mtime_match_returns_cached_pod() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("CachedModule.pm");
+
+    std::fs::write(
+        &path,
+        "package CachedModule;\n\n=head1 NAME\n\nCachedModule\n\n=head1 DESCRIPTION\n\nStatic POD.\n\n=cut\n\n1;\n"
+    )?;
+
+    // First hover: populates cache
+    let hover1 = server.format_pod_for_hover(&path);
+    let cache_size_1 = server.memory_state_snapshot().pod_cache_entries;
+
+    // Immediate second hover: mtime unchanged, should hit cache and return same content
+    let hover2 = server.format_pod_for_hover(&path);
+    let cache_size_2 = server.memory_state_snapshot().pod_cache_entries;
+
+    perl_tdd_support::must(
+        hover1 == hover2,
+        "Same-file successive hovers should return identical cached POD",
+    );
+    perl_tdd_support::must(
+        cache_size_1 == cache_size_2,
+        "Cache size should not change on mtime-matched access",
+    );
+
+    Ok(())
+}
+
+/// Test that when metadata read fails during cache-hit check (file deleted),
+/// the function gracefully returns cached POD without panicking.
+#[test]
+fn test_pod_cache_mtime_check_failure_returns_cached_gracefully(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("TempModule.pm");
+
+    std::fs::write(
+        &path,
+        "package TempModule;\n\n=head1 NAME\n\nTempModule\n\n=head1 DESCRIPTION\n\nTemporary POD.\n\n=cut\n\n1;\n"
+    )?;
+
+    // First hover: cache the POD
+    let hover1 = server.format_pod_for_hover(&path);
+    perl_tdd_support::must(hover1.contains("Temporary POD"), "First hover should cache POD");
+
+    // Delete file to simulate external deletion
+    std::fs::remove_file(&path)?;
+
+    // Second hover: file is deleted, mtime check fails, should return cached POD gracefully
+    let hover2 = server.format_pod_for_hover(&path);
+    perl_tdd_support::must(
+        hover2.contains("Temporary POD"),
+        "Deleted file should return cached POD as fallback",
+    );
+
+    Ok(())
+}
+
+/// Test that empty POD files are cached with valid mtime and verified on next access.
+#[test]
+fn test_pod_cache_empty_file_cached_and_verified() -> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("EmptyModule.pm");
+
+    // Write a module with no POD
+    std::fs::write(&path, "package EmptyModule;\n\n1;\n")?;
+
+    // First hover: cache is populated with empty POD string
+    let hover1 = server.format_pod_for_hover(&path);
+    let cache_size_1 = server.memory_state_snapshot().pod_cache_entries;
+    perl_tdd_support::must(cache_size_1 > 0, "Empty file should still create a cache entry");
+
+    // Immediate second hover: mtime unchanged, should return cached empty result
+    let hover2 = server.format_pod_for_hover(&path);
+    let cache_size_2 = server.memory_state_snapshot().pod_cache_entries;
+
+    perl_tdd_support::must(
+        hover1 == hover2,
+        "Empty file successive hovers should return same cached result",
+    );
+    perl_tdd_support::must(
+        cache_size_1 == cache_size_2,
+        "Cache size should not change for empty file mtime-matched access",
+    );
+
+    Ok(())
+}
+
+/// Test that a read-only file (permission denied on stat) returns cached POD gracefully.
+/// This simulates a scenario where the file exists but cannot be stat'd due to permissions.
+#[test]
+fn test_pod_cache_permission_denied_falls_back_gracefully() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("RestrictedModule.pm");
+
+    std::fs::write(
+        &path,
+        "package RestrictedModule;\n\n=head1 NAME\n\nRestrictedModule\n\n=head1 DESCRIPTION\n\nRestricted POD.\n\n=cut\n\n1;\n"
+    )?;
+
+    // First hover: cache the POD while file is readable
+    let hover1 = server.format_pod_for_hover(&path);
+    perl_tdd_support::must(hover1.contains("Restricted POD"), "First hover should cache POD");
+
+    // Make file unreadable (Windows: remove read permission; Unix: chmod 000)
+    #[cfg(windows)]
+    {
+        use std::fs::Permissions;
+        use std::os::windows::fs::PermissionsExt;
+        let perms = Permissions::from_mode(0o000);
+        std::fs::set_permissions(&path, perms)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o000);
+        std::fs::set_permissions(&path, perms)?;
+    }
+
+    // Second hover: mtime check fails with permission error, should return cached POD
+    let hover2 = server.format_pod_for_hover(&path);
+    perl_tdd_support::must(
+        hover2.contains("Restricted POD"),
+        "Permission-denied file should return cached POD as fallback",
+    );
+
+    // Restore permissions for cleanup
+    #[cfg(windows)]
+    {
+        use std::fs::Permissions;
+        use std::os::windows::fs::PermissionsExt;
+        let perms = Permissions::from_mode(0o644);
+        std::fs::set_permissions(&path, perms)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(&path, perms)?;
+    }
+
+    Ok(())
+}
+
+/// Test that successive hovers on the same file return the same cached entry.
+/// This exercises the mtime-match fast path.
+#[test]
+fn test_pod_cache_successive_hovers_same_file_share_cache() -> Result<(), Box<dyn std::error::Error>>
+{
+    let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("SharedModule.pm");
+
+    std::fs::write(
+        &path,
+        "package SharedModule;\n\n=head1 NAME\n\nSharedModule\n\n=head1 DESCRIPTION\n\nShared POD.\n\n=cut\n\n1;\n"
+    )?;
+
+    // Multiple successive hovers
+    let hover1 = server.format_pod_for_hover(&path);
+    let cache_size_1 = server.memory_state_snapshot().pod_cache_entries;
+
+    let hover2 = server.format_pod_for_hover(&path);
+    let cache_size_2 = server.memory_state_snapshot().pod_cache_entries;
+
+    let hover3 = server.format_pod_for_hover(&path);
+    let cache_size_3 = server.memory_state_snapshot().pod_cache_entries;
+
+    perl_tdd_support::must(
+        hover1 == hover2 && hover2 == hover3,
+        "Multiple successive hovers should return identical content",
+    );
+    perl_tdd_support::must(
+        cache_size_1 == cache_size_2 && cache_size_2 == cache_size_3,
+        "Multiple successive hovers should not add more cache entries",
+    );
+
+    Ok(())
 }
