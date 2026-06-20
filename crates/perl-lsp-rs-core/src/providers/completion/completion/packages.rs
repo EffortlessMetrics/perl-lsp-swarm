@@ -370,8 +370,11 @@ pub fn add_package_completions(
         // implies the user wants `Foo` loaded. Prepare the auto-import once;
         // it is suppressed for `main`, the current package, and already-imported
         // modules.
-        let auto_import_edits =
-            workspace_auto_import_edits(source, Some(package_name.as_str()), &context.current_package);
+        let auto_import_edits = workspace_auto_import_edits(
+            source,
+            Some(package_name.as_str()),
+            &context.current_package,
+        );
 
         for symbol in all_members {
             let item_kind = match symbol.kind {
