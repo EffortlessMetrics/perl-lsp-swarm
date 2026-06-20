@@ -326,6 +326,76 @@ fn test_initialize_contract_3_17() -> TestResult {
 }
 
 #[test]
+fn test_positionEncoding_negotiation_respects_client_list() -> TestResult {
+    // Test that server negotiates positionEncoding from client's preference list
+    // Per LSP 3.17 spec, server MUST pick from client's advertised list or default to utf-16
+
+    // Scenario 1: Client prefers UTF-8 first, then UTF-16
+    let mut harness = LspHarness::new();
+    let result = harness.initialize(Some(json!({
+        "processId": 1234,
+        "clientInfo": { "name": "test-client" },
+        "rootUri": "file:///workspace",
+        "capabilities": {
+            "general": {
+                "positionEncodings": ["utf-8", "utf-16"]
+            }
+        }
+    })))?;
+
+    let capabilities = &result["capabilities"];
+    let encoding = capabilities
+        .get("positionEncoding")
+        .and_then(|v| v.as_str())
+        .ok_or("positionEncoding not found or not string")?;
+
+    // Server should pick utf-8 (first in client's list)
+    assert_eq!(encoding, "utf-8", "Server should negotiate to utf-8 when it's first in client list");
+
+    // Scenario 2: Client prefers UTF-16 first, then UTF-8
+    let mut harness = LspHarness::new();
+    let result = harness.initialize(Some(json!({
+        "processId": 1234,
+        "clientInfo": { "name": "test-client" },
+        "rootUri": "file:///workspace",
+        "capabilities": {
+            "general": {
+                "positionEncodings": ["utf-16", "utf-8"]
+            }
+        }
+    })))?;
+
+    let capabilities = &result["capabilities"];
+    let encoding = capabilities
+        .get("positionEncoding")
+        .and_then(|v| v.as_str())
+        .ok_or("positionEncoding not found or not string")?;
+
+    // Server should pick utf-16 (first in client's list)
+    assert_eq!(encoding, "utf-16", "Server should negotiate to utf-16 when it's first in client list");
+
+    // Scenario 3: Client doesn't specify positionEncodings - default to utf-16
+    let mut harness = LspHarness::new();
+    let result = harness.initialize(Some(json!({
+        "processId": 1234,
+        "clientInfo": { "name": "test-client" },
+        "rootUri": "file:///workspace",
+        "capabilities": {}
+    })))?;
+
+    let capabilities = &result["capabilities"];
+    let encoding = capabilities
+        .get("positionEncoding")
+        .and_then(|v| v.as_str())
+        .ok_or("positionEncoding not found or not string")?;
+
+    // Server should default to utf-16 when client doesn't specify
+    assert_eq!(encoding, "utf-16", "Server should default to utf-16 when client doesn't specify positionEncodings");
+
+    Ok(())
+}
+
+#[test]
 fn test_initialized_notification() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;

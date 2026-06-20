@@ -359,6 +359,34 @@ impl LspServer {
                         caps.inlay_hint_resolve_support = Some(props);
                     }
                 }
+
+                // Negotiate position encoding per LSP 3.17 spec
+                // Client's `general.positionEncodings` is a list of encodings it supports
+                // Server picks the first one from the list that it also supports
+                // Default to UTF-16 if the list is empty or missing
+                let negotiated_encoding = if let Some(encodings) = params
+                    .pointer("/capabilities/general/positionEncodings")
+                    .and_then(Value::as_array)
+                {
+                    // Pick the first encoding from client list that server supports
+                    let supported = vec!["utf-8", "utf-16"]; // Server supports UTF-8 and UTF-16
+                    encodings
+                        .iter()
+                        .find_map(|enc| {
+                            enc.as_str()
+                                .and_then(|s| if supported.contains(&s) { Some(s) } else { None })
+                        })
+                        .and_then(|enc_str| match enc_str {
+                            "utf-8" => Some(crate::textdoc::PosEnc::Utf8),
+                            "utf-16" => Some(crate::textdoc::PosEnc::Utf16),
+                            _ => None,
+                        })
+                        .unwrap_or(crate::textdoc::PosEnc::Utf16)
+                } else {
+                    // No encoding preference list provided, default to UTF-16
+                    crate::textdoc::PosEnc::Utf16
+                };
+                caps.position_encoding = negotiated_encoding;
             } // caps lock released here
 
             // Check if client supports pull diagnostics.
@@ -573,7 +601,13 @@ impl LspServer {
         }
 
         // Add fields not yet in lsp-types 0.97
-        capabilities["positionEncoding"] = json!("utf-16");
+        // Use the negotiated position encoding instead of hardcoding utf-16
+        let position_encoding = self.client_capabilities.lock().position_encoding;
+        let encoding_str = match position_encoding {
+            crate::textdoc::PosEnc::Utf8 => "utf-8",
+            crate::textdoc::PosEnc::Utf16 => "utf-16",
+        };
+        capabilities["positionEncoding"] = json!(encoding_str);
         if features.declaration {
             capabilities["declarationProvider"] = json!(true);
         }
