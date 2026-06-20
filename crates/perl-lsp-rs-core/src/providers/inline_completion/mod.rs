@@ -1951,6 +1951,14 @@ impl InlineCompletionProvider {
         )
     }
 
+    fn preferred_dancer_route(&self, context: &SemanticInlineContext) -> Option<String> {
+        context
+            .imported_modules
+            .iter()
+            .any(|module| matches!(module.name.as_str(), "Dancer" | "Dancer2"))
+            .then(|| "'/path' => sub {\n    return 'ok';\n};".to_string())
+    }
+
     fn push_unique(&self, values: &mut Vec<String>, value: String) {
         if values.iter().any(|existing| existing == &value) {
             return;
@@ -2301,6 +2309,22 @@ impl InlineCandidateSource for SyntaxCandidateSource {
         if ends_with_keyword(prefix, "get ")
             && line_suffix_after_prefix(full_line, prefix).trim().is_empty()
             && let Some(route) = provider.preferred_mojolicious_lite_route(semantic_context)
+        {
+            sink.push(
+                Self::SOURCE,
+                0,
+                InlineCompletionItem {
+                    insert_text: route,
+                    filter_text: Some("get".into()),
+                    range: None,
+                    command: None,
+                },
+            );
+        }
+
+        if ends_with_keyword(prefix, "get ")
+            && line_suffix_after_prefix(full_line, prefix).trim().is_empty()
+            && let Some(route) = provider.preferred_dancer_route(semantic_context)
         {
             sink.push(
                 Self::SOURCE,
