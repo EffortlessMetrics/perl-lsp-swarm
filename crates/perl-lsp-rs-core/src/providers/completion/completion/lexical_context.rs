@@ -170,10 +170,8 @@ pub(super) fn is_in_heredoc(source: &str, position: usize) -> bool {
     }
 
     // Find the opening line (where << appears)
-    let open_line_end = source[heredoc_start..]
-        .find('\n')
-        .map(|p| heredoc_start + p)
-        .unwrap_or(source.len());
+    let open_line_end =
+        source[heredoc_start..].find('\n').map(|p| heredoc_start + p).unwrap_or(source.len());
 
     // After the opening line, look for the closing delimiter.
     // We walk the lines manually with a byte-offset tracker so we can compute
@@ -216,9 +214,8 @@ fn extract_heredoc_delimiter(text: &str) -> Option<String> {
         }
         // Bare form: <<EOF
         _ if first_char.is_ascii_alphabetic() || first_char == '_' => {
-            let end = text
-                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .unwrap_or(text.len());
+            let end =
+                text.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(text.len());
             Some(text[..end].to_string())
         }
         _ => None,
