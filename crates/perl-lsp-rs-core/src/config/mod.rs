@@ -1139,6 +1139,61 @@ pub fn load_project_config(
         .map_err(|e| format!(".perl-lsp.toml has a syntax error: {}", e))
 }
 
+/// Discover a `.perltidyrc` profile for a workspace following perltidy's
+/// conventional search order.
+///
+/// Standard Perl tooling auto-discovers a profile so that a project-local
+/// `.perltidyrc` applies without any editor configuration. This mirrors that
+/// behavior. The search order is:
+///
+/// 1. `<workspace_root>/.perltidyrc`, then `<workspace_root>/perltidyrc`
+/// 2. `$HOME/.perltidyrc`
+/// 3. The file named by the `PERLTIDYRC` environment variable
+///
+/// Returns the first existing profile path as a string, or `None` to let
+/// perltidy fall back to its own defaults. This function only consults the
+/// filesystem; callers are responsible for preferring an explicitly configured
+/// profile over the discovered one.
+pub fn discover_perltidy_profile(workspace_root: &Path) -> Option<String> {
+    discover_perltidy_profile_from(
+        workspace_root,
+        std::env::var_os("HOME").map(PathBuf::from),
+        std::env::var_os("PERLTIDYRC").map(PathBuf::from),
+    )
+}
+
+/// Pure, dependency-injected core of [`discover_perltidy_profile`].
+///
+/// Separated so tests can exercise the search order deterministically without
+/// mutating process-global environment variables.
+fn discover_perltidy_profile_from(
+    workspace_root: &Path,
+    home: Option<PathBuf>,
+    env_profile: Option<PathBuf>,
+) -> Option<String> {
+    for name in [".perltidyrc", "perltidyrc"] {
+        let candidate = workspace_root.join(name);
+        if candidate.is_file() {
+            return candidate.to_str().map(ToOwned::to_owned);
+        }
+    }
+
+    if let Some(home) = home {
+        let candidate = home.join(".perltidyrc");
+        if candidate.is_file() {
+            return candidate.to_str().map(ToOwned::to_owned);
+        }
+    }
+
+    if let Some(env_profile) = env_profile {
+        if env_profile.is_file() {
+            return env_profile.to_str().map(ToOwned::to_owned);
+        }
+    }
+
+    None
+}
+
 impl ProjectConfig {
     /// Apply project config to `ServerConfig` as the base layer.
     ///
@@ -1274,6 +1329,106 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let config = load_project_config(temp.path())?;
         assert!(config.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn discover_perltidy_profile_finds_workspace_root_profile() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let profile = temp.path().join(".perltidyrc");
+        std::fs::write(&profile, "-l=100\n")?;
+
+        let discovered = discover_perltidy_profile_from(temp.path(), None, None);
+
+        assert_eq!(discovered.as_deref(), profile.to_str());
+        Ok(())
+    }
+
+    #[test]
+    fn discover_perltidy_profile_accepts_unprefixed_workspace_profile() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let profile = temp.path().join("perltidyrc");
+        std::fs::write(&profile, "-l=100\n")?;
+
+        let discovered = discover_perltidy_profile_from(temp.path(), None, None);
+
+        assert_eq!(discovered.as_deref(), profile.to_str());
+        Ok(())
+    }
+
+    #[test]
+    fn discover_perltidy_profile_prefers_workspace_over_home_and_env() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let home = tempfile::tempdir()?;
+        let env_dir = tempfile::tempdir()?;
+        let workspace_profile = workspace.path().join(".perltidyrc");
+        std::fs::write(&workspace_profile, "-l=100\n")?;
+        std::fs::write(home.path().join(".perltidyrc"), "-l=80\n")?;
+        let env_profile = env_dir.path().join("custom.perltidyrc");
+        std::fs::write(&env_profile, "-l=72\n")?;
+
+        let discovered = discover_perltidy_profile_from(
+            workspace.path(),
+            Some(home.path().to_path_buf()),
+            Some(env_profile),
+        );
+
+        assert_eq!(discovered.as_deref(), workspace_profile.to_str());
+        Ok(())
+    }
+
+    #[test]
+    fn discover_perltidy_profile_falls_back_to_home() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let home = tempfile::tempdir()?;
+        let home_profile = home.path().join(".perltidyrc");
+        std::fs::write(&home_profile, "-l=80\n")?;
+
+        let discovered =
+            discover_perltidy_profile_from(workspace.path(), Some(home.path().to_path_buf()), None);
+
+        assert_eq!(discovered.as_deref(), home_profile.to_str());
+        Ok(())
+    }
+
+    #[test]
+    fn discover_perltidy_profile_falls_back_to_env_var() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let env_dir = tempfile::tempdir()?;
+        let env_profile = env_dir.path().join("custom.perltidyrc");
+        std::fs::write(&env_profile, "-l=72\n")?;
+
+        let discovered =
+            discover_perltidy_profile_from(workspace.path(), None, Some(env_profile.clone()));
+
+        assert_eq!(discovered.as_deref(), env_profile.to_str());
+        Ok(())
+    }
+
+    #[test]
+    fn discover_perltidy_profile_returns_none_when_absent() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let home = tempfile::tempdir()?;
+
+        let discovered = discover_perltidy_profile_from(
+            workspace.path(),
+            Some(home.path().to_path_buf()),
+            Some(home.path().join("missing.perltidyrc")),
+        );
+
+        assert!(discovered.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn discover_perltidy_profile_ignores_directory_named_profile() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        // A directory named `.perltidyrc` must not be treated as a profile file.
+        std::fs::create_dir(workspace.path().join(".perltidyrc"))?;
+
+        let discovered = discover_perltidy_profile_from(workspace.path(), None, None);
+
+        assert!(discovered.is_none());
         Ok(())
     }
 
