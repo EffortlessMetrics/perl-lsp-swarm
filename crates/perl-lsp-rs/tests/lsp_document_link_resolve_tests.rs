@@ -12,6 +12,29 @@ fn data_str<'a>(link: &'a Value, pointer: &str) -> Option<&'a str> {
     link.pointer(pointer).and_then(Value::as_str)
 }
 
+fn initialized_server() -> LspServer {
+    let server = LspServer::new();
+    let init_params = json!({
+        "capabilities": {},
+        "rootUri": "file:///workspace"
+    });
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer((1) as i64)),
+        method: "initialize".to_string(),
+        params: Some(init_params),
+    });
+
+    let _ = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "initialized".to_string(),
+        params: Some(json!({})),
+    });
+
+    server
+}
+
 /// Test that documentLink/resolve returns target for deferred module links
 #[test]
 fn test_document_link_resolve_module() -> TestResult {
@@ -614,6 +637,109 @@ fn test_document_link_resolve_rejects_invalid_pod_section() -> TestResult {
     assert!(
         error.message.contains("Invalid POD section"),
         "expected invalid POD section error, got: {}",
+        error.message
+    );
+
+    Ok(())
+}
+
+/// Test malformed POD section links without section data are rejected
+#[test]
+fn test_document_link_resolve_rejects_pod_section_missing_section() -> TestResult {
+    let server = initialized_server();
+    let link = json!({
+        "range": {
+            "start": {"line": 2, "character": 6},
+            "end": {"line": 2, "character": 18}
+        },
+        "data": {
+            "type": "pod_section",
+            "baseUri": "file:///workspace/test.pl"
+        }
+    });
+
+    let response = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer((2) as i64)),
+        method: "documentLink/resolve".to_string(),
+        params: Some(link),
+    });
+
+    let resp = response.ok_or("Expected response from documentLink/resolve")?;
+    let error = resp.error.ok_or("Expected error field in response")?;
+    assert_eq!(error.code, -32602);
+    assert!(
+        error.message.contains("Missing POD section"),
+        "expected missing POD section error, got: {}",
+        error.message
+    );
+
+    Ok(())
+}
+
+/// Test malformed POD section links without base URI data are rejected
+#[test]
+fn test_document_link_resolve_rejects_pod_section_missing_base_uri() -> TestResult {
+    let server = initialized_server();
+    let link = json!({
+        "range": {
+            "start": {"line": 2, "character": 6},
+            "end": {"line": 2, "character": 18}
+        },
+        "data": {
+            "type": "pod_section",
+            "section": "method_name"
+        }
+    });
+
+    let response = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer((2) as i64)),
+        method: "documentLink/resolve".to_string(),
+        params: Some(link),
+    });
+
+    let resp = response.ok_or("Expected response from documentLink/resolve")?;
+    let error = resp.error.ok_or("Expected error field in response")?;
+    assert_eq!(error.code, -32602);
+    assert!(
+        error.message.contains("Missing base URI"),
+        "expected missing base URI error, got: {}",
+        error.message
+    );
+
+    Ok(())
+}
+
+/// Test malformed POD section links with invalid base URI data are rejected
+#[test]
+fn test_document_link_resolve_rejects_pod_section_invalid_base_uri() -> TestResult {
+    let server = initialized_server();
+    let link = json!({
+        "range": {
+            "start": {"line": 2, "character": 6},
+            "end": {"line": 2, "character": 18}
+        },
+        "data": {
+            "type": "pod_section",
+            "section": "method_name",
+            "baseUri": "not a uri"
+        }
+    });
+
+    let response = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer((2) as i64)),
+        method: "documentLink/resolve".to_string(),
+        params: Some(link),
+    });
+
+    let resp = response.ok_or("Expected response from documentLink/resolve")?;
+    let error = resp.error.ok_or("Expected error field in response")?;
+    assert_eq!(error.code, -32602);
+    assert!(
+        error.message.contains("Invalid base URI"),
+        "expected invalid base URI error, got: {}",
         error.message
     );
 
