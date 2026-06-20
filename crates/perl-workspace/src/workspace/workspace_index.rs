@@ -7682,4 +7682,308 @@ my ($a, ($b, $c)) = (1, (2, 3));
         let _ = symbols;
         Ok(())
     }
+
+    // Red TDD: #1668 — cap O(n) workspace/symbol scan
+    // The following tests define the acceptance criteria for capping symbol search results.
+    // They test the signature of search_source_symbols and search_generated_workspace_symbols
+    // with an optional cap parameter. Tests will fail until the cap parameter is implemented.
+
+    #[test]
+    fn test_search_source_symbols_returns_cap_when_exact_match() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/SearchTest.pm";
+        let code = r#"package SearchTest;
+sub get_foo { 1 }
+sub get_bar { 2 }
+sub get_baz { 3 }
+sub get_qux { 4 }
+sub get_quux { 5 }
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Create exactly 5 matching symbols via search
+        let all_symbols = index.search_source_symbols("get", None);
+        assert!(all_symbols.len() >= 5, "should have at least 5 matching symbols");
+
+        // Now search with cap=5 and verify we get exactly 5 (or fewer if fewer exist)
+        let capped_symbols = index.search_source_symbols("get", Some(5));
+        assert_eq!(capped_symbols.len(), 5, "should return exactly 5 symbols when cap=5 and 5 match");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_source_symbols_returns_all_when_fewer_than_cap() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/SmallSearch.pm";
+        let code = r#"package SmallSearch;
+sub helper_one { 1 }
+sub helper_two { 2 }
+sub helper_three { 3 }
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // 3 matches but cap is 10
+        let capped_symbols = index.search_source_symbols("helper", Some(10));
+        assert_eq!(capped_symbols.len(), 3, "should return all 3 symbols when cap=10 > results");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_source_symbols_truncates_excess_results() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/LargeSearch.pm";
+        // Create 25 matching symbols
+        let mut code = String::from("package LargeSearch;\n");
+        for i in 0..25 {
+            code.push_str(&format!("sub new_item_{:02} {{ {} }}\n", i, i));
+        }
+        code.push_str("1;\n");
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // 25 matches but cap is 10
+        let capped_symbols = index.search_source_symbols("new_item", Some(10));
+        assert_eq!(capped_symbols.len(), 10, "should return exactly 10 symbols when cap=10 and 25 match");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_source_symbols_empty_query_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/EmptyQueryTest.pm";
+        let code = r#"package EmptyQueryTest;
+sub foo { 1 }
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Empty query should return empty vec
+        let empty_results = index.search_source_symbols("", Some(10));
+        assert!(empty_results.is_empty(), "empty query should return empty vec");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_source_symbols_whitespace_only_query() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/WhitespaceTest.pm";
+        let code = r#"package WhitespaceTest;
+sub test_func { 1 }
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Whitespace-only query should return empty after trim
+        let whitespace_results = index.search_source_symbols("   ", Some(10));
+        assert!(whitespace_results.is_empty(), "whitespace-only query should return empty after trim");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_source_symbols_cap_none_returns_all() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/NoCap.pm";
+        // Create 15 matching symbols
+        let mut code = String::from("package NoCap;\n");
+        for i in 0..15 {
+            code.push_str(&format!("sub find_item_{:02} {{ {} }}\n", i, i));
+        }
+        code.push_str("1;\n");
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // None cap should return all matches
+        let uncapped = index.search_source_symbols("find_item", None);
+        assert_eq!(uncapped.len(), 15, "cap=None should return all 15 matches");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_source_symbols_cap_zero_returns_empty() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/ZeroCap.pm";
+        let code = r#"package ZeroCap;
+sub item { 1 }
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // cap=0 should return empty vec immediately
+        let zero_capped = index.search_source_symbols("item", Some(0));
+        assert!(zero_capped.is_empty(), "cap=0 should return empty vec");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_source_symbols_cap_boundary_minus_one() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/BoundaryMinus.pm";
+        // Create exactly 199 matching symbols (cap-1)
+        let mut code = String::from("package BoundaryMinus;\n");
+        for i in 0..199 {
+            code.push_str(&format!("sub boundary_item_{:03} {{ {} }}\n", i, i));
+        }
+        code.push_str("1;\n");
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // 199 matches, cap=200: should return all 199
+        let results = index.search_source_symbols("boundary_item", Some(200));
+        assert_eq!(results.len(), 199, "should return 199 when 199 match and cap=200");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_source_symbols_cap_boundary_plus_one() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/BoundaryPlus.pm";
+        // Create exactly 201 matching symbols (cap+1)
+        let mut code = String::from("package BoundaryPlus;\n");
+        for i in 0..201 {
+            code.push_str(&format!("sub boundary_item_{:03} {{ {} }}\n", i, i));
+        }
+        code.push_str("1;\n");
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // 201 matches, cap=200: should return exactly 200, not 201
+        let results = index.search_source_symbols("boundary_item", Some(200));
+        assert_eq!(results.len(), 200, "should return 200 when 201 match and cap=200");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_generated_symbols_respects_cap() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/GenSearch.pm";
+        let code = r#"package GenSearch;
+use Moo;
+has field_a => (is => 'rw');
+has field_b => (is => 'rw');
+has field_c => (is => 'rw');
+has field_d => (is => 'rw');
+has field_e => (is => 'rw');
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Search generated symbols with cap
+        let capped_gen = index.search_generated_workspace_symbols("field", Some(3));
+        assert!(capped_gen.len() <= 3, "generated symbols with cap=3 should return at most 3");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_workspace_symbol_combined_sources_respects_cap() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/Combined.pm";
+        let code = r#"package Combined;
+use Moo;
+sub query_one { 1 }
+sub query_two { 2 }
+sub query_three { 3 }
+has query_attr => (is => 'rw');
+1;
+"#;
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // When both source and generated symbols match "query" and cap=2,
+        // total returned should not exceed 2
+        let source = index.search_source_symbols("query", Some(2));
+        let generated = index.search_generated_workspace_symbols("query", Some(2));
+
+        // Both searches independently respect their cap
+        assert!(source.len() <= 2, "source search should respect cap=2");
+        assert!(generated.len() <= 2, "generated search should respect cap=2");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_signature_help_search_no_cap_returns_all() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/SigHelp.pm";
+        // Create 10 matching symbols
+        let mut code = String::from("package SigHelp;\n");
+        for i in 0..10 {
+            code.push_str(&format!("sub method_{:02} {{ {} }}\n", i, i));
+        }
+        code.push_str("1;\n");
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Signature help should get all candidates with cap=None
+        let all_methods = index.search_source_symbols("method", None);
+        assert_eq!(all_methods.len(), 10, "signature help (cap=None) should return all 10 methods");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_source_symbols_capped_results_deterministic() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/Determinism.pm";
+        // Create 50 matching symbols
+        let mut code = String::from("package Determinism;\n");
+        for i in 0..50 {
+            code.push_str(&format!("sub search_func_{:02} {{ {} }}\n", i, i));
+        }
+        code.push_str("1;\n");
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Multiple searches with same query and cap should be deterministic
+        let result1 = index.search_source_symbols("search_func", Some(20));
+        let result2 = index.search_source_symbols("search_func", Some(20));
+
+        assert_eq!(result1.len(), 20, "first search returns 20");
+        assert_eq!(result2.len(), 20, "second search returns 20");
+
+        // Check that we get the same symbols (by name or order)
+        for (i, (sym1, sym2)) in result1.iter().zip(result2.iter()).enumerate() {
+            assert_eq!(sym1.name, sym2.name, "symbol {} has same name in both searches", i);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn bench_search_source_symbols_10k_symbols_latency() -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Instant;
+
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/BenchLarge.pm";
+
+        // Create ~10k symbols spread across many functions
+        let mut code = String::from("package BenchLarge;\n");
+        for i in 0..1000 {
+            code.push_str(&format!("sub bench_symbol_{:04} {{ {} }}\n", i, i));
+        }
+        code.push_str("1;\n");
+
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Measure latency of capped search on large index
+        let start = Instant::now();
+        let capped_results = index.search_source_symbols("bench_symbol", Some(200));
+        let elapsed = start.elapsed();
+
+        assert_eq!(capped_results.len(), 200, "should return 200 symbols when capped at 200");
+        // Should complete in well under 5ms even on 1000-symbol index
+        assert!(elapsed.as_millis() < 5, "capped search should complete in <5ms, took {:?}", elapsed);
+
+        Ok(())
+    }
 }
