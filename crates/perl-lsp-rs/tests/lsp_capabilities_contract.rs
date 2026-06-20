@@ -162,9 +162,11 @@ fn test_completion_advertises_insert_text_modes() -> Result<(), Box<dyn std::err
         .filter_map(|v| v.as_u64().map(|u| u as u32))
         .collect();
     assert!(!modes.is_empty(), "insertTextModes array must not be empty");
+    // Per LSP 3.17 spec and issue #1712 acceptance criteria, both PlainText (1)
+    // and Snippet (2) must be advertised — not just one or the other.
     assert!(
-        modes.contains(&1) || modes.contains(&2),
-        "insertTextModes must include PlainText (1) and/or Snippet (2): got {:?}",
+        modes.contains(&1) && modes.contains(&2),
+        "insertTextModes must include both PlainText (1) and Snippet (2): got {:?}",
         modes
     );
 
