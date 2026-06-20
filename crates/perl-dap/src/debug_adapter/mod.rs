@@ -402,6 +402,7 @@ impl DebugAdapter {
         })
     }
 
+    #[cfg(any(test, feature = "test-helpers"))]
     /// Push a line into the recent-output buffer for testing parser paths.
     ///
     /// Only for use in tests; not part of the public API contract.
@@ -410,6 +411,7 @@ impl DebugAdapter {
         Self::append_recent_output_line_locked(&mut output, line);
     }
 
+    #[cfg(any(test, feature = "test-helpers"))]
     /// Seed a minimal DebugSession in Running state for testing stale-ref guards.
     ///
     /// Creates a `perl -e 1` child process, installs it as the active session, and
@@ -441,6 +443,7 @@ impl DebugAdapter {
         }
     }
 
+    #[cfg(any(test, feature = "test-helpers"))]
     /// Seed `attached_pid` with the given PID for testing.
     ///
     /// Use a PID that is guaranteed not to exist (e.g. `999_999`) to drive the
@@ -538,6 +541,7 @@ impl DebugAdapter {
         }
     }
 
+    #[cfg(any(test, feature = "test-helpers"))]
     /// Seed a stopped DebugSession with a given set of stack frames for testing
     /// frameId validation paths in handle_evaluate.
     ///
