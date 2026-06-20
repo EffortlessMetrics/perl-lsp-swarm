@@ -112,7 +112,4 @@ To add a new incident: copy [TEMPLATE.md](TEMPLATE.md) and fill in all sections.
 | agent-generated | PRs created by agents, not humans |
 | title-check | PR title validation / format enforcement |
 | throughput | Merge funnel throughput / cycle time |
-| merge-velocity | Merge rate / pacing / serialization |
 | bottleneck | Pipeline bottleneck / binding constraint |
-| economics | Cost accounting / ROI / leverage arithmetic |
-
