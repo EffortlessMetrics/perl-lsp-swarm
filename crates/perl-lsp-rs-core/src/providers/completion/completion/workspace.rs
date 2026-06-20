@@ -52,7 +52,7 @@ use std::sync::Arc;
 ///
 /// No edit is produced for the implicit `main` package or for symbols defined
 /// in the document's own `current_package`, since those need no `use` line.
-fn workspace_auto_import_edits(
+pub(super) fn workspace_auto_import_edits(
     source: &str,
     module: Option<&str>,
     current_package: &str,

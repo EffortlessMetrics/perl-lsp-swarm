@@ -3643,6 +3643,44 @@ fn workspace_completion_no_auto_import_for_file_local_symbol()
 }
 
 #[test]
+fn workspace_variable_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nour $xylophone = 1;\n1;\n".to_string(),
+    )?;
+    let code = "use strict;\n$Foo::xyl";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    let foo_var_with_edit = completions.iter().find(|c| {
+        c.kind == CompletionItemKind::Variable
+            && c.label.contains("xylophone")
+            && !c.additional_edits.is_empty()
+    });
+    if let Some(item) = foo_var_with_edit {
+        let edit_text = item.additional_edits.first().map(|(_, t)| t.as_str()).unwrap_or("");
+        assert_eq!(
+            edit_text, "use Foo;\n",
+            "variable completion from Foo must auto-insert `use Foo;`; got: {:?}",
+            item.additional_edits
+        );
+    } else {
+        assert!(
+            !completions.iter().any(|c| {
+                c.kind == CompletionItemKind::Variable
+                    && c.label.contains("xylophone")
+                    && c.additional_edits.is_empty()
+            }),
+            "workspace variable `$xylophone` must carry an auto-import edit when present"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn test_require_statement_triggers_module_completion() -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());
     index.index_file(Url::parse("file:///lib/Utils.pm")?, "package Utils;\n1;\n".to_string())?;
