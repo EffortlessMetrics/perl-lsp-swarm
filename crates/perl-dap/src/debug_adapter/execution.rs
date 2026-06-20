@@ -590,22 +590,73 @@ impl DebugAdapter {
         }
     }
 
+    /// Handle terminateThreads request.
+    ///
+    /// The Perl native adapter exposes a single thread (the whole debuggee — see
+    /// `handle_threads`), so terminating that thread terminates the program under
+    /// debug. When the request targets the active thread (or omits `threadIds`,
+    /// meaning "all threads"), the debuggee is torn down and the lifecycle events
+    /// are emitted. A request for a thread id the adapter does not manage is a
+    /// successful no-op. With no active session the request fails with actionable
+    /// guidance, consistent with the other execution-control handlers.
     pub(super) fn handle_terminate_threads(
         &self,
         seq: i64,
         request_seq: i64,
-        _arguments: Option<Value>,
+        arguments: Option<Value>,
     ) -> DapMessage {
+        // Resolve the active debuggee thread id, if any session is live.
+        let active_thread_id: Option<i32> = if let Some(ref session) =
+            *lock_or_recover(&self.session, "debug_adapter.session")
+        {
+            Some(session.thread_id)
+        } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
+        {
+            Some(Self::i64_to_i32_saturating(i64::from(pid)))
+        } else if lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some() {
+            Some(1)
+        } else {
+            None
+        };
+
+        let Some(active_thread_id) = active_thread_id else {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "terminateThreads".to_string(),
+                body: None,
+                message: Some(Self::no_active_debug_session_message("terminate threads")),
+            };
+        };
+
+        // An empty or omitted `threadIds` list means "terminate all threads".
+        let args: Option<TerminateThreadsArguments> =
+            arguments.and_then(|v| serde_json::from_value(v).ok());
+        let requested = args.and_then(|a| a.thread_ids).unwrap_or_default();
+        let targets_active =
+            requested.is_empty() || requested.contains(&i64::from(active_thread_id));
+
+        if targets_active {
+            // Terminate the debuggee and clear all session state.
+            self.clear_active_session_state();
+
+            // Announce the thread exit, then the debuggee termination, per DAP.
+            self.send_event(
+                "thread",
+                Some(json!({ "reason": "exited", "threadId": active_thread_id })),
+            );
+            self.send_event("terminated", None);
+            self.send_event("exited", Some(json!({ "exitCode": 0 })));
+        }
+
         DapMessage::Response {
             seq,
             request_seq,
-            success: false,
+            success: true,
             command: "terminateThreads".to_string(),
             body: None,
-            message: Some(
-                "Perl threading model does not support targeted thread termination from the debugger"
-                    .to_string(),
-            ),
+            message: None,
         }
     }
 }

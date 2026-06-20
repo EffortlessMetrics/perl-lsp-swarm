@@ -279,15 +279,19 @@ fn test_step_in_targets_no_session_returns_empty_success() -> Result<(), Box<dyn
 
 #[test]
 // AC:16
-fn test_terminate_threads_always_fails_with_message() -> Result<(), Box<dyn std::error::Error>> {
+// terminateThreads requires an active session; without one it fails with a
+// non-empty guidance message. The session-backed success path is covered in
+// dap_terminate_threads_lifecycle_tests.rs.
+fn test_terminate_threads_without_session_fails_with_message()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "terminateThreads", None);
     let msg = assert_response_message(response, "terminateThreads");
     assert!(msg.is_some(), "terminateThreads must include an error message");
     let msg = msg.ok_or("terminateThreads must include an error message")?;
     assert!(
-        msg.contains("thread") || msg.contains("Perl"),
-        "message should explain threading limitation: {msg}"
+        msg.contains("session"),
+        "message should explain that a debug session is required: {msg}"
     );
     Ok(())
 }

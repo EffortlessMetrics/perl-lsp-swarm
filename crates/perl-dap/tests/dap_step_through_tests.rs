@@ -9,7 +9,7 @@
 //! - gotoTargets with actual Perl source files
 //! - cancel signal during step operations
 //! - goto with unknown target id
-//! - restartFrame and terminateThreads unsupported paths
+//! - restartFrame unsupported path; terminateThreads no-active-session path
 //! - Variable inspection request during a stepping sequence
 //! - Sequence monotonicity across stepping operations
 //!
@@ -573,7 +573,7 @@ fn test_cancel_with_request_id_argument() -> Result<(), Box<dyn std::error::Erro
 }
 
 // ---------------------------------------------------------------------------
-// 8. restartFrame and terminateThreads — unsupported operations
+// 8. restartFrame (unsupported on perl -d) and terminateThreads (requires session)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -600,19 +600,22 @@ fn test_restart_frame_is_unsupported_for_perl() -> Result<(), Box<dyn std::error
 
 #[test]
 // AC:3535
-fn test_terminate_threads_is_unsupported_for_perl() -> Result<(), Box<dyn std::error::Error>> {
+// terminateThreads is implemented (it terminates the single-threaded Perl
+// debuggee — see dap_terminate_threads_lifecycle_tests.rs), but it requires an
+// active debug session. With no session it fails with actionable guidance.
+fn test_terminate_threads_requires_active_session() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
 
     let response = adapter.handle_request(1, "terminateThreads", None);
 
     match response {
         DapMessage::Response { success, command, message, .. } => {
-            assert!(!success, "terminateThreads should fail — Perl model doesn't support it");
+            assert!(!success, "terminateThreads should fail when no debug session is active");
             assert_eq!(command, "terminateThreads");
             let msg = message.ok_or("terminateThreads failure must include a message")?;
             assert!(
-                msg.contains("Perl") || msg.contains("thread") || msg.contains("not support"),
-                "message must explain why terminateThreads is unsupported: {msg}"
+                msg.contains("session"),
+                "message must explain that a debug session is required: {msg}"
             );
         }
         _ => return Err("Expected Response for terminateThreads".into()),

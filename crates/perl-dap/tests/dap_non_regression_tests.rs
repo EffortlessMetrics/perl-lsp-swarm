@@ -78,9 +78,9 @@ const ZERO_ARG_COMMANDS: &[&str] = &[
     "disconnect",
     "exceptionInfo",
     "loadedSources",
-    "restartFrame", // always fails — non-regression: must return Response, not panic
+    "restartFrame", // always fails (unsupported) — must return Response, not panic
     "terminate",
-    "terminateThreads", // always fails — same contract
+    "terminateThreads", // fails without an active session — must return Response, not panic
     "threads",
 ];
 

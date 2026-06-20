@@ -585,21 +585,24 @@ fn test_step_in_targets_empty_when_no_session() -> Result<(), Box<dyn std::error
 // ============================================================================
 
 #[test]
-fn test_terminate_threads_fails_as_unsupported() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — Perl threading model does not support targeted termination
+fn test_terminate_threads_without_session_fails() -> Result<(), Box<dyn std::error::Error>> {
+    // AC:2783 — terminateThreads is implemented but requires an active debug
+    // session; without one it fails with actionable guidance. The success path
+    // is covered in dap_terminate_threads_lifecycle_tests.rs.
     let mut adapter = DebugAdapter::new();
     let msg = adapter.handle_request(1, "terminateThreads", None);
     let err = assert_failure_response(msg, "terminateThreads");
     assert!(
-        err.to_lowercase().contains("perl") || err.to_lowercase().contains("thread"),
-        "error must reference Perl threading limitation: {err}"
+        err.to_lowercase().contains("session"),
+        "error must reference the missing debug session: {err}"
     );
     Ok(())
 }
 
 #[test]
-fn test_terminate_threads_with_thread_ids_still_fails() -> Result<(), Box<dyn std::error::Error>> {
-    // AC:2783 — providing threadIds must not bypass the unsupported status
+fn test_terminate_threads_with_thread_ids_without_session_fails()
+-> Result<(), Box<dyn std::error::Error>> {
+    // AC:2783 — providing threadIds does not bypass the no-active-session check
     let mut adapter = DebugAdapter::new();
     let args = json!({ "threadIds": [1, 2, 3] });
     let msg = adapter.handle_request(1, "terminateThreads", Some(args));

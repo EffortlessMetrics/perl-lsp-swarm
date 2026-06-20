@@ -63,7 +63,11 @@ impl DebugAdapter {
             "supportsEvaluateForHovers": supports_core,
             "supportsStepBack": false,
             "supportsSetVariable": supports_core,
-            "supportsRestartFrame": true,
+            // perl -d cannot restart execution from a specific stack frame, so
+            // this capability is advertised false to match handle_restart_frame
+            // (see #1678; restartFrame is genuinely unsupported, unlike the
+            // whole-session `restart` request advertised below).
+            "supportsRestartFrame": false,
             "supportsGotoTargetsRequest": supports_core,
             "supportsStepInTargetsRequest": true,
             "supportsCompletionsRequest": supports_completions,

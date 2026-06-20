@@ -40,7 +40,8 @@ use crate::protocol::{
     SetExpressionArguments, SetExpressionResponseBody, SetFunctionBreakpointsArguments,
     SetVariableArguments, SetVariableResponseBody, SourceArguments, SourceResponseBody,
     StackTraceArguments, StepInArguments, StepInTarget, StepInTargetsArguments,
-    StepInTargetsResponseBody, StepOutArguments, TerminateArguments, VariablesArguments,
+    StepInTargetsResponseBody, StepOutArguments, TerminateArguments, TerminateThreadsArguments,
+    VariablesArguments,
 };
 use crate::stack::{PerlStackParser, is_internal_frame_name_and_path};
 use crate::tcp_attach::{DapEvent, TcpAttachConfig, TcpAttachSession};

@@ -681,10 +681,10 @@ id = "dap.restart_frame"
 spec = "DAP 1.0"
 area = "debug"
 maturity = "ga"
-advertised = true
+advertised = false
 counts_in_coverage = false
 tests = ["crates/perl-dap/tests/dap_step_through_tests.rs"]
-description = "Restart execution from the beginning of a stack frame (restartFrame)"
+description = "Restart execution from the beginning of a stack frame (restartFrame) — not advertised: perl -d cannot restart a frame (#1678)"
 
 [[feature]]
 id = "dap.terminate_threads"

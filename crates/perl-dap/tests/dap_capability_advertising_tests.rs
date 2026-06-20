@@ -31,11 +31,16 @@ mod capability_tests {
         }
     }
 
-    /// Verify that supportsRestartFrame capability is advertised as true.
-    /// Corresponds to handler: crates/perl-dap/src/debug_adapter/execution.rs:574
-    /// Related issue: #1663 Phase 0
+    /// Verify that supportsRestartFrame capability is advertised as false.
+    ///
+    /// `perl -d` cannot restart execution from a specific stack frame, so the
+    /// handler (crates/perl-dap/src/debug_adapter/execution.rs) cannot honor a
+    /// `restartFrame` request. Advertising the capability false keeps the
+    /// declaration consistent with the handler and prevents the client from
+    /// surfacing a "Restart Frame" affordance that always errors.
+    /// Related issues: #1663 Phase 0, #1678.
     #[tokio::test]
-    async fn test_supports_restart_frame_advertised() -> Result<()> {
+    async fn test_supports_restart_frame_not_advertised() -> Result<()> {
         let mut adapter = create_test_adapter();
         let init = adapter.handle_request(1, "initialize", None);
         let caps = extract_initialize_response(init)?;
@@ -45,8 +50,8 @@ mod capability_tests {
             .ok_or_else(|| anyhow::anyhow!("missing supportsRestartFrame capability"))?;
 
         assert_eq!(
-            supports_restart_frame, true,
-            "supportsRestartFrame must be advertised as true when handler exists"
+            supports_restart_frame, false,
+            "supportsRestartFrame must be advertised as false — perl -d cannot restart a frame"
         );
         Ok(())
     }
@@ -91,10 +96,12 @@ mod capability_tests {
         Ok(())
     }
 
-    /// Verify all three critical capabilities are advertised together.
-    /// Prevents regression of capability/handler mismatches.
+    /// Verify each capability flag matches whether its handler can honor the
+    /// request — the invariant behind #1678. `stepInTargets` and
+    /// `terminateThreads` are implemented (advertised true); `restartFrame` is
+    /// not implementable on `perl -d` (advertised false).
     #[tokio::test]
-    async fn test_all_three_capabilities_advertised() -> Result<()> {
+    async fn test_capabilities_match_handler_support() -> Result<()> {
         let mut adapter = create_test_adapter();
         let init = adapter.handle_request(1, "initialize", None);
         let caps = extract_initialize_response(init)?;
@@ -109,7 +116,10 @@ mod capability_tests {
             .get("supportsTerminateThreadsRequest")
             .ok_or_else(|| anyhow::anyhow!("missing supportsTerminateThreadsRequest"))?;
 
-        assert_eq!(restart_frame, true, "supportsRestartFrame should be true");
+        assert_eq!(
+            restart_frame, false,
+            "supportsRestartFrame should be false — perl -d cannot restart a frame"
+        );
         assert_eq!(step_in_targets, true, "supportsStepInTargetsRequest should be true");
         assert_eq!(terminate_threads, true, "supportsTerminateThreadsRequest should be true");
 
