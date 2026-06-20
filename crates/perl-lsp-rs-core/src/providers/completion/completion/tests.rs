@@ -802,6 +802,77 @@ isa => 'St
 }
 
 #[test]
+fn test_completion_sorttext_prevents_context_mixing() -> Result<(), Box<dyn std::error::Error>> {
+    let hash_code = "my %config = (host => 'localhost', port => 5432);\n$config{ho";
+    let mut hash_parser = Parser::new(hash_code);
+    let hash_ast = must(hash_parser.parse());
+    let hash_provider = CompletionProvider::new(&hash_ast);
+    let hash_completions = hash_provider.get_completions(hash_code, hash_code.len());
+    let hash_item = must_some(hash_completions.iter().find(|item| item.label == "host"));
+    let hash_sort = must_some(hash_item.sort_text.as_deref());
+
+    let type_code = concat!(
+        "\n",
+        "use MyApp::Types qw(StrFoo);\n",
+        "use Moose;\n",
+        "\n",
+        "has 'id' => (\n",
+        "is => 'ro',\n",
+        "isa => 'S"
+    );
+    let mut type_parser = Parser::new(type_code);
+    let type_ast = must(type_parser.parse());
+    let type_provider = CompletionProvider::new_with_index_and_source(&type_ast, type_code, None);
+    let type_completions = type_provider.get_completions(type_code, type_code.len());
+    let str_item = must_some(type_completions.iter().find(|item| item.label == "Str"));
+    let str_sort = must_some(str_item.sort_text.as_deref());
+    let str_foo_item = must_some(type_completions.iter().find(|item| item.label == "StrFoo"));
+    let str_foo_sort = must_some(str_foo_item.sort_text.as_deref());
+
+    let option_code = r#"
+use Moose;
+
+has 'id' => (
+i"#;
+    let mut option_parser = Parser::new(option_code);
+    let option_ast = must(option_parser.parse());
+    let option_provider =
+        CompletionProvider::new_with_index_and_source(&option_ast, option_code, None);
+    let option_completions = option_provider.get_completions(option_code, option_code.len());
+    let option_item = must_some(option_completions.iter().find(|item| item.label == "is"));
+    let option_sort = must_some(option_item.sort_text.as_deref());
+
+    let field_code = r#"
+use Object::Pad;
+
+class Point {
+field $name :param;
+field $native_name :param;
+}
+
+Point->new(na"#;
+    let mut field_parser = Parser::new(field_code);
+    let field_ast = must(field_parser.parse());
+    let field_provider =
+        CompletionProvider::new_with_index_and_source(&field_ast, field_code, None);
+    let field_completions = field_provider.get_completions(field_code, field_code.len());
+    let field_item = must_some(field_completions.iter().find(|item| item.label == "name"));
+    let field_sort = must_some(field_item.sort_text.as_deref());
+
+    let mut sort_texts = vec![hash_sort, str_sort, str_foo_sort, option_sort, field_sort];
+    sort_texts.sort_unstable();
+
+    let expected = vec!["0f_name", "0h_host", "0o_is", "0t_Str", "0t_StrFoo"];
+    if sort_texts != expected {
+        return Err(
+            format!("expected grouped sortText values {expected:?}, got {sort_texts:?}").into()
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_regex_completion_binding_operator() {
     // Cursor right after the opening slash of a regex
     let code = r#"my $x = "hello"; $x =~ /"#;
@@ -4156,6 +4227,140 @@ fn test_hash_key_completion_unknown_variable_returns_empty_for_that_hash() {
 }
 
 #[test]
+fn test_hash_key_completion_quoted_keys_with_special_characters() {
+    // Test that quoted keys with hyphens, dots, spaces, and other special characters
+    // are included in hash key completions.
+    let code = r#"my %data = ('db-host' => 'localhost', 'api.key' => 'secret', 'api key' => 'value', 'foo_bar' => 'normal');
+$data{db"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // 'db-host' should be suggested (starts with 'db' prefix)
+    assert!(
+        completions.iter().any(|c| c.label == "db-host"),
+        "expected 'db-host' (quoted key with hyphen) in completions for prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // 'api.key' should NOT be suggested (doesn't start with 'db')
+    assert!(
+        !completions.iter().any(|c| c.label == "api.key"),
+        "expected 'api.key' filtered out by prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // 'foo_bar' should NOT be suggested (doesn't start with 'db')
+    assert!(
+        !completions.iter().any(|c| c.label == "foo_bar"),
+        "expected 'foo_bar' filtered out by prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_hash_key_completion_double_quoted_hyphenated_key() {
+    // Mirror of the single-quoted case for double-quoted keys: keys written with
+    // `"..."` and containing special characters must also be completed. This
+    // exercises the double-quote branch of the quote-stripping logic.
+    let code = r#"my %data = ("db-host" => 'localhost', "api.key" => 'secret');
+$data{db"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // 'db-host' (double-quoted key with hyphen) should be suggested for prefix 'db'.
+    assert!(
+        completions.iter().any(|c| c.label == "db-host"),
+        "expected 'db-host' (double-quoted key with hyphen) in completions for prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // 'api.key' should NOT be suggested (doesn't start with 'db').
+    assert!(
+        !completions.iter().any(|c| c.label == "api.key"),
+        "expected 'api.key' filtered out by prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_hash_key_completion_quoted_keys_with_dots_and_spaces() {
+    // Test completion with dot and space separators in keys
+    let code = r#"my %config = ('db.host' => 1, 'api key' => 2);
+$config{api"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // 'api key' should be suggested (starts with 'api' prefix)
+    assert!(
+        completions.iter().any(|c| c.label == "api key"),
+        "expected 'api key' (quoted key with space) in completions for prefix 'api'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // 'db.host' should NOT be suggested (doesn't start with 'api')
+    assert!(
+        !completions.iter().any(|c| c.label == "db.host"),
+        "expected 'db.host' filtered out by prefix 'api'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_hash_key_completion_double_quoted_keys_with_special_characters() {
+    let code = r#"my %config = ("db.host" => 1, "api key" => 2, "bare" => 3);
+$config{api"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.iter().any(|c| c.label == "api key"),
+        "expected double-quoted 'api key' in completions for prefix 'api'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+    assert!(
+        !completions.iter().any(|c| c.label == "db.host"),
+        "expected double-quoted 'db.host' filtered out by prefix 'api'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_hash_key_completion_unterminated_quoted_key_no_bogus_suggestion() {
+    // Regression: 'db-host (opening quote but no closing quote) must not produce a
+    // completion item with a leading-quote artifact like "'db-host".  Previously the
+    // character-class guard rejected these implicitly; after relaxing it for quoted
+    // keys we must ensure only *fully*-quoted tokens (both delimiters present) are
+    // accepted as special-char keys.
+    let code = "my %cfg = ('db-host' => 1, host => 2);\n$cfg{db";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // The fully-quoted key 'db-host' should be present.
+    assert!(
+        completions.iter().any(|c| c.label == "db-host"),
+        "expected 'db-host' in completions; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // No completion item must carry a leading single-quote from an unterminated literal.
+    assert!(
+        completions.iter().all(|c| !c.label.starts_with('\'')),
+        "no completion label must start with a quote character (unterminated-literal artifact); got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_detect_hash_key_context_unicode_non_ident_after_brace_no_panic() {
     let source = "$config{☃ho";
     let result = CompletionProvider::detect_hash_key_context(source, source.len());
@@ -5009,4 +5214,26 @@ fn test_special_var_count_at_least_40() {
     }
 
     assert!(total >= 40, "expected at least 40 special variables across all sigils, got {total}");
+}
+
+#[test]
+fn extract_fat_comma_keys_covers_quoted_and_bareword_forms() {
+    // Exercises all three branches of the key-token classification in
+    // `extract_fat_comma_keys`: single-quoted, double-quoted, and bareword,
+    // plus the rejection path for an unquoted token with special characters.
+    fn collect(list_text: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        CompletionProvider::extract_fat_comma_keys(list_text, &mut keys, &mut seen);
+        keys
+    }
+
+    // Bareword key (alphanumeric + underscore) is accepted.
+    assert!(collect("host => 1").iter().any(|k| k == "host"));
+    // Single-quoted key may contain special characters (hyphen).
+    assert!(collect("'db-name' => 1").iter().any(|k| k == "db-name"));
+    // Double-quoted key may contain special characters (dot).
+    assert!(collect("\"x.y\" => 1").iter().any(|k| k == "x.y"));
+    // Unquoted token with a non-word character is rejected (no quoting).
+    assert!(collect("a-b => 1").is_empty());
 }

@@ -6,6 +6,7 @@ use super::super::*;
 use crate::cancellation::RequestCleanupGuard;
 use crate::documentation_targets::PerlDocumentationTarget;
 use crate::protocol::{req_position, req_uri};
+use crate::util::escape_markdown_text;
 mod hover_cards;
 mod hover_extracted;
 #[cfg(test)]
@@ -337,7 +338,7 @@ impl LspServer {
             let doc_info = symbol_info
                 .documentation
                 .as_ref()
-                .map(|d| format!("\n\n{}", d))
+                .map(|d| format!("\n\n{}", escape_markdown_text(d)))
                 .unwrap_or_default();
 
             return HoverExtracted::Complete(json!({
@@ -1429,10 +1430,15 @@ Not found in workspace or configured include paths.
         const POD_CACHE_SOFT_CAP: usize = 1024;
         const POD_CACHE_PRUNE_TARGET: usize = 512;
 
+        let current_modified =
+            std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok();
+
         let pod = {
             let mut cache = self.pod_cache.lock();
-            if let Some(cached) = cache.get(path) {
-                cached.clone()
+            if let Some(cached) = cache.get(path)
+                && (current_modified.is_none() || cached.modified == current_modified)
+            {
+                cached.doc.clone()
             } else {
                 if cache.len() >= POD_CACHE_SOFT_CAP {
                     let drop_count = cache.len().saturating_sub(POD_CACHE_PRUNE_TARGET);
@@ -1447,7 +1453,10 @@ Not found in workspace or configured include paths.
                     });
                 }
                 let doc = perl_pod::extract_pod_from_file(path).unwrap_or_default();
-                cache.insert(path.to_path_buf(), doc.clone());
+                cache.insert(
+                    path.to_path_buf(),
+                    PodCacheEntry { modified: current_modified, doc: doc.clone() },
+                );
                 doc
             }
         };

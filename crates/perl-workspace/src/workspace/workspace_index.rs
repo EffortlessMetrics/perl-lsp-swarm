@@ -81,6 +81,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use url::Url;
 
+use crate::semantic::facts::PRODUCER_SCHEMA_VERSION;
 use crate::semantic::imports::ImportExportIndex;
 pub use crate::semantic::invalidation::ShardReplaceResult;
 use crate::semantic::invalidation::{ShardCategoryHashes, plan_shard_replacement};
@@ -1143,6 +1144,12 @@ pub struct FileFactShard {
     pub file_id: FileId,
     /// Whole-file content hash used for stale-shard replacement.
     pub content_hash: u64,
+    /// Schema version of the semantic fact producer that built this shard.
+    ///
+    /// Set to [`crate::semantic::facts::PRODUCER_SCHEMA_VERSION`] at
+    /// construction time.  Consumers (e.g. the snapshot layer in #1601)
+    /// compare this field against the constant to detect schema drift.
+    pub producer_schema_version: u32,
     /// Optional per-category hashes for change diagnostics.
     pub anchors_hash: Option<u64>,
     /// Optional per-category hashes for change diagnostics.
@@ -2471,6 +2478,7 @@ impl WorkspaceIndex {
             source_uri: uri.to_string(),
             file_id,
             content_hash,
+            producer_schema_version: PRODUCER_SCHEMA_VERSION,
             anchors_hash: Some(anchors_hash),
             entities_hash: Some(entities_hash),
             occurrences_hash: Some(0),
@@ -2520,39 +2528,43 @@ impl WorkspaceIndex {
                 ast, file_id,
             );
 
+        // Build synthetic entity/anchor slices from eval-sub triples.
+        // IMPORTANT: The triple is (entity, anchor, occurrence).  Only idx 0
+        // (entity) and idx 1 (anchor) belong in the synthetic slices.  Idx 2
+        // (occurrence) already flows through `dynamic_boundaries` above — do
+        // NOT move it here or `occurrences_hash` will double-count.
+        let synthetic_entities_from_eval: Vec<perl_semantic_facts::EntityFact> =
+            eval_sub_triples.iter().map(|(entity, _, _)| entity.clone()).collect();
+        let synthetic_anchors_from_eval: Vec<perl_semantic_facts::AnchorFact> =
+            eval_sub_triples.iter().map(|(_, anchor, _)| anchor.clone()).collect();
+
+        // Build synthetic entity/anchor slices from generated member facts.
+        let synthetic_entities_from_generated: Vec<perl_semantic_facts::EntityFact> =
+            generated_member_facts.iter().map(|f| f.entity.clone()).collect();
+        let synthetic_anchors_from_generated: Vec<perl_semantic_facts::AnchorFact> =
+            generated_member_facts.iter().map(|f| f.anchor.clone()).collect();
+
+        // Merge into single synthetic slices for the canonical builder.
+        let mut all_synthetic_entities = synthetic_entities_from_eval;
+        all_synthetic_entities.extend(synthetic_entities_from_generated);
+        let mut all_synthetic_anchors = synthetic_anchors_from_eval;
+        all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+
         // Build the canonical fact shard.
+        // Synthetic entities/anchors are now passed to the builder so that
+        // `entities_hash` and `anchors_hash` cover the COMPLETE set.
         // Import specs (for `use`, `require`, `ClassName->import()`) and
         // use-lib facts are populated separately via ImportExportIndex — not passed here.
-        let mut shard = crate::semantic::facts::build_canonical_fact_shard(
+        crate::semantic::facts::build_canonical_fact_shard(
             uri,
             content_hash,
             &decl_facts,
             &ref_facts,
             &[],
             &dynamic_boundaries,
-        );
-
-        // Merge entity and anchor facts from semantic producers into the shard.
-        // The `build_canonical_fact_shard` function only accepts OccurrenceFact
-        // slices for dynamic_boundaries; extra entities and anchors must be
-        // merged manually so queries can resolve those semantic facts.
-        //
-        // NOTE: This post-build merge means `entities_hash` and `anchors_hash` do
-        // not reflect these additions. Incremental replacement
-        // (`replace_fact_shard_incremental`) may miss a change if only synthetic
-        // facts change — the `content_hash` (whole-file) will still catch it.
-        // A future refactor should extend `build_canonical_fact_shard`'s API to
-        // accept extra entity/anchor slices alongside `dynamic_boundaries`.
-        for (entity, anchor, _) in eval_sub_triples {
-            shard.entities.push(entity);
-            shard.anchors.push(anchor);
-        }
-        for fact in generated_member_facts {
-            shard.entities.push(fact.entity);
-            shard.anchors.push(fact.anchor);
-        }
-
-        shard
+            &all_synthetic_entities,
+            &all_synthetic_anchors,
+        )
     }
 
     /// Replace a [`FileFactShard`] with per-category incremental invalidation.
@@ -7057,6 +7069,7 @@ MixedMod->import(qw(qw_one qw_two));
             source_uri: uri.to_string(),
             file_id,
             content_hash,
+            producer_schema_version: PRODUCER_SCHEMA_VERSION,
             anchors_hash,
             entities_hash,
             occurrences_hash,
@@ -7375,36 +7388,59 @@ MixedMod->import(qw(qw_one qw_two));
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::semantic::queries::SemanticQueries;
 
+        // After the file-scoped stable_id fix (#1600), two files with identical Perl source
+        // now produce DISTINCT anchor IDs (the file_id is included in the hash). This test
+        // verifies that both global lookups succeed and return the correct URIs — the old
+        // "fail-closed" scenario (None on collision) no longer applies in production.
         let index = WorkspaceIndex::new();
         let code = "package DuplicateAnchor;\nsub target { 1 }\n1;\n";
+        let uri_a = "file:///lib/DuplicateA.pm";
+        let uri_b = "file:///lib/DuplicateB.pm";
 
-        must(
-            index.index_file(must(url::Url::parse("file:///lib/DuplicateA.pm")), code.to_string()),
-        );
-        must(
-            index.index_file(must(url::Url::parse("file:///lib/DuplicateB.pm")), code.to_string()),
-        );
+        must(index.index_file(must(url::Url::parse(uri_a)), code.to_string()));
+        must(index.index_file(must(url::Url::parse(uri_b)), code.to_string()));
 
-        let candidates = index
-            .with_semantic_queries_for_uri("file:///lib/DuplicateA.pm", |file_id, queries| {
+        let file_id_a = index.file_id_for_uri(uri_a).ok_or("file_id_a not found")?;
+        let file_id_b = index.file_id_for_uri(uri_b).ok_or("file_id_b not found")?;
+
+        // Find anchor for file A by file-scoped resolution.
+        let all_candidates = index
+            .with_semantic_queries_for_uri(uri_a, |file_id, queries| {
                 let ctx = crate::semantic::queries::QueryContext::new(file_id, None, Some(0));
                 queries.definitions("DuplicateAnchor::target", &ctx)
             })
             .ok_or("missing semantic queries")?;
 
-        let anchor_id = candidates
-            .first()
-            .map(|candidate| candidate.anchor_id)
-            .ok_or("missing duplicate definition candidate")?;
-        assert!(
-            candidates.iter().filter(|candidate| candidate.anchor_id == anchor_id).count() > 1,
-            "fixture must produce duplicate anchor IDs to prove fail-closed behavior"
-        );
-        assert_eq!(
-            index.semantic_anchor_wire_location(anchor_id),
-            None,
-            "duplicate source-backed anchors must not resolve to an arbitrary file"
-        );
+        let anchor_id_a = all_candidates
+            .iter()
+            .find_map(|c| {
+                index
+                    .semantic_anchor_wire_location_for_file(file_id_a, c.anchor_id)
+                    .map(|_| c.anchor_id)
+            })
+            .ok_or("no candidate found for file A")?;
+        let anchor_id_b = all_candidates
+            .iter()
+            .find_map(|c| {
+                index
+                    .semantic_anchor_wire_location_for_file(file_id_b, c.anchor_id)
+                    .map(|_| c.anchor_id)
+            })
+            .ok_or("no candidate found for file B")?;
+
+        // After the fix, anchor IDs are distinct — no collision.
+        assert_ne!(anchor_id_a, anchor_id_b, "anchor IDs must be distinct after file-scoped fix");
+
+        // Global lookup now succeeds for both because each anchor_id is unique across shards.
+        let location_a = index
+            .semantic_anchor_wire_location(anchor_id_a)
+            .ok_or("global lookup for anchor_id_a must succeed (no collision after fix)")?;
+        assert_eq!(location_a.uri, uri_a, "anchor_id_a must resolve to uri_a");
+
+        let location_b = index
+            .semantic_anchor_wire_location(anchor_id_b)
+            .ok_or("global lookup for anchor_id_b must succeed (no collision after fix)")?;
+        assert_eq!(location_b.uri, uri_b, "anchor_id_b must resolve to uri_b");
 
         Ok(())
     }
@@ -7414,6 +7450,10 @@ MixedMod->import(qw(qw_one qw_two));
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::semantic::queries::SemanticQueries;
 
+        // After the file-scoped stable_id fix (#1600), two files with identical Perl source
+        // produce DISTINCT anchor IDs. The file-scoped lookup continues to work, and
+        // the global lookup also succeeds (no longer fails closed) because there are no
+        // collisions. Both assertions validate the new correct post-fix behavior.
         let index = WorkspaceIndex::new();
         let code = "package DuplicateAnchor;\nsub target { 1 }\n1;\n";
         let uri_a = "file:///lib/DuplicateA.pm";
@@ -7422,27 +7462,36 @@ MixedMod->import(qw(qw_one qw_two));
         must(index.index_file(must(url::Url::parse(uri_a)), code.to_string()));
         must(index.index_file(must(url::Url::parse(uri_b)), code.to_string()));
 
-        let (file_id_a, anchor_id) = index
+        let file_id_a = index.file_id_for_uri(uri_a).ok_or("file_id_a not found")?;
+
+        let all_candidates = index
             .with_semantic_queries_for_uri(uri_a, |file_id, queries| {
                 let ctx = crate::semantic::queries::QueryContext::new(file_id, None, Some(0));
-                queries
-                    .definitions("DuplicateAnchor::target", &ctx)
-                    .first()
-                    .map(|candidate| (file_id, candidate.anchor_id))
+                queries.definitions("DuplicateAnchor::target", &ctx)
             })
-            .flatten()
-            .ok_or("missing duplicate definition candidate")?;
+            .ok_or("missing semantic queries for uri_a")?;
 
-        assert_eq!(
-            index.semantic_anchor_wire_location(anchor_id),
-            None,
-            "global anchor lookup must still fail closed for duplicate anchor IDs"
-        );
+        // After the fix, find anchor_id for file A via file-scoped resolution.
+        let anchor_id_a = all_candidates
+            .iter()
+            .find_map(|c| {
+                index
+                    .semantic_anchor_wire_location_for_file(file_id_a, c.anchor_id)
+                    .map(|_| c.anchor_id)
+            })
+            .ok_or("no candidate found for file A")?;
 
-        let location = index
-            .semantic_anchor_wire_location_for_file(file_id_a, anchor_id)
-            .ok_or("file-scoped anchor lookup should resolve duplicate anchor ID")?;
-        assert_eq!(location.uri, uri_a);
+        // Global lookup now succeeds (no duplicate AnchorIds after the fix).
+        let global_location = index
+            .semantic_anchor_wire_location(anchor_id_a)
+            .ok_or("global anchor lookup must succeed post-fix (no collision)")?;
+        assert_eq!(global_location.uri, uri_a, "global lookup of anchor_id_a must return uri_a");
+
+        // File-scoped lookup also works.
+        let file_location = index
+            .semantic_anchor_wire_location_for_file(file_id_a, anchor_id_a)
+            .ok_or("file-scoped anchor lookup should resolve anchor ID for file A")?;
+        assert_eq!(file_location.uri, uri_a, "file-scoped lookup of anchor_id_a must return uri_a");
 
         Ok(())
     }
@@ -7681,5 +7730,187 @@ my ($a, ($b, $c)) = (1, (2, 3));
         // the indexer; the key invariant is that the file was successfully indexed.
         let _ = symbols;
         Ok(())
+    }
+}
+
+// ── Entity ID file-scoped collision tests (#1600) ──
+
+#[cfg(test)]
+mod entity_id_file_scoped_tests {
+    use super::*;
+    use crate::semantic::queries::SemanticQueries;
+    use perl_tdd_support::must;
+
+    /// Test A: IDs remain stable across re-parse of identical content in the same file.
+    /// After fix, ID stability within a file should be maintained because file_id is constant.
+    #[test]
+    fn semantic_anchor_id_stable_across_reparse_same_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///lib/Example.pm";
+        let code = "package Example;\nsub target { 1 }\n1;\n";
+
+        // Index the file once.
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Extract anchor_id from first index.
+        let candidates_1 = index
+            .with_semantic_queries_for_uri(uri, |file_id, queries| {
+                let ctx = crate::semantic::queries::QueryContext::new(file_id, None, Some(0));
+                queries.definitions("Example::target", &ctx)
+            })
+            .ok_or("missing semantic queries on first index")?;
+        let anchor_id_1 = candidates_1
+            .first()
+            .map(|candidate| candidate.anchor_id)
+            .ok_or("missing definition candidate on first index")?;
+
+        // Re-index with identical content.
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        // Extract anchor_id from second index.
+        let candidates_2 = index
+            .with_semantic_queries_for_uri(uri, |file_id, queries| {
+                let ctx = crate::semantic::queries::QueryContext::new(file_id, None, Some(0));
+                queries.definitions("Example::target", &ctx)
+            })
+            .ok_or("missing semantic queries on second index")?;
+        let anchor_id_2 = candidates_2
+            .first()
+            .map(|candidate| candidate.anchor_id)
+            .ok_or("missing definition candidate on second index")?;
+
+        // Assertion: IDs must be identical across re-index with same content.
+        assert_eq!(
+            anchor_id_1, anchor_id_2,
+            "anchor ID must remain stable when re-parsing identical content in same file"
+        );
+        Ok(())
+    }
+
+    /// Test B: Two files with identical Perl source produce distinct EntityIds and AnchorIds.
+    /// After file-scoped identity fix, anchor_id_a != anchor_id_b even though they have
+    /// identical qualified_name and byte offsets. Global lookup must succeed for both.
+    ///
+    /// Note on extraction: `definitions()` is a global query that returns candidates from
+    /// ALL indexed files (sorted by rank, then URI). When two files have identical content,
+    /// both files' entities match — we must filter by `semantic_anchor_wire_location_for_file`
+    /// to find the candidate that belongs to EACH specific file, rather than taking `.first()`
+    /// which always picks the alphabetically first file.
+    #[test]
+    fn semantic_anchor_ids_distinct_across_files_same_content()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let code = "package DuplicateAnchor;\nsub target { 1 }\n1;\n";
+        let uri_a = "file:///lib/DuplicateA.pm";
+        let uri_b = "file:///lib/DuplicateB.pm";
+
+        // Index both files with identical Perl source.
+        must(index.index_file(must(url::Url::parse(uri_a)), code.to_string()));
+        must(index.index_file(must(url::Url::parse(uri_b)), code.to_string()));
+
+        // Resolve file IDs for each URI.
+        let file_id_a = index.file_id_for_uri(uri_a).ok_or("file_id_a not found")?;
+        let file_id_b = index.file_id_for_uri(uri_b).ok_or("file_id_b not found")?;
+
+        // Get all definition candidates (from all files) when querying from uri_a context.
+        let all_candidates_a = index
+            .with_semantic_queries_for_uri(uri_a, |file_id, queries| {
+                let ctx = crate::semantic::queries::QueryContext::new(file_id, None, Some(0));
+                queries.definitions("DuplicateAnchor::target", &ctx)
+            })
+            .ok_or("with_semantic_queries_for_uri failed for uri_a")?;
+
+        // Find the candidate whose anchor belongs to file A (file-scoped lookup succeeds).
+        // This disambiguates when two files have identical content and canonical names.
+        let anchor_id_a = all_candidates_a
+            .iter()
+            .find_map(|c| {
+                index
+                    .semantic_anchor_wire_location_for_file(file_id_a, c.anchor_id)
+                    .map(|_| c.anchor_id)
+            })
+            .ok_or("no definition candidate found for file A")?;
+
+        // Get all definition candidates when querying from uri_b context.
+        let all_candidates_b = index
+            .with_semantic_queries_for_uri(uri_b, |file_id, queries| {
+                let ctx = crate::semantic::queries::QueryContext::new(file_id, None, Some(0));
+                queries.definitions("DuplicateAnchor::target", &ctx)
+            })
+            .ok_or("with_semantic_queries_for_uri failed for uri_b")?;
+
+        // Find the candidate whose anchor belongs to file B.
+        let anchor_id_b = all_candidates_b
+            .iter()
+            .find_map(|c| {
+                index
+                    .semantic_anchor_wire_location_for_file(file_id_b, c.anchor_id)
+                    .map(|_| c.anchor_id)
+            })
+            .ok_or("no definition candidate found for file B")?;
+
+        // Assertion 1: File IDs must be distinct.
+        assert_ne!(
+            file_id_a, file_id_b,
+            "file_id_a and file_id_b must be distinct for different URIs"
+        );
+
+        // Assertion 2: Anchor IDs must be distinct across files.
+        assert_ne!(
+            anchor_id_a, anchor_id_b,
+            "anchor IDs must be distinct for identical code in different files (after file-scoped fix)"
+        );
+
+        // Assertion 3: Global lookup must succeed for anchor from file A.
+        let location_a = index
+            .semantic_anchor_wire_location(anchor_id_a)
+            .ok_or("global lookup of anchor_id_a should succeed post-fix")?;
+        assert_eq!(location_a.uri, uri_a, "global lookup of anchor_id_a must return uri_a");
+
+        // Assertion 4: Global lookup must succeed for anchor from file B.
+        let location_b = index
+            .semantic_anchor_wire_location(anchor_id_b)
+            .ok_or("global lookup of anchor_id_b should succeed post-fix")?;
+        assert_eq!(location_b.uri, uri_b, "global lookup of anchor_id_b must return uri_b");
+
+        // Assertion 5: File-scoped lookup must work for both.
+        let location_a_scoped = index
+            .semantic_anchor_wire_location_for_file(file_id_a, anchor_id_a)
+            .ok_or("file-scoped lookup for (file_id_a, anchor_id_a) should succeed")?;
+        assert_eq!(
+            location_a_scoped.uri, uri_a,
+            "file-scoped lookup of anchor_id_a from file_id_a must return uri_a"
+        );
+
+        let location_b_scoped = index
+            .semantic_anchor_wire_location_for_file(file_id_b, anchor_id_b)
+            .ok_or("file-scoped lookup for (file_id_b, anchor_id_b) should succeed")?;
+        assert_eq!(
+            location_b_scoped.uri, uri_b,
+            "file-scoped lookup of anchor_id_b from file_id_b must return uri_b"
+        );
+
+        Ok(())
+    }
+
+    /// Test C: Defense-in-depth — manually injected colliding AnchorIds still fail closed.
+    /// This test verifies that the fail-closed guard at workspace_index.rs:2659 remains
+    /// a valid defense mechanism even after the fix, in case a bug allows collisions.
+    /// Marked #[ignore] pending a synthetic anchor injection API (follow-up issue).
+    #[test]
+    #[ignore]
+    fn semantic_anchor_wire_location_fails_closed_for_manually_injected_duplicate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: This test requires a way to manually inject FileFactShards with
+        // colliding AnchorIds, bypassing the normal stable_id() call path.
+        // Requires either:
+        // - A test-only inject API on WorkspaceIndex, or
+        // - Direct access to modify the internal shard map.
+        // For now, this is deferred as an enhancement to the test harness.
+        // The normal operation case (Test B) ensures collisions don't occur in production.
+        // The fail-closed path at line 2659 will be exercised only if a future bug
+        // creates a collision despite the file_id inclusion.
+        unimplemented!("synthetic anchor injection API not yet available")
     }
 }
