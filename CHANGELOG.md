@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interpolate supplied scalar variables in logpoint message templates while
   preserving existing raw-message behavior when no variable map is available.
   (#1807)
+- **VS Code first-run onboarding helpers.** The extension can suggest discovered
+  include paths from common Perl module directories, exposes an optional
+  server-gated AI completion walkthrough/prompt, and ships an openable demo
+  project for new installations. (#1898)
 
 ### Fixed
 
@@ -137,6 +141,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serialize the internally-computed `filterText` field, preserving expected
   client-side matching for snippets and other items whose label differs from
   the typed prefix. (#1889)
+- **Duplicate quick-fix code actions are collapsed.** When overlapping
+  providers produce byte-identical lightbulb entries, the server now keeps one
+  action and builds `source.fixAll` from the deduplicated set. (#1913)
 
 #### Formatting
 
@@ -187,6 +194,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`s///e` substitution replacement text is classified as Perl code.** This
   improves downstream semantic analysis for executable substitution bodies.
   (#1238)
+- **`given` blocks accept normal Perl statements.** The parser now handles
+  postfix `when`/`default` modifiers and ordinary statements inside `given`
+  blocks while preserving the classic `when { ... }` / `default { ... }` forms.
+  (#1893)
 
 #### Module resolution
 
@@ -215,6 +226,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Generated-member and eval-sub synthetic entities/anchors now flow into the
   canonical shard builder before category hashes are computed, and shards carry
   an explicit producer schema version. (#1904)
+- **AST child-classification flags match traversal.** `contains_children` now
+  agrees with `Node::for_each_child` for every `NodeKind`, with a drift-guard so
+  traversal consumers do not silently skip children. (#1891)
+- **HIR lowers core control-flow shells.** Branches, loops, control transfers,
+  and postfix statement modifiers now lower into PIR-v0-aligned HIR shells with
+  source anchors and static shape facts. No LSP provider behavior is cut over by
+  this substrate change. (#1902)
+- **Compile-state layers are specified and fixture-pinned.** PLSP-SPEC-0030 now
+  defines the L0-L6 compile-state stack, determinism obligations, dynamic
+  boundaries, and no-provider-cutover claim boundary, with alignment tests.
+  (#1895)
+- **Parser boundary responsibilities are documented.** POD, heredoc-body, and
+  `__DATA__` / `__END__` non-executable boundaries now have a consumer contract
+  in `PARSER_CONTRACTS.md`, including strict versus lenient detection posture.
+  (#1896)
 - **LSP transport framing uses checked body-offset arithmetic.**
   `Content-Length` frame parsing now guards the `body_start` offset calculation
   with checked arithmetic and recovers through the existing invalid-length path
@@ -242,6 +268,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Variable completion now has regression tests for `$`/`@`/`%` sigil filtering,
   and the routed completion coverage pack exercises double-quoted special hash
   keys after the #1839 gate repair. (#1842, #1894)
+- **PR summary rendering coverage was raised.** The coverage gate has additional
+  tests for PR summary rendering so Patch-95 behavior stays tied to the
+  coverage-reporting path. (#1890)
+- **Rust toolchain documentation matches the actual 1.95 floor.** Normative
+  onboarding, stability, CI, and template docs now align with `Cargo.toml`,
+  `rust-toolchain.toml`, clippy policy, and flake pins. (#1932)
 - **Workflow privilege analysis fails closed for untrusted event expressions.**
   Jobs with write permissions must prove every event-expression branch is
   anchored to a trusted event. (#1539)
