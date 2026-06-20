@@ -73,3 +73,27 @@ When you intentionally change `syntaxes/perl.tmLanguage.json`:
 
 To extend coverage, add a new `.pl` fixture under `fixtures/` and run
 `npm run test:grammar:update` to generate its snapshot.
+
+## Known grammar bugs captured by the current baseline
+
+These snapshots record what the grammar **actually** emits today, including
+several pre-existing highlighting bugs. That is intentional: a regression
+baseline captures current behaviour so that *any* change — including a fix —
+shows up as an explicit `.snap` diff. When the grammar is corrected, regenerate
+the affected snapshots (`npm run test:grammar:update`) and the diff will show the
+scope improving. The known defects, tracked in
+[#1958](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1958):
+
+- **`qq{...}` / `qw(...)`** (`strings.pl`): the brace/`qw` begin rule scopes
+  leading tokens (`my $qq = `) as `string.quoted.q.perl`; the paren form
+  `q(...)` is correct.
+- **`=~ /pattern/`** (`operators.pl`): the bare match regex after `=~` is
+  tokenized as arithmetic division (`/` → `keyword.operator.arithmetic.perl`);
+  `m//`, `s///`, `tr///`, `qr//` are correct.
+- **`0o755`** (`numbers.pl`): modern octal prefix gets no
+  `constant.numeric.octal.perl` scope.
+- **`1_000_000`** (`numbers.pl`): underscore-separated integers get no
+  `constant.numeric.integer.perl` scope (plain `42` is correct).
+
+Fixing these belongs in a grammar PR against `syntaxes/perl.tmLanguage.json`,
+not here — this harness is the guard that keeps them fixed once they are.
