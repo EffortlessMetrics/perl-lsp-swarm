@@ -157,6 +157,87 @@ fn file_paths_match(stored: &str, observed: &str) -> bool {
     false
 }
 
+/// Interpolate logpoint message template with variable values.
+///
+/// Parses `{expression}` patterns in the message template and substitutes
+/// them with values from the provided variable map.
+///
+/// # Arguments
+///
+/// * `template` - Message template with `{$variable}` expressions
+/// * `variables` - HashMap of variable names to their string values
+///
+/// # Returns
+///
+/// The interpolated message with expressions replaced by variable values.
+/// If a variable is not found, the expression remains as-is.
+///
+/// # Examples
+///
+/// ```
+/// let mut vars = std::collections::HashMap::new();
+/// vars.insert("x".to_string(), "42".to_string());
+/// let result = interpolate_logpoint_message("value: {$x}", &vars);
+/// assert_eq!(result, "value: 42");
+/// ```
+pub fn interpolate_logpoint_message(
+    template: &str,
+    variables: &std::collections::HashMap<String, String>,
+) -> String {
+    // Use a simple regex-based approach to find and replace {$var} patterns
+    // For now, we'll use a manual character-by-character parser to avoid regex dependency
+
+    let mut result = String::new();
+    let mut chars = template.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '{' {
+            // Look ahead for a variable reference like $name
+            let mut expr = String::new();
+            let mut found_close = false;
+
+            // Collect everything until }
+            while let Some(next_ch) = chars.peek() {
+                if *next_ch == '}' {
+                    chars.next(); // consume the }
+                    found_close = true;
+                    break;
+                }
+                expr.push(*next_ch);
+                chars.next();
+            }
+
+            if found_close {
+                // Try to parse as a Perl variable ($name, @name, %name)
+                let trimmed = expr.trim();
+                if let Some(var_name) = trimmed.strip_prefix('$') {
+                    if let Some(value) = variables.get(var_name) {
+                        result.push_str(value);
+                    } else {
+                        // Variable not found, keep original expression
+                        result.push('{');
+                        result.push_str(trimmed);
+                        result.push('}');
+                    }
+                } else {
+                    // Not a Perl variable, keep as-is
+                    result.push('{');
+                    result.push_str(&expr);
+                    result.push('}');
+                }
+            } else {
+                // No closing }, keep opening brace
+                result.push('{');
+                result.push_str(&expr);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
 /// Thread-safe breakpoint storage
 ///
 /// Stores breakpoints indexed by source file path. Provides methods for
@@ -446,6 +527,30 @@ impl BreakpointStore {
     /// This method updates per-breakpoint hit counters and evaluates DAP hit
     /// conditions. For logpoints, execution continues after emitting output.
     pub fn register_breakpoint_hit(&self, source_path: &str, line: i64) -> BreakpointHitOutcome {
+        self.register_breakpoint_hit_with_variables(source_path, line, None)
+    }
+
+    /// Register a breakpoint hit with optional variable interpolation.
+    ///
+    /// Similar to `register_breakpoint_hit`, but accepts optional variable values
+    /// for logpoint message interpolation. If variables are provided, logpoint
+    /// messages with `{$variable}` expressions will be interpolated.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_path` - Path to the source file
+    /// * `line` - Line number where the breakpoint was hit (1-based)
+    /// * `variables` - Optional map of variable names to their string values
+    ///
+    /// # Returns
+    ///
+    /// BreakpointHitOutcome with interpolated log messages if variables provided
+    pub fn register_breakpoint_hit_with_variables(
+        &self,
+        source_path: &str,
+        line: i64,
+        variables: Option<&std::collections::HashMap<String, String>>,
+    ) -> BreakpointHitOutcome {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
         let mut outcome = BreakpointHitOutcome::default();
 
@@ -470,7 +575,13 @@ impl BreakpointStore {
                 }
 
                 if let Some(message) = record.log_message.clone() {
-                    outcome.log_messages.push(message);
+                    // Interpolate message if variables are available
+                    let interpolated = if let Some(vars) = variables {
+                        interpolate_logpoint_message(&message, vars)
+                    } else {
+                        message
+                    };
+                    outcome.log_messages.push(interpolated);
                 } else {
                     outcome.should_stop = true;
                 }
@@ -982,6 +1093,174 @@ print "result: $final\n";
         assert!(logpoint_second.matched);
         assert!(!logpoint_second.should_stop);
         assert_eq!(logpoint_second.log_messages, vec!["loop tick".to_string()]);
+    }
+
+    #[test]
+    fn test_logpoint_message_interpolation() {
+        // Test basic logpoint message interpolation with {$variable} syntax
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+
+        let args = SetBreakpointsArguments {
+            source: Source { path: Some(source_path.clone()), name: Some("script.pl".to_string()) },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 10,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: Some("x = {$x}".to_string()),
+            }]),
+            source_modified: None,
+        };
+        let responses = store.set_breakpoints(&args);
+        assert_eq!(responses.len(), 1);
+        assert!(responses[0].verified);
+
+        // Register hit and verify interpolation occurs
+        let outcome = store.register_breakpoint_hit(&source_path, 10);
+        assert!(outcome.matched);
+        assert!(!outcome.should_stop); // logpoint doesn't stop
+
+        // Interpolate the message with variable values
+        let mut variables = std::collections::HashMap::new();
+        variables.insert("x".to_string(), "42".to_string());
+
+        let interpolated = interpolate_logpoint_message(&outcome.log_messages[0], &variables);
+        assert_eq!(interpolated, "x = 42");
+    }
+
+    #[test]
+    fn test_register_breakpoint_hit_with_variables_interpolates() {
+        // Test register_breakpoint_hit_with_variables interpolates messages
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+
+        let args = SetBreakpointsArguments {
+            source: Source { path: Some(source_path.clone()), name: Some("script.pl".to_string()) },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 10,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: Some("value: {$x}, count: {$count}".to_string()),
+            }]),
+            source_modified: None,
+        };
+        let responses = store.set_breakpoints(&args);
+        assert!(responses[0].verified);
+
+        // Create variable map
+        let mut variables = std::collections::HashMap::new();
+        variables.insert("x".to_string(), "42".to_string());
+        variables.insert("count".to_string(), "7".to_string());
+
+        // Register hit with variables - should interpolate
+        let outcome =
+            store.register_breakpoint_hit_with_variables(&source_path, 10, Some(&variables));
+        assert!(outcome.matched);
+        assert!(!outcome.should_stop);
+        assert_eq!(outcome.log_messages.len(), 1);
+        assert_eq!(outcome.log_messages[0], "value: 42, count: 7");
+    }
+
+    #[test]
+    fn test_register_breakpoint_hit_without_variables_preserves_template() {
+        // Test that without variables, messages are preserved as-is
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+
+        let args = SetBreakpointsArguments {
+            source: Source { path: Some(source_path.clone()), name: Some("script.pl".to_string()) },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 10,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: Some("x = {$x}".to_string()),
+            }]),
+            source_modified: None,
+        };
+        let responses = store.set_breakpoints(&args);
+        assert!(responses[0].verified);
+
+        // Register hit without variables - should preserve template
+        let outcome = store.register_breakpoint_hit(&source_path, 10);
+        assert!(outcome.matched);
+        assert_eq!(outcome.log_messages.len(), 1);
+        assert_eq!(outcome.log_messages[0], "x = {$x}"); // Template preserved
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_single_variable() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("x".to_string(), "42".to_string());
+
+        assert_eq!(interpolate_logpoint_message("value: {$x}", &vars), "value: 42");
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_multiple_variables() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("x".to_string(), "10".to_string());
+        vars.insert("y".to_string(), "20".to_string());
+
+        assert_eq!(interpolate_logpoint_message("x={$x}, y={$y}", &vars), "x=10, y=20");
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_missing_variable() {
+        let vars = std::collections::HashMap::new();
+        // Variable not in map - expression should remain as-is
+        assert_eq!(interpolate_logpoint_message("value: {$x}", &vars), "value: {$x}");
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_no_substitution() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("x".to_string(), "42".to_string());
+
+        // No variables to interpolate
+        assert_eq!(interpolate_logpoint_message("simple message", &vars), "simple message");
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_non_variable_expression() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("x".to_string(), "42".to_string());
+
+        // Non-variable expressions are left unchanged
+        assert_eq!(
+            interpolate_logpoint_message("expression: {5 + 3}", &vars),
+            "expression: {5 + 3}"
+        );
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_unclosed_brace() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("x".to_string(), "42".to_string());
+
+        // Unclosed brace - keep as-is
+        assert_eq!(interpolate_logpoint_message("value: {$x", &vars), "value: {$x");
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_empty_braces() {
+        let vars = std::collections::HashMap::new();
+        // Empty braces should be kept as-is
+        assert_eq!(interpolate_logpoint_message("value: {}", &vars), "value: {}");
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_repeated_variable() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("count".to_string(), "5".to_string());
+
+        // Same variable multiple times
+        assert_eq!(
+            interpolate_logpoint_message("count is {$count}, repeat {$count}", &vars),
+            "count is 5, repeat 5"
+        );
     }
 
     #[test]
