@@ -24,8 +24,10 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**.md'
-      - '.github/workflows/ci.yml'  # This file is metadata; docs-only workflows still run
-      - 'vscode-extension/**'  # VSCode extension docs and translations
+      # Note: .github/workflows/ci.yml is intentionally NOT here — a PR that only
+      # modifies this file must still run CI to validate the change.
+      - 'vscode-extension/media/**'  # Icons, images — no Rust/TS integration impact
+      - 'vscode-extension/snippets/**'  # JSON snippets — no Rust/TS integration impact
       - 'tree-sitter-perl/examples/**'  # Grammar examples (non-executable)
   merge_group: {}
   push:
