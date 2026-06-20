@@ -1108,6 +1108,7 @@ mod tests {
             NodeKind::Subroutine {
                 name: Some("add".to_string()),
                 name_span: None,
+                declarator: None,
                 signature: Some(Box::new(Node::new(
                     NodeKind::Signature {
                         parameters: vec![
