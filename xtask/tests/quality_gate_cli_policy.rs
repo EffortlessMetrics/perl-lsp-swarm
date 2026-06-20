@@ -4,12 +4,14 @@ use std::{
     error::Error,
     fs,
     path::{Path, PathBuf},
-    process::Command as StdCommand,
 };
 
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use tempfile::tempdir;
+
+mod git_test_support;
+use git_test_support::current_head;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -929,14 +931,6 @@ fn repo_root() -> TestResult<PathBuf> {
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "xtask manifest must be nested under repo root".into())
-}
-
-fn current_head(root: &Path) -> TestResult<String> {
-    let output = StdCommand::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output()?;
-    if !output.status.success() {
-        return Err(format!("git rev-parse HEAD failed with status {}", output.status).into());
-    }
-    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
 fn write_text(path: &Path, value: &str) -> TestResult {
