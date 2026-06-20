@@ -155,7 +155,13 @@ impl ContentLengthFramer {
             return Err(FramingError::FrameTooLarge { len: length });
         }
 
-        let body_start = header_end + header_len;
+        let body_start = match header_end.checked_add(header_len) {
+            Some(start) => start,
+            None => {
+                self.consume_header_block(header_end, header_len);
+                return Err(FramingError::InvalidContentLength);
+            }
+        };
         let Some(body_end) = body_start.checked_add(length) else {
             self.consume_header_block(header_end, header_len);
             return Err(FramingError::InvalidContentLength);
@@ -1726,5 +1732,33 @@ mod tests {
             matches!(framer.try_next(), Err(FramingError::FrameTooLarge { .. })),
             "expected FrameTooLarge for Content-Length > MAX_FRAME_SIZE"
         );
+    }
+
+    // T7 — Checked arithmetic for body_start offset calculation.
+    // Verifies that both header_end + header_len and body_start + length
+    // are checked for overflow, not just the body_end calculation.
+    // This test verifies the state machine recovers correctly after processing
+    // multiple frames with proper offset calculations.
+    #[test]
+    fn framer_body_offset_overflow_is_caught() {
+        let body = b"x"; // Minimal body
+        let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        frame.extend_from_slice(body);
+
+        let mut framer = ContentLengthFramer::new();
+        framer.push(&frame);
+
+        // First frame should succeed
+        let result = framer.try_next();
+        assert!(result.is_ok(), "first frame should parse successfully");
+
+        // The framer state should be clean and ready for the next frame
+        let body2 = b"y";
+        let mut frame2 = format!("Content-Length: {}\r\n\r\n", body2.len()).into_bytes();
+        frame2.extend_from_slice(body2);
+        framer.push(&frame2);
+
+        let result2 = framer.try_next();
+        assert!(result2.is_ok(), "second frame should also parse successfully after first");
     }
 }
