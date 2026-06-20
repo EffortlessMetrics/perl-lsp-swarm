@@ -3530,6 +3530,118 @@ fn test_use_statement_skips_past_module_name_at_qw() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+// -------------------------------------------------------------------------
+// Auto-import additionalTextEdits for workspace symbol completions (#1694)
+//
+// Completing an unimported workspace subroutine, variable, or constant should
+// attach an `additionalTextEdits` entry inserting the required `use Module;`
+// statement, matching the behavior already provided for method completions.
+// -------------------------------------------------------------------------
+
+/// Find the auto-import edit text on the completion item whose label matches
+/// `label`, if any.
+fn auto_import_edit_text<'a>(completions: &'a [CompletionItem], label: &str) -> Option<&'a str> {
+    completions
+        .iter()
+        .find(|c| c.label == label)?
+        .additional_edits
+        .first()
+        .map(|(_, text)| text.as_str())
+}
+
+#[test]
+fn workspace_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nsub barker { }\n1;\n".to_string(),
+    )?;
+    let code = "use strict;\nbark";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    // Workspace subroutine completions are labelled by qualified name.
+    let edit = auto_import_edit_text(&completions, "Foo::barker")
+        .ok_or("expected `Foo::barker` workspace subroutine completion with an auto-import edit")?;
+    assert_eq!(edit, "use Foo;\n", "should auto-insert `use Foo;` for unimported subroutine");
+    Ok(())
+}
+
+#[test]
+fn workspace_constant_completion_auto_imports_module() -> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nuse constant ANSWER => 42;\n1;\n".to_string(),
+    )?;
+    let code = "use strict;\nANSW";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    if let Some(edit) = auto_import_edit_text(&completions, "ANSWER") {
+        assert_eq!(edit, "use Foo;\n", "constant completion should auto-insert `use Foo;`");
+    } else {
+        // Constant indexing is best-effort; if the symbol is indexed it must
+        // carry the auto-import edit. A missing symbol does not exercise the arm.
+        assert!(
+            !completions.iter().any(|c| c.label == "ANSWER"),
+            "ANSWER constant completion must carry an auto-import edit when present"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_completion_suppresses_auto_import_when_already_imported()
+-> Result<(), Box<dyn std::error::Error>> {
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(
+        Url::parse("file:///lib/Foo.pm")?,
+        "package Foo;\nsub barker { }\n1;\n".to_string(),
+    )?;
+    // `Foo` is already imported, so no duplicate `use Foo;` edit should attach.
+    let code = "use strict;\nuse Foo;\nbark";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    if let Some(item) = completions.iter().find(|c| c.label == "Foo::barker") {
+        assert!(
+            item.additional_edits.is_empty(),
+            "already-imported module must not produce a duplicate auto-import edit; got {:?}",
+            item.additional_edits
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn workspace_completion_no_auto_import_for_file_local_symbol()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A symbol with no container module (file-local) must not generate an import.
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(Url::parse("file:///main.pl")?, "sub barker { }\nbark\n".to_string())?;
+    let code = "sub barker { }\nbark";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, code.len());
+
+    for item in completions.iter().filter(|c| c.label.contains("barker")) {
+        assert!(
+            item.additional_edits.is_empty(),
+            "file-local symbol must not carry an auto-import edit; got {:?}",
+            item.additional_edits
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn test_require_statement_triggers_module_completion() -> Result<(), Box<dyn std::error::Error>> {
     let index = Arc::new(WorkspaceIndex::new());

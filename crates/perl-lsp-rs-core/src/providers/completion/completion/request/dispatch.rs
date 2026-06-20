@@ -278,6 +278,7 @@ fn complete_general_context(
     workspace::add_workspace_symbol_completions(
         completions,
         context,
+        source,
         &provider.workspace_index,
         &provider.import_map,
     );
