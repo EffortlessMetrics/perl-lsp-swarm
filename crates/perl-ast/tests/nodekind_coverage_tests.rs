@@ -525,7 +525,11 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
         ),
         (
             Node::new(
-                NodeKind::Format { name: "STDOUT".to_string(), name_span: None, body: "body".to_string() },
+                NodeKind::Format {
+                    name: "STDOUT".to_string(),
+                    name_span: None,
+                    body: "body".to_string(),
+                },
                 loc(),
             ),
             "Format",

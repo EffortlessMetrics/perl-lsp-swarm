@@ -1793,7 +1793,11 @@ fn leaf_nodes_have_no_children() -> Result<(), Box<dyn std::error::Error>> {
         Node::new(NodeKind::Prototype { content: "$".to_string() }, loc(0, 3)),
         Node::new(NodeKind::DataSection { marker: "__END__".to_string(), body: None }, loc(0, 7)),
         Node::new(
-            NodeKind::Format { name: "STDOUT".to_string(), name_span: None, body: "@<<<".to_string() },
+            NodeKind::Format {
+                name: "STDOUT".to_string(),
+                name_span: None,
+                body: "@<<<".to_string(),
+            },
             loc(0, 15),
         ),
         Node::new(NodeKind::LoopControl { op: "next".to_string(), label: None }, loc(0, 4)),

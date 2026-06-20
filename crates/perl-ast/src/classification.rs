@@ -1746,7 +1746,11 @@ mod tests {
                 parents: vec![],
                 body: Box::new(block_node()),
             }),
-            n(NodeKind::Format { name: "STDOUT".to_string(), name_span: None, body: "".to_string() }),
+            n(NodeKind::Format {
+                name: "STDOUT".to_string(),
+                name_span: None,
+                body: "".to_string(),
+            }),
             n(NodeKind::Identifier { name: "foo".to_string() }),
             n(NodeKind::Error {
                 message: "oops".to_string(),
