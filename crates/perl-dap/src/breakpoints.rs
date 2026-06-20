@@ -1264,6 +1264,24 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_interpolate_logpoint_message_variable_with_spaces_found() {
+        // Braces with whitespace around $var — trimming finds the variable
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("x".to_string(), "99".to_string());
+        // { $x } trims to $x → looks up "x" → found
+        assert_eq!(interpolate_logpoint_message("val: { $x }", &vars), "val: 99");
+    }
+
+    #[test]
+    fn test_interpolate_logpoint_message_variable_with_spaces_not_found() {
+        // Braces with whitespace around $var — trimming applies before key lookup;
+        // when not found the expression is re-emitted in trimmed form.
+        let vars = std::collections::HashMap::new();
+        // { $y } → trimmed → "$y" → not found → emitted as {$y} (trimmed, no extra spaces)
+        assert_eq!(interpolate_logpoint_message("val: { $y }", &vars), "val: {$y}");
+    }
+
+    #[test]
     fn test_validate_breakpoint_line_scenarios() {
         // AC:7.3
         let source = r#"use strict;
