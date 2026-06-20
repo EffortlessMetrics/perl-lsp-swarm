@@ -613,4 +613,56 @@ mod tests {
         assert_eq!(facts.occurrences[5].confidence, Confidence::Low);
         assert_eq!(facts.occurrences[5].provenance, Provenance::DynamicBoundary);
     }
+
+    /// Test: Entity ID file ID is recoverable via the anchor fact.
+    /// After file-scoped identity fix, entity.anchor_id points to an AnchorFact that
+    /// carries the file_id. This test verifies that file ID can be recovered by
+    /// following the entity → anchor → file_id chain. (#1600)
+    #[test]
+    fn entity_id_file_id_recoverable_via_anchor() {
+        let test_file_id = FileId(555);
+        let decls = vec![
+            SymbolDecl {
+                kind: SymbolKind::Package,
+                name: "TestPkg".to_string(),
+                qualified_name: "TestPkg".to_string(),
+                full_span: (0, 20),
+                anchor_span: Some((8, 15)),
+                container: None,
+                declarator: None,
+            },
+            SymbolDecl {
+                kind: SymbolKind::Subroutine,
+                name: "helper".to_string(),
+                qualified_name: "TestPkg::helper".to_string(),
+                full_span: (21, 50),
+                anchor_span: Some((25, 31)),
+                container: Some("TestPkg".to_string()),
+                declarator: None,
+            },
+        ];
+
+        // Invoke the adapter with a specific file_id.
+        let facts = symbol_decls_to_semantic_facts(&decls, test_file_id);
+
+        // Verify we have entities and anchors.
+        assert!(!facts.entities.is_empty(), "facts should have entities");
+        assert!(!facts.anchors.is_empty(), "facts should have anchors");
+
+        // For each entity, verify that its anchor_id matches an anchor in the facts,
+        // and that anchor carries the correct file_id.
+        for entity in &facts.entities {
+            let matching_anchor = facts
+                .anchors
+                .iter()
+                .find(|anchor| anchor.id == entity.anchor_id)
+                .expect("entity's anchor_id must match an anchor in facts");
+
+            // Key assertion: the anchor's file_id must match the file_id passed in.
+            assert_eq!(
+                matching_anchor.file_id, test_file_id,
+                "anchor's file_id must match the input file_id"
+            );
+        }
+    }
 }
