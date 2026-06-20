@@ -869,7 +869,10 @@ fn test_relaunch_after_terminate_no_stale_state() -> TestResult {
                     && !msg.contains("state conflict"),
                 "launch after terminate must not report stale-session collision, got: {msg}"
             );
-            // Must be a file-not-found or similar launch error.
+            // Must be a file-not-found, launch error, or protocol-ordering error.
+            // If launch is sent without a prior initialize the adapter rejects it
+            // with a protocol ordering message; that is NOT a stale-session error
+            // and is an equally acceptable failure reason here.
             assert!(
                 msg.contains("Cannot find")
                     || msg.contains("not a file")
@@ -877,8 +880,9 @@ fn test_relaunch_after_terminate_no_stale_state() -> TestResult {
                     || msg.contains("Failed")
                     || msg.contains("no launch")
                     || msg.contains("Perl")
-                    || msg.contains("Cannot start"),
-                "launch failure must describe a file/launch error, got: {msg}"
+                    || msg.contains("Cannot start")
+                    || msg.contains("initialize"),
+                "launch failure must describe a file/launch error or protocol-ordering error, got: {msg}"
             );
         }
         DapMessage::Response { success: true, .. } => {

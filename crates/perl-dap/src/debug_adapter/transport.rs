@@ -177,3 +177,102 @@ impl DebugAdapter {
         self.run_with_io(input, output)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! In-crate proof tests for the transport seam.
+    //!
+    //! These cover the core framing path (empty input, well-formed request,
+    //! bad-frame skip + recovery) using `std::io::Cursor` as the reader and
+    //! a shared `Vec<u8>` via `Arc<Mutex<_>>` as the writer.  They give ripr
+    //! recognised coverage for the `run_with_io` / `run_with_io_for_test`
+    //! production lines without requiring an external test binary.
+
+    use super::*;
+    use crate::debug_adapter::DebugAdapter;
+    use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
+
+    // ── shared buffer satisfying `Write + Send + 'static` ────────────────────
+
+    #[derive(Clone, Default)]
+    struct Buf(Arc<Mutex<Vec<u8>>>);
+
+    impl Buf {
+        fn new() -> Self {
+            Self(Arc::new(Mutex::new(Vec::new())))
+        }
+
+        fn snapshot(&self) -> Vec<u8> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+
+    impl io::Write for Buf {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).write(data)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn framed(body: &[u8]) -> Vec<u8> {
+        let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        frame.extend_from_slice(body);
+        frame
+    }
+
+    fn initialize_request() -> Vec<u8> {
+        let body = br#"{"type":"request","seq":1,"command":"initialize","arguments":{"clientID":"test","adapterID":"perl"}}"#;
+        framed(body)
+    }
+
+    // ── 1. Empty input → immediate clean shutdown ─────────────────────────────
+
+    #[test]
+    fn transport_empty_input_returns_ok() -> io::Result<()> {
+        let mut adapter = DebugAdapter::new();
+        adapter.run_with_io_for_test(Cursor::new(Vec::<u8>::new()), Buf::new())
+    }
+
+    // ── 2. Well-formed initialize → response written ──────────────────────────
+
+    #[test]
+    fn transport_well_formed_request_produces_response() -> io::Result<()> {
+        let output = Buf::new();
+        let mut adapter = DebugAdapter::new();
+        adapter.run_with_io_for_test(Cursor::new(initialize_request()), output.clone())?;
+
+        let written = output.snapshot();
+        assert!(
+            written.starts_with(b"Content-Length:"),
+            "expected framed response, got {} bytes",
+            written.len()
+        );
+        Ok(())
+    }
+
+    // ── 3. Bad frame then well-formed request → skip + recover ───────────────
+
+    #[test]
+    fn transport_bad_frame_then_well_formed_recovers() -> io::Result<()> {
+        let mut input = framed(b"not-json!!!");
+        input.extend(initialize_request());
+
+        let output = Buf::new();
+        let mut adapter = DebugAdapter::new();
+        adapter.run_with_io_for_test(Cursor::new(input), output.clone())?;
+
+        let written = output.snapshot();
+        assert!(
+            written.starts_with(b"Content-Length:"),
+            "expected response after recovery, got {} bytes",
+            written.len()
+        );
+        Ok(())
+    }
+}

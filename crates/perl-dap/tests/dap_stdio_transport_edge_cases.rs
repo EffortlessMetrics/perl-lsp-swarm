@@ -218,6 +218,48 @@ fn test_transport_lf_only_separator_no_panic() -> io::Result<()> {
 
 // ── 10. Malformed frame followed by well-formed one (recovery) ────────────────
 
+/// Extract the body bytes of the first framed message from `buf`.
+///
+/// The event-handler thread may append an "initialized" event to the shared
+/// writer *after* `run_with_io_for_test` returns (the thread is not joined
+/// before the function exits).  Parsing `written[separator..end]` as JSON
+/// therefore fails non-deterministically because the slice contains the
+/// initialize response JSON followed by a second Content-Length frame.
+///
+/// This helper parses the `Content-Length` header of the first frame and
+/// returns only those bytes, avoiding the race.
+fn first_frame_body(buf: &[u8]) -> io::Result<&[u8]> {
+    // Locate the header/body separator.
+    let sep_pos = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no CRLF separator in output"))?;
+    let header = &buf[..sep_pos];
+    let body_start = sep_pos + 4;
+
+    // Parse Content-Length from the header.
+    let cl_prefix = b"Content-Length: ";
+    let cl_start =
+        header.windows(cl_prefix.len()).position(|w| w == cl_prefix).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "no Content-Length in header")
+        })? + cl_prefix.len();
+    let cl_end = header[cl_start..]
+        .iter()
+        .position(|&b| b == b'\r' || b == b'\n')
+        .map(|p| cl_start + p)
+        .unwrap_or(header.len());
+    let cl_str = std::str::from_utf8(&header[cl_start..cl_end])
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let cl: usize = cl_str.trim().parse().map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("bad Content-Length: {e}"))
+    })?;
+
+    let body_end = body_start + cl;
+    buf.get(body_start..body_end).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "buffer truncated before body end")
+    })
+}
+
 #[test]
 fn test_transport_recovers_after_malformed_frame() -> io::Result<()> {
     // A bad (non-JSON) frame immediately followed by a well-formed initialize.
@@ -244,11 +286,10 @@ fn test_transport_recovers_after_malformed_frame() -> io::Result<()> {
     );
 
     // Verify the response is for the initialize command.
-    let separator_pos = written
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no CRLF separator in output"))?;
-    let body = &written[separator_pos + 4..];
+    // Use first_frame_body() to avoid a race where the event-handler thread
+    // appends the "initialized" event after run_with_io_for_test returns,
+    // which would make serde_json::from_slice fail on trailing bytes.
+    let body = first_frame_body(&written)?;
     let parsed: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     assert_eq!(parsed["command"], "initialize", "response must be for initialize");
