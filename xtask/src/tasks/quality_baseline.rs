@@ -1045,6 +1045,7 @@ struct WorktreeGitContext {
     work_tree: PathBuf,
 }
 
+#[cfg(test)]
 fn worktree_git_context(root: &Path) -> Result<Option<WorktreeGitContext>> {
     worktree_git_context_with_mount_root(root, default_windows_drive_mount_root())
 }
@@ -1080,6 +1081,7 @@ fn worktree_git_context_with_mount_root(
     Ok(None)
 }
 
+#[cfg(test)]
 fn resolve_git_dir(work_tree: &Path, raw_git_dir: &str) -> PathBuf {
     resolve_git_dir_with_mount_root(work_tree, raw_git_dir, default_windows_drive_mount_root())
 }
