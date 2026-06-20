@@ -4432,6 +4432,14 @@ fn extract_manual_import_symbols(args: &[Node]) -> Vec<String> {
     symbols
 }
 
+    /// Capture current snapshot (if published). Returns None if not yet initialized.
+    /// TODO: Implement with atomic RwLock<Arc<SemanticSnapshot>>.
+    pub fn current_snapshot(&self) -> Option<std::sync::Arc<crate::workspace::SemanticSnapshot>> {
+        // Stub implementation for red TDD - will be implemented in builder phase.
+        // When called, this should return the current generation-numbered snapshot.
+        None
+    }
+
 /// Extract constant names from the `args` field of a `use constant` `NodeKind::Use` node.
 ///
 /// The parser serialises `use constant` args in two distinct forms:

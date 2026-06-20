@@ -27,6 +27,8 @@ pub mod production_coordinator;
 pub mod slo;
 /// State machine defining valid index lifecycle transitions and degraded states.
 pub mod state_machine;
+/// Immutable, generation-numbered semantic snapshot for atomic queries (#1601).
+pub mod snapshot;
 /// Core workspace-wide symbol index and lookup/query API.
 pub mod workspace_index;
 /// Cross-file rename planning and edit-generation helpers.
@@ -47,6 +49,7 @@ pub use production_coordinator::{
     WorkspaceCacheManager,
 };
 pub use slo::{OperationResult, OperationType, Regime, SloConfig, SloStatistics, SloTracker};
+pub use snapshot::{SemanticSnapshot, SnapshotLifecycle};
 pub use state_machine::{
     BuildPhase, DegradationReason, IndexState, IndexStateKind, IndexStateMachine,
     InvalidationReason, ResourceKind, TransitionResult,
