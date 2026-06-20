@@ -4285,6 +4285,34 @@ $config{api"#;
 }
 
 #[test]
+fn test_hash_key_completion_unterminated_quoted_key_no_bogus_suggestion() {
+    // Regression: 'db-host (opening quote but no closing quote) must not produce a
+    // completion item with a leading-quote artifact like "'db-host".  Previously the
+    // character-class guard rejected these implicitly; after relaxing it for quoted
+    // keys we must ensure only *fully*-quoted tokens (both delimiters present) are
+    // accepted as special-char keys.
+    let code = "my %cfg = ('db-host' => 1, host => 2);\n$cfg{db";
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // The fully-quoted key 'db-host' should be present.
+    assert!(
+        completions.iter().any(|c| c.label == "db-host"),
+        "expected 'db-host' in completions; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // No completion item must carry a leading single-quote from an unterminated literal.
+    assert!(
+        completions.iter().all(|c| !c.label.starts_with('\'')),
+        "no completion label must start with a quote character (unterminated-literal artifact); got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_detect_hash_key_context_unicode_non_ident_after_brace_no_panic() {
     let source = "$config{☃ho";
     let result = CompletionProvider::detect_hash_key_context(source, source.len());
