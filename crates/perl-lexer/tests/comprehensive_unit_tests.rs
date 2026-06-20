@@ -638,16 +638,47 @@ fn binary_literal() -> R {
 }
 
 #[test]
-fn prefixed_number_with_underscores_only_falls_back_to_zero() -> R {
+fn prefixed_number_with_underscores_only_emits_error() -> R {
     for input in ["0x_", "0x__", "0b_", "0b___", "0o_", "0o__"] {
         let toks = significant(input);
-        assert!(matches!(toks.first().map(|t| &t.token_type), Some(TokenType::Number(_))));
-        assert_eq!(toks.first().map(|t| t.text.as_ref()), Some("0"), "input: {input}");
         assert!(
-            matches!(toks.get(1).map(|t| &t.token_type), Some(TokenType::Identifier(_))),
-            "expected identifier after fallback for input: {input}, got {toks:?}"
+            matches!(toks.first().map(|t| &t.token_type), Some(TokenType::Error(_))),
+            "input: {input} should emit Error token, got {toks:?}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn malformed_hex_binary_octal_literals_emit_error() -> R {
+    // Test case: 0x with no hex digits should emit Error, not fall back to 0
+    let toks = significant("0x_");
+    assert!(
+        matches!(toks.first().map(|t| &t.token_type), Some(TokenType::Error(_))),
+        "0x_ should emit Error token, got {toks:?}"
+    );
+
+    // Test case: 0x followed by invalid character should emit Error
+    let toks = significant("0xG");
+    assert!(
+        matches!(toks.first().map(|t| &t.token_type), Some(TokenType::Error(_))),
+        "0xG should emit Error token, got {toks:?}"
+    );
+
+    // Test case: 0b followed by invalid binary digit should emit Error
+    let toks = significant("0b2");
+    assert!(
+        matches!(toks.first().map(|t| &t.token_type), Some(TokenType::Error(_))),
+        "0b2 should emit Error token, got {toks:?}"
+    );
+
+    // Test case: 0o followed by invalid octal digit should emit Error
+    let toks = significant("0o8");
+    assert!(
+        matches!(toks.first().map(|t| &t.token_type), Some(TokenType::Error(_))),
+        "0o8 should emit Error token, got {toks:?}"
+    );
+
     Ok(())
 }
 
