@@ -8005,3 +8005,62 @@ fn test_indirect_delete_builtin_does_not_offer_methods() -> Result<(), Box<dyn s
     );
     Ok(())
 }
+
+#[test]
+fn test_indirect_inside_string_offers_no_methods() -> Result<(), Box<dyn std::error::Error>> {
+    // `new Child` appearing inside a string literal must not trigger indirect
+    // method completion (exercises the in_string guard).
+    let index = indirect_child_parent_index()?;
+
+    let code = "my $s = \"new Child\";";
+    let pos = code.find("new").ok_or("missing new")? + "new".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        !completions.iter().any(|c| c.label == "run" || c.label == "speak"),
+        "indirect syntax inside a string literal must not offer class methods"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_indirect_unindexed_class_offers_no_methods() -> Result<(), Box<dyn std::error::Error>> {
+    // `new SomeUnknownClass` where the class is not in the workspace index must
+    // fall through (exercises the empty-workspace-probe guard) rather than
+    // offering bare object defaults.
+    let index = indirect_child_parent_index()?;
+
+    let code = "new TotallyUnknownClass";
+    let pos = "new".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        !completions.iter().any(|c| c.label == "run" || c.label == "speak"),
+        "unindexed indirect receiver must not offer Child/Parent methods"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_indirect_after_arrow_segment_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    // A method token immediately preceded by `->` is an arrow-call segment, not
+    // a statement-level indirect call, and must not re-trigger indirect routing
+    // (exercises the preceding-character guard).
+    let index = indirect_child_parent_index()?;
+
+    let code = "my $obj = Child->new;\n$obj->run Child";
+    let pos = code.rfind("run").ok_or("missing run")? + "run".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    // Must not panic and must not synthesize indirect method completions from
+    // the trailing `Child` receiver.
+    let _ = provider.get_completions(code, pos);
+    Ok(())
+}

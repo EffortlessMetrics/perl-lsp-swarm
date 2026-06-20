@@ -497,3 +497,78 @@ fn complete_general_context(
 
     CompletionFlow::SortAndReturn
 }
+
+#[cfg(test)]
+mod indirect_helper_tests {
+    use super::{indirect_word_end, is_indirect_method_word, parse_indirect_receiver};
+
+    #[test]
+    fn is_indirect_method_word_accepts_lowercase_barewords() {
+        assert!(is_indirect_method_word("new"));
+        assert!(is_indirect_method_word("process"));
+        assert!(is_indirect_method_word("_private"));
+        assert!(is_indirect_method_word("spawn2"));
+    }
+
+    #[test]
+    fn is_indirect_method_word_rejects_non_method_words() {
+        // Uppercase-initial (classes / filehandles) are receivers, not methods.
+        assert!(!is_indirect_method_word("Foo"));
+        assert!(!is_indirect_method_word("STDOUT"));
+        // Empty / sigil / non-word.
+        assert!(!is_indirect_method_word(""));
+        assert!(!is_indirect_method_word("$obj"));
+        // Statement keywords and Carp exporters.
+        assert!(!is_indirect_method_word("my"));
+        assert!(!is_indirect_method_word("return"));
+        assert!(!is_indirect_method_word("croak"));
+        // Perl builtin functions (via the lexer set).
+        assert!(!is_indirect_method_word("length"));
+        assert!(!is_indirect_method_word("keys"));
+        assert!(!is_indirect_method_word("delete"));
+        assert!(!is_indirect_method_word("print"));
+    }
+
+    #[test]
+    fn indirect_word_end_stops_at_first_non_word_byte() {
+        assert_eq!(indirect_word_end("new Child", 0), 3);
+        assert_eq!(indirect_word_end("new Child", 3), 3); // already at the space
+        assert_eq!(indirect_word_end("process $obj", 0), 7);
+        assert_eq!(indirect_word_end("run", 0), 3); // word runs to end of input
+        assert_eq!(indirect_word_end("", 0), 0);
+        assert_eq!(indirect_word_end("ab", 9), 2); // clamps out-of-range start
+    }
+
+    #[test]
+    fn parse_indirect_receiver_reads_uppercase_class() {
+        // Grips dispatch.rs:231 — the uppercase-class branch.
+        assert_eq!(parse_indirect_receiver("new Child", 3), Some("Child".to_string()));
+        // Grips dispatch.rs:234 — the `::` scan for qualified class names.
+        assert_eq!(parse_indirect_receiver("new Foo::Bar", 3), Some("Foo::Bar".to_string()));
+        // Trailing punctuation ends the class token.
+        assert_eq!(parse_indirect_receiver("new Child, 1", 3), Some("Child".to_string()));
+    }
+
+    #[test]
+    fn parse_indirect_receiver_reads_scalar_variable() {
+        assert_eq!(parse_indirect_receiver("process $obj", 7), Some("$obj".to_string()));
+        assert_eq!(parse_indirect_receiver("m $self_ref", 1), Some("$self_ref".to_string()));
+    }
+
+    #[test]
+    fn parse_indirect_receiver_rejects_non_receivers() {
+        // Lowercase bareword is NOT a receiver — deleting the uppercase guard at
+        // dispatch.rs:231 would wrongly accept it, so this pins that branch.
+        assert_eq!(parse_indirect_receiver("foo bar", 3), None);
+        // Array/hash sigils are not single-object receivers.
+        assert_eq!(parse_indirect_receiver("method @args", 6), None);
+        assert_eq!(parse_indirect_receiver("method %opts", 6), None);
+        // Bare `$` with no identifier.
+        assert_eq!(parse_indirect_receiver("method $", 6), None);
+        // No separating whitespace.
+        assert_eq!(parse_indirect_receiver("methodChild", 6), None);
+        // Nothing after the method word.
+        assert_eq!(parse_indirect_receiver("method ", 6), None);
+        assert_eq!(parse_indirect_receiver("method", 6), None);
+    }
+}
