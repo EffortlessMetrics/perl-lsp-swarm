@@ -120,6 +120,10 @@ fn complete_use_or_structural_context(
         return true;
     }
 
+    if complete_indirect_method_context(provider, completions, context, source) {
+        return true;
+    }
+
     false
 }
 
@@ -127,6 +131,163 @@ fn is_method_arrow_context(context: &CompletionContext) -> bool {
     (context.trigger_character == Some('>') || context.trigger_character == Some('-'))
         && context.prefix.ends_with("->")
         && context.prefix.len() > 2
+}
+
+/// Statement-level keywords and I/O builtins that look like a bareword method
+/// at a statement start but are never a user-defined indirect-method call we
+/// want to complete (`my $x`, `return $foo`, `print $fh`, ...).
+const INDIRECT_METHOD_EXCLUDED: &[&str] = &[
+    "my", "our", "local", "state", "sub", "return", "if", "unless", "while", "until", "for",
+    "foreach", "do", "use", "no", "require", "else", "elsif", "print", "printf", "say", "and",
+    "or", "not", "eq", "ne", "lt", "gt", "le", "ge", "cmp", "x", "package", "qw",
+];
+
+/// True when `word` is a plausible indirect-method name: a lowercase-initial
+/// bareword (`new`, `process`, ...) that is not a statement keyword or I/O
+/// builtin. Uppercase-initial words (`Foo`, `STDOUT`) and sigil/`::` tokens are
+/// rejected so we only fire on the method slot of `method RECEIVER ...`.
+fn is_indirect_method_word(word: &str) -> bool {
+    let mut chars = word.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_lowercase() || first == '_') {
+        return false;
+    }
+    if !word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return false;
+    }
+    !INDIRECT_METHOD_EXCLUDED.contains(&word)
+}
+
+/// Advance over `[A-Za-z0-9_]` from `from`, returning the byte offset of the
+/// first non-word byte (the end of the method token under the cursor).
+fn indirect_word_end(source: &str, from: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut i = from.min(bytes.len());
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    i
+}
+
+/// Parse the receiver token that follows the method name in indirect-object
+/// syntax: a `$scalar` variable (`method $obj`) or an uppercase-initial bareword
+/// class (`new Class`, `new Class::Name`). Requires at least one separating
+/// space. Returns `None` for array/hash receivers (`method @args`) and anything
+/// else, so those degrade gracefully to ordinary completion.
+fn parse_indirect_receiver(source: &str, from: usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    let mut i = from;
+    let ws_start = i;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i == ws_start || i >= bytes.len() {
+        return None;
+    }
+
+    if bytes[i] == b'$' {
+        let start = i;
+        i += 1;
+        let id_start = i;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        if i == id_start {
+            return None;
+        }
+        return Some(source[start..i].to_string());
+    }
+
+    if bytes[i].is_ascii_uppercase() {
+        let start = i;
+        while i < bytes.len()
+            && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b':')
+        {
+            i += 1;
+        }
+        return Some(source[start..i].to_string());
+    }
+
+    None
+}
+
+/// Route Perl indirect-object method calls (`method $obj @args`, `new Class`)
+/// through the same method-completion providers as the arrow form (#1758).
+///
+/// The receiver follows the method in indirect syntax, so we detect the
+/// `method RECEIVER` shape from source text and synthesize an equivalent
+/// arrow-form context (`RECEIVER->`) that the existing receiver-classification
+/// and workspace-method logic already understands. We only commit to method
+/// completion when the receiver resolves to a concrete package that actually
+/// contributes workspace methods — otherwise ordinary statements (`my $x`,
+/// `print $fh`) fall through unchanged.
+fn complete_indirect_method_context(
+    provider: &CompletionProvider,
+    completions: &mut Vec<CompletionItem>,
+    context: &CompletionContext,
+    source: &str,
+) -> bool {
+    if context.in_string || context.in_regex || context.in_comment {
+        return false;
+    }
+    if !is_indirect_method_word(&context.prefix) {
+        return false;
+    }
+    // Reject method/glob/qualified segments (`$x->word`, `&word`, `Foo::word`):
+    // those are not statement-level indirect calls.
+    if context.prefix_start > 0 {
+        let prev = source.as_bytes()[context.prefix_start - 1];
+        if matches!(prev, b'>' | b'&' | b'$' | b'@' | b'%' | b':') {
+            return false;
+        }
+    }
+
+    let word_end = indirect_word_end(source, context.position);
+    let Some(receiver) = parse_indirect_receiver(source, word_end) else {
+        return false;
+    };
+
+    // Synthesize the equivalent arrow boundary `receiver->`. `prefix_start` and
+    // `position` are preserved so completion text edits still replace the
+    // indirect method token under the cursor.
+    let mut synth = context.clone();
+    synth.prefix = format!("{receiver}->");
+
+    // Gate: require a concrete receiver package. `Dynamic`/`Unknown` receivers
+    // (e.g. `print $fh`, `return $foo`) carry no package and fall through.
+    let evidence = workspace::classify_receiver(&synth, source, provider.type_engine.as_ref());
+    if evidence.package().is_none() {
+        return false;
+    }
+
+    // Second gate: the resolved package must actually contribute workspace
+    // methods. An unindexed class (`new SomeUnknownThing`) yields nothing and
+    // falls through rather than offering bare object defaults.
+    let mut probe = Vec::new();
+    workspace::add_workspace_method_completions(
+        &mut probe,
+        &synth,
+        source,
+        provider.type_engine.as_ref(),
+        &provider.workspace_index,
+        &provider.used_modules,
+    );
+    if probe.is_empty() {
+        return false;
+    }
+
+    methods::add_method_completions(completions, &synth, source, &provider.symbol_table);
+    workspace::add_workspace_method_completions(
+        completions,
+        &synth,
+        source,
+        provider.type_engine.as_ref(),
+        &provider.workspace_index,
+        &provider.used_modules,
+    );
+    true
 }
 
 fn complete_sigil_context(
