@@ -25,6 +25,43 @@ impl PerlDocumentationTarget {
         Some(Self { name: trimmed.to_string() })
     }
 
+    /// Build a documentation target from a virtual perldoc URI.
+    pub(crate) fn from_perldoc_uri(uri: &str) -> Option<Self> {
+        let name = uri.strip_prefix("perldoc://")?;
+        if name != name.trim() {
+            return None;
+        }
+
+        Self::new(name)
+    }
+
+    /// Build a documentation target from a simple POD `L<>` module target.
+    ///
+    /// This intentionally accepts only module-like names and the core pragma
+    /// targets that virtual perldoc already enriches. Section-only links,
+    /// URLs, and empty labels are left to the client as plain POD text.
+    pub(crate) fn from_simple_pod_link_target(target: &str) -> Option<Self> {
+        let candidate = if let Some((label, link_target)) = target.split_once('|') {
+            if label.trim().is_empty() {
+                return None;
+            }
+            link_target.trim()
+        } else {
+            target.trim()
+        };
+
+        if is_supported_core_pragma_pod_target(candidate) || candidate.contains("::") {
+            Self::new(candidate)
+        } else {
+            None
+        }
+    }
+
+    /// Return the validated perldoc target name.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Return the virtual perldoc document URI.
     pub(crate) fn perldoc_uri(&self) -> String {
         format!("perldoc://{}", self.name)
@@ -56,11 +93,6 @@ impl PerlDocumentationTarget {
     }
 }
 
-/// Construct a virtual perldoc URI for a validated Perl documentation name.
-pub(crate) fn perldoc_uri(name: &str) -> Option<String> {
-    PerlDocumentationTarget::new(name).map(|target| target.perldoc_uri())
-}
-
 /// Construct a MetaCPAN POD URI for a validated Perl documentation name.
 pub(crate) fn metacpan_pod_uri(name: &str) -> Option<String> {
     PerlDocumentationTarget::new(name).map(|target| target.metacpan_pod_uri())
@@ -87,4 +119,80 @@ fn is_perl_doc_name_segment(segment: &str) -> bool {
     }
 
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn is_supported_core_pragma_pod_target(target: &str) -> bool {
+    matches!(target, "strict" | "warnings")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn documentation_target_parses_valid_perldoc_uri() {
+        let target = must_some(PerlDocumentationTarget::from_perldoc_uri("perldoc://Local::Doc"));
+
+        require_eq(target.name(), "Local::Doc");
+        require_eq(&target.perldoc_uri(), "perldoc://Local::Doc");
+    }
+
+    #[test]
+    fn documentation_target_rejects_malformed_perldoc_uri() {
+        for uri in [
+            "perldoc://",
+            "perldoc://Local/Doc",
+            "perldoc://Local::>",
+            "perldoc:// Local::Doc",
+            "https://metacpan.org/pod/Local::Doc",
+        ] {
+            require(
+                PerlDocumentationTarget::from_perldoc_uri(uri).is_none(),
+                format!("expected {uri} to be rejected"),
+            );
+        }
+    }
+
+    #[test]
+    fn documentation_target_extracts_simple_pod_module_targets() {
+        let bare = must_some(PerlDocumentationTarget::from_simple_pod_link_target("Local::Doc"));
+        let labeled =
+            must_some(PerlDocumentationTarget::from_simple_pod_link_target("docs|Local::Labeled"));
+        let pragma =
+            must_some(PerlDocumentationTarget::from_simple_pod_link_target("strict docs|strict"));
+
+        require_eq(&bare.perldoc_uri(), "perldoc://Local::Doc");
+        require_eq(&labeled.perldoc_uri(), "perldoc://Local::Labeled");
+        require_eq(&pragma.perldoc_uri(), "perldoc://strict");
+    }
+
+    #[test]
+    fn documentation_target_rejects_non_module_pod_targets() {
+        for target in [
+            "/section",
+            "docs|/section",
+            "NotAModule",
+            "|Local::Doc",
+            "docs|Broken::",
+            "docs|https://example.invalid",
+        ] {
+            require(
+                PerlDocumentationTarget::from_simple_pod_link_target(target).is_none(),
+                format!("expected {target} to be rejected"),
+            );
+        }
+    }
+
+    fn require(condition: bool, message: String) {
+        if !condition {
+            must(Err::<(), _>(message));
+        }
+    }
+
+    fn require_eq(actual: &str, expected: &str) {
+        if actual != expected {
+            must(Err::<(), _>(format!("expected {expected}, got {actual}")));
+        }
+    }
 }
