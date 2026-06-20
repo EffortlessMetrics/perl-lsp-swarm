@@ -419,6 +419,7 @@ mod tests {
             Node::new(
                 NodeKind::Class {
                     name: "C".to_string(),
+                    name_span: None,
                     parents: vec!["Base".to_string()],
                     body: Box::new(Node::new(NodeKind::Block { statements: vec![] }, loc(80))),
                 },
