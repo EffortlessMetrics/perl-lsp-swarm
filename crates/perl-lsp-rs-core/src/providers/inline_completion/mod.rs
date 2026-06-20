@@ -5626,6 +5626,51 @@ mod tests {
     }
 
     #[test]
+    fn dancer_import_suggests_route_scaffold() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Dancer;\nget ";
+        let character = "get ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "'/path' => sub {\n    return 'ok';\n};");
+        assert_eq!(item.and_then(|item| item.filter_text.as_deref()), Some("get"));
+    }
+
+    #[test]
+    fn dancer2_import_suggests_route_scaffold() {
+        let provider = InlineCompletionProvider::new();
+        let source = "use Dancer2;\nget ";
+        let character = "get ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 1, character);
+
+        let item = completions
+            .items
+            .iter()
+            .find(|item| item.insert_text == "'/path' => sub {\n    return 'ok';\n};");
+        assert_eq!(item.and_then(|item| item.filter_text.as_deref()), Some("get"));
+    }
+
+    #[test]
+    fn dancer_route_requires_visible_import() {
+        let provider = InlineCompletionProvider::new();
+        let source = "get ";
+        let character = "get ".encode_utf16().count() as u32;
+        let completions = provider.get_inline_completions(source, 0, character);
+
+        assert!(
+            completions
+                .items
+                .iter()
+                .all(|item| item.insert_text != "'/path' => sub {\n    return 'ok';\n};"),
+            "Dancer route scaffold must not appear without Dancer or Dancer2 import: {:?}",
+            completions.items.iter().map(|item| &item.insert_text).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn test_assertion_requires_declared_actual_and_expected_variables() {
         let provider = InlineCompletionProvider::new();
         let source = "use Test::More;\n\n$got = compute();\nmy $expected = 42;\n\n";
