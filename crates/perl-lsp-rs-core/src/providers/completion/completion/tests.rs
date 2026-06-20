@@ -1136,6 +1136,64 @@ fn test_regex_completion_suppresses_sigil_completions_in_patterns() {
 }
 
 #[test]
+fn test_regex_completion_suppresses_at_sigil_in_patterns() {
+    // Cursor inside a regex after '@' sigil — array completions should be suppressed.
+    let code = r#"my @arr = (1,2); $str =~ /prefix @ar"#;
+    let pos = code.len();
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        !completions.iter().any(|item| item.label == "@arr"),
+        "expected array completions to be suppressed inside regex patterns, got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_substitution_replacement_side_still_offers_variables() {
+    // Cursor is in the REPLACEMENT side of s///, NOT in the pattern.
+    // Variable completions SHOULD be offered on the replacement side (it is
+    // a double-quote-like string context, not a regex pattern).
+    let code = r#"my $baz = "x"; s/old/$ba"#;
+    let pos = code.len();
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        completions.iter().any(|item| item.label == "$baz"),
+        "expected variable completions on the replacement side of s///, got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_regex_pattern_side_suppresses_variables_not_flags() {
+    // Non-sigil prefix inside a regex body should still offer regex constructs,
+    // not be accidentally suppressed by the new sigil-suppression logic.
+    // This is a regression guard: the suppression must only fire for sigil prefixes.
+    let code = r#"$x =~ /\d"#;
+    let pos = code.len();
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        completions.iter().any(|item| item.label == r"\d"),
+        "regex constructs should still be offered for non-sigil prefixes inside regex, got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_regex_completion_replaces_escape_prefix_range() {
     let code = r#"$x =~ /\d"#;
 
