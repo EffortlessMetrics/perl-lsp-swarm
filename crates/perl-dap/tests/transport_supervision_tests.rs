@@ -139,9 +139,6 @@ mod transport_supervision {
         // One more failure — must not immediately trigger the threshold of 3.
         consecutive += 1;
         assert_eq!(consecutive, 1);
-        assert!(
-            consecutive < 3,
-            "single failure after a reset must not reach threshold(3)"
-        );
+        assert!(consecutive < 3, "single failure after a reset must not reach threshold(3)");
     }
 }

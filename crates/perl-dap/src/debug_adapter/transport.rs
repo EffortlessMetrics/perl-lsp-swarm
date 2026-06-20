@@ -236,10 +236,7 @@ mod tests {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             let n = self.write_count.fetch_add(1, AOrdering::AcqRel);
             if n >= self.fail_after_writes {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "mock write failure",
-                ));
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "mock write failure"));
             }
             Ok(buf.len())
         }
@@ -247,10 +244,7 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             let n = self.write_count.load(AOrdering::Acquire);
             if n >= self.fail_after_writes {
-                return Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "mock flush failure",
-                ));
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "mock flush failure"));
             }
             Ok(())
         }
@@ -310,10 +304,7 @@ mod tests {
         let result = adapter.run_with_io(input, writer);
         // Either the event-writer flag fires or the main-loop write fails — either
         // way the function must not return Ok while the transport is broken.
-        assert!(
-            result.is_err(),
-            "run_with_io must return Err when output is persistently broken"
-        );
+        assert!(result.is_err(), "run_with_io must return Err when output is persistently broken");
     }
 
     /// The event-handler thread must exit in bounded time when writes fail
