@@ -81,8 +81,12 @@ several pre-existing highlighting bugs. That is intentional: a regression
 baseline captures current behaviour so that *any* change — including a fix —
 shows up as an explicit `.snap` diff. When the grammar is corrected, regenerate
 the affected snapshots (`npm run test:grammar:update`) and the diff will show the
-scope improving. The known defects, tracked in
-[#1958](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1958):
+scope improving.
+
+The `.snap` files themselves are the complete record of current behaviour; the
+list below is **representative, not exhaustive**. The full catalogue of known
+defects (and the grammar-fix work) is tracked in
+[#1958](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1958). Examples:
 
 - **`qq{...}` / `qw(...)`** (`strings.pl`): the brace/`qw` begin rule scopes
   leading tokens (`my $qq = `) as `string.quoted.q.perl`; the paren form
@@ -90,6 +94,13 @@ scope improving. The known defects, tracked in
 - **`=~ /pattern/`** (`operators.pl`): the bare match regex after `=~` is
   tokenized as arithmetic division (`/` → `keyword.operator.arithmetic.perl`);
   `m//`, `s///`, `tr///`, `qr//` are correct.
+- **`length` / barewords** (`functions.pl`): the `le`/`gt` string-comparison
+  operator patterns match *inside* identifiers, shredding `length` into
+  `le` + `gt` scopes.
+- **`<STDIN>`** (`keywords_control.pl`): the readline diamond is mis-scoped as
+  `keyword.operator.comparison.perl` (the `<`/`>` comparison rule).
+- **`->` / `=>`** (`variables.pl`): arrow and fat-comma are split by the
+  comparison/operator rules rather than scoped as single operators.
 - **`0o755`** (`numbers.pl`): modern octal prefix gets no
   `constant.numeric.octal.perl` scope.
 - **`1_000_000`** (`numbers.pl`): underscore-separated integers get no
