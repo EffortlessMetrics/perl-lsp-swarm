@@ -322,6 +322,7 @@ mod tests {
             Node::new(
                 NodeKind::Method {
                     name: "bar".to_string(),
+                    name_span: None,
                     signature: Some(sig),
                     attributes: Vec::new(),
                     body,
