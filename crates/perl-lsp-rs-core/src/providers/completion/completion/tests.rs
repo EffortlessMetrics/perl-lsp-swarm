@@ -7923,8 +7923,7 @@ die $e";
 }
 
 #[test]
-fn test_indirect_warn_object_does_not_offer_methods()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_indirect_warn_object_does_not_offer_methods() -> Result<(), Box<dyn std::error::Error>> {
     // `warn $obj` is a diagnostic output call, not an indirect method call.
     let index = indirect_child_parent_index()?;
 
@@ -7943,4 +7942,3 @@ warn $obj";
     );
     Ok(())
 }
-

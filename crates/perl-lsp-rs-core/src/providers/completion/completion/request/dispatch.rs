@@ -155,8 +155,8 @@ const INDIRECT_METHOD_EXCLUDED: &[&str] = &[
     // what looks like a receiver.
     "push", "pop", "shift", "unshift", "splice", "grep", "map", "sort",
     // File/IO builtins not already covered by `print`/`printf`/`say`.
-    "open", "close", "read", "write", "seek", "tell", "eof", "binmode",
-    "chomp", "chop", "chdir", "stat", "unlink", "rename", "chmod", "undef",
+    "open", "close", "read", "write", "seek", "tell", "eof", "binmode", "chomp", "chop", "chdir",
+    "stat", "unlink", "rename", "chmod", "undef",
 ];
 
 /// True when `word` is a plausible indirect-method name: a lowercase-initial
