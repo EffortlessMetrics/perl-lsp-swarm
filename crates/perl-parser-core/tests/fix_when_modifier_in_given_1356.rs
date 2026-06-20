@@ -332,3 +332,36 @@ given ($x) {
         sexp
     );
 }
+
+// --- Depth-guard propagation and synchronize-fail branches ---
+
+#[test]
+fn test_deeply_nested_given_propagates_depth_error_without_panic() {
+    use perl_parser_core::Parser;
+    // Deep nesting trips the parser's depth guard. The error must propagate out
+    // of the fallback arm's early-return branch (RecursionLimit / NestingTooDeep
+    // / Cancelled) gracefully — no panic, no stack overflow.
+    let source =
+        format!("{}when (1) {{ print 1; }}{}", "given ($x) {\n".repeat(400), "}\n".repeat(400));
+    let mut parser = Parser::new(&source);
+    let result = parser.parse();
+    assert!(
+        result.is_err() || !parser.get_errors().is_empty(),
+        "expected a graceful depth error for deeply nested given blocks"
+    );
+}
+
+#[test]
+fn test_unterminated_malformed_given_block_breaks_cleanly() {
+    use perl_parser_core::Parser;
+    // Malformed statements with no recovery boundary before EOF make
+    // synchronize() fail, exercising the loop's break-on-failure path. The
+    // parser must report an error rather than loop forever or panic.
+    let source = "given ($x) {\n= = = =";
+    let mut parser = Parser::new(source);
+    let result = parser.parse();
+    assert!(
+        result.is_err() || !parser.get_errors().is_empty(),
+        "expected a graceful error for an unterminated malformed given block"
+    );
+}
