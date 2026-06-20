@@ -517,6 +517,30 @@ mod tests {
     }
 
     #[test]
+    fn our_variable_declaration_candidate_scans_past_non_declaration_marker()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // An earlier non-declaration `our ` (here inside a comment) must not mask
+        // the real source-backed declaration that follows on a later line.
+        let source = "# our $todo\nour $shared = 1;\n$shared++;\n";
+        let candidate = semantic_token_our_variable_declaration_candidate(source)
+            .ok_or("real `our` declaration should be detected past the comment marker")?;
+        assert!(
+            candidate.identity.starts_with("token:our_variable_declaration:$shared:"),
+            "expected the $shared declaration identity, got {}",
+            candidate.identity
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn our_variable_declaration_candidate_requires_a_real_declaration() {
+        // Only a non-declaration `our ` marker is present; the detector must fall
+        // back (no candidate) rather than record a false compiler-token identity.
+        let source = "# our $todo\nmy $x = 1;\n";
+        assert!(semantic_token_our_variable_declaration_candidate(source).is_none());
+    }
+
+    #[test]
     fn filter_encoded_semantic_tokens_by_range_reencodes_retained_range()
     -> Result<(), Box<dyn std::error::Error>> {
         let tokens: Vec<crate::semantic_tokens::EncodedToken> =
@@ -907,27 +931,42 @@ fn semantic_token_our_variable_declaration_candidate(
     source: &str,
 ) -> Option<crate::semantic_tokens::SemanticTokenShadowCandidate> {
     const MARKER: &str = "our ";
-    let marker_start = source.find(MARKER)?;
-    let line_start = source[..marker_start].rfind('\n').map_or(0, |offset| offset + 1);
-    if !source[line_start..marker_start].chars().all(char::is_whitespace) {
-        return None;
+    // Scan every `our ` marker, not just the first: an earlier non-declaration
+    // marker (e.g. `# our $todo` or an `our` inside a string) must not mask a
+    // later real source-backed declaration. Each candidate must still begin its
+    // line (after only whitespace) and yield a sigiled variable name; otherwise
+    // we keep scanning and ultimately fall back, preserving the fail-closed
+    // boundary.
+    for (marker_start, _) in source.match_indices(MARKER) {
+        let line_start = source[..marker_start].rfind('\n').map_or(0, |offset| offset + 1);
+        if !source[line_start..marker_start].chars().all(char::is_whitespace) {
+            continue;
+        }
+
+        let Some((name_start, name_end)) =
+            variable_name_after_marker(source, marker_start + MARKER.len())
+        else {
+            continue;
+        };
+
+        let name = &source[name_start..name_end];
+        let Some(span) = crate::semantic_tokens::SemanticTokenShadowSpan::from_byte_offsets(
+            source, name_start, name_end,
+        ) else {
+            continue;
+        };
+
+        return Some(crate::semantic_tokens::SemanticTokenShadowCandidate::source_backed_shadow(
+            format!("token:our_variable_declaration:{name}:compiler"),
+            ProviderFactSourceKind::CompilerFact,
+            Provenance::SemanticAnalyzer,
+            Confidence::Medium,
+            ProviderFactFreshness::Fresh,
+            span,
+        ));
     }
 
-    let (name_start, name_end) = variable_name_after_marker(source, marker_start + MARKER.len())?;
-
-    let name = &source[name_start..name_end];
-    let span = crate::semantic_tokens::SemanticTokenShadowSpan::from_byte_offsets(
-        source, name_start, name_end,
-    )?;
-
-    Some(crate::semantic_tokens::SemanticTokenShadowCandidate::source_backed_shadow(
-        format!("token:our_variable_declaration:{name}:compiler"),
-        ProviderFactSourceKind::CompilerFact,
-        Provenance::SemanticAnalyzer,
-        Confidence::Medium,
-        ProviderFactFreshness::Fresh,
-        span,
-    ))
+    None
 }
 
 fn lexical_variable_name_after_my_marker(
