@@ -1482,10 +1482,7 @@ mod tests {
             }),
             n(NodeKind::NestedVariableList { items: vec![leaf()] }),
             n(NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }),
-            n(NodeKind::VariableWithAttributes {
-                variable: Box::new(leaf()),
-                attributes: vec![],
-            }),
+            n(NodeKind::VariableWithAttributes { variable: Box::new(leaf()), attributes: vec![] }),
             n(NodeKind::Assignment {
                 lhs: Box::new(leaf()),
                 rhs: Box::new(leaf()),
