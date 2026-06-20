@@ -1160,6 +1160,54 @@ fn test_cancelled_open_returns_ok_without_storing_document()
     Ok(())
 }
 
+/// A ranged didChange whose cancellation flag is already set (a newer change
+/// superseded it) must skip the warm reparse and leave the stored document
+/// unchanged — the newer change is responsible for the final state (#1374).
+#[cfg(feature = "incremental")]
+#[test]
+fn test_didchange_skips_when_cancellation_already_set() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let server = LspServer::new();
+    let uri = "file:///test_cancelled_change.pl";
+    let original = "my $value = 1;\n";
+
+    server.did_open(json!({
+        "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": original }
+    }))?;
+
+    // Pre-set the cancellation flag, then send a ranged edit. The pre-parse
+    // check must short-circuit before applying the warm reparse.
+    let flag = Arc::new(AtomicBool::new(true));
+    let result = server.handle_did_change_with_cancellation(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": 0, "character": 12 },
+                    "end":   { "line": 0, "character": 13 }
+                },
+                "text": "9"
+            }]
+        })),
+        Some(flag),
+    );
+    assert!(result.is_ok(), "cancelled didChange must return Ok(()): {result:?}");
+
+    // The stored document must remain at the pre-edit text/version, since the
+    // superseded change was skipped before it could be committed.
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("document must still exist after skipped change")?;
+    assert_eq!(doc.version, 1, "version must remain 1 when the change is skipped");
+    assert!(
+        doc.text.contains("= 1;"),
+        "text must remain the pre-edit content when the change is skipped; got {:?}",
+        doc.text
+    );
+    Ok(())
+}
+
 /// Binary content guard — didOpen with null bytes must skip the parser and
 /// store the document with DegradationTier::Minimal and no AST.
 #[test]
