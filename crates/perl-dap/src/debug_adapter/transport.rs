@@ -136,28 +136,54 @@ impl DebugAdapter {
                     }
                 };
 
-                let DapMessage::Request { seq, command, arguments } = msg else {
-                    continue;
-                };
+                match msg {
+                    DapMessage::Request { seq, command, arguments } => {
+                        let response = self.dispatch_request(seq, &command, arguments);
+                        let payload = match serde_json::to_vec(&response) {
+                            Ok(payload) => payload,
+                            Err(e) => {
+                                tracing::error!(error = %e, "Failed to serialize DAP response");
+                                continue;
+                            }
+                        };
 
-                let response = self.dispatch_request(seq, &command, arguments);
-                let payload = match serde_json::to_vec(&response) {
-                    Ok(payload) => payload,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to serialize DAP response");
-                        continue;
+                        let mut writer = lock_or_recover(&shared_writer, "response_writer");
+                        write_framed_payload(&mut *writer, &payload)?;
+                        writer.flush()?;
+
+                        // DAP requires this event only after initialize response is sent.
+                        if command == "initialize"
+                            && Self::response_succeeded_for_command(&response, "initialize")
+                        {
+                            self.send_event("initialized", None);
+                        }
                     }
-                };
-
-                let mut writer = lock_or_recover(&shared_writer, "response_writer");
-                write_framed_payload(&mut *writer, &payload)?;
-                writer.flush()?;
-
-                // DAP requires this event only after initialize response is sent.
-                if command == "initialize"
-                    && Self::response_succeeded_for_command(&response, "initialize")
-                {
-                    self.send_event("initialized", None);
+                    DapMessage::Response {
+                        seq, request_seq, command, success, message, ..
+                    } => {
+                        // Log reception of response messages from client (for potential future
+                        // server-initiated requests that expect responses). Currently the adapter
+                        // does not initiate requests, so these are unexpected but valid per DAP spec.
+                        tracing::debug!(
+                            seq,
+                            request_seq,
+                            command,
+                            success,
+                            message = ?message,
+                            "Received Response message from client (not yet handled)"
+                        );
+                    }
+                    DapMessage::Event { seq, event, body } => {
+                        // Log reception of event messages from client. The DAP protocol permits
+                        // bidirectional event flow for advanced features. Currently these are
+                        // unexpected, but we handle them gracefully by logging.
+                        tracing::debug!(
+                            seq,
+                            event,
+                            body = ?body,
+                            "Received Event message from client (not yet handled)"
+                        );
+                    }
                 }
             }
         }
