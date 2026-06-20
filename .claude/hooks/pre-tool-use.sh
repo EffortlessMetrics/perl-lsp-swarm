@@ -14,9 +14,15 @@ fi
 # Block recursive deletes that target the filesystem root or a whole top-level
 # system directory. Subpath deletes (e.g. `rm -rf /tmp/foo`, `rm -rf /home/user/proj/target`)
 # are allowed — the previous bare `rm -rf /` substring match blocked every absolute path.
-# Matched: `rm -rf /`, `rm -rf /*`, `rm -rf /etc`, `rm -rf /home/`, `rm -rf /usr/*`.
+# Matched: `rm -rf /`, `rm -rf /*`, `rm -rf /etc`, `rm -rf /home/`, `rm -rf /usr/*`,
+#          `rm -rf /tmp`, `rm -rf /tmp/*` (whole shared-temp wipe removes active build
+#          files/sockets in container sessions — per Codex review on PR #1952), and
+#          separator-terminated forms `rm -rf /etc;`, `rm -rf /etc&`, `rm -rf /etc||`
+#          (per factory-droid review on PR #1952).
 # Not matched: `rm -rf /tmp/x`, `rm -rf /home/user/...`, `rm -rf ./target`.
-if echo "$CMD" | grep -qE 'rm +(-[[:alnum:]]+ +)*/(\*?|(bin|boot|dev|etc|home|lib|lib64|opt|proc|root|sbin|srv|sys|usr|var|mnt)/?\*?)([[:space:]]|$)'; then
+# The trailing class includes shell separators (; & | < >) in addition to whitespace/EOL
+# so a blocked path followed by a command separator is still caught.
+if echo "$CMD" | grep -qE 'rm +(-[[:alnum:]]+ +)*/(\*?|(bin|boot|dev|etc|home|lib|lib64|opt|proc|root|sbin|srv|sys|tmp|usr|var|mnt)/?\*?)([[:space:];&|<>]|$)'; then
   echo "Blocked: refusing to recursively delete the filesystem root or a whole system directory." >&2
   echo "Deleting a specific subpath (e.g. /tmp/foo, ./target) is allowed." >&2
   exit 2
