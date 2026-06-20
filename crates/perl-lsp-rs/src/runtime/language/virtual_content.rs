@@ -578,6 +578,22 @@ my $non_pod = 'L<Code::Reference>';
     }
 
     #[test]
+    fn collect_simple_pod_module_links_boundary_discriminator() {
+        let mut uris = BTreeSet::new();
+
+        collect_simple_pod_module_links(
+            "See L<Local::Doc> for this module and L<Local::Other> for the neighbor.",
+            "Local::Doc",
+            &mut uris,
+        );
+
+        assert_eq!(
+            uris.into_iter().collect::<Vec<_>>(),
+            vec!["perldoc://Local::Other".to_string()]
+        );
+    }
+
+    #[test]
     fn parser_workspace_pod_related_perldoc_links_ignore_malformed_and_empty_targets() {
         let source = r#"package Local::Doc;
 

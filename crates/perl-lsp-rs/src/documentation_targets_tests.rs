@@ -10,6 +10,18 @@ fn from_perldoc_uri_parses_valid_perldoc_uri() {
 }
 
 #[test]
+fn from_perldoc_uri_accepts_already_trimmed_name_boundary() {
+    let name = "Local::Trimmed";
+    assert_eq!(name, name.trim());
+    let uri = format!("perldoc://{name}");
+
+    let target = must_some(PerlDocumentationTarget::from_perldoc_uri(&uri));
+
+    assert_eq!(target.name(), name);
+    assert_eq!(&target.perldoc_uri(), "perldoc://Local::Trimmed");
+}
+
+#[test]
 fn from_perldoc_uri_rejects_non_perldoc_scheme() {
     assert!(
         PerlDocumentationTarget::from_perldoc_uri("https://metacpan.org/pod/Local::Doc").is_none(),
@@ -60,6 +72,12 @@ fn from_simple_pod_link_target_accepts_core_pragma_targets() {
 
     assert_eq!(&bare.perldoc_uri(), "perldoc://strict");
     assert_eq!(&labeled.perldoc_uri(), "perldoc://warnings");
+}
+
+#[test]
+fn perl_doc_name_segment_accepts_alphanumeric_and_underscore_tail() {
+    assert!(is_perl_doc_name_segment("Doc_2"));
+    assert!(!is_perl_doc_name_segment("Doc-2"));
 }
 
 #[test]
