@@ -145,7 +145,24 @@ impl DebugAdapter {
                     Ok(payload) => payload,
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to serialize DAP response");
-                        continue;
+                        // Send an error response to the client instead of silent failure
+                        let error_response = DapMessage::Response {
+                            seq: self.next_seq(),
+                            request_seq: seq,
+                            command: command.clone(),
+                            success: false,
+                            body: None,
+                            message: Some(format!(
+                                "Internal error: failed to serialize response: {e}"
+                            )),
+                        };
+                        match serde_json::to_vec(&error_response) {
+                            Ok(error_payload) => error_payload,
+                            Err(e2) => {
+                                tracing::error!(error = %e2, "Failed to serialize error response - giving up on this request");
+                                continue;
+                            }
+                        }
                     }
                 };
 
