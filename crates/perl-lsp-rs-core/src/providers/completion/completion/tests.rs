@@ -4260,6 +4260,33 @@ $data{db"#;
 }
 
 #[test]
+fn test_hash_key_completion_double_quoted_keys_with_special_characters() {
+    // Mirror of the single-quoted case for double-quoted keys: keys written with
+    // `"..."` and containing special characters must also be completed. This
+    // exercises the double-quote branch of the quote-stripping logic.
+    let code = r#"my %data = ("db-host" => 'localhost', "api.key" => 'secret');
+$data{db"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    // 'db-host' (double-quoted key with hyphen) should be suggested for prefix 'db'.
+    assert!(
+        completions.iter().any(|c| c.label == "db-host"),
+        "expected 'db-host' (double-quoted key with hyphen) in completions for prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+
+    // 'api.key' should NOT be suggested (doesn't start with 'db').
+    assert!(
+        !completions.iter().any(|c| c.label == "api.key"),
+        "expected 'api.key' filtered out by prefix 'db'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn test_hash_key_completion_quoted_keys_with_dots_and_spaces() {
     // Test completion with dot and space separators in keys
     let code = r#"my %config = ('db.host' => 1, 'api key' => 2);
@@ -4280,6 +4307,27 @@ $config{api"#;
     assert!(
         !completions.iter().any(|c| c.label == "db.host"),
         "expected 'db.host' filtered out by prefix 'api'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_hash_key_completion_double_quoted_keys_with_special_characters() {
+    let code = r#"my %config = ("db.host" => 1, "api key" => 2, "bare" => 3);
+$config{api"#;
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new(&ast);
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.iter().any(|c| c.label == "api key"),
+        "expected double-quoted 'api key' in completions for prefix 'api'; got: {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+    assert!(
+        !completions.iter().any(|c| c.label == "db.host"),
+        "expected double-quoted 'db.host' filtered out by prefix 'api'; got: {:?}",
         completions.iter().map(|c| &c.label).collect::<Vec<_>>()
     );
 }
@@ -5166,4 +5214,26 @@ fn test_special_var_count_at_least_40() {
     }
 
     assert!(total >= 40, "expected at least 40 special variables across all sigils, got {total}");
+}
+
+#[test]
+fn extract_fat_comma_keys_covers_quoted_and_bareword_forms() {
+    // Exercises all three branches of the key-token classification in
+    // `extract_fat_comma_keys`: single-quoted, double-quoted, and bareword,
+    // plus the rejection path for an unquoted token with special characters.
+    fn collect(list_text: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        CompletionProvider::extract_fat_comma_keys(list_text, &mut keys, &mut seen);
+        keys
+    }
+
+    // Bareword key (alphanumeric + underscore) is accepted.
+    assert!(collect("host => 1").iter().any(|k| k == "host"));
+    // Single-quoted key may contain special characters (hyphen).
+    assert!(collect("'db-name' => 1").iter().any(|k| k == "db-name"));
+    // Double-quoted key may contain special characters (dot).
+    assert!(collect("\"x.y\" => 1").iter().any(|k| k == "x.y"));
+    // Unquoted token with a non-word character is rejected (no quoting).
+    assert!(collect("a-b => 1").is_empty());
 }
