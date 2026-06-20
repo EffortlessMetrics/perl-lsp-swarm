@@ -184,9 +184,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Execute-command routed-suite expectations were refreshed to the tightened
   contract.** The stale test setup was corrected without loosening the
   execute-command assertions. (#1530)
-- **Docs-only PRs no longer run the full Rust matrix.** Pull requests that
-  touch only documentation paths skip the expensive Rust CI workflow while
-  mixed code/doc PRs still run the full matrix. (#1688)
+- **Docs/assets-only PRs no longer run the full Rust matrix while preserving
+  required workflow triggers.** Pull requests that touch only documentation,
+  extension media/snippets, or tree-sitter examples skip the expensive Rust CI
+  jobs inside the always-triggered CI workflow; mixed code/doc PRs still run
+  the full matrix, and workflow-trigger lint stays enforced. (#1688, #1816,
+  #1817)
 - **Draft PR ripr routing treats skipped routers as neutral.** Draft pull
   requests no longer fail the ripr aggregate solely because the router
   intentionally skipped execution. (#1689)
