@@ -2667,10 +2667,18 @@ export async function suggestDiscoveredIncludePaths(context: vscode.ExtensionCon
         const config = vscode.workspace.getConfiguration('perl-lsp', folder.uri);
         const includePaths: string[] = config.get('includePaths', ['lib', 'local/lib/perl5']);
         const covered = new Set(includePaths.map(includePath => path.normalize(includePath)));
+        // A candidate is already covered if any configured include path IS the candidate
+        // or is a sub-path of it (e.g. "local/lib/perl5" covers the "local" candidate so
+        // we don't incorrectly suggest adding the parent directory as an additional root).
+        const isCandidateCovered = (candidate: string): boolean => {
+            const candidateNorm = path.normalize(candidate);
+            return covered.has(candidateNorm) ||
+                [...covered].some(c => c === candidateNorm + path.sep || c.startsWith(candidateNorm + path.sep) || c.startsWith(candidateNorm + '/'));
+        };
 
         const discovered: string[] = [];
         for (const candidate of DISCOVERY_CANDIDATE_DIRS) {
-            if (covered.has(path.normalize(candidate))) {
+            if (isCandidateCovered(candidate)) {
                 continue;
             }
             const resolved = path.resolve(folder.uri.fsPath, candidate);

@@ -1319,6 +1319,24 @@ describe('suggestDiscoveredIncludePaths (#1633)', () => {
     await suggestDiscoveredIncludePaths(context);
     expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
   });
+
+  test('stays silent when a sub-path of the candidate is already covered (e.g. local/ covered by local/lib/perl5)', async () => {
+    // Regression: when local/lib/perl5 is in includePaths, the parent directory
+    // "local" candidate should NOT be suggested even if it contains .pm files (it does,
+    // via local/lib/perl5/Foo.pm which is within the walk depth). Without the sub-path
+    // check, the scanner would incorrectly suggest adding "local" as an additional root.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-discover-subpath-'));
+    fs.mkdirSync(path.join(dir, 'local', 'lib', 'perl5'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'local', 'lib', 'perl5', 'Installed.pm'), 'package Installed; 1;\n');
+
+    const context: any = { globalState: makeGlobalState() };
+    // local/lib/perl5 is already in includePaths — "local" should be suppressed
+    mountWorkspace(dir, ['lib', 'local/lib/perl5']);
+
+    await suggestDiscoveredIncludePaths(context);
+
+    expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
