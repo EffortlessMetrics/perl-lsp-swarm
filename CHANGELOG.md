@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Phase-block hover docs (`BEGIN`/`END`/`INIT`/`CHECK`/`UNITCHECK`).** Hovering
   over a Perl phase block now displays an explanation of when that block runs
   relative to compile and runtime. (#1298)
+- **Framework-aware deterministic inline completions.** Try::Tiny `try`/`catch`
+  scaffolds, Mojolicious::Lite route scaffolds, and project-indexed package
+  receiver method completions are now offered only when the workspace evidence
+  supports them. (#1532, #1573, #1585)
 
 ### Fixed
 
@@ -50,6 +54,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pause` now reports whether the failure was "no active session" or "session
   exists but signal delivery failed", giving editors and users an accurate
   explanation. (#1364)
+- **`variablesReference` spaces are separated by type.** Scope, stack, and
+  evaluate-result references now use a typed codec, retiring the collision class
+  where one reference kind could be decoded as another. (#1430, #1444)
+- **`evaluate` validates the expression before frame lookup.** Empty or unsafe
+  expressions now report the expression problem even when the frame id is bad,
+  avoiding misleading no-session errors. (#1496)
+- **Malformed debugger stack contexts reject blank file names.** Stack parsing
+  no longer accepts whitespace-only file fields as a real frame location.
+  (#1498)
 
 #### Editor settings
 
@@ -72,6 +85,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Editors that request semantic tokens before sending `textDocument/didOpen` now
   receive a message explaining the required sequencing, rather than a bare error
   code. (#1206)
+- **Baseline single-root LSP smoke blockers repaired.** The runtime and tests
+  now preserve hover state, wait for workspace file-operation indexing, handle
+  empty workspace-folder inputs as no-ops, and keep progress harness output
+  deterministic. (#1551)
+- **Multi-root `workspace/symbol` is deterministic.** Workspace-symbol queries
+  now wait briefly for active indexing, preserve each symbol's workspace-folder
+  URI, and return repeatable results across roots. (#1522)
+- **Reference fallback avoids document-lock re-entry.** Partial-index reference
+  fallback no longer re-enters the documents lock while searching open files.
+  (#1597)
 
 #### Formatting
 
@@ -79,6 +102,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Formatting a selected range no longer fails when the rest of the file contains
   regex literals, heredocs, `qw(...)`, or POD blocks outside the selection.
   (#1314)
+- **Heredoc and multiline folding boundaries are corrected.** Folding ranges for
+  heredocs and multiline constructs now align with the intended source spans.
+  (#1560)
 
 #### Rename and refactor
 
@@ -88,6 +114,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Rename uses character-aware word boundaries.** The boundary check now
   handles multi-byte UTF-8 characters correctly, preventing partial-match
   renames that would corrupt identifiers containing non-ASCII characters. (#1288)
+
+#### Diagnostics and code actions
+
+- **Code actions no longer panic on mid-codepoint UTF-8 ranges.** Invalid byte
+  ranges inside multibyte characters now produce no action instead of slicing
+  through a character boundary; valid character-boundary ranges still work.
+  (#1481)
+- **Arrow-deref hash keys are no longer flagged as strict barewords.**
+  `$self->{name}` and `$ref->{key}` are recognized as Perl's auto-quoted hash
+  key form while real strict-bareword violations still report. (#1562)
+- **DBI receiver completions are import-gated.** DBI-style receiver completions
+  now stay quiet unless a visible `use DBI` fact supports them. (#1579)
+
+#### Parser recovery and legacy syntax
+
+- **Nested variable lists parse comma-separated items.** Declarations such as
+  `my ($a, ($b, $c))` now recover the nested list instead of stopping at the
+  inner comma. (#1457)
+- **Negative keyword barewords before `=>` are treated as strings.** The parser
+  no longer reports false errors for valid fat-comma hash keys such as
+  `-strict => 1`. (#1460, #1483)
+- **Custom sub attributes and method-call-looking string content stay quiet.**
+  Common legacy syntax no longer produces false parser errors for custom
+  attributes or interpolated strings containing method-call shapes. (#1461,
+  #1463)
+- **`s///e` substitution replacement text is classified as Perl code.** This
+  improves downstream semantic analysis for executable substitution bodies.
+  (#1238)
 
 #### Module resolution
 
@@ -105,9 +159,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in `docs/reference/PARSER_CONTRACTS.md`. (#1319, #1321, #1324)
 - **RIPR coverage tool upgraded from 0.5.0 to 0.9.0.** The CI seam-proof gate
   now uses the current RIPR release. (#1329)
-- **`s///e` substitution marked as embedded code.** The parser now correctly
-  classifies the replacement side of `s///e` as Perl code, improving downstream
-  semantic analysis accuracy. (#1238)
+- **AST kind inventories are compiler-derived.** `ALL_KIND_NAMES` now derives
+  from `NodeKind::VARIANTS`, removing a hand-maintained mirror list that could
+  drift from the enum. (#1491)
+- **Coverage and test gates are separated.** Patch coverage now reports
+  coverage shortfall/setup/routing failures separately from routed test
+  failures, so a latent unrelated routed test belongs to a test-named gate
+  rather than the Codecov/Patch-95 verdict. (#1482, #1549, #1576, #1581, #1586)
+- **CPAN corpus ratchet can run a bounded top-50 profile.** The post-merge corpus
+  workflow now has a bounded representative mode in addition to the full ratchet;
+  release accuracy claims still require the corresponding receipt. (#1520)
+- **Runner disk preflight and failover are explicit.** Self-hosted runner
+  routing now treats disk hygiene as a preflight invariant and falls back only
+  for disk-preflight failures, without masking real test or gate failures.
+  (#1528)
+- **Workflow privilege analysis fails closed for untrusted event expressions.**
+  Jobs with write permissions must prove every event-expression branch is
+  anchored to a trusted event. (#1539)
+- **Execute-command routed-suite expectations were refreshed to the tightened
+  contract.** The stale test setup was corrected without loosening the
+  execute-command assertions. (#1530)
 
 ---
 
