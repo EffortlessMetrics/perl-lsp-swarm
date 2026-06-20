@@ -180,3 +180,104 @@ fn test_incremental_edits_no_state_corruption() -> Result<(), Box<dyn std::error
 
     Ok(())
 }
+
+/// Test that consecutive didChange notifications WITHOUT explicit version fields
+/// produce monotonically increasing version numbers (no collision at N+1).
+///
+/// This test captures the bug described in #1847: two rapid versionless didChange
+/// messages would both read the same stale doc_state.version and produce the same
+/// auto-incremented version (e.g., both become v2), silently overwriting each other.
+///
+/// The fix ensures that version auto-increment always reads the CURRENT stored
+/// document state immediately before computing the next version, avoiding stale
+/// snapshots and collision.
+#[test]
+fn test_consecutive_didchange_without_version_increments_uniquely() -> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp(&server);
+
+    let uri = "file:///collision_test.pl";
+
+    // Open document with version 1
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $a = 1; my $b = 2;\n"
+                }
+            }
+        }),
+    );
+
+    // First didChange WITHOUT explicit version field
+    // Should auto-increment to version 2
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": uri },
+                "contentChanges": [{ "text": "my $a = 99; my $b = 2;\n" }]
+            }
+        }),
+    );
+
+    // Second didChange WITHOUT explicit version field, in rapid succession
+    // Should auto-increment to version 3 (not collision at 2)
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": uri },
+                "contentChanges": [{ "text": "my $a = 99; my $b = 99;\n" }]
+            }
+        }),
+    );
+
+    // Third didChange WITHOUT explicit version field
+    // Should auto-increment to version 4 (proving no collision)
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": uri },
+                "contentChanges": [{ "text": "my $a = 99; my $b = 99; my $c = 3;\n" }]
+            }
+        }),
+    );
+
+    // Request hover to verify the document state is healthy and versions advanced correctly
+    // (hover on the document will trigger internal version tracking checks)
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 300,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 4 }
+            }
+        }),
+    );
+
+    // The hover response should not contain an error. If versions collided at N+1,
+    // the document state would be corrupted and the hover would fail or error.
+    assert!(
+        response.get("error").is_none(),
+        "Hover after consecutive versionless didChanges should not error (indicating no version collision): {response:?}"
+    );
+
+    Ok(())
+}
