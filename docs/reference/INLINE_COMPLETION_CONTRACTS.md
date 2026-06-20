@@ -51,8 +51,9 @@ and the cross-referenced `lsp.ranges_formatting`, `lsp.text_document_content`.
 
 ### Contract
 
-The serialized request/response shapes match the LSP 3.18 `inlineCompletion`
-types exactly, with camelCase field names.
+The serialized request/response field **names and shapes** match the LSP 3.18
+`inlineCompletion` types, with camelCase field names. One deliberate value-type
+narrowing is documented below (`insertText` is plain string only).
 
 **Response items** — `crates/perl-lsp-rs-core/src/providers/inline_completion/mod.rs`:
 
@@ -64,9 +65,19 @@ types exactly, with camelCase field names.
 - `InlineCompletionList` (struct at `mod.rs:312`): `items: Vec<InlineCompletionItem>`
   → `items`.
 
-These four item fields are the complete LSP 3.18 `InlineCompletionItem` surface.
-Optional fields are elided via `skip_serializing_if = "Option::is_none"` so the
-emitted JSON is minimal and spec-shaped.
+These four item **fields** are the complete LSP 3.18 `InlineCompletionItem`
+surface. Optional fields are elided via `skip_serializing_if = "Option::is_none"`
+so the emitted JSON is minimal and spec-shaped.
+
+**Supported subset — `insertText`.** The LSP 3.18 spec types `insertText` as
+`string | StringValue` (the `StringValue` object form, `{ kind: "snippet", value }`,
+carries snippet-syntax insertions). perl-lsp implements the **plain `string`**
+arm only — `insert_text` is a Rust `String`, so emitted items are always literal
+text, never a snippet `StringValue`. This is a deliberate conformance subset, not
+a typed `StringValue` struct. Emitting snippet insertions is a future extension
+that must add the `StringValue` variant (and a client `insertTextFormat`/snippet
+capability gate) before this contract can claim the full `string | StringValue`
+surface.
 
 **Request params** — parsed in
 `crates/perl-lsp-rs/src/runtime/language/misc.rs::handle_inline_completion`
@@ -206,7 +217,13 @@ looking at: it must extend the selected text and agree on the replaced range.
 deterministic provider. Fallback is governed by `ai_config.fallback`:
 
 - AI returns non-empty → apply replacement ranges, selected-info constraint, and
-  trigger policy, then return (`misc.rs:921`–`942`).
+  trigger policy (`misc.rs:921`–`934`). The handler returns the AI list **only if
+  it is still non-empty after filtering, or `fallback` is false** — the guard is
+  `if !list.items.is_empty() || !ai_config.fallback` (`misc.rs:935`). So when the
+  selected-info constraint or the automatic-trigger policy filters every AI item
+  out **and** `fallback` is true, the handler does **not** return the empty AI
+  list; it falls through to the deterministic provider below. With `fallback`
+  false it returns the (possibly empty) AI list.
 - AI errors or returns empty → if `fallback` is false, return `{ "items": [] }`;
   otherwise fall through to the deterministic provider (`misc.rs:944`–`959`).
 - Deterministic path always applies the same selected-info + trigger-policy
@@ -256,8 +273,17 @@ upstream-proposed method).
   `{ token, value: { kind: "perlInlineCompletionStream", sessionId, sequence,
   isFinal, items } }` (`streaming.rs:99`, `:150`, `:197`). Each chunk carries
   **cumulative** text (not a delta).
-- A new request cancels the prior session (`StreamSession`); cancellation is
-  honored mid-stream.
+- Session replacement is **scoped to the session key**. `StreamSessionManager::`
+  `start_session` (`crates/perl-lsp-rs/src/runtime/stream_session.rs:83`) cancels
+  the prior session only for the **same `SessionKey`** = (`uri`, `document_version`,
+  `line`, `character`) (`stream_session.rs:15`, `:91`). A second request at the
+  **same** cursor/version replaces and cancels the first (test
+  `streaming_completion_second_request_cancels_first_session`). A request at a
+  **different** position/version does **not** cancel an earlier in-flight stream
+  via `start_session`; that earlier stream is reclaimed on the next document edit
+  by `cancel_for_uri` (didChange/didClose, `stream_session.rs:104`) or
+  `cancel_for_uri_version` (older version, `stream_session.rs:118`). Cancellation
+  is honored mid-stream (`session.is_cancelled()`).
 - While streaming, the request result is JSON `null`; the items arrive via
   progress.
 
