@@ -49,12 +49,14 @@ fn make_synthetic_anchor(id: AnchorId, file_id: FileId, start: u32, end: u32) ->
 fn entities_hash_covers_generated_members() -> Result<(), Box<dyn std::error::Error>> {
     let index = WorkspaceIndex::new();
 
-    // Index a file with Moo (generates members)
+    // Index a file with Moo (generates two accessor members for two `has` fields).
+    // Two generated members vs one regular sub ensures entities.len() differs.
     let uri_with_gen = "file:///workspace/with_generated.pm";
     let source_with_gen = r#"
 package WithMoo;
 use Moo;
 has name => (is => 'ro');
+has age => (is => 'ro');
 1;
 "#;
 
@@ -90,10 +92,13 @@ sub foo { 1 }
         "entities_hash must change when generated members are present"
     );
 
-    // The shard with generated should have more entities
+    // The shard with generated should have more entities.
+    // WithMoo has 2 generated members (name + extra) vs WithoutMoo's 1 sub.
     assert!(
         shard_with_gen.entities.len() > shard_without_gen.entities.len(),
-        "shard with generated members should have more entities"
+        "shard with generated members should have more entities (got {} vs {})",
+        shard_with_gen.entities.len(),
+        shard_without_gen.entities.len()
     );
 
     // At least one entity should be GeneratedMember in the Moo file
@@ -186,16 +191,12 @@ fn file_fact_shard_carries_producer_schema_version() -> Result<(), Box<dyn std::
     index.index_file(Url::parse(uri)?, source.to_string())?;
     let shard = index.file_fact_shard(uri).ok_or_else(|| io::Error::other("missing shard"))?;
 
-    // The shard must have a producer_schema_version field
-    // When the field is added, this should assert:
-    // assert_eq!(shard.producer_schema_version, 1, "producer_schema_version must be 1 (PRODUCER_SCHEMA_VERSION constant)");
-    //
-    // For now, document what we expect to find on the shard once the field exists:
-    // TODO: Uncomment the following line once FileFactShard::producer_schema_version field is added:
-    // assert_eq!(shard.producer_schema_version, 1);
-
-    // Placeholder assertion to keep test structure valid until field is added:
-    assert!(!shard.source_uri.is_empty(), "shard should have a source URI");
+    // The shard must carry the producer schema version constant.
+    assert_eq!(
+        shard.producer_schema_version,
+        1,
+        "producer_schema_version must be 1 (PRODUCER_SCHEMA_VERSION constant)"
+    );
 
     Ok(())
 }
