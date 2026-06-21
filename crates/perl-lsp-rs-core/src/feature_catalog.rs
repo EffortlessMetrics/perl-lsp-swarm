@@ -630,10 +630,7 @@ mod tests {
             description: "duplicate row".to_string(),
         });
 
-        let err = match catalog.validate() {
-            Ok(()) => return Err("duplicate id must fail validation".into()),
-            Err(err) => err,
-        };
+        let err = catalog.validate().err().ok_or("duplicate id must fail validation")?;
         let message = err.to_string();
         assert!(message.contains("duplicate feature id: lsp.completion"));
         Ok(())

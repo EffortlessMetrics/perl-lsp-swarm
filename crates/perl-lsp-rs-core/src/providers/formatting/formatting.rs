@@ -619,14 +619,9 @@ mod tests {
             trim_final_newlines: None,
         };
 
-        let error = match provider.format_document("my$x=1;\n", &options) {
-            Ok(_) => {
-                return Err(anyhow::anyhow!(
-                    "explicit external legacy mode must report missing perltidy"
-                ));
-            }
-            Err(error) => error,
-        };
+        let error = provider.format_document("my$x=1;\n", &options).err().ok_or_else(|| {
+            anyhow::anyhow!("explicit external legacy mode must report missing perltidy")
+        })?;
         assert_eq!(error.error_kind(), "perltidy_not_found");
         Ok(())
     }
