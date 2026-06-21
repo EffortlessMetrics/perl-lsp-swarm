@@ -4,10 +4,16 @@
 //! stable language constructs, parser anchors, source ranges, and scope graph
 //! proof data without changing LSP provider behavior.
 
+mod body;
 pub mod disposition;
 mod lower;
 mod model;
 
+pub use body::{
+    AccessMode, Arena, AssignMode, BinaryOp, BodyOwnerKind, BodySourceMap, DeclStorageClass,
+    HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt, HirStmtId, HirVariable,
+    Sigil, VariableKind, lower_body,
+};
 pub use lower::lower_ast;
 pub use model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
