@@ -11,13 +11,15 @@
 use std::fs;
 use std::path::PathBuf;
 
+use perl_tdd_support::must;
+
 fn workspace_root() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest_dir).join("..").join("..")
 }
 
 #[test]
-fn g3_lsp_compat_feature_signal_not_gating() -> Result<(), Box<dyn std::error::Error>> {
+fn g3_lsp_compat_feature_signal_not_gating() {
     // Orchestrator decision (Option A) from PR #4539:
     // Keep lsp-types as REQUIRED, not optional. Keep lsp-compat as an empty SIGNAL feature.
     //
@@ -33,7 +35,7 @@ fn g3_lsp_compat_feature_signal_not_gating() -> Result<(), Box<dyn std::error::E
     let root = workspace_root();
     let core_toml = root.join("crates/perl-lsp-rs-core/Cargo.toml");
 
-    let content = fs::read_to_string(&core_toml)?;
+    let content = must(fs::read_to_string(&core_toml));
 
     // Check that lsp-compat feature exists (as empty signal, not gating)
     let has_lsp_compat = content.contains("lsp-compat = []");
@@ -50,8 +52,6 @@ fn g3_lsp_compat_feature_signal_not_gating() -> Result<(), Box<dyn std::error::E
         has_lsp_types_required,
         "lsp-types should be a required dependency (not optional). Follow-up: implement optional gating for WASM-style builds."
     );
-
-    Ok(())
 }
 
 #[test]
