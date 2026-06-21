@@ -39,12 +39,15 @@ fn strip_perl_sigil(name: &str) -> &str {
     }
 }
 
+fn perl_word_split_boundary(c: char) -> bool {
+    !c.is_alphanumeric() && c != '_'
+}
+
 fn lexical_declaration_keyword_before(source: &str, symbol_start: usize) -> bool {
     let line_start =
         if symbol_start == 0 { 0 } else { source[..symbol_start].rfind('\n').map_or(0, |p| p + 1) };
     let prefix = source[line_start..symbol_start].trim_end();
-    let previous_word =
-        prefix.split(|c: char| !c.is_alphanumeric() && c != '_').rfind(|word| !word.is_empty());
+    let previous_word = prefix.split(perl_word_split_boundary).rfind(|word| !word.is_empty());
     matches!(previous_word, Some("my" | "state"))
 }
 
@@ -52,8 +55,7 @@ fn sub_declaration_keyword_before(source: &str, symbol_start: usize) -> bool {
     let line_start =
         if symbol_start == 0 { 0 } else { source[..symbol_start].rfind('\n').map_or(0, |p| p + 1) };
     let prefix = source[line_start..symbol_start].trim_end();
-    let previous_word =
-        prefix.split(|c: char| !c.is_alphanumeric() && c != '_').rfind(|word| !word.is_empty());
+    let previous_word = prefix.split(perl_word_split_boundary).rfind(|word| !word.is_empty());
     matches!(previous_word, Some("sub"))
 }
 
@@ -1678,6 +1680,21 @@ mod tests {
         // bounds are byte offsets; slice with &text[start..end]
         assert_eq!(&text[start..end], "$value");
         Ok(())
+    }
+
+    #[test]
+    fn perl_word_split_boundary_discriminator_c_eq_underscore() {
+        assert_eq!(perl_word_split_boundary('_'), false, "input that hits the boundary: c == '_'");
+    }
+
+    #[test]
+    fn perl_word_split_boundary_discriminator_c_ne_underscore() {
+        assert_eq!(perl_word_split_boundary(' '), true, "input that hits the boundary: c != '_'");
+        assert_eq!(
+            perl_word_split_boundary('a'),
+            false,
+            "input that hits the boundary: c.is_alphanumeric()"
+        );
     }
 
     #[test]
