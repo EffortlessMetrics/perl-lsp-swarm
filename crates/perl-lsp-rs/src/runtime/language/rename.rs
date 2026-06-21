@@ -1701,6 +1701,76 @@ mod tests {
     }
 
     #[test]
+    fn sub_declaration_keyword_before_boundary_discriminator_c_not_underscore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub_ target { 1 }\nsub target { 2 }\n";
+        let invalid_offset = source.find("target { 1 }").ok_or("missing invalid sub target")?;
+        let valid_offset = source.find("target { 2 }").ok_or("missing valid sub target")?;
+
+        assert_eq!(
+            sub_declaration_keyword_before(source, invalid_offset),
+            false,
+            "underscore remains part of the previous word, so sub_ is not the sub keyword"
+        );
+        assert_eq!(
+            sub_declaration_keyword_before(source, valid_offset),
+            true,
+            "plain sub declarations should still detect the sub keyword"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn sub_declaration_keyword_before_boundary_discriminator_not_alphanumeric_and_not_underscore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "sub\t target { 1 }\nmethod target { 2 }\n";
+        let tab_offset = source.find("target { 1 }").ok_or("missing tab-separated sub target")?;
+        let method_offset = source.find("target { 2 }").ok_or("missing method target")?;
+
+        assert_eq!(
+            sub_declaration_keyword_before(source, tab_offset),
+            true,
+            "non-identifier whitespace separates sub from the declaration name"
+        );
+        assert_eq!(
+            sub_declaration_keyword_before(source, method_offset),
+            false,
+            "other declaration-like keywords must not be treated as sub declarations"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_starts_with_sub_declaration_name_call_observation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let absolute_start = 19;
+        let source_range = "  sub target { 1 }";
+        let relative_name_start = source_range.find("target").ok_or("missing target")?;
+        let expected_start = absolute_start + relative_name_start;
+        let expected_end = expected_start + "target".len();
+
+        assert_eq!(
+            range_starts_with_sub_declaration_name(source_range, absolute_start, "target"),
+            Some((expected_start, expected_end)),
+            "leading whitespace should be skipped before matching the sub declaration name"
+        );
+        assert_eq!(
+            range_starts_with_sub_declaration_name("subtarget { 1 }", absolute_start, "target"),
+            None,
+            "sub followed by an identifier character is not the sub keyword"
+        );
+        assert_eq!(
+            range_starts_with_sub_declaration_name("sub_target { 1 }", absolute_start, "target"),
+            None,
+            "sub followed by underscore is not the sub keyword"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn token_helpers_work_with_non_ascii_prefix() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
         // "# café\n" — 'é' (U+00E9) is 2 UTF-8 bytes; the line is 9 bytes, 8 chars.
