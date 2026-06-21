@@ -1701,7 +1701,7 @@ mod tests {
     }
 
     #[test]
-    fn sub_declaration_keyword_before_boundary_discriminator_c_not_underscore()
+    fn sub_declaration_keyword_before_boundary_discriminator_c_ne_underscore()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = "sub_ target { 1 }\nsub target { 2 }\n";
         let invalid_offset = source.find("target { 1 }").ok_or("missing invalid sub target")?;
@@ -1710,7 +1710,7 @@ mod tests {
         assert_eq!(
             sub_declaration_keyword_before(source, invalid_offset),
             false,
-            "underscore remains part of the previous word, so sub_ is not the sub keyword"
+            "input that hits the boundary: c != '_'"
         );
         assert_eq!(
             sub_declaration_keyword_before(source, valid_offset),
@@ -1722,7 +1722,7 @@ mod tests {
     }
 
     #[test]
-    fn sub_declaration_keyword_before_boundary_discriminator_not_alphanumeric_and_not_underscore()
+    fn sub_declaration_keyword_before_boundary_discriminator_not_c_is_alphanumeric_and_c_ne_underscore()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = "sub\t target { 1 }\nmethod target { 2 }\n";
         let tab_offset = source.find("target { 1 }").ok_or("missing tab-separated sub target")?;
@@ -1731,7 +1731,7 @@ mod tests {
         assert_eq!(
             sub_declaration_keyword_before(source, tab_offset),
             true,
-            "non-identifier whitespace separates sub from the declaration name"
+            "input that hits the boundary: !c.is_alphanumeric() && c != '_'"
         );
         assert_eq!(
             sub_declaration_keyword_before(source, method_offset),
@@ -1743,7 +1743,7 @@ mod tests {
     }
 
     #[test]
-    fn range_starts_with_sub_declaration_name_call_observation()
+    fn range_starts_with_sub_declaration_name_boundary_discriminator_call_observation()
     -> Result<(), Box<dyn std::error::Error>> {
         let absolute_start = 19;
         let source_range = "  sub target { 1 }";
@@ -1754,17 +1754,64 @@ mod tests {
         assert_eq!(
             range_starts_with_sub_declaration_name(source_range, absolute_start, "target"),
             Some((expected_start, expected_end)),
-            "leading whitespace should be skipped before matching the sub declaration name"
+            "input that observes the range_starts_with_sub_declaration_name call"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn range_starts_with_sub_declaration_name_boundary_discriminator_ch_is_alphanumeric_or_ch_eq_underscore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let absolute_start = 19;
+
         assert_eq!(
             range_starts_with_sub_declaration_name("subtarget { 1 }", absolute_start, "target"),
             None,
-            "sub followed by an identifier character is not the sub keyword"
+            "input that hits the boundary: ch.is_alphanumeric() || ch == '_'"
         );
         assert_eq!(
             range_starts_with_sub_declaration_name("sub_target { 1 }", absolute_start, "target"),
             None,
-            "sub followed by underscore is not the sub keyword"
+            "input that hits the boundary: ch == '_'"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_starts_with_sub_declaration_name_boundary_discriminator_source_range_get_name_start_name_end_ne_symbol()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            range_starts_with_sub_declaration_name("sub target { 1 }", 19, "other"),
+            None,
+            "input that hits the boundary: source_range.get(name_start..name_end)? != symbol"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_starts_with_sub_declaration_name_boundary_discriminator_tail_ch_is_alphanumeric_or_ch_eq_underscore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let absolute_start = 19;
+
+        assert_eq!(
+            range_starts_with_sub_declaration_name(
+                "sub targetSuffix { 1 }",
+                absolute_start,
+                "target"
+            ),
+            None,
+            "input that hits the boundary: source_range.get(name_end..).and_then(|tail| tail.chars().next()).is_some_and(|ch| ch.is_alphanumeric() || ch == '_')"
+        );
+        assert_eq!(
+            range_starts_with_sub_declaration_name(
+                "sub target_suffix { 1 }",
+                absolute_start,
+                "target"
+            ),
+            None,
+            "input that hits the boundary: ch == '_'"
         );
 
         Ok(())
