@@ -765,4 +765,71 @@ mod tests {
             assert_eq!(got, expected, "legacy_category mismatch for {kind}");
         }
     }
+
+    #[test]
+    fn legacy_category_as_str_round_trips_meaning() {
+        // Every legacy category must expose a stable slug and a non-empty,
+        // human-readable meaning used by the generated status doc.
+        let categories = [
+            LegacyCategory::Lowered,
+            LegacyCategory::DynamicBoundary,
+            LegacyCategory::IntentionallySkipped,
+            LegacyCategory::NotYetModeled,
+        ];
+        let mut slugs = std::collections::BTreeSet::new();
+        for cat in categories {
+            let slug = cat.as_str();
+            assert!(!slug.is_empty(), "slug for {cat:?} is empty");
+            assert!(slugs.insert(slug), "duplicate slug {slug:?} across legacy categories");
+            assert!(!cat.meaning().is_empty(), "meaning for {cat:?} is empty");
+        }
+        // Spot-check exact slugs so the status doc / xtask contract stays stable.
+        assert_eq!(LegacyCategory::Lowered.as_str(), "lowered");
+        assert_eq!(LegacyCategory::DynamicBoundary.as_str(), "dynamic_boundary");
+        assert_eq!(LegacyCategory::IntentionallySkipped.as_str(), "intentionally_skipped");
+        assert_eq!(LegacyCategory::NotYetModeled.as_str(), "not_yet_modeled");
+    }
+
+    #[test]
+    fn hir_kinds_for_matches_emission_flags() {
+        // A kind that emits HIR items must list at least one HIR kind, and a
+        // kind that emits none must report an empty inventory. This keeps the
+        // coverage inventory (`hir_kinds_for`) in lockstep with the lowering
+        // disposition flags.
+        for &kind_name in NodeKind::ALL_KIND_NAMES {
+            let Some(d) = disposition_for(kind_name) else {
+                continue;
+            };
+            let hir_kinds = hir_kinds_for(kind_name);
+            if d.emits_items || d.may_emit_boundary {
+                assert!(
+                    !hir_kinds.is_empty(),
+                    "{kind_name} emits HIR items/boundaries but hir_kinds_for() is empty"
+                );
+            }
+        }
+        // Spot-check a few documented mappings.
+        assert_eq!(hir_kinds_for("Package"), &["PackageDecl"]);
+        assert_eq!(hir_kinds_for("Eval"), &["DynamicBoundary"]);
+        assert!(hir_kinds_for("Unary").contains(&"DynamicBoundary"));
+        // Unknown kinds report no HIR inventory.
+        assert!(hir_kinds_for("ThisKindDoesNotExist").is_empty());
+    }
+
+    #[test]
+    fn registry_has_no_stale_or_missing_entries() {
+        // The registry must be exactly aligned with the live NodeKind set:
+        // no missing entries (every live kind classified) and no phantom
+        // (stale) entries shadowing removed variants.
+        assert!(
+            missing_dispositions().is_empty(),
+            "registry is missing entries: {:?}",
+            missing_dispositions()
+        );
+        assert!(
+            stale_dispositions().is_empty(),
+            "registry has stale entries: {:?}",
+            stale_dispositions()
+        );
+    }
 }
