@@ -324,6 +324,30 @@ mod tests {
         assert!(result.is_err(), "run_with_io must return Err when writer is broken immediately");
     }
 
+    #[test]
+    fn test_failing_writer_fails_at_configured_boundary() {
+        let mut writer = FailingWriter::fail_after(1);
+
+        let first = writer.write(b"a");
+        assert!(matches!(first, Ok(1)), "first write should succeed before the boundary");
+        assert_eq!(
+            writer.write_count.load(AOrdering::Acquire),
+            writer.fail_after_writes,
+            "write count should sit exactly on the configured failure boundary"
+        );
+
+        let second = writer.write(b"b");
+        assert!(
+            matches!(second, Err(ref error) if error.kind() == io::ErrorKind::BrokenPipe),
+            "write at the configured boundary must return BrokenPipe"
+        );
+        assert_eq!(
+            writer.write_count.load(AOrdering::Acquire),
+            writer.fail_after_writes + 1,
+            "failed boundary write must still be counted"
+        );
+    }
+
     /// A writer that succeeds for a few writes then fails permanently triggers the
     /// supervision path: the event-handler sets `transport_broken`, and the main
     /// loop detects it on the next iteration and returns `BrokenPipe`.

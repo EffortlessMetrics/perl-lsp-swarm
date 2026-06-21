@@ -318,10 +318,8 @@ fn test_launch_reports_missing_module_with_install_hint() -> Result<(), Box<dyn 
     initialize_adapter(&mut adapter);
     let tmp = tempfile::tempdir()?;
 
-    for (offset, module_name) in
-        ["Some::Missing::Module", "Optional::Dep", "Tied::Hash::With::Spaces"]
-            .into_iter()
-            .enumerate()
+    for (request_seq, module_name) in
+        [(2, "Some::Missing::Module"), (3, "Optional::Dep"), (4, "Tied::Hash::With::Spaces")]
     {
         let script = write_script(
             &tmp,
@@ -335,10 +333,14 @@ fn test_launch_reports_missing_module_with_install_hint() -> Result<(), Box<dyn 
             "args": []
         });
 
-        let response = adapter.handle_request((offset as i64) + 2, "launch", Some(args));
+        let response = adapter.handle_request(request_seq, "launch", Some(args));
 
         match response {
-            DapMessage::Response { success, message, .. } => {
+            DapMessage::Response { success, message, request_seq: echoed_request_seq, .. } => {
+                assert_eq!(
+                    echoed_request_seq, request_seq,
+                    "launch response must echo the missing-module request sequence"
+                );
                 assert!(!success, "Launch should fail for missing module {module_name}");
                 let msg = must_some(message);
                 assert!(

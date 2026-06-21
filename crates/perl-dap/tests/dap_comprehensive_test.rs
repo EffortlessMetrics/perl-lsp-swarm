@@ -582,6 +582,10 @@ print "Result: $result\n";
 "#;
 
     let (_script_dir, script_path) = create_test_script(script_content)?;
+    assert!(
+        script_path.exists(),
+        "created DAP lifecycle script must stay on disk while its TempDir is held"
+    );
     let mut adapter = DebugAdapter::new();
     let (tx, rx) = channel();
     adapter.set_event_sender(tx);

@@ -80,9 +80,8 @@ mod transport_supervision {
         let mut w = FailingWriter::always_failing();
         let result = w.write(b"hello");
         assert!(result.is_err(), "FailingWriter(0) must fail on the first write");
-        assert_eq!(
-            result.unwrap_err().kind(),
-            io::ErrorKind::BrokenPipe,
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == io::ErrorKind::BrokenPipe),
             "error kind must be BrokenPipe"
         );
     }
@@ -95,7 +94,12 @@ mod transport_supervision {
         assert!(w.write(b"a").is_ok(), "write 1 should succeed");
         assert!(w.write(b"b").is_ok(), "write 2 should succeed");
         assert!(w.write(b"c").is_ok(), "write 3 should succeed");
-        assert!(w.write(b"d").is_err(), "write 4 should fail");
+        assert_eq!(count.load(Ordering::Acquire), 3, "count must reach the configured boundary");
+        let boundary_result = w.write(b"d");
+        assert!(
+            matches!(boundary_result, Err(ref error) if error.kind() == io::ErrorKind::BrokenPipe),
+            "write at the configured boundary should fail with BrokenPipe"
+        );
         assert!(w.write(b"e").is_err(), "write 5 should fail");
         // Shared counter must reflect all five attempts.
         assert_eq!(count.load(Ordering::Acquire), 5);
