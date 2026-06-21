@@ -1652,6 +1652,27 @@ impl LspServer {
 mod tests {
     use super::*;
 
+    fn position_of(text: &str, needle: &str) -> Result<(u32, u32), Box<dyn std::error::Error>> {
+        for (line_idx, line) in text.lines().enumerate() {
+            if let Some(byte_offset) = line.find(needle) {
+                let line_number = u32::try_from(line_idx)?;
+                let character = line[..byte_offset].chars().map(char::len_utf16).sum::<usize>();
+                let character = u32::try_from(character)?;
+                return Ok((line_number, character));
+            }
+        }
+
+        Err(format!("needle `{needle}` not found").into())
+    }
+
+    fn rename_params(uri: &str, line: u32, character: u32, new_name: &str) -> Value {
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+            "newName": new_name
+        })
+    }
+
     #[test]
     fn token_helpers_support_cursor_on_sigil() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
@@ -1759,6 +1780,28 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn wait_for_rename_index_ready_observes_ready_transition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = std::sync::Arc::new(LspServer::default());
+        let uri = "file:///workspace/lib/WaitReady.pm";
+        let source = "package WaitReady;\nsub target { 1 }\n1;\n";
+        server.test_index_file_in_building_state(uri, source).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_start();
+
+        let worker = std::sync::Arc::clone(&server);
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            worker.test_simulate_indexing_complete();
+        });
+
+        server.wait_for_rename_index_ready();
+        handle.join().map_err(|_| std::io::Error::other("index-ready worker panicked"))?;
+
+        Ok(())
+    }
+
     #[test]
     fn range_starts_with_sub_declaration_name_boundary_discriminator_call_observation()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1830,6 +1873,582 @@ mod tests {
             None,
             "input that hits the boundary: ch == '_'"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_contains_single_bare_function_call_name_rejects_non_calls_and_duplicates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            range_contains_single_bare_function_call_name("target + 1", 7, "target"),
+            None,
+            "bare symbol ranges that are not call sites must not become rename edits"
+        );
+        assert_eq!(
+            range_contains_single_bare_function_call_name("target() + target()", 7, "target"),
+            None,
+            "ambiguous duplicate call names inside one provider range must be rejected"
+        );
+        assert_eq!(
+            range_contains_single_bare_function_call_name("target()", 7, "target"),
+            Some((7, 13)),
+            "single bare call names should still narrow to the token span"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn same_file_rename_span_rejects_sigiled_symbol_range_mismatch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "my $value_suffix = $value;";
+        let bare_start = source.find("value;").ok_or("missing bare value")?;
+        let bare_end = bare_start + "value".len();
+        let mismatch_start = source.find("value_suffix").ok_or("missing value_suffix")?;
+        let mismatch_end = mismatch_start + "value_suffix".len();
+
+        assert_eq!(
+            same_file_rename_span(source, bare_start, bare_end, "$value", "value"),
+            Some((bare_start, bare_end)),
+            "sigiled rename plans may target the bare identifier span"
+        );
+        assert_eq!(
+            same_file_rename_span(source, mismatch_start, mismatch_end, "$value", "value"),
+            None,
+            "sigiled rename plans must reject coarse ranges that do not match the current token"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_rename_partial_index_uses_open_document_qualified_workspace_edit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/Partial/Pkg.pm";
+        let caller_uri = "file:///workspace/lib/Partial/Caller.pm";
+        let request_source = "package Partial::Pkg;\nsub target { 1 }\n1;\n";
+        let caller_source = "package Partial::Caller;\nsub run { Partial::Pkg::target(); }\n1;\n";
+        server.test_apply_did_open(request_uri, request_source, 1)?;
+        server.test_apply_did_open(caller_uri, caller_source, 1)?;
+        server
+            .test_index_file_in_building_state(request_uri, request_source)
+            .map_err(std::io::Error::other)?;
+
+        let (line, character) = position_of(request_source, "target {")?;
+        let rename_result = server
+            .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))?
+            .ok_or("missing partial-index package rename result")?;
+
+        let changes = rename_result
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing partial-index workspace edit changes")?;
+        let edit_count: usize = changes.values().filter_map(Value::as_array).map(Vec::len).sum();
+        assert_eq!(edit_count, 2);
+        assert!(
+            changes.contains_key(request_uri),
+            "request declaration edit should be present: {rename_result}"
+        );
+        assert!(
+            changes.contains_key(caller_uri),
+            "open caller qualified call edit should be present: {rename_result}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_rename_partial_index_falls_back_when_open_document_guard_has_no_callers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/PartialSolo/Pkg.pm";
+        let request_source = "package PartialSolo::Pkg;\nsub target { 1 }\n1;\n";
+        server.test_apply_did_open(request_uri, request_source, 1)?;
+        server
+            .test_index_file_in_building_state(request_uri, request_source)
+            .map_err(std::io::Error::other)?;
+
+        let (line, character) = position_of(request_source, "target {")?;
+        let rename_result = server.handle_rename_workspace(Some(rename_params(
+            request_uri,
+            line,
+            character,
+            "renamed",
+        )))?;
+
+        assert!(
+            rename_result.is_none()
+                || rename_result
+                    .as_ref()
+                    .and_then(|value| value.get("changes"))
+                    .and_then(Value::as_object)
+                    .is_some_and(|changes| !changes.is_empty()),
+            "partial-index fallthrough should either produce a safe same-file edit or refuse: {rename_result:?}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_rename_without_coordinator_uses_open_document_qualified_workspace_edit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut server = LspServer::default();
+        server.index_coordinator = None;
+        server.test_simulate_indexing_start();
+
+        let request_uri = "file:///workspace/lib/NoCoord/Pkg.pm";
+        let caller_uri = "file:///workspace/lib/NoCoord/Caller.pm";
+        let request_source = "package NoCoord::Pkg;\nsub target { 1 }\n1;\n";
+        let caller_source = "package NoCoord::Caller;\nsub run { NoCoord::Pkg::target(); }\n1;\n";
+        server.test_apply_did_open(request_uri, request_source, 1)?;
+        server.test_apply_did_open(caller_uri, caller_source, 1)?;
+
+        let (line, character) = position_of(request_source, "target {")?;
+        let rename_result = server
+            .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))?
+            .ok_or("missing no-coordinator package rename result")?;
+
+        let changes = rename_result
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing no-coordinator workspace edit changes")?;
+        let edit_count: usize = changes.values().filter_map(Value::as_array).map(Vec::len).sum();
+        assert_eq!(edit_count, 2);
+        assert!(
+            changes.contains_key(request_uri),
+            "request declaration edit should be present: {rename_result}"
+        );
+        assert!(
+            changes.contains_key(caller_uri),
+            "open caller qualified call edit should be present without a coordinator: {rename_result}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_rename_full_index_uses_indexed_open_document_guard()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/Full/Pkg.pm";
+        let caller_uri = "file:///workspace/lib/Full/Caller.pm";
+        let request_source = "package Full::Pkg;\nsub target { 1 }\n1;\n";
+        let caller_source = "package Full::Caller;\nsub run { Full::Pkg::target(); }\n1;\n";
+        server.test_apply_did_open(request_uri, request_source, 1)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace index coordinator")?;
+        coordinator
+            .index()
+            .index_file(url::Url::parse(request_uri)?, request_source.to_string())
+            .map_err(std::io::Error::other)?;
+        coordinator
+            .index()
+            .index_file(url::Url::parse(caller_uri)?, caller_source.to_string())
+            .map_err(std::io::Error::other)?;
+        coordinator.transition_to_ready(
+            coordinator.index().file_count(),
+            coordinator.index().symbol_count(),
+        );
+
+        let (line, character) = position_of(request_source, "target {")?;
+        let rename_result = server
+            .handle_rename_workspace_for_receipt_noise(Some(rename_params(
+                request_uri,
+                line,
+                character,
+                "renamed",
+            )))?
+            .ok_or("missing full-index package rename result")?;
+
+        let changes = rename_result
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing full-index workspace edit changes")?;
+        let edit_count: usize = changes.values().filter_map(Value::as_array).map(Vec::len).sum();
+        assert_eq!(edit_count, 2);
+        assert!(
+            changes.contains_key(request_uri),
+            "request declaration edit should be present: {rename_result}"
+        );
+        assert!(
+            changes.contains_key(caller_uri),
+            "indexed caller qualified call edit should be present: {rename_result}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn handle_rename_full_index_stale_request_falls_back_to_same_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/Stale/Pkg.pm";
+        let stale_index_source = "package Stale::Pkg;\nsub other { 1 }\n1;\n";
+        let live_source = "package Stale::Pkg;\nsub target { 1 }\ntarget();\n1;\n";
+        server.test_apply_did_open(request_uri, live_source, 1)?;
+
+        let coordinator = server.coordinator().ok_or("missing workspace index coordinator")?;
+        coordinator
+            .index()
+            .index_file(url::Url::parse(request_uri)?, stale_index_source.to_string())
+            .map_err(std::io::Error::other)?;
+        coordinator.transition_to_ready(
+            coordinator.index().file_count(),
+            coordinator.index().symbol_count(),
+        );
+
+        let (line, character) = position_of(live_source, "target {")?;
+        let rename_result = server
+            .handle_rename_workspace(Some(rename_params(request_uri, line, character, "renamed")))?
+            .ok_or("missing stale-index same-file fallback rename result")?;
+
+        let changes = rename_result
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing stale-index workspace edit changes")?;
+        let edits = changes
+            .get(request_uri)
+            .and_then(Value::as_array)
+            .ok_or("missing stale-index same-file edits")?;
+        assert!(
+            edits.len() >= 2,
+            "stale workspace index should fall back to same-file edits: {rename_result}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn add_qualified_document_rename_edits_filters_contexts_and_deduplicates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let uri = "file:///workspace/lib/Caller.pm";
+        let source = concat!(
+            "My::Pkg::target();\n",
+            "My::Pkg::target();\n",
+            "Other::My::Pkg::target();\n",
+            "My::Pkg::target_suffix();\n",
+            "# My::Pkg::target();\n",
+            "my $s = \"My::Pkg::target()\";\n",
+        );
+        let mut grouped: std::collections::BTreeMap<String, Vec<serde_json::Value>> =
+            std::collections::BTreeMap::new();
+        let mut seen = std::collections::BTreeSet::new();
+
+        add_qualified_document_rename_edits(
+            &mut grouped,
+            &mut seen,
+            uri,
+            source,
+            "My::Pkg::target",
+            "My::Pkg".len(),
+            "target".len(),
+            "renamed",
+            |offset| perl_position_tracking::offset_to_utf16_line_col(source, offset),
+        );
+
+        let edits = grouped.get(uri).ok_or("missing qualified call edits")?;
+        assert_eq!(
+            edits.len(),
+            2,
+            "only standalone qualified calls outside comments and strings should be edited"
+        );
+        assert!(
+            edits.iter().all(|edit| edit.get("newText").and_then(Value::as_str) == Some("renamed")),
+            "all accepted qualified call edits should use the requested bare replacement"
+        );
+
+        add_qualified_document_rename_edits(
+            &mut grouped,
+            &mut seen,
+            uri,
+            source,
+            "My::Pkg::target",
+            "My::Pkg".len(),
+            "target".len(),
+            "renamed",
+            |offset| perl_position_tracking::offset_to_utf16_line_col(source, offset),
+        );
+
+        let deduped_edits = grouped.get(uri).ok_or("missing deduped qualified call edits")?;
+        assert_eq!(
+            deduped_edits.len(),
+            2,
+            "re-scanning the same document must not produce duplicate edits"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn package_rename_open_document_qualified_workspace_edit_uses_indexed_non_live_docs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/Indexed/Pkg.pm";
+        let caller_uri = "file:///workspace/lib/Indexed/Caller.pm";
+        let request_source = "package Indexed::Pkg;\nsub target { 1 }\n1;\n";
+        let caller_source = "package Indexed::Caller;\nsub run { Indexed::Pkg::target(); }\n1;\n";
+
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": request_uri,
+                "text": request_source,
+                "languageId": "perl",
+                "version": 1
+            }
+        })))?;
+
+        let index = crate::workspace_index::WorkspaceIndex::new();
+        index.index_file_str(request_uri, request_source)?;
+        index.index_file_str(caller_uri, caller_source)?;
+        let key = crate::workspace_index::SymbolKey {
+            pkg: "Indexed::Pkg".into(),
+            name: "target".into(),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        };
+
+        let (workspace_edit, edit_count, fallback_state) = server
+            .package_rename_open_document_qualified_workspace_edit(
+                Some(&index),
+                request_uri,
+                &key,
+                "renamed",
+            )
+            .ok_or("missing indexed qualified workspace edit")?;
+
+        assert_eq!(edit_count, 2);
+        assert_eq!(fallback_state, "workspace_index");
+        let changes = workspace_edit
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing workspace edit changes")?;
+        assert!(
+            changes.contains_key(request_uri),
+            "request document declaration edit should be preserved: {workspace_edit}"
+        );
+        assert!(
+            changes.contains_key(caller_uri),
+            "indexed non-live caller edit should be included: {workspace_edit}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn package_rename_open_document_qualified_workspace_edit_uses_disk_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let request_path = temp.path().join("lib").join("Disk").join("Pkg.pm");
+        let caller_path = temp.path().join("lib").join("Disk").join("Caller.pm");
+        let request_parent = request_path.parent().ok_or("missing request parent")?;
+        let caller_parent = caller_path.parent().ok_or("missing caller parent")?;
+        std::fs::create_dir_all(request_parent)?;
+        std::fs::create_dir_all(caller_parent)?;
+
+        let request_source = "package Disk::Pkg;\nsub target { 1 }\n1;\n";
+        let caller_source = "package Disk::Caller;\nsub run { Disk::Pkg::target(); }\n1;\n";
+        std::fs::write(&request_path, request_source)?;
+        std::fs::write(&caller_path, caller_source)?;
+
+        let server = LspServer::default();
+        let root_uri = perl_uri::fs_path_to_uri(temp.path())?;
+        let request_uri = perl_uri::fs_path_to_uri(&request_path)?;
+        let caller_uri = perl_uri::fs_path_to_uri(&caller_path)?;
+        server.test_set_workspace_folder_uris(&[root_uri.as_str()]);
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": request_uri,
+                "text": request_source,
+                "languageId": "perl",
+                "version": 1
+            }
+        })))?;
+
+        let key = crate::workspace_index::SymbolKey {
+            pkg: "Disk::Pkg".into(),
+            name: "target".into(),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        };
+
+        let (workspace_edit, edit_count, fallback_state) = server
+            .package_rename_open_document_qualified_workspace_edit(
+                None,
+                &request_uri,
+                &key,
+                "renamed",
+            )
+            .ok_or("missing disk qualified workspace edit")?;
+
+        assert_eq!(edit_count, 2);
+        assert_eq!(fallback_state, "workspace_disk");
+        let changes = workspace_edit
+            .get("changes")
+            .and_then(Value::as_object)
+            .ok_or("missing workspace edit changes")?;
+        assert!(
+            changes.contains_key(&workspace_edit_uri_key(&request_uri)),
+            "request document declaration edit should be preserved: {workspace_edit}"
+        );
+        assert!(
+            changes.contains_key(&workspace_edit_uri_key(&caller_uri)),
+            "disk-discovered caller edit should be included: {workspace_edit}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn package_rename_disk_scan_roots_use_workspace_folder_or_root_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let workspace_temp = tempfile::tempdir()?;
+        let root_temp = tempfile::tempdir()?;
+        let workspace_doc = workspace_temp.path().join("lib").join("Folder").join("Doc.pm");
+        let workspace_doc_parent = workspace_doc.parent().ok_or("missing workspace doc parent")?;
+        std::fs::create_dir_all(workspace_doc_parent)?;
+
+        let server = LspServer::default();
+        let workspace_root_uri = perl_uri::fs_path_to_uri(workspace_temp.path())?;
+        let workspace_doc_uri = perl_uri::fs_path_to_uri(&workspace_doc)?;
+        server.test_set_workspace_folder_uris(&[workspace_root_uri.as_str()]);
+        assert_eq!(
+            server.package_rename_disk_scan_roots(&workspace_doc_uri),
+            vec![workspace_temp.path().to_path_buf()],
+            "workspace folder provenance should win when the request URI belongs to it"
+        );
+
+        let server = LspServer::default();
+        server.test_set_root_path(root_temp.path().to_path_buf());
+        assert_eq!(
+            server.package_rename_disk_scan_roots("file:///outside/Doc.pm"),
+            vec![root_temp.path().to_path_buf()],
+            "root_path should be the disk-scan fallback when no workspace folder matches"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_rejects_invalid_targets() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+
+        assert_eq!(server.normalize_rename_target(Some("$value"), "renamed")?, "$renamed");
+        assert_eq!(server.normalize_rename_target(Some("$value"), "$renamed")?, "$renamed");
+        assert_eq!(server.normalize_rename_target(Some("target"), "renamed")?, "renamed");
+
+        assert!(
+            server.normalize_rename_target(Some("$value"), "").is_err(),
+            "empty requested names must be rejected"
+        );
+        assert!(
+            server.normalize_rename_target(Some("$value"), "@renamed").is_err(),
+            "sigiled renames must preserve the current symbol sigil"
+        );
+        assert!(
+            server.normalize_rename_target(Some("$value"), "bad-name").is_err(),
+            "sigiled symbols still require valid Perl identifier bodies"
+        );
+        assert!(
+            server.normalize_rename_target(Some("target"), "bad-name").is_err(),
+            "bare symbols still require valid Perl identifiers"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn is_valid_identifier_rejects_invalid_edges() {
+        let server = LspServer::default();
+
+        assert!(!server.is_valid_identifier(""));
+        assert!(!server.is_valid_identifier("1bad"));
+        assert!(!server.is_valid_identifier("bad-name"));
+        assert!(server.is_valid_identifier("_good1"));
+    }
+
+    #[test]
+    fn token_helpers_reject_empty_standalone_sigil_and_non_identifier_offsets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+
+        assert_eq!(server.get_token_at_position("", 0), "");
+        assert_eq!(server.get_token_bounds("", 4), (4, 4));
+        assert_eq!(server.get_token_at_position("$", 0), "");
+        assert_eq!(server.get_token_bounds("$", 0), (0, 0));
+        assert_eq!(server.get_token_at_position(";", 0), "");
+        assert_eq!(server.get_token_bounds(";", 0), (0, 0));
+        assert_eq!(server.get_token_at_position("target;", "target".len()), "target");
+        assert_eq!(server.get_token_bounds("target;", "target".len()), (0, "target".len()));
+
+        assert_eq!(LspServer::token_byte_span_in_line("", 0), None);
+        assert_eq!(LspServer::token_byte_span_in_line("   ", 1), None);
+        assert_eq!(
+            LspServer::token_byte_span_in_line("prefix target", "prefix target".len()),
+            Some(("prefix ".len(), "prefix target".len())),
+            "line-local token spans should support cursor-at-line-end token offsets"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_guard_tracks_escaped_quotes_and_comment_boundaries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let single = r#"my $s = 'don\'t stop'; my $x = 1;"#;
+        let single_inside = single.find("stop").ok_or("missing single quoted text")?;
+        let single_after = single.find("my $x").ok_or("missing code after single string")?;
+        assert!(LspServer::offset_is_inside_quoted_string(single, single_inside));
+        assert!(!LspServer::offset_is_inside_quoted_string(single, single_after));
+
+        let double = r#"my $s = "he said \"ok\""; my $x = 1;"#;
+        let double_inside = double.find("ok").ok_or("missing escaped double quoted text")?;
+        let double_after = double.find("my $x").ok_or("missing code after double string")?;
+        assert!(LspServer::offset_is_inside_quoted_string(double, double_inside));
+        assert!(!LspServer::offset_is_inside_quoted_string(double, double_after));
+
+        let comment = "# \"commented\"\nmy $x = 1;";
+        let code_after_comment = comment.find("my $x").ok_or("missing code after comment")?;
+        assert!(!LspServer::offset_is_inside_quoted_string(comment, code_after_comment));
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_rename_returns_null_for_blocked_or_missing_symbols()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/lib/Blocked.pm";
+        let source = "use Moo;\nhas name => (is => 'ro');\nsub run { 1 }\n";
+        server.test_apply_did_open(uri, source, 1)?;
+
+        let blocked = server.handle_prepare_rename(Some(serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 5 }
+        })))?;
+        assert_eq!(blocked, Some(serde_json::json!(null)));
+
+        let punctuation = server.handle_prepare_rename(Some(serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 2, "character": 10 }
+        })))?;
+        assert_eq!(punctuation, Some(serde_json::json!(null)));
+
+        let missing_document = server.handle_prepare_rename(Some(serde_json::json!({
+            "textDocument": { "uri": "file:///workspace/lib/Missing.pm" },
+            "position": { "line": 0, "character": 0 }
+        })))?;
+        assert_eq!(missing_document, Some(serde_json::json!(null)));
 
         Ok(())
     }
