@@ -2,7 +2,7 @@
 //! Tests for issue #1609: event handler thread has no supervision or recovery on write errors.
 //!
 //! These tests exercise the `FailingWriter` mock infrastructure and also drive the
-//! full `DebugAdapter` transport via `run_with_io` (exposed via `pub(crate)` for
+//! full `DebugAdapter` transport via `run_with_io` (exposed via `pub(super)` for
 //! testing — see transport.rs `#[cfg(test)]` accessor).
 //!
 //! Integration tests that require the `transport_broken` supervision path to fire

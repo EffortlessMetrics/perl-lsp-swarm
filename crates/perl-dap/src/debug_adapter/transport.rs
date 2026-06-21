@@ -14,6 +14,23 @@ fn write_framed_payload<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<
     writer.write_all(payload)
 }
 
+fn record_event_write_failure(
+    consecutive_write_failures: &mut usize,
+    transport_broken: &AtomicBool,
+) -> bool {
+    *consecutive_write_failures += 1;
+    if *consecutive_write_failures >= WRITE_FAILURE_THRESHOLD {
+        transport_broken.store(true, Ordering::Release);
+        true
+    } else {
+        false
+    }
+}
+
+fn record_event_write_success(consecutive_write_failures: &mut usize) {
+    *consecutive_write_failures = 0;
+}
+
 impl DebugAdapter {
     /// Run the debug adapter server
     pub(crate) fn run(&mut self) -> io::Result<()> {
@@ -100,11 +117,15 @@ impl DebugAdapter {
 
                 let mut writer = lock_or_recover(&event_writer, "event_writer");
                 let mut write_failed = false;
+                let mut transport_marked_broken = false;
                 for payload in &payloads {
                     if let Err(e) = write_framed_payload(&mut *writer, payload) {
                         tracing::error!(error = %e, "Failed to write DAP frame in event handler");
                         write_failed = true;
-                        consecutive_write_failures += 1;
+                        transport_marked_broken = record_event_write_failure(
+                            &mut consecutive_write_failures,
+                            &transport_broken,
+                        );
                         break;
                     }
                 }
@@ -112,21 +133,21 @@ impl DebugAdapter {
                     if let Err(e) = writer.flush() {
                         tracing::error!(error = %e, "Failed to flush DAP frame in event handler");
                         write_failed = true;
-                        consecutive_write_failures += 1;
+                        transport_marked_broken = record_event_write_failure(
+                            &mut consecutive_write_failures,
+                            &transport_broken,
+                        );
                     } else {
-                        // Reset failure counter on successful write
-                        consecutive_write_failures = 0;
+                        record_event_write_success(&mut consecutive_write_failures);
                     }
                 }
 
-                // If write failed, check if we've hit the threshold
-                if write_failed && consecutive_write_failures >= WRITE_FAILURE_THRESHOLD {
+                if write_failed && transport_marked_broken {
                     tracing::error!(
                         failure_count = consecutive_write_failures,
                         threshold = WRITE_FAILURE_THRESHOLD,
                         "Event handler detected persistent write failure; marking transport broken"
                     );
-                    transport_broken.store(true, Ordering::Release);
                     break;
                 }
 
@@ -339,6 +360,60 @@ mod tests {
         assert!(
             !adapter.transport_broken.load(AOrdering::Acquire),
             "transport_broken must remain false after a clean run"
+        );
+    }
+
+    #[test]
+    fn test_event_write_failure_waits_until_threshold() {
+        let transport_broken = AtomicBool::new(false);
+        let mut consecutive = 0usize;
+
+        for _ in 1..WRITE_FAILURE_THRESHOLD {
+            let threshold_hit = record_event_write_failure(&mut consecutive, &transport_broken);
+            assert!(!threshold_hit, "transport must not be marked broken before the threshold");
+            assert!(
+                !transport_broken.load(AOrdering::Acquire),
+                "transport_broken must stay false before the threshold"
+            );
+        }
+
+        assert_eq!(consecutive, WRITE_FAILURE_THRESHOLD - 1);
+    }
+
+    #[test]
+    fn test_event_write_failure_sets_transport_broken_at_threshold() {
+        let transport_broken = AtomicBool::new(false);
+        let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
+
+        let threshold_hit = record_event_write_failure(&mut consecutive, &transport_broken);
+
+        assert!(threshold_hit, "threshold failure must mark the transport broken");
+        assert_eq!(consecutive, WRITE_FAILURE_THRESHOLD);
+        assert!(
+            transport_broken.load(AOrdering::Acquire),
+            "transport_broken must be visible after the release store"
+        );
+    }
+
+    #[test]
+    fn test_event_write_success_resets_failure_counter() {
+        let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
+
+        record_event_write_success(&mut consecutive);
+
+        assert_eq!(consecutive, 0, "successful event writes must reset failures");
+    }
+
+    #[test]
+    fn test_run_with_io_returns_broken_pipe_when_flag_is_already_set() {
+        let mut adapter = DebugAdapter::new();
+        adapter.transport_broken.store(true, AOrdering::Release);
+
+        let result = adapter.run_with_io(Cursor::new(Vec::<u8>::new()), Vec::<u8>::new());
+
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == io::ErrorKind::BrokenPipe),
+            "pre-marked broken transport must return BrokenPipe"
         );
     }
 }

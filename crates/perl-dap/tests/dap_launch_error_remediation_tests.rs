@@ -9,14 +9,23 @@
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::json;
 
+fn initialize_adapter(adapter: &mut DebugAdapter) {
+    let response = adapter.handle_request(1, "initialize", None);
+    assert!(
+        matches!(response, DapMessage::Response { success: true, .. }),
+        "initialize should succeed before launch remediation checks, got: {response:?}"
+    );
+}
+
 /// Launch with a nonexistent program path should yield an error message
 /// that mentions `perl-lsp.perl.path` verbatim.
 #[test]
 fn launch_error_names_perl_lsp_perl_path_setting() {
     let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
 
     let response = adapter.handle_request(
-        1,
+        2,
         "launch",
         Some(json!({
             "program": "/nonexistent/path/to/script.pl"
@@ -46,9 +55,10 @@ fn launch_error_names_perl_lsp_perl_path_setting() {
 #[test]
 fn launch_error_includes_perl_detection_info() {
     let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
 
     let response = adapter.handle_request(
-        1,
+        2,
         "launch",
         Some(json!({
             "program": "/nonexistent/path/to/script.pl"
@@ -81,12 +91,13 @@ fn launch_error_includes_perl_detection_info() {
 #[test]
 fn repeated_launch_failures_keep_actionable_guidance() {
     let mut adapter = DebugAdapter::new();
+    initialize_adapter(&mut adapter);
     let arguments = Some(json!({
         "program": "/nonexistent/path/to/script.pl"
     }));
 
-    let first = adapter.handle_request(1, "launch", arguments.clone());
-    let second = adapter.handle_request(2, "launch", arguments);
+    let first = adapter.handle_request(2, "launch", arguments.clone());
+    let second = adapter.handle_request(3, "launch", arguments);
 
     match (first, second) {
         (
@@ -120,9 +131,10 @@ fn launch_error_on_windows_links_strawberry_perl_when_perl_absent() {
     // Only run this assertion when Perl is genuinely not available.
     if resolve_perl_path_with_toolchain().is_err() {
         let mut adapter = DebugAdapter::new();
+        initialize_adapter(&mut adapter);
 
         let response = adapter.handle_request(
-            1,
+            2,
             "launch",
             Some(json!({
                 "program": "/nonexistent/path/to/script.pl"
