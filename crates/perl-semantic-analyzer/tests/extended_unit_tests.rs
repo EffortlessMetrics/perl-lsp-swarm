@@ -121,6 +121,23 @@ fn current_package_at_resets_package_after_block_scope() -> Result<(), Box<dyn s
 }
 
 #[test]
+fn current_package_at_handles_explicit_package_block() -> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Outer;\npackage Boxed {\n    sub inside {}\n}\nsub outside {}\n";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse()?;
+
+    let package_offset = code.find("Boxed").ok_or("missing package block name")?;
+    let inside_offset = code.find("inside").ok_or("missing package block sub")?;
+    let outside_offset = code.find("outside").ok_or("missing outside sub")?;
+
+    assert_eq!(current_package_at(&ast, package_offset), "Boxed");
+    assert_eq!(current_package_at(&ast, inside_offset), "Boxed");
+    assert_eq!(current_package_at(&ast, outside_offset), "Outer");
+
+    Ok(())
+}
+
+#[test]
 fn find_node_at_offset_returns_none_out_of_range() -> Result<(), Box<dyn std::error::Error>> {
     let code = "my $x = 1;";
     let mut parser = Parser::new(code);
