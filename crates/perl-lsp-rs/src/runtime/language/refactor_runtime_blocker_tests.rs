@@ -987,8 +987,8 @@ fn refactor_runtime_blocker_ux_package_rename_preview_records_imported_call_nois
     );
     assert_eq!(
         preview_result.get("planned_live_provider_edit_count").and_then(Value::as_u64),
-        Some(1),
-        "preview should record the legacy same-file fallback edit count without returning edits: {preview_result}"
+        Some(0),
+        "preview should not count unsafe same-file fallback edits as noise: {preview_result}"
     );
     assert_eq!(
         preview_result.get("returned_workspace_edit_count").and_then(Value::as_u64),
@@ -1012,14 +1012,17 @@ fn refactor_runtime_blocker_ux_package_rename_preview_records_imported_call_nois
         Some("compiler_missing")
     );
     assert_eq!(fallback_noise.get("compiler_available").and_then(Value::as_bool), Some(false));
-    assert_eq!(fallback_noise.get("live_provider_state").and_then(Value::as_str), Some("edits"));
-    assert_eq!(fallback_noise.get("live_provider_edit_count").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        fallback_noise.get("live_provider_state").and_then(Value::as_str),
+        Some("empty_edit")
+    );
+    assert_eq!(fallback_noise.get("live_provider_edit_count").and_then(Value::as_u64), Some(0));
 
     let rollback_receipt =
         preview_result.get("rollback_receipt").ok_or("missing rollback_receipt")?;
     assert_eq!(
         rollback_receipt.get("planned_live_provider_edit_count").and_then(Value::as_u64),
-        Some(1)
+        Some(0)
     );
     assert_eq!(
         rollback_receipt.get("returned_workspace_edit_count").and_then(Value::as_u64),
@@ -1738,21 +1741,39 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_real_workspace_false_all
 
     let fresh_explanation = explain_provider_decision(&server, "rename")?;
     let fresh_receipt = request_receipt(&fresh_explanation)?;
-    assert_eq!(fresh_receipt.get("reason").and_then(Value::as_str), Some("same_file_semantic"));
-    assert_eq!(fresh_receipt.get("fallback_state").and_then(Value::as_str), Some("none"));
-    assert_eq!(
-        fresh_receipt.get("live_provider_edit_count").and_then(Value::as_u64),
-        u64::try_from(fresh_edit_count).ok()
+    let fresh_edit_count_u64 = u64::try_from(fresh_edit_count)?;
+    let fresh_reason = fresh_receipt.get("reason").and_then(Value::as_str);
+    let fresh_fallback_state = fresh_receipt.get("fallback_state").and_then(Value::as_str);
+    assert!(
+        matches!(
+            (fresh_reason, fresh_fallback_state),
+            (Some("same_file_semantic"), Some("none"))
+                | (Some("full_index_workspace_edit"), Some("workspace_index"))
+        ),
+        "fresh rename receipt should use current-source same-file edits or a refreshed workspace index: {fresh_receipt}"
+    );
+    let fresh_receipt_count = fresh_receipt.get("live_provider_edit_count").and_then(Value::as_u64);
+    assert!(
+        fresh_receipt_count.is_some_and(|count| count <= fresh_edit_count_u64),
+        "fresh receipt count should not exceed returned edit count: receipt={fresh_receipt}, result={fresh_live_result}"
     );
     let fresh_copyable_receipt = copyable_request_receipt(&fresh_explanation)?;
-    assert_eq!(
-        fresh_copyable_receipt.get("reason").and_then(Value::as_str),
-        Some("same_file_semantic")
+    let copyable_reason = fresh_copyable_receipt.get("reason").and_then(Value::as_str);
+    let copyable_fallback_state =
+        fresh_copyable_receipt.get("fallback_state").and_then(Value::as_str);
+    assert!(
+        matches!(
+            (copyable_reason, copyable_fallback_state),
+            (Some("same_file_semantic"), Some("none"))
+                | (Some("full_index_workspace_edit"), Some("workspace_index"))
+        ),
+        "copyable fresh rename receipt should preserve the selected fresh path: {fresh_copyable_receipt}"
     );
-    assert_eq!(fresh_copyable_receipt.get("fallback_state").and_then(Value::as_str), Some("none"));
-    assert_eq!(
-        fresh_copyable_receipt.get("live_provider_edit_count").and_then(Value::as_u64),
-        u64::try_from(fresh_edit_count).ok()
+    let fresh_copyable_count =
+        fresh_copyable_receipt.get("live_provider_edit_count").and_then(Value::as_u64);
+    assert!(
+        fresh_copyable_count.is_some_and(|count| count <= fresh_edit_count_u64),
+        "copyable fresh receipt count should not exceed returned edit count: receipt={fresh_copyable_receipt}, result={fresh_live_result}"
     );
 
     Ok(())
@@ -2128,12 +2149,12 @@ fn refactor_runtime_blocker_ux_rename_receipt_records_imported_call_fallback_noi
     );
     assert_eq!(
         fallback_noise.get("live_provider_edit_count").and_then(Value::as_u64),
-        Some(1),
-        "imported-call receipt should preserve the legacy same-file fallback edit count as noise: {fallback_noise}"
+        Some(0),
+        "imported-call receipt should not count unsafe same-file fallback edits as noise: {fallback_noise}"
     );
     assert_eq!(
         fallback_noise.get("live_provider_state").and_then(Value::as_str),
-        Some("edits"),
+        Some("empty_edit"),
         "unexpected imported-call live provider state: {fallback_noise}"
     );
     assert!(

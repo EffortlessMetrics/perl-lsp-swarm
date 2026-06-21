@@ -7,7 +7,7 @@
 //!
 //! Uses the routing module for state-aware dispatch:
 //! - **Ready state**: Full workspace rename across all indexed files
-//! - **Building/Degraded state**: Same-file rename only; logs "workspace rename unavailable while index building"
+//! - **Building/Degraded state**: Bounded readiness wait, then safe same-file rename only
 
 use super::super::*;
 use crate::protocol::{req_position, req_uri};
@@ -118,7 +118,7 @@ impl LspServer {
         byte_offset: usize,
         symbol: &str,
         new_name_bare: &str,
-    ) -> Option<Result<(Value, usize), ()>> {
+    ) -> Option<Result<(Value, usize), RenamePackagePilotIneligibleReason>> {
         let byte_offset = u32::try_from(byte_offset).ok()?;
         workspace_index
             .with_semantic_queries_for_uri(uri, |file_id, queries| {
@@ -134,7 +134,7 @@ impl LspServer {
                         reason: RenamePackagePilotIneligibleReason::EmptyPlan,
                         ..
                     } => None,
-                    RenamePackagePilotResult::Ineligible { .. } => Some(Err(())),
+                    RenamePackagePilotResult::Ineligible { reason, .. } => Some(Err(reason)),
                     _ => None,
                 }
             })
@@ -672,6 +672,34 @@ impl LspServer {
             && guard_workspace_edit == semantic_workspace_edit
     }
 
+    #[cfg(feature = "workspace")]
+    fn wait_for_rename_index_ready(&self) {
+        use perl_parser::workspace_index::IndexState;
+        use std::sync::atomic::Ordering;
+        use std::time::{Duration, Instant};
+
+        let indexing_scan_in_progress = self.indexing_in_progress.load(Ordering::Acquire);
+        let pending_index_tasks = self.pending_index_task_count.load(Ordering::Acquire);
+        if !indexing_scan_in_progress && pending_index_tasks == 0 {
+            return;
+        }
+
+        let Some(coordinator) = self.coordinator() else {
+            return;
+        };
+
+        let deadline = Instant::now() + Duration::from_millis(2_000);
+        loop {
+            let pending_index_tasks = self.pending_index_task_count.load(Ordering::Acquire);
+            match coordinator.state() {
+                IndexState::Ready { .. } if pending_index_tasks == 0 => break,
+                IndexState::Degraded { .. } => break,
+                _ if Instant::now() >= deadline => break,
+                _ => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+    }
+
     fn handle_rename_workspace_inner(
         &self,
         params: Option<Value>,
@@ -707,6 +735,7 @@ impl LspServer {
                 // Check index access mode using routing helper
                 #[cfg(feature = "workspace")]
                 {
+                    self.wait_for_rename_index_ready();
                     let access_mode = route_index_access(self.coordinator());
                     let (symbol_key, rename_byte_offset, rename_is_package_scoped) = {
                         let documents = self.documents_guard();
@@ -762,6 +791,14 @@ impl LspServer {
                         }
                         IndexAccessMode::Full(coordinator) => {
                             let idx = coordinator.index();
+                            let workspace_index_matches_request_doc = {
+                                let documents = self.documents_guard();
+                                self.get_document(&documents, uri).is_none_or(|doc| {
+                                    idx.document_store()
+                                        .get(uri)
+                                        .is_some_and(|indexed| indexed.text == doc.text)
+                                })
+                            };
                             if package_local_live_pilot_enabled {
                                 if let (Some(offset), Some(symbol)) =
                                     (rename_byte_offset, current_symbol.as_deref())
@@ -852,7 +889,18 @@ impl LspServer {
                                             );
                                             return Ok(Some(json!({"changes": {}})));
                                         }
-                                        Some(Err(())) => {
+                                        Some(Err(
+                                            RenamePackagePilotIneligibleReason::UnsupportedEditCategory,
+                                        )) => {
+                                            self.record_rename_provider_decision_trace(
+                                                Some(uri),
+                                                Some(symbol),
+                                                "package_local_live_pilot_unsupported",
+                                                0,
+                                                "workspace_index",
+                                            );
+                                        }
+                                        Some(Err(_)) => {
                                             self.record_rename_provider_decision_trace(
                                                 Some(uri),
                                                 Some(symbol),
@@ -865,33 +913,50 @@ impl LspServer {
                                         None => {}
                                     }
                                 }
-                            } else if let Some(key) = workspace_symbol_key.as_ref() {
-                                let edits = crate::features::workspace_rename::build_rename_edit(
-                                    idx.as_ref(),
-                                    key,
-                                    normalized_bare,
-                                )
-                                .map_err(|refusal| {
-                                    JsonRpcError {
-                                        code: -32602,
-                                        message: refusal.to_string(),
-                                        data: None,
-                                    }
-                                })?;
-                                if edits.is_empty() {
-                                    // Fall through to same-file rename.
-                                } else {
-                                    let edit_count = edits.len();
-                                    let ws_edit =
-                                        crate::features::workspace_rename::to_workspace_edit(edits);
+                            }
+
+                            if let Some(key) = workspace_symbol_key.as_ref() {
+                                if package_local_live_pilot_enabled
+                                    && !workspace_index_matches_request_doc
+                                {
                                     self.record_rename_provider_decision_trace(
                                         Some(uri),
                                         current_symbol.as_deref(),
-                                        "full_index_workspace_edit",
-                                        edit_count,
-                                        "workspace_index",
+                                        "workspace_index_stale",
+                                        0,
+                                        "same_file",
                                     );
-                                    return Ok(Some(ws_edit));
+                                } else {
+                                    let edits =
+                                        crate::features::workspace_rename::build_rename_edit(
+                                            idx.as_ref(),
+                                            key,
+                                            normalized_bare,
+                                        )
+                                        .map_err(
+                                            |refusal| JsonRpcError {
+                                                code: -32602,
+                                                message: refusal.to_string(),
+                                                data: None,
+                                            },
+                                        )?;
+                                    if edits.is_empty() {
+                                        // Fall through to same-file rename.
+                                    } else {
+                                        let edit_count = edits.len();
+                                        let ws_edit =
+                                            crate::features::workspace_rename::to_workspace_edit(
+                                                edits,
+                                            );
+                                        self.record_rename_provider_decision_trace(
+                                            Some(uri),
+                                            current_symbol.as_deref(),
+                                            "full_index_workspace_edit",
+                                            edit_count,
+                                            "workspace_index",
+                                        );
+                                        return Ok(Some(ws_edit));
+                                    }
                                 }
                             }
                         }
@@ -906,6 +971,7 @@ impl LspServer {
                         let current_symbol = self.get_token_at_position(&doc.text, offset);
                         let normalized_name =
                             self.normalize_rename_target(Some(current_symbol.as_str()), new_name)?;
+                        let current_symbol_bare = strip_perl_sigil(&current_symbol);
 
                         if let Some(edits) =
                             self.scoped_lexical_rename_edits(doc, ast, offset, &normalized_name)
@@ -936,6 +1002,31 @@ impl LspServer {
                             // Create text edits for all references
                             let mut edits = Vec::new();
                             for location in references {
+                                let Some(source_range) = doc.text.get(location.start..location.end)
+                                else {
+                                    self.record_rename_provider_decision_trace(
+                                        Some(uri),
+                                        Some(current_symbol.as_str()),
+                                        "same_file_semantic_invalid_range",
+                                        0,
+                                        "no_edit",
+                                    );
+                                    return Ok(Some(json!({"changes": {}})));
+                                };
+                                if source_range != current_symbol
+                                    && (current_symbol_bare == current_symbol
+                                        || source_range != current_symbol_bare)
+                                {
+                                    self.record_rename_provider_decision_trace(
+                                        Some(uri),
+                                        Some(current_symbol.as_str()),
+                                        "same_file_semantic_range_mismatch",
+                                        0,
+                                        "no_edit",
+                                    );
+                                    return Ok(Some(json!({"changes": {}})));
+                                }
+
                                 let (start_line, start_char) =
                                     self.offset_to_pos16(doc, location.start);
                                 let (end_line, end_char) = self.offset_to_pos16(doc, location.end);
