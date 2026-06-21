@@ -172,13 +172,13 @@ fn add_qualified_document_rename_edits<F>(
         let before_ok = source
             .get(..match_start)
             .and_then(|prefix| prefix.chars().next_back())
-            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':');
+            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':' && ch != '\'');
         let name_start = match_start + package_len + "::".len();
         let name_end = name_start + symbol_len;
         let after_ok = source
             .get(name_end..)
             .and_then(|suffix| suffix.chars().next())
-            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':');
+            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':' && ch != '\'');
         if !before_ok
             || !after_ok
             || is_in_comment(name_start, source)
@@ -294,6 +294,8 @@ impl LspServer {
                 range_starts_with_sub_declaration_name(line, line_start, key.name.as_ref())
                 && crate::declaration::current_package_at(request_ast, name_start)
                     == key.pkg.as_ref()
+                && !is_in_comment(name_start, &request_doc.text)
+                && !is_in_string(name_start, &request_doc.text)
             {
                 let (start_line, start_char) = self.offset_to_pos16(request_doc, name_start);
                 let (end_line, end_char) = self.offset_to_pos16(request_doc, name_end);
@@ -1591,17 +1593,18 @@ impl LspServer {
                                     has_sub_declaration_edit = true;
                                 }
 
-                                let (start_line, start_char) =
-                                    self.offset_to_pos16(doc, edit_start);
-                                let (end_line, end_char) = self.offset_to_pos16(doc, edit_end);
-
-                                edits.push(json!({
-                                    "range": {
-                                        "start": { "line": start_line, "character": start_char },
-                                        "end": { "line": end_line, "character": end_char }
+                                let narrowed = RenameEdit {
+                                    location: perl_parser_core::SourceLocation {
+                                        start: edit_start,
+                                        end: edit_end,
                                     },
-                                    "newText": normalized_name
-                                }));
+                                    new_text: normalized_name.to_string(),
+                                };
+                                edits.push(self.rename_edit_to_lsp_text_edit(
+                                    doc,
+                                    &narrowed,
+                                    &normalized_name,
+                                ));
                             }
 
                             if !has_sub_declaration_edit {
@@ -2177,6 +2180,8 @@ mod tests {
             "Other::My::Pkg::target();\n",
             "My::Pkg::target_suffix();\n",
             "My::Pkg::target::child();\n",
+            "Other'My::Pkg::target();\n",
+            "My::Pkg::target'child();\n",
             "# My::Pkg::target();\n",
             "my $s = \"My::Pkg::target()\";\n",
         );
@@ -2225,6 +2230,30 @@ mod tests {
             2,
             "re-scanning the same document must not produce duplicate edits"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn rename_edit_to_lsp_text_edit_expands_sigil_for_bare_span()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/lib/Sigil.pm";
+        let source = "my $value = $value;\n";
+        server.test_apply_did_open(uri, source, 1)?;
+        let bare_start = source.rfind("value").ok_or("missing bare variable reference")?;
+        let bare_end = bare_start + "value".len();
+        let edit = RenameEdit {
+            location: perl_parser_core::SourceLocation { start: bare_start, end: bare_end },
+            new_text: "$renamed".to_string(),
+        };
+        let documents = server.documents_guard();
+        let doc = server.get_document(&documents, uri).ok_or("missing opened document")?;
+
+        let lsp_edit = server.rename_edit_to_lsp_text_edit(doc, &edit, "$renamed");
+        assert_eq!(lsp_edit.get("newText").and_then(Value::as_str), Some("$renamed"));
+        assert_eq!(lsp_edit["range"]["start"]["character"], serde_json::json!(12));
+        assert_eq!(lsp_edit["range"]["end"]["character"], serde_json::json!(18));
 
         Ok(())
     }
@@ -2343,6 +2372,45 @@ mod tests {
         assert!(
             changes.contains_key(caller_uri),
             "indexed non-live caller edit should be included: {workspace_edit}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn package_rename_open_document_qualified_workspace_edit_rejects_comment_string_anchors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/Comment/Pkg.pm";
+        let caller_uri = "file:///workspace/lib/Comment/Caller.pm";
+        let request_source = concat!(
+            "package Comment::Pkg;\n",
+            "# sub target { 1 }\n",
+            "my $s = 'sub target { 1 }';\n",
+            "1;\n",
+        );
+        let caller_source = "package Comment::Caller;\nsub run { Comment::Pkg::target(); }\n1;\n";
+        server.test_apply_did_open(request_uri, request_source, 1)?;
+        server.test_apply_did_open(caller_uri, caller_source, 1)?;
+
+        let key = crate::workspace_index::SymbolKey {
+            pkg: "Comment::Pkg".into(),
+            name: "target".into(),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        };
+
+        assert!(
+            server
+                .package_rename_open_document_qualified_workspace_edit(
+                    None,
+                    request_uri,
+                    &key,
+                    "renamed",
+                )
+                .is_none(),
+            "comment or string text must not seed package rename declaration anchors"
         );
 
         Ok(())
