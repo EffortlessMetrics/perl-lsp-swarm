@@ -59,6 +59,7 @@ impl DiagnosticCode {
             Self::InvalidPrototype => "PL302",
             Self::RoleConflict => "PL303",
             Self::MissingPodCoverage => "PL304",
+            Self::UnusedPrivateSubroutine => "PL305",
             Self::BarewordFilehandle => "PL400",
             Self::TwoArgOpen => "PL401",
             Self::ImplicitReturn => "PL402",
@@ -131,6 +132,7 @@ impl DiagnosticCode {
             "PL302" => "https://docs.perl-lsp.org/errors/PL302",
             "PL303" => "https://docs.perl-lsp.org/errors/PL303",
             "PL304" => "https://docs.perl-lsp.org/errors/PL304",
+            "PL305" => "https://docs.perl-lsp.org/errors/PL305",
             "PL400" => "https://docs.perl-lsp.org/errors/PL400",
             "PL401" => "https://docs.perl-lsp.org/errors/PL401",
             "PL402" => "https://docs.perl-lsp.org/errors/PL402",
@@ -194,6 +196,7 @@ impl DiagnosticCode {
             | Self::MissingReturn
             | Self::InvalidPrototype
             | Self::RoleConflict
+            | Self::UnusedPrivateSubroutine
             | Self::BarewordFilehandle
             | Self::TwoArgOpen
             | Self::ImplicitReturn
@@ -246,7 +249,8 @@ impl DiagnosticCode {
             Self::UnusedVariable
             | Self::UnusedParameter
             | Self::UnusedImport
-            | Self::UnreachableCode => &[DiagnosticTag::Unnecessary],
+            | Self::UnreachableCode
+            | Self::UnusedPrivateSubroutine => &[DiagnosticTag::Unnecessary],
             Self::DeprecatedDefined | Self::DeprecatedArrayBase => &[DiagnosticTag::Deprecated],
             _ => &[],
         }
@@ -311,6 +315,10 @@ impl DiagnosticCode {
             Self::MissingPodCoverage => Some(
                 "This exported subroutine has no corresponding `=head2` or `=item` POD section. \
                 Add documentation so users of your module can discover its API.",
+            ),
+            Self::UnusedPrivateSubroutine => Some(
+                "This private subroutine (underscore-prefixed) is defined but never called in this file. \
+                Remove it or add a call to use it.",
             ),
             Self::InvalidPrototype => Some(
                 "The prototype contains a character that Perl does not recognise. \
@@ -592,6 +600,7 @@ impl DiagnosticCode {
             "PL302" => Some(Self::InvalidPrototype),
             "PL303" => Some(Self::RoleConflict),
             "PL304" => Some(Self::MissingPodCoverage),
+            "PL305" => Some(Self::UnusedPrivateSubroutine),
             "PL400" => Some(Self::BarewordFilehandle),
             "PL401" => Some(Self::TwoArgOpen),
             "PL402" => Some(Self::ImplicitReturn),

@@ -37,7 +37,8 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             | IssueKind::UnusedVariable
             | IssueKind::ParameterShadowsGlobal
             | IssueKind::UnusedParameter
-            | IssueKind::UninitializedVariable => DiagnosticSeverity::Warning,
+            | IssueKind::UninitializedVariable
+            | IssueKind::UnusedPrivateSubroutine => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
         };
 
@@ -52,6 +53,7 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             IssueKind::UnquotedBareword => DiagnosticCode::UnquotedBareword,
             IssueKind::UninitializedVariable => DiagnosticCode::UninitializedVariable,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticCode::CaptureVarWithoutRegexMatch,
+            IssueKind::UnusedPrivateSubroutine => DiagnosticCode::UnusedPrivateSubroutine,
         };
 
         let related_info = build_scope_related_info(&issue);
@@ -63,7 +65,12 @@ pub fn scope_issues_to_diagnostics(issues: Vec<ScopeIssue>) -> Vec<Diagnostic> {
             code: Some(code.as_str().to_string()),
             message: build_enhanced_scope_message(&issue),
             related_information: related_info,
-            tags: if matches!(issue.kind, IssueKind::UnusedVariable | IssueKind::UnusedParameter) {
+            tags: if matches!(
+                issue.kind,
+                IssueKind::UnusedVariable
+                    | IssueKind::UnusedParameter
+                    | IssueKind::UnusedPrivateSubroutine
+            ) {
                 vec![DiagnosticTag::Unnecessary]
             } else {
                 Vec::new()
@@ -219,7 +226,8 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             | IssueKind::UnusedVariable
             | IssueKind::ParameterShadowsGlobal
             | IssueKind::UnusedParameter
-            | IssueKind::UninitializedVariable => DiagnosticSeverity::Warning,
+            | IssueKind::UninitializedVariable
+            | IssueKind::UnusedPrivateSubroutine => DiagnosticSeverity::Warning,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticSeverity::Information,
         };
 
@@ -234,6 +242,7 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             IssueKind::UnquotedBareword => DiagnosticCode::UnquotedBareword,
             IssueKind::UninitializedVariable => DiagnosticCode::UninitializedVariable,
             IssueKind::CaptureVarWithoutRegexMatch => DiagnosticCode::CaptureVarWithoutRegexMatch,
+            IssueKind::UnusedPrivateSubroutine => DiagnosticCode::UnusedPrivateSubroutine,
         };
 
         let mut related_info = build_scope_related_info(&issue);
@@ -257,7 +266,12 @@ pub fn scope_issues_to_diagnostics_with_semantics<Q: SemanticQueries>(
             code: Some(code.as_str().to_string()),
             message: build_enhanced_scope_message(&issue),
             related_information: related_info,
-            tags: if matches!(issue.kind, IssueKind::UnusedVariable | IssueKind::UnusedParameter) {
+            tags: if matches!(
+                issue.kind,
+                IssueKind::UnusedVariable
+                    | IssueKind::UnusedParameter
+                    | IssueKind::UnusedPrivateSubroutine
+            ) {
                 vec![DiagnosticTag::Unnecessary]
             } else {
                 Vec::new()
@@ -430,6 +444,12 @@ fn build_scope_related_info(issue: &ScopeIssue) -> Vec<RelatedInformation> {
                 message: "ℹ️ Capture variables ($1, $2, etc.) hold the last successful match and may be undef if no match has occurred.".to_string(),
             }
         ],
+        IssueKind::UnusedPrivateSubroutine => vec![
+            RelatedInformation {
+                location: issue.range,
+                message: "💡 Remove the private subroutine or add a call to use it".to_string(),
+            }
+        ],
     }
 }
 
@@ -483,6 +503,12 @@ fn build_enhanced_scope_message(issue: &ScopeIssue) -> String {
                 name, name
             )
         }
+        IssueKind::UnusedPrivateSubroutine => {
+            format!(
+                "Private subroutine '{}' is defined but never called -- remove it or add a call to use it",
+                name
+            )
+        }
         // Fall back to the analyzer's original description for other kinds
         _ => issue.description.clone(),
     }
@@ -501,6 +527,9 @@ fn build_scope_suggestion(issue: &ScopeIssue) -> Option<String> {
         IssueKind::UninitializedVariable => Some(format!("Initialize: my {} = ...;", name)),
         IssueKind::UnquotedBareword => {
             Some(format!("Quote as '{}' or use qw({}) for lists", name, name))
+        }
+        IssueKind::UnusedPrivateSubroutine => {
+            Some(format!("Remove '{}' or add a call to use it", name))
         }
         _ => None,
     }

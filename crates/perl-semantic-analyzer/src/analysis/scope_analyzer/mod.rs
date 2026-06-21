@@ -87,6 +87,8 @@ pub enum IssueKind {
     UninitializedVariable,
     /// Capture variable (`$1`, `$2`, etc.) used with no preceding regex match in scope.
     CaptureVarWithoutRegexMatch,
+    /// A private subroutine (underscore-prefixed) is defined but never called in this file.
+    UnusedPrivateSubroutine,
 }
 
 /// A single scope-analysis finding with location and human-readable description.
@@ -386,6 +388,10 @@ pub(super) struct AnalysisContext<'a> {
     line_starts: RefCell<Option<Vec<usize>>>,
     /// Current package name, updated as `package` statements are traversed.
     current_package: RefCell<String>,
+    /// Private subroutine definitions found during analysis: (name, start_offset, end_offset).
+    private_sub_defs: RefCell<Vec<(String, usize, usize)>>,
+    /// All subroutine names called or referenced in the file.
+    sub_call_refs: RefCell<HashSet<String>>,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -397,6 +403,8 @@ impl<'a> AnalysisContext<'a> {
             imported_barewords: collect_imported_barewords(ast),
             line_starts: RefCell::new(None),
             current_package: RefCell::new("main".to_string()),
+            private_sub_defs: RefCell::new(Vec::new()),
+            sub_call_refs: RefCell::new(HashSet::new()),
         }
     }
 
@@ -614,6 +622,9 @@ impl ScopeAnalyzer {
         // Collect all unused variables from all scopes
         self.collect_unused_variables(&root_scope, &mut issues, &context);
 
+        // Collect unused private subroutines
+        self.collect_unused_private_subroutines(&context, &mut issues);
+
         issues
     }
 
@@ -688,6 +699,11 @@ impl ScopeAnalyzer {
                 );
             }
             NodeKind::FunctionCall { name, args } => {
+                // Track calls to private subroutines (bare calls like _helper() or &_helper())
+                let bare_name = name.trim_start_matches('&');
+                if is_private_sub_name(bare_name) {
+                    context.sub_call_refs.borrow_mut().insert(bare_name.to_string());
+                }
                 calls_and_exprs::handle_function_call(
                     self,
                     node,
@@ -701,6 +717,10 @@ impl ScopeAnalyzer {
                 );
             }
             NodeKind::MethodCall { object, method, args } => {
+                // Track calls to private methods (e.g. $self->_helper())
+                if is_private_sub_name(method) {
+                    context.sub_call_refs.borrow_mut().insert(method.to_string());
+                }
                 calls_and_exprs::handle_method_call(
                     self,
                     node,
@@ -811,7 +831,22 @@ impl ScopeAnalyzer {
                 );
             }
 
-            NodeKind::Subroutine { signature, body, .. } => {
+            NodeKind::Subroutine { name, name_span, signature, body, .. } => {
+                // Track private subroutine definitions
+                if let Some(sub_name) = name {
+                    if is_private_sub_name(sub_name) {
+                        let (start, end) = if let Some(span) = name_span {
+                            (span.start, span.end)
+                        } else {
+                            (node.location.start, node.location.end)
+                        };
+                        context.private_sub_defs.borrow_mut().push((
+                            sub_name.clone(),
+                            start,
+                            end,
+                        ));
+                    }
+                }
                 scope_constructs::handle_subroutine(
                     self,
                     node,
@@ -1255,6 +1290,36 @@ impl ScopeAnalyzer {
         });
     }
 
+    /// Collect unused private subroutine diagnostics after the full traversal.
+    ///
+    /// A private subroutine is one whose name starts with a single underscore followed
+    /// by an ASCII letter (e.g. `_helper`, `_internal_func`). Dunder names (`__init__`)
+    /// and bare `_` are excluded.
+    fn collect_unused_private_subroutines(
+        &self,
+        context: &AnalysisContext<'_>,
+        issues: &mut Vec<ScopeIssue>,
+    ) {
+        let defs = context.private_sub_defs.borrow();
+        let refs = context.sub_call_refs.borrow();
+        for (name, start, end) in defs.iter() {
+            if !refs.contains(name.as_str()) {
+                let start_clamped = (*start).min(context.code.len());
+                let end_clamped = (*end).min(context.code.len());
+                issues.push(ScopeIssue {
+                    kind: IssueKind::UnusedPrivateSubroutine,
+                    variable_name: name.clone(),
+                    line: context.get_line(*start),
+                    range: (start_clamped, end_clamped),
+                    description: format!(
+                        "Private subroutine '{}' is defined but never called in this file",
+                        name
+                    ),
+                });
+            }
+        }
+    }
+
     pub(super) fn extract_variable_name<'a>(&self, node: &'a Node) -> ExtractedName<'a> {
         match &node.kind {
             NodeKind::Variable { sigil, name } => ExtractedName::Parts(sigil, name),
@@ -1448,6 +1513,12 @@ impl ScopeAnalyzer {
                 IssueKind::CaptureVarWithoutRegexMatch => {
                     format!(
                         "Perform a regex match (=~ /.../) before using capture variable '{}'",
+                        issue.variable_name
+                    )
+                }
+                IssueKind::UnusedPrivateSubroutine => {
+                    format!(
+                        "Remove '{}' or add a call to use it",
                         issue.variable_name
                     )
                 }
@@ -1870,6 +1941,19 @@ pub(super) fn is_topic_defaulting_builtin(name: &str) -> bool {
 /// Topic-defaulting builtins that also modify `$_` when called without args.
 pub(super) fn is_topic_modifying_builtin(name: &str) -> bool {
     matches!(name, "chomp" | "chop")
+}
+
+/// Return `true` if `name` is a private subroutine name.
+///
+/// The Perl convention is that a name starting with a single underscore followed
+/// by an ASCII letter is private (e.g. `_helper`, `_internal_func`). This function
+/// excludes dunder names (`__DATA__`, `__init__`, etc.) and the bare `_` variable.
+///
+/// Matches: `_helper`, `_internal_func`
+/// Does not match: `__init`, `_`, `_2private`, `AUTOLOAD`
+pub(super) fn is_private_sub_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    bytes.len() >= 2 && bytes[0] == b'_' && bytes[1] != b'_' && bytes[1].is_ascii_alphabetic()
 }
 
 fn is_explicit_scalar_reference_deref(source: &str) -> bool {

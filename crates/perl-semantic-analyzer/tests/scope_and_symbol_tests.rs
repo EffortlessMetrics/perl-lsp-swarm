@@ -4284,6 +4284,146 @@ print nested_func();
     Ok(())
 }
 
+// ===========================================================================
+// Unused Private Subroutine detection (PL305)
+// ===========================================================================
+
+#[test]
+fn unused_private_sub_is_flagged() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+use warnings;
+
+sub _helper {
+    return 42;
+}
+
+sub public_func {
+    return 1;
+}
+"#;
+    let issues = scope_issues(code);
+    assert!(
+        has_issue(&issues, IssueKind::UnusedPrivateSubroutine, "_helper"),
+        "unused private sub _helper should be flagged, got: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    assert!(
+        !has_issue(&issues, IssueKind::UnusedPrivateSubroutine, "public_func"),
+        "public sub should not be flagged"
+    );
+    Ok(())
+}
+
+#[test]
+fn called_private_sub_is_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+use warnings;
+
+sub _helper {
+    return 42;
+}
+
+sub public_func {
+    return _helper();
+}
+"#;
+    let issues = scope_issues(code);
+    assert!(
+        !has_issue(&issues, IssueKind::UnusedPrivateSubroutine, "_helper"),
+        "called private sub should not be flagged, got: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn double_underscore_sub_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
+    // Dunder methods (__DATA__, __END__, etc.) should not be flagged
+    let code = r#"
+sub __init {
+    return 1;
+}
+"#;
+    let issues = scope_issues(code);
+    assert!(
+        !has_issue(&issues, IssueKind::UnusedPrivateSubroutine, "__init"),
+        "dunder method should not be flagged"
+    );
+    Ok(())
+}
+
+#[test]
+fn multiple_unused_private_subs_each_flagged() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+sub _helper_one {
+    return 1;
+}
+
+sub _helper_two {
+    return 2;
+}
+
+sub _helper_three {
+    return 3;
+}
+"#;
+    let issues = scope_issues(code);
+    assert_eq!(
+        count_issues(&issues, IssueKind::UnusedPrivateSubroutine),
+        3,
+        "all three unused private subs should be flagged, got: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn method_call_to_private_sub_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
+    let code = r#"
+use strict;
+use warnings;
+
+sub _helper {
+    return 42;
+}
+
+sub public_func {
+    my $self = shift;
+    return $self->_helper();
+}
+"#;
+    let issues = scope_issues(code);
+    assert!(
+        !has_issue(&issues, IssueKind::UnusedPrivateSubroutine, "_helper"),
+        "private sub called as method should not be flagged, got: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn forward_reference_private_sub_not_flagged() -> Result<(), Box<dyn std::error::Error>> {
+    // Call before definition should still suppress the warning
+    let code = r#"
+sub public_func {
+    return _helper();
+}
+
+sub _helper {
+    return 42;
+}
+"#;
+    let issues = scope_issues(code);
+    assert!(
+        !has_issue(&issues, IssueKind::UnusedPrivateSubroutine, "_helper"),
+        "private sub called before its definition should not be flagged, got: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
 #[test]
 fn strict_subs_no_false_positive_on_arrow_deref_hash_key() -> Result<(), Box<dyn std::error::Error>>
 {
