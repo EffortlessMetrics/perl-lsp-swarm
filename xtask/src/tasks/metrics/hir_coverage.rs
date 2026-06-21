@@ -3,6 +3,16 @@
 //! This metric tracks the current bridge from parser AST nodes to crate-local
 //! HIR shells. It is intentionally descriptive: it does not score provider
 //! behavior and it does not imply that not-yet-modeled constructs are failures.
+//!
+//! ## Single source of truth
+//!
+//! This module no longer contains its own AST-kind classification table.
+//! All lowering dispositions are read from
+//! [`perl_parser_core::hir::disposition::disposition_for`] — the shared
+//! registry that is also consumed by the `hir_lowering_completeness_tests`
+//! integration tests.  Changes to how any AST kind is lowered must be made in
+//! `disposition.rs`; the coverage check and the completeness gate will both
+//! reflect the update automatically.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -10,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::{Context, Result, eyre};
 use perl_parser::NodeKind;
-use perl_parser_core::hir::HirKind;
+use perl_parser_core::hir::{HirKind, disposition};
 use serde::Serialize;
 
 use crate::utils::project_root;
@@ -77,51 +87,17 @@ struct HirCoverageArtifact {
 #[derive(Debug, Clone, Serialize)]
 struct HirCoverageRow {
     ast_kind: &'static str,
-    status: HirCoverageStatus,
+    status: &'static str,
     hir_kinds: Vec<&'static str>,
     note: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum HirCoverageStatus {
-    Lowered,
-    DynamicBoundary,
-    IntentionallySkipped,
-    NotYetModeled,
-}
-
-impl HirCoverageStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Lowered => "lowered",
-            Self::DynamicBoundary => "dynamic_boundary",
-            Self::IntentionallySkipped => "intentionally_skipped",
-            Self::NotYetModeled => "not_yet_modeled",
-        }
-    }
-
-    fn meaning(self) -> &'static str {
-        match self {
-            Self::Lowered => "Emits one or more HIR items today.",
-            Self::DynamicBoundary => {
-                "Emits an explicit dynamic-boundary HIR item for unsupported static truth."
-            }
-            Self::IntentionallySkipped => {
-                "Traversal, metadata, or recovery placeholder; no standalone HIR item expected."
-            }
-            Self::NotYetModeled => "Parser AST construct exists, but HIR has no shell yet.",
-        }
-    }
-}
-
 fn build_artifact() -> Result<HirCoverageArtifact> {
-    let rows = coverage_rows();
-    validate_rows(&rows)?;
+    let rows = coverage_rows()?;
 
     let mut counts = BTreeMap::new();
     for row in &rows {
-        *counts.entry(row.status.as_str()).or_insert(0) += 1;
+        *counts.entry(row.status).or_insert(0) += 1;
     }
 
     Ok(HirCoverageArtifact {
@@ -135,229 +111,54 @@ fn build_artifact() -> Result<HirCoverageArtifact> {
     })
 }
 
-fn coverage_rows() -> Vec<HirCoverageRow> {
-    NodeKind::ALL_KIND_NAMES.iter().map(|kind| row_for_ast_kind(kind)).collect()
-}
-
-fn row_for_ast_kind(ast_kind: &'static str) -> HirCoverageRow {
-    match ast_kind {
-        "ArrayLiteral" => {
-            lowered(ast_kind, &["LiteralExpr"], "Lowered as aggregate literal shell.")
-        }
-        "Block" => lowered(
-            ast_kind,
-            &["BlockShell"],
-            "Lowered as block shell and contributes a ScopeGraph block frame.",
-        ),
-        "Do" => boundary(
-            ast_kind,
-            "Non-block `do` forms emit `DynamicBoundary`; block bodies traverse.",
-        ),
-        "Eval" => {
-            boundary(ast_kind, "Expression `eval` emits `DynamicBoundary`; block bodies traverse.")
-        }
-        "Assignment" => boundary(
-            ast_kind,
-            "Typeglob assignment with a non-static RHS emits `DynamicBoundary`; other assignments traverse.",
-        ),
-        "FunctionCall" => lowered(
-            ast_kind,
-            &["CallExpr", "DynamicBoundary", "RequireDecl"],
-            "`require` calls lower as `RequireDecl`; coderef calls add a dynamic boundary.",
-        ),
-        "HashLiteral" => lowered(ast_kind, &["LiteralExpr"], "Lowered as aggregate literal shell."),
-        "Identifier" => {
-            lowered(ast_kind, &["BarewordExpr"], "Lowered as bareword expression shell.")
-        }
-        "IndirectCall" => {
-            lowered(ast_kind, &["IndirectCallExpr"], "Lowered as indirect-object call shell.")
-        }
-        "Method" => lowered(
-            ast_kind,
-            &["MethodDecl"],
-            "Lowered as method declaration shell and contributes a method scope frame.",
-        ),
-        "MethodCall" => lowered(ast_kind, &["MethodCallExpr"], "Lowered as method-call shell."),
-        "Number" => lowered(ast_kind, &["LiteralExpr"], "Lowered as numeric literal shell."),
-        "Package" => lowered(
-            ast_kind,
-            &["PackageDecl"],
-            "Lowered and updates package context plus package scope.",
-        ),
-        "String" => lowered(ast_kind, &["LiteralExpr"], "Lowered as string literal shell."),
-        "Subroutine" => lowered(
-            ast_kind,
-            &["SubDecl"],
-            "Lowered as sub declaration shell and contributes a subroutine scope frame.",
-        ),
-        "Undef" => lowered(ast_kind, &["LiteralExpr"], "Lowered as undef literal shell."),
-        "Use" => lowered(
-            ast_kind,
-            &["UseDecl"],
-            "Lowered as use declaration shell and records CompileEnvironment directive facts.",
-        ),
-        "VariableDeclaration" => lowered(
-            ast_kind,
-            &["VariableDecl"],
-            "Lowered as single variable declaration shell and records ScopeGraph bindings.",
-        ),
-        "VariableListDeclaration" => lowered(
-            ast_kind,
-            &["VariableDecl"],
-            "Lowered as list variable declaration shell and records ScopeGraph bindings.",
-        ),
-        "If" => lowered(
-            ast_kind,
-            &["BranchShell"],
-            "`if`/`unless` block form lowered as a branch shell with condition anchor and arm counts.",
-        ),
-        "Ternary" => lowered(
-            ast_kind,
-            &["BranchShell"],
-            "Ternary expression lowered as a branch shell with both arms present.",
-        ),
-        "While" => lowered(
-            ast_kind,
-            &["LoopShell"],
-            "`while`/`until` lowered as a loop shell with condition and continue-block facts.",
-        ),
-        "For" => lowered(
-            ast_kind,
-            &["LoopShell"],
-            "C-style `for` lowered as a loop shell with optional-condition and iterator facts.",
-        ),
-        "Foreach" => lowered(
-            ast_kind,
-            &["LoopShell"],
-            "`foreach` lowered as a loop shell with iterator-declaration and continue-block facts.",
-        ),
-        "Return" => lowered(
-            ast_kind,
-            &["ControlTransfer"],
-            "Lowered as a control-transfer shell recording whether a value is returned.",
-        ),
-        "LoopControl" => lowered(
-            ast_kind,
-            &["ControlTransfer"],
-            "`next`/`last`/`redo` lowered as control-transfer shells with optional label.",
-        ),
-        "Goto" => lowered(
-            ast_kind,
-            &["ControlTransfer"],
-            "Lowered as a control-transfer shell; plain label targets are preserved.",
-        ),
-        "StatementModifier" => lowered(
-            ast_kind,
-            &["StatementModifierShell"],
-            "Postfix statement modifiers lowered as modifier shells with a condition anchor.",
-        ),
-        "LabeledStatement" => skipped(
-            ast_kind,
-            "Label metadata is threaded into the loop it wraps; no standalone HIR item.",
-        ),
-        "Error" => {
-            skipped(ast_kind, "Recovered partials are traversed; raw error nodes emit no HIR.")
-        }
-        "ExpressionStatement" => skipped(ast_kind, "Statement wrapper is traversal-only."),
-        "MissingBlock" | "MissingExpression" | "MissingIdentifier" | "MissingStatement"
-        | "UnknownRest" => {
-            skipped(ast_kind, "Parser recovery placeholder, intentionally no HIR item.")
-        }
-        "Program" => skipped(ast_kind, "Root wrapper is traversal-only."),
-        "Prototype" => skipped(ast_kind, "Captured as declaration metadata."),
-        "Signature" | "MandatoryParameter" | "NamedParameter" | "OptionalParameter"
-        | "SlurpyParameter" => skipped(
-            ast_kind,
-            "Captured as ScopeGraph parameter binding metadata; no standalone HIR item.",
-        ),
-        "Variable" | "VariableWithAttributes" => skipped(
-            ast_kind,
-            "Consumed by declaration lowering or recorded as ScopeGraph references.",
-        ),
-        "Format" => not_modeled(
-            ast_kind,
-            "No HIR shell yet; format declarations contribute a ScopeGraph format frame.",
-        ),
-        "No" => skipped(
-            ast_kind,
-            "`no` directives record CompileEnvironment facts; no standalone HIR item yet.",
-        ),
-        "PhaseBlock" => skipped(
-            ast_kind,
-            "Phase blocks record CompileEnvironment phase facts and contribute a ScopeGraph phase frame.",
-        ),
-        "Typeglob" => not_modeled(
-            ast_kind,
-            "No standalone HIR shell yet; typeglob assignments can contribute StashGraph slots or boundaries.",
-        ),
-        "Defer" => not_modeled(
-            ast_kind,
-            "Deferred cleanup needs scope/control-flow modeling before a HIR shell.",
-        ),
-        _ => not_modeled(ast_kind, "No first-slice HIR shell yet."),
+fn coverage_rows() -> Result<Vec<HirCoverageRow>> {
+    // Guard: the shared registry must cover all AST kinds before we build rows.
+    let missing = disposition::missing_dispositions();
+    if !missing.is_empty() {
+        return Err(eyre!(
+            "HIR disposition registry is incomplete; missing entries for AST kinds: {}\n\
+             Add them to `disposition_for()` in \
+             `crates/perl-parser-core/src/hir/disposition.rs`.",
+            missing.join(", ")
+        ));
     }
-}
 
-fn lowered(
-    ast_kind: &'static str,
-    hir_kinds: &[&'static str],
-    note: &'static str,
-) -> HirCoverageRow {
-    row(ast_kind, HirCoverageStatus::Lowered, hir_kinds, note)
-}
-
-fn boundary(ast_kind: &'static str, note: &'static str) -> HirCoverageRow {
-    row(ast_kind, HirCoverageStatus::DynamicBoundary, &["DynamicBoundary"], note)
-}
-
-fn skipped(ast_kind: &'static str, note: &'static str) -> HirCoverageRow {
-    row(ast_kind, HirCoverageStatus::IntentionallySkipped, &[], note)
-}
-
-fn not_modeled(ast_kind: &'static str, note: &'static str) -> HirCoverageRow {
-    row(ast_kind, HirCoverageStatus::NotYetModeled, &[], note)
-}
-
-fn row(
-    ast_kind: &'static str,
-    status: HirCoverageStatus,
-    hir_kinds: &[&'static str],
-    note: &'static str,
-) -> HirCoverageRow {
-    HirCoverageRow { ast_kind, status, hir_kinds: hir_kinds.to_vec(), note }
-}
-
-fn validate_rows(rows: &[HirCoverageRow]) -> Result<()> {
-    let ast_kinds = NodeKind::ALL_KIND_NAMES.iter().copied().collect::<BTreeSet<_>>();
-    let hir_kinds = HirKind::ALL_KIND_NAMES.iter().copied().collect::<BTreeSet<_>>();
-
-    let mut seen = BTreeSet::new();
-    for row in rows {
-        if !ast_kinds.contains(row.ast_kind) {
-            return Err(eyre!("HIR coverage row references unknown AST kind `{}`", row.ast_kind));
-        }
-        if !seen.insert(row.ast_kind) {
-            return Err(eyre!("duplicate HIR coverage row for AST kind `{}`", row.ast_kind));
-        }
-        for hir_kind in &row.hir_kinds {
-            if !hir_kinds.contains(hir_kind) {
+    // Validate that the HIR kinds referenced in the registry actually exist.
+    let valid_hir_kinds: BTreeSet<&str> = HirKind::ALL_KIND_NAMES.iter().copied().collect();
+    for &ast_kind in NodeKind::ALL_KIND_NAMES {
+        for &hir_kind in disposition::hir_kinds_for(ast_kind) {
+            if !valid_hir_kinds.contains(hir_kind) {
                 return Err(eyre!(
-                    "HIR coverage row `{}` references unknown HIR kind `{hir_kind}`",
-                    row.ast_kind
+                    "disposition registry for `{ast_kind}` references unknown HIR kind \
+                     `{hir_kind}`; update `hir_kinds_for()` in \
+                     `crates/perl-parser-core/src/hir/disposition.rs`."
                 ));
             }
         }
     }
 
-    let missing = ast_kinds.difference(&seen).copied().collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(eyre!("missing HIR coverage rows for AST kinds: {}", missing.join(", ")));
-    }
+    let rows = NodeKind::ALL_KIND_NAMES
+        .iter()
+        .map(|&ast_kind| {
+            let d = disposition::disposition_for(ast_kind)
+                .unwrap_or_else(|| unreachable!("missing_dispositions() guard above ensures this"));
+            let status = d.legacy_category().as_str();
+            let hir_kinds = disposition::hir_kinds_for(ast_kind).to_vec();
+            HirCoverageRow { ast_kind, status, hir_kinds, note: d.note }
+        })
+        .collect();
 
-    Ok(())
+    Ok(rows)
 }
 
 fn render_markdown(artifact: &HirCoverageArtifact) -> String {
+    let status_order = [
+        disposition::LegacyCategory::Lowered.as_str(),
+        disposition::LegacyCategory::DynamicBoundary.as_str(),
+        disposition::LegacyCategory::IntentionallySkipped.as_str(),
+        disposition::LegacyCategory::NotYetModeled.as_str(),
+    ];
+
     let mut out = String::new();
     out.push_str("# HIR Lowering Coverage\n\n");
     out.push_str("> Generated by `cargo xtask metrics hir-coverage --write-status`.\n");
@@ -366,14 +167,10 @@ fn render_markdown(artifact: &HirCoverageArtifact) -> String {
     out.push_str("## Summary\n\n");
     out.push_str("| Status | Count | Meaning |\n");
     out.push_str("| --- | ---: | --- |\n");
-    for status in [
-        HirCoverageStatus::Lowered,
-        HirCoverageStatus::DynamicBoundary,
-        HirCoverageStatus::IntentionallySkipped,
-        HirCoverageStatus::NotYetModeled,
-    ] {
-        let count = artifact.counts.get(status.as_str()).copied().unwrap_or_default();
-        out.push_str(&format!("| `{}` | {} | {} |\n", status.as_str(), count, status.meaning()));
+    for &status_str in &status_order {
+        let category = legacy_category_from_str(status_str);
+        let count = artifact.counts.get(status_str).copied().unwrap_or_default();
+        out.push_str(&format!("| `{}` | {} | {} |\n", status_str, count, category.meaning()));
     }
     out.push('\n');
     out.push_str(&format!(
@@ -391,13 +188,19 @@ fn render_markdown(artifact: &HirCoverageArtifact) -> String {
         };
         out.push_str(&format!(
             "| `{}` | `{}` | {} | {} |\n",
-            row.ast_kind,
-            row.status.as_str(),
-            hir_kinds,
-            row.note
+            row.ast_kind, row.status, hir_kinds, row.note
         ));
     }
     out
+}
+
+fn legacy_category_from_str(s: &str) -> disposition::LegacyCategory {
+    match s {
+        "lowered" => disposition::LegacyCategory::Lowered,
+        "dynamic_boundary" => disposition::LegacyCategory::DynamicBoundary,
+        "intentionally_skipped" => disposition::LegacyCategory::IntentionallySkipped,
+        _ => disposition::LegacyCategory::NotYetModeled,
+    }
 }
 
 #[cfg(test)]
@@ -406,8 +209,7 @@ mod tests {
 
     #[test]
     fn hir_coverage_inventory_covers_all_ast_kinds_once() -> Result<()> {
-        let rows = coverage_rows();
-        validate_rows(&rows)?;
+        let rows = coverage_rows()?;
         assert_eq!(rows.len(), NodeKind::ALL_KIND_NAMES.len());
         Ok(())
     }
@@ -415,16 +217,15 @@ mod tests {
     #[test]
     fn hir_coverage_inventory_has_nonempty_status_counts() -> Result<()> {
         let artifact = build_artifact()?;
-        for status in [
-            HirCoverageStatus::Lowered,
-            HirCoverageStatus::DynamicBoundary,
-            HirCoverageStatus::IntentionallySkipped,
-            HirCoverageStatus::NotYetModeled,
+        for status_str in [
+            disposition::LegacyCategory::Lowered.as_str(),
+            disposition::LegacyCategory::DynamicBoundary.as_str(),
+            disposition::LegacyCategory::IntentionallySkipped.as_str(),
+            disposition::LegacyCategory::NotYetModeled.as_str(),
         ] {
             assert!(
-                artifact.counts.get(status.as_str()).copied().unwrap_or_default() > 0,
-                "expected at least one `{}` HIR coverage row",
-                status.as_str()
+                artifact.counts.get(status_str).copied().unwrap_or_default() > 0,
+                "expected at least one `{status_str}` HIR coverage row"
             );
         }
         Ok(())
@@ -436,6 +237,30 @@ mod tests {
         let markdown = render_markdown(&artifact);
         assert!(markdown.contains("no LSP provider consumes these facts yet"));
         assert!(markdown.contains("AST NodeKind"));
+        Ok(())
+    }
+
+    #[test]
+    fn hir_coverage_registry_has_no_missing_dispositions() {
+        let missing = disposition::missing_dispositions();
+        assert!(
+            missing.is_empty(),
+            "HIR disposition registry is missing entries for: {:?}",
+            missing
+        );
+    }
+
+    #[test]
+    fn hir_coverage_disposition_registry_agrees_with_hir_kinds() -> Result<()> {
+        let valid_hir_kinds: BTreeSet<&str> = HirKind::ALL_KIND_NAMES.iter().copied().collect();
+        for &ast_kind in NodeKind::ALL_KIND_NAMES {
+            for &hir_kind in disposition::hir_kinds_for(ast_kind) {
+                assert!(
+                    valid_hir_kinds.contains(hir_kind),
+                    "disposition registry for `{ast_kind}` references unknown HIR kind `{hir_kind}`"
+                );
+            }
+        }
         Ok(())
     }
 }

@@ -4,6 +4,7 @@
 //! stable language constructs, parser anchors, source ranges, and scope graph
 //! proof data without changing LSP provider behavior.
 
+pub mod disposition;
 mod lower;
 mod model;
 
