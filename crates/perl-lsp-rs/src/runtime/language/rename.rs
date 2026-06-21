@@ -1681,6 +1681,26 @@ mod tests {
     }
 
     #[test]
+    fn sub_declaration_keyword_before_boundary_discriminator_symbol_start_zero()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let boundary_source = "target();\nsub target { 1 }\n";
+        assert_eq!(
+            sub_declaration_keyword_before(boundary_source, 0),
+            false,
+            "symbol_start == 0 must not slice before the document start"
+        );
+
+        let sub_name_offset = boundary_source.find("target {").ok_or("missing sub target")?;
+        assert_eq!(
+            sub_declaration_keyword_before(boundary_source, sub_name_offset),
+            true,
+            "normal sub declaration names should still detect the preceding sub keyword"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn token_helpers_work_with_non_ascii_prefix() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::default();
         // "# café\n" — 'é' (U+00E9) is 2 UTF-8 bytes; the line is 9 bytes, 8 chars.

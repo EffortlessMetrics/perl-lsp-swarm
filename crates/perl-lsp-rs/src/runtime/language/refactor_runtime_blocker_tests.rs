@@ -1772,6 +1772,47 @@ fn refactor_runtime_blocker_ux_package_local_live_pilot_blocks_real_workspace_im
 }
 
 #[test]
+fn refactor_runtime_blocker_ux_package_rename_live_pilot_workspace_edit_exact_error_variant_blocked()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    let files = open_semantic_real_workspace(&server)?;
+    let util = files.get("lib/RealBaseline/Util.pm").ok_or("missing RealBaseline Util fixture")?;
+
+    let (helper_line, helper_character) = position_of(util, "helper {")?;
+    let rename_result = server
+        .handle_rename_workspace(Some(json!({
+            "textDocument": {"uri": REAL_BASELINE_UTIL_URI},
+            "position": {"line": helper_line, "character": helper_character},
+            "newName": "renamed_helper_exact_error"
+        })))?
+        .ok_or("missing package live-pilot exact error-variant result")?;
+
+    assert_eq!(
+        workspace_edit_change_count(&rename_result)?,
+        0,
+        "package_rename_live_pilot_workspace_edit Err(Blocked) must surface as a no-edit result: {rename_result}"
+    );
+
+    let explanation = explain_provider_decision(&server, "rename")?;
+    let request_receipt = request_receipt(&explanation)?;
+    assert_eq!(request_receipt.get("provider").and_then(Value::as_str), Some("rename"));
+    assert_eq!(
+        request_receipt.get("provider_action").and_then(Value::as_str),
+        Some("textDocument/rename")
+    );
+    assert_eq!(
+        request_receipt.get("reason").and_then(Value::as_str),
+        Some("package_local_live_pilot_blocked"),
+        "the exact Err(reason) variant should be recorded as the blocked package live-pilot path"
+    );
+    assert_eq!(request_receipt.get("fallback_state").and_then(Value::as_str), Some("no_edit"));
+    assert_eq!(request_receipt.get("live_provider_edit_count").and_then(Value::as_u64), Some(0));
+    assert_eq!(request_receipt.get("symbol").and_then(Value::as_str), Some("helper"));
+
+    Ok(())
+}
+
+#[test]
 fn refactor_runtime_blocker_ux_package_local_live_pilot_real_workspace_false_allow_falls_back_with_fresh_rollback_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();
