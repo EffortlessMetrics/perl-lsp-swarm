@@ -432,7 +432,7 @@ fn scenario_68_strict_warnings_guided_edit_receipt() {
                 "schema_version": 1,
                 "receipt": "strict_warnings_guided_edit",
                 "workspace_fixture": "package missing use strict and use warnings pragmas",
-                "claim_boundary": "real-stdio LSP deterministic pragma code-action receipt only; no provider behavior change, no server-originated applyEdit flow, no WorkspaceEdit.metadata, no generated-assistance label",
+                "claim_boundary": "real-stdio LSP deterministic pragma code-action and source.fixAll aggregation receipt only; no server-originated applyEdit flow, no WorkspaceEdit.metadata, no generated-assistance label",
                 "classification": "deterministic_quick_fix",
                 "plain_profile": plain,
                 "snippet_profile": snippet,
