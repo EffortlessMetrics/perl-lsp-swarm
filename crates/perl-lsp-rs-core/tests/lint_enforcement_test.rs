@@ -11,7 +11,7 @@
 //! These tests read the actual source files via `CARGO_MANIFEST_DIR` so they would
 //! catch any future accidental removal of the directives.
 
-use std::fs;
+use std::{fs, io};
 
 /// Returns the path to perl-lsp-rs-core's `lib.rs`.
 fn lib_rs_path() -> std::path::PathBuf {
@@ -25,10 +25,8 @@ fn launcher_mod_path() -> std::path::PathBuf {
     manifest_dir.join("src/runtime/launcher/mod.rs")
 }
 
-#[allow(clippy::expect_used)]
-fn read_source(path: &std::path::Path) -> String {
+fn read_source(path: &std::path::Path) -> io::Result<String> {
     fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("source file must be readable: {}", path.display()))
 }
 
 fn find_line_number(source: &str, pattern: &str) -> Option<usize> {
@@ -36,16 +34,17 @@ fn find_line_number(source: &str, pattern: &str) -> Option<usize> {
 }
 
 #[test]
-fn test_workspace_cargo_has_print_deny() {
+fn test_workspace_cargo_has_print_deny() -> io::Result<()> {
     // Navigate from manifest dir up to workspace root
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest
         .ancestors()
         .skip(1) // skip the crate dir
         .find(|p| p.join("Cargo.toml").exists() && p.join("Cargo.lock").exists())
-        .expect("workspace root Cargo.toml must be readable");
-    let cargo_toml = std::fs::read_to_string(workspace_root.join("Cargo.toml"))
-        .expect("workspace Cargo.toml must be readable");
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "workspace root Cargo.toml must be readable")
+        })?;
+    let cargo_toml = std::fs::read_to_string(workspace_root.join("Cargo.toml"))?;
     assert!(
         cargo_toml.contains("print_stderr = \"deny\""),
         "workspace Cargo.toml must contain print_stderr = \"deny\" in [workspace.lints.clippy]"
@@ -54,22 +53,26 @@ fn test_workspace_cargo_has_print_deny() {
         cargo_toml.contains("print_stdout = \"deny\""),
         "workspace Cargo.toml must contain print_stdout = \"deny\" in [workspace.lints.clippy]"
     );
+
+    Ok(())
 }
 
 #[test]
-fn test_lib_has_cfg_attr_allow_in_test_mode() {
-    let source = read_source(&lib_rs_path());
+fn test_lib_has_cfg_attr_allow_in_test_mode() -> io::Result<()> {
+    let source = read_source(&lib_rs_path())?;
     let pattern = "#![cfg_attr(test, allow(clippy::print_stderr, clippy::print_stdout))]";
     assert!(
         find_line_number(&source, pattern).is_some(),
         "perl-lsp-rs-core/src/lib.rs is missing test-mode suppression directive:\n  {pattern}\n\n\
          Without this, test helpers that use eprintln!/println! would fail to compile."
     );
+
+    Ok(())
 }
 
 #[test]
-fn test_startup_banner_has_allow_annotation() {
-    let source = read_source(&launcher_mod_path());
+fn test_startup_banner_has_allow_annotation() -> io::Result<()> {
+    let source = read_source(&launcher_mod_path())?;
     // The expect annotation must appear before the function definition.
     // rustfmt may expand the attribute to multi-line format; search for the lint name
     // directly since it must appear in both single-line and multi-line forms.
@@ -99,4 +102,6 @@ fn test_startup_banner_has_allow_annotation() {
              before pub fn startup_banner (line {func})."
         );
     }
+
+    Ok(())
 }

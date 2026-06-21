@@ -329,7 +329,7 @@ mod tests {
                 assert!(!ranked.is_empty(), "should have ranked symbols");
             }
             CompletionCutoverResult::LegacyFallback(_) => {
-                panic!("explicit import should not fall back");
+                return Err("explicit import should not fall back".into());
             }
         }
         Ok(())
@@ -350,7 +350,7 @@ mod tests {
                 assert!(!ranked.is_empty(), "default export should produce ranked symbols");
             }
             CompletionCutoverResult::LegacyFallback(_) => {
-                panic!("default export should not fall back");
+                return Err("default export should not fall back".into());
             }
         }
         Ok(())
@@ -389,7 +389,7 @@ mod tests {
                 assert_eq!(ranked.len(), 2, "tag export should produce 2 ranked symbols");
             }
             CompletionCutoverResult::LegacyFallback(_) => {
-                panic!("tag export should not fall back");
+                return Err("tag export should not fall back".into());
             }
         }
         Ok(())
