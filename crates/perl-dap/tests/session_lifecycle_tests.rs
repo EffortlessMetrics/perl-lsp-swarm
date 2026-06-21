@@ -685,7 +685,6 @@ fn test_session_lifecycle_attach_port_out_of_range() {
 fn test_session_lifecycle_state_transitions() {
     // Test proper state transitions through session lifecycle
     if PerlOracleEnv::for_dap_test_fixture().is_none() {
-        eprintln!("Skipping test_session_lifecycle_state_transitions - perl not available");
         return;
     }
 
@@ -1459,7 +1458,6 @@ fn test_error_handling_launch_program_is_directory() {
 fn test_complete_session_lifecycle() {
     // Test complete session lifecycle from start to finish
     if PerlOracleEnv::for_dap_test_fixture().is_none() {
-        eprintln!("Skipping test_complete_session_lifecycle - perl not available");
         return;
     }
 
