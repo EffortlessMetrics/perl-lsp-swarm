@@ -1093,7 +1093,7 @@ impl LspServer {
             return;
         };
 
-        let deadline = Instant::now() + Duration::from_millis(2_000);
+        let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             let pending_index_tasks = self.pending_index_task_count.load(Ordering::Acquire);
             match coordinator.state() {
