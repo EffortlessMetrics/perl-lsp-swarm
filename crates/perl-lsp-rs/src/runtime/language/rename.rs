@@ -152,33 +152,6 @@ fn workspace_edit_uri_key(uri: &str) -> String {
     uri.to_string()
 }
 
-fn package_name_at_offset(source: &str, target_offset: usize) -> &str {
-    let mut current_pkg = "main";
-    let mut line_start = 0_usize;
-
-    for line in source.split_inclusive('\n') {
-        if line_start > target_offset {
-            break;
-        }
-
-        let trimmed = line.trim_start();
-        if let Some(package_decl) = trimmed.strip_prefix("package ") {
-            let package_name = package_decl
-                .trim_start()
-                .split(|ch: char| ch.is_whitespace() || ch == ';')
-                .next()
-                .unwrap_or_default();
-            if !package_name.is_empty() {
-                current_pkg = package_name;
-            }
-        }
-
-        line_start += line.len();
-    }
-
-    current_pkg
-}
-
 #[cfg(feature = "workspace")]
 // This edit collector has several independent range inputs so callers can use it for live and indexed documents.
 #[allow(clippy::too_many_arguments)]
@@ -205,7 +178,7 @@ fn add_qualified_document_rename_edits<F>(
         let after_ok = source
             .get(name_end..)
             .and_then(|suffix| suffix.chars().next())
-            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_');
+            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':');
         if !before_ok
             || !after_ok
             || is_in_comment(name_start, source)
@@ -310,6 +283,7 @@ impl LspServer {
         let symbol_len = key.name.as_ref().len();
         let documents = self.documents_guard();
         let request_doc = self.get_document(&documents, request_uri)?;
+        let request_ast = request_doc.ast.as_ref()?;
         let request_edit_uri = workspace_edit_uri_key(request_uri);
         let mut live_document_keys = BTreeSet::new();
         let mut indexed_document_keys = BTreeSet::new();
@@ -318,7 +292,8 @@ impl LspServer {
         for line in request_doc.text.split_inclusive('\n') {
             if let Some((name_start, name_end)) =
                 range_starts_with_sub_declaration_name(line, line_start, key.name.as_ref())
-                && package_name_at_offset(&request_doc.text, name_start) == key.pkg.as_ref()
+                && crate::declaration::current_package_at(request_ast, name_start)
+                    == key.pkg.as_ref()
             {
                 let (start_line, start_char) = self.offset_to_pos16(request_doc, name_start);
                 let (end_line, end_char) = self.offset_to_pos16(request_doc, name_end);
@@ -394,11 +369,12 @@ impl LspServer {
         let scanned_document_count = live_document_keys.len() + indexed_document_keys.len();
         if grouped.values().map(Vec::len).sum::<usize>() <= 1 && scanned_document_count <= 8 {
             for root in self.package_rename_disk_scan_roots(request_uri) {
-                for path in super::super::file_discovery::discover_perl_files(&root)
-                    .files
-                    .into_iter()
-                    .take(512)
-                {
+                let discovered_files =
+                    super::super::file_discovery::discover_perl_files(&root).files;
+                if discovered_files.len() > 512 {
+                    continue;
+                }
+                for path in discovered_files {
                     let Ok(uri) = perl_uri::fs_path_to_uri(&path) else {
                         continue;
                     };
@@ -1070,6 +1046,63 @@ impl LspServer {
             .unwrap_or(0)
     }
 
+    #[cfg(feature = "workspace")]
+    fn workspace_edit_change_keys(workspace_edit: &Value) -> BTreeSet<String> {
+        let mut keys = BTreeSet::new();
+        let Some(changes) = workspace_edit.get("changes").and_then(Value::as_object) else {
+            return keys;
+        };
+
+        for (uri, edits) in changes {
+            let Some(edits) = edits.as_array() else {
+                continue;
+            };
+            for edit in edits {
+                let Some(range) = edit.get("range") else {
+                    continue;
+                };
+                let key = format!(
+                    "{}:{}:{}:{}:{}:{}",
+                    uri,
+                    range
+                        .get("start")
+                        .and_then(|start| start.get("line"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                    range
+                        .get("start")
+                        .and_then(|start| start.get("character"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                    range
+                        .get("end")
+                        .and_then(|end| end.get("line"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                    range
+                        .get("end")
+                        .and_then(|end| end.get("character"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default(),
+                    edit.get("newText").and_then(Value::as_str).unwrap_or_default(),
+                );
+                keys.insert(key);
+            }
+        }
+
+        keys
+    }
+
+    #[cfg(feature = "workspace")]
+    fn workspace_edit_covers_required_changes(candidate: &Value, required: &Value) -> bool {
+        let required_keys = Self::workspace_edit_change_keys(required);
+        if required_keys.is_empty() {
+            return false;
+        }
+        let candidate_keys = Self::workspace_edit_change_keys(candidate);
+        required_keys.is_subset(&candidate_keys)
+    }
+
     fn package_rename_guard_accepts_workspace_edit(
         guard_workspace_edit: &Value,
         semantic_workspace_edit: &Value,
@@ -1321,6 +1354,10 @@ impl LspServer {
                                                         key,
                                                         normalized_bare,
                                                     )
+                                                    && Self::workspace_edit_covers_required_changes(
+                                                        &open_doc_ws_edit,
+                                                        &guard_ws_edit,
+                                                    )
                                                 {
                                                     self.record_rename_provider_decision_trace(
                                                         Some(uri),
@@ -1439,6 +1476,10 @@ impl LspServer {
                                                 uri,
                                                 key,
                                                 normalized_bare,
+                                            )
+                                            && Self::workspace_edit_covers_required_changes(
+                                                &open_doc_ws_edit,
+                                                &ws_edit,
                                             )
                                         {
                                             self.record_rename_provider_decision_trace(
@@ -2135,6 +2176,7 @@ mod tests {
             "My::Pkg::target();\n",
             "Other::My::Pkg::target();\n",
             "My::Pkg::target_suffix();\n",
+            "My::Pkg::target::child();\n",
             "# My::Pkg::target();\n",
             "my $s = \"My::Pkg::target()\";\n",
         );
@@ -2183,6 +2225,69 @@ mod tests {
             2,
             "re-scanning the same document must not produce duplicate edits"
         );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn workspace_edit_covers_required_changes_requires_superset()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let required = serde_json::json!({
+            "changes": {
+                "file:///workspace/lib/Pkg.pm": [{
+                    "range": {
+                        "start": { "line": 1, "character": 4 },
+                        "end": { "line": 1, "character": 10 }
+                    },
+                    "newText": "renamed"
+                }]
+            }
+        });
+        let candidate = serde_json::json!({
+            "changes": {
+                "file:///workspace/lib/Pkg.pm": [{
+                    "range": {
+                        "start": { "line": 1, "character": 4 },
+                        "end": { "line": 1, "character": 10 }
+                    },
+                    "newText": "renamed"
+                }],
+                "file:///workspace/lib/Caller.pm": [{
+                    "range": {
+                        "start": { "line": 2, "character": 20 },
+                        "end": { "line": 2, "character": 26 }
+                    },
+                    "newText": "renamed"
+                }]
+            }
+        });
+        let missing = serde_json::json!({
+            "changes": {
+                "file:///workspace/lib/Caller.pm": [{
+                    "range": {
+                        "start": { "line": 2, "character": 20 },
+                        "end": { "line": 2, "character": 26 }
+                    },
+                    "newText": "renamed"
+                }]
+            }
+        });
+        let wrong_text = serde_json::json!({
+            "changes": {
+                "file:///workspace/lib/Pkg.pm": [{
+                    "range": {
+                        "start": { "line": 1, "character": 4 },
+                        "end": { "line": 1, "character": 10 }
+                    },
+                    "newText": "other"
+                }]
+            }
+        });
+
+        assert!(LspServer::workspace_edit_covers_required_changes(&candidate, &required));
+        assert!(!LspServer::workspace_edit_covers_required_changes(&missing, &required));
+        assert!(!LspServer::workspace_edit_covers_required_changes(&wrong_text, &required));
 
         Ok(())
     }
@@ -2238,6 +2343,54 @@ mod tests {
         assert!(
             changes.contains_key(caller_uri),
             "indexed non-live caller edit should be included: {workspace_edit}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn package_rename_open_document_qualified_workspace_edit_rejects_block_scoped_package_mismatch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/Block/Pkg.pm";
+        let caller_uri = "file:///workspace/lib/Block/Caller.pm";
+        let request_source = concat!(
+            "package Block::Outer;\n",
+            "{\n",
+            "    package Block::Inner;\n",
+            "}\n",
+            "sub target { 1 }\n",
+            "1;\n",
+        );
+        let caller_source = "package Block::Caller;\nsub run { Block::Inner::target(); }\n1;\n";
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": request_uri,
+                "text": request_source,
+                "languageId": "perl",
+                "version": 1
+            }
+        })))?;
+        server.test_apply_did_open(caller_uri, caller_source, 1)?;
+
+        let key = crate::workspace_index::SymbolKey {
+            pkg: "Block::Inner".into(),
+            name: "target".into(),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        };
+
+        assert!(
+            server
+                .package_rename_open_document_qualified_workspace_edit(
+                    None,
+                    request_uri,
+                    &key,
+                    "renamed",
+                )
+                .is_none(),
+            "a block-scoped package declaration must not claim later outer-scope sub declarations"
         );
 
         Ok(())
@@ -2303,6 +2456,64 @@ mod tests {
         assert!(
             changes.contains_key(&workspace_edit_uri_key(&caller_uri)),
             "disk-discovered caller edit should be included: {workspace_edit}"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn package_rename_open_document_qualified_workspace_edit_skips_truncated_disk_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let request_path = temp.path().join("lib").join("DiskCap").join("Pkg.pm");
+        let caller_dir = temp.path().join("lib").join("DiskCap").join("callers");
+        let request_parent = request_path.parent().ok_or("missing request parent")?;
+        std::fs::create_dir_all(request_parent)?;
+        std::fs::create_dir_all(&caller_dir)?;
+
+        let request_source = "package DiskCap::Pkg;\nsub target { 1 }\n1;\n";
+        std::fs::write(&request_path, request_source)?;
+        for idx in 0..513 {
+            let caller_path = caller_dir.join(format!("Caller{idx}.pm"));
+            std::fs::write(
+                caller_path,
+                format!(
+                    "package DiskCap::Caller{idx};\nsub run {{ DiskCap::Pkg::target(); }}\n1;\n"
+                ),
+            )?;
+        }
+
+        let server = LspServer::default();
+        let root_uri = perl_uri::fs_path_to_uri(temp.path())?;
+        let request_uri = perl_uri::fs_path_to_uri(&request_path)?;
+        server.test_set_workspace_folder_uris(&[root_uri.as_str()]);
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": request_uri,
+                "text": request_source,
+                "languageId": "perl",
+                "version": 1
+            }
+        })))?;
+
+        let key = crate::workspace_index::SymbolKey {
+            pkg: "DiskCap::Pkg".into(),
+            name: "target".into(),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        };
+
+        assert!(
+            server
+                .package_rename_open_document_qualified_workspace_edit(
+                    None,
+                    &request_uri,
+                    &key,
+                    "renamed",
+                )
+                .is_none(),
+            "disk fallback must refuse rather than emit edits from a truncated file set"
         );
 
         Ok(())

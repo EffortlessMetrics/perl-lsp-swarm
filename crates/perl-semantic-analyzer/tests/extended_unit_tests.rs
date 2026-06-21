@@ -106,6 +106,21 @@ fn current_package_at_multiple_packages() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
+fn current_package_at_resets_package_after_block_scope() -> Result<(), Box<dyn std::error::Error>> {
+    let code = "package Outer;\n{\n    package Inner;\n    sub inside {}\n}\nsub outside {}\n";
+    let mut parser = Parser::new(code);
+    let ast = parser.parse()?;
+
+    let inside_offset = code.find("inside").ok_or("missing inside sub")?;
+    let outside_offset = code.find("outside").ok_or("missing outside sub")?;
+
+    assert_eq!(current_package_at(&ast, inside_offset), "Inner");
+    assert_eq!(current_package_at(&ast, outside_offset), "Outer");
+
+    Ok(())
+}
+
+#[test]
 fn find_node_at_offset_returns_none_out_of_range() -> Result<(), Box<dyn std::error::Error>> {
     let code = "my $x = 1;";
     let mut parser = Parser::new(code);
