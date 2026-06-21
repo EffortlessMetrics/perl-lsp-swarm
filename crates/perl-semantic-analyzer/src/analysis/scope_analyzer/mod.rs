@@ -840,11 +840,7 @@ impl ScopeAnalyzer {
                         } else {
                             (node.location.start, node.location.end)
                         };
-                        context.private_sub_defs.borrow_mut().push((
-                            sub_name.clone(),
-                            start,
-                            end,
-                        ));
+                        context.private_sub_defs.borrow_mut().push((sub_name.clone(), start, end));
                     }
                 }
                 scope_constructs::handle_subroutine(
@@ -1517,10 +1513,7 @@ impl ScopeAnalyzer {
                     )
                 }
                 IssueKind::UnusedPrivateSubroutine => {
-                    format!(
-                        "Remove '{}' or add a call to use it",
-                        issue.variable_name
-                    )
+                    format!("Remove '{}' or add a call to use it", issue.variable_name)
                 }
             })
             .collect()
