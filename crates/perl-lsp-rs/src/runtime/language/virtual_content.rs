@@ -580,10 +580,17 @@ my $non_pod = 'L<Code::Reference>';
     #[test]
     fn collect_simple_pod_module_links_boundary_discriminator() {
         let mut uris = BTreeSet::new();
+        let current_module = "Local::Doc";
+        let link_target = PerlDocumentationTarget::from_simple_pod_link_target("Local::Other");
+
+        assert!(
+            link_target.as_ref().is_some_and(|link_target| link_target.name() != current_module),
+            "link_target.name() != current_module must keep related module links",
+        );
 
         collect_simple_pod_module_links(
             "See L<Local::Doc> for this module and L<Local::Other> for the neighbor.",
-            "Local::Doc",
+            current_module,
             &mut uris,
         );
 

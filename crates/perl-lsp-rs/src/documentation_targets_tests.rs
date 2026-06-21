@@ -12,7 +12,7 @@ fn from_perldoc_uri_parses_valid_perldoc_uri() {
 #[test]
 fn from_perldoc_uri_accepts_already_trimmed_name_boundary() {
     let name = "Local::Trimmed";
-    assert_eq!(name, name.trim());
+    assert!(name == name.trim(), "name == name.trim() must take the accepted URI branch",);
     let uri = format!("perldoc://{name}");
 
     let target = must_some(PerlDocumentationTarget::from_perldoc_uri(&uri));
@@ -76,6 +76,12 @@ fn from_simple_pod_link_target_accepts_core_pragma_targets() {
 
 #[test]
 fn perl_doc_name_segment_accepts_alphanumeric_and_underscore_tail() {
+    let mut chars = "Doc_2".chars();
+    assert_eq!(chars.next(), Some('D'));
+    assert!(
+        chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_'),
+        "chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') must accept tail characters",
+    );
     assert!(is_perl_doc_name_segment("Doc_2"));
     assert!(!is_perl_doc_name_segment("Doc-2"));
 }
