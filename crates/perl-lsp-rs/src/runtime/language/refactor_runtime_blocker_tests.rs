@@ -1577,6 +1577,150 @@ sub caller {
 }
 
 #[test]
+fn refactor_runtime_blocker_ux_main_sub_rename_returns_safe_same_file_edits()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    let uri = "file:///workspace/rename_flow.pl";
+    let source = r#"use strict;
+use warnings;
+
+sub greet {
+    return "hello";
+}
+
+my $value = greet();
+print greet();
+"#;
+    open_document(&server, uri, source)?;
+
+    let (line, character) = position_of(source, "greet();")?;
+    let rename_result = server
+        .handle_rename_workspace(Some(json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "newName": "welcome"
+        })))?
+        .ok_or("missing main-package same-file rename result")?;
+
+    let edit_count = workspace_edit_change_count(&rename_result)?;
+    let explanation = explain_provider_decision(&server, "rename")?;
+    let request_receipt = request_receipt(&explanation)?;
+    assert!(
+        edit_count >= 2,
+        "main-package same-file rename should edit declaration and call sites: {rename_result}; receipt={request_receipt}"
+    );
+    let texts = workspace_edit_texts_for_uri(&rename_result, uri)?;
+    assert!(
+        texts.iter().filter(|text| **text == "welcome").count() >= 2,
+        "main-package same-file rename should use the requested bare sub name: {rename_result}"
+    );
+
+    assert_eq!(request_receipt.get("provider").and_then(Value::as_str), Some("rename"));
+    assert_eq!(
+        request_receipt.get("provider_action").and_then(Value::as_str),
+        Some("textDocument/rename")
+    );
+    assert_eq!(request_receipt.get("reason").and_then(Value::as_str), Some("same_file_main_sub"));
+    assert_eq!(request_receipt.get("fallback_state").and_then(Value::as_str), Some("none"));
+    assert_eq!(
+        request_receipt.get("live_provider_edit_count").and_then(Value::as_u64),
+        u64::try_from(edit_count).ok()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn refactor_runtime_blocker_ux_package_rename_scans_open_qualified_call_sites()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    let foo_uri = "file:///workspace/lib/Foo.pm";
+    let bar_uri = "file:///workspace/lib/Bar.pm";
+    let main_uri = "file:///workspace/main.pl";
+    let foo_source = r#"package Foo;
+use strict;
+use warnings;
+
+sub process_data {
+    return "foo";
+}
+
+1;
+"#;
+    let bar_source = r#"package Bar;
+use strict;
+use warnings;
+
+sub process_data {
+    return "bar";
+}
+
+1;
+"#;
+    let main_source = r#"use strict;
+use warnings;
+use lib './lib';
+use Foo;
+use Bar;
+
+my $foo = Foo::process_data();
+my $also = Foo::process_data();
+my $bar = Bar::process_data();
+"#;
+    open_document(&server, foo_uri, foo_source)?;
+    open_document(&server, bar_uri, bar_source)?;
+    open_document(&server, main_uri, main_source)?;
+
+    let (line, character) = position_of(foo_source, "process_data {")?;
+    let rename_result = server
+        .handle_rename_workspace(Some(json!({
+            "textDocument": {"uri": foo_uri},
+            "position": {"line": line, "character": character},
+            "newName": "process_records"
+        })))?
+        .ok_or("missing package-qualified open-document rename result")?;
+
+    let edit_count = workspace_edit_change_count(&rename_result)?;
+    assert!(
+        edit_count >= 3,
+        "package rename should edit the declaration and qualified open-document call sites: {rename_result}"
+    );
+
+    let foo_texts = workspace_edit_texts_for_uri(&rename_result, foo_uri).unwrap_or_default();
+    let main_texts = workspace_edit_texts_for_uri(&rename_result, main_uri).unwrap_or_default();
+    let bar_texts = workspace_edit_texts_for_uri(&rename_result, bar_uri).unwrap_or_default();
+    assert!(
+        foo_texts.iter().any(|text| *text == "process_records"),
+        "Foo declaration edit should carry the new name: {rename_result}"
+    );
+    assert!(
+        main_texts.iter().filter(|text| **text == "process_records").count() >= 2,
+        "main.pl should carry the renamed Foo call-site token: {rename_result}"
+    );
+    assert!(
+        bar_texts.is_empty(),
+        "Bar.pm must not be edited when renaming Foo::process_data: {rename_result}"
+    );
+
+    let explanation = explain_provider_decision(&server, "rename")?;
+    let request_receipt = request_receipt(&explanation)?;
+    assert_eq!(
+        request_receipt.get("reason").and_then(Value::as_str),
+        Some("open_document_qualified_workspace_edit")
+    );
+    assert_eq!(
+        request_receipt.get("fallback_state").and_then(Value::as_str),
+        Some("current_source")
+    );
+    assert_eq!(
+        request_receipt.get("live_provider_edit_count").and_then(Value::as_u64),
+        u64::try_from(edit_count).ok()
+    );
+
+    Ok(())
+}
+
+#[test]
 fn refactor_runtime_blocker_ux_package_local_live_pilot_blocks_real_workspace_imported_symbol_false_allow()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = create_server();

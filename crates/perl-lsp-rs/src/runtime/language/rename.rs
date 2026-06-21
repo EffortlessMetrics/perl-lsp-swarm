@@ -17,13 +17,15 @@ use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
 };
-use perl_lsp_rs_core::providers::rename::{RenameOptions, RenameProvider, TextEdit as RenameEdit};
+use perl_lsp_rs_core::providers::rename::{
+    RenameOptions, RenameProvider, TextEdit as RenameEdit, is_in_comment, is_in_string,
+};
 #[cfg(feature = "workspace")]
 use perl_semantic_facts::{EntityId, FileId, PlannedEdit};
 #[cfg(feature = "workspace")]
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 #[cfg(feature = "workspace")]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Returns true if `c` is a Perl variable sigil (`$`, `@`, or `%`).
 fn is_perl_sigil(c: char) -> bool {
@@ -44,6 +46,187 @@ fn lexical_declaration_keyword_before(source: &str, symbol_start: usize) -> bool
     let previous_word =
         prefix.split(|c: char| !c.is_alphanumeric() && c != '_').rfind(|word| !word.is_empty());
     matches!(previous_word, Some("my" | "state"))
+}
+
+fn sub_declaration_keyword_before(source: &str, symbol_start: usize) -> bool {
+    let line_start =
+        if symbol_start == 0 { 0 } else { source[..symbol_start].rfind('\n').map_or(0, |p| p + 1) };
+    let prefix = source[line_start..symbol_start].trim_end();
+    let previous_word =
+        prefix.split(|c: char| !c.is_alphanumeric() && c != '_').rfind(|word| !word.is_empty());
+    matches!(previous_word, Some("sub"))
+}
+
+fn range_starts_with_sub_declaration_name(
+    source_range: &str,
+    absolute_start: usize,
+    symbol: &str,
+) -> Option<(usize, usize)> {
+    let leading_ws = source_range.len().saturating_sub(source_range.trim_start().len());
+    let after_ws = source_range.get(leading_ws..)?;
+    let after_sub = after_ws.strip_prefix("sub")?;
+    if after_sub.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
+        return None;
+    }
+
+    let name_prefix_len = after_sub.len().saturating_sub(after_sub.trim_start().len());
+    let name_start = leading_ws + "sub".len() + name_prefix_len;
+    let name_end = name_start + symbol.len();
+    if source_range.get(name_start..name_end)? != symbol {
+        return None;
+    }
+    if source_range
+        .get(name_end..)
+        .and_then(|tail| tail.chars().next())
+        .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+
+    Some((absolute_start + name_start, absolute_start + name_end))
+}
+
+fn range_contains_single_bare_function_call_name(
+    source_range: &str,
+    absolute_start: usize,
+    symbol: &str,
+) -> Option<(usize, usize)> {
+    let mut match_span = None;
+
+    for (relative_start, _) in source_range.match_indices(symbol) {
+        let relative_end = relative_start + symbol.len();
+        let before_ok = source_range
+            .get(..relative_start)
+            .and_then(|prefix| prefix.chars().next_back())
+            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_');
+        let after = source_range.get(relative_end..)?;
+        let after_ok = after.chars().next().is_none_or(|ch| !ch.is_alphanumeric() && ch != '_');
+        if !before_ok || !after_ok || !after.trim_start().starts_with('(') {
+            continue;
+        }
+        if match_span.is_some() {
+            return None;
+        }
+        match_span = Some((absolute_start + relative_start, absolute_start + relative_end));
+    }
+
+    match_span
+}
+
+fn same_file_rename_span(
+    source: &str,
+    start: usize,
+    end: usize,
+    current_symbol: &str,
+    current_symbol_bare: &str,
+) -> Option<(usize, usize)> {
+    let source_range = source.get(start..end)?;
+    if source_range == current_symbol
+        || (current_symbol_bare != current_symbol && source_range == current_symbol_bare)
+    {
+        return Some((start, end));
+    }
+    if current_symbol_bare != current_symbol {
+        return None;
+    }
+    range_starts_with_sub_declaration_name(source_range, start, current_symbol).or_else(|| {
+        range_contains_single_bare_function_call_name(source_range, start, current_symbol)
+    })
+}
+
+fn workspace_edit_uri_key(uri: &str) -> String {
+    #[cfg(windows)]
+    {
+        let mut bytes = uri.as_bytes().to_vec();
+        if bytes.len() > "file:///c:".len()
+            && uri.starts_with("file:///")
+            && bytes[8].is_ascii_lowercase()
+            && bytes[9] == b':'
+        {
+            bytes[8] = bytes[8].to_ascii_uppercase();
+            return String::from_utf8(bytes).unwrap_or_else(|_| uri.to_string());
+        }
+    }
+    uri.to_string()
+}
+
+fn package_name_at_offset(source: &str, target_offset: usize) -> &str {
+    let mut current_pkg = "main";
+    let mut line_start = 0_usize;
+
+    for line in source.split_inclusive('\n') {
+        if line_start > target_offset {
+            break;
+        }
+
+        let trimmed = line.trim_start();
+        if let Some(package_decl) = trimmed.strip_prefix("package ") {
+            let package_name = package_decl
+                .trim_start()
+                .split(|ch: char| ch.is_whitespace() || ch == ';')
+                .next()
+                .unwrap_or_default();
+            if !package_name.is_empty() {
+                current_pkg = package_name;
+            }
+        }
+
+        line_start += line.len();
+    }
+
+    current_pkg
+}
+
+#[cfg(feature = "workspace")]
+// This edit collector has several independent range inputs so callers can use it for live and indexed documents.
+#[allow(clippy::too_many_arguments)]
+fn add_qualified_document_rename_edits<F>(
+    grouped: &mut BTreeMap<String, Vec<Value>>,
+    seen: &mut BTreeSet<String>,
+    edit_uri: &str,
+    source: &str,
+    qualified_name: &str,
+    package_len: usize,
+    symbol_len: usize,
+    new_name_bare: &str,
+    offset_to_pos16: F,
+) where
+    F: Fn(usize) -> (u32, u32),
+{
+    for (match_start, _) in source.match_indices(qualified_name) {
+        let before_ok = source
+            .get(..match_start)
+            .and_then(|prefix| prefix.chars().next_back())
+            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':');
+        let name_start = match_start + package_len + "::".len();
+        let name_end = name_start + symbol_len;
+        let after_ok = source
+            .get(name_end..)
+            .and_then(|suffix| suffix.chars().next())
+            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_');
+        if !before_ok
+            || !after_ok
+            || is_in_comment(name_start, source)
+            || is_in_string(name_start, source)
+        {
+            continue;
+        }
+
+        let (start_line, start_char) = offset_to_pos16(name_start);
+        let (end_line, end_char) = offset_to_pos16(name_end);
+        let edit_key = format!("{edit_uri}:{start_line}:{start_char}:{end_line}:{end_char}");
+        if !seen.insert(edit_key) {
+            continue;
+        }
+
+        grouped.entry(edit_uri.to_string()).or_default().push(json!({
+            "range": {
+                "start": { "line": start_line, "character": start_char },
+                "end": { "line": end_line, "character": end_char }
+            },
+            "newText": new_name_bare
+        }));
+    }
 }
 
 impl LspServer {
@@ -108,6 +291,177 @@ impl LspServer {
         }
 
         Some((json!({ "changes": grouped }), edit_count))
+    }
+
+    #[cfg(feature = "workspace")]
+    fn package_rename_open_document_qualified_workspace_edit(
+        &self,
+        workspace_index: Option<&crate::workspace_index::WorkspaceIndex>,
+        request_uri: &str,
+        key: &crate::workspace_index::SymbolKey,
+        new_name_bare: &str,
+    ) -> Option<(Value, usize, &'static str)> {
+        let mut grouped: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let mut seen = BTreeSet::new();
+        let qualified_name = format!("{}::{}", key.pkg, key.name);
+        let package_len = key.pkg.as_ref().len();
+        let symbol_len = key.name.as_ref().len();
+        let documents = self.documents_guard();
+        let request_doc = self.get_document(&documents, request_uri)?;
+        let request_edit_uri = workspace_edit_uri_key(request_uri);
+        let mut live_document_keys = BTreeSet::new();
+        let mut indexed_document_keys = BTreeSet::new();
+
+        let mut line_start = 0_usize;
+        for line in request_doc.text.split_inclusive('\n') {
+            if let Some((name_start, name_end)) =
+                range_starts_with_sub_declaration_name(line, line_start, key.name.as_ref())
+                && package_name_at_offset(&request_doc.text, name_start) == key.pkg.as_ref()
+            {
+                let (start_line, start_char) = self.offset_to_pos16(request_doc, name_start);
+                let (end_line, end_char) = self.offset_to_pos16(request_doc, name_end);
+                let edit_key =
+                    format!("{request_edit_uri}:{start_line}:{start_char}:{end_line}:{end_char}");
+                seen.insert(edit_key);
+                grouped.entry(request_edit_uri.clone()).or_default().push(json!({
+                    "range": {
+                        "start": { "line": start_line, "character": start_char },
+                        "end": { "line": end_line, "character": end_char }
+                    },
+                    "newText": new_name_bare
+                }));
+                break;
+            }
+            line_start += line.len();
+        }
+
+        if grouped.is_empty() {
+            return None;
+        }
+
+        for (uri, doc) in documents.iter() {
+            live_document_keys.insert(self.normalize_uri_key(uri));
+            let edit_uri = if self.normalize_uri_key(uri) == self.normalize_uri_key(request_uri) {
+                request_edit_uri.clone()
+            } else {
+                workspace_edit_uri_key(uri)
+            };
+            add_qualified_document_rename_edits(
+                &mut grouped,
+                &mut seen,
+                &edit_uri,
+                &doc.text,
+                &qualified_name,
+                package_len,
+                symbol_len,
+                new_name_bare,
+                |offset| self.offset_to_pos16(doc, offset),
+            );
+        }
+        drop(documents);
+
+        let mut used_indexed_document = false;
+        if let Some(workspace_index) = workspace_index {
+            for doc in workspace_index.document_store().all_documents() {
+                let normalized_uri = self.normalize_uri_key(&doc.uri);
+                indexed_document_keys.insert(normalized_uri.clone());
+                if live_document_keys.contains(&normalized_uri) {
+                    continue;
+                }
+                let edit_uri = workspace_edit_uri_key(&doc.uri);
+                let edit_count_before: usize = grouped.values().map(Vec::len).sum();
+                add_qualified_document_rename_edits(
+                    &mut grouped,
+                    &mut seen,
+                    &edit_uri,
+                    &doc.text,
+                    &qualified_name,
+                    package_len,
+                    symbol_len,
+                    new_name_bare,
+                    |offset| doc.line_index.offset_to_position(offset),
+                );
+                let edit_count_after: usize = grouped.values().map(Vec::len).sum();
+                if edit_count_after > edit_count_before {
+                    used_indexed_document = true;
+                }
+            }
+        }
+
+        let mut used_disk_document = false;
+        let scanned_document_count = live_document_keys.len() + indexed_document_keys.len();
+        if grouped.values().map(Vec::len).sum::<usize>() <= 1 && scanned_document_count <= 8 {
+            for root in self.package_rename_disk_scan_roots(request_uri) {
+                for path in super::super::file_discovery::discover_perl_files(&root)
+                    .files
+                    .into_iter()
+                    .take(512)
+                {
+                    let Ok(uri) = perl_uri::fs_path_to_uri(&path) else {
+                        continue;
+                    };
+                    let normalized_uri = self.normalize_uri_key(&uri);
+                    if live_document_keys.contains(&normalized_uri)
+                        || indexed_document_keys.contains(&normalized_uri)
+                    {
+                        continue;
+                    }
+                    let Ok(text) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    let edit_uri = workspace_edit_uri_key(&uri);
+                    let edit_count_before: usize = grouped.values().map(Vec::len).sum();
+                    add_qualified_document_rename_edits(
+                        &mut grouped,
+                        &mut seen,
+                        &edit_uri,
+                        &text,
+                        &qualified_name,
+                        package_len,
+                        symbol_len,
+                        new_name_bare,
+                        |offset| perl_position_tracking::offset_to_utf16_line_col(&text, offset),
+                    );
+                    let edit_count_after: usize = grouped.values().map(Vec::len).sum();
+                    if edit_count_after > edit_count_before {
+                        used_disk_document = true;
+                    }
+                }
+            }
+        }
+
+        let edit_count: usize = grouped.values().map(Vec::len).sum();
+        if edit_count <= 1 {
+            return None;
+        }
+
+        let fallback_state = if used_disk_document {
+            "workspace_disk"
+        } else if used_indexed_document {
+            "workspace_index"
+        } else {
+            "current_source"
+        };
+        Some((json!({ "changes": grouped }), edit_count, fallback_state))
+    }
+
+    #[cfg(feature = "workspace")]
+    fn package_rename_disk_scan_roots(&self, request_uri: &str) -> Vec<std::path::PathBuf> {
+        let mut roots = Vec::new();
+        {
+            let folders = self.workspace_folders.lock();
+            if let Some(folder) = best_workspace_folder_for_doc(&folders, request_uri)
+                && let Some(path) = workspace_folder_path(folder)
+            {
+                roots.push(path);
+            }
+        }
+        if roots.is_empty()
+            && let Some(path) = self.root_path.lock().clone()
+        {
+            roots.push(path);
+        }
+        roots
     }
 
     #[cfg(feature = "workspace")]
@@ -340,6 +694,57 @@ impl LspServer {
                 .map(|edit| self.rename_edit_to_lsp_text_edit(doc, edit, normalized_name))
                 .collect(),
         )
+    }
+
+    fn scoped_main_sub_rename_edits(
+        &self,
+        doc: &crate::state::DocumentState,
+        ast: &perl_parser_core::Node,
+        offset: usize,
+        current_symbol: &str,
+        normalized_name: &str,
+    ) -> Option<Vec<Value>> {
+        if normalized_name.chars().next().is_some_and(is_perl_sigil) {
+            return None;
+        }
+        if crate::declaration::current_package_at(ast, offset) != "main" {
+            return None;
+        }
+
+        let provider = RenameProvider::new(ast, doc.text.clone());
+        let result = provider.scoped_rename(
+            offset,
+            strip_perl_sigil(normalized_name),
+            &RenameOptions::default(),
+        );
+        if !result.is_valid || result.edits.is_empty() {
+            return None;
+        }
+
+        let mut edits = Vec::new();
+        let mut has_sub_declaration_edit = false;
+        for edit in &result.edits {
+            if crate::declaration::current_package_at(ast, edit.location.start) != "main" {
+                return None;
+            }
+            let (start, end) = same_file_rename_span(
+                &doc.text,
+                edit.location.start,
+                edit.location.end,
+                current_symbol,
+                current_symbol,
+            )?;
+            let narrowed = RenameEdit {
+                location: perl_parser_core::SourceLocation { start, end },
+                new_text: edit.new_text.clone(),
+            };
+            if sub_declaration_keyword_before(&doc.text, start) {
+                has_sub_declaration_edit = true;
+            }
+            edits.push(self.rename_edit_to_lsp_text_edit(doc, &narrowed, normalized_name));
+        }
+
+        has_sub_declaration_edit.then_some(edits)
     }
 
     fn is_lexical_declaration_edit(
@@ -750,7 +1155,7 @@ impl LspServer {
                                     current_pkg,
                                     &doc.text,
                                 )
-                                .map(|key| (key, offset, !current_pkg.is_empty()))
+                                .map(|key| (key, offset, current_pkg != "main"))
                             })
                         })
                     }
@@ -776,6 +1181,32 @@ impl LspServer {
                                 reason,
                                 "Rename: partial-index workspace facts cannot authorize package-local live edits, using same-file only"
                             );
+                            if rename_is_package_scoped
+                                && current_symbol.as_deref().is_some_and(|symbol| {
+                                    !symbol.is_empty()
+                                        && symbol.chars().next().is_some_and(|c| !is_perl_sigil(c))
+                                })
+                                && let Some(key) = workspace_symbol_key.as_ref()
+                                && let Some((
+                                    open_doc_ws_edit,
+                                    open_doc_edit_count,
+                                    open_doc_fallback_state,
+                                )) = self.package_rename_open_document_qualified_workspace_edit(
+                                    None,
+                                    uri,
+                                    key,
+                                    normalized_bare,
+                                )
+                            {
+                                self.record_rename_provider_decision_trace(
+                                    Some(uri),
+                                    current_symbol.as_deref(),
+                                    "open_document_qualified_workspace_edit",
+                                    open_doc_edit_count,
+                                    open_doc_fallback_state,
+                                );
+                                return Ok(Some(open_doc_ws_edit));
+                            }
                             self.record_rename_provider_decision_trace(
                                 Some(uri),
                                 current_symbol.as_deref(),
@@ -787,6 +1218,32 @@ impl LspServer {
                         }
                         IndexAccessMode::None => {
                             tracing::debug!("Rename: no workspace feature, using same-file only");
+                            if rename_is_package_scoped
+                                && current_symbol.as_deref().is_some_and(|symbol| {
+                                    !symbol.is_empty()
+                                        && symbol.chars().next().is_some_and(|c| !is_perl_sigil(c))
+                                })
+                                && let Some(key) = workspace_symbol_key.as_ref()
+                                && let Some((
+                                    open_doc_ws_edit,
+                                    open_doc_edit_count,
+                                    open_doc_fallback_state,
+                                )) = self.package_rename_open_document_qualified_workspace_edit(
+                                    None,
+                                    uri,
+                                    key,
+                                    normalized_bare,
+                                )
+                            {
+                                self.record_rename_provider_decision_trace(
+                                    Some(uri),
+                                    current_symbol.as_deref(),
+                                    "open_document_qualified_workspace_edit",
+                                    open_doc_edit_count,
+                                    open_doc_fallback_state,
+                                );
+                                return Ok(Some(open_doc_ws_edit));
+                            }
                             // Fall through to same-file rename
                         }
                         IndexAccessMode::Full(coordinator) => {
@@ -851,6 +1308,28 @@ impl LspServer {
                                                     crate::features::workspace_rename::to_workspace_edit(
                                                         guard_edits,
                                                     );
+                                                if let Some((
+                                                    open_doc_ws_edit,
+                                                    open_doc_edit_count,
+                                                    open_doc_fallback_state,
+                                                )) = self
+                                                    .package_rename_open_document_qualified_workspace_edit(
+                                                        Some(idx.as_ref()),
+                                                        uri,
+                                                        key,
+                                                        normalized_bare,
+                                                    )
+                                                {
+                                                    self.record_rename_provider_decision_trace(
+                                                        Some(uri),
+                                                        Some(symbol),
+                                                        "open_document_qualified_workspace_edit",
+                                                        open_doc_edit_count,
+                                                        open_doc_fallback_state,
+                                                    );
+                                                    return Ok(Some(open_doc_ws_edit));
+                                                }
+
                                                 if Self::package_rename_guard_accepts_workspace_edit(
                                                     &guard_ws_edit,
                                                     &semantic_ws_edit,
@@ -948,6 +1427,27 @@ impl LspServer {
                                             crate::features::workspace_rename::to_workspace_edit(
                                                 edits,
                                             );
+                                        if let Some((
+                                            open_doc_ws_edit,
+                                            open_doc_edit_count,
+                                            open_doc_fallback_state,
+                                        )) = self
+                                            .package_rename_open_document_qualified_workspace_edit(
+                                                Some(idx.as_ref()),
+                                                uri,
+                                                key,
+                                                normalized_bare,
+                                            )
+                                        {
+                                            self.record_rename_provider_decision_trace(
+                                                Some(uri),
+                                                current_symbol.as_deref(),
+                                                "open_document_qualified_workspace_edit",
+                                                open_doc_edit_count,
+                                                open_doc_fallback_state,
+                                            );
+                                            return Ok(Some(open_doc_ws_edit));
+                                        }
                                         self.record_rename_provider_decision_trace(
                                             Some(uri),
                                             current_symbol.as_deref(),
@@ -991,6 +1491,28 @@ impl LspServer {
                             })));
                         }
 
+                        if let Some(edits) = self.scoped_main_sub_rename_edits(
+                            doc,
+                            ast,
+                            offset,
+                            &current_symbol,
+                            &normalized_name,
+                        ) {
+                            let edit_count = edits.len();
+                            self.record_rename_provider_decision_trace(
+                                Some(uri),
+                                Some(current_symbol.as_str()),
+                                "same_file_main_sub",
+                                edit_count,
+                                "none",
+                            );
+                            return Ok(Some(json!({
+                                "changes": {
+                                    uri: edits
+                                }
+                            })));
+                        }
+
                         // Create semantic analyzer for same-file rename
                         let analyzer = crate::semantic::SemanticAnalyzer::analyze(ast);
 
@@ -1001,22 +1523,16 @@ impl LspServer {
                             let edit_count = references.len();
                             // Create text edits for all references
                             let mut edits = Vec::new();
+                            let mut has_sub_declaration_edit =
+                                current_symbol_bare != current_symbol;
                             for location in references {
-                                let Some(source_range) = doc.text.get(location.start..location.end)
-                                else {
-                                    self.record_rename_provider_decision_trace(
-                                        Some(uri),
-                                        Some(current_symbol.as_str()),
-                                        "same_file_semantic_invalid_range",
-                                        0,
-                                        "no_edit",
-                                    );
-                                    return Ok(Some(json!({"changes": {}})));
-                                };
-                                if source_range != current_symbol
-                                    && (current_symbol_bare == current_symbol
-                                        || source_range != current_symbol_bare)
-                                {
+                                let Some((edit_start, edit_end)) = same_file_rename_span(
+                                    &doc.text,
+                                    location.start,
+                                    location.end,
+                                    &current_symbol,
+                                    current_symbol_bare,
+                                ) else {
                                     self.record_rename_provider_decision_trace(
                                         Some(uri),
                                         Some(current_symbol.as_str()),
@@ -1025,11 +1541,16 @@ impl LspServer {
                                         "no_edit",
                                     );
                                     return Ok(Some(json!({"changes": {}})));
+                                };
+                                if current_symbol_bare == current_symbol
+                                    && sub_declaration_keyword_before(&doc.text, edit_start)
+                                {
+                                    has_sub_declaration_edit = true;
                                 }
 
                                 let (start_line, start_char) =
-                                    self.offset_to_pos16(doc, location.start);
-                                let (end_line, end_char) = self.offset_to_pos16(doc, location.end);
+                                    self.offset_to_pos16(doc, edit_start);
+                                let (end_line, end_char) = self.offset_to_pos16(doc, edit_end);
 
                                 edits.push(json!({
                                     "range": {
@@ -1038,6 +1559,17 @@ impl LspServer {
                                     },
                                     "newText": normalized_name
                                 }));
+                            }
+
+                            if !has_sub_declaration_edit {
+                                self.record_rename_provider_decision_trace(
+                                    Some(uri),
+                                    Some(current_symbol.as_str()),
+                                    "same_file_semantic_range_mismatch",
+                                    0,
+                                    "no_edit",
+                                );
+                                return Ok(Some(json!({"changes": {}})));
                             }
 
                             // Return WorkspaceEdit with same-file changes only
