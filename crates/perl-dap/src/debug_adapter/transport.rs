@@ -31,6 +31,35 @@ fn record_event_write_success(consecutive_write_failures: &mut usize) {
     *consecutive_write_failures = 0;
 }
 
+fn write_event_payloads<W: Write>(
+    writer: &mut W,
+    payloads: &[Vec<u8>],
+    consecutive_write_failures: &mut usize,
+    transport_broken: &AtomicBool,
+) -> bool {
+    let mut write_failed = false;
+    let mut transport_marked_broken = false;
+    for payload in payloads {
+        if let Err(e) = write_framed_payload(writer, payload) {
+            tracing::error!(error = %e, "Failed to write DAP frame in event handler");
+            write_failed = true;
+            transport_marked_broken =
+                record_event_write_failure(consecutive_write_failures, transport_broken);
+            break;
+        }
+    }
+    if !write_failed {
+        if let Err(e) = writer.flush() {
+            tracing::error!(error = %e, "Failed to flush DAP frame in event handler");
+            transport_marked_broken =
+                record_event_write_failure(consecutive_write_failures, transport_broken);
+        } else {
+            record_event_write_success(consecutive_write_failures);
+        }
+    }
+    transport_marked_broken
+}
+
 impl DebugAdapter {
     /// Run the debug adapter server
     pub(crate) fn run(&mut self) -> io::Result<()> {
@@ -116,33 +145,12 @@ impl DebugAdapter {
                 }
 
                 let mut writer = lock_or_recover(&event_writer, "event_writer");
-                let mut write_failed = false;
-                let mut transport_marked_broken = false;
-                for payload in &payloads {
-                    if let Err(e) = write_framed_payload(&mut *writer, payload) {
-                        tracing::error!(error = %e, "Failed to write DAP frame in event handler");
-                        write_failed = true;
-                        transport_marked_broken = record_event_write_failure(
-                            &mut consecutive_write_failures,
-                            &transport_broken,
-                        );
-                        break;
-                    }
-                }
-                if !write_failed {
-                    if let Err(e) = writer.flush() {
-                        tracing::error!(error = %e, "Failed to flush DAP frame in event handler");
-                        write_failed = true;
-                        transport_marked_broken = record_event_write_failure(
-                            &mut consecutive_write_failures,
-                            &transport_broken,
-                        );
-                    } else {
-                        record_event_write_success(&mut consecutive_write_failures);
-                    }
-                }
-
-                if write_failed && transport_marked_broken {
+                if write_event_payloads(
+                    &mut *writer,
+                    &payloads,
+                    &mut consecutive_write_failures,
+                    &transport_broken,
+                ) {
                     tracing::error!(
                         failure_count = consecutive_write_failures,
                         threshold = WRITE_FAILURE_THRESHOLD,
@@ -268,6 +276,22 @@ mod tests {
                 return Err(io::Error::new(io::ErrorKind::BrokenPipe, "mock flush failure"));
             }
             Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct FlushFailingWriter {
+        bytes: Vec<u8>,
+    }
+
+    impl Write for FlushFailingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "mock flush failure"))
         }
     }
 
@@ -402,6 +426,50 @@ mod tests {
         record_event_write_success(&mut consecutive);
 
         assert_eq!(consecutive, 0, "successful event writes must reset failures");
+    }
+
+    #[test]
+    fn test_write_event_payloads_successful_flush_resets_counter() {
+        let mut writer = Vec::<u8>::new();
+        let transport_broken = AtomicBool::new(false);
+        let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
+        let payloads = vec![b"{}".to_vec()];
+
+        let threshold_hit =
+            write_event_payloads(&mut writer, &payloads, &mut consecutive, &transport_broken);
+
+        assert!(!threshold_hit, "successful event write must not mark the transport broken");
+        assert_eq!(consecutive, 0, "successful flush must reset failure count");
+        assert!(
+            !transport_broken.load(AOrdering::Acquire),
+            "transport_broken must remain false after successful flush"
+        );
+        assert!(
+            String::from_utf8_lossy(&writer).starts_with("Content-Length:"),
+            "event payload must be written as a DAP frame"
+        );
+    }
+
+    #[test]
+    fn test_write_event_payloads_flush_failure_marks_transport_broken_at_threshold() {
+        let mut writer = FlushFailingWriter::default();
+        let transport_broken = AtomicBool::new(false);
+        let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
+        let payloads = vec![b"{}".to_vec()];
+
+        let threshold_hit =
+            write_event_payloads(&mut writer, &payloads, &mut consecutive, &transport_broken);
+
+        assert!(threshold_hit, "flush failure at threshold must mark the transport broken");
+        assert_eq!(consecutive, WRITE_FAILURE_THRESHOLD);
+        assert!(
+            transport_broken.load(AOrdering::Acquire),
+            "transport_broken must be set after threshold flush failure"
+        );
+        assert!(
+            String::from_utf8_lossy(&writer.bytes).starts_with("Content-Length:"),
+            "flush failure must occur after writing the DAP frame"
+        );
     }
 
     #[test]
