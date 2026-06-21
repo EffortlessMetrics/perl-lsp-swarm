@@ -832,4 +832,263 @@ mod tests {
             stale_dispositions()
         );
     }
+
+    #[test]
+    fn disposition_for_unknown_kind_returns_none() {
+        // The `_ => None` fallthrough in `disposition_for` must return `None` for
+        // any name that is not in the registry.  This is the sentinel the
+        // `hir-coverage --check` gate and the completeness-gate test use to
+        // detect missing entries.
+        assert!(
+            disposition_for("__UnknownKindThatDoesNotExist__").is_none(),
+            "disposition_for() must return None for unknown kind names"
+        );
+        assert!(
+            disposition_for("").is_none(),
+            "disposition_for() must return None for empty string"
+        );
+        assert!(
+            disposition_for("NotANodeKind").is_none(),
+            "disposition_for() must return None for unrecognised name"
+        );
+    }
+
+    #[test]
+    fn lowered_kinds_have_correct_multi_axis_flags() {
+        // Spot-check the multi-axis flags for representative Lowered kinds.
+        // `Package` emits an item, traverses children, and records side-facts (scope/stash).
+        let pkg = disposition_for("Package").expect("Package must have a disposition");
+        assert!(pkg.emits_items, "Package must emit HIR items");
+        assert!(!pkg.may_emit_boundary, "Package does not emit dynamic boundaries");
+        assert!(pkg.traverses_children, "Package must traverse children (nested decls)");
+        assert!(pkg.records_side_facts, "Package must record scope/stash side-facts");
+        assert!(pkg.is_intentional, "Package classification must be intentional");
+
+        // `Number` emits an item but does NOT traverse children and records nothing extra.
+        let num = disposition_for("Number").expect("Number must have a disposition");
+        assert!(num.emits_items, "Number must emit a literal HIR item");
+        assert!(!num.may_emit_boundary, "Number does not emit boundaries");
+        assert!(!num.traverses_children, "Number has no children to traverse");
+        assert!(!num.records_side_facts, "Number records no side-facts");
+        assert!(num.is_intentional, "Number classification must be intentional");
+
+        // `LoopControl` (next/last/redo) emits but does NOT traverse children.
+        let lc = disposition_for("LoopControl").expect("LoopControl must have a disposition");
+        assert!(lc.emits_items, "LoopControl must emit a control-transfer HIR item");
+        assert!(!lc.traverses_children, "LoopControl has no child subtrees to traverse");
+    }
+
+    #[test]
+    fn dynamic_boundary_kinds_have_correct_multi_axis_flags() {
+        // `Assignment` emits no standalone HIR item but may emit a boundary and
+        // traverses children AND records side-facts (stash effects).
+        let assign = disposition_for("Assignment").expect("Assignment must have a disposition");
+        assert!(!assign.emits_items, "Assignment must NOT emit a standalone HIR item");
+        assert!(assign.may_emit_boundary, "Assignment must be able to emit DynamicBoundary");
+        assert!(assign.traverses_children, "Assignment must traverse children");
+        assert!(assign.records_side_facts, "Assignment must record stash side-facts");
+        assert!(assign.is_intentional, "Assignment classification must be intentional");
+
+        // `Eval` emits no standalone item but may emit a boundary and traverses children.
+        let eval = disposition_for("Eval").expect("Eval must have a disposition");
+        assert!(!eval.emits_items, "Eval must NOT emit a standalone HIR item");
+        assert!(eval.may_emit_boundary, "Eval must be able to emit DynamicBoundary");
+        assert!(eval.traverses_children, "Eval must traverse children (block body)");
+        assert!(!eval.records_side_facts, "Eval does not record side-facts");
+        assert!(eval.is_intentional, "Eval classification must be intentional");
+
+        // `Unary` (symbolic-ref deref path): no items, may emit boundary, traverses operand.
+        let unary = disposition_for("Unary").expect("Unary must have a disposition");
+        assert!(!unary.emits_items, "Unary must NOT emit a standalone HIR item");
+        assert!(unary.may_emit_boundary, "Unary must be able to emit DynamicBoundary");
+        assert!(unary.traverses_children, "Unary must traverse the operand child");
+        assert!(!unary.records_side_facts, "Unary does not record side-facts");
+
+        // `Do`: non-block form emits boundary; both forms traverse.
+        let do_ = disposition_for("Do").expect("Do must have a disposition");
+        assert!(!do_.emits_items, "Do must NOT emit a standalone HIR item");
+        assert!(do_.may_emit_boundary, "Do must be able to emit DynamicBoundary");
+        assert!(do_.traverses_children, "Do must traverse children (block body)");
+    }
+
+    #[test]
+    fn intentionally_skipped_kinds_have_correct_multi_axis_flags() {
+        // `Program` (root wrapper): traversal-only, no items, no side-facts.
+        let prog = disposition_for("Program").expect("Program must have a disposition");
+        assert!(!prog.emits_items, "Program must NOT emit HIR items");
+        assert!(!prog.may_emit_boundary, "Program must NOT emit boundaries");
+        assert!(prog.traverses_children, "Program must traverse children (root wrapper)");
+        assert!(!prog.records_side_facts, "Program records no side-facts");
+        assert!(prog.is_intentional, "Program skipping must be intentional");
+        assert_eq!(prog.legacy_category(), LegacyCategory::IntentionallySkipped);
+
+        // `Variable`: no items emitted, but records ScopeGraph references.
+        let var = disposition_for("Variable").expect("Variable must have a disposition");
+        assert!(!var.emits_items, "Variable must NOT emit standalone HIR items");
+        assert!(!var.may_emit_boundary, "Variable must NOT emit boundaries");
+        assert!(!var.traverses_children, "Variable has no children to traverse");
+        assert!(var.records_side_facts, "Variable must record ScopeGraph reference facts");
+        assert!(var.is_intentional, "Variable classification must be intentional");
+        assert_eq!(var.legacy_category(), LegacyCategory::IntentionallySkipped);
+
+        // Recovery placeholders: nothing emitted, not traversed, not recorded, intentional.
+        for kind in [
+            "MissingExpression",
+            "MissingStatement",
+            "MissingIdentifier",
+            "MissingBlock",
+            "UnknownRest",
+        ] {
+            let d = disposition_for(kind).unwrap_or_else(|| panic!("no disposition for {kind}"));
+            assert!(!d.emits_items, "{kind} must NOT emit HIR items");
+            assert!(!d.may_emit_boundary, "{kind} must NOT emit boundaries");
+            assert!(!d.traverses_children, "{kind} must NOT traverse children");
+            assert!(!d.records_side_facts, "{kind} must NOT record side-facts");
+            assert!(d.is_intentional, "{kind} must be intentional (explicit placeholder)");
+            assert_eq!(
+                d.legacy_category(),
+                LegacyCategory::IntentionallySkipped,
+                "{kind} must be IntentionallySkipped"
+            );
+        }
+
+        // `Prototype`: records metadata but does not traverse or emit.
+        let proto = disposition_for("Prototype").expect("Prototype must have a disposition");
+        assert!(!proto.emits_items, "Prototype must NOT emit HIR items");
+        assert!(!proto.traverses_children, "Prototype does not traverse children");
+        assert!(proto.records_side_facts, "Prototype must record declaration metadata");
+        assert!(proto.is_intentional, "Prototype classification must be intentional");
+    }
+
+    #[test]
+    fn not_yet_modeled_kinds_have_correct_multi_axis_flags() {
+        // All `NotYetModeled` kinds must fall to `_ => visit_children` and must
+        // therefore have `traverses_children=true` and `is_intentional=false`.
+        for kind in [
+            "Binary",
+            "Heredoc",
+            "Readline",
+            "Glob",
+            "Diamond",
+            "Ellipsis",
+            "Typeglob",
+            "Regex",
+            "Match",
+            "Substitution",
+            "Transliteration",
+            "Given",
+            "When",
+            "Default",
+            "Try",
+            "Defer",
+            "Tie",
+            "Untie",
+            "Class",
+            "DataSection",
+        ] {
+            let d = disposition_for(kind).unwrap_or_else(|| panic!("no disposition for {kind}"));
+            assert!(!d.emits_items, "{kind} (NotYetModeled) must NOT emit HIR items");
+            assert!(!d.may_emit_boundary, "{kind} (NotYetModeled) must NOT emit boundaries");
+            assert!(
+                d.traverses_children,
+                "{kind} (NotYetModeled) must traverse children via fallthrough"
+            );
+            assert!(!d.records_side_facts, "{kind} (NotYetModeled) must NOT record side-facts");
+            assert!(
+                !d.is_intentional,
+                "{kind} must NOT be flagged intentional (it is not-yet-modeled)"
+            );
+            assert_eq!(
+                d.legacy_category(),
+                LegacyCategory::NotYetModeled,
+                "{kind} must derive to NotYetModeled"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_variable_list_is_not_yet_modeled() {
+        // `NestedVariableList` is the one entry that falls to `_ => visit_children`
+        // without an explicit design decision — its `is_intentional` flag is `false`
+        // which makes it `NotYetModeled`.
+        let d = disposition_for("NestedVariableList")
+            .expect("NestedVariableList must have a disposition");
+        assert!(!d.is_intentional, "NestedVariableList must NOT be intentional");
+        assert!(d.traverses_children, "NestedVariableList must traverse children");
+        assert_eq!(d.legacy_category(), LegacyCategory::NotYetModeled);
+    }
+
+    #[test]
+    fn hir_kinds_for_spot_checks_all_emitting_categories() {
+        // Verify hir_kinds_for for additional kinds not covered by other spot-checks.
+        assert_eq!(hir_kinds_for("Subroutine"), &["SubDecl"]);
+        assert_eq!(hir_kinds_for("Use"), &["UseDecl"]);
+        assert_eq!(hir_kinds_for("VariableDeclaration"), &["VariableDecl"]);
+        assert_eq!(hir_kinds_for("VariableListDeclaration"), &["VariableDecl"]);
+        assert_eq!(hir_kinds_for("If"), &["BranchShell"]);
+        assert_eq!(hir_kinds_for("Ternary"), &["BranchShell"]);
+        assert_eq!(hir_kinds_for("While"), &["LoopShell"]);
+        assert_eq!(hir_kinds_for("For"), &["LoopShell"]);
+        assert_eq!(hir_kinds_for("Foreach"), &["LoopShell"]);
+        assert_eq!(hir_kinds_for("Return"), &["ControlTransfer"]);
+        assert_eq!(hir_kinds_for("LoopControl"), &["ControlTransfer"]);
+        assert_eq!(hir_kinds_for("Goto"), &["ControlTransfer"]);
+        assert_eq!(hir_kinds_for("StatementModifier"), &["StatementModifierShell"]);
+        assert_eq!(hir_kinds_for("Block"), &["BlockShell"]);
+        assert_eq!(hir_kinds_for("ArrayLiteral"), &["LiteralExpr"]);
+        assert_eq!(hir_kinds_for("HashLiteral"), &["LiteralExpr"]);
+        assert_eq!(hir_kinds_for("Number"), &["LiteralExpr"]);
+        assert_eq!(hir_kinds_for("String"), &["LiteralExpr"]);
+        assert_eq!(hir_kinds_for("Undef"), &["LiteralExpr"]);
+        assert_eq!(hir_kinds_for("Identifier"), &["BarewordExpr"]);
+        assert_eq!(hir_kinds_for("IndirectCall"), &["IndirectCallExpr"]);
+        assert_eq!(hir_kinds_for("Method"), &["MethodDecl"]);
+        assert_eq!(hir_kinds_for("MethodCall"), &["MethodCallExpr"]);
+        assert_eq!(hir_kinds_for("Assignment"), &["DynamicBoundary"]);
+        assert_eq!(hir_kinds_for("Do"), &["DynamicBoundary"]);
+        // Kinds that emit no HIR items must return empty inventory.
+        assert!(hir_kinds_for("Program").is_empty());
+        assert!(hir_kinds_for("Variable").is_empty());
+        assert!(hir_kinds_for("Binary").is_empty());
+        assert!(hir_kinds_for("NestedVariableList").is_empty());
+    }
+
+    #[test]
+    fn legacy_category_display_is_stable() {
+        // Verify that `LegacyCategory` derives `Debug` and `Clone` as expected by
+        // doc consumers and serializers.
+        let cats = [
+            LegacyCategory::Lowered,
+            LegacyCategory::DynamicBoundary,
+            LegacyCategory::IntentionallySkipped,
+            LegacyCategory::NotYetModeled,
+        ];
+        for cat in cats {
+            // Debug format must be non-empty (sanity check that derive worked).
+            let dbg = format!("{cat:?}");
+            assert!(!dbg.is_empty(), "Debug impl must be non-empty for {cat:?}");
+            // Clone must produce equal value.
+            assert_eq!(cat, cat.clone(), "Clone must produce equal LegacyCategory");
+        }
+        // Ord/PartialOrd: Lowered < DynamicBoundary < IntentionallySkipped < NotYetModeled.
+        assert!(LegacyCategory::Lowered < LegacyCategory::DynamicBoundary);
+        assert!(LegacyCategory::DynamicBoundary < LegacyCategory::IntentionallySkipped);
+        assert!(LegacyCategory::IntentionallySkipped < LegacyCategory::NotYetModeled);
+    }
+
+    #[test]
+    fn lowering_disposition_is_copy_and_clone() {
+        // Verify the `Copy` and `Clone` derives work correctly for `LoweringDisposition`.
+        let d = disposition_for("Package").expect("Package must have a disposition");
+        let cloned = d.clone();
+        assert_eq!(d, cloned, "Clone must produce equal LoweringDisposition");
+        // Copy: assign to a new binding and both must be usable.
+        let copied: LoweringDisposition = d;
+        assert_eq!(copied.emits_items, d.emits_items);
+        assert_eq!(copied.may_emit_boundary, d.may_emit_boundary);
+        assert_eq!(copied.traverses_children, d.traverses_children);
+        assert_eq!(copied.records_side_facts, d.records_side_facts);
+        assert_eq!(copied.is_intentional, d.is_intentional);
+        assert_eq!(copied.note, d.note);
+    }
 }

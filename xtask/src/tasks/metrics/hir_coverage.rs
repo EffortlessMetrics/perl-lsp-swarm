@@ -263,4 +263,96 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn legacy_category_from_str_round_trips_all_slugs() {
+        // Verify that `legacy_category_from_str` returns the correct variant for
+        // each stable slug produced by `LegacyCategory::as_str()`.  This also
+        // exercises the `_` fallthrough arm which handles any unknown string.
+        use disposition::LegacyCategory;
+        assert_eq!(legacy_category_from_str("lowered"), LegacyCategory::Lowered);
+        assert_eq!(legacy_category_from_str("dynamic_boundary"), LegacyCategory::DynamicBoundary);
+        assert_eq!(
+            legacy_category_from_str("intentionally_skipped"),
+            LegacyCategory::IntentionallySkipped
+        );
+        // The `_ => NotYetModeled` arm.
+        assert_eq!(
+            legacy_category_from_str("not_yet_modeled"),
+            LegacyCategory::NotYetModeled,
+            "not_yet_modeled slug must fall through to NotYetModeled"
+        );
+        assert_eq!(
+            legacy_category_from_str("anything_else"),
+            LegacyCategory::NotYetModeled,
+            "unknown slug must default to NotYetModeled via _ arm"
+        );
+    }
+
+    #[test]
+    fn hir_coverage_row_fields_are_populated() -> Result<()> {
+        // Verify that every row returned by `coverage_rows()` has a non-empty
+        // `ast_kind`, a non-empty `status` slug, and a non-empty `note`.
+        // This exercises the inner mapping closure in `coverage_rows()`.
+        let rows = coverage_rows()?;
+        assert!(!rows.is_empty(), "coverage_rows() must return at least one row");
+        for row in &rows {
+            assert!(!row.ast_kind.is_empty(), "every row must have a non-empty ast_kind");
+            assert!(!row.status.is_empty(), "every row must have a non-empty status slug");
+            assert!(!row.note.is_empty(), "every row must have a non-empty note");
+        }
+        // Spot-check a representative row.
+        let pkg_row = rows.iter().find(|r| r.ast_kind == "Package");
+        assert!(pkg_row.is_some(), "Package must appear in coverage rows");
+        let pkg = pkg_row.unwrap();
+        assert_eq!(pkg.status, "lowered", "Package must have lowered status");
+        assert!(
+            pkg.hir_kinds.contains(&"PackageDecl"),
+            "Package row must list PackageDecl HIR kind"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hir_coverage_markdown_contains_all_status_slugs() -> Result<()> {
+        // Verify that the generated markdown contains all four status slugs in the
+        // summary table — exercising the `render_markdown()` loop over `status_order`.
+        let artifact = build_artifact()?;
+        let markdown = render_markdown(&artifact);
+        assert!(markdown.contains("lowered"), "markdown must mention 'lowered'");
+        assert!(markdown.contains("dynamic_boundary"), "markdown must mention 'dynamic_boundary'");
+        assert!(
+            markdown.contains("intentionally_skipped"),
+            "markdown must mention 'intentionally_skipped'"
+        );
+        assert!(markdown.contains("not_yet_modeled"), "markdown must mention 'not_yet_modeled'");
+        // Verify the inventory table header is present.
+        assert!(markdown.contains("| AST NodeKind | Status | HIR kinds | Note |"));
+        // Verify the summary header is present.
+        assert!(markdown.contains("## Summary"));
+        assert!(markdown.contains("## Inventory"));
+        Ok(())
+    }
+
+    #[test]
+    fn hir_coverage_artifact_total_counts_are_consistent() -> Result<()> {
+        // Verify that the sum of all status counts equals the total number of AST kinds
+        // tracked — the `schema_version`, `total_ast_kinds`, and `total_hir_kinds`
+        // fields must all be plausible.
+        let artifact = build_artifact()?;
+        let count_sum: usize = artifact.counts.values().sum();
+        assert_eq!(
+            count_sum, artifact.total_ast_kinds,
+            "sum of per-status counts must equal total_ast_kinds"
+        );
+        assert_eq!(
+            artifact.total_ast_kinds,
+            NodeKind::ALL_KIND_NAMES.len(),
+            "total_ast_kinds must equal ALL_KIND_NAMES length"
+        );
+        assert_eq!(artifact.schema_version, 1, "schema_version must be 1");
+        assert_eq!(artifact.subsystem, "hir_coverage", "subsystem slug must be hir_coverage");
+        assert!(artifact.total_hir_kinds > 0, "total_hir_kinds must be positive");
+        Ok(())
+    }
 }
