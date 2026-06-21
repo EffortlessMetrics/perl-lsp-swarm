@@ -801,6 +801,7 @@ fn test_evaluate_without_frameid_no_session_still_returns_error() -> TestResult 
 // ---------------------------------------------------------------------------
 
 /// session exists + is Running + frameId provided → "not stopped" error
+#[cfg(feature = "test-helpers")]
 #[test]
 fn test_evaluate_running_session_with_frameid_returns_not_stopped_error() -> TestResult {
     if !perl_available() {
@@ -831,6 +832,7 @@ fn test_evaluate_running_session_with_frameid_returns_not_stopped_error() -> Tes
 }
 
 /// session exists + is Stopped + frameId NOT in stack_frames → "Frame not found" error
+#[cfg(feature = "test-helpers")]
 #[test]
 fn test_evaluate_stopped_session_frame_not_found_returns_error() -> TestResult {
     if !perl_available() {
@@ -877,6 +879,7 @@ fn test_evaluate_stopped_session_frame_not_found_returns_error() -> TestResult {
 }
 
 /// session exists + is Stopped + frameId found in stack_frames → validation passes
+#[cfg(feature = "test-helpers")]
 #[test]
 fn test_evaluate_stopped_session_frame_found_passes_validation() -> TestResult {
     if !perl_available() {
@@ -932,6 +935,7 @@ fn test_evaluate_stopped_session_frame_found_passes_validation() -> TestResult {
 ///
 /// Simulated by re-seeding the session with empty frames (as resume would do) and
 /// then requesting the previously-valid frameId.
+#[cfg(feature = "test-helpers")]
 #[test]
 fn test_evaluate_stale_frameid_after_resume_rejected() -> TestResult {
     if !perl_available() {
@@ -1139,6 +1143,7 @@ fn test_set_expression_newline_in_value_is_rejected() -> TestResult {
 /// Without an active debugger session the result is parsed from recent output;
 /// we push a synthetic line that looks like debugger output for a hash to seed
 /// the result buffer.
+#[cfg(feature = "test-helpers")]
 #[test]
 fn test_evaluate_hash_result_returns_nonzero_variables_reference() -> TestResult {
     let mut adapter = DebugAdapter::new();
@@ -1167,6 +1172,7 @@ fn test_evaluate_hash_result_returns_nonzero_variables_reference() -> TestResult
 }
 
 /// evaluate result typed as a scalar must return variablesReference == 0.
+#[cfg(feature = "test-helpers")]
 #[test]
 fn test_evaluate_scalar_result_returns_zero_variables_reference() -> TestResult {
     let mut adapter = DebugAdapter::new();
