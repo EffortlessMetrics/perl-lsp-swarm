@@ -549,6 +549,9 @@ impl LspServer {
                     let label = symbol.name.clone();
                     let qualified_name = Self::workspace_symbol_qualified_name(&symbol);
                     let detail = Some(qualified_name.clone());
+                    // Invariant: text_edit_range.is_some() ⟺ insert_text is the
+                    // fully-qualified name.  The serializer (completion_item_to_lsp_value)
+                    // depends on this to locate the newText from `item["insertText"]`.
                     let (insert_text, text_edit_range) = if qualified_variable_context
                         && matches!(symbol.kind, crate::workspace_index::SymbolKind::Variable(_))
                     {
