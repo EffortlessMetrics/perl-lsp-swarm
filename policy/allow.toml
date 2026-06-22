@@ -1,0 +1,3090 @@
+schema_version = "0.1"
+policy = "cargo-allow"
+owner = "core/maintainers"
+status = "active"
+
+[workspace]
+root = "."
+inventory = "git-tracked"
+default_mode = "no-new"
+ignored = [
+  ".git/**",
+  "target/**",
+  # Workspace exclusions per CLAUDE.md
+  "archive/**",          # archived/legacy crates — not governed production code
+  "tree-sitter-perl/**", # legacy C tree-sitter grammar, not Rust production code
+  "fuzz/**",             # fuzz build infrastructure and fuzz corpus data
+  "test_corpus/**",      # Perl test corpus — .pm/.pl files; not production Rust source
+  # Generated / vendor
+  "vendor/**",
+  "**/*.snap",           # insta snapshot files — generated test artifacts
+]
+
+[requirements]
+owner_required = true
+reason_required = true
+classification_required = true
+evidence_required = false
+expires_or_review_after_required = true
+allow_bare_allow_attributes = false
+stale_entries_fail = false
+
+[requirements.unsafe]
+evidence_required = true
+safety_comment_required = false
+
+# ===========================================================================
+# BASELINE LEDGER — Phase 1: no-new-debt floor (2026-06-22)
+#
+# All entries below are baseline_debt receipts. They establish the ratchet
+# floor so new unreceipted exceptions fail CI. They are NOT approvals.
+# owner = "unowned" is the baseline_debt convention per cargo-allow policy.
+# expires within 120 days of creation (2026-10-20).
+#
+# Close debt by: fixing the exception, narrowing the selector, adding typed
+# evidence, or deleting stale entries. See cargo-allow docs.
+#
+# After promotion: replace owner="unowned" with the responsible owner and
+# change classification from baseline_debt to the reviewed classification.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 1. Test-file panic macros (assert!, assert_eq!, assert_ne!, panic! in tests)
+#
+# These dominate the count. Tests use panicking assertions by Rust convention.
+# CLAUDE.md permits panics in test code.
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0001"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Test-file panic macros (assert!, assert_eq!, assert_ne!, unwrap_or_else panic) are Rust test convention. CLAUDE.md permits panics in tests. Baseline floor; tighten per-crate as debt is reviewed."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0003"
+kind = "panic"
+family = "panic_macro"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "xtask build/dev tooling panic macros (assert!, assert_eq! in xtask tests and tasks). xtask is internal build infrastructure, not published library code."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "xtask/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 2. Test-file indexing panics
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0004"
+kind = "panic"
+family = "indexing"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Indexing in test helper code is acceptable; tests are not shipped to users. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0005"
+kind = "panic"
+family = "indexing"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Indexing in xtask build tooling — internal build infrastructure, not user-facing code."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "xtask/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 3. Test-file string-slice panics
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0006"
+kind = "panic"
+family = "string_slice"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing in test code — acceptable for test fixture construction. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0007"
+kind = "panic"
+family = "string_slice"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing in xtask build tooling — internal infrastructure."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "xtask/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 4. Source panic macros (production Rust, non-test)
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0008"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Production source panic macros (assert!, unreachable!, todo! guards). Baseline floor — each should be reviewed and replaced with proper error handling or an exact typed receipt. See CLAUDE.md coding standards."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/*/src/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 5. Indexing panics in production source
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0009"
+kind = "panic"
+family = "indexing"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing in production source. Baseline floor — review each for bounds checking alternatives. See CLAUDE.md coding standards."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/*/src/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 6. String-slice panics in production source
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0010"
+kind = "panic"
+family = "string_slice"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing in production source. Baseline floor — review for get() alternatives. See CLAUDE.md coding standards."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/*/src/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 7. unreachable! in production source
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0011"
+kind = "panic"
+family = "unreachable"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! guards in production source. CLAUDE.md explicitly permits unreachable!() in static LazyLock<Regex> initializers. Other uses need individual review. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/*/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0012"
+kind = "panic"
+family = "unreachable"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! in test code — acceptable for exhaustive match guards in tests."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0013"
+kind = "panic"
+family = "unreachable"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! in xtask build tooling — internal infrastructure."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "xtask/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 8. .expect() calls — production source
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0014"
+kind = "panic"
+family = "expect"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Production .expect() calls. CLAUDE.md bans expect() except in specific locations. Baseline floor — replace with ? or ok_or_else(). Each needs individual review."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/*/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0015"
+kind = "panic"
+family = "expect"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Test-file .expect() calls — acceptable in tests per project convention. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0016"
+kind = "panic"
+family = "expect"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "xtask build tooling .expect() calls — internal infrastructure, not user-facing. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "xtask/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 9. .unwrap() calls
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0017"
+kind = "panic"
+family = "unwrap"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Production .unwrap() calls. CLAUDE.md bans unwrap() in production — use ? instead. Baseline floor for all existing uses."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/*/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0018"
+kind = "panic"
+family = "unwrap"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Test-file .unwrap() calls — tests should use must/must_some helpers. Baseline floor — migrate to must/must_some as tests are touched."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0019"
+kind = "panic"
+family = "unwrap"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "xtask build tooling .unwrap() calls — internal infrastructure. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "xtask/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 10. bin/ and bench targets (CLAUDE.md-documented exceptions)
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0020"
+kind = "panic"
+family = "expect"
+glob = "crates/*/src/bin/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Binary entry points may use expect() per CLAUDE.md: 'bin/ targets may use #[allow(clippy::expect_used)] for profiling / CLI entry points'. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/*/src/bin/**/*.rs"
+
+[[allow]]
+id = "allow-b0021"
+kind = "panic"
+family = "unwrap"
+glob = "crates/*/src/bin/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Binary entry points may use unwrap() per CLAUDE.md bin/ exception. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/*/src/bin/**/*.rs"
+
+[[allow]]
+id = "allow-b0023"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/*/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Benchmark targets may use panic macros per CLAUDE.md: benches are internal measurement tooling, not user-facing published code."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/*/benches/**/*.rs"
+
+[[allow]]
+id = "allow-b0024"
+kind = "panic"
+family = "expect"
+glob = "crates/*/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Benchmark expect() calls — benches use expect() for fail-fast setup per CLAUDE.md bench exception."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/*/benches/**/*.rs"
+
+[[allow]]
+id = "allow-b0025"
+kind = "panic"
+family = "unwrap"
+glob = "crates/*/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Benchmark unwrap() calls — same bench exception as allow-b0024."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/*/benches/**/*.rs"
+
+[[allow]]
+id = "allow-b0026"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/*/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Benchmark lint suppressions — benches suppress expect_used/unwrap_used/panic per CLAUDE.md bench exception."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/*/benches/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 11. Lint exceptions (#[allow(...)]) — production source
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0027"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Production #[allow(...)] attributes. Baseline floor — each should be reviewed and justified with typed evidence or replaced. CLAUDE.md has specific permitted exceptions documented."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/*/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0028"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Test-file #[allow(...)] attributes. Tests may suppress lints for test-specific helpers. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0029"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "xtask build tooling lint suppressions. Internal infrastructure. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "xtask/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 12. #[expect(...)] attributes
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0030"
+kind = "lint_exception"
+family = "expect_attribute"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Production #[expect(...)] attributes — Rust 2024 lint expectation mechanism. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/*/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0031"
+kind = "lint_exception"
+family = "expect_attribute"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Test-file #[expect(...)] attributes. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/*/tests/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 13. Unsafe code — production source
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0032"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe blocks in production source. Baseline floor — each requires review and typed evidence (ripr:, unsafe-review:, or test:) before promotion from baseline_debt."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/*/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0033"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe blocks in test code. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0034"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe blocks in xtask build tooling — internal infrastructure. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "xtask/**/*.rs"
+
+[[allow]]
+id = "allow-b0035"
+kind = "unsafe"
+family = "unsafe_fn"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe function declarations in production source. Baseline floor — each requires review and caller contract documentation."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_fn"
+glob = "crates/*/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0036"
+kind = "unsafe"
+family = "unsafe_impl"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe trait implementations in production source. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_impl"
+glob = "crates/*/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0037"
+kind = "unsafe"
+family = "unsafe_extern_block"
+glob = "crates/*/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe extern blocks (FFI declarations) in production source. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_extern_block"
+glob = "crates/*/src/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 14. Non-Rust tracked files
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0038"
+kind = "non_rust_file"
+family = "documentation"
+glob = "**/*.md"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Markdown documentation files tracked in the repository. Not executable code. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.md"
+
+[[allow]]
+id = "allow-b0039"
+kind = "non_rust_file"
+family = "configuration"
+glob = "**/*.toml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "TOML configuration files (Cargo.toml, policy/, CI config). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.toml"
+
+[[allow]]
+id = "allow-b0041"
+kind = "non_rust_file"
+family = "ci_declarative"
+glob = ".ci/**/*.yml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Internal CI configuration YAML files (.ci/ directory). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".ci/**/*.yml"
+
+[[allow]]
+id = "allow-b0042"
+kind = "non_rust_file"
+family = "shell_script"
+glob = "**/*.sh"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Shell scripts (install hooks, CI helpers, xtask wrappers). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.sh"
+
+[[allow]]
+id = "allow-b0043"
+kind = "non_rust_file"
+family = "python_tool"
+glob = "**/*.py"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Python scripts (test helpers, tooling). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.py"
+
+[[allow]]
+id = "allow-b0044"
+kind = "non_rust_file"
+family = "javascript_tool"
+glob = "vscode-extension/**/*.ts"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "VSCode extension TypeScript source. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/**/*.ts"
+
+[[allow]]
+id = "allow-b0045"
+kind = "non_rust_file"
+family = "javascript_tool"
+glob = "vscode-extension/**/*.js"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "VSCode extension JavaScript files. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/**/*.js"
+
+[[allow]]
+id = "allow-b0046"
+kind = "non_rust_file"
+family = "package_metadata"
+glob = "**/Cargo.toml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Cargo package manifests — tracked source files governing crate metadata. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/Cargo.toml"
+
+[[allow]]
+id = "allow-b0047"
+kind = "non_rust_file"
+family = "package_metadata"
+glob = "Cargo.lock"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Cargo.lock lockfile — tracked source file for reproducible builds. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "Cargo.lock"
+
+[[allow]]
+id = "allow-b0048"
+kind = "non_rust_file"
+family = "configuration"
+glob = "**/*.json"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "JSON configuration files (VSCode extension manifest, test fixtures, CI config). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.json"
+
+[[allow]]
+id = "allow-b0051"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.txt"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Text files tracked in the repo (test data, notes, corpus). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.txt"
+
+[[allow]]
+id = "allow-b0052"
+kind = "non_rust_file"
+family = "release_script"
+glob = "scripts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Release and dev scripts tracked in scripts/ directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "scripts/**"
+
+[[allow]]
+id = "allow-b0053"
+kind = "non_rust_file"
+family = "editor_extension"
+glob = "vscode-extension/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "VSCode extension tracked files (package.json, tsconfig, extension source). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/**"
+
+[[allow]]
+id = "allow-b0054"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = ".claude/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Claude Code agent infrastructure files (.claude/ directory — commands, agents, settings). Internal orchestration tooling. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".claude/**"
+
+[[allow]]
+id = "allow-b0055"
+kind = "non_rust_file"
+family = "configuration"
+glob = ".ops-perl-lsp/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Ops metrics and swarm state files (.ops-perl-lsp/ directory). Internal orchestration data. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".ops-perl-lsp/**"
+
+[[allow]]
+id = "allow-b0056"
+kind = "non_rust_file"
+family = "configuration"
+glob = "docs/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Project documentation files (docs/ directory — reference docs, SDLC docs, status). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**"
+
+[[allow]]
+id = "allow-b0057"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.svg"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "SVG image assets. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.svg"
+
+[[allow]]
+id = "allow-b0058"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.h"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "C header files (tree-sitter bindings headers). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.h"
+
+[[allow]]
+id = "allow-b0059"
+kind = "non_rust_file"
+family = "configuration"
+glob = "**/.gitignore"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Git ignore files. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/.gitignore"
+
+# ---------------------------------------------------------------------------
+# 15. Additional Rust surfaces not covered by crates/*/src or crates/*/tests
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0061"
+kind = "panic"
+family = "panic_macro"
+glob = "tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level tests/ directory Rust files (integration/benchmark tests). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0062"
+kind = "panic"
+family = "indexing"
+glob = "tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level tests/ directory indexing. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0063"
+kind = "panic"
+family = "string_slice"
+glob = "tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level tests/ directory string slicing. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0064"
+kind = "panic"
+family = "expect"
+glob = "tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level tests/ directory .expect() calls. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0065"
+kind = "panic"
+family = "unwrap"
+glob = "tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level tests/ directory .unwrap() calls. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0066"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level tests/ directory lint suppressions. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "tests/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 16. crates/*/examples/ and crates/*/build.rs
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0067"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Example programs in crates/*/examples/ — demonstration code, not production library. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/*/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0068"
+kind = "panic"
+family = "expect"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Example program .expect() calls. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/*/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0069"
+kind = "panic"
+family = "unwrap"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Example program .unwrap() calls. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/*/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0070"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/*/build.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Build script panic macros — build.rs runs at compile time, not in production binary. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/*/build.rs"
+
+[[allow]]
+id = "allow-b0071"
+kind = "panic"
+family = "expect"
+glob = "crates/*/build.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Build script .expect() calls. Build scripts are run in the build environment, not shipped. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/*/build.rs"
+
+[[allow]]
+id = "allow-b0072"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/*/build.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe in build scripts. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/*/build.rs"
+
+# ---------------------------------------------------------------------------
+# 17. Root-level examples/ directory
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0073"
+kind = "panic"
+family = "panic_macro"
+glob = "examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level examples/ directory — demonstration code, not production library. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0074"
+kind = "panic"
+family = "expect"
+glob = "examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level examples/ directory .expect() calls. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "examples/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 18. C source files (tree-sitter-perl-c bindings)
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0075"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "crates/tree-sitter-perl-c/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "C source files for the tree-sitter-perl-c crate (parser.c, scanner.c). These are vendored/generated C grammar source. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "crates/tree-sitter-perl-c/**"
+
+# ---------------------------------------------------------------------------
+# 19. Remaining non-Rust file categories
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0076"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "crates/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Remaining non-Rust tracked files under crates/ (LICENSE files, .perltidyrc, .proptest-regressions, .pest grammars, .rlib artifacts, .disabled files, templates, etc.). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "crates/**"
+
+[[allow]]
+id = "allow-b0077"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "tests/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level tests/ non-Rust tracked files (Perl corpus .pl files, fixture data). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "tests/**"
+
+[[allow]]
+id = "allow-b0078"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "testdata/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "testdata/ directory — UX smoke test data, Perl scripts, expected outputs. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "testdata/**"
+
+[[allow]]
+id = "allow-b0079"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "demo_workspace/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "demo_workspace/ directory — Perl demo project files for LSP testing. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "demo_workspace/**"
+
+[[allow]]
+id = "allow-b0080"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "distribution/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "distribution/ directory — packaging files (Chocolatey, WinGet, Homebrew, Linux packages). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "distribution/**"
+
+[[allow]]
+id = "allow-b0081"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "templates/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "templates/ directory — CI pipeline templates (Buildkite, CircleCI, GitLab, Jenkins, Travis). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "templates/**"
+
+[[allow]]
+id = "allow-b0082"
+kind = "non_rust_file"
+family = "ci_declarative"
+glob = "**/*.yaml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "YAML configuration files (.yaml extension — CI configs, schema files, blockers, thresholds). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.yaml"
+
+[[allow]]
+id = "allow-b0083"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.nix"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Nix flake files (flake.nix). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.nix"
+
+[[allow]]
+id = "allow-b0084"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.lock"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Lock files (flake.lock, package-lock.json, pnpm-lock.yaml). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.lock"
+
+[[allow]]
+id = "allow-b0085"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.scm"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Scheme/query files (queries/highlights.scm — tree-sitter highlight queries). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.scm"
+
+[[allow]]
+id = "allow-b0086"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.pest"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "PEG grammar files (.pest) for the pest-based parser variant. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.pest"
+
+[[allow]]
+id = "allow-b0087"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.rb"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Ruby files (Homebrew formula, Formula/ directory). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.rb"
+
+[[allow]]
+id = "allow-b0088"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.ps1"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "PowerShell scripts (distribution scripts, agent scripts). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.ps1"
+
+[[allow]]
+id = "allow-b0089"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.xml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "XML files (IDE external tools config). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.xml"
+
+[[allow]]
+id = "allow-b0090"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.nuspec"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "NuGet package spec files (Chocolatey distribution). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.nuspec"
+
+[[allow]]
+id = "allow-b0091"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.spec.in"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "RPM package spec template files (Linux distribution). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.spec.in"
+
+[[allow]]
+id = "allow-b0092"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.png"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "PNG image files (icons, logos). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.png"
+
+[[allow]]
+id = "allow-b0093"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.rst"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "RST documentation files. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.rst"
+
+[[allow]]
+id = "allow-b0094"
+kind = "non_rust_file"
+family = "release_script"
+glob = "**/*.1"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Man page files (man/perl-lsp.1). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.1"
+
+[[allow]]
+id = "allow-b0095"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "**/*.pnpm-lock.yaml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "pnpm lock files. Baseline floor (covered by *.yaml but explicit for clarity)."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.pnpm-lock.yaml"
+
+# Catch-all for remaining unknown non-Rust files not covered by extension globs
+[[allow]]
+id = "allow-b0096"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "xtask/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Non-Rust tracked files under xtask/ (fixture JSON/YAML/pl files, test data). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "xtask/**"
+
+[[allow]]
+id = "allow-b0097"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "ci/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Legacy ci/ directory baseline files. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "ci/**"
+
+[[allow]]
+id = "allow-b0098"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = ".ci/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "CI configuration and baseline files under .ci/ directory (blockers, thresholds, baseline manifests). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".ci/**"
+
+[[allow]]
+id = "allow-b0099"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = ".receipts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Receipt/evidence YAML files stored in .receipts/ directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".receipts/**"
+
+[[allow]]
+id = "allow-b0100"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "ripr/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "ripr/ directory (proof diff artifacts). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "ripr/**"
+
+[[allow]]
+id = "allow-b0101"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "schemas/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "JSON/YAML schema files under schemas/ directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "schemas/**"
+
+[[allow]]
+id = "allow-b0102"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "queries/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Tree-sitter query files under queries/ directory (.scm). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "queries/**"
+
+[[allow]]
+id = "allow-b0103"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "examples/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level examples/ non-Rust tracked files (Perl examples .pl). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "examples/**"
+
+[[allow]]
+id = "allow-b0104"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "icon/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Icon/logo image files under icon/ directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "icon/**"
+
+[[allow]]
+id = "allow-b0105"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "homebrew/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Homebrew formula files. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "homebrew/**"
+
+[[allow]]
+id = "allow-b0106"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "man/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Man page directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "man/**"
+
+[[allow]]
+id = "allow-b0107"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = ".kiro/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".kiro/ directory (Kiro IDE spec files). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".kiro/**"
+
+[[allow]]
+id = "allow-b0108"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = ".docker/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".docker/ directory (Dockerfile configurations). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".docker/**"
+
+[[allow]]
+id = "allow-b0109"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = ".justfiles/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".justfiles/ directory (just recipe fragments). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".justfiles/**"
+
+[[allow]]
+id = "allow-b0110"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = ".cargo/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".cargo/ directory configuration files (config.toml, local config examples). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".cargo/**"
+
+[[allow]]
+id = "allow-b0111"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "receipts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "receipts/ directory (gate receipt placeholder). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "receipts/**"
+
+# ---------------------------------------------------------------------------
+# 20. Unsafe in xtask source
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0114"
+kind = "unsafe"
+family = "unsafe_fn"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe function declarations in xtask build tooling. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_fn"
+glob = "xtask/**/*.rs"
+
+[[allow]]
+id = "allow-b0115"
+kind = "unsafe"
+family = "unsafe_impl"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe trait implementations in xtask build tooling. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_impl"
+glob = "xtask/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 21. Non-Rust test_fixture family — xtask and crates test fixtures
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0116"
+kind = "non_rust_file"
+family = "test_fixture"
+glob = "xtask/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Non-Rust test fixture files under xtask/ (JSON, YAML, pl test data for xtask tests). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "xtask/**"
+
+[[allow]]
+id = "allow-b0118"
+kind = "non_rust_file"
+family = "test_fixture"
+glob = "testdata/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Non-Rust test fixture files in testdata/. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "testdata/**"
+
+[[allow]]
+id = "allow-b0119"
+kind = "non_rust_file"
+family = "test_fixture"
+glob = "tests/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Non-Rust test fixture files in tests/ (Perl corpus .pl files). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "tests/**"
+
+[[allow]]
+id = "allow-b0120"
+kind = "non_rust_file"
+family = "test_fixture"
+glob = "scripts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Non-Rust test fixture files in scripts/ci/fixtures/. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "scripts/**"
+
+# ---------------------------------------------------------------------------
+# 22. Non-Rust documentation family — for docs/ subdirectory overrides
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0121"
+kind = "non_rust_file"
+family = "documentation"
+glob = "docs/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Documentation files under docs/ — same as allow-b0056 but for documentation family classifier. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**"
+
+# ---------------------------------------------------------------------------
+# 23. Non-Rust configuration family — for non-standard config paths
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0125"
+kind = "non_rust_file"
+family = "configuration"
+glob = "scripts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Configuration files in scripts/ci/fixtures/. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "scripts/**"
+
+# ---------------------------------------------------------------------------
+# 24. Non-Rust shell_script family — for non-standard script paths
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0126"
+kind = "non_rust_file"
+family = "shell_script"
+glob = "scripts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Shell scripts in scripts/ without .sh extension (scripts/cargo-safe, scripts/devplane-init, etc.) and executable scripts. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "scripts/**"
+
+[[allow]]
+id = "allow-b0127"
+kind = "non_rust_file"
+family = "shell_script"
+glob = "hooks/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Git hooks (hooks/pre-push). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "hooks/**"
+
+[[allow]]
+id = "allow-b0128"
+kind = "non_rust_file"
+family = "shell_script"
+glob = "docs/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Shell scripts in docs/handoff/ directory (setup scripts, hook scripts). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**"
+
+# ---------------------------------------------------------------------------
+# 25. Non-Rust package_metadata family — for crate-level metadata
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 26. Non-Rust editor_extension family — VSCode editor files
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0130"
+kind = "non_rust_file"
+family = "editor_extension"
+glob = "vscode-extension/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "VSCode extension files (already covered by allow-b0053 but needs editor_extension family). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/**"
+
+[[allow]]
+id = "allow-b0131"
+kind = "non_rust_file"
+family = "javascript_tool"
+glob = ".claude/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "JavaScript workflow tools in .claude/workflows/ directory (.js files for Claude Code). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".claude/**"
+
+# ---------------------------------------------------------------------------
+# 27. Unsafe in examples and test support dirs
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0132"
+kind = "unsafe"
+family = "unsafe_fn"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe functions in test support code (tests/support/ dirs). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_fn"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0133"
+kind = "unsafe"
+family = "unsafe_impl"
+glob = "crates/*/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe trait implementations in test support code. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_impl"
+glob = "crates/*/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0134"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe blocks in example programs. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/*/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0135"
+kind = "unsafe"
+family = "unsafe_fn"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe functions in example programs. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_fn"
+glob = "crates/*/examples/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# 28. Panic in crates/*/tests/support/*.rs (support subdirs)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 29. Indexing/string_slice/unreachable coverage for examples, benches, build.rs, loose files
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0137"
+kind = "panic"
+family = "indexing"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Indexing in crate example programs. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/*/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0138"
+kind = "panic"
+family = "indexing"
+glob = "examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Indexing in root examples/ directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0139"
+kind = "panic"
+family = "indexing"
+glob = "crates/*/build.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Indexing in build scripts. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/*/build.rs"
+
+[[allow]]
+id = "allow-b0140"
+kind = "panic"
+family = "indexing"
+glob = "crates/*/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Indexing in benchmark programs. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/*/benches/**/*.rs"
+
+[[allow]]
+id = "allow-b0141"
+kind = "panic"
+family = "string_slice"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing in example programs. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/*/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0142"
+kind = "panic"
+family = "string_slice"
+glob = "examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing in root examples/. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0143"
+kind = "panic"
+family = "string_slice"
+glob = "crates/*/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing in benchmarks. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/*/benches/**/*.rs"
+
+[[allow]]
+id = "allow-b0144"
+kind = "panic"
+family = "unreachable"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! in example programs. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/*/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0145"
+kind = "panic"
+family = "unreachable"
+glob = "examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! in root examples/. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0146"
+kind = "panic"
+family = "unreachable"
+glob = "crates/*/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! in benchmarks. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/*/benches/**/*.rs"
+
+[[allow]]
+id = "allow-b0147"
+kind = "panic"
+family = "unwrap"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unwrap() in example programs. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/*/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0148"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/*/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Lint suppressions in example programs. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/*/examples/**/*.rs"
+
+# Loose Rust files not in src/, tests/, examples/ standard dirs
+[[allow]]
+id = "allow-b0149"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-parser/fix_regex_parsing.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Loose Rust file at crate root (fix_regex_parsing.rs) with indexing. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser/fix_regex_parsing.rs"
+
+[[allow]]
+id = "allow-b0150"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-parser/fix_regex_parsing.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Loose Rust file at crate root with panic macros. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-parser/fix_regex_parsing.rs"
+
+# ---------------------------------------------------------------------------
+# 30. Remaining root-level non-Rust files (dotfiles, config, packaging)
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0151"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = ".*"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level dotfiles (.gitattributes, .tokeignore, .trivyignore, .aider.conf.yml, .pre-commit-hooks.yaml, .perl-lsp.toml.example). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".*"
+
+[[allow]]
+id = "allow-b0153"
+kind = "non_rust_file"
+family = "documentation"
+glob = ".*"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level dotfile documentation. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".*"
+
+[[allow]]
+id = "allow-b0154"
+kind = "non_rust_file"
+family = "ci_declarative"
+glob = "codecov.yml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "codecov.yml coverage configuration file. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "codecov.yml"
+
+[[allow]]
+id = "allow-b0155"
+kind = "non_rust_file"
+family = "ci_declarative"
+glob = "docker-compose.yml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Docker Compose configuration file. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docker-compose.yml"
+
+[[allow]]
+id = "allow-b0156"
+kind = "non_rust_file"
+family = "release_script"
+glob = "justfile"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root justfile (just task runner). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "justfile"
+
+[[allow]]
+id = "allow-b0157"
+kind = "non_rust_file"
+family = "release_script"
+glob = "install.ps1"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Windows install script. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "install.ps1"
+
+[[allow]]
+id = "allow-b0158"
+kind = "non_rust_file"
+family = "shell_script"
+glob = "hooks/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Git hook shell scripts (hooks/pre-push). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "hooks/**"
+
+[[allow]]
+id = "allow-b0161"
+kind = "non_rust_file"
+family = "package_metadata"
+glob = "vscode-extension/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "VSCode extension package metadata (package.json, pnpm-lock.yaml, package-lock.json, LICENSE). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/**"
+
+[[allow]]
+id = "allow-b0162"
+kind = "non_rust_file"
+family = "test_fixture"
+glob = "vscode-extension/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "VSCode extension test fixture files (demo project .pm/.pl files, test samples). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/**"
+
+[[allow]]
+id = "allow-b0163"
+kind = "non_rust_file"
+family = "editor_extension"
+glob = ".vscode/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "VSCode workspace settings (.vscode/settings.json). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".vscode/**"
+
+[[allow]]
+id = "allow-b0165"
+kind = "non_rust_file"
+family = "documentation"
+glob = ".receipts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Receipt documentation/YAML files in .receipts/ directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".receipts/**"
+
+[[allow]]
+id = "allow-b0166"
+kind = "non_rust_file"
+family = "shell_script"
+glob = "scripts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Shell scripts without .sh extension in scripts/ (storage-doctor, swarm-clean, swarm-doctor, etc.). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "scripts/**"
+
+[[allow]]
+id = "allow-b0167"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "scripts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Misc unknown non-Rust files in scripts/ (.ignored-baseline, requirements.txt). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "scripts/**"
+
+# Root-level test Perl files
+[[allow]]
+id = "allow-b0169"
+kind = "non_rust_file"
+family = "test_fixture"
+glob = "test_print_indirect.pl"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level Perl test script. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "test_print_indirect.pl"
+
+# allow_attribute lint exceptions coverage for benches and build
+[[allow]]
+id = "allow-b0170"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/*/build.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Lint suppressions in build scripts. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/*/build.rs"
+
+[[allow]]
+id = "allow-b0113"
+kind = "panic"
+family = "panic_macro"
+glob = "xtask/src/allocation_tracker.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "xtask allocation tracker source with panic macros. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "xtask/src/allocation_tracker.rs"
+
+# ---------------------------------------------------------------------------
+# 31. Targeted entries for remaining 35 new findings (final batch)
+# ---------------------------------------------------------------------------
+
+# .github/CODEOWNERS - unknown_non_rust (b0168 covered documentation only)
+[[allow]]
+id = "allow-b0171"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = ".github/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "GitHub metadata files (CODEOWNERS, issue templates, workflows). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = ".github/**"
+
+# docker-compose.yml at root
+[[allow]]
+id = "allow-b0173"
+kind = "non_rust_file"
+family = "configuration"
+glob = "docker-compose.yml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Docker Compose file at repo root. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docker-compose.yml"
+
+# distribution/ - ps1 shell scripts
+[[allow]]
+id = "allow-b0174"
+kind = "non_rust_file"
+family = "shell_script"
+glob = "distribution/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Distribution packaging scripts (Chocolatey ps1, Windows ps1). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "distribution/**"
+
+# distribution/winget - yaml configuration
+[[allow]]
+id = "allow-b0175"
+kind = "non_rust_file"
+family = "configuration"
+glob = "distribution/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Distribution packaging metadata (winget YAML manifests). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "distribution/**"
+
+# distribution/* - package_metadata
+[[allow]]
+id = "allow-b0176"
+kind = "non_rust_file"
+family = "package_metadata"
+glob = "distribution/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Distribution package metadata files. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "distribution/**"
+
+# flake.lock at root - package_metadata
+[[allow]]
+id = "allow-b0177"
+kind = "non_rust_file"
+family = "package_metadata"
+glob = "flake.lock"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Nix flake.lock file at repo root. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "flake.lock"
+
+# hooks/pre-push - also unknown_non_rust (b0158 had shell_script only)
+[[allow]]
+id = "allow-b0178"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "hooks/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Git hook scripts (pre-push) without standard extension. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "hooks/**"
+
+# install.ps1 at root - shell_script (b0157 used release_script)
+[[allow]]
+id = "allow-b0179"
+kind = "non_rust_file"
+family = "shell_script"
+glob = "install.ps1"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level Windows install.ps1 script. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "install.ps1"
+
+# justfile at root - unknown_non_rust (b0156 used release_script)
+[[allow]]
+id = "allow-b0180"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "justfile"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level justfile (just task runner). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "justfile"
+
+# schemas/ directory - configuration/yml files
+[[allow]]
+id = "allow-b0181"
+kind = "non_rust_file"
+family = "configuration"
+glob = "schemas/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "JSON/YAML schema files in schemas/ directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "schemas/**"
+
+# templates/ci/ directory - CI config templates
+[[allow]]
+id = "allow-b0182"
+kind = "non_rust_file"
+family = "configuration"
+glob = "templates/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "CI configuration templates for buildkite/circleci/gitlab/travis. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "templates/**"
+
+# templates/* - ci_declarative variant
+[[allow]]
+id = "allow-b0183"
+kind = "non_rust_file"
+family = "ci_declarative"
+glob = "templates/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "CI declarative configuration templates. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "templates/**"
+
+# test_print_indirect.pl - unknown_non_rust (b0169 matched test_fixture not unknown_non_rust)
+[[allow]]
+id = "allow-b0184"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "test_print_indirect.pl"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Root-level Perl test script. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "test_print_indirect.pl"
+
+# vscode-extension/* - unknown_non_rust (b0161 is package_metadata, b0162 is test_fixture)
+[[allow]]
+id = "allow-b0185"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "vscode-extension/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "VSCode extension unknown file types (.vscodeignore, LICENSE, .pl demo files). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/**"
+
+# scripts/requirements.txt - package_metadata (b0166/b0167 covered shell_script/unknown_non_rust)
+[[allow]]
+id = "allow-b0186"
+kind = "non_rust_file"
+family = "package_metadata"
+glob = "scripts/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Package metadata files in scripts/ (requirements.txt). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "scripts/**"
+
+# xtask/*.txt files - documentation (xtask/src/** covered by b0119 but not root xtask/*.txt)
+[[allow]]
+id = "allow-b0187"
+kind = "non_rust_file"
+family = "documentation"
+glob = "xtask/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Documentation text files in xtask/ (benchmark_results, published-crate-baseline). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "xtask/**"
+
+# crates/perl-parser/fix_regex_parsing.rs - panic.string_slice (b0149 is indexing, b0150 is macro)
+[[allow]]
+id = "allow-b0188"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-parser/fix_regex_parsing.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing in loose Rust file fix_regex_parsing.rs at crate root. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser/fix_regex_parsing.rs"
+
+# examples/lsp_client.rs at workspace root - panic.unwrap (b0147 covers crates/*/examples/ only)
+[[allow]]
+id = "allow-b0189"
+kind = "panic"
+family = "unwrap"
+glob = "examples/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unwrap() in root-level examples/ directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "examples/**"
+
+# ---------------------------------------------------------------------------
+# 32. Missing extension-based entries for .yaml/.yml and .txt documentation
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0190"
+kind = "non_rust_file"
+family = "configuration"
+glob = "**/*.yaml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "YAML configuration files across the repo (.ci/, .github/, schemas/, templates/, vscode-extension/). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.yaml"
+
+[[allow]]
+id = "allow-b0191"
+kind = "non_rust_file"
+family = "configuration"
+glob = "**/*.yml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "YAML configuration files with .yml extension (docker-compose.yml, codecov.yml, CI templates). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.yml"
+
+[[allow]]
+id = "allow-b0192"
+kind = "non_rust_file"
+family = "ci_declarative"
+glob = "**/*.yaml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "CI declarative YAML files (.yaml extension). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.yaml"
+
+[[allow]]
+id = "allow-b0193"
+kind = "non_rust_file"
+family = "ci_declarative"
+glob = "**/*.yml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "CI declarative YAML files (.yml extension). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.yml"
+
+[[allow]]
+id = "allow-b0194"
+kind = "non_rust_file"
+family = "documentation"
+glob = "**/*.txt"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Text documentation files across the repo (.ci/manifest, baseline .txt files, published-crate-baseline). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.txt"
+
+# Dotfiles without standard extension that classify as configuration
+[[allow]]
+id = "allow-b0195"
+kind = "non_rust_file"
+family = "configuration"
+glob = "**/.gitattributes"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Git attributes dotfile (.gitattributes). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/.gitattributes"
+
+# ---------------------------------------------------------------------------
+# 33. Re-add crates/ test fixture and documentation coverage with narrow globs
+#     (broad crates/** entries removed due to ambiguity; use narrow test dirs)
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0196"
+kind = "non_rust_file"
+family = "test_fixture"
+glob = "crates/*/tests/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Non-Rust test fixture files under crates/*/tests/ (JSON fixtures, golden transcripts, FIXTURE_INDEX.md, snapshots). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "crates/*/tests/**"
+
+[[allow]]
+id = "allow-b0197"
+kind = "non_rust_file"
+family = "documentation"
+glob = "crates/*/tests/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Documentation files under crates/*/tests/ (FIXTURE_INDEX.md, snapshot .md files). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "crates/*/tests/**"
+
+[[allow]]
+id = "allow-b0198"
+kind = "non_rust_file"
+family = "documentation"
+glob = "crates/*/src/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Documentation files (RST, txt) under crates/*/src/ subdirectories. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "crates/*/src/**"
