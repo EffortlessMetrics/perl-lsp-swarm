@@ -370,7 +370,15 @@ fn pull_document_diagnostic_syntax_only_concurrent_didchange_does_not_panic() ->
 
     // The handler must not return an error.
     let resp = resp?;
-    assert!(resp.is_some(), "SyntaxOnly pull handler must always return Some result, never None");
+    let items = pull_items(resp).ok_or("SyntaxOnly response must carry items array")?;
+    // Guard fires  → items empty (concurrent didChange advanced the generation)
+    // Guard not reached → items may be non-empty (valid snapshot from old version)
+    // Both are acceptable; asserting the array shape confirms a well-formed
+    // DocumentDiagnosticReport rather than Some(json!(null)) or Some(json!({})).
+    assert!(
+        items.iter().all(|i| i.is_object()),
+        "items must be well-formed diagnostic objects or empty, got: {items:?}"
+    );
 
     Ok(())
 }
