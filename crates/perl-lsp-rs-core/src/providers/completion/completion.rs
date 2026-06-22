@@ -1261,14 +1261,15 @@ impl CompletionProvider {
             // characters (hyphens, dots, spaces, etc.).  Unquoted (bareword) tokens are restricted
             // to alphanumeric + underscore to avoid accepting parse noise that leaks from mis-parsed
             // value text or from unterminated string literals in incomplete source at the cursor.
-            let (token, was_quoted) =
-                if let Some(inner) = token.strip_prefix('\'').and_then(|t| t.strip_suffix('\'')) {
-                    (inner, true)
-                } else if let Some(inner) = token.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
-                    (inner, true)
-                } else {
-                    (token, false)
-                };
+            let (token, was_quoted) = if let Some(inner) =
+                token.strip_prefix('\'').and_then(|t| t.strip_suffix('\''))
+            {
+                (inner, true)
+            } else if let Some(inner) = token.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+                (inner, true)
+            } else {
+                (token, false)
+            };
             let is_valid_key = !token.is_empty()
                 && (was_quoted || token.chars().all(|c| c.is_alphanumeric() || c == '_'));
             if is_valid_key {
@@ -1548,6 +1549,14 @@ impl CompletionProvider {
 
     fn is_in_comment(&self, source: &str, position: usize) -> bool {
         lexical_context::is_in_comment(source, position)
+    }
+
+    pub(crate) fn is_in_heredoc(source: &str, position: usize) -> bool {
+        lexical_context::is_in_heredoc(source, position)
+    }
+
+    pub(crate) fn is_in_pod(source: &str, position: usize) -> bool {
+        lexical_context::is_in_pod(source, position)
     }
 
     /// Check if we're in a test context
