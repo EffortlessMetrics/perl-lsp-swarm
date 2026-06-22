@@ -3582,16 +3582,21 @@ fn workspace_constant_completion_auto_imports_module() -> Result<(), Box<dyn std
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    if let Some(edit) = auto_import_edit_text(&completions, "ANSWER") {
-        assert_eq!(edit, "use Foo;\n", "constant completion should auto-insert `use Foo;`");
-    } else {
-        // Constant indexing is best-effort; if the symbol is indexed it must
-        // carry the auto-import edit. A missing symbol does not exercise the arm.
-        assert!(
-            !completions.iter().any(|c| c.label == "ANSWER"),
-            "ANSWER constant completion must carry an auto-import edit when present"
-        );
-    }
+    let item = completions
+        .iter()
+        .find(|c| c.label == "ANSWER")
+        .ok_or("expected `ANSWER` constant completion")?;
+    assert_eq!(item.kind, CompletionItemKind::Constant);
+    assert_eq!(
+        item.additional_edits.len(),
+        1,
+        "constant completion must carry exactly one auto-import edit; got {:?}",
+        item.additional_edits
+    );
+    assert_eq!(
+        item.additional_edits[0].1, "use Foo;\n",
+        "constant completion must auto-insert exactly `use Foo;`"
+    );
     Ok(())
 }
 
@@ -3610,13 +3615,16 @@ fn workspace_completion_suppresses_auto_import_when_already_imported()
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    if let Some(item) = completions.iter().find(|c| c.label == "Foo::barker") {
-        assert!(
-            item.additional_edits.is_empty(),
-            "already-imported module must not produce a duplicate auto-import edit; got {:?}",
-            item.additional_edits
-        );
-    }
+    let item = completions
+        .iter()
+        .find(|c| c.label == "Foo::barker")
+        .ok_or("expected `Foo::barker` workspace completion")?;
+    assert_eq!(
+        item.additional_edits,
+        vec![],
+        "already-imported module must not produce a duplicate auto-import edit; got {:?}",
+        item.additional_edits
+    );
     Ok(())
 }
 
@@ -3655,28 +3663,21 @@ fn workspace_variable_completion_auto_imports_module() -> Result<(), Box<dyn std
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    let foo_var_with_edit = completions.iter().find(|c| {
-        c.kind == CompletionItemKind::Variable
-            && c.label.contains("xylophone")
-            && !c.additional_edits.is_empty()
-    });
-    if let Some(item) = foo_var_with_edit {
-        let edit_text = item.additional_edits.first().map(|(_, t)| t.as_str()).unwrap_or("");
-        assert_eq!(
-            edit_text, "use Foo;\n",
-            "variable completion from Foo must auto-insert `use Foo;`; got: {:?}",
-            item.additional_edits
-        );
-    } else {
-        assert!(
-            !completions.iter().any(|c| {
-                c.kind == CompletionItemKind::Variable
-                    && c.label.contains("xylophone")
-                    && c.additional_edits.is_empty()
-            }),
-            "workspace variable `$xylophone` must carry an auto-import edit when present"
-        );
-    }
+    let item = completions
+        .iter()
+        .find(|c| c.label == "$xylophone")
+        .ok_or("expected `$xylophone` workspace variable completion")?;
+    assert_eq!(item.kind, CompletionItemKind::Variable);
+    assert_eq!(
+        item.additional_edits.len(),
+        1,
+        "variable completion must carry exactly one auto-import edit; got {:?}",
+        item.additional_edits
+    );
+    assert_eq!(
+        item.additional_edits[0].1, "use Foo;\n",
+        "variable completion from Foo must auto-insert exactly `use Foo;`"
+    );
     Ok(())
 }
 
@@ -3696,15 +3697,54 @@ fn qualified_subroutine_completion_auto_imports_module() -> Result<(), Box<dyn s
     let provider = CompletionProvider::new_with_index(&ast, Some(index));
     let completions = provider.get_completions(code, code.len());
 
-    if let Some(item) = completions.iter().find(|c| c.label.contains("barley")) {
-        let edit_text = item.additional_edits.first().map(|(_, t)| t.as_str()).unwrap_or("");
-        assert_eq!(
-            edit_text, "use Foo;\n",
-            "qualified subroutine completion must auto-insert `use Foo;`; got: {:?}",
-            item.additional_edits
-        );
-    }
+    let item = completions
+        .iter()
+        .find(|c| c.label == "barley")
+        .ok_or("expected `barley` qualified subroutine completion")?;
+    assert_eq!(
+        item.additional_edits.len(),
+        1,
+        "qualified subroutine completion must carry exactly one auto-import edit; got {:?}",
+        item.additional_edits
+    );
+    assert_eq!(
+        item.additional_edits[0].1, "use Foo;\n",
+        "qualified subroutine completion must auto-insert exactly `use Foo;`"
+    );
     Ok(())
+}
+
+#[test]
+fn workspace_auto_import_edits_returns_exact_edits_per_branch() {
+    // Direct call-observation with exact assertions on the helper that produces
+    // every workspace completion's `additionalTextEdits`, discriminating each
+    // guard branch (reachable, main, current package, empty, file-local,
+    // already-imported).
+    use super::workspace::workspace_auto_import_edits;
+
+    let source = "use strict;\nmy $x = 1;\n";
+    let after_use = "use strict;\n".len();
+
+    // Reachable, unimported, foreign module -> exactly one edit after the use block.
+    let edits = workspace_auto_import_edits(source, Some("My::App"), "main");
+    assert_eq!(edits.len(), 1, "expected exactly one edit; got {edits:?}");
+    assert_eq!(edits[0].1, "use My::App;\n");
+    assert_eq!(edits[0].0.start, after_use);
+    assert_eq!(edits[0].0.end, after_use);
+
+    // Implicit `main` package must never be auto-imported.
+    assert_eq!(workspace_auto_import_edits(source, Some("main"), "Other"), vec![]);
+    // The document's own current package needs no import.
+    assert_eq!(workspace_auto_import_edits(source, Some("Demo"), "Demo"), vec![]);
+    // Empty module name yields no edit.
+    assert_eq!(workspace_auto_import_edits(source, Some(""), "main"), vec![]);
+    // File-local symbol (no container module) yields no edit.
+    assert_eq!(workspace_auto_import_edits(source, None, "main"), vec![]);
+    // Already-imported module yields no duplicate edit.
+    assert_eq!(
+        workspace_auto_import_edits("use My::App;\nmy $x = 1;\n", Some("My::App"), "main"),
+        vec![]
+    );
 }
 
 #[test]
