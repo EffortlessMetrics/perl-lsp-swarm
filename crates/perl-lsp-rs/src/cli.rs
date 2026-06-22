@@ -659,8 +659,8 @@ fn print_version(command_name: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_parse_error_context, invocation_name, render_help_text, render_shell_completion,
-        run_cli,
+        build_unavailable_packet, format_parse_error_context, invocation_name, normalize_fact_classes,
+        render_help_text, render_shell_completion, run_cli, run_ripr_facts, write_packet,
     };
     use std::ffi::OsString;
 
