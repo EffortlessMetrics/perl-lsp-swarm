@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 
 use crate::hir::{
-    AccessMode, AssignMode, CallForm, DynamicBoundaryKind, HirBody, HirBodyId, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, HirStmt, Sigil, UnaryMode, VariableKind,
-    HIR_BODY_MODEL_VERSION,
+    AccessMode, AssignMode, CallForm, DeclStorageClass, DynamicBoundaryKind,
+    HIR_BODY_MODEL_VERSION, HirBody, HirBodyId, HirExpr, HirExprId, HirFile, HirItem, HirKind,
+    HirScopeId, HirStmt, Sigil, UnaryMode, VariableKind,
 };
 
 use super::model::{
@@ -365,10 +365,7 @@ pub fn lower_hir_bodies(file: &HirFile) -> PirGraph {
 /// Lower a [`HirFile`]'s canonical body arenas into a PIR-A graph, tagging the
 /// receipt with an optional caller-supplied source or fixture identity.
 #[must_use]
-pub fn lower_hir_bodies_with_identity(
-    file: &HirFile,
-    source_identity: Option<String>,
-) -> PirGraph {
+pub fn lower_hir_bodies_with_identity(file: &HirFile, source_identity: Option<String>) -> PirGraph {
     // Verifier rule: schema-version mismatch → empty graph.
     if file.body_model_version != HIR_BODY_MODEL_VERSION {
         let receipt = PirReceipt {
@@ -439,21 +436,46 @@ impl BodyLowerer {
             None => return,
         };
         match stmt {
-            HirStmt::Let { name, sigil, storage: _, init } => {
-                // Declaration site: the variable is always a Write.
-                // The storage class (my/state/our) is already captured in VariableKind
-                // through the HIR body; here we emit from the declaration sigil/name.
+            HirStmt::Let { name, sigil, storage, init } => {
+                // Emit exactly ONE Write op for the declaration target.
+                // `storage` determines whether this is a lexical (my/state) or
+                // package (our) slot. Ignoring `storage` was the root cause of
+                // BUG 1 (double Write), BUG 2 (our→wrong LexicalWrite), and
+                // BUG 3 (spurious LexicalWrite alongside correct StashWrite).
+                //
+                // We emit the Write here from the declaration metadata, then
+                // lower ONLY the RHS of the initialiser (not the HirExpr::Assign
+                // wrapper, which would re-emit the LHS variable as a second Write).
                 let range = body.source_map.stmt_ranges.get(stmt_id.0 as usize).copied();
                 if let Some(range) = range {
                     let anchor = self.make_body_anchor(range);
-                    let op = PirOperation::LexicalWrite {
-                        name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
+                    let op = match storage {
+                        DeclStorageClass::Our => PirOperation::StashWrite {
+                            symbol: SymbolName {
+                                sigil: sigil_str(sigil),
+                                name: name.clone(),
+                                package: None, // package context not yet threaded into body arena
+                            },
+                        },
+                        // my / state / any other declarator → lexical write
+                        _ => PirOperation::LexicalWrite {
+                            name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
+                        },
                     };
                     self.push_body_node(anchor, op, PirContext::Lvalue, None, file);
                 }
-                // Lower the initializer expression.
+                // Lower the RHS of the initialiser. The init expr in the HIR body
+                // is an HirExpr::Assign { lhs: Variable(Write), rhs, mode: Simple }.
+                // We skip the Assign wrapper and lower only the rhs to avoid
+                // re-emitting the LHS Variable as a second Write.
                 if let Some(init_id) = init {
-                    self.lower_expr(body, *init_id, file);
+                    if let Some(HirExpr::Assign { rhs, .. }) = body.expr(*init_id) {
+                        self.lower_expr(body, *rhs, file);
+                    } else {
+                        // Not an Assign node (shouldn't happen in well-formed HIR,
+                        // but handle defensively — lower the init as-is).
+                        self.lower_expr(body, *init_id, file);
+                    }
                 }
             }
             HirStmt::Expr(expr_id) => {
@@ -486,7 +508,13 @@ impl BodyLowerer {
                         self.lower_expr(body, *rhs, file);
                         // Emit an Assign node spanning the whole expression.
                         let anchor = self.make_body_anchor(range);
-                        self.push_body_node(anchor, PirOperation::Assign, PirContext::Void, None, file);
+                        self.push_body_node(
+                            anchor,
+                            PirOperation::Assign,
+                            PirContext::Void,
+                            None,
+                            file,
+                        );
                     }
                     AssignMode::ReadModifyWrite => {
                         // Compound assign: emit a single Modify node — place evaluated once.
@@ -553,12 +581,12 @@ impl BodyLowerer {
             // VariableKind has Lexical and Package; Package covers both resolved
             // package aliases and unresolved globals. We emit ops for both —
             // a StashRead/StashWrite for Package, LexicalRead/LexicalWrite for Lexical.
-            (AccessMode::Read, VariableKind::Lexical) => PirOperation::LexicalRead {
-                name: LexicalName { sigil, name: v.name.clone() },
-            },
-            (AccessMode::Write, VariableKind::Lexical) => PirOperation::LexicalWrite {
-                name: LexicalName { sigil, name: v.name.clone() },
-            },
+            (AccessMode::Read, VariableKind::Lexical) => {
+                PirOperation::LexicalRead { name: LexicalName { sigil, name: v.name.clone() } }
+            }
+            (AccessMode::Write, VariableKind::Lexical) => {
+                PirOperation::LexicalWrite { name: LexicalName { sigil, name: v.name.clone() } }
+            }
             (AccessMode::ReadModifyWrite, VariableKind::Lexical) => {
                 // ReadModifyWrite access on a Variable node means it came from
                 // lower_expr_as_place for compound assign LHS — this is the Modify path.

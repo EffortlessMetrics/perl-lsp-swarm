@@ -5,10 +5,10 @@
 //! source anchors, scope/package context, and verifier fail-closed behaviour.
 //!
 //! Test coverage:
-//!   1. `my $x = $a + $b;` — canonical receipt: Write $x, Read $a, Read $b, Binary
+//!   1. `my $x = $a + $b;` — canonical receipt: exactly 1 Write $x (double-emit guard), Read $a, Read $b, Binary
 //!   2. `$x = $y;` — plain assign → Write $x, Read $y
 //!   3. `$x += 1;` — compound assign → Modify $x (place evaluated once)
-//!   4. `our $x; $x = $y;` — package place → StashWrite / StashRead
+//!   4. `our $x; $x = $y;` — package place → StashWrite / StashRead, NO LexicalWrite for $x
 //!   5. `$Foo::x = $y;` — package slot → StashWrite / StashRead
 //!   6. Recovery `my $x = ;` — NO exact operation emitted from recovered syntax
 //!   7. Unresolved/Dynamic place — no exact Read/Write op emitted
@@ -19,12 +19,11 @@
 //!  12. Modify evaluates place once (no duplicate target evaluation in receipt)
 //!  13. `sub foo { my $x = 1; }` — sub body produces Write in sub body operations
 //!  14. body_model_version guard — version 0 → no body ops emitted / version 1 → ok
+//!  15. `our $x = $y;` — exactly 1 StashWrite, 0 LexicalWrite for $x (storage-aware Let guard)
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
-use perl_parser_core::pir::{
-    PIR_RECEIPT_VERSION, PirGraph, PirOperation, lower_hir_bodies,
-};
+use perl_parser_core::pir::{PIR_RECEIPT_VERSION, PirGraph, PirOperation, lower_hir_bodies};
 
 fn parse_and_lower(source: &str) -> PirGraph {
     let mut parser = Parser::new(source);
@@ -41,11 +40,16 @@ fn parse_and_lower(source: &str) -> PirGraph {
 fn pir_a_canonical_receipt_my_x_equals_a_plus_b() {
     let graph = parse_and_lower("my $x = $a + $b;");
 
-    // Must have at least a LexicalWrite for $x
-    let write = graph.nodes.iter().find(|n| {
-        matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "x")
-    });
-    assert!(write.is_some(), "must have LexicalWrite for $x");
+    // Must have exactly one LexicalWrite for $x — double-emission from the Let arm was a bug
+    let write_count = graph
+        .nodes
+        .iter()
+        .filter(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "x"))
+        .count();
+    assert_eq!(
+        write_count, 1,
+        "must have exactly 1 LexicalWrite for $x, not {write_count} (double-emit guard)"
+    );
 
     // Must have LexicalRead nodes (for $a and $b — both undeclared, package vars OR
     // reads from the rhs. Note: undeclared vars may resolve as StashRead, not LexicalRead.
@@ -54,7 +58,10 @@ fn pir_a_canonical_receipt_my_x_equals_a_plus_b() {
         .nodes
         .iter()
         .filter(|n| {
-            matches!(&n.operation, PirOperation::LexicalRead { .. } | PirOperation::StashRead { .. })
+            matches!(
+                &n.operation,
+                PirOperation::LexicalRead { .. } | PirOperation::StashRead { .. }
+            )
         })
         .count();
     assert!(read_count >= 2, "must have at least 2 read ops for $a and $b; got {read_count}");
@@ -128,10 +135,26 @@ fn pir_a_our_var_produces_stash_ops() {
     let graph = parse_and_lower("our $x; $x = $y;");
 
     // `our $x` is a StashWrite (declaration)
-    let stash_write = graph.nodes.iter().find(|n| {
-        matches!(&n.operation, PirOperation::StashWrite { symbol } if symbol.name == "x")
-    });
-    assert!(stash_write.is_some(), "`our $x` must produce StashWrite; got {:?}", graph.nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>());
+    let stash_write = graph.nodes.iter().find(
+        |n| matches!(&n.operation, PirOperation::StashWrite { symbol } if symbol.name == "x"),
+    );
+    assert!(
+        stash_write.is_some(),
+        "`our $x` must produce StashWrite; got {:?}",
+        graph.nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>()
+    );
+
+    // `our $x` must NOT produce a LexicalWrite — the old Let arm bug emitted LexicalWrite
+    // unconditionally, ignoring the storage class.
+    let lex_write = graph
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "x"));
+    assert!(
+        lex_write.is_none(),
+        "`our $x` declaration must NOT produce LexicalWrite; got: {:?}",
+        lex_write.map(|n| n.operation.name())
+    );
 }
 
 // ── 5. `$Foo::x = $y;` — qualified name → StashWrite ────────────────────────
@@ -163,7 +186,12 @@ fn pir_a_recovery_no_exact_operation() {
     let clean_reads: Vec<_> = graph
         .nodes
         .iter()
-        .filter(|n| matches!(&n.operation, PirOperation::LexicalRead { .. } | PirOperation::StashRead { .. }))
+        .filter(|n| {
+            matches!(
+                &n.operation,
+                PirOperation::LexicalRead { .. } | PirOperation::StashRead { .. }
+            )
+        })
         .collect();
 
     // There should be no reads from a recovered RHS. The declaration Write is ok.
@@ -213,8 +241,7 @@ fn pir_a_all_nodes_anchored() {
         );
     }
     assert_eq!(
-        graph.receipt.source_anchor_coverage.unanchored,
-        0,
+        graph.receipt.source_anchor_coverage.unanchored, 0,
         "receipt must report 0 unanchored nodes"
     );
 }
@@ -225,8 +252,7 @@ fn pir_a_all_nodes_anchored() {
 fn pir_a_schema_version_matches() {
     let graph = parse_and_lower("my $x = 1;");
     assert_eq!(
-        graph.receipt.schema_version,
-        PIR_RECEIPT_VERSION,
+        graph.receipt.schema_version, PIR_RECEIPT_VERSION,
         "PIR-A receipt schema_version must match PIR_RECEIPT_VERSION"
     );
 }
@@ -282,8 +308,7 @@ fn pir_a_modify_place_evaluated_once() {
         })
         .count();
     assert_eq!(
-        modify_count,
-        1,
+        modify_count, 1,
         "Modify must evaluate its place exactly once; got {modify_count} Modify ops for $x"
     );
 }
@@ -295,9 +320,10 @@ fn pir_a_sub_body_produces_ops() {
     let graph = parse_and_lower("sub foo { my $x = 1; }");
 
     // The sub body `my $x = 1` must produce a LexicalWrite for $x.
-    let write = graph.nodes.iter().find(|n| {
-        matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "x")
-    });
+    let write = graph
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "x"));
     assert!(
         write.is_some(),
         "sub body `my $x = 1` must produce LexicalWrite for $x; got: {:?}",
@@ -318,8 +344,7 @@ fn pir_a_body_model_version_check() {
     let output = parser.parse_with_recovery();
     let hir = lower_ast(&output.ast);
     assert_eq!(
-        hir.body_model_version,
-        HIR_BODY_MODEL_VERSION,
+        hir.body_model_version, HIR_BODY_MODEL_VERSION,
         "lower_ast must set body_model_version = HIR_BODY_MODEL_VERSION"
     );
     let graph = lower_hir_bodies(&hir);
@@ -327,5 +352,39 @@ fn pir_a_body_model_version_check() {
     assert!(
         !graph.nodes.is_empty(),
         "lower_hir_bodies with correct body_model_version must produce ops"
+    );
+}
+
+// ── 15. `our $x = $y;` — storage-aware Let: 1 StashWrite, 0 LexicalWrite ──────
+// Regression guard for the Let arm bug: storage class was ignored → LexicalWrite
+// was always emitted. Now `our` must produce exactly 1 StashWrite for $x and
+// zero LexicalWrite ops for $x.
+
+#[test]
+fn pir_a_our_with_init_produces_stash_write_not_lexical() {
+    let graph = parse_and_lower("our $x = $y;");
+
+    // Exactly one StashWrite for $x
+    let stash_write_count = graph
+        .nodes
+        .iter()
+        .filter(
+            |n| matches!(&n.operation, PirOperation::StashWrite { symbol } if symbol.name == "x"),
+        )
+        .count();
+    assert_eq!(
+        stash_write_count, 1,
+        "`our $x = $y` must produce exactly 1 StashWrite for $x; got {stash_write_count}"
+    );
+
+    // Zero LexicalWrite for $x
+    let lex_write_count = graph
+        .nodes
+        .iter()
+        .filter(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "x"))
+        .count();
+    assert_eq!(
+        lex_write_count, 0,
+        "`our $x = $y` must produce 0 LexicalWrite for $x; got {lex_write_count}"
     );
 }
