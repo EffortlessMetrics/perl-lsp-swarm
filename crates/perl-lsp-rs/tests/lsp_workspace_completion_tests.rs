@@ -86,18 +86,21 @@ fn await_open_processing(server: &common::LspServer) {
 ///
 /// After `textDocument/didOpen` for a module file, the server dispatches a
 /// background task (tokio blocking pool) to extract and insert symbols into
-/// the workspace index.  `await_open_processing` only drains quiet for up to
-/// 500ms — barely enough for fast machines.  This helper uses a longer quiet
-/// window to ensure the background indexing task has finished before any
-/// completion request that depends on cross-file symbols.
+/// the workspace index.  No LSP notification is emitted when a per-file
+/// background indexing task completes (the `perl-lsp/index-ready` notification
+/// is sent once during `initialized` and is consumed by `initialize_lsp`).
 ///
-/// The `perl-lsp/index-ready` notification is sent once during `initialized`
-/// and is consumed by `initialize_lsp`.  It is NOT re-emitted per `didOpen`,
-/// so this helper does not attempt to receive it again.
+/// This helper drains pending LSP traffic first, then waits a fixed interval
+/// to give the blocking-pool task time to commit its symbol insertions.  The
+/// 500ms wall-clock budget is generous enough for debug builds on slow CI
+/// machines while remaining acceptable in total test time.
 fn await_module_indexed(server: &common::LspServer) {
-    // Use a generously-long inter-quiet interval (200ms) so that the 1s total
-    // budget lets the blocking-pool indexing task complete on slow CI machines.
-    drain_until_quiet(server, Duration::from_millis(200), Duration::from_secs(1));
+    // Drain any pending diagnostics / notifications from the didOpen.
+    drain_until_quiet(server, Duration::from_millis(50), Duration::from_millis(500));
+    // Fixed sleep: the background indexing task emits no notification when it
+    // completes, so we must wait a wall-clock budget for it to finish.
+    // 500ms is sufficient for debug-build Perl symbol extraction on slow machines.
+    std::thread::sleep(Duration::from_millis(500));
 }
 
 /// Test cross-file function completion
@@ -755,12 +758,12 @@ fn test_completion_textedit_replaces_qualified_prefix() -> Result<(), Box<dyn st
     assert_eq!(end["line"], 0, "textEdit end line");
     assert_eq!(end["character"], 16, "textEdit end character (end of '$Cfg::CF')");
 
-    // newText must be the fully-qualified variable name.
+    // newText must be the fully-qualified variable name, not just the bare label.
+    // An exact-equality check catches the regression this PR fixes: without the
+    // textEdit field, clients append the resolved name *after* the prefix; with it,
+    // newText must be the complete replacement string "$Cfg::CFG_VALUE".
     let new_text = text_edit["newText"].as_str().ok_or("textEdit.newText must be a string")?;
-    assert!(
-        new_text.contains("CFG_VALUE"),
-        "textEdit.newText should contain CFG_VALUE, got: {new_text:?}"
-    );
+    assert_eq!(new_text, "$Cfg::CFG_VALUE", "textEdit.newText must be the fully-qualified name");
 
     Ok(())
 }
@@ -866,10 +869,7 @@ fn test_completion_textedit_utf16_position() -> Result<(), Box<dyn std::error::E
     assert_eq!(end["character"], 20, "textEdit end character (UTF-16 col at end of '$Enc::EN')");
 
     let new_text = text_edit["newText"].as_str().ok_or("textEdit.newText must be a string")?;
-    assert!(
-        new_text.contains("ENC_KEY"),
-        "textEdit.newText should contain ENC_KEY, got: {new_text:?}"
-    );
+    assert_eq!(new_text, "$Enc::ENC_KEY", "textEdit.newText must be the fully-qualified name");
 
     Ok(())
 }
