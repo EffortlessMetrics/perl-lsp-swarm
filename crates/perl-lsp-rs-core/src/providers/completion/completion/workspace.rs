@@ -2001,6 +2001,10 @@ fn semantic_file_id(uri: &str) -> FileId {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "policy:#2064: visible-symbol completion tests stay beside their filter seam"
+)]
 mod visible_symbol_completion_tests {
     use super::{VisibleSymbol, VisibleSymbolSource, is_live_visible_completion_candidate};
     use perl_semantic_facts::{Confidence, EntityId};
@@ -2066,7 +2070,10 @@ mod visible_symbol_completion_tests {
 /// approximates but does not exactly match C3 for complex diamond hierarchies.
 /// This is a pre-existing approximation shared with `navigation.rs`. A follow-up
 /// issue should address strict C3 ordering if it becomes important (see issue #3482).
-fn collect_all_package_members(index: &WorkspaceIndex, package_name: &str) -> Vec<WorkspaceSymbol> {
+pub(super) fn collect_all_package_members(
+    index: &WorkspaceIndex,
+    package_name: &str,
+) -> Vec<WorkspaceSymbol> {
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut result: Vec<WorkspaceSymbol> = Vec::new();
 
