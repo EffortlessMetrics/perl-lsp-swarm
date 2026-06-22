@@ -125,6 +125,10 @@ pub struct DebugAdapter {
     next_goto_target_id: Arc<Mutex<i64>>,
     /// Workspace root for path validation (set during launch)
     workspace_root: Arc<Mutex<Option<PathBuf>>>,
+    /// Transport broken flag: set by event handler on persistent write failure
+    transport_broken: Arc<AtomicBool>,
+    /// Tracks whether initialize request has been received (state machine validation)
+    initialized: Arc<AtomicBool>,
 }
 
 /// Represents a DAP message, which can be a request, response, or event.
@@ -202,6 +206,8 @@ impl DebugAdapter {
             goto_targets: Arc::new(Mutex::new(HashMap::new())),
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
+            transport_broken: Arc::new(AtomicBool::new(false)),
+            initialized: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -751,8 +757,16 @@ print "result: $final\n";
             ("supportsCompletionsRequest", crate::feature_catalog::has_feature("dap.completions")),
             ("supportsModulesRequest", crate::feature_catalog::has_feature("dap.modules")),
             ("supportsDataBreakpoints", crate::feature_catalog::has_feature("dap.watchpoints")),
-            ("supportsTerminateThreadsRequest", false),
+            (
+                "supportsTerminateThreadsRequest",
+                crate::feature_catalog::has_feature("dap.terminate_threads"),
+            ),
             ("supportsGotoTargetsRequest", crate::feature_catalog::has_feature("dap.core")),
+            ("supportsRestartFrame", crate::feature_catalog::has_feature("dap.restart_frame")),
+            (
+                "supportsStepInTargetsRequest",
+                crate::feature_catalog::has_feature("dap.step_in_targets"),
+            ),
         ];
 
         for (capability, expected) in expectations {
@@ -845,6 +859,7 @@ print "result: $final\n";
             ("supportsDataBreakpoints", "setDataBreakpoints"),
             ("supportsLoadedSourcesRequest", "loadedSources"),
             ("supportsCancelRequest", "cancel"),
+            ("supportsRestartFrame", "restartFrame"),
             ("supportsStepInTargetsRequest", "stepInTargets"),
             ("supportsGotoTargetsRequest", "gotoTargets"),
             ("supportsTerminateThreadsRequest", "terminateThreads"),
@@ -933,11 +948,13 @@ print "result: $final\n";
             }
         }
 
-        // supportsTerminateThreadsRequest must be false (Perl limitation)
+        // supportsTerminateThreadsRequest matches feature advertising (now enabled)
+        let terminate_threads_expected =
+            crate::feature_catalog::has_feature("dap.terminate_threads");
         assert_eq!(
             capability_map.get("supportsTerminateThreadsRequest").and_then(|v| v.as_bool()),
-            Some(false),
-            "supportsTerminateThreadsRequest must be false — Perl has no thread termination"
+            Some(terminate_threads_expected),
+            "supportsTerminateThreadsRequest must match dap.terminate_threads feature setting"
         );
 
         Ok(())
@@ -1391,7 +1408,8 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_terminate_threads_capability_is_false() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_terminate_threads_capability_is_advertised_when_feature_enabled()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         let init = adapter.handle_request(1, "initialize", None);
         let capabilities = match init {
@@ -1399,10 +1417,11 @@ print "result: $final\n";
             _ => return Err("Expected successful initialize response".into()),
         };
         let cap_map = capabilities.as_object().ok_or("body must be object")?;
+        let expected = crate::feature_catalog::has_feature("dap.terminate_threads");
         assert_eq!(
             cap_map.get("supportsTerminateThreadsRequest").and_then(|v| v.as_bool()),
-            Some(false),
-            "supportsTerminateThreadsRequest must be false"
+            Some(expected),
+            "supportsTerminateThreadsRequest must match dap.terminate_threads feature setting"
         );
         Ok(())
     }
@@ -1915,5 +1934,77 @@ print "result: $final\n";
             "handle_goto must clear stack_frames after resume"
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_configuration_done_without_launch_should_fail() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut adapter = DebugAdapter::new();
+
+        // Call initialize first (correct)
+        let init_response = adapter.handle_request(1, "initialize", None);
+        match init_response {
+            DapMessage::Response { success: true, command, .. } => {
+                assert_eq!(command, "initialize");
+            }
+            _ => return Err("Initialize should succeed".into()),
+        }
+
+        // Call configurationDone WITHOUT calling launch first (incorrect sequence)
+        let config_response = adapter.handle_request(2, "configurationDone", None);
+
+        // This should FAIL because no session exists (launch was never called)
+        match config_response {
+            DapMessage::Response { success: false, command, message, .. } => {
+                assert_eq!(command, "configurationDone");
+                assert!(message.is_some(), "should provide error message");
+                let msg = message.ok_or("Expected error message")?;
+                assert!(
+                    msg.contains("No active debug session")
+                        || msg.contains("launch")
+                        || msg.contains("session"),
+                    "Error message should explain that launch was not called, got: {msg}"
+                );
+                Ok(())
+            }
+            DapMessage::Response { success: true, .. } => {
+                Err("configurationDone should FAIL when no launch has been called".into())
+            }
+            _ => Err("Expected response".into()),
+        }
+    }
+
+    #[test]
+    fn test_launch_before_initialize_should_fail() -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+
+        // Try to call launch WITHOUT calling initialize first (incorrect sequence)
+        let launch_response = adapter.handle_request(
+            1,
+            "launch",
+            Some(json!({
+                "program": "/tmp/test.pl"
+            })),
+        );
+
+        // This should FAIL because initialize was never called
+        match launch_response {
+            DapMessage::Response { success: false, command, message, .. } => {
+                assert_eq!(command, "launch");
+                assert!(message.is_some(), "should provide error message");
+                let msg = message.ok_or("Expected error message")?;
+                assert!(
+                    msg.contains("initialize")
+                        || msg.contains("Initialize")
+                        || msg.contains("session"),
+                    "Error message should explain that initialize is required, got: {msg}"
+                );
+                Ok(())
+            }
+            DapMessage::Response { success: true, .. } => {
+                Err("launch should FAIL when initialize has not been called".into())
+            }
+            _ => Err("Expected response".into()),
+        }
     }
 }

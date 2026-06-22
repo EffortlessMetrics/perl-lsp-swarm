@@ -10,11 +10,39 @@ use std::sync::Once;
 /// Fires at most once per LSP session, when Perl is not found anywhere.
 static PERL_NOT_FOUND_WARNED: Once = Once::new();
 
+/// Read a `.perltidyrc` profile and extract the native-formatter scalar options
+/// it maps to (line width, indent, tab/brace/else/keyword/trailing-comma).
+///
+/// Returns `None` if the file cannot be read; an unreadable or empty profile
+/// simply contributes no options. The parsing/classification is delegated to
+/// the shared `classify_perltidy_profile` machinery so the editor and the
+/// `native-format perltidy-compat` report agree on the mapping.
+fn read_perltidy_native_options(
+    path: &str,
+) -> Option<perl_lsp_rs_core::tooling::native_compat::PerltidyNativeConfigSuggestion> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    Some(perl_lsp_rs_core::tooling::native_compat::classify_perltidy_profile(&raw).suggested_config)
+}
+
 impl LspServer {
     /// Set the root path from the root URI during initialization
+    ///
+    /// Also performs one-time `.perltidyrc` discovery for the workspace so a
+    /// project-local profile applies without explicit configuration. Discovery
+    /// runs here (at initialize) rather than on every format request; an
+    /// explicitly configured `perltidy_profile` still takes precedence when the
+    /// formatter config is built.
     pub(crate) fn set_root_uri(&self, root_uri: &str) {
         let root_path = super::super::source_path_from_uri(root_uri);
+        let discovered =
+            root_path.as_deref().and_then(perl_lsp_rs_core::config::discover_perltidy_profile);
+        // Parse the discovered profile's supported scalar options once so the
+        // default native formatter can honor them (the external path passes the
+        // profile via --profile; the native path consumes scalar config fields).
+        let discovered_options = discovered.as_deref().and_then(read_perltidy_native_options);
         *self.root_path.lock() = root_path;
+        *self.discovered_perltidy_profile.lock() = discovered;
+        *self.discovered_perltidy_options.lock() = discovered_options;
     }
 
     /// Detect the Perl interpreter and surface an actionable message if not found.
@@ -205,6 +233,46 @@ mod tests {
         let server = LspServer::new();
         server.set_root_uri("untitled:Untitled-1");
         assert!(server.root_path.lock().is_none());
+        // With no file-scheme root there is no workspace to search, so discovery
+        // contributes nothing regardless of the ambient environment.
+        assert!(server.discovered_perltidy_profile.lock().is_none());
+    }
+
+    #[test]
+    fn set_root_uri_discovers_workspace_perltidyrc() -> std::io::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let profile = temp.path().join(".perltidyrc");
+        std::fs::write(&profile, "-l=100\n")?;
+
+        server.set_root_uri(&format!("file://{}", temp.path().display()));
+
+        // The workspace profile is searched first, so this assertion holds
+        // regardless of any ambient $HOME/.perltidyrc or $PERLTIDY on the host.
+        assert_eq!(
+            server.discovered_perltidy_profile.lock().as_deref(),
+            profile.to_str(),
+            "workspace .perltidyrc should be discovered and cached at initialize"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn set_root_uri_parses_discovered_perltidyrc_native_options() -> std::io::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join(".perltidyrc"), "-l=100\n-i 2\n")?;
+
+        server.set_root_uri(&format!("file://{}", temp.path().display()));
+
+        let opts = server.discovered_perltidy_options.lock().clone();
+        assert_eq!(
+            opts.as_ref().and_then(|o| o.perltidy_maximum_line_length),
+            Some(100),
+            "discovered profile's line width should be parsed for native formatting"
+        );
+        assert_eq!(opts.as_ref().and_then(|o| o.perltidy_indent_columns), Some(2));
+        Ok(())
     }
 
     #[test]

@@ -174,6 +174,19 @@ pub struct LspServer {
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
     /// Root path for module resolution
     root_path: Arc<Mutex<Option<PathBuf>>>,
+    /// Cached `.perltidyrc` profile discovered from the workspace root during
+    /// initialization. `None` means discovery has not run or found nothing; an
+    /// explicitly configured `perltidy_profile` always takes precedence over
+    /// this value when building a formatter config.
+    discovered_perltidy_profile: Arc<Mutex<Option<String>>>,
+    /// Native-formatter scalar options parsed from the discovered `.perltidyrc`
+    /// at initialization (line width, indent, brace/else placement, etc.). These
+    /// fill the corresponding formatter-config fields only when no explicit
+    /// `perltidy_profile` is configured and the user has not set the field
+    /// directly, so the default native formatter honors a project-local profile.
+    discovered_perltidy_options: Arc<
+        Mutex<Option<perl_lsp_rs_core::tooling::native_compat::PerltidyNativeConfigSuggestion>>,
+    >,
     /// Advertised server capabilities
     advertised_features: Mutex<crate::protocol::capabilities::AdvertisedFeatures>,
     /// Client supports pull diagnostics
@@ -214,7 +227,7 @@ pub struct LspServer {
     /// workspace on disk.
     pub(crate) workspace_indexing_invocation_count: Arc<std::sync::atomic::AtomicUsize>,
     /// Cache of extracted POD documentation keyed by resolved file path.
-    pod_cache: Arc<Mutex<HashMap<PathBuf, perl_pod::PodDoc>>>,
+    pod_cache: Arc<Mutex<HashMap<PathBuf, PodCacheEntry>>>,
     /// Cache of SemanticAnalyzer results keyed by (normalized_uri, content_hash).
     ///
     /// Avoids re-running the full O(n) AST traversal on repeated hover/definition
@@ -323,6 +336,12 @@ pub struct LspServer {
     pub(crate) ai_inline_backend: Mutex<
         Option<Arc<dyn perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend>>,
     >,
+}
+
+#[derive(Clone)]
+struct PodCacheEntry {
+    modified: Option<std::time::SystemTime>,
+    doc: perl_pod::PodDoc,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
