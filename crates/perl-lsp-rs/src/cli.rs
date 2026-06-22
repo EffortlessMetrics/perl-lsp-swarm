@@ -812,6 +812,64 @@ mod tests {
     }
 
     #[test]
+    fn ripr_facts_rejects_drive_path() {
+        let rc = run_ripr_facts(
+            "ripr-perl-facts-v1",
+            "C:/repo",
+            None,
+            None,
+            "owners",
+            "target/ripr/test-drive.json",
+        );
+        assert_eq!(rc, 1, "Windows drive path must exit 1");
+    }
+
+    #[test]
+    fn ripr_facts_rejects_dot_slash_root() {
+        let rc = run_ripr_facts(
+            "ripr-perl-facts-v1",
+            "./repo",
+            None,
+            None,
+            "owners",
+            "target/ripr/test-dot-slash.json",
+        );
+        assert_eq!(rc, 1, "./ prefix must exit 1");
+    }
+
+    #[test]
+    fn ripr_facts_rejects_empty_fact_classes() {
+        let rc = run_ripr_facts(
+            "ripr-perl-facts-v1",
+            ".",
+            None,
+            None,
+            "",
+            "target/ripr/test-empty-classes.json",
+        );
+        assert_eq!(rc, 1, "empty fact_classes must exit 1");
+    }
+
+    #[test]
+    fn ripr_facts_accepts_valid_invocation() {
+        let out = "target/ripr/test-valid-invocation.json";
+        let rc = run_ripr_facts(
+            "ripr-perl-facts-v1",
+            ".",
+            Some("origin/main"),
+            Some("HEAD"),
+            "files,owners,changes,tests,oracles",
+            out,
+        );
+        assert_eq!(rc, 0, "valid invocation must exit 0");
+        let written = std::fs::read_to_string(out).expect("packet must be written");
+        let parsed: serde_json::Value = serde_json::from_str(&written).expect("packet must be JSON");
+        assert_eq!(parsed["packet_status"], "unavailable");
+        // Clean up.
+        let _ = std::fs::remove_file(out);
+    }
+
+    #[test]
     fn ripr_facts_deduplicates_and_orders_fact_classes() {
         let normalized = normalize_fact_classes("changes,owners,owners,changes,tests")
             .expect("valid classes normalize");
