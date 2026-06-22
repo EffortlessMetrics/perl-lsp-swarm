@@ -969,11 +969,19 @@ impl LspServer {
             if self.runtime_tuning.diagnostic_mode
                 == perl_lsp_rs_core::runtime::tuning::DiagnosticMode::SyntaxOnly
             {
+                // Capture the generation Arc alongside the document clone so we can
+                // detect a concurrent didChange that arrives during syntax analysis.
                 let doc_snapshot = {
                     let documents = self.documents.lock();
-                    self.get_document(&documents, uri_str).cloned()
+                    self.get_document(&documents, uri_str).map(|doc| {
+                        (
+                            doc.clone(),
+                            std::sync::Arc::clone(&doc.generation),
+                            doc.generation.load(std::sync::atomic::Ordering::SeqCst),
+                        )
+                    })
                 };
-                if let Some(doc) = doc_snapshot {
+                if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
                     let markup_message_support =
                         self.client_capabilities.lock().markup_message_support;
                     let items = Self::syntax_only_lsp_diagnostics(
@@ -983,6 +991,18 @@ impl LspServer {
                         &doc.rope,
                         markup_message_support,
                     );
+                    // Generation-aware staleness guard: discard if a didChange arrived
+                    // while we were analysing the parse errors.
+                    let current_gen = generation.load(std::sync::atomic::Ordering::SeqCst);
+                    if current_gen != gen_at_snapshot {
+                        tracing::debug!(
+                            uri = uri_str,
+                            gen_at_snapshot,
+                            current_gen,
+                            "Skipping stale syntax-only diagnostic (generation advanced during computation)"
+                        );
+                        return Ok(Some(json!({ "kind": "full", "items": [] })));
+                    }
                     return Ok(Some(json!({
                         "kind": "full",
                         "items": items,
@@ -1032,11 +1052,12 @@ impl LspServer {
                 // diagnostics were being computed, discard this result — the next
                 // diagnostic request will compute from the latest version.  Mirrors the
                 // guard already present in the push path.
-                if generation.load(std::sync::atomic::Ordering::SeqCst) != gen_at_snapshot {
+                let current_gen = generation.load(std::sync::atomic::Ordering::SeqCst);
+                if current_gen != gen_at_snapshot {
                     tracing::debug!(
                         uri = uri_str,
                         gen_at_snapshot,
-                        current_gen = generation.load(std::sync::atomic::Ordering::SeqCst),
+                        current_gen,
                         "Skipping stale document diagnostic (generation advanced during computation)"
                     );
                     // Return an empty full report with no resultId so the client
