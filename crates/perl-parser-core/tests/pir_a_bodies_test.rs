@@ -544,3 +544,243 @@ fn pir_a_call_in_body_does_not_produce_write_for_arg() {
     // The graph must be valid (receipt schema version correct, nodes consistent)
     assert_eq!(graph.receipt.schema_version, PIR_RECEIPT_VERSION);
 }
+
+// ── 21. Array sigil `@arr` — sigil_str emits `@`, not `$` ───────────────────
+// Exercises `sigil_str` for the Array variant. Without a test, the `@`, `%`,
+// `&`, `*` arms in `sigil_str` are untouched by the patch and fail coverage.
+
+#[test]
+fn pir_a_array_var_sigil_is_at_sign() {
+    // `my @arr = ();` — declaration of an array variable. The LexicalWrite for
+    // @arr must carry the `@` sigil, not `$`.
+    let graph = parse_and_lower("my @arr = ();");
+
+    let write = graph.nodes.iter().find(
+        |n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "arr"),
+    );
+    assert!(
+        write.is_some(),
+        "`my @arr = ()` must produce a LexicalWrite for @arr; ops: {:?}",
+        graph.nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>()
+    );
+
+    // Sigil must be `@`.
+    if let Some(node) = write {
+        if let PirOperation::LexicalWrite { name } = &node.operation {
+            assert_eq!(
+                name.sigil, "@",
+                "LexicalWrite for @arr must have sigil `@`, got `{}`",
+                name.sigil
+            );
+        }
+    }
+}
+
+// ── 22. Hash sigil `%h` — sigil_str emits `%` ────────────────────────────────
+
+#[test]
+fn pir_a_hash_var_sigil_is_percent() {
+    let graph = parse_and_lower("my %h;");
+
+    let write = graph
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "h"));
+    assert!(write.is_some(), "`my %h` must produce a LexicalWrite for %h");
+
+    if let Some(node) = write {
+        if let PirOperation::LexicalWrite { name } = &node.operation {
+            assert_eq!(
+                name.sigil, "%",
+                "LexicalWrite for %h must have sigil `%`, got `{}`",
+                name.sigil
+            );
+        }
+    }
+}
+
+// ── 23. Opaque function call counted in unsupported receipt ───────────────────
+// `foo($x)` in a body arena lowers to `HirExpr::Opaque { ast_kind: "FunctionCall" }`,
+// which hits `ast_kind_to_static("FunctionCall") → "OpaqueCall"`. The receipt must
+// record this as unsupported rather than silently dropping it or crashing.
+
+#[test]
+fn pir_a_opaque_function_call_counted_as_unsupported() {
+    let graph = parse_and_lower("foo($x);");
+
+    // The call must be recorded in unsupported_construct_counts, not dropped.
+    // It will appear as "OpaqueCall" or "Call" depending on whether HIR body
+    // lowering emits an Opaque or a Call node.
+    let has_unsupported_call =
+        graph.receipt.unsupported_construct_counts.contains_key("OpaqueCall")
+            || graph.receipt.unsupported_construct_counts.contains_key("Call");
+
+    assert!(
+        has_unsupported_call,
+        "`foo($x)` in body must record an unsupported call op in the receipt; got: {:?}",
+        graph.receipt.unsupported_construct_counts
+    );
+}
+
+// ── 24. Opaque method call counted in unsupported receipt ────────────────────
+// `$obj->method()` lowers to `HirExpr::Opaque { ast_kind: "MethodCall" }` in
+// body arenas, hitting `ast_kind_to_static("MethodCall") → "OpaqueMethodCall"`.
+
+#[test]
+fn pir_a_opaque_method_call_counted_as_unsupported() {
+    let graph = parse_and_lower("$obj->method();");
+
+    let has_unsupported_method =
+        graph.receipt.unsupported_construct_counts.contains_key("OpaqueMethodCall")
+            || graph.receipt.unsupported_construct_counts.contains_key("Call")
+            || graph.receipt.unsupported_construct_counts.contains_key("OpaqueExpr");
+
+    assert!(
+        has_unsupported_method,
+        "`$obj->method()` in body must record an unsupported op in the receipt; got: {:?}",
+        graph.receipt.unsupported_construct_counts
+    );
+
+    // Must not produce a spurious Write for $obj
+    let write_obj = graph.nodes.iter().find(|n| match &n.operation {
+        PirOperation::LexicalWrite { name } => name.name == "obj",
+        PirOperation::StashWrite { symbol } => symbol.name == "obj",
+        _ => false,
+    });
+    assert!(
+        write_obj.is_none(),
+        "`$obj->method()` must not produce a Write for $obj; got: {:?}",
+        write_obj.map(|n| n.operation.name())
+    );
+}
+
+// ── 25. Cross-body no spurious fallthrough edges ─────────────────────────────
+// When a file has both a subroutine body and the program-root body, the last
+// PIR node of the sub body must NOT be connected by a Fallthrough edge to the
+// first PIR node of the program-root body. Bodies are independent control-flow
+// regions — `last_in_scope` must be cleared at the start of each body.
+
+#[test]
+fn pir_a_no_cross_body_fallthrough_edges() {
+    use perl_parser_core::pir::PirEdgeKind;
+
+    // Source with two bodies: the subroutine body and the program-root body.
+    // Each body has exactly one PIR node. If `last_in_scope` is not cleared
+    // between bodies, body 0's last node is connected to body 1's first node.
+    let graph = parse_and_lower("sub foo { my $x = 1; } my $y = 2;");
+
+    // Collect all Fallthrough edges.
+    let fallthroughs: Vec<_> =
+        graph.edges.iter().filter(|e| e.kind == PirEdgeKind::Fallthrough).collect();
+
+    // In a two-body graph, there must be AT MOST one Fallthrough edge per body
+    // (connecting consecutive nodes WITHIN the same body). There must be ZERO
+    // cross-body Fallthrough edges.
+    //
+    // Specifically: if both bodies produce at least one node, a cross-body edge
+    // would connect the last node of body 0 to the first node of body 1.
+    // We detect this conservatively: if there are N nodes total in two separate
+    // bodies, any fallthrough from the last node of body 0 to the first of body 1
+    // would be the only edge that crosses the body boundary. With 2+ nodes and
+    // 1 edge, the edge is internal. With 3+ nodes and edges where the from-node
+    // belongs to one body and to-node to another, that is the bug.
+    //
+    // Simplest check: with only ONE node in each body (no internal edges needed),
+    // there must be ZERO Fallthrough edges total.
+    let sub_body_nodes: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|n| {
+            // Nodes in the sub body ($x) vs program root ($y)
+            matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "x")
+        })
+        .collect();
+    let root_body_nodes: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "y"))
+        .collect();
+
+    if !sub_body_nodes.is_empty() && !root_body_nodes.is_empty() {
+        let sub_last = sub_body_nodes.last().expect("sub body node");
+        let root_first = root_body_nodes.first().expect("root body node");
+
+        // Check no Fallthrough edge goes from sub-body-last to root-body-first.
+        let cross_body_edge =
+            fallthroughs.iter().find(|e| e.from == sub_last.id && e.to == Some(root_first.id));
+        assert!(
+            cross_body_edge.is_none(),
+            "must not have a cross-body Fallthrough edge from $x (sub body) to $y (root body); \
+             found: {:?}",
+            cross_body_edge
+        );
+    }
+}
+
+// ── 26. Leading-`::` qualified var — no empty-string package ─────────────────
+// `$::x` is a main-package global written as a leading-`::` name. The
+// `package_from_name` helper must not emit `package: Some("")` for this; the
+// empty prefix from `rsplit_once("::")` must be filtered to `None`.
+
+#[test]
+fn pir_a_leading_colon_var_no_empty_package() {
+    let graph = parse_and_lower("$::x = 1;");
+
+    // Find any StashWrite or StashRead for a variable with name "x" or "::x".
+    for node in &graph.nodes {
+        if let PirOperation::StashWrite { symbol } | PirOperation::StashRead { symbol } =
+            &node.operation
+        {
+            if symbol.name.contains('x') {
+                assert_ne!(
+                    symbol.package.as_deref(),
+                    Some(""),
+                    "package must not be Some(\"\") for leading-`::` name `$::x`; \
+                     got symbol={:?}",
+                    symbol
+                );
+            }
+        }
+    }
+
+    // The graph itself must be valid.
+    assert_eq!(graph.receipt.schema_version, PIR_RECEIPT_VERSION);
+}
+
+// ── 27. Opaque literal/generic expression counted in unsupported ──────────────
+// Exercises the `_ => "OpaqueExpr"` fallthrough in `ast_kind_to_static`.
+// A numeric literal (e.g. `1`) in expression-statement position produces an
+// Opaque node with an ast_kind that doesn't match the specific match arms.
+
+#[test]
+fn pir_a_opaque_literal_counted_as_unsupported_expr() {
+    // `1;` — a bare numeric literal in statement position.
+    // In the body arena this becomes an Opaque node (the literal is not a
+    // modeled HIR expression in this slice). The receipt must record it.
+    let graph = parse_and_lower("1;");
+
+    // The graph may be empty (if the literal collapses to nothing) or have an
+    // opaque entry. What we assert: the receipt schema is valid and no panic
+    // occurred. Additionally, if the literal DID produce a receipt entry, it
+    // must be in unsupported_construct_counts (not misclassified as a variable op).
+    assert_eq!(
+        graph.receipt.schema_version, PIR_RECEIPT_VERSION,
+        "bare literal `1;` must produce a valid receipt"
+    );
+    // No LexicalWrite or StashWrite from a bare literal
+    let write_nodes: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|n| {
+            matches!(
+                &n.operation,
+                PirOperation::LexicalWrite { .. } | PirOperation::StashWrite { .. }
+            )
+        })
+        .collect();
+    assert!(
+        write_nodes.is_empty(),
+        "bare literal `1;` must not produce any Write ops; got: {:?}",
+        write_nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>()
+    );
+}

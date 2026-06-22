@@ -422,6 +422,13 @@ impl BodyLowerer {
     }
 
     fn lower_body(&mut self, body: &HirBody, _body_id: HirBodyId, file: &HirFile) {
+        // Clear the intra-scope fallthrough state between bodies. Without this,
+        // the last node of body N would be connected by a spurious Fallthrough
+        // edge to the first node of body N+1 — incorrect because bodies are
+        // independent control-flow regions (sub bodies do not fall through into
+        // the program root body or into each other).
+        self.last_in_scope.clear();
+
         // Walk the root block's statements.
         if let Some(root_block) = body.block(body.root_block) {
             for stmt_id in &root_block.stmts {
@@ -721,8 +728,16 @@ fn sigil_str(sigil: &Sigil) -> String {
 }
 
 /// Extract package prefix from a qualified name (`Foo::x` → `Some("Foo")`).
+///
+/// Leading-`::` names (e.g. `::foo`) split into `("", "foo")`. The empty-string
+/// package half is filtered out so the result is `None` rather than `Some("")`,
+/// which would be a confusing artifact. Bare-name is the conservative fallback.
 fn package_from_name(name: &str) -> Option<String> {
-    name.rsplit_once("::").map(|(pkg, _)| pkg.to_string())
+    name.rsplit_once("::").and_then(
+        |(pkg, _)| {
+            if pkg.is_empty() { None } else { Some(pkg.to_string()) }
+        },
+    )
 }
 
 /// Map a known-bad `ast_kind` string to a static str for the unsupported counter.
