@@ -77,7 +77,8 @@ impl DiagnosticCode {
             | Self::MissingReturn
             | Self::InvalidPrototype
             | Self::RoleConflict
-            | Self::MissingPodCoverage => DiagnosticCategory::Subroutine,
+            | Self::MissingPodCoverage
+            | Self::UnusedPrivateSubroutine => DiagnosticCategory::Subroutine,
 
             Self::BarewordFilehandle
             | Self::TwoArgOpen

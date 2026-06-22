@@ -219,6 +219,12 @@ pub(super) fn handle_identifier(
     pragma_state: &PragmaState,
     strict_subs_mode: bool,
 ) {
+    // A bare identifier that matches a private sub name counts as a call/use.
+    // This covers `_helper;` (no parens) style invocations.
+    if super::is_private_sub_name(name) {
+        context.mark_private_sub_used(name);
+    }
+
     // Check for barewords under strict mode, excluding hash keys
     // Hybrid check: Fast path for immediate hash keys (depth 1), then known functions, then deep check
     if strict_subs_mode

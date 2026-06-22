@@ -20,6 +20,13 @@ pub(super) fn handle_function_call<'a>(
     context: &AnalysisContext<'a>,
     strict_vars_mode: bool,
 ) {
+    // A bare function call like `_helper(...)` counts as a use of the private sub.
+    // Strip any leading `&` sigil that the parser may include in the name.
+    let bare_name = name.strip_prefix('&').unwrap_or(name);
+    if super::is_private_sub_name(bare_name) {
+        context.mark_private_sub_used(bare_name);
+    }
+
     if let Some((sigil, var_name)) = analyzer.extract_name_like_variable(name) {
         analyzer.record_variable_use(
             scope,

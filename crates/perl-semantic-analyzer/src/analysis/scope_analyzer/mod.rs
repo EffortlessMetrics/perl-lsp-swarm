@@ -87,6 +87,9 @@ pub enum IssueKind {
     UninitializedVariable,
     /// Capture variable (`$1`, `$2`, etc.) used with no preceding regex match in scope.
     CaptureVarWithoutRegexMatch,
+    /// A private subroutine (name starts with `_` followed by at least one letter or underscore)
+    /// is defined but never called anywhere in the same file.
+    UnusedPrivateSubroutine,
 }
 
 /// A single scope-analysis finding with location and human-readable description.
@@ -378,6 +381,16 @@ pub(super) enum ExtractedName<'a> {
     Full(String),
 }
 
+/// Tracks a private subroutine definition for unused-sub detection.
+pub(super) struct PrivateSubEntry {
+    /// The subroutine name (without any sigil, e.g. `_helper`).
+    name: String,
+    /// Byte offset of the subroutine's `sub` keyword (used for diagnostics).
+    offset: usize,
+    /// Whether the subroutine has been referenced (called) in this file.
+    is_used: RefCell<bool>,
+}
+
 pub(super) struct AnalysisContext<'a> {
     code: &'a str,
     pragma_map: &'a [(Range<usize>, PragmaState)],
@@ -386,6 +399,10 @@ pub(super) struct AnalysisContext<'a> {
     line_starts: RefCell<Option<Vec<usize>>>,
     /// Current package name, updated as `package` statements are traversed.
     current_package: RefCell<String>,
+    /// File-level registry of private subroutines (`sub _name { }`) pending
+    /// unused-sub analysis.  Populated during the first pass over subroutine
+    /// declarations; entries are marked used when a matching call-site is seen.
+    private_subs: RefCell<Vec<PrivateSubEntry>>,
 }
 
 impl<'a> AnalysisContext<'a> {
@@ -397,6 +414,7 @@ impl<'a> AnalysisContext<'a> {
             imported_barewords: collect_imported_barewords(ast),
             line_starts: RefCell::new(None),
             current_package: RefCell::new("main".to_string()),
+            private_subs: RefCell::new(Vec::new()),
         }
     }
 
@@ -425,6 +443,33 @@ impl<'a> AnalysisContext<'a> {
         match starts.binary_search(&offset) {
             Ok(idx) => idx + 1,
             Err(idx) => idx,
+        }
+    }
+
+    /// Register a package-scoped private subroutine definition.
+    ///
+    /// A name qualifies as private when it starts with `_` followed by at
+    /// least one ASCII letter or `_` (e.g. `_helper`, `_do_work`).  Single
+    /// underscore (`_`) and dunder names (`__ANON__`, `__private`) are
+    /// excluded because they have special semantics in Perl.
+    fn register_private_sub(&self, name: &str, offset: usize) {
+        if !is_private_sub_name(name) {
+            return;
+        }
+        self.private_subs.borrow_mut().push(PrivateSubEntry {
+            name: name.to_string(),
+            offset,
+            is_used: RefCell::new(false),
+        });
+    }
+
+    /// Mark a private subroutine name as used (called from somewhere in the file).
+    fn mark_private_sub_used(&self, name: &str) {
+        let subs = self.private_subs.borrow();
+        for entry in subs.iter() {
+            if entry.name == name {
+                *entry.is_used.borrow_mut() = true;
+            }
         }
     }
 
@@ -613,6 +658,9 @@ impl ScopeAnalyzer {
 
         // Collect all unused variables from all scopes
         self.collect_unused_variables(&root_scope, &mut issues, &context);
+
+        // Collect unused private subroutines (file-level pass)
+        self.collect_unused_private_subs(&context, &mut issues);
 
         issues
     }
@@ -1255,6 +1303,44 @@ impl ScopeAnalyzer {
         });
     }
 
+    /// Emit `UnusedPrivateSubroutine` diagnostics for any private subs that were
+    /// defined but never called anywhere in the file.
+    pub(super) fn collect_unused_private_subs(
+        &self,
+        context: &AnalysisContext<'_>,
+        issues: &mut Vec<ScopeIssue>,
+    ) {
+        let subs = context.private_subs.borrow();
+        for entry in subs.iter() {
+            if *entry.is_used.borrow() {
+                continue;
+            }
+            let sub_keyword_len = "sub".len();
+            let name_start = entry.offset + sub_keyword_len;
+            // Scan forward from the `sub` keyword past whitespace to find the name.
+            let code_bytes = context.code.as_bytes();
+            let mut name_start_actual = name_start;
+            while name_start_actual < code_bytes.len()
+                && code_bytes[name_start_actual].is_ascii_whitespace()
+            {
+                name_start_actual += 1;
+            }
+            let name_end = name_start_actual + entry.name.len();
+            let safe_start = name_start_actual.min(context.code.len());
+            let safe_end = name_end.min(context.code.len());
+            issues.push(ScopeIssue {
+                kind: IssueKind::UnusedPrivateSubroutine,
+                variable_name: entry.name.clone(),
+                line: context.get_line(entry.offset),
+                range: (safe_start, safe_end),
+                description: format!(
+                    "Private subroutine '{}' is defined but never called in this file",
+                    entry.name
+                ),
+            });
+        }
+    }
+
     pub(super) fn extract_variable_name<'a>(&self, node: &'a Node) -> ExtractedName<'a> {
         match &node.kind {
             NodeKind::Variable { sigil, name } => ExtractedName::Parts(sigil, name),
@@ -1448,6 +1534,12 @@ impl ScopeAnalyzer {
                 IssueKind::CaptureVarWithoutRegexMatch => {
                     format!(
                         "Perform a regex match (=~ /.../) before using capture variable '{}'",
+                        issue.variable_name
+                    )
+                }
+                IssueKind::UnusedPrivateSubroutine => {
+                    format!(
+                        "Remove unused private subroutine '{}' or call it somewhere in this file",
                         issue.variable_name
                     )
                 }
@@ -1870,6 +1962,25 @@ pub(super) fn is_topic_defaulting_builtin(name: &str) -> bool {
 /// Topic-defaulting builtins that also modify `$_` when called without args.
 pub(super) fn is_topic_modifying_builtin(name: &str) -> bool {
     matches!(name, "chomp" | "chop")
+}
+
+/// Returns `true` when `name` matches the private-subroutine naming convention.
+///
+/// A name is considered private when:
+/// - It starts with `_`
+/// - The second character is an ASCII letter (not another `_`)
+///
+/// This deliberately excludes single `_` (special Perl topic/discard) and
+/// dunder names (`__ANON__`, `__private`, etc.) whose second byte is `_`.
+///
+/// Examples that return `true`: `_helper`, `_do_work`, `_validate`
+/// Examples that return `false`: `_` (single underscore), `__ANON__`, `__data`
+pub(super) fn is_private_sub_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.len() < 2 {
+        return false;
+    }
+    bytes[0] == b'_' && bytes[1].is_ascii_alphabetic()
 }
 
 fn is_explicit_scalar_reference_deref(source: &str) -> bool {

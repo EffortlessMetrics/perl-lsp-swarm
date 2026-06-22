@@ -95,6 +95,8 @@ pub enum DiagnosticCode {
     RoleConflict,
     /// Exported subroutine lacks POD documentation
     MissingPodCoverage,
+    /// Unused private subroutine: `sub _name` declared but never called in this file.
+    UnusedPrivateSubroutine,
 
     // Best practices (PL400-PL499)
     /// Bareword filehandle usage

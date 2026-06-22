@@ -122,6 +122,12 @@ pub(super) fn handle_subroutine<'a>(
     issues: &mut Vec<ScopeIssue>,
     context: &AnalysisContext<'a>,
 ) {
+    // Register package-scoped private subs (no declarator, name starting with `_[a-zA-Z]`)
+    // for unused-sub detection after the full file has been analyzed.
+    if let NodeKind::Subroutine { name: Some(sub_name), declarator: None, .. } = &node.kind {
+        context.register_private_sub(sub_name, node.location.start);
+    }
+
     let sub_scope = Rc::new(Scope::with_parent(scope.clone()));
 
     // Check for duplicate parameters and shadowing
