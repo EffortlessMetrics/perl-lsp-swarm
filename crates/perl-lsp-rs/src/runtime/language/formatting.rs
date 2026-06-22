@@ -34,77 +34,28 @@ fn document_not_open_error(uri: &str) -> JsonRpcError {
 }
 
 impl LspServer {
-    /// Parse the native scalar options for an explicitly configured
-    /// `perltidy_profile`, cached by path so the file is read only when the
-    /// configured path changes. Returns `None` if the file cannot be read.
-    fn explicit_perltidy_native_options(
-        &self,
-        path: &str,
-    ) -> Option<perl_lsp_rs_core::tooling::native_compat::PerltidyNativeConfigSuggestion> {
-        if let Some((cached_path, options)) = self.explicit_perltidy_options.lock().as_ref() {
-            if cached_path == path {
-                return Some(options.clone());
-            }
-        }
-        let options = super::super::read_perltidy_native_options(path)?;
-        *self.explicit_perltidy_options.lock() = Some((path.to_string(), options.clone()));
-        Some(options)
-    }
-
     /// Build a `PerlTidyConfig` from the current server configuration.
     ///
-    /// An explicitly configured `perltidy_profile` is used as-is, and its
-    /// contents are parsed to fill native scalar fields the user has not set.
-    /// When no profile is configured, the `.perltidyrc` discovered from the
-    /// workspace root at initialization is used so project-local formatting
-    /// rules apply automatically — both its path (for the external adapter) and
-    /// its parsed scalar options (so the default native formatter honors it).
-    /// When neither is present, `None` lets the formatter fall back to its own
-    /// defaults.
-    ///
-    /// Precedence per field: an explicitly set value wins; otherwise the
-    /// effective profile's parsed value fills the gap. The effective profile is
-    /// the explicit `perltidy_profile` when configured, else the discovered one —
-    /// the two are never mixed.
+    /// The native scalar fields are read directly from the server config, which
+    /// already reflects the correct precedence: built-in defaults, then the
+    /// discovered `.perltidyrc` options applied at initialize (see
+    /// `set_root_uri`), then user `.perl-lsp.toml` / `didChangeConfiguration`.
+    /// The profile *path* used for the external adapter is the explicitly
+    /// configured `perltidy_profile` when set, else the discovered one.
     fn build_perltidy_config(&self) -> PerlTidyConfig {
-        // Resolve the effective profile and its parsed native options without
-        // holding the config lock across the (possible) file read.
-        let explicit_profile = self.config.lock().perltidy_profile.clone();
-        let (profile, profile_options) = match explicit_profile {
-            // Explicit profile configured: use it, and parse *its* contents for
-            // native scalar fills (cached by path). Never mix in options from a
-            // different discovered profile.
-            Some(explicit) => {
-                let options = self.explicit_perltidy_native_options(&explicit);
-                (Some(explicit), options)
-            }
-            None => (
-                self.discovered_perltidy_profile.lock().clone(),
-                self.discovered_perltidy_options.lock().clone(),
-            ),
-        };
         let config = self.config.lock();
-        let discovered = profile_options.as_ref();
+        let profile = config
+            .perltidy_profile
+            .clone()
+            .or_else(|| self.discovered_perltidy_profile.lock().clone());
         PerlTidyConfig {
-            maximum_line_length: config
-                .perltidy_maximum_line_length
-                .or_else(|| discovered.and_then(|d| d.perltidy_maximum_line_length)),
-            indent_columns: config
-                .perltidy_indent_columns
-                .or_else(|| discovered.and_then(|d| d.perltidy_indent_columns)),
-            tabs: config.perltidy_tabs.or_else(|| discovered.and_then(|d| d.perltidy_tabs)),
-            opening_brace_on_new_line: config
-                .perltidy_opening_brace_on_new_line
-                .or_else(|| discovered.and_then(|d| d.perltidy_opening_brace_on_new_line)),
-            cuddled_else: config
-                .perltidy_cuddled_else
-                .or_else(|| discovered.and_then(|d| d.perltidy_cuddled_else)),
-            space_after_keyword: config
-                .perltidy_space_after_keyword
-                .or_else(|| discovered.and_then(|d| d.perltidy_space_after_keyword)),
-            add_trailing_commas: config
-                .perltidy_add_trailing_commas
-                .or_else(|| discovered.and_then(|d| d.perltidy_add_trailing_commas)),
+            maximum_line_length: config.perltidy_maximum_line_length,
+            indent_columns: config.perltidy_indent_columns,
+            tabs: config.perltidy_tabs,
+            opening_brace_on_new_line: config.perltidy_opening_brace_on_new_line,
+            cuddled_else: config.perltidy_cuddled_else,
+            space_after_keyword: config.perltidy_space_after_keyword,
+            add_trailing_commas: config.perltidy_add_trailing_commas,
             vertical_alignment: config.perltidy_vertical_alignment,
             block_comment_indentation: config.perltidy_block_comment_indentation,
             profile,
@@ -507,126 +458,23 @@ mod tests {
         );
     }
 
-    fn discovered_options(
-        profile: &str,
-    ) -> perl_lsp_rs_core::tooling::native_compat::PerltidyNativeConfigSuggestion {
-        perl_lsp_rs_core::tooling::native_compat::classify_perltidy_profile(profile)
-            .suggested_config
-    }
-
     #[test]
-    fn build_perltidy_config_applies_discovered_native_options_when_unset() {
+    fn build_perltidy_config_reads_native_scalars_from_server_config() {
+        // The native scalar fields are read straight from the server config,
+        // which already reflects defaults + discovered-profile + user config.
         let server = LspServer::new();
         {
             let mut config = server.config.lock();
-            config.perltidy_profile = None;
-            config.perltidy_maximum_line_length = None;
-            config.perltidy_indent_columns = None;
-            config.perltidy_tabs = None;
-        }
-        *server.discovered_perltidy_profile.lock() = Some("/ws/.perltidyrc".to_string());
-        *server.discovered_perltidy_options.lock() =
-            Some(discovered_options("-l=100\n-i 2\n-nt\n"));
-
-        let config = server.build_perltidy_config();
-
-        assert_eq!(
-            config.maximum_line_length,
-            Some(100),
-            "native formatter should honor the discovered profile's line width"
-        );
-        assert_eq!(config.indent_columns, Some(2));
-        assert_eq!(config.tabs, Some(false));
-        assert_eq!(config.profile.as_deref(), Some("/ws/.perltidyrc"));
-    }
-
-    #[test]
-    fn build_perltidy_config_explicit_field_overrides_discovered_option() {
-        let server = LspServer::new();
-        {
-            let mut config = server.config.lock();
-            config.perltidy_profile = None;
-            config.perltidy_maximum_line_length = Some(72);
-        }
-        *server.discovered_perltidy_profile.lock() = Some("/ws/.perltidyrc".to_string());
-        *server.discovered_perltidy_options.lock() = Some(discovered_options("-l=100\n"));
-
-        let config = server.build_perltidy_config();
-
-        assert_eq!(
-            config.maximum_line_length,
-            Some(72),
-            "an explicitly configured field must win over the discovered profile option"
-        );
-    }
-
-    #[test]
-    fn build_perltidy_config_ignores_discovered_options_when_explicit_profile_set() {
-        let server = LspServer::new();
-        {
-            let mut config = server.config.lock();
-            config.perltidy_profile = Some("/explicit/.perltidyrc".to_string());
-            config.perltidy_maximum_line_length = None;
-        }
-        *server.discovered_perltidy_profile.lock() = Some("/ws/.perltidyrc".to_string());
-        *server.discovered_perltidy_options.lock() = Some(discovered_options("-l=100\n"));
-
-        let config = server.build_perltidy_config();
-
-        assert_eq!(config.profile.as_deref(), Some("/explicit/.perltidyrc"));
-        assert!(
-            config.maximum_line_length.is_none(),
-            "discovered options must not be mixed in when an explicit profile is configured \
-             (and the non-existent explicit profile contributes nothing)"
-        );
-    }
-
-    #[test]
-    fn build_perltidy_config_applies_explicit_profile_native_options() -> std::io::Result<()> {
-        let server = LspServer::new();
-        let temp = tempfile::tempdir()?;
-        let profile = temp.path().join(".perltidyrc");
-        std::fs::write(&profile, "-l=120\n-i 3\n")?;
-        {
-            let mut config = server.config.lock();
-            config.perltidy_profile = profile.to_str().map(ToOwned::to_owned);
-            config.perltidy_maximum_line_length = None;
-            config.perltidy_indent_columns = None;
+            config.perltidy_maximum_line_length = Some(123);
+            config.perltidy_indent_columns = Some(3);
+            config.perltidy_tabs = Some(true);
         }
 
         let config = server.build_perltidy_config();
 
-        assert_eq!(config.profile.as_deref(), profile.to_str());
-        assert_eq!(
-            config.maximum_line_length,
-            Some(120),
-            "native formatter should honor an explicitly configured profile's options"
-        );
+        assert_eq!(config.maximum_line_length, Some(123));
         assert_eq!(config.indent_columns, Some(3));
-        Ok(())
-    }
-
-    #[test]
-    fn build_perltidy_config_explicit_field_wins_over_explicit_profile_options()
-    -> std::io::Result<()> {
-        let server = LspServer::new();
-        let temp = tempfile::tempdir()?;
-        let profile = temp.path().join(".perltidyrc");
-        std::fs::write(&profile, "-l=120\n")?;
-        {
-            let mut config = server.config.lock();
-            config.perltidy_profile = profile.to_str().map(ToOwned::to_owned);
-            config.perltidy_maximum_line_length = Some(80);
-        }
-
-        let config = server.build_perltidy_config();
-
-        assert_eq!(
-            config.maximum_line_length,
-            Some(80),
-            "an explicitly set field must win over the explicit profile's parsed option"
-        );
-        Ok(())
+        assert_eq!(config.tabs, Some(true));
     }
 
     #[test]
