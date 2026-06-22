@@ -40,7 +40,10 @@ pub fn lower_ast(ast: &Node) -> HirFile {
     lowerer.record_pragma_state_facts();
     let mut file = lowerer.finish();
     // Second pass: lower bodies and attach to HirFile.
+    // body_model_version is set AFTER the second pass succeeds so that
+    // consumers see version==1 only when bodies are actually attached.
     lower_bodies_into_file(ast, &mut file);
+    file.body_model_version = HIR_BODY_MODEL_VERSION;
     file
 }
 
@@ -108,7 +111,9 @@ impl Lowerer {
             bareword_table: self.bareword_table,
             bodies: Vec::new(),
             body_owners: BTreeMap::new(),
-            body_model_version: HIR_BODY_MODEL_VERSION,
+            // Version 0 = bodies not yet attached. lower_ast() sets this to
+            // HIR_BODY_MODEL_VERSION after lower_bodies_into_file() returns.
+            body_model_version: 0,
         }
     }
 
@@ -2403,8 +2408,14 @@ fn goto_label(target: &Node) -> Option<String> {
 fn lower_bodies_into_file(ast: &Node, file: &mut HirFile) {
     // Program-root body (index 0 in bodies vec).
     {
+        let root_scope = file
+            .scope_graph
+            .scopes
+            .first()
+            .map(|s| s.id)
+            .unwrap_or_else(|| HirScopeId::from_index(0));
         let root_body =
-            lower_body_from_ast(ast, BodyOwnerKind::ProgramRoot, &file.scope_graph.bindings);
+            lower_body_from_ast(ast, BodyOwnerKind::ProgramRoot, root_scope, &file.scope_graph);
         let body_id = HirBodyId(file.bodies.len() as u32);
         file.body_owners.insert(BodyOwner::new(BodyOwnerKind::ProgramRoot, 0), body_id);
         file.bodies.push(root_body);
@@ -2431,8 +2442,11 @@ fn collect_sub_bodies(
             let owner_kind = BodyOwnerKind::Subroutine { name: name.clone() };
             let ordinal = *sub_ordinal;
             *sub_ordinal += 1;
+            // Find the scope frame created for this sub's body by matching
+            // the body block's source range and scope kind.
+            let body_scope = find_body_scope(&file.scope_graph, body.location);
             let hir_body =
-                lower_body_from_ast(body, owner_kind.clone(), &file.scope_graph.bindings);
+                lower_body_from_ast(body, owner_kind.clone(), body_scope, &file.scope_graph);
             let body_id = HirBodyId(file.bodies.len() as u32);
             file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
             file.bodies.push(hir_body);
@@ -2443,8 +2457,9 @@ fn collect_sub_bodies(
             let owner_kind = BodyOwnerKind::Method { name: name.clone() };
             let ordinal = *method_ordinal;
             *method_ordinal += 1;
+            let body_scope = find_body_scope(&file.scope_graph, body.location);
             let hir_body =
-                lower_body_from_ast(body, owner_kind.clone(), &file.scope_graph.bindings);
+                lower_body_from_ast(body, owner_kind.clone(), body_scope, &file.scope_graph);
             let body_id = HirBodyId(file.bodies.len() as u32);
             file.body_owners.insert(BodyOwner::new(owner_kind, ordinal), body_id);
             file.bodies.push(hir_body);
@@ -2473,8 +2488,16 @@ fn collect_sub_bodies(
 ///
 /// For the program root, `ast` is the `Program` node.
 /// For a subroutine body, `ast` is the `Block` node inside the sub.
-fn lower_body_from_ast(ast: &Node, owner: BodyOwnerKind, bindings: &[Binding]) -> HirBody {
-    let mut builder = BodyBuilder2::new(bindings);
+///
+/// `start_scope` is the innermost scope frame that encloses this body — used
+/// to seed the scope chain walk for variable-kind resolution.
+fn lower_body_from_ast(
+    ast: &Node,
+    owner: BodyOwnerKind,
+    start_scope: HirScopeId,
+    scope_graph: &ScopeGraph,
+) -> HirBody {
+    let mut builder = BodyBuilder2::new(scope_graph, start_scope);
 
     let stmts = match &ast.kind {
         NodeKind::Program { statements } => statements.as_slice(),
@@ -2506,26 +2529,28 @@ struct BodyBuilder2<'a> {
     stmts: Arena<HirStmt>,
     blocks: Arena<HirBlock>,
     source_map: BodySourceMap,
-    /// Binding table from pass 1 for lexical resolution.
-    bindings: &'a [Binding],
-    /// Scope stack mirroring the AST walk for resolution.
-    scope_depth: Vec<HirScopeId>,
+    /// Full scope graph from pass 1 — used for parent-chain resolution.
+    scope_graph: &'a ScopeGraph,
+    /// The innermost scope that encloses this body's root block.
+    ///
+    /// All variable-kind resolution starts from this scope and walks up through
+    /// parent pointers in `scope_graph.scopes`. This is the fix for the scope-blind
+    /// bug: previously `scope_depth` was initialised to [scope 0] and never updated,
+    /// so every variable in a sub body incorrectly resolved to scope 0 (file root),
+    /// making all bindings declared inside the sub invisible.
+    start_scope: HirScopeId,
 }
 
 impl<'a> BodyBuilder2<'a> {
-    fn new(bindings: &'a [Binding]) -> Self {
+    fn new(scope_graph: &'a ScopeGraph, start_scope: HirScopeId) -> Self {
         Self {
             exprs: Arena::default(),
             stmts: Arena::default(),
             blocks: Arena::default(),
             source_map: BodySourceMap::default(),
-            bindings,
-            scope_depth: vec![HirScopeId::from_index(0)],
+            scope_graph,
+            start_scope,
         }
-    }
-
-    fn current_scope(&self) -> HirScopeId {
-        self.scope_depth.last().copied().unwrap_or_else(|| HirScopeId::from_index(0))
     }
 
     fn alloc_expr(&mut self, expr: HirExpr, range: SourceLocation) -> HirExprId {
@@ -2562,42 +2587,41 @@ impl<'a> BodyBuilder2<'a> {
     /// A variable is `Lexical` if a `my`/`state` binding for it is visible in
     /// the current scope chain. An `our` binding resolves to `Package` (package
     /// alias). A qualified name (`Foo::x`) is always `Package`.
+    ///
+    /// Uses the same parent-chain walk as the first-pass `resolve_visible_binding`
+    /// (lower.rs ~1892). Starting from `start_scope`, walk up through
+    /// `scope_graph.scopes[id].parent` until None — matching the identical
+    /// algorithm used in pass 1.
     fn resolve_variable_kind(&self, sigil: &str, name: &str) -> VariableKind {
         // Qualified names are always package-qualified.
         if name.contains("::") {
             return VariableKind::Package;
         }
-        let scope = self.current_scope();
-        for binding in self.bindings.iter().rev() {
-            if binding.scope_id != scope && !self.is_ancestor_scope(binding.scope_id, scope) {
-                continue;
+        let mut cursor = Some(self.start_scope);
+        while let Some(current_scope) = cursor {
+            for binding in self.scope_graph.bindings.iter().rev() {
+                if binding.scope_id == current_scope
+                    && binding.sigil == sigil
+                    && binding.name == name
+                {
+                    return match binding.storage {
+                        StorageClass::LexicalMy
+                        | StorageClass::LexicalState
+                        | StorageClass::Parameter => VariableKind::Lexical,
+                        StorageClass::PackageOur
+                        | StorageClass::LocalizedPackage
+                        | StorageClass::PackageGlobal
+                        | StorageClass::MethodInvocant
+                        | StorageClass::Implicit => VariableKind::Package,
+                    };
+                }
             }
-            if binding.sigil == sigil && binding.name == name {
-                return match binding.storage {
-                    StorageClass::LexicalMy
-                    | StorageClass::LexicalState
-                    | StorageClass::Parameter => VariableKind::Lexical,
-                    StorageClass::PackageOur
-                    | StorageClass::LocalizedPackage
-                    | StorageClass::PackageGlobal
-                    | StorageClass::MethodInvocant
-                    | StorageClass::Implicit => VariableKind::Package,
-                };
-            }
+            // Walk up to the parent scope — identical to first-pass resolve_visible_binding.
+            cursor =
+                self.scope_graph.scopes.get(current_scope.index() as usize).and_then(|s| s.parent);
         }
-        // No binding found — treat as package global (unresolved).
+        // No binding found in any ancestor scope — treat as package global.
         VariableKind::Package
-    }
-
-    /// Check whether `candidate` is an ancestor of `current` in the scope chain.
-    fn is_ancestor_scope(&self, candidate: HirScopeId, current: HirScopeId) -> bool {
-        // The scope graph is not directly available here (we only have bindings).
-        // As a conservative approximation: scope indices are assigned in creation
-        // order, so a lower index is a potential ancestor. We accept the small
-        // over-approximation here — correctness of variable kind lookup does not
-        // require exact scope ancestry, only that we don't falsely classify a
-        // visible binding as invisible.
-        candidate.index() < current.index()
     }
 
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
@@ -2746,6 +2770,31 @@ impl<'a> BodyBuilder2<'a> {
 }
 
 // ── Helpers for the second-pass body lowerer ─────────────────────────────────
+
+/// Find the innermost scope frame that covers `body_loc` (the source range of
+/// a subroutine or method body block).
+///
+/// The first pass creates a `Subroutine` or `Method` scope frame whose `.range`
+/// covers the body block. We find it by scanning all scope frames for the one
+/// with the smallest enclosing range that still fully contains `body_loc`.
+/// Falls back to the root scope (index 0) if no matching frame is found.
+fn find_body_scope(scope_graph: &ScopeGraph, body_loc: SourceLocation) -> HirScopeId {
+    let mut best: Option<(usize, HirScopeId)> = None; // (range_size, id)
+    for frame in &scope_graph.scopes {
+        let range = frame.range;
+        // Check that this scope frame fully contains the body location.
+        if range.start <= body_loc.start && range.end >= body_loc.end {
+            let size = range.end - range.start;
+            let is_better = best.is_none_or(|(prev_size, _)| size < prev_size);
+            if is_better {
+                best = Some((size, frame.id));
+            }
+        }
+    }
+    best.map(|(_, id)| id)
+        .or_else(|| scope_graph.scopes.first().map(|s| s.id))
+        .unwrap_or_else(|| HirScopeId::from_index(0))
+}
 
 fn sigil_from_str(s: &str) -> Sigil {
     match s {
