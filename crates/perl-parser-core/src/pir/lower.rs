@@ -575,59 +575,59 @@ impl BodyLowerer {
     }
 
     /// Emit a Read or Write PIR node for a `HirVariable`, respecting its `VariableKind`.
+    ///
+    /// # Why `AccessMode::ReadModifyWrite` is not handled here
+    ///
+    /// `lower_variable_expr` is only called from `lower_expr` when it encounters a
+    /// standalone `HirExpr::Variable` node. In the current HIR design, a `Variable`
+    /// node with `access == ReadModifyWrite` only ever appears as:
+    ///
+    /// - The LHS of `HirExpr::Assign { mode: ReadModifyWrite }` — handled by extracting
+    ///   the variable and calling `lower_variable_modify` directly; `lower_expr(lhs)` is
+    ///   never called, so the Variable node itself never reaches `lower_expr`.
+    /// - The operand of `HirExpr::Unary { mode: ReadModifyWrite }` — same pattern:
+    ///   `lower_variable_modify` is called directly.
+    ///
+    /// Therefore this function only needs to handle `Read` and `Write` access. If a
+    /// future HIR change routes an RMW Variable here, the early-return below ensures
+    /// fail-closed behaviour (no wrong fact emitted, gap recorded in the receipt).
     fn lower_variable_expr(
         &mut self,
         v: &crate::hir::HirVariable,
         range: crate::SourceLocation,
         file: &HirFile,
     ) {
+        // Fail-closed guard: RMW variables are resolved through lower_variable_modify,
+        // not through this function. If HIR ever routes one here, emit nothing.
+        if v.access == AccessMode::ReadModifyWrite {
+            *self.unsupported.entry("RmwVariableFallthrough").or_insert(0) += 1;
+            return;
+        }
+
         let anchor = self.make_body_anchor(range);
         let sigil = sigil_str(&v.sigil);
-        let op = match (v.access, &v.kind) {
-            // Verifier rule: Unresolved/Dynamic place → no exact Read/Write.
-            // VariableKind has Lexical and Package; Package covers both resolved
-            // package aliases and unresolved globals. We emit ops for both —
-            // a StashRead/StashWrite for Package, LexicalRead/LexicalWrite for Lexical.
-            (AccessMode::Read, VariableKind::Lexical) => {
+        // At this point access is Read or Write (RMwW filtered above).
+        let op = match &v.kind {
+            VariableKind::Lexical if v.access == AccessMode::Read => {
                 PirOperation::LexicalRead { name: LexicalName { sigil, name: v.name.clone() } }
             }
-            (AccessMode::Write, VariableKind::Lexical) => {
+            VariableKind::Lexical => {
                 PirOperation::LexicalWrite { name: LexicalName { sigil, name: v.name.clone() } }
             }
-            (AccessMode::ReadModifyWrite, VariableKind::Lexical) => {
-                // ReadModifyWrite access on a Variable node means it came from
-                // lower_expr_as_place for compound assign LHS — this is the Modify path.
-                // It should have been caught in the Assign arm above; here it's a fallback.
-                PirOperation::Modify {
-                    name: LexicalName { sigil, name: v.name.clone() },
-                    op: "+=".to_string(), // conservative default
-                }
-            }
-            (AccessMode::Read, VariableKind::Package) => PirOperation::StashRead {
+            VariableKind::Package if v.access == AccessMode::Read => PirOperation::StashRead {
                 symbol: SymbolName {
                     sigil,
                     name: v.name.clone(),
                     package: package_from_name(&v.name),
                 },
             },
-            (AccessMode::Write, VariableKind::Package) => PirOperation::StashWrite {
+            VariableKind::Package => PirOperation::StashWrite {
                 symbol: SymbolName {
                     sigil,
                     name: v.name.clone(),
                     package: package_from_name(&v.name),
                 },
             },
-            (AccessMode::ReadModifyWrite, VariableKind::Package) => {
-                // Same fallback as lexical RMW above.
-                PirOperation::StashModify {
-                    symbol: SymbolName {
-                        sigil,
-                        name: v.name.clone(),
-                        package: package_from_name(&v.name),
-                    },
-                    op: "+=".to_string(),
-                }
-            }
         };
         self.push_body_node(anchor, op, PirContext::Unknown, None, file);
     }

@@ -27,7 +27,11 @@
 //!  20. `foo($x)` in body — Call node is unsupported, $x produces a Read (not Write)
 
 use perl_parser_core::Parser;
-use perl_parser_core::hir::lower_ast;
+use perl_parser_core::SourceLocation;
+use perl_parser_core::hir::{
+    AccessMode, Arena, BodyOwnerKind, BodySourceMap, HirBlock, HirBlockId, HirBody, HirExpr,
+    HirExprId, HirStmt, HirStmtId, HirVariable, Sigil, VariableKind, lower_ast,
+};
 use perl_parser_core::pir::{
     PIR_RECEIPT_VERSION, PirGraph, PirOperation, lower_hir_bodies, lower_hir_bodies_with_identity,
 };
@@ -782,5 +786,79 @@ fn pir_a_opaque_literal_counted_as_unsupported_expr() {
         write_nodes.is_empty(),
         "bare literal `1;` must not produce any Write ops; got: {:?}",
         write_nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>()
+    );
+}
+
+// ── 28. RMW variable reaching lower_variable_expr → fail-closed, no wrong op ──
+// Exercises the early-return guard in `lower_variable_expr` for the
+// `AccessMode::ReadModifyWrite` case. In the current HIR/PIR design this path
+// is structurally unreachable through the normal parser path (RMW variables are
+// always handled by `lower_variable_modify` before `lower_expr` is called). This
+// test constructs a synthetic HIR body where a `Variable { RMW }` node appears
+// as a standalone statement expression — the only way to reach the guard.
+//
+// Expected: no node emitted for the RMW variable (fail-closed); the receipt
+// records it in `unsupported_construct_counts` under "RmwVariableFallthrough".
+
+#[test]
+fn pir_a_rmw_variable_in_expr_position_is_fail_closed() {
+    use perl_parser_core::hir::{HIR_BODY_MODEL_VERSION, HirFile};
+
+    // Build a synthetic HIR body containing exactly one statement:
+    // `HirStmt::Expr(rmw_var_id)` where the expression is
+    // `HirExpr::Variable { access: ReadModifyWrite, kind: Lexical }`.
+    let loc = SourceLocation { start: 0, end: 3 };
+
+    let mut exprs: Arena<HirExpr> = Arena::default();
+    let rmw_var = HirExpr::Variable(HirVariable {
+        sigil: Sigil::Scalar,
+        name: "x".to_string(),
+        kind: VariableKind::Lexical,
+        access: AccessMode::ReadModifyWrite,
+    });
+    let expr_idx = exprs.alloc(rmw_var);
+    let expr_id = HirExprId(expr_idx);
+
+    let mut stmts: Arena<HirStmt> = Arena::default();
+    let stmt_idx = stmts.alloc(HirStmt::Expr(expr_id));
+    let stmt_id = HirStmtId(stmt_idx);
+
+    let mut blocks: Arena<HirBlock> = Arena::default();
+    let mut root_block = HirBlock::default();
+    root_block.stmts.push(stmt_id);
+    let block_idx = blocks.alloc(root_block);
+    let root_block_id = HirBlockId(block_idx);
+
+    let source_map =
+        BodySourceMap { expr_ranges: vec![loc], stmt_ranges: vec![loc], block_ranges: vec![loc] };
+
+    let body = HirBody {
+        exprs,
+        stmts,
+        blocks,
+        source_map,
+        root_block: root_block_id,
+        owner: BodyOwnerKind::ProgramRoot,
+    };
+
+    let mut file = HirFile::default();
+    file.body_model_version = HIR_BODY_MODEL_VERSION;
+    file.bodies.push(body);
+
+    let graph = lower_hir_bodies(&file);
+
+    // The RMW variable must produce NO PIR node (fail-closed, no wrong fact).
+    assert_eq!(
+        graph.nodes.len(),
+        0,
+        "RMW variable in standalone expr position must not produce any PIR node; got: {:?}",
+        graph.nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>()
+    );
+
+    // The receipt must record the gap as "RmwVariableFallthrough".
+    assert!(
+        graph.receipt.unsupported_construct_counts.contains_key("RmwVariableFallthrough"),
+        "RMW variable fallthrough must be recorded in unsupported_construct_counts; got: {:?}",
+        graph.receipt.unsupported_construct_counts
     );
 }
