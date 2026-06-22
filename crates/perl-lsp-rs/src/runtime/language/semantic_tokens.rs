@@ -598,37 +598,43 @@ mod tests {
     }
 
     #[test]
-    fn named_function_call_candidate_spans_the_whole_call() {
+    fn named_function_call_candidate_spans_the_whole_call() -> Result<(), Box<dyn std::error::Error>>
+    {
         // The live FunctionCall token covers the entire call expression, so the
         // candidate span must run from the callee name through the close paren.
         let source = "use strict;\n\ncompute(1, 2);\n";
         let candidate = semantic_token_named_function_call_candidate(source)
-            .expect("a bareword call should be detected");
+            .ok_or("a bareword call should be detected")?;
         assert_eq!(candidate.identity, "token:named_function_call:compute:compiler");
-        let span = candidate.source_span.expect("call candidate must be source-backed");
+        let span = candidate.source_span.ok_or("call candidate must be source-backed")?;
         // `compute(1, 2)` is 13 UTF-16 units on a single line.
         assert_eq!(span.single_line_lsp_length(), Some(13));
+        Ok(())
     }
 
     #[test]
-    fn named_function_call_candidate_handles_empty_argument_list() {
+    fn named_function_call_candidate_handles_empty_argument_list()
+    -> Result<(), Box<dyn std::error::Error>> {
         let source = "run_pipeline();\n";
         let candidate = semantic_token_named_function_call_candidate(source)
-            .expect("a no-argument call should be detected");
+            .ok_or("a no-argument call should be detected")?;
         assert_eq!(candidate.identity, "token:named_function_call:run_pipeline:compiler");
-        let span = candidate.source_span.expect("call candidate must be source-backed");
+        let span = candidate.source_span.ok_or("call candidate must be source-backed")?;
         // `run_pipeline()` is 14 UTF-16 units.
         assert_eq!(span.single_line_lsp_length(), Some(14));
+        Ok(())
     }
 
     #[test]
-    fn named_function_call_candidate_excludes_method_calls() {
+    fn named_function_call_candidate_excludes_method_calls()
+    -> Result<(), Box<dyn std::error::Error>> {
         // `->name(` is a method dispatch handled by the method-call class, not a
         // bareword function call.
         let source = "my $c = ctx();\n$c->stash(1);\n";
         let candidate = semantic_token_named_function_call_candidate(source)
-            .expect("the bareword ctx() call should be detected, not the method call");
+            .ok_or("the bareword ctx() call should be detected, not the method call")?;
         assert_eq!(candidate.identity, "token:named_function_call:ctx:compiler");
+        Ok(())
     }
 
     #[test]
@@ -1144,33 +1150,43 @@ fn semantic_token_named_function_call_candidate(
 /// so a run always begins right after a non-name character; we only need to
 /// reject sigil/arrow/ampersand prefixes and non-call keywords. See
 /// [`semantic_token_named_function_call_candidate`] for the rationale.
+///
+/// Scans `char_indices()` directly via a peekable iterator (no heap
+/// allocation) because semantic-token analysis runs on nearly every document
+/// change. `prev_char` tracks the character immediately preceding the current
+/// run start: every non-run character passes through the `else` arm and updates
+/// it, and maximal runs are always separated by at least one such character, so
+/// the prefix check sees the correct preceding character.
 fn first_named_function_call_site(source: &str) -> Option<(usize, usize)> {
-    let chars: Vec<(usize, char)> = source.char_indices().collect();
-    let mut index = 0;
-    while index < chars.len() {
-        let first_char = chars[index].1;
-        if !(first_char.is_ascii_alphabetic() || first_char == '_') {
-            index += 1;
+    let mut chars = source.char_indices().peekable();
+    let mut prev_char: Option<char> = None;
+
+    while let Some(&(run_start, ch)) = chars.peek() {
+        if !(ch.is_ascii_alphabetic() || ch == '_') {
+            prev_char = Some(ch);
+            chars.next();
             continue;
         }
 
-        let run_start = chars[index].0;
-        let mut run_end_index = index + 1;
-        while run_end_index < chars.len() && is_subroutine_name_char(chars[run_end_index].1) {
-            run_end_index += 1;
+        chars.next();
+        while let Some(&(_, next_ch)) = chars.peek() {
+            if is_subroutine_name_char(next_ch) {
+                chars.next();
+            } else {
+                break;
+            }
         }
 
-        if run_end_index < chars.len() && chars[run_end_index].1 == '(' {
-            let char_before = index.checked_sub(1).map(|prev| chars[prev].1);
-            let prefix_ok = char_before.is_none_or(|ch| !is_call_prefix_blocker(ch));
-            let paren_open = chars[run_end_index].0;
+        if let Some(&(paren_open, '(')) = chars.peek() {
+            let prefix_ok = prev_char.is_none_or(|prev| !is_call_prefix_blocker(prev));
             let name = &source[run_start..paren_open];
             if prefix_ok && !is_non_call_keyword(name) {
                 return Some((run_start, paren_open));
             }
         }
-
-        index = run_end_index;
+        // The identifier run did not yield a call; leave `prev_char` for the
+        // following non-run character (the loop will update it) so the next
+        // run's prefix check stays accurate.
     }
 
     None
