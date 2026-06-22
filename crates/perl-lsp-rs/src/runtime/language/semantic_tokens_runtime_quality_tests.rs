@@ -295,6 +295,7 @@ $shared_total++;
 /// live parser/HIR `variable` token and remain output-neutral.
 const STATE_VARIABLE_MODULE: &str = r#"use strict;
 use warnings;
+use feature 'state';
 
 sub counter {
     state $count = 0;
@@ -306,6 +307,7 @@ sub counter {
 
 const UPDATED_STATE_VARIABLE_MODULE: &str = r#"use strict;
 use warnings;
+use feature 'state';
 
 sub counter {
     state $call_count = 0;
