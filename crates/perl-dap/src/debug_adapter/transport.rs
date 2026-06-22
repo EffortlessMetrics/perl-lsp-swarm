@@ -207,22 +207,8 @@ impl DebugAdapter {
                     }
                 };
 
-                match msg {
-                    DapMessage::Request { seq, command, arguments } => {
-                        let response = self.dispatch_request(seq, &command, arguments);
-                        let payload = serde_json::to_vec(&response).map_err(io::Error::other)?;
-
-                        let mut writer = lock_or_recover(&shared_writer, "response_writer");
-                        write_framed_payload(&mut *writer, &payload)?;
-                        writer.flush()?;
-
-                        // DAP requires this event only after initialize response is sent.
-                        if command == "initialize"
-                            && Self::response_succeeded_for_command(&response, "initialize")
-                        {
-                            self.send_event("initialized", None);
-                        }
-                    }
+                let (seq, command, arguments) = match msg {
+                    DapMessage::Request { seq, command, arguments } => (seq, command, arguments),
                     DapMessage::Response {
                         seq, request_seq, command, success, message, ..
                     } => {
@@ -237,6 +223,7 @@ impl DebugAdapter {
                             message = ?message,
                             "Received Response message from client (not yet handled)"
                         );
+                        continue;
                     }
                     DapMessage::Event { seq, event, body } => {
                         // Log reception of event messages from client. The DAP protocol permits
@@ -248,7 +235,22 @@ impl DebugAdapter {
                             body = ?body,
                             "Received Event message from client (not yet handled)"
                         );
+                        continue;
                     }
+                };
+
+                let response = self.dispatch_request(seq, &command, arguments);
+                let payload = serde_json::to_vec(&response).map_err(io::Error::other)?;
+
+                let mut writer = lock_or_recover(&shared_writer, "response_writer");
+                write_framed_payload(&mut *writer, &payload)?;
+                writer.flush()?;
+
+                // DAP requires this event only after initialize response is sent.
+                if command == "initialize"
+                    && Self::response_succeeded_for_command(&response, "initialize")
+                {
+                    self.send_event("initialized", None);
                 }
             }
         }
