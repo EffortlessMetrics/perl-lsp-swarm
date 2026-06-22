@@ -11,6 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automatic `.perltidyrc` discovery at the workspace root.** When no
+  `perltidy_profile` is explicitly configured, the server now discovers a
+  project-local `.perltidyrc` once during `initialize` — searching the
+  workspace root, then perltidy's documented `PERLTIDY` environment override,
+  then `$HOME/.perltidyrc` — and uses it when building the formatter config.
+  Explicit configuration always takes precedence. (#1899, issue #1777)
+- **Default native formatter honors the discovered `.perltidyrc`.** The
+  supported scalar options in a discovered profile (line width, indent, tabs,
+  brace/else placement, keyword spacing, trailing commas) are parsed once at
+  `initialize` and feed the native formatter, so project formatting applies in
+  the default engine — not just `external-legacy` mode. Explicitly configured
+  fields still win per option; a discovered profile is never mixed with an
+  explicitly configured `perltidy_profile`. (#2016, issue #1953)
+- **First-run doctor report.** `perllsp --doctor [dir]` now prints a read-only
+  workspace setup report covering project config, Perl interpreter probing,
+  configured include roots, `PERL5LIB`, system `@INC`, rejected roots, and the
+  effective include-root categories the server will use. Failed Perl version
+  probes preserve stderr guidance for actionable setup fixes. (#1571, issue #1818)
+- **Shared Perl toolchain profile.** LSP, DAP, and first-run diagnostics now
+  resolve Perl interpreter identity through a common `PerlToolchainProfile`,
+  with cached version probes for fingerprinted binaries and deterministic
+  handling for bare `PATH` commands. (#1951, #1978, issue #1929)
 - **Workspace method signature help for `->method()` calls.** Triggering
   signature help (or hovering) on an OO method call now resolves the signature
   from the workspace symbol index for methods defined in the same project,
@@ -25,9 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over a Perl phase block now displays an explanation of when that block runs
   relative to compile and runtime. (#1298)
 - **Framework-aware deterministic inline completions.** Try::Tiny `try`/`catch`
-  scaffolds, Mojolicious::Lite route scaffolds, and project-indexed package
-  receiver method completions are now offered only when the workspace evidence
-  supports them. (#1532, #1573, #1585)
+  scaffolds, Mojolicious::Lite and Dancer route scaffolds, and project-indexed
+  package receiver method completions are now offered only when the workspace
+  evidence supports them. (#1532, #1573, #1585, #1949, issue #1648)
+- **DAP logpoint interpolation substrate.** Breakpoint hit registration can now
+  interpolate supplied scalar variables in logpoint message templates while
+  preserving existing raw-message behavior when no variable map is available.
+  (#1807)
+- **VS Code first-run onboarding helpers.** The extension can suggest discovered
+  include paths from common Perl module directories, exposes an optional
+  server-gated AI completion walkthrough/prompt, and ships an openable demo
+  project for new installations. (#1898)
 
 ### Fixed
 
@@ -70,6 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DAP scopes expose pagination hint fields.** Scope responses now carry the
   optional `namedVariables` and `indexedVariables` fields from the DAP
   specification, preserving compatibility when counts are unavailable. (#1810)
+- **DAP variables responses expose `totalVariables` when known.** Debug clients
+  can now show accurate variables pagination counts without changing existing
+  responses where a count is unavailable. (#1811)
 - **DAP capability flags match implemented handlers.** The initialize response
   now advertises restart frame, step-in targets, and terminate-threads support
   when those routed handlers exist, so clients can discover the implemented
@@ -106,6 +139,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reference fallback avoids document-lock re-entry.** Partial-index reference
   fallback no longer re-enters the documents lock while searching open files.
   (#1597)
+- **PL701 missing-module suggestions point at setup guidance.** Missing-module
+  diagnostics now append `perllsp --doctor <workspace>` and the PL701 docs URL
+  to legacy and context-aware suggestion text while preserving branch-specific
+  `includePaths`, `useSystemInc`, `resolutionTimeout`, and `cpanm` hints.
+  (#2047, issue #2049)
 - **Perl documentation links share one validated target resolver.** Hover,
   document-link, resolve, and virtual perldoc surfaces now build MetaCPAN,
   `perldoc://`, and perldoc.perl.org targets through the same resolver, and
@@ -115,14 +153,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now exposes module/core-pragma and same-document POD section references from
   real POD blocks, and `documentLink/resolve` validates same-document section
   fragments before returning `#section` targets. (#1795)
+- **Non-standard POD sections are indexed for documentation surfaces.** Common
+  `=head1` sections such as `ARGUMENTS`, `RETURN VALUES`, `EXAMPLES`, and
+  `SEE ALSO` are now extracted instead of being dropped from POD-derived
+  documentation. (#1834, issue #1610)
 - **POD hover refreshes after external module edits.** Hover documentation
   cached from a resolved module file is refreshed when that file's mtime
   changes outside the LSP document lifecycle, so hover no longer serves stale
   POD after on-disk edits. (#1882)
+- **Hover documentation escapes markdown metacharacters.** Documentation text
+  containing characters such as `*`, `_`, `#`, and `[]` now renders literally
+  in hover cards instead of becoming unintended markdown formatting. (#1840)
 - **Context-specific completions keep semantic groups together.** Hash-key,
   Moo/Moose type and option, and Object::Pad constructor-parameter completions
   now use separate sort tiers so clients do not interleave unrelated suggestions
   alphabetically. (#1875)
+- **Completion items send `filterText` to clients.** Completion responses now
+  serialize the internally-computed `filterText` field, preserving expected
+  client-side matching for snippets and other items whose label differs from
+  the typed prefix. (#1889)
+- **Completion capabilities advertise insert text modes.** Initialize responses
+  now advertise `completionProvider.completionItem.insertTextModes: [1, 2]`
+  for LSP 3.17 clients when completion is enabled, matching the server's
+  PlainText and Snippet insertion support. (#1838, issue #1712)
+- **Package-qualified method completions include inherited methods.** Completion
+  for package receivers now considers inherited methods in the workspace model
+  instead of limiting suggestions to methods declared directly on the receiver.
+  (#1841)
+- **Multiline inline completions are parse-checked against the full document.**
+  Inline completion candidates whose replacement ranges span lines now run
+  full-document parse probes and fail closed when a range cannot be
+  reconstructed, preventing syntactically damaging ghost text from being shown.
+  (#1926)
+- **Duplicate quick-fix code actions are collapsed.** When overlapping
+  providers produce byte-identical lightbulb entries, the server now keeps one
+  action and builds `source.fixAll` from the deduplicated set. (#1913)
 
 #### Formatting
 
@@ -154,6 +219,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key form while real strict-bareword violations still report. (#1562)
 - **DBI receiver completions are import-gated.** DBI-style receiver completions
   now stay quiet unless a visible `use DBI` fact supports them. (#1579)
+- **Quoted hash keys with special characters appear in completion.** Hash-key
+  completion now includes fully quoted fat-comma keys such as `'db-host'`,
+  `'api.key'`, and `'api key'` while keeping unquoted keys conservative. (#1839)
 
 #### Parser recovery and legacy syntax
 
@@ -170,6 +238,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`s///e` substitution replacement text is classified as Perl code.** This
   improves downstream semantic analysis for executable substitution bodies.
   (#1238)
+- **`given` blocks accept normal Perl statements.** The parser now handles
+  postfix `when`/`default` modifiers and ordinary statements inside `given`
+  blocks while preserving the classic `when { ... }` / `default { ... }` forms.
+  (#1893)
+- **Lexical sub declarations retain their declarator.** `my sub`, `our sub`,
+  and `state sub` nodes now carry the declarator so downstream semantic
+  analysis can distinguish lexical subroutines from package-scoped `sub`
+  declarations. (#1845, issue #1729)
 
 #### Module resolution
 
@@ -182,6 +258,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Under the hood (not user-facing)
 
+- **TextMate grammar visual regression tests.** The VS Code extension's static
+  syntax highlighting (`syntaxes/perl.tmLanguage.json`) is now locked down by
+  scope snapshots under `vscode-extension/test/grammar/`, run via
+  `npm run test:grammar` and enforced in the Extension Jest CI job. Any
+  unintended change to highlighting surfaces as an explicit per-token diff.
+  Closes the long-standing "visual regression testing for UI features" item in
+  the E2E test strategy. (#1907, issue #1908)
 - **Parser contract index.** Lexer and parser-core paired-delimiter and
   balanced-segment behavior is now covered by a conformance matrix and documented
   in `docs/reference/PARSER_CONTRACTS.md`. (#1319, #1321, #1324)
@@ -194,6 +277,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for anchors, entities, occurrences, and file-scoped edges now include
   `FileId`, preventing identical source in different files from colliding while
   preserving the file-neutral reference-source sentinel. (#1876)
+- **File semantic bundle hashes include synthetic facts before hashing.**
+  Generated-member and eval-sub synthetic entities/anchors now flow into the
+  canonical shard builder before category hashes are computed, and shards carry
+  an explicit producer schema version. (#1904)
+- **AST child-classification flags match traversal.** `contains_children` now
+  agrees with `Node::for_each_child` for every `NodeKind`, with a drift-guard so
+  traversal consumers do not silently skip children. (#1891)
+- **HIR lowers core control-flow shells.** Branches, loops, control transfers,
+  and postfix statement modifiers now lower into PIR-v0-aligned HIR shells with
+  source anchors and static shape facts. No LSP provider behavior is cut over by
+  this substrate change. (#1902)
+- **PIR v0 tooling IR is lowered from HIR.** The compiler substrate now exposes
+  a PIR v0 intermediate representation for tooling consumers while preserving
+  the no-provider-cutover boundary for this release. (#1900)
+- **Compile-state layers are specified and fixture-pinned.** PLSP-SPEC-0030 now
+  defines the L0-L6 compile-state stack, determinism obligations, dynamic
+  boundaries, and no-provider-cutover claim boundary, with alignment tests.
+  (#1895)
+- **Semantic snapshot and identity invariants are documented.** The semantic
+  model now has release-facing source truth for snapshot shape, identity
+  stability, and consumer obligations. (#1599)
+- **Provider-decision schema alignment is restored.** `provider_decision.v1`
+  now matches its schema/spec model so release evidence is not built from a
+  drifted provider-decision shape. (#1910)
+- **`our` declaration semantic-token facts are scoped.** Semantic facts for
+  package-scoped `our` declarations now carry a scoped fact class, avoiding
+  ambiguity for downstream semantic consumers. (#1920, issue #1922)
+- **Parser boundary responsibilities are documented.** POD, heredoc-body, and
+  `__DATA__` / `__END__` non-executable boundaries now have a consumer contract
+  in `PARSER_CONTRACTS.md`, including strict versus lenient detection posture.
+  (#1896)
 - **LSP transport framing uses checked body-offset arithmetic.**
   `Content-Length` frame parsing now guards the `body_start` offset calculation
   with checked arithmetic and recovers through the existing invalid-length path
@@ -202,6 +316,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coverage shortfall/setup/routing failures separately from routed test
   failures, so a latent unrelated routed test belongs to a test-named gate
   rather than the Codecov/Patch-95 verdict. (#1482, #1549, #1576, #1581, #1586)
+- **Coverage receipt tests cover closeout helpers.** Allocation-tracker and
+  active-goal manifest coverage tests keep the closeout proof paths visible to
+  Patch-95 without treating routed test failures as coverage failures.
+  (#1950, #2041)
+- **Agent lease proof-control-plane coverage is covered.** Agent lease acquire,
+  verify, expiry, stale snapshot/head, malformed input, and task-validation
+  paths now have focused xtask unit and CLI tests so lease proof infrastructure
+  remains visible to Patch-95. (#2045, issue #2043)
 - **CPAN corpus ratchet can run a bounded top-50 profile.** The post-merge corpus
   workflow now has a bounded representative mode in addition to the full ratchet;
   release accuracy claims still require the corresponding receipt. (#1520)
@@ -214,6 +336,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspace `target/` during pre-checkout ownership cleanup. Real Cargo output
   remains on `/mnt/ci-scratch`, while stale root-owned workspace receipts no
   longer block checkout or `target` creation. (#1886)
+- **Hash-key completion regression tests have unique names.** The duplicate
+  test identifier that broke `perl-lsp-rs-core` test builds was renamed without
+  changing the fixture or assertions. (#1938)
+- **Gate-list rendering has CLI contract coverage.** The `cargo xtask gates
+  --list` path now has tests for PR-fast tier filtering, explicit gate
+  filtering, and actionable unknown-gate errors without executing configured
+  gates. (#1939, issue #1942)
+- **PR-fast capability snapshots are current.** LSP capability YAML and JSON
+  snapshots were regenerated after `insertTextModes` support so PR-fast guards
+  verify the current server contract instead of stale expected output. (#2039,
+  issue #2042)
+- **Test::More and Test2 inline-completion packs have contract fixtures.** The
+  completion-pack matrix now covers import-present positives plus no-import,
+  comment, string, POD, near-match, and malformed-context quiet paths for the
+  Test::More and Test2::V0 assertion packs. (#1945, issue #1943)
+- **Corpus gold fixtures avoid invalid Perl syntax.** Two parser gold fixtures
+  that were invalid under Perl 5 were corrected so corpus accuracy metrics no
+  longer count fixture bugs as parser false negatives. (#1903)
+- **Completion regression coverage covers sigil and quoted-key edges.**
+  Variable completion now has regression tests for `$`/`@`/`%` sigil filtering,
+  and the routed completion coverage pack exercises double-quoted special hash
+  keys after the #1839 gate repair. (#1842, #1894)
+- **PR summary rendering coverage was raised.** The coverage gate has additional
+  tests for PR summary rendering so Patch-95 behavior stays tied to the
+  coverage-reporting path. (#1890)
+- **Rust toolchain documentation and CI pins match the actual 1.95 floor.**
+  Normative onboarding, stability, CI, and template docs now align with
+  `Cargo.toml`, `rust-toolchain.toml`, clippy policy, flake pins, and CI
+  toolchain selection. (#1932, #1954, #1957)
+- **Main fmt drift was repaired before release staging.** The post-refactor fmt
+  drift on main was corrected, and `cargo xtask fmt --check` was restored as a
+  clean release gate. (#1960, #2038)
 - **Workflow privilege analysis fails closed for untrusted event expressions.**
   Jobs with write permissions must prove every event-expression branch is
   anchored to a trusted event. (#1539)
