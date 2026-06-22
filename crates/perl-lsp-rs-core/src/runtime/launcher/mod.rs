@@ -17,12 +17,12 @@ use clap::{Args, Parser};
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
 pub use crate::features::grid::{compliance_percent_for_profile, to_json_for_profile};
-pub use crate::features::policy::{FeatureProfile, catalog_advertised_feature_ids};
+pub use crate::features::policy::{catalog_advertised_feature_ids, FeatureProfile};
 use crate::features::profile_cli::{feature_profile_supported_tokens, parse_feature_profile_arg};
 use crate::runtime::tuning::{DiagnosticMode, RuntimeMode, RuntimeTuning};
 pub use timing::{StartupReport, StartupTimer};
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{EnvFilter, fmt as tracing_fmt};
+use tracing_subscriber::{fmt as tracing_fmt, EnvFilter};
 
 static LOGGING_INIT: Once = Once::new();
 /// Keeps the non-blocking file writer alive for the process lifetime.
@@ -299,7 +299,11 @@ pub struct LspArgs {
     pub ripr_head: Option<String>,
 
     /// Comma-separated fact-class subset (e.g. `owners,changes,tests,oracles`).
-    #[arg(long, value_name = "CLASSES", default_value = "files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance")]
+    #[arg(
+        long,
+        value_name = "CLASSES",
+        default_value = "files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance"
+    )]
     pub ripr_fact_classes: String,
 
     /// Output path for the packet (e.g. `target/ripr/reports/perl-facts.json`).
@@ -631,14 +635,7 @@ where
                 let head = parsed_args.ripr_head.clone();
                 let fact_classes = parsed_args.ripr_fact_classes.clone();
                 let out = parsed_args.ripr_out.clone();
-                LaunchAction::RiprFacts {
-                    schema,
-                    root,
-                    base,
-                    head,
-                    fact_classes,
-                    out,
-                }
+                LaunchAction::RiprFacts { schema, root, base, head, fact_classes, out }
             } else {
                 LaunchAction::Run
             };
@@ -1089,8 +1086,8 @@ fn parse_feature_profile(raw_profile: &str) -> Result<FeatureProfile, LaunchPars
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_LSP_PORT, DiagnosticMode, LaunchAction, RuntimeMode, RuntimeTuning, TransportMode,
-        parse_args,
+        parse_args, DiagnosticMode, LaunchAction, RuntimeMode, RuntimeTuning, TransportMode,
+        DEFAULT_LSP_PORT,
     };
     use perl_tdd_support::{must, must_some};
 
@@ -1536,8 +1533,8 @@ mod tests {
     }
 
     #[test]
-    fn env_truthy_boundary_discriminator_input_that_hits_the_boundary_normalized_is_empty_or_normalized_equals_0()
-     {
+    fn env_truthy_boundary_discriminator_input_that_hits_the_boundary_normalized_is_empty_or_normalized_equals_0(
+    ) {
         {
             let _guard = EnvGuard::set("PERL_LSP_TEST_TRUTHY", "   ");
             assert_eq!(
