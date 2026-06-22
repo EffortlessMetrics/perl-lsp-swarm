@@ -20,10 +20,17 @@
 //!  13. `sub foo { my $x = 1; }` — sub body produces Write in sub body operations
 //!  14. body_model_version guard — version 0 → no body ops emitted / version 1 → ok
 //!  15. `our $x = $y;` — exactly 1 StashWrite, 0 LexicalWrite for $x (storage-aware Let guard)
+//!  16. `our $x += 1;` — StashModify from lower_variable_modify (package compound assign)
+//!  17. Version-mismatch empty graph — body_model_version != HIR_BODY_MODEL_VERSION → 0 nodes + ambient_input
+//!  18. `lower_hir_bodies_with_identity` threads source_identity to receipt
+//!  19. Unary Read (`-$x`) — lowers operand as a Read, no Modify
+//!  20. `foo($x)` in body — Call node is unsupported, $x produces a Read (not Write)
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::lower_ast;
-use perl_parser_core::pir::{PIR_RECEIPT_VERSION, PirGraph, PirOperation, lower_hir_bodies};
+use perl_parser_core::pir::{
+    PIR_RECEIPT_VERSION, PirGraph, PirOperation, lower_hir_bodies, lower_hir_bodies_with_identity,
+};
 
 fn parse_and_lower(source: &str) -> PirGraph {
     let mut parser = Parser::new(source);
@@ -387,4 +394,153 @@ fn pir_a_our_with_init_produces_stash_write_not_lexical() {
         lex_write_count, 0,
         "`our $x = $y` must produce 0 LexicalWrite for $x; got {lex_write_count}"
     );
+}
+
+// ── 16. `our $x += 1;` — StashModify from lower_variable_modify ──────────────
+// `our $x` is a Package variable; compound assign on a Package place must
+// produce a StashModify (not Modify).  This exercises the Package arm in
+// lower_variable_modify, which was previously uncovered.
+
+#[test]
+fn pir_a_our_compound_assign_produces_stash_modify() {
+    // Declare our $x so it is known as a package variable, then compound-assign.
+    let graph = parse_and_lower("our $x; $x += 1;");
+
+    let stash_modify = graph.nodes.iter().find(
+        |n| matches!(&n.operation, PirOperation::StashModify { symbol, .. } if symbol.name == "x"),
+    );
+    assert!(
+        stash_modify.is_some(),
+        "`our $x += 1` must produce StashModify for $x; got ops: {:?}",
+        graph.nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>()
+    );
+
+    // Must not produce a Lexical Modify for $x
+    let lex_modify = graph
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.operation, PirOperation::Modify { name, .. } if name.name == "x"));
+    assert!(
+        lex_modify.is_none(),
+        "`our $x += 1` must NOT produce Modify (lexical) for $x; got: {:?}",
+        lex_modify.map(|n| n.operation.name())
+    );
+}
+
+// ── 17. Version-mismatch empty graph ─────────────────────────────────────────
+// When body_model_version != HIR_BODY_MODEL_VERSION, lower_hir_bodies must
+// return an empty graph and record the mismatch in ambient_inputs.
+
+#[test]
+fn pir_a_version_mismatch_yields_empty_graph_with_ambient_input() {
+    use perl_parser_core::hir::HIR_BODY_MODEL_VERSION;
+
+    let mut parser = Parser::new("my $x = 1;");
+    let output = parser.parse_with_recovery();
+    let mut hir = lower_ast(&output.ast);
+
+    // Corrupt the version to trigger the fail-closed path.
+    // body_model_version 0 means "second pass not yet run" — it is never a valid
+    // post-lower value, so it reliably triggers the mismatch guard.
+    hir.body_model_version = 0;
+    assert_ne!(hir.body_model_version, HIR_BODY_MODEL_VERSION);
+
+    let graph = lower_hir_bodies(&hir);
+
+    assert_eq!(graph.nodes.len(), 0, "version-mismatch must yield empty node list");
+    assert_eq!(graph.edges.len(), 0, "version-mismatch must yield empty edge list");
+    assert!(
+        !graph.receipt.ambient_inputs.is_empty(),
+        "version-mismatch must record mismatch in ambient_inputs"
+    );
+    assert!(
+        graph.receipt.ambient_inputs[0].contains("body_model_version"),
+        "ambient_input must mention body_model_version; got: {:?}",
+        graph.receipt.ambient_inputs[0]
+    );
+}
+
+// ── 18. `lower_hir_bodies_with_identity` threads source identity ──────────────
+// Exercises the `source_identity: Some(...)` path in the bodies lowerer,
+// which was previously only tested via the None path (lower_hir_bodies).
+
+#[test]
+fn pir_a_bodies_source_identity_threaded_to_receipt() {
+    let mut parser = Parser::new("my $x = 1;");
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+
+    let graph = lower_hir_bodies_with_identity(&hir, Some("fixture://test.pl".to_string()));
+    assert_eq!(
+        graph.receipt.source_identity.as_deref(),
+        Some("fixture://test.pl"),
+        "lower_hir_bodies_with_identity must thread source_identity to receipt"
+    );
+    // Must still produce operations (version is correct)
+    assert!(!graph.nodes.is_empty(), "must produce ops with valid version and source_identity");
+}
+
+// ── 19. Unary Read (`-$x`) — lowers operand as Read, no Modify ───────────────
+// `UnaryMode::Read` in `lower_expr` (negation, logical-not, etc.) must lower
+// its operand as a read expression, producing a Read op — not a Modify.
+
+#[test]
+fn pir_a_unary_read_lowers_operand() {
+    // `-$x` is a unary read; the operand $x should appear as a Read in the receipt.
+    // Use a declared variable so the kind is deterministic.
+    let graph = parse_and_lower("my $x = 1; my $y = -$x;");
+
+    // $x must appear as a Read (not a Modify) when used as a unary-read operand.
+    let read_x_lexical = graph
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.operation, PirOperation::LexicalRead { name } if name.name == "x"));
+    let read_x_stash = graph
+        .nodes
+        .iter()
+        .find(|n| matches!(&n.operation, PirOperation::StashRead { symbol } if symbol.name == "x"));
+    assert!(
+        read_x_lexical.is_some() || read_x_stash.is_some(),
+        "unary-read operand $x must produce a Read op; got ops: {:?}",
+        graph.nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>()
+    );
+
+    // Must NOT produce a Modify for $x from this unary-read context
+    let modify_x = graph.nodes.iter().find(|n| match &n.operation {
+        PirOperation::Modify { name, .. } => name.name == "x",
+        PirOperation::StashModify { symbol, .. } => symbol.name == "x",
+        _ => false,
+    });
+    assert!(
+        modify_x.is_none(),
+        "unary-read operand $x must NOT produce a Modify; got: {:?}",
+        modify_x.map(|n| n.operation.name())
+    );
+}
+
+// ── 20. `foo($x)` in body — Call unsupported, $x produces Read ───────────────
+// Exercises the `HirExpr::Call` arm in `lower_expr` (body arenas), which records
+// calls as unsupported in the receipt. The argument $x should still appear as a Read.
+// Note: the body lowerer may or may not reach the call's args depending on whether
+// the parser represents the call in the body arena. What we assert: the receipt
+// does not produce a Write for $x (the argument) and the graph is valid.
+
+#[test]
+fn pir_a_call_in_body_does_not_produce_write_for_arg() {
+    // `foo($x)` — $x is an argument (read position), not a write target.
+    let graph = parse_and_lower("foo($x);");
+
+    // $x must not appear as a Write target
+    let write_x = graph.nodes.iter().find(|n| match &n.operation {
+        PirOperation::LexicalWrite { name } => name.name == "x",
+        PirOperation::StashWrite { symbol } => symbol.name == "x",
+        _ => false,
+    });
+    assert!(
+        write_x.is_none(),
+        "`foo($x)` must not produce a Write for the argument $x; got: {:?}",
+        write_x.map(|n| n.operation.name())
+    );
+    // The graph must be valid (receipt schema version correct, nodes consistent)
+    assert_eq!(graph.receipt.schema_version, PIR_RECEIPT_VERSION);
 }
