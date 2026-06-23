@@ -362,12 +362,24 @@ pub fn lower_hir_bodies(file: &HirFile) -> PirGraph {
     lower_hir_bodies_with_identity(file, None)
 }
 
+/// Returns `true` iff `version` matches the current HIR body-model version.
+///
+/// Extracted as a pure predicate so the schema-version equality boundary is
+/// independently unit-testable with *literal* version arguments (below / equal /
+/// above) — a fixture-construction test that assigns the constant to a field
+/// cannot expose this equality to static analysis.
+#[inline]
+#[must_use]
+fn body_model_version_matches(version: u32) -> bool {
+    version == HIR_BODY_MODEL_VERSION
+}
+
 /// Lower a [`HirFile`]'s canonical body arenas into a PIR-A graph, tagging the
 /// receipt with an optional caller-supplied source or fixture identity.
 #[must_use]
 pub fn lower_hir_bodies_with_identity(file: &HirFile, source_identity: Option<String>) -> PirGraph {
     // Verifier rule: schema-version mismatch → empty graph.
-    if file.body_model_version != HIR_BODY_MODEL_VERSION {
+    if !body_model_version_matches(file.body_model_version) {
         let receipt = PirReceipt {
             schema_version: PIR_RECEIPT_VERSION,
             source_identity,
@@ -780,6 +792,23 @@ mod tests {
         let output = parser.parse_with_recovery();
         let hir = lower_ast(&output.ast);
         lower_hir(&hir)
+    }
+
+    #[test]
+    fn body_model_version_matches_pins_equality_boundary() {
+        // Literal-argument boundary test for the schema-version predicate that
+        // guards `lower_hir_bodies_with_identity`. Passing the version directly
+        // pins below / equal / above so a mutation removing or flipping the
+        // equality is caught — and the discriminator value is statically visible.
+        assert!(body_model_version_matches(HIR_BODY_MODEL_VERSION), "exact version must match");
+        assert!(
+            !body_model_version_matches(HIR_BODY_MODEL_VERSION - 1),
+            "below-threshold version must not match"
+        );
+        assert!(
+            !body_model_version_matches(HIR_BODY_MODEL_VERSION + 1),
+            "above-threshold version must not match"
+        );
     }
 
     #[test]
