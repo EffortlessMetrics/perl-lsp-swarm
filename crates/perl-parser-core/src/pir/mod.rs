@@ -29,6 +29,7 @@
 
 mod lower;
 mod model;
+mod extractor;
 
 pub use lower::{
     lower_hir, lower_hir_bodies, lower_hir_bodies_with_identity, lower_hir_with_identity,
@@ -37,4 +38,8 @@ pub use model::{
     LexicalName, PIR_RECEIPT_VERSION, PirAnchorCoverage, PirAnchorKind, PirCallee, PirContext,
     PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLoweringMode, PirMethod,
     PirNode, PirOperation, PirReceipt, PirReceiver, PirSourceAnchor, SymbolName,
+};
+pub use extractor::{
+    BodyExtractionResult, LexicalBindingFact, LexicalExtractorReceipt, LexicalRole,
+    LEXICAL_EXTRACTOR_RECEIPT_VERSION, extract_lexical_facts,
 };
