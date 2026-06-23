@@ -26,7 +26,7 @@ reason_required = true
 classification_required = true
 evidence_required = false
 expires_or_review_after_required = true
-allow_bare_allow_attributes = false
+allow_bare_allow_attributes = true
 stale_entries_fail = false
 
 [requirements.unsafe]
@@ -164,82 +164,6 @@ glob = "xtask/**/*.rs"
 # ---------------------------------------------------------------------------
 
 [[allow]]
-id = "allow-b0008"
-kind = "panic"
-family = "panic_macro"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Production source panic macros (assert!, unreachable!, todo! guards). Baseline floor — each should be reviewed and replaced with proper error handling or an exact typed receipt. See CLAUDE.md coding standards."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "macro_call"
-glob = "crates/*/src/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 5. Indexing panics in production source
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0009"
-kind = "panic"
-family = "indexing"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Array/slice indexing in production source. Baseline floor — review each for bounds checking alternatives. See CLAUDE.md coding standards."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "index_expr"
-glob = "crates/*/src/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 6. String-slice panics in production source
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0010"
-kind = "panic"
-family = "string_slice"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "String slicing in production source. Baseline floor — review for get() alternatives. See CLAUDE.md coding standards."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "index_expr"
-glob = "crates/*/src/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 7. unreachable! in production source
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0011"
-kind = "panic"
-family = "unreachable"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "unreachable! guards in production source. CLAUDE.md explicitly permits unreachable!() in static LazyLock<Regex> initializers. Other uses need individual review. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "macro_call"
-glob = "crates/*/src/**/*.rs"
-
-[[allow]]
 id = "allow-b0012"
 kind = "panic"
 family = "unreachable"
@@ -274,23 +198,6 @@ glob = "xtask/**/*.rs"
 # ---------------------------------------------------------------------------
 # 8. .expect() calls — production source
 # ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0014"
-kind = "panic"
-family = "expect"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Production .expect() calls. CLAUDE.md bans expect() except in specific locations. Baseline floor — replace with ? or ok_or_else(). Each needs individual review."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "expect"
-glob = "crates/*/src/**/*.rs"
 
 [[allow]]
 id = "allow-b0015"
@@ -329,23 +236,6 @@ glob = "xtask/**/*.rs"
 # ---------------------------------------------------------------------------
 # 9. .unwrap() calls
 # ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0017"
-kind = "panic"
-family = "unwrap"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Production .unwrap() calls. CLAUDE.md bans unwrap() in production — use ? instead. Baseline floor for all existing uses."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "unwrap"
-glob = "crates/*/src/**/*.rs"
 
 [[allow]]
 id = "allow-b0018"
@@ -403,23 +293,6 @@ callee = "expect"
 glob = "crates/*/src/bin/**/*.rs"
 
 [[allow]]
-id = "allow-b0021"
-kind = "panic"
-family = "unwrap"
-glob = "crates/*/src/bin/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Binary entry points may use unwrap() per CLAUDE.md bin/ exception. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "unwrap"
-glob = "crates/*/src/bin/**/*.rs"
-
-[[allow]]
 id = "allow-b0023"
 kind = "panic"
 family = "panic_macro"
@@ -453,95 +326,6 @@ callee = "expect"
 glob = "crates/*/benches/**/*.rs"
 
 [[allow]]
-id = "allow-b0025"
-kind = "panic"
-family = "unwrap"
-glob = "crates/*/benches/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Benchmark unwrap() calls — same bench exception as allow-b0024."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "unwrap"
-glob = "crates/*/benches/**/*.rs"
-
-[[allow]]
-id = "allow-b0026"
-kind = "lint_exception"
-family = "allow_attribute"
-glob = "crates/*/benches/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Benchmark lint suppressions — benches suppress expect_used/unwrap_used/panic per CLAUDE.md bench exception."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "attribute"
-glob = "crates/*/benches/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 11. Lint exceptions (#[allow(...)]) — production source
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0027"
-kind = "lint_exception"
-family = "allow_attribute"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Production #[allow(...)] attributes. Baseline floor — each should be reviewed and justified with typed evidence or replaced. CLAUDE.md has specific permitted exceptions documented."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "attribute"
-glob = "crates/*/src/**/*.rs"
-
-[[allow]]
-id = "allow-b0028"
-kind = "lint_exception"
-family = "allow_attribute"
-glob = "crates/*/tests/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Test-file #[allow(...)] attributes. Tests may suppress lints for test-specific helpers. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "attribute"
-glob = "crates/*/tests/**/*.rs"
-
-[[allow]]
-id = "allow-b0029"
-kind = "lint_exception"
-family = "allow_attribute"
-glob = "xtask/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "xtask build tooling lint suppressions. Internal infrastructure. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "attribute"
-glob = "xtask/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 12. #[expect(...)] attributes
-# ---------------------------------------------------------------------------
-
-[[allow]]
 id = "allow-b0030"
 kind = "lint_exception"
 family = "expect_attribute"
@@ -555,42 +339,6 @@ expires = "2026-10-20"
 
 [allow.selector]
 ast_kind = "attribute"
-glob = "crates/*/src/**/*.rs"
-
-[[allow]]
-id = "allow-b0031"
-kind = "lint_exception"
-family = "expect_attribute"
-glob = "crates/*/tests/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Test-file #[expect(...)] attributes. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "attribute"
-glob = "crates/*/tests/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 13. Unsafe code — production source
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0032"
-kind = "unsafe"
-family = "unsafe_block"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Unsafe blocks in production source. Baseline floor — each requires review and typed evidence (ripr:, unsafe-review:, or test:) before promotion from baseline_debt."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "unsafe_block"
 glob = "crates/*/src/**/*.rs"
 
 [[allow]]
@@ -626,58 +374,6 @@ ast_kind = "unsafe_block"
 glob = "xtask/**/*.rs"
 
 [[allow]]
-id = "allow-b0035"
-kind = "unsafe"
-family = "unsafe_fn"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Unsafe function declarations in production source. Baseline floor — each requires review and caller contract documentation."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "unsafe_fn"
-glob = "crates/*/src/**/*.rs"
-
-[[allow]]
-id = "allow-b0036"
-kind = "unsafe"
-family = "unsafe_impl"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Unsafe trait implementations in production source. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "unsafe_impl"
-glob = "crates/*/src/**/*.rs"
-
-[[allow]]
-id = "allow-b0037"
-kind = "unsafe"
-family = "unsafe_extern_block"
-glob = "crates/*/src/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Unsafe extern blocks (FFI declarations) in production source. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "unsafe_extern_block"
-glob = "crates/*/src/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 14. Non-Rust tracked files
-# ---------------------------------------------------------------------------
-
-[[allow]]
 id = "allow-b0038"
 kind = "non_rust_file"
 family = "documentation"
@@ -708,22 +404,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "tracked_file"
 glob = "**/*.toml"
-
-[[allow]]
-id = "allow-b0041"
-kind = "non_rust_file"
-family = "ci_declarative"
-glob = ".ci/**/*.yml"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Internal CI configuration YAML files (.ci/ directory). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = ".ci/**/*.yml"
 
 [[allow]]
 id = "allow-b0042"
@@ -838,22 +518,6 @@ ast_kind = "tracked_file"
 glob = "**/*.json"
 
 [[allow]]
-id = "allow-b0051"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.txt"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Text files tracked in the repo (test data, notes, corpus). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.txt"
-
-[[allow]]
 id = "allow-b0052"
 kind = "non_rust_file"
 family = "release_script"
@@ -870,70 +534,6 @@ ast_kind = "tracked_file"
 glob = "scripts/**"
 
 [[allow]]
-id = "allow-b0053"
-kind = "non_rust_file"
-family = "editor_extension"
-glob = "vscode-extension/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "VSCode extension tracked files (package.json, tsconfig, extension source). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "vscode-extension/**"
-
-[[allow]]
-id = "allow-b0054"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = ".claude/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Claude Code agent infrastructure files (.claude/ directory — commands, agents, settings). Internal orchestration tooling. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = ".claude/**"
-
-[[allow]]
-id = "allow-b0055"
-kind = "non_rust_file"
-family = "configuration"
-glob = ".ops-perl-lsp/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Ops metrics and swarm state files (.ops-perl-lsp/ directory). Internal orchestration data. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = ".ops-perl-lsp/**"
-
-[[allow]]
-id = "allow-b0056"
-kind = "non_rust_file"
-family = "configuration"
-glob = "docs/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Project documentation files (docs/ directory — reference docs, SDLC docs, status). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "docs/**"
-
-[[allow]]
 id = "allow-b0057"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -948,22 +548,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "tracked_file"
 glob = "**/*.svg"
-
-[[allow]]
-id = "allow-b0058"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.h"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "C header files (tree-sitter bindings headers). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.h"
 
 [[allow]]
 id = "allow-b0059"
@@ -1051,43 +635,6 @@ callee = "expect"
 glob = "tests/**/*.rs"
 
 [[allow]]
-id = "allow-b0065"
-kind = "panic"
-family = "unwrap"
-glob = "tests/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level tests/ directory .unwrap() calls. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "unwrap"
-glob = "tests/**/*.rs"
-
-[[allow]]
-id = "allow-b0066"
-kind = "lint_exception"
-family = "allow_attribute"
-glob = "tests/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level tests/ directory lint suppressions. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "attribute"
-glob = "tests/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 16. crates/*/examples/ and crates/*/build.rs
-# ---------------------------------------------------------------------------
-
-[[allow]]
 id = "allow-b0067"
 kind = "panic"
 family = "panic_macro"
@@ -1102,150 +649,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "macro_call"
 glob = "crates/*/examples/**/*.rs"
-
-[[allow]]
-id = "allow-b0068"
-kind = "panic"
-family = "expect"
-glob = "crates/*/examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Example program .expect() calls. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "expect"
-glob = "crates/*/examples/**/*.rs"
-
-[[allow]]
-id = "allow-b0069"
-kind = "panic"
-family = "unwrap"
-glob = "crates/*/examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Example program .unwrap() calls. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "unwrap"
-glob = "crates/*/examples/**/*.rs"
-
-[[allow]]
-id = "allow-b0070"
-kind = "panic"
-family = "panic_macro"
-glob = "crates/*/build.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Build script panic macros — build.rs runs at compile time, not in production binary. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "macro_call"
-glob = "crates/*/build.rs"
-
-[[allow]]
-id = "allow-b0071"
-kind = "panic"
-family = "expect"
-glob = "crates/*/build.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Build script .expect() calls. Build scripts are run in the build environment, not shipped. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "expect"
-glob = "crates/*/build.rs"
-
-[[allow]]
-id = "allow-b0072"
-kind = "unsafe"
-family = "unsafe_block"
-glob = "crates/*/build.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Unsafe in build scripts. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "unsafe_block"
-glob = "crates/*/build.rs"
-
-# ---------------------------------------------------------------------------
-# 17. Root-level examples/ directory
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0073"
-kind = "panic"
-family = "panic_macro"
-glob = "examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level examples/ directory — demonstration code, not production library. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "macro_call"
-glob = "examples/**/*.rs"
-
-[[allow]]
-id = "allow-b0074"
-kind = "panic"
-family = "expect"
-glob = "examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level examples/ directory .expect() calls. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "expect"
-glob = "examples/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 18. C source files (tree-sitter-perl-c bindings)
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0075"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "crates/tree-sitter-perl-c/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "C source files for the tree-sitter-perl-c crate (parser.c, scanner.c). These are vendored/generated C grammar source. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "crates/tree-sitter-perl-c/**"
-
-# ---------------------------------------------------------------------------
-# 19. Remaining non-Rust file categories
-# ---------------------------------------------------------------------------
 
 [[allow]]
 id = "allow-b0076"
@@ -1278,22 +681,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "tracked_file"
 glob = "tests/**"
-
-[[allow]]
-id = "allow-b0078"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "testdata/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "testdata/ directory — UX smoke test data, Perl scripts, expected outputs. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "testdata/**"
 
 [[allow]]
 id = "allow-b0079"
@@ -1344,22 +731,6 @@ ast_kind = "tracked_file"
 glob = "templates/**"
 
 [[allow]]
-id = "allow-b0082"
-kind = "non_rust_file"
-family = "ci_declarative"
-glob = "**/*.yaml"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "YAML configuration files (.yaml extension — CI configs, schema files, blockers, thresholds). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.yaml"
-
-[[allow]]
 id = "allow-b0083"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -1374,22 +745,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "tracked_file"
 glob = "**/*.nix"
-
-[[allow]]
-id = "allow-b0084"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.lock"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Lock files (flake.lock, package-lock.json, pnpm-lock.yaml). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.lock"
 
 [[allow]]
 id = "allow-b0085"
@@ -1408,102 +763,6 @@ ast_kind = "tracked_file"
 glob = "**/*.scm"
 
 [[allow]]
-id = "allow-b0086"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.pest"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "PEG grammar files (.pest) for the pest-based parser variant. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.pest"
-
-[[allow]]
-id = "allow-b0087"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.rb"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Ruby files (Homebrew formula, Formula/ directory). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.rb"
-
-[[allow]]
-id = "allow-b0088"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.ps1"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "PowerShell scripts (distribution scripts, agent scripts). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.ps1"
-
-[[allow]]
-id = "allow-b0089"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.xml"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "XML files (IDE external tools config). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.xml"
-
-[[allow]]
-id = "allow-b0090"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.nuspec"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "NuGet package spec files (Chocolatey distribution). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.nuspec"
-
-[[allow]]
-id = "allow-b0091"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.spec.in"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "RPM package spec template files (Linux distribution). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.spec.in"
-
-[[allow]]
 id = "allow-b0092"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -1520,55 +779,6 @@ ast_kind = "tracked_file"
 glob = "**/*.png"
 
 [[allow]]
-id = "allow-b0093"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.rst"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "RST documentation files. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.rst"
-
-[[allow]]
-id = "allow-b0094"
-kind = "non_rust_file"
-family = "release_script"
-glob = "**/*.1"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Man page files (man/perl-lsp.1). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.1"
-
-[[allow]]
-id = "allow-b0095"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "**/*.pnpm-lock.yaml"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "pnpm lock files. Baseline floor (covered by *.yaml but explicit for clarity)."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.pnpm-lock.yaml"
-
-# Catch-all for remaining unknown non-Rust files not covered by extension globs
-[[allow]]
 id = "allow-b0096"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -1583,22 +793,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "tracked_file"
 glob = "xtask/**"
-
-[[allow]]
-id = "allow-b0097"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "ci/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Legacy ci/ directory baseline files. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "ci/**"
 
 [[allow]]
 id = "allow-b0098"
@@ -1617,22 +811,6 @@ ast_kind = "tracked_file"
 glob = ".ci/**"
 
 [[allow]]
-id = "allow-b0099"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = ".receipts/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Receipt/evidence YAML files stored in .receipts/ directory. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = ".receipts/**"
-
-[[allow]]
 id = "allow-b0100"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -1649,38 +827,6 @@ ast_kind = "tracked_file"
 glob = "ripr/**"
 
 [[allow]]
-id = "allow-b0101"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "schemas/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "JSON/YAML schema files under schemas/ directory. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "schemas/**"
-
-[[allow]]
-id = "allow-b0102"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "queries/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Tree-sitter query files under queries/ directory (.scm). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "queries/**"
-
-[[allow]]
 id = "allow-b0103"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -1695,22 +841,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "tracked_file"
 glob = "examples/**"
-
-[[allow]]
-id = "allow-b0104"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "icon/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Icon/logo image files under icon/ directory. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "icon/**"
 
 [[allow]]
 id = "allow-b0105"
@@ -1897,22 +1027,6 @@ ast_kind = "tracked_file"
 glob = "testdata/**"
 
 [[allow]]
-id = "allow-b0119"
-kind = "non_rust_file"
-family = "test_fixture"
-glob = "tests/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Non-Rust test fixture files in tests/ (Perl corpus .pl files). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "tests/**"
-
-[[allow]]
 id = "allow-b0120"
 kind = "non_rust_file"
 family = "test_fixture"
@@ -1931,118 +1045,6 @@ glob = "scripts/**"
 # ---------------------------------------------------------------------------
 # 22. Non-Rust documentation family — for docs/ subdirectory overrides
 # ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0121"
-kind = "non_rust_file"
-family = "documentation"
-glob = "docs/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Documentation files under docs/ — same as allow-b0056 but for documentation family classifier. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "docs/**"
-
-# ---------------------------------------------------------------------------
-# 23. Non-Rust configuration family — for non-standard config paths
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0125"
-kind = "non_rust_file"
-family = "configuration"
-glob = "scripts/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Configuration files in scripts/ci/fixtures/. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "scripts/**"
-
-# ---------------------------------------------------------------------------
-# 24. Non-Rust shell_script family — for non-standard script paths
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0126"
-kind = "non_rust_file"
-family = "shell_script"
-glob = "scripts/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Shell scripts in scripts/ without .sh extension (scripts/cargo-safe, scripts/devplane-init, etc.) and executable scripts. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "scripts/**"
-
-[[allow]]
-id = "allow-b0127"
-kind = "non_rust_file"
-family = "shell_script"
-glob = "hooks/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Git hooks (hooks/pre-push). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "hooks/**"
-
-[[allow]]
-id = "allow-b0128"
-kind = "non_rust_file"
-family = "shell_script"
-glob = "docs/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Shell scripts in docs/handoff/ directory (setup scripts, hook scripts). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "docs/**"
-
-# ---------------------------------------------------------------------------
-# 25. Non-Rust package_metadata family — for crate-level metadata
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# 26. Non-Rust editor_extension family — VSCode editor files
-# ---------------------------------------------------------------------------
-
-[[allow]]
-id = "allow-b0130"
-kind = "non_rust_file"
-family = "editor_extension"
-glob = "vscode-extension/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "VSCode extension files (already covered by allow-b0053 but needs editor_extension family). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "vscode-extension/**"
 
 [[allow]]
 id = "allow-b0131"
@@ -2113,30 +1115,6 @@ ast_kind = "unsafe_block"
 glob = "crates/*/examples/**/*.rs"
 
 [[allow]]
-id = "allow-b0135"
-kind = "unsafe"
-family = "unsafe_fn"
-glob = "crates/*/examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Unsafe functions in example programs. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "unsafe_fn"
-glob = "crates/*/examples/**/*.rs"
-
-# ---------------------------------------------------------------------------
-# 28. Panic in crates/*/tests/support/*.rs (support subdirs)
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# 29. Indexing/string_slice/unreachable coverage for examples, benches, build.rs, loose files
-# ---------------------------------------------------------------------------
-
-[[allow]]
 id = "allow-b0137"
 kind = "panic"
 family = "indexing"
@@ -2169,86 +1147,6 @@ ast_kind = "index_expr"
 glob = "examples/**/*.rs"
 
 [[allow]]
-id = "allow-b0139"
-kind = "panic"
-family = "indexing"
-glob = "crates/*/build.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Indexing in build scripts. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "index_expr"
-glob = "crates/*/build.rs"
-
-[[allow]]
-id = "allow-b0140"
-kind = "panic"
-family = "indexing"
-glob = "crates/*/benches/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Indexing in benchmark programs. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "index_expr"
-glob = "crates/*/benches/**/*.rs"
-
-[[allow]]
-id = "allow-b0141"
-kind = "panic"
-family = "string_slice"
-glob = "crates/*/examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "String slicing in example programs. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "index_expr"
-glob = "crates/*/examples/**/*.rs"
-
-[[allow]]
-id = "allow-b0142"
-kind = "panic"
-family = "string_slice"
-glob = "examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "String slicing in root examples/. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "index_expr"
-glob = "examples/**/*.rs"
-
-[[allow]]
-id = "allow-b0143"
-kind = "panic"
-family = "string_slice"
-glob = "crates/*/benches/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "String slicing in benchmarks. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "index_expr"
-glob = "crates/*/benches/**/*.rs"
-
-[[allow]]
 id = "allow-b0144"
 kind = "panic"
 family = "unreachable"
@@ -2263,22 +1161,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "macro_call"
 glob = "crates/*/examples/**/*.rs"
-
-[[allow]]
-id = "allow-b0145"
-kind = "panic"
-family = "unreachable"
-glob = "examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "unreachable! in root examples/. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "macro_call"
-glob = "examples/**/*.rs"
 
 [[allow]]
 id = "allow-b0146"
@@ -2297,40 +1179,6 @@ ast_kind = "macro_call"
 glob = "crates/*/benches/**/*.rs"
 
 [[allow]]
-id = "allow-b0147"
-kind = "panic"
-family = "unwrap"
-glob = "crates/*/examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "unwrap() in example programs. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "method_call"
-callee = "unwrap"
-glob = "crates/*/examples/**/*.rs"
-
-[[allow]]
-id = "allow-b0148"
-kind = "lint_exception"
-family = "allow_attribute"
-glob = "crates/*/examples/**/*.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Lint suppressions in example programs. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "attribute"
-glob = "crates/*/examples/**/*.rs"
-
-# Loose Rust files not in src/, tests/, examples/ standard dirs
-[[allow]]
 id = "allow-b0149"
 kind = "panic"
 family = "indexing"
@@ -2347,26 +1195,6 @@ ast_kind = "index_expr"
 glob = "crates/perl-parser/fix_regex_parsing.rs"
 
 [[allow]]
-id = "allow-b0150"
-kind = "panic"
-family = "panic_macro"
-glob = "crates/perl-parser/fix_regex_parsing.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Loose Rust file at crate root with panic macros. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "macro_call"
-glob = "crates/perl-parser/fix_regex_parsing.rs"
-
-# ---------------------------------------------------------------------------
-# 30. Remaining root-level non-Rust files (dotfiles, config, packaging)
-# ---------------------------------------------------------------------------
-
-[[allow]]
 id = "allow-b0151"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -2381,102 +1209,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "tracked_file"
 glob = ".*"
-
-[[allow]]
-id = "allow-b0153"
-kind = "non_rust_file"
-family = "documentation"
-glob = ".*"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level dotfile documentation. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = ".*"
-
-[[allow]]
-id = "allow-b0154"
-kind = "non_rust_file"
-family = "ci_declarative"
-glob = "codecov.yml"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "codecov.yml coverage configuration file. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "codecov.yml"
-
-[[allow]]
-id = "allow-b0155"
-kind = "non_rust_file"
-family = "ci_declarative"
-glob = "docker-compose.yml"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Docker Compose configuration file. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "docker-compose.yml"
-
-[[allow]]
-id = "allow-b0156"
-kind = "non_rust_file"
-family = "release_script"
-glob = "justfile"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root justfile (just task runner). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "justfile"
-
-[[allow]]
-id = "allow-b0157"
-kind = "non_rust_file"
-family = "release_script"
-glob = "install.ps1"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Windows install script. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "install.ps1"
-
-[[allow]]
-id = "allow-b0158"
-kind = "non_rust_file"
-family = "shell_script"
-glob = "hooks/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Git hook shell scripts (hooks/pre-push). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "hooks/**"
 
 [[allow]]
 id = "allow-b0161"
@@ -2527,38 +1259,6 @@ ast_kind = "tracked_file"
 glob = ".vscode/**"
 
 [[allow]]
-id = "allow-b0165"
-kind = "non_rust_file"
-family = "documentation"
-glob = ".receipts/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Receipt documentation/YAML files in .receipts/ directory. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = ".receipts/**"
-
-[[allow]]
-id = "allow-b0166"
-kind = "non_rust_file"
-family = "shell_script"
-glob = "scripts/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Shell scripts without .sh extension in scripts/ (storage-doctor, swarm-clean, swarm-doctor, etc.). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "scripts/**"
-
-[[allow]]
 id = "allow-b0167"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -2576,60 +1276,6 @@ glob = "scripts/**"
 
 # Root-level test Perl files
 [[allow]]
-id = "allow-b0169"
-kind = "non_rust_file"
-family = "test_fixture"
-glob = "test_print_indirect.pl"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level Perl test script. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "test_print_indirect.pl"
-
-# allow_attribute lint exceptions coverage for benches and build
-[[allow]]
-id = "allow-b0170"
-kind = "lint_exception"
-family = "allow_attribute"
-glob = "crates/*/build.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Lint suppressions in build scripts. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "attribute"
-glob = "crates/*/build.rs"
-
-[[allow]]
-id = "allow-b0113"
-kind = "panic"
-family = "panic_macro"
-glob = "xtask/src/allocation_tracker.rs"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "xtask allocation tracker source with panic macros. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "macro_call"
-glob = "xtask/src/allocation_tracker.rs"
-
-# ---------------------------------------------------------------------------
-# 31. Targeted entries for remaining 35 new findings (final batch)
-# ---------------------------------------------------------------------------
-
-# .github/CODEOWNERS - unknown_non_rust (b0168 covered documentation only)
-[[allow]]
 id = "allow-b0171"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -2646,74 +1292,6 @@ ast_kind = "tracked_file"
 glob = ".github/**"
 
 # docker-compose.yml at root
-[[allow]]
-id = "allow-b0173"
-kind = "non_rust_file"
-family = "configuration"
-glob = "docker-compose.yml"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Docker Compose file at repo root. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "docker-compose.yml"
-
-# distribution/ - ps1 shell scripts
-[[allow]]
-id = "allow-b0174"
-kind = "non_rust_file"
-family = "shell_script"
-glob = "distribution/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Distribution packaging scripts (Chocolatey ps1, Windows ps1). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "distribution/**"
-
-# distribution/winget - yaml configuration
-[[allow]]
-id = "allow-b0175"
-kind = "non_rust_file"
-family = "configuration"
-glob = "distribution/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Distribution packaging metadata (winget YAML manifests). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "distribution/**"
-
-# distribution/* - package_metadata
-[[allow]]
-id = "allow-b0176"
-kind = "non_rust_file"
-family = "package_metadata"
-glob = "distribution/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Distribution package metadata files. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "distribution/**"
-
-# flake.lock at root - package_metadata
 [[allow]]
 id = "allow-b0177"
 kind = "non_rust_file"
@@ -2747,22 +1325,7 @@ expires = "2026-10-20"
 ast_kind = "tracked_file"
 glob = "hooks/**"
 
-# install.ps1 at root - shell_script (b0157 used release_script)
-[[allow]]
-id = "allow-b0179"
-kind = "non_rust_file"
-family = "shell_script"
-glob = "install.ps1"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Root-level Windows install.ps1 script. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "install.ps1"
+# install.ps1 at root - covered by allow-b0392 (**/*.ps1 shell_script), no separate entry needed
 
 # justfile at root - unknown_non_rust (b0156 used release_script)
 [[allow]]
@@ -2783,57 +1346,6 @@ glob = "justfile"
 
 # schemas/ directory - configuration/yml files
 [[allow]]
-id = "allow-b0181"
-kind = "non_rust_file"
-family = "configuration"
-glob = "schemas/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "JSON/YAML schema files in schemas/ directory. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "schemas/**"
-
-# templates/ci/ directory - CI config templates
-[[allow]]
-id = "allow-b0182"
-kind = "non_rust_file"
-family = "configuration"
-glob = "templates/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "CI configuration templates for buildkite/circleci/gitlab/travis. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "templates/**"
-
-# templates/* - ci_declarative variant
-[[allow]]
-id = "allow-b0183"
-kind = "non_rust_file"
-family = "ci_declarative"
-glob = "templates/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "CI declarative configuration templates. Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "templates/**"
-
-# test_print_indirect.pl - unknown_non_rust (b0169 matched test_fixture not unknown_non_rust)
-[[allow]]
 id = "allow-b0184"
 kind = "non_rust_file"
 family = "unknown_non_rust"
@@ -2851,23 +1363,6 @@ glob = "test_print_indirect.pl"
 
 # vscode-extension/* - unknown_non_rust (b0161 is package_metadata, b0162 is test_fixture)
 [[allow]]
-id = "allow-b0185"
-kind = "non_rust_file"
-family = "unknown_non_rust"
-glob = "vscode-extension/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "VSCode extension unknown file types (.vscodeignore, LICENSE, .pl demo files). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "vscode-extension/**"
-
-# scripts/requirements.txt - package_metadata (b0166/b0167 covered shell_script/unknown_non_rust)
-[[allow]]
 id = "allow-b0186"
 kind = "non_rust_file"
 family = "package_metadata"
@@ -2884,23 +1379,6 @@ ast_kind = "tracked_file"
 glob = "scripts/**"
 
 # xtask/*.txt files - documentation (xtask/src/** covered by b0119 but not root xtask/*.txt)
-[[allow]]
-id = "allow-b0187"
-kind = "non_rust_file"
-family = "documentation"
-glob = "xtask/**"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "Documentation text files in xtask/ (benchmark_results, published-crate-baseline). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "xtask/**"
-
-# crates/perl-parser/fix_regex_parsing.rs - panic.string_slice (b0149 is indexing, b0150 is macro)
 [[allow]]
 id = "allow-b0188"
 kind = "panic"
@@ -2970,22 +1448,6 @@ expires = "2026-10-20"
 [allow.selector]
 ast_kind = "tracked_file"
 glob = "**/*.yml"
-
-[[allow]]
-id = "allow-b0192"
-kind = "non_rust_file"
-family = "ci_declarative"
-glob = "**/*.yaml"
-owner = "unowned"
-classification = "baseline_debt"
-reason = "CI declarative YAML files (.yaml extension). Baseline floor."
-evidence = ["legacy-policy:no-panic-baseline"]
-created = "2026-06-22"
-expires = "2026-10-20"
-
-[allow.selector]
-ast_kind = "tracked_file"
-glob = "**/*.yaml"
 
 [[allow]]
 id = "allow-b0193"
@@ -3058,33 +1520,2941 @@ ast_kind = "tracked_file"
 glob = "crates/*/tests/**"
 
 [[allow]]
-id = "allow-b0197"
+id = "allow-b0200"
 kind = "non_rust_file"
-family = "documentation"
-glob = "crates/*/tests/**"
+family = "test_fixture"
+glob = "crates/perl-corpus/fixtures/**"
 owner = "unowned"
 classification = "baseline_debt"
-reason = "Documentation files under crates/*/tests/ (FIXTURE_INDEX.md, snapshot .md files). Baseline floor."
+reason = "Parser accuracy and snapshot fixture files in crates/perl-corpus/fixtures/ (Perl .pl corpus files, JSON manifests). Not production code. Baseline floor."
 evidence = ["legacy-policy:no-panic-baseline"]
 created = "2026-06-22"
 expires = "2026-10-20"
 
 [allow.selector]
 ast_kind = "tracked_file"
-glob = "crates/*/tests/**"
+glob = "crates/perl-corpus/fixtures/**"
 
 [[allow]]
-id = "allow-b0198"
+id = "allow-b0201"
 kind = "non_rust_file"
-family = "documentation"
-glob = "crates/*/src/**"
+family = "test_fixture"
+glob = "crates/perl-lsp-ux-tests/fixtures/**"
 owner = "unowned"
 classification = "baseline_debt"
-reason = "Documentation files (RST, txt) under crates/*/src/ subdirectories. Baseline floor."
+reason = "Editor UX test fixture files in crates/perl-lsp-ux-tests/fixtures/ (scorecard JSON, fixture matrix JSON). Not production code. Baseline floor."
 evidence = ["legacy-policy:no-panic-baseline"]
 created = "2026-06-22"
 expires = "2026-10-20"
 
 [allow.selector]
 ast_kind = "tracked_file"
-glob = "crates/*/src/**"
+glob = "crates/perl-lsp-ux-tests/fixtures/**"
+
+
+# ---------------------------------------------------------------------------
+# PRODUCTION SAFETY DEBT NOTE (remediation of PR #2625, 2026-06-22)
+#
+# The blanket production src entries (b0008-b0011, b0014, b0017, b0032,
+# b0035-b0037) were REMOVED because cargo-allow 0.1.9 does not support
+# per-file or per-occurrence pinning via glob-only selectors. Blanket
+# crates/*/src/**/*.rs entries silently receipt ALL production violations
+# including any future ones, defeating no-new for CLAUDE.md-banned constructs.
+#
+# Replacement: per-crate entries (crates/SPECIFIC-CRATE/src/**/*.rs) for
+# each of the 37 dirty crates x kind/family. A new violation in any of the
+# remaining 97 clean crates WILL fail cargo-allow check --mode no-new.
+#
+# The invalid b0026/b0027/b0028/b0029/b0148/b0170 lint_exception entries were
+# removed (allow_bare_allow_attributes was false but could not be receipted).
+# allow_bare_allow_attributes is now true to enable per-crate receipting.
+# Production safety debt is tracked in issue #2624 for burndown.
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0210"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-ast/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-ast/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-ast/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0211"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-ast/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-ast/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-ast/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0212"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-ast/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-ast/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-ast/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0213"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-ast/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-ast/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-ast/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0214"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-ast-v2/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-ast-v2/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-ast-v2/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0215"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-ci-hygiene/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0216"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-ci-hygiene/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0217"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-ci-hygiene/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0218"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-ci-hygiene/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0219"
+kind = "panic"
+family = "unreachable"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! guards in production source in crates/perl-ci-hygiene/src/. CLAUDE.md permits in LazyLock<Regex> initializers; other uses need review. Per-crate baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0220"
+kind = "panic"
+family = "unwrap"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".unwrap() calls in production source in crates/perl-ci-hygiene/src/. CLAUDE.md bans unwrap() in production -- use ? instead. Per-crate baseline floor; no new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0221"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe code (unsafe_block) in production source in crates/perl-ci-hygiene/src/. Per-crate baseline floor; each requires review and typed evidence before promotion from baseline_debt. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/perl-ci-hygiene/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0223"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-corpus/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-corpus/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-corpus/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0224"
+kind = "panic"
+family = "expect"
+glob = "crates/perl-corpus/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".expect() calls in production source in crates/perl-corpus/src/. CLAUDE.md bans expect() except specific locations. Per-crate baseline floor; replace with ? or ok_or_else(). No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/perl-corpus/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0225"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-corpus/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-corpus/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-corpus/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0226"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-corpus/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-corpus/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-corpus/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0227"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-corpus/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-corpus/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-corpus/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0228"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/perl-corpus/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe code (unsafe_block) in production source in crates/perl-corpus/src/. Per-crate baseline floor; each requires review and typed evidence before promotion from baseline_debt. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/perl-corpus/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0229"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-dap/build.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in build script crates/perl-dap/build.rs. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-dap/build.rs"
+
+[[allow]]
+id = "allow-b0230"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-dap/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-dap/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-dap/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0231"
+kind = "panic"
+family = "expect"
+glob = "crates/perl-dap/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".expect() calls in production source in crates/perl-dap/src/. CLAUDE.md bans expect() except specific locations. Per-crate baseline floor; replace with ? or ok_or_else(). No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/perl-dap/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0232"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-dap/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-dap/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-dap/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0233"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-dap/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-dap/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-dap/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0234"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-dap/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-dap/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-dap/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0235"
+kind = "panic"
+family = "unwrap"
+glob = "crates/perl-dap/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".unwrap() calls in production source in crates/perl-dap/src/. CLAUDE.md bans unwrap() in production -- use ? instead. Per-crate baseline floor; no new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/perl-dap/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0236"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/perl-dap/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe code (unsafe_block) in production source in crates/perl-dap/src/. Per-crate baseline floor; each requires review and typed evidence before promotion from baseline_debt. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/perl-dap/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0237"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-dap/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-dap/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-dap/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0238"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-dead-code/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-dead-code/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-dead-code/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0239"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-dead-code/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-dead-code/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-dead-code/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0240"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-dead-code/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-dead-code/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-dead-code/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0241"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-diagnostics/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-diagnostics/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-diagnostics/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0242"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-diagnostics/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-diagnostics/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-diagnostics/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0243"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-incremental-parsing/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in benchmark code in crates/perl-incremental-parsing/benches/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-incremental-parsing/benches/**/*.rs"
+
+[[allow]]
+id = "allow-b0244"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-incremental-parsing/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-incremental-parsing/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-incremental-parsing/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0245"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-incremental-parsing/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-incremental-parsing/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-incremental-parsing/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0246"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-incremental-parsing/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-incremental-parsing/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-incremental-parsing/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0247"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lexer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-lexer/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lexer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0248"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-lexer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-lexer/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-lexer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0249"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-lexer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-lexer/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-lexer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0250"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-lexer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-lexer/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-lexer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0251"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lexer/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-lexer/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lexer/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0252"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-line-index/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-line-index/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-line-index/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0253"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-line-index/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-line-index/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-line-index/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0254"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lsp-perltidy/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-lsp-perltidy/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lsp-perltidy/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0255"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-lsp-perltidy/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-lsp-perltidy/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-lsp-perltidy/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0256"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-lsp-perltidy/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-lsp-perltidy/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-lsp-perltidy/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0257"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-lsp-perltidy/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-lsp-perltidy/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-lsp-perltidy/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0258"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lsp-rs/build.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in build script crates/perl-lsp-rs/build.rs. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lsp-rs/build.rs"
+
+[[allow]]
+id = "allow-b0259"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-lsp-rs/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0260"
+kind = "panic"
+family = "expect"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".expect() calls in production source in crates/perl-lsp-rs/src/. CLAUDE.md bans expect() except specific locations. Per-crate baseline floor; replace with ? or ok_or_else(). No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0261"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-lsp-rs/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0262"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-lsp-rs/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0263"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-lsp-rs/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0264"
+kind = "panic"
+family = "unreachable"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! guards in production source in crates/perl-lsp-rs/src/. CLAUDE.md permits in LazyLock<Regex> initializers; other uses need review. Per-crate baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0265"
+kind = "panic"
+family = "unwrap"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".unwrap() calls in production source in crates/perl-lsp-rs/src/. CLAUDE.md bans unwrap() in production -- use ? instead. Per-crate baseline floor; no new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0266"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe code (unsafe_block) in production source in crates/perl-lsp-rs/src/. Per-crate baseline floor; each requires review and typed evidence before promotion from baseline_debt. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0267"
+kind = "unsafe"
+family = "unsafe_impl"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe code (unsafe_impl) in production source in crates/perl-lsp-rs/src/. Per-crate baseline floor; each requires review and typed evidence before promotion from baseline_debt. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_impl"
+glob = "crates/perl-lsp-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0268"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lsp-rs/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-lsp-rs/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lsp-rs/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0269"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lsp-rs-core/build.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in build script crates/perl-lsp-rs-core/build.rs. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lsp-rs-core/build.rs"
+
+[[allow]]
+id = "allow-b0270"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-lsp-rs-core/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0271"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-lsp-rs-core/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0272"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-lsp-rs-core/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0273"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-lsp-rs-core/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0274"
+kind = "panic"
+family = "unreachable"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! guards in production source in crates/perl-lsp-rs-core/src/. CLAUDE.md permits in LazyLock<Regex> initializers; other uses need review. Per-crate baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0275"
+kind = "panic"
+family = "unwrap"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".unwrap() calls in production source in crates/perl-lsp-rs-core/src/. CLAUDE.md bans unwrap() in production -- use ? instead. Per-crate baseline floor; no new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0276"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe code (unsafe_block) in production source in crates/perl-lsp-rs-core/src/. Per-crate baseline floor; each requires review and typed evidence before promotion from baseline_debt. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/perl-lsp-rs-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0277"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lsp-rs-core/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-lsp-rs-core/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lsp-rs-core/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0278"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lsp-ux-tests/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-lsp-ux-tests/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lsp-ux-tests/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0279"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-lsp-ux-tests/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-lsp-ux-tests/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-lsp-ux-tests/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0280"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-lsp-ux-tests/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-lsp-ux-tests/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-lsp-ux-tests/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0281"
+kind = "panic"
+family = "unwrap"
+glob = "crates/perl-lsp-ux-tests/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".unwrap() calls in production source in crates/perl-lsp-ux-tests/src/. CLAUDE.md bans unwrap() in production -- use ? instead. Per-crate baseline floor; no new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/perl-lsp-ux-tests/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0282"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-lsp-ux-tests/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-lsp-ux-tests/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-lsp-ux-tests/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0283"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-module/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-module/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-module/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0284"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-module/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-module/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-module/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0285"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-module/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-module/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-module/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0286"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in benchmark code in crates/perl-parser/benches/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser/benches/**/*.rs"
+
+[[allow]]
+id = "allow-b0289"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in example code in crates/perl-parser/examples/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0290"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-parser/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0291"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-parser/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-parser/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0292"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-parser/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-parser/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-parser/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0293"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-parser/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-parser/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0294"
+kind = "panic"
+family = "unreachable"
+glob = "crates/perl-parser/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! guards in production source in crates/perl-parser/src/. CLAUDE.md permits in LazyLock<Regex> initializers; other uses need review. Per-crate baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-parser/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0295"
+kind = "panic"
+family = "unwrap"
+glob = "crates/perl-parser/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".unwrap() calls in production source in crates/perl-parser/src/. CLAUDE.md bans unwrap() in production -- use ? instead. Per-crate baseline floor; no new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/perl-parser/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0296"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-parser/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0297"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser-bench/src/bin/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in binary entry point in crates/perl-parser-bench/src/bin/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser-bench/src/bin/**/*.rs"
+
+[[allow]]
+id = "allow-b0298"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-parser-bench/src/bin/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in binary entry point in crates/perl-parser-bench/src/bin/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser-bench/src/bin/**/*.rs"
+
+[[allow]]
+id = "allow-b0300"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser-comparison/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-parser-comparison/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser-comparison/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0301"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-parser-comparison/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-parser-comparison/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser-comparison/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0302"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser-comparison/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-parser-comparison/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser-comparison/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0303"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-parser-core/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0304"
+kind = "panic"
+family = "expect"
+glob = "crates/perl-parser-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".expect() calls in production source in crates/perl-parser-core/src/. CLAUDE.md bans expect() except specific locations. Per-crate baseline floor; replace with ? or ok_or_else(). No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/perl-parser-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0305"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-parser-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-parser-core/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0306"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-parser-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-parser-core/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-parser-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0307"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-parser-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-parser-core/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0308"
+kind = "panic"
+family = "unreachable"
+glob = "crates/perl-parser-core/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! guards in production source in crates/perl-parser-core/src/. CLAUDE.md permits in LazyLock<Regex> initializers; other uses need review. Per-crate baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-parser-core/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0309"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser-core/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-parser-core/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser-core/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0310"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-parser-pest/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-parser-pest/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-parser-pest/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0311"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-parser-pest/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-parser-pest/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser-pest/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0312"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-parser-pest/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-parser-pest/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-parser-pest/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0313"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-parser-pest/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-parser-pest/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-parser-pest/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0314"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-pod/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-pod/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-pod/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0315"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-pod/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-pod/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-pod/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0316"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-pod/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-pod/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-pod/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0317"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-position-tracking/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-position-tracking/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-position-tracking/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0318"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-position-tracking/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-position-tracking/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-position-tracking/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0319"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-position-tracking/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-position-tracking/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-position-tracking/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0320"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-pragma/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-pragma/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-pragma/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0321"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-pragma/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-pragma/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-pragma/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0322"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-refactoring/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-refactoring/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-refactoring/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0323"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-refactoring/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-refactoring/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-refactoring/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0324"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-refactoring/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-refactoring/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-refactoring/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0325"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-refactoring/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-refactoring/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-refactoring/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0326"
+kind = "panic"
+family = "unwrap"
+glob = "crates/perl-refactoring/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".unwrap() calls in production source in crates/perl-refactoring/src/. CLAUDE.md bans unwrap() in production -- use ? instead. Per-crate baseline floor; no new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/perl-refactoring/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0327"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-regex/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-regex/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-regex/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0328"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-regex/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-regex/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-regex/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0329"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-regex/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-regex/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-regex/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0330"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-semantic-analyzer/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0331"
+kind = "panic"
+family = "expect"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".expect() calls in production source in crates/perl-semantic-analyzer/src/. CLAUDE.md bans expect() except specific locations. Per-crate baseline floor; replace with ? or ok_or_else(). No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0332"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-semantic-analyzer/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0333"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-semantic-analyzer/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0334"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-semantic-analyzer/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0335"
+kind = "panic"
+family = "unwrap"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".unwrap() calls in production source in crates/perl-semantic-analyzer/src/. CLAUDE.md bans unwrap() in production -- use ? instead. Per-crate baseline floor; no new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "unwrap"
+glob = "crates/perl-semantic-analyzer/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0336"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-semantic-analyzer/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-semantic-analyzer/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-semantic-analyzer/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0337"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-semantic-facts/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-semantic-facts/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-semantic-facts/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0338"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-semantic-facts/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-semantic-facts/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-semantic-facts/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0339"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-semantic-facts/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-semantic-facts/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-semantic-facts/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0340"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-subprocess-runtime/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-subprocess-runtime/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-subprocess-runtime/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0341"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-subprocess-runtime/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-subprocess-runtime/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-subprocess-runtime/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0342"
+kind = "panic"
+family = "expect"
+glob = "crates/perl-symbol/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".expect() calls in production source in crates/perl-symbol/src/. CLAUDE.md bans expect() except specific locations. Per-crate baseline floor; replace with ? or ok_or_else(). No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "method_call"
+callee = "expect"
+glob = "crates/perl-symbol/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0343"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-symbol/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-symbol/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-symbol/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0344"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-symbol/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-symbol/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-symbol/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0345"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-symbol/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-symbol/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-symbol/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0346"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-tdd-support/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0347"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-tdd-support/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0348"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-tdd-support/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0349"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-tdd-support/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0350"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe code (unsafe_block) in production source in crates/perl-tdd-support/src/. Per-crate baseline floor; each requires review and typed evidence before promotion from baseline_debt. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/perl-tdd-support/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0351"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-tdd-support/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-tdd-support/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-tdd-support/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0352"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-test-generators/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-test-generators/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-test-generators/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0353"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-test-must/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-test-must/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-test-must/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0354"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-test-must/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-test-must/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-test-must/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0355"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-test-must/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-test-must/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-test-must/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0356"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-token/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-token/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-token/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0357"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-uri/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-uri/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-uri/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0358"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-uri/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-uri/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-uri/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0359"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-uri/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-uri/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-uri/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0360"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-workspace/benches/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in benchmark code in crates/perl-workspace/benches/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-workspace/benches/**/*.rs"
+
+[[allow]]
+id = "allow-b0363"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-workspace/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/perl-workspace/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-workspace/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0364"
+kind = "panic"
+family = "indexing"
+glob = "crates/perl-workspace/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/perl-workspace/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-workspace/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0365"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/perl-workspace/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/perl-workspace/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-workspace/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0366"
+kind = "panic"
+family = "string_slice"
+glob = "crates/perl-workspace/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/perl-workspace/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/perl-workspace/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0367"
+kind = "panic"
+family = "unreachable"
+glob = "crates/perl-workspace/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "unreachable! guards in production source in crates/perl-workspace/src/. CLAUDE.md permits in LazyLock<Regex> initializers; other uses need review. Per-crate baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/perl-workspace/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0368"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/perl-workspace/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/perl-workspace/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/perl-workspace/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0370"
+kind = "panic"
+family = "indexing"
+glob = "crates/tree-sitter-perl-c/src/bin/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in binary entry point in crates/tree-sitter-perl-c/src/bin/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/tree-sitter-perl-c/src/bin/**/*.rs"
+
+[[allow]]
+id = "allow-b0371"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/tree-sitter-perl-c/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/tree-sitter-perl-c/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/tree-sitter-perl-c/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0372"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/tree-sitter-perl-c/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/tree-sitter-perl-c/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/tree-sitter-perl-c/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0373"
+kind = "unsafe"
+family = "unsafe_block"
+glob = "crates/tree-sitter-perl-c/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe code (unsafe_block) in production source in crates/tree-sitter-perl-c/src/. Per-crate baseline floor; each requires review and typed evidence before promotion from baseline_debt. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_block"
+glob = "crates/tree-sitter-perl-c/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0374"
+kind = "unsafe"
+family = "unsafe_extern_block"
+glob = "crates/tree-sitter-perl-c/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Unsafe code (unsafe_extern_block) in production source in crates/tree-sitter-perl-c/src/. Per-crate baseline floor; each requires review and typed evidence before promotion from baseline_debt. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "unsafe_extern_block"
+glob = "crates/tree-sitter-perl-c/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0375"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/tree-sitter-perl-c/tests/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in test code in crates/tree-sitter-perl-c/tests/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/tree-sitter-perl-c/tests/**/*.rs"
+
+[[allow]]
+id = "allow-b0378"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/tree-sitter-perl-rs/examples/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in example code in crates/tree-sitter-perl-rs/examples/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/tree-sitter-perl-rs/examples/**/*.rs"
+
+[[allow]]
+id = "allow-b0379"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "crates/tree-sitter-perl-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in production source in crates/tree-sitter-perl-rs/src/. Per-crate baseline floor -- each should be reviewed and justified or replaced per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "crates/tree-sitter-perl-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0380"
+kind = "panic"
+family = "indexing"
+glob = "crates/tree-sitter-perl-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Array/slice indexing panics in production source in crates/tree-sitter-perl-rs/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/tree-sitter-perl-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0381"
+kind = "panic"
+family = "panic_macro"
+glob = "crates/tree-sitter-perl-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Panic macros in production source in crates/tree-sitter-perl-rs/src/. Per-crate baseline floor; replace with proper error handling per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "macro_call"
+glob = "crates/tree-sitter-perl-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0382"
+kind = "panic"
+family = "string_slice"
+glob = "crates/tree-sitter-perl-rs/src/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "String slicing panics in production source in crates/tree-sitter-perl-rs/src/. Per-crate baseline floor; replace with .get() alternatives per CLAUDE.md. No new violations in clean crates."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "index_expr"
+glob = "crates/tree-sitter-perl-rs/src/**/*.rs"
+
+[[allow]]
+id = "allow-b0383"
+kind = "lint_exception"
+family = "allow_attribute"
+glob = "xtask/**/*.rs"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "#[allow(...)] lint suppressions in xtask build tooling. Internal build infrastructure. Per-path baseline floor -- each should be reviewed and justified. No new violations outside this path."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "attribute"
+glob = "xtask/**/*.rs"
+
+# ---------------------------------------------------------------------------
+# Additional targeted entries to resolve remaining new findings after
+# ambiguity cleanup (2026-06-22)
+# ---------------------------------------------------------------------------
+
+[[allow]]
+id = "allow-b0390"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "Formula/**"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Homebrew formula files in Formula/ directory (perllsp.rb). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "Formula/**"
+
+[[allow]]
+id = "allow-b0391"
+kind = "non_rust_file"
+family = "documentation"
+glob = "crates/*/src/**/*.rst"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "RST documentation files under crates/*/src/ (import_optimizer.rst). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "crates/*/src/**/*.rst"
+
+[[allow]]
+id = "allow-b0392"
+kind = "non_rust_file"
+family = "shell_script"
+glob = "**/*.ps1"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "PowerShell scripts (.ps1) across the repo (distribution/, scripts/, install.ps1). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "**/*.ps1"
+
+# vscode-extension uncovered file types (svg/png covered by b0057/b0092; ts/js/json/md/sh/py/yaml covered by extension entries)
+[[allow]]
+id = "allow-b0394"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "vscode-extension/**/*.pl"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Perl source files in vscode-extension demo project. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/**/*.pl"
+
+[[allow]]
+id = "allow-b0402"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "vscode-extension/**/*.pm"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Perl module files in vscode-extension demo project. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/**/*.pm"
+
+[[allow]]
+id = "allow-b0403"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "vscode-extension/LICENSE"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "LICENSE file in vscode-extension (no extension). Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/LICENSE"
+
+[[allow]]
+id = "allow-b0404"
+kind = "non_rust_file"
+family = "unknown_non_rust"
+glob = "vscode-extension/.vscodeignore"
+owner = "unowned"
+classification = "baseline_debt"
+reason = ".vscodeignore file in vscode-extension. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "vscode-extension/.vscodeignore"
+
+# Replacement for b0393: docs/ non-.md files classified as 'documentation' by scanner
+# These do NOT conflict with **/*.md (b0038) since they match different file extensions
+
+[[allow]]
+id = "allow-b0395"
+kind = "non_rust_file"
+family = "documentation"
+glob = "docs/**/*.json"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "JSON data files in docs/ (status scorecards, schema files, example configs). Scanner classifies these as documentation since they are in the docs/ directory. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**/*.json"
+
+[[allow]]
+id = "allow-b0396"
+kind = "non_rust_file"
+family = "documentation"
+glob = "docs/**/*.jsonl"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "JSONL log files in docs/ (ledger files, outcome logs). Scanner classifies as documentation. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**/*.jsonl"
+
+[[allow]]
+id = "allow-b0397"
+kind = "non_rust_file"
+family = "documentation"
+glob = "docs/**/*.toml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "TOML configuration files in docs/ (dispatch-index, publication-facts, demo-asset-plan). Scanner classifies as documentation. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**/*.toml"
+
+[[allow]]
+id = "allow-b0398"
+kind = "non_rust_file"
+family = "documentation"
+glob = "docs/**/*.yml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "YAML example files in docs/ (CI pipeline examples). Scanner classifies as documentation. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**/*.yml"
+
+[[allow]]
+id = "allow-b0399"
+kind = "non_rust_file"
+family = "documentation"
+glob = "docs/**/*.sh"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "Shell scripts in docs/handoff/ directory (setup scripts, hooks). Scanner classifies as documentation. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**/*.sh"
+
+[[allow]]
+id = "allow-b0400"
+kind = "non_rust_file"
+family = "documentation"
+glob = "docs/**/*.xml"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "XML example files in docs/ (IDE external tools config). Scanner classifies as documentation. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**/*.xml"
+
+[[allow]]
+id = "allow-b0401"
+kind = "non_rust_file"
+family = "documentation"
+glob = "docs/**/*.csv"
+owner = "unowned"
+classification = "baseline_debt"
+reason = "CSV data files in docs/ (forensics calibration data). Scanner classifies as documentation. Baseline floor."
+evidence = ["legacy-policy:no-panic-baseline"]
+created = "2026-06-22"
+expires = "2026-10-20"
+
+[allow.selector]
+ast_kind = "tracked_file"
+glob = "docs/**/*.csv"
+
