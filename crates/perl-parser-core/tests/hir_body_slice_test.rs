@@ -53,10 +53,22 @@ fn hir_body_slice_specimen_structure() {
     let stmt = body.stmt(stmt_id).expect("stmt must exist");
 
     // ── 3. Statement is Let { name: "x", sigil: $, storage: my } ──────────
-    let (let_name, let_sigil, let_storage, init_id) = match stmt {
-        HirStmt::Let { name, sigil, storage, init, .. } => (name.as_str(), sigil, storage, *init),
+    let (let_name, let_sigil, let_storage, init_id, binding_range) = match stmt {
+        HirStmt::Let { name, sigil, storage, init, binding_range } => {
+            (name.as_str(), sigil, storage, *init, *binding_range)
+        }
         other => panic!("expected HirStmt::Let, got {:?}", other),
     };
+
+    // ── Let.binding_range must be the `$x` token span (3..5), NOT the statement
+    //    span (0..15) — declaration-anchor parity through the hir::body lowering
+    //    path (#2640). Asserting it here reveals the `binding_range` seam for the
+    //    body.rs construction site.
+    assert_eq!(
+        (binding_range.start, binding_range.end),
+        (3, 5),
+        "Let.binding_range must be the `$x` token span (3..5), not the statement span (0..15)"
+    );
 
     assert_eq!(let_name, "x", "declared variable name must be 'x'");
     assert!(matches!(let_sigil, Sigil::Scalar), "sigil must be Scalar ($)");
