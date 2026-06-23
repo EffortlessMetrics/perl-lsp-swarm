@@ -464,6 +464,63 @@ fn pir_a_version_mismatch_yields_empty_graph_with_ambient_input() {
     );
 }
 
+// ── 17b. body_model_version threshold boundary (below / equal / above) ────────
+// ripr seam proof for the schema-version predicate in
+// `lower_hir_bodies_with_identity` (`file.body_model_version != HIR_BODY_MODEL_VERSION`).
+// Pins the equality boundary from BOTH sides with *literal* version values so a
+// mutation that removes or flips the guard is caught: only the exact match version
+// lowers the body; below and above fail-closed to an empty graph with the mismatch
+// recorded in ambient_inputs.
+
+#[test]
+fn pir_a_body_model_version_threshold_below_equal_above() {
+    use perl_parser_core::hir::HIR_BODY_MODEL_VERSION;
+
+    // A real non-empty HIR (`my $x = 1;` lowers to a LexicalWrite) so the body
+    // WOULD emit a node if the version guard were bypassed.
+    let build = || {
+        let mut parser = Parser::new("my $x = 1;");
+        let output = parser.parse_with_recovery();
+        lower_ast(&output.ast)
+    };
+
+    // EQUAL: body_model_version == HIR_BODY_MODEL_VERSION → lowering proceeds.
+    let mut equal = build();
+    equal.body_model_version = HIR_BODY_MODEL_VERSION;
+    let g = lower_hir_bodies(&equal);
+    assert!(
+        !g.nodes.is_empty(),
+        "version == HIR_BODY_MODEL_VERSION must lower the body (got empty graph)"
+    );
+    assert!(
+        g.receipt.ambient_inputs.iter().all(|s| !s.contains("body_model_version mismatch")),
+        "matching version must NOT record a version mismatch; got: {:?}",
+        g.receipt.ambient_inputs
+    );
+
+    // BELOW: version < HIR_BODY_MODEL_VERSION → fail-closed empty graph.
+    let mut below = build();
+    below.body_model_version = HIR_BODY_MODEL_VERSION - 1;
+    let g = lower_hir_bodies(&below);
+    assert_eq!(g.nodes.len(), 0, "below-threshold version must yield an empty graph");
+    assert!(
+        g.receipt.ambient_inputs.iter().any(|s| s.contains("body_model_version mismatch")),
+        "below-threshold version must record the mismatch; got: {:?}",
+        g.receipt.ambient_inputs
+    );
+
+    // ABOVE: version > HIR_BODY_MODEL_VERSION → fail-closed empty graph.
+    let mut above = build();
+    above.body_model_version = HIR_BODY_MODEL_VERSION + 1;
+    let g = lower_hir_bodies(&above);
+    assert_eq!(g.nodes.len(), 0, "above-threshold version must yield an empty graph");
+    assert!(
+        g.receipt.ambient_inputs.iter().any(|s| s.contains("body_model_version mismatch")),
+        "above-threshold version must record the mismatch; got: {:?}",
+        g.receipt.ambient_inputs
+    );
+}
+
 // ── 18. `lower_hir_bodies_with_identity` threads source identity ──────────────
 // Exercises the `source_identity: Some(...)` path in the bodies lowerer,
 // which was previously only tested via the None path (lower_hir_bodies).
