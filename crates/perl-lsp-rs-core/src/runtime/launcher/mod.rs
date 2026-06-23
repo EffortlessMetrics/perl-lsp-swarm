@@ -17,12 +17,12 @@ use clap::{Args, Parser};
 pub mod timing;
 pub use crate::features::contracts::trackable_feature_count_for_grid;
 pub use crate::features::grid::{compliance_percent_for_profile, to_json_for_profile};
-pub use crate::features::policy::{catalog_advertised_feature_ids, FeatureProfile};
+pub use crate::features::policy::{FeatureProfile, catalog_advertised_feature_ids};
 use crate::features::profile_cli::{feature_profile_supported_tokens, parse_feature_profile_arg};
 use crate::runtime::tuning::{DiagnosticMode, RuntimeMode, RuntimeTuning};
 pub use timing::{StartupReport, StartupTimer};
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{fmt as tracing_fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt as tracing_fmt};
 
 static LOGGING_INIT: Once = Once::new();
 /// Keeps the non-blocking file writer alive for the process lifetime.
@@ -279,7 +279,17 @@ pub struct LspArgs {
 
     /// Export a ripr-perl-facts-v1 fact packet (Campaign 31, ripr-swarm#1379).
     /// Does NOT start the LSP server or execute Perl.
-    #[arg(long, conflicts_with_all = ["check", "check_project", "doctor"])]
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "check",
+            "check_project",
+            "doctor",
+            "features_json",
+            "perltidy_compat_report",
+            "perlcritic_compat_report"
+        ]
+    )]
     pub ripr_facts: bool,
 
     /// Schema version for --ripr-facts (must be `ripr-perl-facts-v1`).
@@ -1086,8 +1096,8 @@ fn parse_feature_profile(raw_profile: &str) -> Result<FeatureProfile, LaunchPars
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_args, DiagnosticMode, LaunchAction, RuntimeMode, RuntimeTuning, TransportMode,
-        DEFAULT_LSP_PORT,
+        DEFAULT_LSP_PORT, DiagnosticMode, LaunchAction, RuntimeMode, RuntimeTuning, TransportMode,
+        parse_args,
     };
     use perl_tdd_support::{must, must_some};
 
@@ -1533,8 +1543,8 @@ mod tests {
     }
 
     #[test]
-    fn env_truthy_boundary_discriminator_input_that_hits_the_boundary_normalized_is_empty_or_normalized_equals_0(
-    ) {
+    fn env_truthy_boundary_discriminator_input_that_hits_the_boundary_normalized_is_empty_or_normalized_equals_0()
+     {
         {
             let _guard = EnvGuard::set("PERL_LSP_TEST_TRUTHY", "   ");
             assert_eq!(
