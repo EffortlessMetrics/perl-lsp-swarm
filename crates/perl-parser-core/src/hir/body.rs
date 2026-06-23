@@ -645,3 +645,36 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
         }
     }
 }
+
+#[cfg(test)]
+mod binding_range_discriminator_tests {
+    use super::{HirStmt, Sigil, lower_body};
+    use crate::Parser;
+
+    #[test]
+    fn lower_body_let_carries_fields_and_variable_token_binding_range() {
+        // Same-crate discriminator for the `HirStmt::Let` construction in
+        // `lower_statement` (the hir::body lowering path). For `my $x = 1;` the
+        // lowered Let must carry name "x", a scalar sigil, an initializer, and a
+        // `binding_range` pinned at the `$x` token span (3..5) — NOT the statement
+        // span. These statically-visible assertions activate the construction-field
+        // seams that a tests/-dir integration test cannot reach (ripr's
+        // cross-language test-target inference limitation).
+        let mut parser = Parser::new("my $x = 1;");
+        let output = parser.parse_with_recovery();
+        let body = lower_body(&output.ast);
+        let root = body.block(body.root_block).expect("root block");
+        let stmt = body.stmt(root.stmts[0]).expect("stmt");
+        let HirStmt::Let { name, sigil, init, binding_range, .. } = stmt else {
+            panic!("expected HirStmt::Let, got {stmt:?}");
+        };
+        assert_eq!(name.as_str(), "x", "declared variable name");
+        assert!(matches!(sigil, Sigil::Scalar), "scalar sigil");
+        assert!(init.is_some(), "initializer must be present");
+        assert_eq!(
+            (binding_range.start, binding_range.end),
+            (3, 5),
+            "binding_range must be the `$x` token span (3..5), not the statement span"
+        );
+    }
+}
