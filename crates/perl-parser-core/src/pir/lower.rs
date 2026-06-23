@@ -860,6 +860,25 @@ mod tests {
     }
 
     #[test]
+    fn declaration_write_anchors_at_variable_token_not_statement() {
+        // Same-crate discriminator for the #2640 declaration `binding_range` anchor
+        // seam (`make_body_anchor(*binding_range)` in `lower_stmt`'s `Let` arm): the
+        // LexicalWrite for `my $x = 1;` must anchor at the `$x` token span (3..5),
+        // NOT the enclosing statement span (0..9). The discriminator value (3, 5) is
+        // statically visible here, so a mutation reverting the anchor to the
+        // statement range is caught and the exposure seam is closed.
+        let graph = lower("my $x = 1;");
+        let write = &graph.nodes[0];
+        assert_eq!(write.operation.name(), "LexicalWrite");
+        let range = must_some(write.source_anchor.range.as_ref());
+        assert_eq!(
+            (range.start, range.end),
+            (3, 5),
+            "declaration write must anchor at the `$x` token (3..5), not the statement (0..9)"
+        );
+    }
+
+    #[test]
     fn our_declaration_is_stash_write() {
         let graph = lower("package Acme; our @items = (1, 2);");
         let stash = must_some(
