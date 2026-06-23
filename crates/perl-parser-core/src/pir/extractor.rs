@@ -6,8 +6,9 @@
 //! The extractor is used by PR2 (#2634) for shadow comparison and later by providers for
 //! navigation and reference detection. PR1 defines the core API only; no provider changes.
 
-use crate::hir::{BodyOwnerKind, HirFile};
-use crate::pir::model::{LexicalName, PirSourceAnchor};
+use crate::hir::{BodyOwnerKind, HirBodyId, HirFile};
+use crate::pir::lower::lower_single_body;
+use crate::pir::model::{LexicalName, PirOperation, PirSourceAnchor};
 
 /// Current schema version for lexical extractor receipts.
 pub const LEXICAL_EXTRACTOR_RECEIPT_VERSION: u32 = 1;
@@ -73,7 +74,7 @@ pub struct LexicalExtractorReceipt {
     pub total_read_count: usize,
     /// Total count of lexical writes across all bodies.
     pub total_write_count: usize,
-    /// Count of operations skipped (Modify, StashModify, non-anchored).
+    /// Count of operations skipped (Modify, StashModify).
     pub skipped_node_count: usize,
     /// Whether provider behavior changed (always false for PR1).
     pub provider_behavior_changed: bool,
@@ -95,20 +96,83 @@ pub struct LexicalExtractorReceipt {
 /// # Invariants
 ///
 /// - All emitted facts have `source_anchor.is_anchored() == true`
-/// - `Modify`/`StashModify` operations are skipped (not counted as facts, but tracked in skipped_node_count)
+/// - `Modify`/`StashModify` operations are skipped (not counted as facts, but tracked in `skipped_node_count`)
 /// - `StashRead`/`StashWrite` are ignored (not extracted in PR1)
 /// - `provider_behavior_changed` is always `false`
 /// - `total_read_count + total_write_count == sum(bodies[].facts.len())`
 #[must_use]
-pub fn extract_lexical_facts(_file: &HirFile) -> LexicalExtractorReceipt {
-    // Stub: builder implements the full traversal.
-    // For red TDD, this must return a minimal default receipt.
+pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
+    let mut bodies = Vec::new();
+    let mut total_read_count = 0usize;
+    let mut total_write_count = 0usize;
+    let mut skipped_node_count = 0usize;
+
+    for (body_idx, body) in file.bodies.iter().enumerate() {
+        let owner = body.owner.clone();
+        let mut facts = Vec::new();
+        let mut anchored_node_count = 0usize;
+        let mut total_node_count = 0usize;
+
+        // Lower this body in isolation — fresh lowerer per body preserves scope boundaries.
+        let pir_nodes = lower_single_body(body, HirBodyId(body_idx as u32), file);
+
+        for pir_node in pir_nodes {
+            total_node_count += 1;
+
+            match &pir_node.operation {
+                PirOperation::LexicalRead { name } => {
+                    if pir_node.source_anchor.is_anchored() {
+                        anchored_node_count += 1;
+                        facts.push(LexicalBindingFact {
+                            name: name.clone(),
+                            role: LexicalRole::Read,
+                            source_anchor: pir_node.source_anchor.clone(),
+                            body_idx,
+                            body_owner: owner.clone(),
+                        });
+                        total_read_count += 1;
+                    }
+                }
+                PirOperation::LexicalWrite { name } => {
+                    if pir_node.source_anchor.is_anchored() {
+                        anchored_node_count += 1;
+                        facts.push(LexicalBindingFact {
+                            name: name.clone(),
+                            role: LexicalRole::Write,
+                            source_anchor: pir_node.source_anchor.clone(),
+                            body_idx,
+                            body_owner: owner.clone(),
+                        });
+                        total_write_count += 1;
+                    }
+                }
+                PirOperation::Modify { .. } | PirOperation::StashModify { .. } => {
+                    // Modify and StashModify are explicitly skipped: they are neither Read nor
+                    // Write in the lexical-fact model (they represent compound RMW operations).
+                    // Track them so the receipt surface is honest about what was filtered.
+                    skipped_node_count += 1;
+                }
+                // StashRead, StashWrite, Call, MethodCall, Assign, DynamicBoundary, etc.
+                // are outside PR1 scope — silently ignored (not facts, not skipped).
+                _ => {}
+            }
+        }
+
+        bodies.push(BodyExtractionResult {
+            body_idx,
+            owner,
+            facts,
+            anchored_node_count,
+            total_node_count,
+        });
+    }
+
     LexicalExtractorReceipt {
         schema_version: LEXICAL_EXTRACTOR_RECEIPT_VERSION,
-        bodies: Vec::new(),
-        total_read_count: 0,
-        total_write_count: 0,
-        skipped_node_count: 0,
+        bodies,
+        total_read_count,
+        total_write_count,
+        skipped_node_count,
         provider_behavior_changed: false,
     }
 }
