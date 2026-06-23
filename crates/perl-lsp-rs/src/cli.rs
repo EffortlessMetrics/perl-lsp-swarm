@@ -654,7 +654,7 @@ mod tests {
     use super::{
         build_unavailable_packet, format_parse_error_context, invocation_name,
         normalize_fact_classes, render_help_text, render_shell_completion, run_cli, run_ripr_facts,
-        write_packet,
+        validate_ripr_facts_path, write_packet,
     };
     use std::ffi::OsString;
 
@@ -918,5 +918,37 @@ mod tests {
         assert_eq!(parsed["schema_version"], "ripr-perl-facts-v1");
         assert_eq!(parsed["packet_status"], "unavailable");
         Ok(())
+    }
+
+    #[test]
+    fn ripr_facts_rejects_empty_root() {
+        let rc = run_ripr_facts(
+            "ripr-perl-facts-v1",
+            "",
+            None,
+            None,
+            "owners",
+            "target/ripr/test-empty-root.json",
+        );
+        assert_eq!(rc, 1, "empty root must exit 1");
+    }
+
+    #[test]
+    fn ripr_facts_rejects_empty_out() {
+        let rc =
+            run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "owners", "");
+        assert_eq!(rc, 1, "empty out path must exit 1");
+    }
+
+    #[test]
+    fn ripr_facts_validates_path_helper_directly() {
+        // Directly test the path validator for all branches.
+        assert!(validate_ripr_facts_path(".", "test").is_ok());
+        assert!(validate_ripr_facts_path("target/ripr/x.json", "test").is_ok());
+        assert!(validate_ripr_facts_path("", "test").is_err());
+        assert!(validate_ripr_facts_path("/abs", "test").is_err());
+        assert!(validate_ripr_facts_path("./rel", "test").is_err());
+        assert!(validate_ripr_facts_path("../escape", "test").is_err());
+        assert!(validate_ripr_facts_path("C:/drive", "test").is_err());
     }
 }
