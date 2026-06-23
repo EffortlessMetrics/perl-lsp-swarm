@@ -182,6 +182,20 @@ impl Default for DebugAdapter {
     }
 }
 
+impl Drop for DebugAdapter {
+    fn drop(&mut self) {
+        // Signal cancellation of any in-progress requests so polling loops exit
+        // promptly. This is a best-effort signal — the actual cleanup below will
+        // terminate the underlying process regardless.
+        self.cancel_requested.store(true, Ordering::Release);
+        // Terminate the active debug session (process, TCP attach, PID attach).
+        // Closing the process's stdio pipes causes the output reader thread — which
+        // holds no JoinHandle — to receive EOF/error and exit naturally without a
+        // blocking join.
+        self.clear_active_session_state();
+    }
+}
+
 impl DebugAdapter {
     /// Create a new debug adapter
     pub fn new() -> Self {
