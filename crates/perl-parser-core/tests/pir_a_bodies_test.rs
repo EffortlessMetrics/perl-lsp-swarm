@@ -855,10 +855,15 @@ fn pir_a_rmw_variable_in_expr_position_is_fail_closed() {
         graph.nodes.iter().map(|n| n.operation.name()).collect::<Vec<_>>()
     );
 
-    // The receipt must record the gap as "RmwVariableFallthrough".
-    assert!(
-        graph.receipt.unsupported_construct_counts.contains_key("RmwVariableFallthrough"),
-        "RMW variable fallthrough must be recorded in unsupported_construct_counts; got: {:?}",
+    // The receipt must record the gap EXACTLY ONCE under "RmwVariableFallthrough".
+    // Asserting the exact count (not just key presence) is the ripr seam proof: it
+    // kills the `+= 1` → `+= 0` mutant on the counter increment in
+    // `lower_variable_expr` — `.or_insert(0)` would still insert the key with value
+    // 0, so a `contains_key` assertion would survive that mutation.
+    assert_eq!(
+        graph.receipt.unsupported_construct_counts.get("RmwVariableFallthrough").copied(),
+        Some(1),
+        "RMW variable fallthrough must be recorded exactly once; got: {:?}",
         graph.receipt.unsupported_construct_counts
     );
 }
