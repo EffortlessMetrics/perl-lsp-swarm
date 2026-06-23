@@ -399,6 +399,12 @@ pub enum HirStmt {
         storage: DeclStorageClass,
         /// Optional initializer expression ID.
         init: Option<HirExprId>,
+        /// Source span of the declared variable token (`$x`), for reference / LSP
+        /// anchoring. Distinct from the enclosing statement span (`stmt_ranges`)
+        /// and present for EVERY declaration form, including those without an
+        /// initializer — so PIR-A lowering anchors declarations at the variable,
+        /// matching the legacy find-references provider (#2640 range parity).
+        binding_range: SourceLocation,
     },
 }
 
@@ -584,7 +590,13 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
             });
 
             builder.alloc_stmt(
-                HirStmt::Let { name: var_name, sigil, storage, init: init_expr_id },
+                HirStmt::Let {
+                    name: var_name,
+                    sigil,
+                    storage,
+                    init: init_expr_id,
+                    binding_range: variable.location,
+                },
                 range,
             )
         }

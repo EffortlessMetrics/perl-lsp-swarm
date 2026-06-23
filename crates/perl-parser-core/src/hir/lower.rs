@@ -2673,7 +2673,13 @@ impl<'a> BodyBuilder2<'a> {
                 });
 
                 self.alloc_stmt(
-                    HirStmt::Let { name: var_name, sigil, storage, init: init_expr_id },
+                    HirStmt::Let {
+                        name: var_name,
+                        sigil,
+                        storage,
+                        init: init_expr_id,
+                        binding_range: variable.location,
+                    },
                     range,
                 )
             }

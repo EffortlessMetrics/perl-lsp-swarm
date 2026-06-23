@@ -32,6 +32,9 @@ const CORPUS: &[(&str, &str)] = &[
         "reassign_then_sub",
         "my $s = 'a';\n$s = 'b';\nprint $s;\nsub t { my $s = 'c'; return $s; }\n",
     ),
+    // Bare (no-initializer) declarations across two scopes — exercises the #2640
+    // first-class binding range for declarations without an `Assign` initializer.
+    ("no_init_decl", "my $x;\n$x = 1;\nprint $x;\nsub t { my $x; $x = 2; return $x; }\n"),
 ];
 
 #[test]

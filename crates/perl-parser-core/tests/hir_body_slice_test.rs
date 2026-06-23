@@ -54,7 +54,7 @@ fn hir_body_slice_specimen_structure() {
 
     // ── 3. Statement is Let { name: "x", sigil: $, storage: my } ──────────
     let (let_name, let_sigil, let_storage, init_id) = match stmt {
-        HirStmt::Let { name, sigil, storage, init } => (name.as_str(), sigil, storage, *init),
+        HirStmt::Let { name, sigil, storage, init, .. } => (name.as_str(), sigil, storage, *init),
         other => panic!("expected HirStmt::Let, got {:?}", other),
     };
 

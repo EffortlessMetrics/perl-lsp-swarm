@@ -472,7 +472,7 @@ impl BodyLowerer {
             None => return,
         };
         match stmt {
-            HirStmt::Let { name, sigil, storage, init } => {
+            HirStmt::Let { name, sigil, storage, init, binding_range } => {
                 // Emit exactly ONE Write op for the declaration target.
                 // `storage` determines whether this is a lexical (my/state) or
                 // package (our) slot. Ignoring `storage` was the root cause of
@@ -482,21 +482,14 @@ impl BodyLowerer {
                 // We emit the Write here from the declaration metadata, then
                 // lower ONLY the RHS of the initialiser (not the HirExpr::Assign
                 // wrapper, which would re-emit the LHS variable as a second Write).
-                // Anchor the declaration write at the VARIABLE token (`$x`) to match
-                // the legacy find-references / LSP anchoring, NOT the whole
-                // `my $x = ...` statement span (issue #2640, PR3 range parity). The
-                // variable's range is the LHS of the initialiser's `Assign`; fall back
-                // to the statement range for declarations without an initialiser.
-                let var_range = init.as_ref().and_then(|init_id| match body.expr(*init_id) {
-                    Some(HirExpr::Assign { lhs, .. }) => {
-                        body.source_map.expr_ranges.get(lhs.0 as usize).copied()
-                    }
-                    _ => None,
-                });
-                let range = var_range
-                    .or_else(|| body.source_map.stmt_ranges.get(stmt_id.0 as usize).copied());
-                if let Some(range) = range {
-                    let anchor = self.make_body_anchor(range);
+                // Anchor the declaration write at the VARIABLE token (`$x`), not the
+                // enclosing `my $x = ...` statement span, to match the legacy
+                // find-references / LSP anchoring (issue #2640). `binding_range` is
+                // the variable's source span, captured at HIR-build time for EVERY
+                // declaration form — including those without an initialiser, which the
+                // previous statement-range fallback mis-anchored.
+                {
+                    let anchor = self.make_body_anchor(*binding_range);
                     let op = match storage {
                         DeclStorageClass::Our => PirOperation::StashWrite {
                             symbol: SymbolName {
