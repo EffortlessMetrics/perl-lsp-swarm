@@ -482,7 +482,19 @@ impl BodyLowerer {
                 // We emit the Write here from the declaration metadata, then
                 // lower ONLY the RHS of the initialiser (not the HirExpr::Assign
                 // wrapper, which would re-emit the LHS variable as a second Write).
-                let range = body.source_map.stmt_ranges.get(stmt_id.0 as usize).copied();
+                // Anchor the declaration write at the VARIABLE token (`$x`) to match
+                // the legacy find-references / LSP anchoring, NOT the whole
+                // `my $x = ...` statement span (issue #2640, PR3 range parity). The
+                // variable's range is the LHS of the initialiser's `Assign`; fall back
+                // to the statement range for declarations without an initialiser.
+                let var_range = init.as_ref().and_then(|init_id| match body.expr(*init_id) {
+                    Some(HirExpr::Assign { lhs, .. }) => {
+                        body.source_map.expr_ranges.get(lhs.0 as usize).copied()
+                    }
+                    _ => None,
+                });
+                let range = var_range
+                    .or_else(|| body.source_map.stmt_ranges.get(stmt_id.0 as usize).copied());
                 if let Some(range) = range {
                     let anchor = self.make_body_anchor(range);
                     let op = match storage {
