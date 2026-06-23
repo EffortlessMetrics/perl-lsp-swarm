@@ -34,6 +34,8 @@ use perl_semantic_facts::{
     SafeDeletePlan, ScopeId, UseLibFact, ValueShape, VisibleSymbol, VisibleSymbolSource,
 };
 
+use perl_lexer::is_rename_keyword;
+
 use super::imports::ImportExportIndex;
 use super::package_graph::PackageGraphIndex;
 use super::references::ReferenceIndex;
@@ -662,6 +664,28 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
                     warnings,
                 );
             }
+        }
+
+        // ── Block on reserved Perl keywords ──
+        // Renaming to a keyword produces syntactically invalid Perl; reject before
+        // any occurrence collection so no partial edits are returned.
+        if is_rename_keyword(new_name) {
+            blockers.push(PlanBlocker::new(
+                PlanBlockerReason::ReservedKeyword,
+                None,
+                format!(
+                    "'{}' is a reserved Perl keyword and cannot be used as a symbol name.",
+                    new_name
+                ),
+            ));
+            return RenamePlan::new(
+                entity_id,
+                old_name,
+                new_name.to_string(),
+                edits,
+                blockers,
+                warnings,
+            );
         }
 
         // ── Collect definition occurrences ──
@@ -3070,6 +3094,118 @@ mod tests {
         assert!(!gen_blockers.is_empty(), "should have GeneratedMember blocker");
         // Should return early with no edits.
         assert!(plan.edits.is_empty(), "generated member rename should have no edits");
+        Ok(())
+    }
+
+    #[test]
+    fn rename_plan_blocks_on_reserved_keyword() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(1);
+        let entity_id = EntityId(100);
+        let anchor_id = AnchorId(10);
+
+        let shard = make_shard(
+            "file:///lib/MySub.pm",
+            file_id,
+            vec![AnchorFact {
+                id: anchor_id,
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 8,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: entity_id,
+                kind: EntityKind::Subroutine,
+                canonical_name: "MySub::run".to_string(),
+                anchor_id: Some(anchor_id),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        // All of these are reserved Perl keywords — every one must produce a
+        // ReservedKeyword blocker and no planned edits.
+        for keyword in &["if", "while", "for", "foreach", "my", "our", "local", "sub", "package"] {
+            let plan = queries.rename_plan(entity_id, keyword);
+            assert_eq!(
+                plan.blockers.len(),
+                1,
+                "Expected exactly 1 blocker when renaming to keyword '{}'",
+                keyword
+            );
+            assert_eq!(
+                plan.blockers[0].reason,
+                PlanBlockerReason::ReservedKeyword,
+                "Expected ReservedKeyword blocker for '{}'",
+                keyword
+            );
+            assert!(
+                plan.blockers[0].description.contains(keyword),
+                "Blocker description should contain the keyword '{}'",
+                keyword
+            );
+            assert!(
+                plan.edits.is_empty(),
+                "Should produce no edits when blocked on keyword '{}'",
+                keyword
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_plan_allows_non_keyword_name() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(1);
+        let entity_id = EntityId(100);
+        let anchor_id = AnchorId(10);
+
+        let shard = make_shard(
+            "file:///lib/MySub.pm",
+            file_id,
+            vec![AnchorFact {
+                id: anchor_id,
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 8,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: entity_id,
+                kind: EntityKind::Subroutine,
+                canonical_name: "MySub::run".to_string(),
+                anchor_id: Some(anchor_id),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        let plan = queries.rename_plan(entity_id, "process");
+        assert!(
+            plan.blockers.iter().all(|b| b.reason != PlanBlockerReason::ReservedKeyword),
+            "Should not produce a ReservedKeyword blocker for a valid identifier"
+        );
         Ok(())
     }
 

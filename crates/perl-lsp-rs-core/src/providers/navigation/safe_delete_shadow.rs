@@ -318,6 +318,12 @@ fn blocker_fact_trace(blocker: &PlanBlocker) -> ProviderFactTrace {
             Confidence::Low,
             ProviderFactFreshness::Unknown,
         ),
+        PlanBlockerReason::ReservedKeyword => (
+            ProviderFactSourceKind::SemanticFact,
+            Provenance::SemanticAnalyzer,
+            Confidence::High,
+            ProviderFactFreshness::Fresh,
+        ),
         _ => (
             ProviderFactSourceKind::Unknown,
             Provenance::SearchFallback,

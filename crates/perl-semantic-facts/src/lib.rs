@@ -908,6 +908,8 @@ pub enum PlanBlockerReason {
     StaleFact,
     /// Occurrence could not be classified into a known category.
     UnclassifiedOccurrence,
+    /// The proposed new name is a reserved Perl keyword (e.g. `if`, `sub`, `while`).
+    ReservedKeyword,
 }
 
 /// A non-blocking warning attached to a rename or safe-delete plan.
@@ -1796,6 +1798,7 @@ mod tests {
             PlanBlockerReason::GeneratedMember,
             PlanBlockerReason::StaleFact,
             PlanBlockerReason::UnclassifiedOccurrence,
+            PlanBlockerReason::ReservedKeyword,
         ];
         for variant in &variants {
             let serialized = serde_json::to_string(variant)?;

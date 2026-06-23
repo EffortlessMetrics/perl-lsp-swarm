@@ -1962,6 +1962,7 @@ dependencies = [
  "criterion",
  "lsp-types",
  "parking_lot",
+ "perl-lexer",
  "perl-parser-core",
  "perl-position-tracking",
  "perl-semantic-facts",
