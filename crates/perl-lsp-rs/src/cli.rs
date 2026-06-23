@@ -242,15 +242,11 @@ fn validate_ripr_facts_path(path: &str, field: &str) -> Result<(), String> {
         return Err(format!("`{field}` must not start with `./`: `{path}`"));
     }
     if path.contains("..") {
-        return Err(format!(
-            "`{field}` must not contain `..` (path escape): `{path}`"
-        ));
+        return Err(format!("`{field}` must not contain `..` (path escape): `{path}`"));
     }
     // Reject Windows drive letters (e.g. `C:\`) and UNC paths.
     if path.len() >= 2 && path.as_bytes()[1] == b':' {
-        return Err(format!(
-            "`{field}` must be repo-relative, not a drive path: `{path}`"
-        ));
+        return Err(format!("`{field}` must be repo-relative, not a drive path: `{path}`"));
     }
     Ok(())
 }
@@ -286,10 +282,7 @@ fn normalize_fact_classes(raw: &str) -> Result<Vec<String>, String> {
     }
     // Deterministic order: canonical VALID_FACT_CLASSES order.
     seen.sort_by_key(|c| {
-        VALID_FACT_CLASSES
-            .iter()
-            .position(|v| *v == c.as_str())
-            .unwrap_or(usize::MAX)
+        VALID_FACT_CLASSES.iter().position(|v| *v == c.as_str()).unwrap_or(usize::MAX)
     });
     if seen.is_empty() {
         return Err("fact_classes must not be empty".to_string());
@@ -659,8 +652,9 @@ fn print_version(command_name: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_unavailable_packet, format_parse_error_context, invocation_name, normalize_fact_classes,
-        render_help_text, render_shell_completion, run_cli, run_ripr_facts, write_packet,
+        build_unavailable_packet, format_parse_error_context, invocation_name,
+        normalize_fact_classes, render_help_text, render_shell_completion, run_cli, run_ripr_facts,
+        write_packet,
     };
     use std::ffi::OsString;
 
@@ -787,14 +781,8 @@ mod tests {
 
     #[test]
     fn ripr_facts_rejects_path_escape() {
-        let rc = run_ripr_facts(
-            "ripr-perl-facts-v1",
-            ".",
-            None,
-            None,
-            "owners",
-            "../../../etc/passwd",
-        );
+        let rc =
+            run_ripr_facts("ripr-perl-facts-v1", ".", None, None, "owners", "../../../etc/passwd");
         assert_eq!(rc, 1, "path escape must exit 1");
     }
 
@@ -863,7 +851,8 @@ mod tests {
         );
         assert_eq!(rc, 0, "valid invocation must exit 0");
         let written = std::fs::read_to_string(out).expect("packet must be written");
-        let parsed: serde_json::Value = serde_json::from_str(&written).expect("packet must be JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&written).expect("packet must be JSON");
         assert_eq!(parsed["packet_status"], "unavailable");
         // Clean up.
         let _ = std::fs::remove_file(out);
@@ -874,10 +863,7 @@ mod tests {
         let normalized = normalize_fact_classes("changes,owners,owners,changes,tests")
             .expect("valid classes normalize");
         // Canonical order (VALID_FACT_CLASSES order): files, owners, changes, tests, ...
-        assert_eq!(
-            normalized,
-            vec!["owners", "changes", "tests"]
-        );
+        assert_eq!(normalized, vec!["owners", "changes", "tests"]);
     }
 
     #[test]
@@ -903,7 +889,13 @@ mod tests {
         assert_eq!(packet["limitations"][0]["kind"], "missing_emitter");
         // All fact arrays are empty (unavailable).
         for key in [
-            "files", "owners", "changes", "tests", "oracles", "relations", "dynamic_boundaries",
+            "files",
+            "owners",
+            "changes",
+            "tests",
+            "oracles",
+            "relations",
+            "dynamic_boundaries",
             "verify_commands",
         ] {
             assert!(packet[key].as_array().unwrap().is_empty(), "array {key} should be empty");
