@@ -43,6 +43,75 @@ struct ReferencesDecisionTraceContext {
     include_declaration: bool,
 }
 
+/// Which tier of the 9-internal-tier cascade answered a `textDocument/references` request.
+///
+/// The 9 internal tiers are collapsed to 7 observable labels for the decision trace.
+/// This makes the trace accurate and machine-readable for scorecard analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReferencesAnsweringTier {
+    /// Tier 1 — live compiler source-backed references (most precise).
+    SemanticSourceBacked,
+    /// Tiers 2, 4, 5 — workspace index `find_refs`/`find_def`/`find_references`.
+    WorkspaceExact,
+    /// Tiers 3, 6 — full-branch regex/text search across workspace files.
+    WorkspaceText,
+    /// Tier 7 — partial index `find_refs` (index building/degraded state).
+    PartialIndex,
+    /// Tier 8 — open-document text search (same-file fallback).
+    OpenDocumentText,
+    /// Tier 9 — same-file `SemanticAnalyzer::find_all_references`.
+    SemanticAnalyzer,
+    /// No tier produced a non-empty result.
+    Empty,
+}
+
+impl ReferencesAnsweringTier {
+    /// Stable snake_case label for the tier, written to the decision trace JSON.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::SemanticSourceBacked => "semantic_source_backed",
+            Self::WorkspaceExact => "workspace_exact",
+            Self::WorkspaceText => "workspace_text",
+            Self::PartialIndex => "partial_index",
+            Self::OpenDocumentText => "open_document_text",
+            Self::SemanticAnalyzer => "semantic_analyzer",
+            Self::Empty => "empty",
+        }
+    }
+
+    /// Returns `true` only when compiler source-backed facts answered this request.
+    pub(crate) fn is_source_backed(self) -> bool {
+        matches!(self, Self::SemanticSourceBacked)
+    }
+
+    /// Infer `"full" | "partial" | "none"` index state from the answering tier.
+    ///
+    /// This is an approximation: source-backed and workspace-* tiers imply a full
+    /// index; partial_index and open_document_text imply partial; everything else
+    /// implies no index. Accurate for observability; not authoritative for routing.
+    fn index_state_str(self) -> &'static str {
+        match self {
+            Self::SemanticSourceBacked | Self::WorkspaceExact | Self::WorkspaceText => "full",
+            Self::PartialIndex | Self::OpenDocumentText => "partial",
+            Self::SemanticAnalyzer | Self::Empty => "none",
+        }
+    }
+}
+
+/// Classify the combined workspace+text return site into the correct tier.
+///
+/// Call this BEFORE extending `workspace_locations` with text matches so that
+/// `from_index` captures whether the index contributed results. Extracted as a
+/// pure function so the branch is covered by `--lib` unit tests even when the
+/// surrounding handler line is only reached via integration tests.
+pub(crate) fn classify_combined_tier(from_index: bool) -> ReferencesAnsweringTier {
+    if from_index {
+        ReferencesAnsweringTier::WorkspaceExact
+    } else {
+        ReferencesAnsweringTier::WorkspaceText
+    }
+}
+
 fn get_qualified_name_regex() -> Option<&'static regex::Regex> {
     QUALIFIED_NAME_RE
         .get_or_init(|| regex::Regex::new(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)"))
@@ -125,6 +194,7 @@ impl LspServer {
         &self,
         context: Option<&ReferencesDecisionTraceContext>,
         result: Option<&Value>,
+        tier: ReferencesAnsweringTier,
     ) {
         let Some(context) = context else {
             return;
@@ -135,6 +205,8 @@ impl LspServer {
         } else {
             ("acted", "live_provider_result", "live_provider")
         };
+        // confidence is "high" when compiler source-backed facts answered, else "low"
+        let confidence = if tier.is_source_backed() { "high" } else { "low" };
 
         self.record_provider_decision_trace(
             "references",
@@ -149,10 +221,12 @@ impl LspServer {
                 "include_declaration": context.include_declaration,
                 "result_count": result_count,
                 "fact_source": "navigation_provider",
-                "confidence": "low",
+                "confidence": confidence,
                 "freshness": "fresh",
-                "source_backed": false,
+                "source_backed": tier.is_source_backed(),
                 "source_backed_state": "not_proven_by_provider_trace",
+                "answering_tier": tier.as_str(),
+                "index_state": tier.index_state_str(),
                 "fallback_state": fallback_state,
                 "dynamic_boundary": false,
                 "trace_only_no_live_behavior_change": true,
@@ -173,15 +247,19 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let trace_context = Self::references_decision_trace_context(params.as_ref())?;
-        let result = self.handle_references_inner(params)?;
-        self.record_references_provider_decision_trace(trace_context.as_ref(), result.as_ref());
+        let (result, tier) = self.handle_references_inner(params)?;
+        self.record_references_provider_decision_trace(
+            trace_context.as_ref(),
+            result.as_ref(),
+            tier,
+        );
         Ok(result)
     }
 
     fn handle_references_inner(
         &self,
         params: Option<Value>,
-    ) -> Result<Option<Value>, JsonRpcError> {
+    ) -> Result<(Option<Value>, ReferencesAnsweringTier), JsonRpcError> {
         let start = Instant::now();
         let deadline = reference_search_deadline();
         let cap = references_cap();
@@ -236,7 +314,10 @@ impl LspServer {
                                             elapsed = ?start.elapsed(),
                                             "References: returned live source-backed compiler facts"
                                         );
-                                        return Ok(Some(json!(live_locations)));
+                                        return Ok((
+                                            Some(json!(live_locations)),
+                                            ReferencesAnsweringTier::SemanticSourceBacked,
+                                        ));
                                     }
 
                                     tracing::debug!(key = ?symbol_key, "Looking for references");
@@ -273,7 +354,10 @@ impl LspServer {
                                             "References: deadline exceeded, returning partial results"
                                         );
                                         workspace_locations.truncate(cap);
-                                        return Ok(Some(json!(workspace_locations)));
+                                        return Ok((
+                                            Some(json!(workspace_locations)),
+                                            ReferencesAnsweringTier::WorkspaceExact,
+                                        ));
                                     }
 
                                     // Enhanced fallback: always search for both qualified and unqualified references
@@ -339,7 +423,10 @@ impl LspServer {
                                         }
                                     }
 
-                                    // Combine workspace index results with text search results
+                                    // Combine workspace index results with text search results.
+                                    // Capture whether the index contributed BEFORE merging text matches
+                                    // so classify_combined_tier can distinguish workspace_exact vs workspace_text.
+                                    let from_index = !workspace_locations.is_empty();
                                     workspace_locations.extend(enhanced_locations);
                                     let mut all_combined_locations = workspace_locations;
                                     // Cap results
@@ -352,7 +439,10 @@ impl LspServer {
                                             elapsed = ?start.elapsed(),
                                             "Found total references via combined search"
                                         );
-                                        return Ok(Some(json!(all_combined_locations)));
+                                        return Ok((
+                                            Some(json!(all_combined_locations)),
+                                            classify_combined_tier(from_index),
+                                        ));
                                     }
 
                                     // Also try with find_references for backward compatibility
@@ -381,7 +471,10 @@ impl LspServer {
                                                 capped_refs,
                                             );
                                         if !lsp_locations.is_empty() {
-                                            return Ok(Some(json!(lsp_locations)));
+                                            return Ok((
+                                                Some(json!(lsp_locations)),
+                                                ReferencesAnsweringTier::WorkspaceExact,
+                                            ));
                                         }
                                     }
                                 }
@@ -446,7 +539,7 @@ impl LspServer {
                                                         let lsp_locations =
                                                     crate::workspace_index::lsp_adapter::to_lsp_locations(capped_refs);
                                                         if !lsp_locations.is_empty() {
-                                                            return Ok(Some(json!(lsp_locations)));
+                                                            return Ok((Some(json!(lsp_locations)), ReferencesAnsweringTier::WorkspaceExact));
                                                         }
                                                     }
 
@@ -519,7 +612,10 @@ impl LspServer {
                                                     if !all_locations.is_empty() {
                                                         // Truncate to cap
                                                         all_locations.truncate(cap);
-                                                        return Ok(Some(json!(all_locations)));
+                                                        return Ok((
+                                                            Some(json!(all_locations)),
+                                                            ReferencesAnsweringTier::WorkspaceText,
+                                                        ));
                                                     }
                                                 }
                                                 break;
@@ -556,7 +652,10 @@ impl LspServer {
                                                 elapsed = ?start.elapsed(),
                                                 "References: returned partial-index results"
                                             );
-                                            return Ok(Some(json!(lsp_locations)));
+                                            return Ok((
+                                                Some(json!(lsp_locations)),
+                                                ReferencesAnsweringTier::PartialIndex,
+                                            ));
                                         }
                                     }
                                 }
@@ -576,7 +675,10 @@ impl LspServer {
                                             elapsed = ?start.elapsed(),
                                             "References: returned open-document results"
                                         );
-                                        return Ok(Some(json!(open_doc_locations)));
+                                        return Ok((
+                                            Some(json!(open_doc_locations)),
+                                            ReferencesAnsweringTier::OpenDocumentText,
+                                        ));
                                     }
                                 }
                                 // Fall through to same-file semantic analysis
@@ -623,13 +725,16 @@ impl LspServer {
                             elapsed = ?start.elapsed(),
                             "References: returned same-file results"
                         );
-                        return Ok(Some(json!(locations)));
+                        return Ok((
+                            Some(json!(locations)),
+                            ReferencesAnsweringTier::SemanticAnalyzer,
+                        ));
                     }
                 }
             }
         }
 
-        Ok(Some(json!([])))
+        Ok((Some(json!([])), ReferencesAnsweringTier::Empty))
     }
 
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -924,6 +1029,153 @@ impl LspServer {
 mod tests {
     use super::*;
     use std::error::Error;
+
+    // ── ReferencesAnsweringTier unit tests ─────────────────────────────────
+
+    #[test]
+    fn answering_tier_as_str_all_variants() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            ReferencesAnsweringTier::SemanticSourceBacked.as_str(),
+            "semantic_source_backed"
+        );
+        assert_eq!(ReferencesAnsweringTier::WorkspaceExact.as_str(), "workspace_exact");
+        assert_eq!(ReferencesAnsweringTier::WorkspaceText.as_str(), "workspace_text");
+        assert_eq!(ReferencesAnsweringTier::PartialIndex.as_str(), "partial_index");
+        assert_eq!(ReferencesAnsweringTier::OpenDocumentText.as_str(), "open_document_text");
+        assert_eq!(ReferencesAnsweringTier::SemanticAnalyzer.as_str(), "semantic_analyzer");
+        assert_eq!(ReferencesAnsweringTier::Empty.as_str(), "empty");
+        Ok(())
+    }
+
+    #[test]
+    fn answering_tier_is_source_backed_only_for_semantic_source_backed()
+    -> Result<(), Box<dyn Error>> {
+        assert!(ReferencesAnsweringTier::SemanticSourceBacked.is_source_backed());
+        assert!(!ReferencesAnsweringTier::WorkspaceExact.is_source_backed());
+        assert!(!ReferencesAnsweringTier::WorkspaceText.is_source_backed());
+        assert!(!ReferencesAnsweringTier::PartialIndex.is_source_backed());
+        assert!(!ReferencesAnsweringTier::OpenDocumentText.is_source_backed());
+        assert!(!ReferencesAnsweringTier::SemanticAnalyzer.is_source_backed());
+        assert!(!ReferencesAnsweringTier::Empty.is_source_backed());
+        Ok(())
+    }
+
+    #[test]
+    fn classify_combined_tier_returns_workspace_exact_when_index_contributed()
+    -> Result<(), Box<dyn Error>> {
+        assert_eq!(classify_combined_tier(true), ReferencesAnsweringTier::WorkspaceExact);
+        assert_eq!(classify_combined_tier(false), ReferencesAnsweringTier::WorkspaceText);
+        Ok(())
+    }
+
+    // ── Handler trace tests (--lib reachable) ────────────────────────────
+
+    #[test]
+    fn handle_references_workspace_variable_answering_tier_in_trace() -> Result<(), Box<dyn Error>>
+    {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+
+        // Open a document with a known local scalar variable; after didOpen the
+        // workspace index contains the file so the cascade uses a workspace tier.
+        let uri = "file:///test/scalar.pl";
+        let text = "my $value = 1;\nmy $other = $value;\n";
+        server.test_apply_did_open(uri, text, 1)?;
+
+        // Position cursor on the `$` sigil of `$value` on line 0
+        let params = serde_json::json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 0, "character": 3},
+            "context": {"includeDeclaration": true}
+        });
+        server.test_handle_references(Some(params))?;
+
+        // Read back the trace via explain_provider_decision
+        let explanation = server
+            .handle_execute_command(Some(serde_json::json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing request_receipt")?;
+
+        // `answering_tier` must be present in the trace (the exact tier depends
+        // on workspace index state; what matters is the field is emitted and
+        // `source_backed` is accurate — `$value` is not compiler-source-backed).
+        let tier = receipt
+            .get("answering_tier")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("answering_tier field missing from references trace")?;
+        assert!(!tier.is_empty(), "answering_tier must be a non-empty string; got {tier:?}");
+        assert_eq!(
+            receipt.get("source_backed").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "lexical $value must not be source_backed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn handle_references_empty_tier_when_cursor_on_whitespace() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+
+        let uri = "file:///test/whitespace.pl";
+        // A blank line — cursor on it yields no token so no workspace lookup and
+        // no semantic references → Empty tier.
+        let text = "my $x = 1;\n\nmy $y = $x;\n";
+        server.test_apply_did_open(uri, text, 1)?;
+
+        // Position cursor on the blank line (line 1, character 0)
+        let params = serde_json::json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 1, "character": 0},
+            "context": {"includeDeclaration": true}
+        });
+        server.test_handle_references(Some(params))?;
+
+        let explanation = server
+            .handle_execute_command(Some(serde_json::json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing request_receipt")?;
+
+        // Cursor on a blank line: no token → workspace finds nothing → semantic
+        // analyzer finds nothing → Empty tier.
+        assert_eq!(
+            receipt.get("answering_tier").and_then(serde_json::Value::as_str),
+            Some("empty"),
+            "blank-line cursor must report empty tier"
+        );
+        assert_eq!(
+            receipt.get("source_backed").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "empty tier must not be source_backed"
+        );
+        Ok(())
+    }
 
     fn location_start(location: &Value) -> Result<(u64, u64), Box<dyn Error>> {
         let line = location["range"]["start"]["line"].as_u64().ok_or("missing start line")?;
