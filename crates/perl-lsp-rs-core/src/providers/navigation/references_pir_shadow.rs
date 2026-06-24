@@ -450,7 +450,7 @@ pub fn references_pir_promote(
 mod promote_tests {
     use super::{
         ENABLE_PIR_LEXICAL_REFERENCES, PirShadowRefusalReason, ReferencesPirPromoteOutcome,
-        references_pir_promote,
+        references_pir_promote, references_pir_promote_unguarded,
     };
     use perl_parser_core::{Parser, hir::lower_ast, pir::extract_lexical_facts};
 
@@ -521,14 +521,100 @@ mod promote_tests {
         ));
     }
 
-    // ── Branch: flag on (internal simulation) ──
-    // We cannot flip ENABLE_PIR_LEXICAL_REFERENCES (it is `const false`) in a
-    // lib test without a separate cfg flag. Instead we test the promotion core
-    // logic directly, bypassing the flag guard, by calling `evaluate_refusal`
-    // and the facts-projection path indirectly through the shadow function (PR2)
-    // which does NOT check the flag. The flag-on Exact branch is proven
-    // reachable in the integration test (references_promotion_test.rs) which
-    // uses a test-only wrapper.
+    // ── Branch: Exact path via unguarded helper (covers build_compiler_ranges + Exact return) ──
+    //
+    // `references_pir_promote_unguarded` bypasses the compile-time flag guard and
+    // exercises the Exact-producing code path: `build_compiler_ranges` + the
+    // `ReferencesPirPromoteOutcome::Exact(...)` return. These lines are unreachable
+    // from `references_pir_promote` while the flag is `false`, so they MUST be
+    // covered here to satisfy the Codecov Patch 95 --lib gate.
+
+    #[test]
+    fn unguarded_returns_exact_with_compiler_ranges() {
+        // Drive the real pipeline: Parser → lower_ast → extract_lexical_facts.
+        // `my $x = 1;\nprint $x;\n` yields two anchored facts for `x` in body 0:
+        // one LexicalWrite (declaration) + one LexicalRead (the print).
+        let receipt = receipt_for("my $x = 1;\nprint $x;\n");
+        let outcome = references_pir_promote_unguarded(&receipt, &[], "x", 0, &byte_mapper);
+
+        // Must produce Exact — this is the line coverage target for build_compiler_ranges.
+        assert!(
+            matches!(&outcome, ReferencesPirPromoteOutcome::Exact(_)),
+            "unguarded path must produce Exact for a valid receipt, got {outcome:?}"
+        );
+        if let ReferencesPirPromoteOutcome::Exact(ranges) = outcome {
+            assert!(
+                ranges.len() >= 2,
+                "expected at least 2 anchored facts for $x (write + read), got {ranges:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unguarded_exact_ranges_use_uri_mapper() {
+        // Verify that `build_compiler_ranges` calls `uri_mapper` for each fact.
+        // We use a mapper that adds a sentinel offset so we can detect it was called.
+        let receipt = receipt_for("my $p = 1;");
+        // Mapper shifts every character by 1000 so we can distinguish mapper output
+        // from raw byte offsets (raw byte offsets of `$p` are <10).
+        let sentinel_mapper = |start: usize, end: usize| lsp_types::Range {
+            start: lsp_types::Position { line: 1, character: (start + 1000) as u32 },
+            end: lsp_types::Position { line: 1, character: (end + 1000) as u32 },
+        };
+        let outcome = references_pir_promote_unguarded(&receipt, &[], "p", 0, &sentinel_mapper);
+        if let ReferencesPirPromoteOutcome::Exact(ranges) = outcome {
+            assert!(
+                ranges.iter().all(|r| r.start.character >= 1000),
+                "uri_mapper must have been applied to all ranges: {ranges:?}"
+            );
+        } else {
+            assert!(
+                matches!(&outcome, ReferencesPirPromoteOutcome::Exact(_)),
+                "expected Exact, got {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unguarded_refusal_via_package_name_returns_legacy_fallback() {
+        // Via unguarded path: `::`-qualified name triggers evaluate_refusal → LegacyFallback.
+        // Covers the early-return in references_pir_promote_unguarded (the refusal branch).
+        let receipt = receipt_for("my $x = 1;");
+        let legacy = vec![(0usize, 2usize)];
+        let outcome =
+            references_pir_promote_unguarded(&receipt, &legacy, "Foo::x", 0, &byte_mapper);
+        assert!(
+            matches!(
+                &outcome,
+                ReferencesPirPromoteOutcome::LegacyFallback {
+                    reason: PirShadowRefusalReason::NotSameFileLexical,
+                    ..
+                }
+            ),
+            "package-qualified name must refuse via unguarded path: {outcome:?}"
+        );
+        if let ReferencesPirPromoteOutcome::LegacyFallback { result, .. } = outcome {
+            assert_eq!(result, legacy, "legacy preserved on unguarded refusal");
+        }
+    }
+
+    #[test]
+    fn unguarded_unknown_name_returns_exact_with_empty_ranges() {
+        // A name with no facts in the receipt → Exact([]) — not a refusal.
+        // Covers the Exact return when build_compiler_ranges yields an empty Vec.
+        let receipt = receipt_for("my $x = 1;");
+        let outcome = references_pir_promote_unguarded(
+            &receipt,
+            &[(0, 2)],
+            "zzz_no_such_var",
+            0,
+            &byte_mapper,
+        );
+        assert!(
+            matches!(&outcome, ReferencesPirPromoteOutcome::Exact(v) if v.is_empty()),
+            "unknown name should produce Exact([]) via unguarded path, got {outcome:?}"
+        );
+    }
 
     // ── Branch: LegacyFallback carries legacy result unchanged ──
 
