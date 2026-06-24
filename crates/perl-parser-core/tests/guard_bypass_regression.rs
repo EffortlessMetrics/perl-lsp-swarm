@@ -118,3 +118,32 @@ fn bang_in_condition_still_parses() {
 fn word_not_in_condition_still_parses() {
     assert_clean_parse("die unless not $ok;");
 }
+
+// --- Test 1: mixed operator nesting (carried from superseded #2669) ---
+
+#[test]
+fn mixed_not_and_bang_nesting_hits_limit() {
+    // Carried from superseded #2669 (test_mixed_operator_nesting): symbolic `!`
+    // and word `not` may share the global recursion budget if both call the same
+    // recursive parsing path. 100 `!` wrapping (100 `not` 1) = ~200 combined levels.
+    // If the guard is per-function (not shared), 100+100=200 exceeds MAX_RECURSION_DEPTH (128).
+    // If the guard is global and shared, even fewer nesting levels trip it.
+    let inner = "not ".repeat(100) + "1";
+    let code = "!".repeat(100) + "(" + &inner + ")";
+    assert!(fails_gracefully(&code), "mixed !/not nesting should hit the recursion guard");
+}
+
+// --- Test 2: LSP-facing path (parse_with_recovery) ---
+
+#[test]
+fn deep_nesting_recovers_with_nesting_diagnostic_on_lsp_path() {
+    // LSP uses parse_with_recovery(): deep nesting must yield a (partial) tree
+    // AND a NestingTooDeep diagnostic — not a crash, not a silent success.
+    let code = "not ".repeat(300) + "1";
+    let mut parser = Parser::new(&code);
+    let output = parser.parse_with_recovery();
+    assert!(
+        output.diagnostics.iter().any(|d| matches!(d, ParseError::NestingTooDeep { .. })),
+        "parse_with_recovery should surface a NestingTooDeep diagnostic for deep nesting"
+    );
+}
