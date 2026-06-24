@@ -664,6 +664,24 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
             }
         }
 
+        // ── Block on reserved Perl keyword as target name ──
+        // Variables allow keyword names ($if, @for) since Perl permits this.
+        // Subroutines, methods, constants, and packages cannot safely use
+        // reserved control-flow or declaration keywords as names.
+        if let Some(ref info) = entity_info {
+            if let Some(blocker) = keyword_rename_blocker(info.kind, new_name) {
+                blockers.push(blocker);
+                return RenamePlan::new(
+                    entity_id,
+                    old_name,
+                    new_name.to_string(),
+                    edits,
+                    blockers,
+                    warnings,
+                );
+            }
+        }
+
         // ── Collect definition occurrences ──
         let bare = bare_name(&old_name);
         if let Some((info, shard)) = self.find_entity_with_shard(entity_id)
@@ -1432,6 +1450,47 @@ fn classify_occurrence(kind: OccurrenceKind) -> Option<PlannedEditCategory> {
 
 fn is_dynamic_boundary_occurrence(kind: OccurrenceKind) -> bool {
     matches!(kind, OccurrenceKind::DynamicBoundary | OccurrenceKind::TypeglobReference)
+}
+
+/// Reserved Perl control-flow and declaration keywords that cannot safely be
+/// used as subroutine or method names.
+///
+/// Variables are intentionally excluded: Perl allows `$if`, `@for`, etc.
+/// This set covers the keywords most likely to cause syntax errors or
+/// silent semantic breakage when shadowing core dispatch.
+const PERL_RESERVED_SUB_NAMES: &[&str] = &[
+    // control flow
+    "if", "unless", "while", "until", "for", "foreach", "given", "when", "default", "do", "last",
+    "next", "redo", "goto", "return", // declarations
+    "sub", "package", "use", "no", "require", "my", "our", "local", "state",
+    // logic operators (keyword forms)
+    "and", "or", "not",
+];
+
+/// Return a [`PlanBlocker`] when `new_name` is a reserved Perl keyword that
+/// cannot safely be used for an entity of `kind`, or `None` if the rename is
+/// allowed.
+///
+/// Variables (`$if`, `@for`, …) are always permitted; subroutines, methods,
+/// constants, packages, and similar declaration-bearing entities are blocked.
+fn keyword_rename_blocker(kind: EntityKind, new_name: &str) -> Option<PlanBlocker> {
+    // Strip any sigil so callers can pass "$if" and still match "if".
+    let bare = new_name.trim_start_matches(['$', '@', '%', '&', '*']);
+
+    // Variables allow keyword names — Perl permits $if, @for, etc.
+    if matches!(kind, EntityKind::Variable) {
+        return None;
+    }
+
+    if PERL_RESERVED_SUB_NAMES.contains(&bare) {
+        Some(PlanBlocker::new(
+            PlanBlockerReason::ReservedKeyword,
+            None,
+            format!("'{bare}' is a reserved Perl keyword and cannot be used as a subroutine name."),
+        ))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -3070,6 +3129,160 @@ mod tests {
         assert!(!gen_blockers.is_empty(), "should have GeneratedMember blocker");
         // Should return early with no edits.
         assert!(plan.edits.is_empty(), "generated member rename should have no edits");
+        Ok(())
+    }
+
+    // ── keyword_rename_blocker unit tests ──
+
+    #[test]
+    fn keyword_rename_blocker_blocks_subroutine_to_reserved_keyword()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Each reserved keyword must produce a ReservedKeyword blocker for Subroutine.
+        let reserved = ["if", "while", "for", "foreach", "sub", "package", "given", "return"];
+        for kw in reserved {
+            let blocker = keyword_rename_blocker(EntityKind::Subroutine, kw);
+            assert!(blocker.is_some(), "should block Subroutine rename to reserved keyword '{kw}'");
+            assert_eq!(
+                blocker.unwrap().reason,
+                PlanBlockerReason::ReservedKeyword,
+                "wrong reason for '{kw}'"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn keyword_rename_blocker_blocks_method_to_reserved_keyword()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let blocker = keyword_rename_blocker(EntityKind::Method, "if");
+        assert!(blocker.is_some(), "should block Method rename to 'if'");
+        assert_eq!(blocker.unwrap().reason, PlanBlockerReason::ReservedKeyword);
+        Ok(())
+    }
+
+    #[test]
+    fn keyword_rename_blocker_allows_variable_to_keyword_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Perl permits $if, @for, %while — variable rename to keyword is allowed.
+        for kw in ["if", "for", "while", "sub"] {
+            let blocker = keyword_rename_blocker(EntityKind::Variable, kw);
+            assert!(blocker.is_none(), "Variable rename to '{kw}' should be allowed");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn keyword_rename_blocker_allows_non_reserved_name() -> Result<(), Box<dyn std::error::Error>> {
+        // Ordinary names (not in the reserved list) must pass through.
+        for name in ["new_sub", "process", "handler", "run_all"] {
+            let blocker = keyword_rename_blocker(EntityKind::Subroutine, name);
+            assert!(blocker.is_none(), "'{name}' is not reserved — should be allowed");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_plan_blocks_sub_rename_to_reserved_keyword() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let file_id = FileId(1);
+        let entity_id = EntityId(100);
+        let anchor_id = AnchorId(10);
+
+        let shard = make_shard(
+            "file:///lib/Foo.pm",
+            file_id,
+            vec![AnchorFact {
+                id: anchor_id,
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 15,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: entity_id,
+                kind: EntityKind::Subroutine,
+                canonical_name: "Foo::helper".to_string(),
+                anchor_id: Some(anchor_id),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        // Attempting to rename a subroutine to a reserved keyword must be blocked.
+        let plan = queries.rename_plan(entity_id, "if");
+        let kw_blockers: Vec<_> = plan
+            .blockers
+            .iter()
+            .filter(|b| b.reason == PlanBlockerReason::ReservedKeyword)
+            .collect();
+        assert!(!kw_blockers.is_empty(), "should have ReservedKeyword blocker for 'if'");
+        assert!(plan.edits.is_empty(), "keyword-blocked rename should produce no edits");
+        assert!(
+            kw_blockers[0].description.contains("'if'"),
+            "blocker description should name the keyword"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rename_plan_allows_variable_rename_to_keyword_name() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let file_id = FileId(1);
+        let entity_id = EntityId(100);
+        let anchor_id = AnchorId(10);
+
+        let shard = make_shard(
+            "file:///lib/Foo.pm",
+            file_id,
+            vec![AnchorFact {
+                id: anchor_id,
+                file_id,
+                span_start_byte: 0,
+                span_end_byte: 3,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![EntityFact {
+                id: entity_id,
+                kind: EntityKind::Variable,
+                canonical_name: "Foo::x".to_string(),
+                anchor_id: Some(anchor_id),
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+        );
+
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        // Renaming a variable to "if" is legal Perl ($if is valid) — must not block.
+        let plan = queries.rename_plan(entity_id, "if");
+        let kw_blockers: Vec<_> = plan
+            .blockers
+            .iter()
+            .filter(|b| b.reason == PlanBlockerReason::ReservedKeyword)
+            .collect();
+        assert!(kw_blockers.is_empty(), "variable rename to keyword should not be blocked");
         Ok(())
     }
 

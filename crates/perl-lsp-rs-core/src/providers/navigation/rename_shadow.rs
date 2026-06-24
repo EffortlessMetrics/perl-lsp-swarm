@@ -1273,6 +1273,73 @@ mod tests {
         Ok(())
     }
 
+    // ── Reserved keyword blocker receipt tests ──
+
+    #[test]
+    fn rename_cutover_blocked_on_reserved_keyword_produces_blocked_result()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = RenamePlan::new(
+            EntityId(1),
+            "helper".to_string(),
+            "if".to_string(),
+            vec![],
+            vec![PlanBlocker::new(
+                PlanBlockerReason::ReservedKeyword,
+                None,
+                "'if' is a reserved Perl keyword and cannot be used as a subroutine name."
+                    .to_string(),
+            )],
+            vec![],
+        );
+        let queries = StubSemanticQueries { rename_plan_result: plan };
+
+        let outcome = rename_cutover(true, &queries, EntityId(1), "if");
+
+        match &outcome.result {
+            RenameCutoverResult::Blocked { blockers, .. } => {
+                assert_eq!(blockers.len(), 1);
+                assert_eq!(blockers[0].reason, PlanBlockerReason::ReservedKeyword);
+                assert!(
+                    blockers[0].description.contains("reserved Perl keyword"),
+                    "description should mention reserved keyword: {}",
+                    blockers[0].description
+                );
+            }
+            other => return Err(format!("expected Blocked, got {:?}", other).into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_cutover_reserved_keyword_blocker_notes_include_reason()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = RenamePlan::new(
+            EntityId(1),
+            "helper".to_string(),
+            "while".to_string(),
+            vec![],
+            vec![PlanBlocker::new(
+                PlanBlockerReason::ReservedKeyword,
+                None,
+                "'while' is a reserved Perl keyword and cannot be used as a subroutine name."
+                    .to_string(),
+            )],
+            vec![],
+        );
+        let queries = StubSemanticQueries { rename_plan_result: plan };
+
+        let outcome = rename_cutover(true, &queries, EntityId(1), "while");
+        let notes = outcome.receipt.notes.join(" ");
+
+        assert!(notes.contains("blocker_count=1"), "missing blocker count in notes: {}", notes);
+        assert!(
+            notes.contains("reserved_keyword"),
+            "notes should mention reserved_keyword reason: {}",
+            notes
+        );
+        Ok(())
+    }
+
     // ── Classify helper tests ──
 
     #[test]

@@ -908,6 +908,9 @@ pub enum PlanBlockerReason {
     StaleFact,
     /// Occurrence could not be classified into a known category.
     UnclassifiedOccurrence,
+    /// The proposed new name is a reserved Perl keyword that cannot be used
+    /// as a subroutine or method name without ambiguity or syntax errors.
+    ReservedKeyword,
 }
 
 /// A non-blocking warning attached to a rename or safe-delete plan.
