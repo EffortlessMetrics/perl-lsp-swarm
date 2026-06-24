@@ -118,3 +118,44 @@ fn ci_explain_missing_receipt_prints_inconclusive() {
     assert!(stdout.contains("inconclusive"), "expected 'inconclusive' in: {stdout}");
     assert!(stdout.contains("cargo xtask gates"), "expected hint 'cargo xtask gates' in: {stdout}");
 }
+
+#[test]
+fn ci_explain_malformed_receipt_prints_distinct_inconclusive() {
+    let temp = TempDir::new().expect("create temp dir");
+    let receipt_path = temp.path().join("bad.json");
+    fs::write(&receipt_path, b"not valid json { }").expect("write bad receipt");
+
+    let output = cargo_bin_cmd!("xtask")
+        .args(["ci", "explain", "--receipt", receipt_path.to_str().unwrap()])
+        .output()
+        .expect("run xtask ci explain");
+
+    assert!(output.status.success(), "exit code: {:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Must say "inconclusive" and "malformed" — not the absent-file hint.
+    assert!(stdout.contains("inconclusive"), "expected 'inconclusive' in: {stdout}");
+    assert!(stdout.contains("malformed"), "expected 'malformed' in: {stdout}");
+    assert!(
+        !stdout.contains("cargo xtask gates"),
+        "must not emit absent-file hint for malformed receipt"
+    );
+}
+
+#[test]
+fn ci_explain_unsupported_schema_prints_distinct_inconclusive() {
+    let temp = TempDir::new().expect("create temp dir");
+    let receipt_path = temp.path().join("receipt.json");
+    fs::write(&receipt_path, br#"{"schema_version":"gates.v99","gates":[]}"#)
+        .expect("write receipt with unsupported schema");
+
+    let output = cargo_bin_cmd!("xtask")
+        .args(["ci", "explain", "--receipt", receipt_path.to_str().unwrap()])
+        .output()
+        .expect("run xtask ci explain");
+
+    assert!(output.status.success(), "exit code: {:?}", output.status);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("inconclusive"), "expected 'inconclusive' in: {stdout}");
+    assert!(stdout.contains("gates.v99"), "expected version in: {stdout}");
+    assert!(stdout.contains("upgrade xtask"), "expected upgrade hint in: {stdout}");
+}
