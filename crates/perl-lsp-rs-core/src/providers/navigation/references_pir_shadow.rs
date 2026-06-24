@@ -524,13 +524,30 @@ pub fn references_pir_promote(
             // mode) but always return the legacy result unchanged — no cutover.
             // The candidate result is observed here; `ShadowObserved` is the honest
             // reason: the path ran, the evidence is real, the live result is preserved.
-            let _observed = evaluate_pir_reference_candidate(
+            //
+            // Build the durable comparison receipt using `shadow_references_with_pir`,
+            // which operates on the byte-offset level (no uri_mapper needed for the
+            // scorecard). The candidate evaluation result flows into the receipt via
+            // the compiler-set counts. Emit via tracing::debug! for aggregation.
+            let receipt = shadow_references_with_pir(
                 pir_receipt,
-                target_sigil,
+                legacy_result,
                 target_name,
                 target_body_idx,
-                uri_mapper,
-                opts.include_declaration,
+            );
+            tracing::debug!(
+                target: "pir_shadow_receipt",
+                target_sigil = %target_sigil,
+                target_name = %target_name,
+                target_body_idx = target_body_idx,
+                compiler_candidate_count = receipt.compiler_candidate_count,
+                legacy_candidate_count = receipt.legacy_candidate_count,
+                missing_from_compiler = receipt.missing_from_compiler.len(),
+                extra_in_compiler = receipt.extra_in_compiler.len(),
+                range_disagreements = receipt.range_disagreements.len(),
+                refusal_reason = ?receipt.refusal_reason,
+                provider_behavior_changed = receipt.provider_behavior_changed,
+                "pir_shadow_compare_receipt"
             );
             ReferencesPirPromoteOutcome::LegacyFallback {
                 result: legacy_vec,
