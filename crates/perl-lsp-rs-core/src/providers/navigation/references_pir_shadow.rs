@@ -101,6 +101,15 @@ pub enum PirShadowRefusalReason {
     /// This is distinct from `NoAnchoredFacts`: the receipt has bodies and the
     /// body index is in range, but no fact matched the requested `LexicalName`.
     NoExactFacts,
+    /// [`PromotionMode::Shadow`] mode: the candidate was evaluated for scorecard
+    /// observation but the live provider result is preserved unchanged.
+    ///
+    /// Distinct from all refusal reasons: this is not a refusal — the PIR path
+    /// ran and produced evidence. The legacy result is returned to the caller
+    /// unchanged (shadow-only, no cutover). The observation is recorded via the
+    /// `Shadow` arm in [`references_pir_promote`]; scorecard aggregation uses the
+    /// companion [`shadow_references_with_pir`] for the full receipt.
+    ShadowObserved,
 }
 
 /// Receipt from one shadow-compare run.
@@ -432,9 +441,8 @@ fn evaluate_pir_reference_candidate(
         if fact.name.sigil != target_sigil || fact.name.name != target_name {
             continue;
         }
-        if !fact.source_anchor.is_anchored() {
-            continue;
-        }
+        // Note: extractor invariant (PR1 #2637) guarantees every emitted fact has
+        // `source_anchor.is_anchored() == true` — no dead branch needed here.
         if !include_declaration && !declaration_skipped && fact.role == LexicalRole::Write {
             declaration_skipped = true;
             continue;
@@ -512,10 +520,11 @@ pub fn references_pir_promote(
         },
 
         PromotionMode::Shadow => {
-            // Evaluate candidate for scorecard purposes but always return legacy.
-            // The comparison result is discarded here; callers that want it should
-            // call `shadow_references_with_pir` directly.
-            let _candidate = evaluate_pir_reference_candidate(
+            // Evaluate candidate for scorecard observation (the whole point of Shadow
+            // mode) but always return the legacy result unchanged — no cutover.
+            // The candidate result is observed here; `ShadowObserved` is the honest
+            // reason: the path ran, the evidence is real, the live result is preserved.
+            let _observed = evaluate_pir_reference_candidate(
                 pir_receipt,
                 target_sigil,
                 target_name,
@@ -525,7 +534,7 @@ pub fn references_pir_promote(
             );
             ReferencesPirPromoteOutcome::LegacyFallback {
                 result: legacy_vec,
-                reason: PirShadowRefusalReason::NoAnchoredFacts,
+                reason: PirShadowRefusalReason::ShadowObserved,
             }
         }
 
@@ -636,8 +645,14 @@ mod promote_tests {
             opts_all(),
         );
         assert!(
-            matches!(&outcome, ReferencesPirPromoteOutcome::LegacyFallback { .. }),
-            "Shadow mode must return LegacyFallback, got {outcome:?}"
+            matches!(
+                &outcome,
+                ReferencesPirPromoteOutcome::LegacyFallback {
+                    reason: PirShadowRefusalReason::ShadowObserved,
+                    ..
+                }
+            ),
+            "Shadow mode must return LegacyFallback with ShadowObserved reason, got {outcome:?}"
         );
         if let ReferencesPirPromoteOutcome::LegacyFallback { result, .. } = outcome {
             assert_eq!(result, legacy, "shadow mode must preserve legacy result");
