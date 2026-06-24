@@ -132,7 +132,6 @@ fn ci_explain_malformed_receipt_prints_distinct_inconclusive() {
 
     assert!(output.status.success(), "exit code: {:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Must say "inconclusive" and "malformed" — not the absent-file hint.
     assert!(stdout.contains("inconclusive"), "expected 'inconclusive' in: {stdout}");
     assert!(stdout.contains("malformed"), "expected 'malformed' in: {stdout}");
     assert!(

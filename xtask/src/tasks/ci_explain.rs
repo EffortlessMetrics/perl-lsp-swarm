@@ -15,13 +15,14 @@
 //! ```text
 //! inconclusive: no receipts; run `cargo xtask gates`
 //! ```
+//!
+//! **Out of scope in this version**: `--run-id` (GH artifact download, tracked in #2652)
+//! and `--base` (base-branch comparison, tracked in #2653).
 
-use color_eyre::eyre::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 // ── Receipt types (subset of gates::Receipt / gates::GateResult) ─────────────
 
@@ -48,21 +49,6 @@ enum ReceiptLoadError {
     Malformed(String),
     /// The file parsed, but its `schema_version` is not supported.
     UnsupportedSchema(String),
-}
-
-impl std::fmt::Display for ReceiptLoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Absent => write!(f, "receipt file not found"),
-            Self::Malformed(msg) => write!(f, "malformed receipt: {msg}"),
-            Self::UnsupportedSchema(ver) => {
-                write!(
-                    f,
-                    "unsupported schema version \"{ver}\" (expected \"{SUPPORTED_SCHEMA_VERSION}\")"
-                )
-            }
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,7 +90,7 @@ pub struct ExplainReceipt {
     pub failure_class: String,
     /// `file:line` extracted from first_failure.site (or output_summary heuristic).
     pub source_file_line: Option<String>,
-    /// Whether the same gate also fails on the base branch (`true`/`false`/`"unknown"`).
+    /// Base-branch comparison not yet implemented; always `"unknown"` (see #2653).
     pub exists_on_base: String,
     /// Exact command to reproduce locally.
     pub local_reproduction_command: Option<String>,
@@ -115,11 +101,6 @@ pub struct ExplainReceipt {
 #[derive(Debug, PartialEq, Eq)]
 enum FailureClass {
     CodeRegression,
-    /// Reserved for future use once base-branch comparison is implemented.
-    /// Not currently emitted — kept here so the `as_str` match arm and the
-    /// output receipt schema remain valid when a real base-comparison follows.
-    #[allow(dead_code)]
-    MasterRed,
     StaleBase,
     Unknown,
 }
@@ -128,7 +109,6 @@ impl FailureClass {
     fn as_str(&self) -> &'static str {
         match self {
             Self::CodeRegression => "code_regression",
-            Self::MasterRed => "master_red",
             Self::StaleBase => "stale_base",
             Self::Unknown => "unknown",
         }
@@ -137,92 +117,41 @@ impl FailureClass {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub fn run(
-    receipt_path: Option<PathBuf>,
-    run_id: Option<String>,
-    base: Option<String>,
-) -> Result<()> {
-    let base_ref = base.as_deref().unwrap_or("origin/main");
-    let receipts_dir = PathBuf::from("target/receipts");
-
-    // If the caller supplied a run_id, download the artifact first.
-    if let Some(ref id) = run_id {
-        download_run_artifacts(id)?;
-    }
-
-    let path = resolve_receipt_path(receipt_path.as_deref(), run_id.as_deref(), &receipts_dir);
+pub fn run(receipt_path: Option<PathBuf>) -> color_eyre::eyre::Result<()> {
+    let path = resolve_receipt_path(receipt_path.as_deref());
 
     let receipt = match load_receipt(&path) {
         Ok(r) => r,
-        Err(e) => {
-            match &e {
-                ReceiptLoadError::Absent => {
-                    if let Some(ref id) = run_id {
-                        println!(
-                            "inconclusive: run {id} downloaded but no gate receipt found under target/receipts/ci-run/"
-                        );
-                    } else {
-                        println!("inconclusive: no receipts; run `cargo xtask gates`");
-                    }
-                }
-                ReceiptLoadError::Malformed(msg) => {
-                    println!("inconclusive: receipt is malformed — {msg}");
-                }
-                ReceiptLoadError::UnsupportedSchema(ver) => {
-                    println!(
-                        "inconclusive: unsupported receipt schema \"{ver}\" (expected \"{SUPPORTED_SCHEMA_VERSION}\"); upgrade xtask"
-                    );
-                }
-            }
+        Err(ReceiptLoadError::Absent) => {
+            println!("inconclusive: no receipts; run `cargo xtask gates`");
+            return Ok(());
+        }
+        Err(ReceiptLoadError::Malformed(msg)) => {
+            println!("inconclusive: receipt is malformed — {msg}");
+            return Ok(());
+        }
+        Err(ReceiptLoadError::UnsupportedSchema(ver)) => {
+            println!(
+                "inconclusive: unsupported receipt schema \"{ver}\" (expected \"{SUPPORTED_SCHEMA_VERSION}\"); upgrade xtask"
+            );
             return Ok(());
         }
     };
 
-    let explanation = explain(&receipt, base_ref);
+    let explanation = explain(&receipt);
     print_explanation(&explanation);
     Ok(())
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Compute the path to the gate receipt JSON.
+/// Compute the path to the gate receipt JSON (pure — no I/O).
 ///
-/// Resolution order (pure — no I/O, no `gh` calls):
+/// Resolution order:
 /// 1. If `explicit` is `Some`, return that path directly.
-/// 2. If `run_id` is `Some`, search `<base_dir>/ci-run/` for a `receipt.json`
-///    file (non-recursive scan of the immediate download directory and one
-///    level of sub-directories, as `gh run download` may create a named
-///    artifact sub-directory). Returns the first match found, or
-///    `<base_dir>/ci-run/receipt.json` as a sentinel when no file exists yet
-///    (the caller handles the missing-file error with the run-id-specific
-///    inconclusive message).
-/// 3. Otherwise return `<base_dir>/receipt.json`.
-fn resolve_receipt_path(explicit: Option<&Path>, run_id: Option<&str>, base_dir: &Path) -> PathBuf {
-    if let Some(path) = explicit {
-        return path.to_path_buf();
-    }
-    if run_id.is_some() {
-        let ci_run_dir = base_dir.join("ci-run");
-        // Prefer a receipt.json directly in the download dir.
-        let direct = ci_run_dir.join("receipt.json");
-        if direct.exists() {
-            return direct;
-        }
-        // `gh run download` may place artifacts under a named sub-directory.
-        // Scan one level deep for the first receipt.json found.
-        if let Ok(entries) = fs::read_dir(&ci_run_dir) {
-            for entry in entries.flatten() {
-                let candidate = entry.path().join("receipt.json");
-                if candidate.exists() {
-                    return candidate;
-                }
-            }
-        }
-        // Return the sentinel path; the caller will get a load error and emit
-        // the run-id-specific inconclusive message.
-        return direct;
-    }
-    base_dir.join("receipt.json")
+/// 2. Otherwise return `target/receipts/receipt.json`.
+fn resolve_receipt_path(explicit: Option<&Path>) -> PathBuf {
+    explicit.map_or_else(|| PathBuf::from("target/receipts/receipt.json"), Path::to_path_buf)
 }
 
 fn load_receipt(path: &Path) -> std::result::Result<Receipt, ReceiptLoadError> {
@@ -267,11 +196,9 @@ fn is_failing_status(status: &str) -> bool {
 /// 3. If the gate is a lint/fmt/clippy gate with an `output_summary` → `code_regression`.
 /// 4. Else → `unknown`.
 ///
-/// Note: `master_red` is intentionally not emitted here because we have no
-/// mechanism to verify the base branch without running gates against it (a
-/// follow-up issue will add that capability). Emitting `master_red` from a
-/// stub that never actually checked the base would be misleading.
-fn classify_failure(blocking: &GateResult, _base_ref: &str) -> FailureClass {
+/// Note: `master_red` is not emitted here — base-branch comparison needs a
+/// base receipt and is tracked in #2653.
+fn classify_failure(blocking: &GateResult) -> FailureClass {
     // If output_summary mentions "master" or "stale" → stale_base hint.
     if let Some(ref summary) = blocking.output_summary {
         let low = summary.to_lowercase();
@@ -321,9 +248,6 @@ fn normalize_site(raw: &str) -> String {
     // Handle Windows paths like C:/foo/bar:12:5
     // After replace, a Windows abs path starts with a drive letter + '/'
     if parts.len() == 3 {
-        // parts[0] is the path (may be empty if raw starts with ':')
-        // parts[1] is line, parts[2] is col
-        // But on Windows the path itself contains a drive letter: "C" + "/" + "foo…" → splitn gives "C", "/foo…:12", "5"
         // Guard: if parts[1] is entirely digits, we have path:line:col
         if parts[2].chars().all(|c| c.is_ascii_digit())
             && parts[1].chars().all(|c| c.is_ascii_digit())
@@ -374,16 +298,7 @@ fn build_repro_command(gate: &GateResult) -> Option<String> {
     })
 }
 
-fn exists_on_base_str(class: &FailureClass) -> &'static str {
-    match class {
-        FailureClass::MasterRed => "true",
-        FailureClass::StaleBase => "true",
-        // For everything else we can't determine without running gates on base.
-        _ => "unknown",
-    }
-}
-
-fn explain(receipt: &Receipt, base_ref: &str) -> ExplainReceipt {
+fn explain(receipt: &Receipt) -> ExplainReceipt {
     let blocking = find_blocking_gate(receipt);
 
     let Some(gate) = blocking else {
@@ -391,21 +306,20 @@ fn explain(receipt: &Receipt, base_ref: &str) -> ExplainReceipt {
             blocking_check_name: None,
             failure_class: "none".to_string(),
             source_file_line: None,
-            exists_on_base: "unknown".to_string(),
+            exists_on_base: "unknown".to_string(), // see #2653
             local_reproduction_command: None,
         };
     };
 
-    let class = classify_failure(gate, base_ref);
+    let class = classify_failure(gate);
     let source_file_line = extract_source_file_line(gate);
     let repro = build_repro_command(gate);
-    let exists_on_base = exists_on_base_str(&class).to_string();
 
     ExplainReceipt {
         blocking_check_name: Some(gate.gate_name.clone()),
         failure_class: class.as_str().to_string(),
         source_file_line,
-        exists_on_base,
+        exists_on_base: "unknown".to_string(), // see #2653
         local_reproduction_command: repro,
     }
 }
@@ -434,19 +348,6 @@ fn print_explanation(explanation: &ExplainReceipt) {
     )
     .ok();
     print!("{out}");
-}
-
-/// Download CI run artifacts using `gh run download`.
-fn download_run_artifacts(run_id: &str) -> Result<()> {
-    let status = Command::new("gh")
-        .args(["run", "download", run_id, "--dir", "target/receipts/ci-run"])
-        .status()
-        .with_context(|| format!("running `gh run download {run_id}`"))?;
-    if !status.success() {
-        bail!("gh run download {} failed", run_id);
-    }
-    println!("Downloaded CI run artifacts to target/receipts/ci-run/");
-    Ok(())
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -481,11 +382,69 @@ mod tests {
         }
     }
 
-    // ── find_blocking_gate ───────────────────────────────────────────────────
-
     fn make_receipt(gates: Vec<GateResult>) -> Receipt {
         Receipt { gates, ..Receipt::default() }
     }
+
+    // ── resolve_receipt_path ─────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_receipt_path_explicit_wins() {
+        let explicit = PathBuf::from("my/custom/receipt.json");
+        let result = resolve_receipt_path(Some(&explicit));
+        assert_eq!(result, explicit);
+    }
+
+    #[test]
+    fn resolve_receipt_path_default_when_none() {
+        let result = resolve_receipt_path(None);
+        assert_eq!(result, PathBuf::from("target/receipts/receipt.json"));
+    }
+
+    // ── load_receipt error variants ──────────────────────────────────────────
+
+    #[test]
+    fn load_receipt_absent_file_returns_absent_error() {
+        let path = PathBuf::from("target/receipts/nonexistent-receipt-ci-explain-test.json");
+        let result = load_receipt(&path);
+        assert!(matches!(result, Err(ReceiptLoadError::Absent)));
+    }
+
+    #[test]
+    fn load_receipt_malformed_json_returns_malformed_error() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("bad.json");
+        fs::write(&path, b"not valid json").expect("write");
+        let result = load_receipt(&path);
+        assert!(matches!(result, Err(ReceiptLoadError::Malformed(_))));
+    }
+
+    #[test]
+    fn load_receipt_unsupported_schema_returns_error() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("receipt.json");
+        fs::write(&path, br#"{"schema_version":"gates.v99","gates":[]}"#).expect("write");
+        let result = load_receipt(&path);
+        assert!(matches!(result, Err(ReceiptLoadError::UnsupportedSchema(_))));
+    }
+
+    #[test]
+    fn load_receipt_absent_schema_version_is_accepted() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("receipt.json");
+        // Older receipts without schema_version must still parse successfully.
+        fs::write(&path, br#"{"gates":[]}"#).expect("write");
+        let result = load_receipt(&path);
+        assert!(result.is_ok());
+    }
+
+    // ── find_blocking_gate ───────────────────────────────────────────────────
 
     #[test]
     fn find_blocking_gate_picks_first_required_fail() {
@@ -532,7 +491,7 @@ mod tests {
     #[test]
     fn classify_code_regression_when_first_failure_site_present() {
         let gate = make_gate_with_failure("test", Some("crates/foo/src/lib.rs:42"), None);
-        let class = classify_failure(&gate, "origin/main");
+        let class = classify_failure(&gate);
         assert_eq!(class, FailureClass::CodeRegression);
     }
 
@@ -540,7 +499,7 @@ mod tests {
     fn classify_code_regression_for_fmt_gate_with_output() {
         let mut gate = make_gate("fmt", "fail", true);
         gate.output_summary = Some("diff detected in src/main.rs".to_string());
-        let class = classify_failure(&gate, "origin/main");
+        let class = classify_failure(&gate);
         assert_eq!(class, FailureClass::CodeRegression);
     }
 
@@ -548,14 +507,14 @@ mod tests {
     fn classify_code_regression_for_clippy_gate_with_output() {
         let mut gate = make_gate("clippy", "fail", true);
         gate.output_summary = Some("error: unused variable".to_string());
-        let class = classify_failure(&gate, "origin/main");
+        let class = classify_failure(&gate);
         assert_eq!(class, FailureClass::CodeRegression);
     }
 
     #[test]
     fn classify_unknown_without_evidence() {
         let gate = make_gate("test", "fail", true);
-        let class = classify_failure(&gate, "origin/main");
+        let class = classify_failure(&gate);
         assert_eq!(class, FailureClass::Unknown);
     }
 
@@ -563,7 +522,7 @@ mod tests {
     fn classify_stale_base_from_output_summary() {
         let mut gate = make_gate("test", "fail", true);
         gate.output_summary = Some("PR is stale and behind master".to_string());
-        let class = classify_failure(&gate, "origin/main");
+        let class = classify_failure(&gate);
         assert_eq!(class, FailureClass::StaleBase);
     }
 
@@ -580,10 +539,8 @@ mod tests {
     fn extract_strips_column_from_site() {
         let gate = make_gate_with_failure("test", Some("crates/foo/src/lib.rs:42:7"), None);
         let result = extract_source_file_line(&gate);
-        // After normalize, path:line:col where col is all digits → path:line
-        // Note: normalize_site uses splitn(3, ':') on the normalized string.
         // "crates/foo/src/lib.rs:42:7" → parts = ["crates/foo/src/lib.rs", "42", "7"]
-        // Both "42" and "7" are all-digit → format "path:line" = "crates/foo/src/lib.rs:42"
+        // Both parts are all-digit → format "path:line" = "crates/foo/src/lib.rs:42"
         assert_eq!(result, Some("crates/foo/src/lib.rs:42".to_string()));
     }
 
@@ -608,8 +565,6 @@ mod tests {
     #[test]
     fn normalize_site_backslashes() {
         let result = normalize_site("crates\\foo\\src\\lib.rs:42:7");
-        // After replace '\\' → '/' : "crates/foo/src/lib.rs:42:7"
-        // splitn(3, ':') → ["crates/foo/src/lib.rs", "42", "7"] — both digit parts
         assert_eq!(result, "crates/foo/src/lib.rs:42");
     }
 
@@ -655,9 +610,10 @@ mod tests {
     #[test]
     fn explain_all_passing_returns_none_blocking() {
         let receipt = make_receipt(vec![make_gate("lint", "pass", true)]);
-        let result = explain(&receipt, "origin/main");
+        let result = explain(&receipt);
         assert!(result.blocking_check_name.is_none());
         assert_eq!(result.failure_class, "none");
+        assert_eq!(result.exists_on_base, "unknown");
     }
 
     #[test]
@@ -667,112 +623,10 @@ mod tests {
             Some("crates/foo/src/lib.rs:10"),
             None,
         )]);
-        let result = explain(&receipt, "origin/main");
+        let result = explain(&receipt);
         assert_eq!(result.blocking_check_name, Some("test".to_string()));
         assert_eq!(result.failure_class, "code_regression");
         assert_eq!(result.source_file_line, Some("crates/foo/src/lib.rs:10".to_string()));
-    }
-
-    #[test]
-    fn explain_missing_receipt_returns_absent_error() {
-        let path = PathBuf::from("target/receipts/nonexistent-receipt-ci-explain-test.json");
-        let result = load_receipt(&path);
-        assert!(matches!(result, Err(ReceiptLoadError::Absent)));
-    }
-
-    #[test]
-    fn explain_malformed_receipt_returns_malformed_error() {
-        use std::fs;
-        use tempfile::TempDir;
-        let tmp = TempDir::new().expect("tempdir");
-        let path = tmp.path().join("bad.json");
-        fs::write(&path, b"not valid json").expect("write");
-        let result = load_receipt(&path);
-        assert!(matches!(result, Err(ReceiptLoadError::Malformed(_))));
-    }
-
-    #[test]
-    fn explain_unsupported_schema_version_returns_error() {
-        use std::fs;
-        use tempfile::TempDir;
-        let tmp = TempDir::new().expect("tempdir");
-        let path = tmp.path().join("receipt.json");
-        fs::write(&path, br#"{"schema_version":"gates.v99","gates":[]}"#).expect("write");
-        let result = load_receipt(&path);
-        assert!(matches!(result, Err(ReceiptLoadError::UnsupportedSchema(_))));
-    }
-
-    #[test]
-    fn explain_absent_schema_version_is_accepted() {
-        use std::fs;
-        use tempfile::TempDir;
-        let tmp = TempDir::new().expect("tempdir");
-        let path = tmp.path().join("receipt.json");
-        // Older receipts without schema_version must still parse successfully.
-        fs::write(&path, br#"{"gates":[]}"#).expect("write");
-        let result = load_receipt(&path);
-        assert!(result.is_ok());
-    }
-
-    // ── resolve_receipt_path ─────────────────────────────────────────────────
-
-    #[test]
-    fn resolve_receipt_path_explicit_wins_over_everything() {
-        let base_dir = PathBuf::from("target/receipts");
-        let explicit = PathBuf::from("my/custom/receipt.json");
-        let result = resolve_receipt_path(Some(&explicit), Some("12345"), &base_dir);
-        assert_eq!(result, explicit);
-    }
-
-    #[test]
-    fn resolve_receipt_path_no_run_id_returns_default() {
-        let base_dir = PathBuf::from("target/receipts");
-        let result = resolve_receipt_path(None, None, &base_dir);
-        assert_eq!(result, base_dir.join("receipt.json"));
-    }
-
-    #[test]
-    fn resolve_receipt_path_run_id_resolves_under_ci_run_dir() {
-        // When run_id is set but no files exist (sentinel path), the result must
-        // be under <base_dir>/ci-run/ — never the default receipt.json.
-        let base_dir = PathBuf::from("target/receipts");
-        let result = resolve_receipt_path(None, Some("99999"), &base_dir);
-        assert!(
-            result.starts_with(base_dir.join("ci-run")),
-            "expected path under ci-run/, got: {}",
-            result.display()
-        );
-        // Must NOT fall back to the top-level receipt.json.
-        assert_ne!(result, base_dir.join("receipt.json"));
-    }
-
-    #[test]
-    fn resolve_receipt_path_run_id_finds_receipt_in_ci_run_dir() {
-        use std::fs;
-        use tempfile::TempDir;
-        let tmp = TempDir::new().expect("tempdir");
-        let ci_run_dir = tmp.path().join("ci-run");
-        fs::create_dir_all(&ci_run_dir).expect("create ci-run dir");
-        let receipt_file = ci_run_dir.join("receipt.json");
-        fs::write(&receipt_file, b"{}").expect("write receipt");
-
-        let result = resolve_receipt_path(None, Some("42"), tmp.path());
-        assert_eq!(result, receipt_file);
-    }
-
-    #[test]
-    fn resolve_receipt_path_run_id_finds_receipt_in_artifact_subdir() {
-        use std::fs;
-        use tempfile::TempDir;
-        let tmp = TempDir::new().expect("tempdir");
-        let ci_run_dir = tmp.path().join("ci-run");
-        // `gh run download` puts artifacts in a named sub-directory.
-        let artifact_dir = ci_run_dir.join("gate-receipts");
-        fs::create_dir_all(&artifact_dir).expect("create artifact dir");
-        let receipt_file = artifact_dir.join("receipt.json");
-        fs::write(&receipt_file, b"{}").expect("write receipt");
-
-        let result = resolve_receipt_path(None, Some("42"), tmp.path());
-        assert_eq!(result, receipt_file);
+        assert_eq!(result.exists_on_base, "unknown");
     }
 }

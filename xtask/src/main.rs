@@ -2626,24 +2626,19 @@ enum CiSubcommand {
     /// Explain the blocking CI check failure with a local reproduction path.
     ///
     /// Reads gate receipts under `target/receipts/` and emits a compact summary:
-    /// blocking check name, failure class, source file:line, whether the failure
-    /// also exists on the base branch, and the exact reproduce command.
+    /// blocking check name, failure class, source file:line, and the exact
+    /// reproduce command.
     ///
     /// Degrades gracefully when no receipts exist — prints an inconclusive message
     /// and hints to run `cargo xtask gates` first.
+    ///
+    /// Remote run artifact download (`--run-id`) is tracked in #2652.
+    /// Base-branch comparison (`--base`) is tracked in #2653.
     #[command(name = "explain")]
     Explain {
         /// Receipt JSON path to parse (default: target/receipts/receipt.json).
         #[arg(long)]
         receipt: Option<PathBuf>,
-
-        /// GitHub run ID to download CI artifacts before parsing (implies remote failure).
-        #[arg(long)]
-        run_id: Option<String>,
-
-        /// Base ref for comparison (default: origin/main).
-        #[arg(long)]
-        base: Option<String>,
     },
 }
 
@@ -2897,9 +2892,7 @@ fn main() -> Result<()> {
                     changed_files: changed_file,
                 })
             }
-            Some(CiSubcommand::Explain { receipt, run_id, base }) => {
-                ci_explain::run(receipt, run_id, base)
-            }
+            Some(CiSubcommand::Explain { receipt }) => ci_explain::run(receipt),
         },
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckLintPolicy => check_lint_policy::run(),
