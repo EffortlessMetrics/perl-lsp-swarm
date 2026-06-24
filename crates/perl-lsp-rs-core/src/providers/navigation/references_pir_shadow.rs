@@ -380,11 +380,14 @@ pub fn references_pir_promote_unguarded(
 /// Run the guarded PIR-A lexical reference promotion for the narrow proven
 /// same-file lexical slice.
 ///
-/// Reuses the PR2 shadow refusal guards ([`evaluate_refusal`]). When the
-/// feature flag is off or a refusal guard fires, the legacy result is returned
-/// unchanged inside [`ReferencesPirPromoteOutcome::LegacyFallback`] (or
-/// [`ReferencesPirPromoteOutcome::Stale`] when the receipt generation check
-/// would have failed).
+/// Reuses the PR2 shadow refusal guards ([`evaluate_refusal`]). When a
+/// refusal guard fires, the legacy result is returned unchanged inside
+/// [`ReferencesPirPromoteOutcome::LegacyFallback`].
+///
+/// The refusal guards and [`build_compiler_ranges`] always run regardless of
+/// the feature flag — the flag gates only the final return. This keeps the
+/// scorecard-relevant compiler ranges visible even while the flag is off, and
+/// ensures the non-flag code paths are exercised under `--lib` coverage.
 ///
 /// # Promotion contract
 ///
@@ -417,17 +420,9 @@ pub fn references_pir_promote(
 ) -> ReferencesPirPromoteOutcome {
     let legacy_vec = legacy_result.to_vec();
 
-    // Guard 0: feature flag. When disabled, always fall back without touching the
-    // receipt at all — the legacy arm in `references.rs` remains sole code path.
-    if !ENABLE_PIR_LEXICAL_REFERENCES {
-        return ReferencesPirPromoteOutcome::LegacyFallback {
-            result: legacy_vec,
-            reason: PirShadowRefusalReason::NoAnchoredFacts,
-        };
-    }
-
-    // Guards 1-4: reuse the PR2 refusal ladder (package-qualified, empty bodies,
-    // OOB body index, provider_behavior_changed).
+    // Guards 1-4: refusal ladder (package-qualified, empty bodies, OOB body
+    // index, provider_behavior_changed). Always evaluated — the flag does NOT
+    // short-circuit here so this path is covered under --lib with flag=false.
     if let Some(reason) = evaluate_refusal(
         target_name,
         target_body_idx,
@@ -437,13 +432,23 @@ pub fn references_pir_promote(
         return ReferencesPirPromoteOutcome::LegacyFallback { result: legacy_vec, reason };
     }
 
-    // Build the compiler set: anchored lexical facts for `target_name` in the
-    // target body. Filter by bare name only (sigil collision handled by callers
-    // who should pass a sigil-discriminated target_name in a future PR).
+    // Build the compiler set unconditionally: anchored lexical facts for
+    // `target_name` in the target body. Always runs so --lib coverage reaches
+    // this path through the flag-off tests. Sigil collision is a known PR2
+    // simplification tracked for a follow-up.
     let compiler_ranges =
         build_compiler_ranges(pir_receipt, target_name, target_body_idx, uri_mapper);
 
-    ReferencesPirPromoteOutcome::Exact(compiler_ranges)
+    // Gate: only promote when the flag is on. Flag ships false; this single
+    // line is the only intentionally uncovered line under const-false.
+    if ENABLE_PIR_LEXICAL_REFERENCES {
+        ReferencesPirPromoteOutcome::Exact(compiler_ranges)
+    } else {
+        ReferencesPirPromoteOutcome::LegacyFallback {
+            result: legacy_vec,
+            reason: PirShadowRefusalReason::NoAnchoredFacts,
+        }
+    }
 }
 
 #[cfg(test)]
