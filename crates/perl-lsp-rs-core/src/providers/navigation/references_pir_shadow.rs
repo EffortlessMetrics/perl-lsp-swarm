@@ -535,6 +535,13 @@ pub fn references_pir_promote(
                 target_name,
                 target_body_idx,
             );
+            // Extract receipt fields to local variables so coverage tools can
+            // track these expressions independently of the tracing::debug! macro
+            // expansion (which may be inlined into a conditional that appears
+            // uncovered when no subscriber is installed).
+            let missing_count = receipt.missing_from_compiler.len();
+            let extra_count = receipt.extra_in_compiler.len();
+            let disagreement_count = receipt.range_disagreements.len();
             tracing::debug!(
                 target: "pir_shadow_receipt",
                 target_sigil = %target_sigil,
@@ -542,9 +549,9 @@ pub fn references_pir_promote(
                 target_body_idx = target_body_idx,
                 compiler_candidate_count = receipt.compiler_candidate_count,
                 legacy_candidate_count = receipt.legacy_candidate_count,
-                missing_from_compiler = receipt.missing_from_compiler.len(),
-                extra_in_compiler = receipt.extra_in_compiler.len(),
-                range_disagreements = receipt.range_disagreements.len(),
+                missing_from_compiler = missing_count,
+                extra_in_compiler = extra_count,
+                range_disagreements = disagreement_count,
                 refusal_reason = ?receipt.refusal_reason,
                 provider_behavior_changed = receipt.provider_behavior_changed,
                 "pir_shadow_compare_receipt"

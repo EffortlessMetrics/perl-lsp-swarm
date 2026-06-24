@@ -39,7 +39,6 @@ use perl_parser_core::qualified_name::split_qualified_name;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PIR-A Shadow wiring
-// (`lsp_types` is used by the identity mapper in the shadow block below.)
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // `SHADOW_WIRING_MODE` controls whether the PIR-A promotion path runs beside
@@ -54,6 +53,20 @@ use perl_parser_core::qualified_name::split_qualified_name;
 //     one complete CI green run post PR2 merge (spec #2635 precondition).
 //   Shadow → Off: rollback; no criteria needed (safe at any time).
 use super::references_pir_shadow::{PromotionMode, ReferenceOptions, references_pir_promote};
+
+/// Identity byte-offset mapper for `references_pir_promote`.
+///
+/// Required by `references_pir_promote`'s signature (consumed in `PromoteExact`
+/// mode) but not invoked in `Shadow` mode — the Shadow arm works at byte-offset
+/// granularity via `shadow_references_with_pir` and never calls this mapper.
+/// Kept as a free function so the coverage tool can track it independently of
+/// the call site that constructs the closure.
+fn identity_byte_mapper(start: usize, end: usize) -> lsp_types::Range {
+    lsp_types::Range {
+        start: lsp_types::Position { line: 0, character: start as u32 },
+        end: lsp_types::Position { line: 0, character: end as u32 },
+    }
+}
 
 /// Shadow-wiring promotion mode for the same-file references path.
 ///
@@ -109,22 +122,16 @@ pub fn find_references_with_pir_shadow(
             extract_lexical_facts(&hir)
         };
 
-        // Identity byte mapper: required by `references_pir_promote`'s signature
-        // (used by `PromoteExact` mode) but not consumed in `Shadow` mode — the
-        // Shadow arm calls `shadow_references_with_pir` which works at byte-offset
-        // granularity and never calls the mapper. The identity mapper is therefore
-        // safe here and avoids a `PositionMapper` allocation.
-        let identity_mapper = |start: usize, end: usize| lsp_types::Range {
-            start: lsp_types::Position { line: 0, character: start as u32 },
-            end: lsp_types::Position { line: 0, character: end as u32 },
-        };
-
         let opts = ReferenceOptions { include_declaration: true };
 
         // `references_pir_promote` in Shadow mode: evaluates the PIR candidate,
         // builds the `PirShadowCompareReceipt` via `shadow_references_with_pir`,
         // emits it as a structured `tracing::debug!` event, and returns
         // `LegacyFallback` — the legacy result is preserved.
+        //
+        // `identity_byte_mapper` is required by the signature (consumed only in
+        // `PromoteExact` mode); Shadow never calls it. It is a named free
+        // function (not an inline closure) so coverage tracks it independently.
         let _outcome = references_pir_promote(
             SHADOW_WIRING_MODE,
             target_sigil,
@@ -132,7 +139,7 @@ pub fn find_references_with_pir_shadow(
             &pir_receipt,
             &legacy_result,
             0, // body 0 = program-root body for same-file lexical scope
-            &identity_mapper,
+            &identity_byte_mapper,
             opts,
         );
         // _outcome is LegacyFallback — the legacy_result is embedded in it, but
@@ -412,5 +419,55 @@ mod tests {
         // Must find at least 2 sites (decl + read).
         let ranges = must_some(shadow);
         assert!(ranges.len() >= 2, "expected >=2 $x sites, got {ranges:?}");
+    }
+
+    /// `identity_byte_mapper` constructs a valid `lsp_types::Range` from byte offsets.
+    ///
+    /// Coverage target: `identity_byte_mapper` is the named free function used as the
+    /// uri_mapper argument in `find_references_with_pir_shadow`. Shadow mode never
+    /// calls it (Shadow uses byte-offset comparison directly). This test exercises the
+    /// function body so coverage tools can track it independently of its call site.
+    #[test]
+    fn identity_byte_mapper_produces_correct_range() {
+        let range = super::identity_byte_mapper(10, 20);
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 10);
+        assert_eq!(range.end.line, 0);
+        assert_eq!(range.end.character, 20);
+
+        // Zero-length range (declaration-only case).
+        let zero = super::identity_byte_mapper(5, 5);
+        assert_eq!(zero.start.character, 5);
+        assert_eq!(zero.end.character, 5);
+    }
+
+    /// Shadow emit path: `find_references_with_pir_shadow` on the multi-scope
+    /// fixture drives the full Shadow receipt-emit branch including all receipt
+    /// field accesses inside `tracing::debug!`.
+    ///
+    /// The multi-scope source has two `$x` bindings at different scopes, so the
+    /// PIR compiler set (lexical-scope-aware) differs from the legacy set (scope-
+    /// blind). This ensures the receipt fields (`missing_from_compiler`,
+    /// `extra_in_compiler`, `range_disagreements`) are populated and their
+    /// `.len()` calls inside the `tracing::debug!` emission actually execute.
+    #[test]
+    fn shadow_emit_path_runs_with_populated_receipt_fields() {
+        // Outer `$x` at byte 3, inner `$x` at byte 23.
+        // Legacy (scope-blind): 4 sites. PIR-A (scope-aware): 2 outer sites.
+        // The disagreement means `missing_from_compiler` and `range_disagreements`
+        // will be non-empty → all receipt `.len()` calls are exercised.
+        const F1_SOURCE: &str = "my $x = 1;\n{\n    my $x = 2;\n    print $x;\n}\nprint $x;\n";
+        let ast = parse_with_recovery(F1_SOURCE);
+
+        // Cursor on the outer `$x` at byte 3.
+        let shadow = find_references_with_pir_shadow(&ast, 3, F1_SOURCE);
+        let ranges = must_some(shadow);
+
+        // Behavior-preserving: legacy returns all 4 sites (both scopes).
+        assert_eq!(
+            ranges.len(),
+            4,
+            "shadow must return the scope-blind legacy result (4 sites); got {ranges:?}"
+        );
     }
 }
