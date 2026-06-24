@@ -119,27 +119,11 @@ impl FailureClass {
 
 pub fn run(receipt_path: Option<PathBuf>) -> color_eyre::eyre::Result<()> {
     let path = resolve_receipt_path(receipt_path.as_deref());
-
-    let receipt = match load_receipt(&path) {
-        Ok(r) => r,
-        Err(ReceiptLoadError::Absent) => {
-            println!("inconclusive: no receipts; run `cargo xtask gates`");
-            return Ok(());
-        }
-        Err(ReceiptLoadError::Malformed(msg)) => {
-            println!("inconclusive: receipt is malformed — {msg}");
-            return Ok(());
-        }
-        Err(ReceiptLoadError::UnsupportedSchema(ver)) => {
-            println!(
-                "inconclusive: unsupported receipt schema \"{ver}\" (expected \"{SUPPORTED_SCHEMA_VERSION}\"); upgrade xtask"
-            );
-            return Ok(());
-        }
+    let out = match load_receipt(&path) {
+        Ok(r) => format_explanation(&explain(&r)),
+        Err(e) => format_load_error(&e),
     };
-
-    let explanation = explain(&receipt);
-    print_explanation(&explanation);
+    print!("{out}");
     Ok(())
 }
 
@@ -324,10 +308,25 @@ fn explain(receipt: &Receipt) -> ExplainReceipt {
     }
 }
 
-fn print_explanation(explanation: &ExplainReceipt) {
+/// Format a receipt load error as an inconclusive message (pure — no I/O).
+fn format_load_error(err: &ReceiptLoadError) -> String {
+    match err {
+        ReceiptLoadError::Absent => {
+            "inconclusive: no receipts; run `cargo xtask gates`\n".to_string()
+        }
+        ReceiptLoadError::Malformed(msg) => {
+            format!("inconclusive: receipt is malformed — {msg}\n")
+        }
+        ReceiptLoadError::UnsupportedSchema(ver) => format!(
+            "inconclusive: unsupported receipt schema \"{ver}\" (expected \"{SUPPORTED_SCHEMA_VERSION}\"); upgrade xtask\n"
+        ),
+    }
+}
+
+/// Format an explanation as a human-readable string (pure — no I/O).
+fn format_explanation(explanation: &ExplainReceipt) -> String {
     if explanation.blocking_check_name.is_none() {
-        println!("All gates passing");
-        return;
+        return "All gates passing\n".to_string();
     }
 
     let mut out = String::new();
@@ -347,7 +346,7 @@ fn print_explanation(explanation: &ExplainReceipt) {
         explanation.local_reproduction_command.as_deref().unwrap_or("-")
     )
     .ok();
-    print!("{out}");
+    out
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -628,5 +627,78 @@ mod tests {
         assert_eq!(result.failure_class, "code_regression");
         assert_eq!(result.source_file_line, Some("crates/foo/src/lib.rs:10".to_string()));
         assert_eq!(result.exists_on_base, "unknown");
+    }
+
+    // ── format_explanation ───────────────────────────────────────────────────
+
+    #[test]
+    fn format_explanation_all_passing() {
+        let receipt = make_receipt(vec![make_gate("lint", "pass", true)]);
+        let explanation = explain(&receipt);
+        let output = format_explanation(&explanation);
+        assert_eq!(output, "All gates passing\n");
+    }
+
+    #[test]
+    fn format_explanation_blocking_with_site() {
+        let receipt = make_receipt(vec![make_gate_with_failure(
+            "fmt",
+            Some("xtask/src/tasks/ci_explain.rs:42"),
+            None,
+        )]);
+        let explanation = explain(&receipt);
+        let output = format_explanation(&explanation);
+        assert!(output.contains("blocking_check:   fmt\n"));
+        assert!(output.contains("failure_class:    code_regression\n"));
+        assert!(output.contains("source_file_line: xtask/src/tasks/ci_explain.rs:42\n"));
+        assert!(output.contains("exists_on_base:   unknown\n"));
+        assert!(output.contains("reproduce:        cargo xtask fmt\n"));
+    }
+
+    #[test]
+    fn format_explanation_blocking_without_site() {
+        let receipt = make_receipt(vec![make_gate("test", "fail", true)]);
+        let explanation = explain(&receipt);
+        let output = format_explanation(&explanation);
+        assert!(output.contains("blocking_check:   test\n"));
+        assert!(output.contains("failure_class:    unknown\n"));
+        assert!(output.contains("source_file_line: -\n"));
+        assert!(output.contains("exists_on_base:   unknown\n"));
+        assert!(output.contains("reproduce:        cargo xtask test\n"));
+    }
+
+    #[test]
+    fn format_explanation_stale_base_class() {
+        let mut gate = make_gate("test", "fail", true);
+        gate.output_summary = Some("PR is stale and behind master".to_string());
+        let receipt = make_receipt(vec![gate]);
+        let explanation = explain(&receipt);
+        let output = format_explanation(&explanation);
+        assert!(output.contains("failure_class:    stale_base\n"));
+    }
+
+    // ── format_load_error ────────────────────────────────────────────────────
+
+    #[test]
+    fn format_load_error_absent() {
+        let output = format_load_error(&ReceiptLoadError::Absent);
+        assert_eq!(output, "inconclusive: no receipts; run `cargo xtask gates`\n");
+    }
+
+    #[test]
+    fn format_load_error_malformed() {
+        let output =
+            format_load_error(&ReceiptLoadError::Malformed("bad json at line 3".to_string()));
+        assert_eq!(output, "inconclusive: receipt is malformed — bad json at line 3\n");
+    }
+
+    #[test]
+    fn format_load_error_unsupported_schema() {
+        let output =
+            format_load_error(&ReceiptLoadError::UnsupportedSchema("gates.v99".to_string()));
+        assert_eq!(
+            output,
+            "inconclusive: unsupported receipt schema \"gates.v99\" (expected \"gates.v1\"); upgrade xtask\n"
+        );
     }
 }
