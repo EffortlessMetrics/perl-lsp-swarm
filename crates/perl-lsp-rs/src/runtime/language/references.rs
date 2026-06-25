@@ -20,6 +20,8 @@ use perl_lsp_rs_core::providers::navigation::references_shadow::{
     ReferencesCutoverResult, find_references_live_source_backed,
 };
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use perl_semantic_facts::AnchorId;
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 
 #[cfg(feature = "workspace")]
@@ -903,17 +905,22 @@ impl LspServer {
         byte_offset: usize,
         include_declaration: bool,
     ) -> Option<Vec<Value>> {
-        if include_declaration {
-            return None;
-        }
-
         let byte_offset = u32::try_from(byte_offset).ok()?;
         let workspace_index = self.workspace_index()?;
-        let outcome = workspace_index
+
+        // Resolve the semantic outcome plus, when the caller wants the
+        // declaration included, the anchor that points at the definition site.
+        let (outcome, decl_anchor) = workspace_index
             .with_semantic_queries_for_uri(uri, |file_id, queries| {
                 let ctx = QueryContext::new(file_id, None, Some(byte_offset));
-                let entity_id = queries
-                    .symbol_at(file_id, byte_offset)
+
+                // Two-step entity resolution: prefer the typed occurrence at
+                // the cursor, fall back to a uniquely-matching definition
+                // candidate.  When resolving via definitions we keep the
+                // anchor around so we can include it as the declaration site.
+                let symbol_at = queries.symbol_at(file_id, byte_offset);
+                let entity_id = symbol_at
+                    .as_ref()
                     .and_then(|(_, occurrence)| occurrence.entity_id)
                     .or_else(|| {
                         let exact_candidates: Vec<_> = queries
@@ -937,12 +944,42 @@ impl LspServer {
                             _ => None,
                         }
                     })?;
-                Some(find_references_live_source_backed(
+
+                // Find the declaration anchor for this entity, used when
+                // `include_declaration` is true.  We accept the anchor from
+                // `symbol_at` if the occurrence is a definition kind, or look
+                // up a high-confidence definition candidate otherwise.
+                let decl_anchor: Option<AnchorId> = if include_declaration {
+                    use perl_semantic_facts::OccurrenceKind;
+                    let from_symbol_at = symbol_at
+                        .as_ref()
+                        .filter(|(_, occ)| occ.kind == OccurrenceKind::Definition)
+                        .map(|(_, occ)| occ.anchor_id);
+                    from_symbol_at.or_else(|| {
+                        queries
+                            .definitions(symbol, &ctx)
+                            .into_iter()
+                            .filter(|c| {
+                                c.confidence == perl_semantic_facts::Confidence::High
+                                    && c.entity_id == entity_id
+                                    && workspace_index
+                                        .semantic_anchor_wire_location(c.anchor_id)
+                                        .is_some()
+                            })
+                            .map(|c| c.anchor_id)
+                            .next()
+                    })
+                } else {
+                    None
+                };
+
+                let outcome = find_references_live_source_backed(
                     workspace_index.as_ref(),
                     &queries,
                     symbol,
                     entity_id,
-                ))
+                );
+                Some((outcome, decl_anchor))
             })
             .flatten()?;
 
@@ -950,12 +987,29 @@ impl LspServer {
             return None;
         };
 
-        let mut locations = Vec::with_capacity(occurrences.len());
+        let mut locations = Vec::with_capacity(occurrences.len() + 1);
         for occurrence in occurrences {
             let wire_location =
                 workspace_index.semantic_anchor_wire_location(occurrence.anchor_id)?;
             let location: lsp_types::Location = wire_location.into();
             locations.push(serde_json::to_value(location).ok()?);
+        }
+
+        // Include the declaration location when requested, deduped against the
+        // reference set already collected above.
+        if include_declaration {
+            if let Some(anchor_id) = decl_anchor {
+                if let Some(wire_location) =
+                    workspace_index.semantic_anchor_wire_location(anchor_id)
+                {
+                    let decl_location: lsp_types::Location = wire_location.into();
+                    let decl_value = serde_json::to_value(&decl_location).ok()?;
+                    let already_present = locations.iter().any(|loc| loc == &decl_value);
+                    if !already_present {
+                        locations.push(decl_value);
+                    }
+                }
+            }
         }
 
         if locations.is_empty() { None } else { Some(locations) }
@@ -1034,11 +1088,13 @@ impl LspServer {
                                 &symbol,
                                 entity_id,
                             );
-                            let live_cutover = !include_declaration
-                                && matches!(outcome.result, ReferencesCutoverResult::Exact(_));
+                            let live_cutover =
+                                matches!(outcome.result, ReferencesCutoverResult::Exact(_));
                             let mut receipt = outcome.receipt;
                             let compiler_result_count = receipt.new_result.match_count;
-                            let behavior_note = if live_cutover {
+                            let behavior_note = if live_cutover && include_declaration {
+                                "partial live exact/imported references cutover (includeDeclaration=true)"
+                            } else if live_cutover {
                                 "partial live exact/imported references cutover"
                             } else {
                                 "legacy fallback"
