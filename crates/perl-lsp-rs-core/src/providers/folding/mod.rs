@@ -124,7 +124,9 @@ impl FoldingRangeExtractor {
                 if after_hash.starts_with("region") {
                     // Verify it's a word boundary (not part of another word)
                     let after_region = after_hash.strip_prefix("region").unwrap_or("");
-                    if after_region.is_empty() || !after_region.chars().next().unwrap_or(' ').is_alphanumeric() {
+                    if after_region.is_empty()
+                        || !after_region.chars().next().unwrap_or(' ').is_alphanumeric()
+                    {
                         stack.push((line_start_offset, depth));
                         depth += 1;
                     }
@@ -137,7 +139,9 @@ impl FoldingRangeExtractor {
                 if after_hash.starts_with("endregion") {
                     // Verify it's a word boundary
                     let after_endregion = after_hash.strip_prefix("endregion").unwrap_or("");
-                    if after_endregion.is_empty() || !after_endregion.chars().next().unwrap_or(' ').is_alphanumeric() {
+                    if after_endregion.is_empty()
+                        || !after_endregion.chars().next().unwrap_or(' ').is_alphanumeric()
+                    {
                         if depth > 0 {
                             depth -= 1;
                             if let Some((start_offset, _)) = stack.pop() {
