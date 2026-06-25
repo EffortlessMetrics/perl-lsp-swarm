@@ -382,3 +382,49 @@ fn test_select_path_candidate_relative_candidate_dropped_absolute_path_wins() {
         "relative candidate must be dropped; absolute PATH binary must win"
     );
 }
+
+// --- Has-extension bare-name bypass regression ---
+//
+// A bare name WITH an extension but NO separator (e.g. "perltidy.exe") must
+// not be passed through to `Command::new` unchanged.  Windows' CreateProcess
+// searches the CWD before PATH, so `Command::new("perltidy.exe")` with a
+// planted workspace binary is an RCE.  `resolve_windows_program` now routes
+// these through the same PATH-only search as extensionless bare names.
+//
+// These tests exercise `select_path_candidate` directly (the pure fn) because
+// the real `resolve_windows_program` needs the binary to exist on disk.  The
+// security property being tested is that the selection layer rejects any
+// candidate whose parent is the CWD — identical to the planted-binary tests
+// above — confirming that extensioned bare names feed the same safe path.
+
+/// A candidate for an extensioned bare name (`perltidy.exe`) that lives in the
+/// CWD must be rejected in favour of a PATH-directory copy.
+#[cfg(windows)]
+#[test]
+fn test_select_path_candidate_extensioned_bare_cwd_binary_rejected_in_favor_of_path() {
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[
+        r"C:\Users\user\project\perltidy.exe", // planted in CWD — must be dropped
+        r"C:\Strawberry\perl\bin\perltidy.exe", // legitimate PATH install
+    ];
+    let result = select_path_candidate(candidates, &cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        "extensioned bare name: CWD-planted binary must be rejected; PATH binary must win"
+    );
+}
+
+/// When an extensioned bare name is not found on PATH at all, `None` is
+/// returned — never falls back to the CWD.
+#[cfg(windows)]
+#[test]
+fn test_select_path_candidate_extensioned_bare_cwd_only_returns_none() {
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[r"C:\Users\user\project\perltidy.exe"]; // only in CWD
+    let result = select_path_candidate(candidates, &cwd);
+    assert!(
+        result.is_none(),
+        "extensioned bare name not on PATH must return None, not execute CWD binary; got: {result:?}"
+    );
+}

@@ -34,49 +34,75 @@ pub(crate) fn windows_quote_for_cmd(arg: &str) -> String {
     escaped
 }
 
-/// Resolve a bare program name (no path separator, no extension) to an absolute
-/// path by searching the `PATH` environment variable directories.
+/// Resolve a program name to an absolute path by searching the `PATH`
+/// environment variable directories.
+///
+/// # Dispatch rules
+///
+/// | Input form | Action |
+/// |---|---|
+/// | Contains `\` or `/` (real path) | Pass through unchanged — caller pre-resolved it |
+/// | Bare name, no extension (`perltidy`) | Search PATH dirs × PATHEXT extensions |
+/// | Bare name, with extension (`perltidy.exe`) | Search PATH dirs for that exact filename |
+///
+/// Bare names with an extension are **not** passed through unchanged.
+/// `Command::new("perltidy.exe")` would let Windows' CreateProcess CWD search
+/// find a planted workspace binary — the same binary-planting RCE the PATH-only
+/// search closes.  Both bare-name cases feed `select_path_candidate` which
+/// enforces the absolute-only + CWD-exclusion invariants.
 ///
 /// # Security invariant
 ///
-/// The current working directory is **never** consulted, even though
-/// `where.exe` (the previous implementation) searches the CWD first.
-/// An attacker who can plant files in the workspace directory opened by the
-/// LSP server (e.g. `perltidy.exe` in the project root) must not be able to
-/// hijack tool invocations — this is the Windows binary-planting / CWD-RCE
-/// attack class.
-///
-/// Absolute paths and paths containing a separator pass through unchanged via
-/// the early return so callers can always use pre-resolved paths safely.
+/// The current working directory is **never** consulted.  An attacker who plants
+/// `perltidy.exe` (or any extensioned tool name) in the LSP workspace root must
+/// not be able to hijack tool invocations.
 pub(crate) fn resolve_windows_program(program: &str) -> Option<String> {
     let program_path = Path::new(program);
     let has_separator = program.contains('\\') || program.contains('/');
-    let has_extension = program_path.extension().is_some();
-    if has_separator || has_extension {
+
+    // A name with a path separator is already a resolved path — pass through.
+    // Note: we do NOT early-return for bare names that happen to carry an
+    // extension (e.g. "perltidy.exe").  Such names must go through the
+    // PATH-only search below to prevent CreateProcess CWD lookup.
+    if has_separator {
         return Some(program.to_string());
     }
 
-    // Collect all candidate paths from PATH × PATHEXT.
-    //
+    let has_extension = program_path.extension().is_some();
+
     // Security: skip any PATH entry that is empty or not absolute.  An empty
     // entry (`;;` or trailing `;`) produces a relative path via `dir.join`,
     // which resolves against the CWD at `.is_file()` time — the same
     // binary-planting vector we are closing.  A relative PATH entry is equally
     // dangerous and is almost always a misconfiguration, not intentional.
     let path_dirs = path_dirs_from_env();
-    let path_exts = pathext_from_env();
 
-    let candidates: Vec<String> = path_dirs
-        .iter()
-        .filter(|dir| !dir.as_os_str().is_empty() && dir.is_absolute())
-        .flat_map(|dir| {
-            path_exts.iter().filter_map(|ext| {
-                let mut candidate = dir.join(program);
-                candidate.set_extension(ext.trim_start_matches('.'));
+    let candidates: Vec<String> = if has_extension {
+        // Bare name with extension: search each PATH dir for the exact filename.
+        // Do not append PATHEXT — the caller already specified the extension.
+        path_dirs
+            .iter()
+            .filter(|dir| !dir.as_os_str().is_empty() && dir.is_absolute())
+            .filter_map(|dir| {
+                let candidate = dir.join(program);
                 if candidate.is_file() { candidate.to_str().map(str::to_string) } else { None }
             })
-        })
-        .collect();
+            .collect()
+    } else {
+        // Bare name without extension: try each PATH dir × each PATHEXT extension.
+        let path_exts = pathext_from_env();
+        path_dirs
+            .iter()
+            .filter(|dir| !dir.as_os_str().is_empty() && dir.is_absolute())
+            .flat_map(|dir| {
+                path_exts.iter().filter_map(|ext| {
+                    let mut candidate = dir.join(program);
+                    candidate.set_extension(ext.trim_start_matches('.'));
+                    if candidate.is_file() { candidate.to_str().map(str::to_string) } else { None }
+                })
+            })
+            .collect()
+    };
 
     let cwd = std::env::current_dir().ok()?;
     let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
