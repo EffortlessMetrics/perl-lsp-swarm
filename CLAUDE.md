@@ -34,7 +34,7 @@ The pipeline is organized into **7 gates** (coarse stages) with multiple agents 
 | **4. Review/improve** | Right thing × what codebase needs × right way | reviewer, maintainer-pr, refactor-planner, green-refactor, reviewer-deep, diff-auditor |
 | **5. CI green** | Live CI actually green (not just a label) | green-ci, pr-responder |
 | **6. Merge** | Land it | ops |
-| **7. Learn** | Consolidate captured learning into durable artifacts | wisdom, memory-recalibrator |
+| **7. Learn** | Consolidate captured learning into durable artifacts | wisdom, memory-recalibrator, learning-scribe |
 
 **Sequencing within a gate** is preferred when agents build on each other's output, but is not strict — parallel agents within a gate are fine when they don't depend on each other.
 
@@ -45,6 +45,8 @@ The pipeline is organized into **7 gates** (coarse stages) with multiple agents 
 **Gate-7 capture loop**: Every deep-review fix or observable incident => one  entry (YAML frontmatter with tags + search_terms, links the PR# and the  pattern) + a spec/contract follow-up in  or  if the class is recurring.
 
 See [docs/reference/PIPELINE_GATES.md](docs/reference/PIPELINE_GATES.md) for the full gate model: skip criteria, within-gate ordering, three-axis triangulation in Gate 4, and worked examples.
+
+The tables above name the load-bearing gate agents; for the full roster — including the pipeline **leads** (`lead-discovery`, `lead-build`, `lead-review`) and the **Issue Discovery Desk** scouts (`scout-find-*`) — see [.claude/agents/AGENT_CATALOG.md](.claude/agents/AGENT_CATALOG.md).
 
 ### Pipeline: Scout → Accuracy-Scout → Plan-Review → Build → Review → Green → Merge → Wisdom
 
