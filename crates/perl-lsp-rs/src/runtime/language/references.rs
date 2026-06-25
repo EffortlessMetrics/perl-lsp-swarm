@@ -20,6 +20,8 @@ use perl_lsp_rs_core::providers::navigation::references_shadow::{
     ReferencesCutoverResult, find_references_live_source_backed,
 };
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+use perl_semantic_facts::AnchorId;
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
 use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
 
 #[cfg(feature = "workspace")]
@@ -844,32 +846,70 @@ impl LspServer {
         byte_offset: usize,
         include_declaration: bool,
     ) -> Option<Vec<Value>> {
-        if include_declaration {
-            return None;
-        }
-
         let byte_offset = u32::try_from(byte_offset).ok()?;
         let workspace_index = self.workspace_index()?;
-        let outcome = workspace_index
+
+        // Compiler-backing gate: Tier-1 only fires for named subroutine entities whose
+        // declaration is in the SAME FILE as the query URI.  Two conditions:
+        //
+        //   1. ENTITY KIND: only `Subroutine`/`Method` entities reach
+        //      Tier-1.  Lexical variables (`EntityKind::Variable`) are handled by the
+        //      PIR-A shadow path and workspace-index tiers — they must not be
+        //      `source_backed` in the decision trace.
+        //
+        //   2. SAME-FILE DECLARATION: the entity's declaration anchor must live in THIS
+        //      file.  A cross-file call-site (declaration in file B, cursor in file A)
+        //      falls through to workspace-index tiers.  This prevents MODULE+MAIN-style
+        //      workspaces from triggering Tier-1 when querying a call-site in the
+        //      importing file.
+        //
+        // Entity resolution:
+        //   a. `symbol_at` — prefer a typed occurrence directly at the cursor.
+        //   b. `definitions()` — fallback for bare calls whose occurrence has no
+        //      entity_id (name-qualification mismatch), gated on same-file anchor.
+        let (outcome, decl_anchor) = workspace_index
             .with_semantic_queries_for_uri(uri, |file_id, queries| {
                 let ctx = QueryContext::new(file_id, None, Some(byte_offset));
-                let entity_id = queries
-                    .symbol_at(file_id, byte_offset)
+                let symbol_at = queries.symbol_at(file_id, byte_offset);
+
+                // Filter out non-subroutine entities — lexical variables, constants,
+                // etc. must not be source_backed.  Only Subroutine and Method entities
+                // represent named subs that the semantic reference index covers reliably.
+                let symbol_at_sub = symbol_at.as_ref().filter(|(entity, _)| {
+                    matches!(
+                        entity.kind,
+                        perl_semantic_facts::EntityKind::Subroutine
+                            | perl_semantic_facts::EntityKind::Method
+                    )
+                });
+
+                let entity_id = symbol_at_sub
                     .and_then(|(_, occurrence)| occurrence.entity_id)
                     .or_else(|| {
+                        // Use definitions() fallback only for same-file, sub-kind declarations.
+                        // Candidates from other files or of non-subroutine kind are rejected.
                         let exact_candidates: Vec<_> = queries
                             .definitions(symbol, &ctx)
                             .into_iter()
                             .filter(|candidate| {
-                                candidate.confidence == perl_semantic_facts::Confidence::High
+                                matches!(
+                                    candidate.kind,
+                                    perl_semantic_facts::EntityKind::Subroutine
+                                        | perl_semantic_facts::EntityKind::Method
+                                ) && candidate.confidence
+                                    == perl_semantic_facts::Confidence::High
                                     && matches!(
                                         candidate.provenance,
                                         perl_semantic_facts::Provenance::ExactAst
                                             | perl_semantic_facts::Provenance::ImportExportInference
                                             | perl_semantic_facts::Provenance::LiteralRequireImport
                                     )
+                                    // Same-file gate: declaration anchor must be in this file.
                                     && workspace_index
-                                        .semantic_anchor_wire_location(candidate.anchor_id)
+                                        .semantic_anchor_wire_location_for_file(
+                                            file_id,
+                                            candidate.anchor_id,
+                                        )
                                         .is_some()
                             })
                             .collect();
@@ -878,12 +918,40 @@ impl LspServer {
                             _ => None,
                         }
                     })?;
-                Some(find_references_live_source_backed(
+
+                // When the caller wants the declaration included, capture the
+                // anchor of the definition occurrence so it can be appended below.
+                let decl_anchor: Option<AnchorId> = if include_declaration {
+                    use perl_semantic_facts::OccurrenceKind;
+                    symbol_at
+                        .as_ref()
+                        .filter(|(_, occ)| occ.kind == OccurrenceKind::Definition)
+                        .map(|(_, occ)| occ.anchor_id)
+                        .or_else(|| {
+                            queries
+                                .definitions(symbol, &ctx)
+                                .into_iter()
+                                .filter(|c| {
+                                    c.confidence == perl_semantic_facts::Confidence::High
+                                        && c.entity_id == entity_id
+                                        && workspace_index
+                                            .semantic_anchor_wire_location(c.anchor_id)
+                                            .is_some()
+                                })
+                                .map(|c| c.anchor_id)
+                                .next()
+                        })
+                } else {
+                    None
+                };
+
+                let outcome = find_references_live_source_backed(
                     workspace_index.as_ref(),
                     &queries,
                     symbol,
                     entity_id,
-                ))
+                );
+                Some((outcome, decl_anchor))
             })
             .flatten()?;
 
@@ -891,12 +959,28 @@ impl LspServer {
             return None;
         };
 
-        let mut locations = Vec::with_capacity(occurrences.len());
+        let mut locations = Vec::with_capacity(occurrences.len() + 1);
         for occurrence in occurrences {
             let wire_location =
                 workspace_index.semantic_anchor_wire_location(occurrence.anchor_id)?;
             let location: lsp_types::Location = wire_location.into();
             locations.push(serde_json::to_value(location).ok()?);
+        }
+
+        // Include the declaration location when requested, deduped against the
+        // reference set already collected above.
+        if include_declaration {
+            if let Some(anchor_id) = decl_anchor {
+                if let Some(wire_location) =
+                    workspace_index.semantic_anchor_wire_location(anchor_id)
+                {
+                    let decl_location: lsp_types::Location = wire_location.into();
+                    let decl_value = serde_json::to_value(&decl_location).ok()?;
+                    if !locations.iter().any(|loc| loc == &decl_value) {
+                        locations.push(decl_value);
+                    }
+                }
+            }
         }
 
         if locations.is_empty() { None } else { Some(locations) }
@@ -975,11 +1059,13 @@ impl LspServer {
                                 &symbol,
                                 entity_id,
                             );
-                            let live_cutover = !include_declaration
-                                && matches!(outcome.result, ReferencesCutoverResult::Exact(_));
+                            let live_cutover =
+                                matches!(outcome.result, ReferencesCutoverResult::Exact(_));
                             let mut receipt = outcome.receipt;
                             let compiler_result_count = receipt.new_result.match_count;
-                            let behavior_note = if live_cutover {
+                            let behavior_note = if live_cutover && include_declaration {
+                                "partial live exact/imported references cutover (includeDeclaration=true)"
+                            } else if live_cutover {
                                 "partial live exact/imported references cutover"
                             } else {
                                 "legacy fallback"
