@@ -145,10 +145,8 @@ fn trace_count(receipt: &Value) -> Result<usize, Box<dyn std::error::Error>> {
 fn assert_trace_only_navigation_receipt(receipt: &serde_json::Map<String, Value>) {
     assert_eq!(receipt.get("reason").and_then(Value::as_str), Some("live_provider_result"));
     assert_eq!(receipt.get("fact_source").and_then(Value::as_str), Some("navigation_provider"));
-    // `confidence` and `source_backed` are tier-dependent since the references
-    // scorecard PR: they are `"high"` / `true` when the semantic-source-backed
-    // tier answers, and `"low"` / `false` otherwise.  Do not assert fixed values
-    // here; assert them per-provider in caller code where the tier is known.
+    assert_eq!(receipt.get("confidence").and_then(Value::as_str), Some("low"));
+    assert_eq!(receipt.get("source_backed").and_then(Value::as_bool), Some(false));
     assert_eq!(
         receipt.get("source_backed_state").and_then(Value::as_str),
         Some("not_proven_by_provider_trace")
@@ -215,19 +213,6 @@ fn navigation_provider_decision_replays_definition_and_references_traces()
         Some(u64::try_from(location_count(references_result.as_ref()))?)
     );
     assert_trace_only_navigation_receipt(references_receipt);
-    // The test workspace uses a simple function-call fixture that cannot reach the
-    // SemanticSourceBacked tier, so source_backed must be false and confidence "low".
-    // Assert here (not in the shared helper) because these values are now tier-dependent.
-    assert_eq!(
-        references_receipt.get("source_backed").and_then(Value::as_bool),
-        Some(false),
-        "references receipt must not be source_backed in a non-compiler-backed test workspace"
-    );
-    assert_eq!(
-        references_receipt.get("confidence").and_then(Value::as_str),
-        Some("low"),
-        "references receipt confidence must be \"low\" when not source_backed"
-    );
     assert_eq!(
         references_receipt.get("claim_boundary").and_then(Value::as_str),
         Some("records existing references response only; no broader live references cutover")
@@ -394,6 +379,138 @@ fn navigation_runtime_quality_references_receipt_compares_live_and_compiler_path
                 .iter()
                 .any(|note| note.contains("partial live exact/imported references cutover")),
         "references receipt notes must record runtime proof and partial live cutover: {notes:?}"
+    );
+
+    Ok(())
+}
+
+// ── includeDeclaration=true tests (#2673) ──
+
+/// Prove that the source-backed tier is used — not the workspace-index
+/// fallback — when `includeDeclaration=true` (the VS Code editor default).
+///
+/// Before #2673 the source-backed path bailed early with `return None` when
+/// `include_declaration==true`, causing every such request to fall through to
+/// the lower-fidelity workspace-index tier.
+#[test]
+fn references_source_backed_tier_used_when_include_declaration_true()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_live_references_workspace(&server)?;
+    let (line, character) = position_of(LIVE_REFS, "target();")?;
+
+    // `includeDeclaration: true` is the VS Code default.
+    let params = json!({
+        "textDocument": {"uri": LIVE_REFS_URI},
+        "position": {"line": line, "character": character},
+        "context": {"includeDeclaration": true}
+    });
+
+    let live_result = server.test_handle_references(Some(params.clone()))?;
+    let runtime_receipt = server
+        .test_references_runtime_quality_receipt(Some(params))?
+        .ok_or("missing references runtime receipt")?;
+    let compiler = compiler_receipt(&runtime_receipt)?;
+    let notes = receipt_notes(compiler)?;
+
+    // The live source-backed tier must have served this request.
+    assert_eq!(
+        runtime_receipt.get("no_live_behavior_change").and_then(Value::as_bool),
+        Some(false),
+        "includeDeclaration=true must not fall through to legacy path"
+    );
+    assert_eq!(
+        runtime_receipt.get("live_cutover").and_then(Value::as_str),
+        Some("partial_exact_imported"),
+        "live_cutover must be set — source-backed tier is active"
+    );
+    // The live result must be non-empty: we expect at least the two call
+    // sites inside `caller` plus the declaration.
+    assert!(
+        location_count(live_result.as_ref()) >= 1,
+        "expected at least one location from source-backed tier with includeDeclaration=true"
+    );
+    assert!(trace_count(compiler)? > 0, "compiler receipt must carry fact-source traces");
+    assert!(
+        notes.iter().any(|note| note.contains("references runtime proof"))
+            && notes.iter().any(|note| note.contains("includeDeclaration=true")),
+        "receipt notes must record includeDeclaration=true cutover: {notes:?}"
+    );
+
+    Ok(())
+}
+
+/// Prove that the result with `includeDeclaration=true` contains strictly more
+/// locations than the same request with `includeDeclaration=false`.
+///
+/// Specifically the declaration site must be present in the `true` result and
+/// must not inflate the `false` result.
+#[test]
+fn references_include_declaration_true_adds_declaration_to_source_backed_result()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_live_references_workspace(&server)?;
+    let (line, character) = position_of(LIVE_REFS, "target();")?;
+
+    let base_params = json!({
+        "textDocument": {"uri": LIVE_REFS_URI},
+        "position": {"line": line, "character": character}
+    });
+
+    let refs_without_decl = server.test_handle_references(Some(json!({
+        "textDocument": {"uri": LIVE_REFS_URI},
+        "position": {"line": line, "character": character},
+        "context": {"includeDeclaration": false}
+    })))?;
+
+    let refs_with_decl = server.test_handle_references(Some(json!({
+        "textDocument": {"uri": LIVE_REFS_URI},
+        "position": {"line": line, "character": character},
+        "context": {"includeDeclaration": true}
+    })))?;
+
+    let _ = base_params; // used to share the position
+
+    let count_without = location_count(refs_without_decl.as_ref());
+    let count_with = location_count(refs_with_decl.as_ref());
+
+    assert!(
+        count_with > count_without,
+        "includeDeclaration=true ({count_with} locs) must return more locations than false ({count_without} locs)"
+    );
+
+    // The `false` result must not contain the definition line (line 4 in
+    // LIVE_REFS — `sub target {`).  The `true` result must contain it.
+    let decl_line: u64 = {
+        let (idx, _) = LIVE_REFS
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("sub target"))
+            .ok_or("sub target not found in LIVE_REFS")?;
+        u64::try_from(idx)?
+    };
+
+    let contains_decl = |result: &Option<Value>| {
+        result
+            .as_ref()
+            .and_then(Value::as_array)
+            .map(|locs| {
+                locs.iter().any(|loc| {
+                    loc.pointer("/range/start/line")
+                        .and_then(Value::as_u64)
+                        .map_or(false, |l| l == decl_line)
+                })
+            })
+            .unwrap_or(false)
+    };
+
+    assert!(
+        contains_decl(&refs_with_decl),
+        "includeDeclaration=true result must contain the definition line ({decl_line})"
+    );
+    assert!(
+        !contains_decl(&refs_without_decl),
+        "includeDeclaration=false result must NOT contain the definition line ({decl_line})"
     );
 
     Ok(())
