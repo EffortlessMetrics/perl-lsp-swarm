@@ -1,6 +1,6 @@
 #[cfg(windows)]
 use crate::os_runtime::{
-    resolve_command_invocation, select_path_candidate, windows_program_priority,
+    resolve_cmd_exe, resolve_command_invocation, select_path_candidate, windows_program_priority,
     windows_quote_for_cmd,
 };
 use crate::*;
@@ -99,10 +99,18 @@ fn test_os_runtime_rejects_nul_bytes_in_program_or_args() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_uses_cmd_for_batch_wrappers() {
-    let (program, args) =
-        resolve_command_invocation(r"C:\Strawberry\perl\bin\perltidy.bat", &["-st", "-se"]);
+    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+        r"C:\Strawberry\perl\bin\perltidy.bat",
+        &["-st", "-se"],
+    ));
 
-    assert_eq!(program, "cmd.exe");
+    // The cmd.exe used for batch wrappers is resolved to an ABSOLUTE path —
+    // never the bare "cmd.exe", which CreateProcess would search CWD-first.
+    assert!(
+        std::path::Path::new(&program).is_absolute()
+            && program.to_ascii_lowercase().ends_with("cmd.exe"),
+        "batch wrapper must run via an absolute cmd.exe path, not a bare name; got: {program}"
+    );
     assert_eq!(
         args,
         vec![
@@ -180,10 +188,16 @@ fn test_windows_quote_for_cmd_injection_attempt_is_inert() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_includes_v_off_flag() {
-    let (program, args) =
-        resolve_command_invocation(r"C:\tools\perlcritic.bat", &["--profile=!TEMP!"]);
+    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+        r"C:\tools\perlcritic.bat",
+        &["--profile=!TEMP!"],
+    ));
 
-    assert_eq!(program, "cmd.exe");
+    assert!(
+        std::path::Path::new(&program).is_absolute()
+            && program.to_ascii_lowercase().ends_with("cmd.exe"),
+        "batch wrapper must run via an absolute cmd.exe path; got: {program}"
+    );
     assert!(
         args.contains(&"/V:OFF".to_string()),
         "/V:OFF must be present to disable delayed expansion; got: {:?}",
@@ -194,7 +208,10 @@ fn test_resolve_command_invocation_includes_v_off_flag() {
 #[cfg(windows)]
 #[test]
 fn test_resolve_command_invocation_preserves_executable_paths() {
-    let (program, args) = resolve_command_invocation(r"C:\tools\perlcritic.exe", &["--version"]);
+    let (program, args) = perl_tdd_support::must(resolve_command_invocation(
+        r"C:\tools\perlcritic.exe",
+        &["--version"],
+    ));
 
     assert_eq!(program, r"C:\tools\perlcritic.exe");
     assert_eq!(args, vec!["--version".to_string()]);
@@ -426,5 +443,107 @@ fn test_select_path_candidate_extensioned_bare_cwd_only_returns_none() {
     assert!(
         result.is_none(),
         "extensioned bare name not on PATH must return None, not execute CWD binary; got: {result:?}"
+    );
+}
+
+// --- Caller-chain fail-closed regression (the seam the selector tests miss) ---
+//
+// Every test above exercises `select_path_candidate` — the pure SELECTOR.  None
+// drives the actual invocation chain, which is exactly where the live RCE
+// survived: the selector correctly returned `None` for a not-on-PATH tool, but
+// the caller's old `resolve_windows_program(program).unwrap_or_else(|| program
+// .to_string())` restored the bare name → `Command::new(bare)` → CWD search.
+// These tests drive `resolve_command_invocation` and the real `run_command`
+// entry point so the caller can never silently re-arm the bypass.
+
+/// Caller fail-closed: a bare tool name not present on PATH must return an
+/// error, NOT a `(bare_name, args)` invocation that `Command::new` would resolve
+/// against the current working directory.
+#[cfg(windows)]
+#[test]
+fn test_resolve_command_invocation_fails_closed_when_tool_not_on_path() {
+    let result = resolve_command_invocation("definitely_not_a_real_tool_zzz_2764", &["--version"]);
+    assert!(
+        result.is_err(),
+        "an unresolved bare tool name must fail closed, not return a bare-name invocation; got: {result:?}"
+    );
+    let err = result.expect_err("must be Err");
+    assert!(
+        err.message.contains("current directory excluded"),
+        "error must explain the CWD-exclusion security refusal; got: {}",
+        err.message
+    );
+}
+
+/// `resolve_cmd_exe` must yield an ABSOLUTE path ending in `cmd.exe` — never the
+/// bare name, which would itself be subject to the CWD-first CreateProcess
+/// search.
+#[cfg(windows)]
+#[test]
+fn test_resolve_cmd_exe_returns_absolute_path_never_bare() {
+    let resolved = resolve_cmd_exe().expect("cmd.exe must resolve on a Windows test host");
+    assert!(
+        std::path::Path::new(&resolved).is_absolute(),
+        "cmd.exe must resolve to an absolute path, never the bare name; got: {resolved}"
+    );
+    assert!(
+        resolved.to_ascii_lowercase().ends_with("cmd.exe"),
+        "resolved shell must be cmd.exe; got: {resolved}"
+    );
+    assert_ne!(
+        resolved.to_ascii_lowercase(),
+        "cmd.exe",
+        "must not be the bare CWD-searchable name"
+    );
+}
+
+/// Full-chain RCE regression: drive the real `run_command` entry point with a
+/// bare name that is NOT on PATH while a same-named batch file is planted in the
+/// current working directory.  The old fail-open caller would have executed the
+/// planted file via `cmd.exe /C "pwned.bat"` (CWD-resolved); the fixed chain
+/// must fail closed and leave the marker absent.  Serialized because it mutates
+/// the process-global CWD.
+#[cfg(windows)]
+#[test]
+fn test_run_command_does_not_execute_planted_cwd_binary() {
+    use std::io::Write as _;
+    use std::sync::Mutex;
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = CWD_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+
+    let unique = format!("rce_chain_{}", std::process::id());
+    let workspace = std::env::temp_dir().join(unique);
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("create temp workspace");
+
+    let marker = workspace.join("PWNED_MARKER.txt");
+    let planted = workspace.join("pwned.bat");
+    {
+        let mut f = std::fs::File::create(&planted).expect("write planted .bat");
+        writeln!(f, "@echo off").expect("write bat line");
+        // Absolute marker path so execution is detectable regardless of CWD.
+        writeln!(f, "echo pwned> \"{}\"", marker.display()).expect("write bat line");
+    }
+
+    let original_cwd = std::env::current_dir().expect("capture original cwd");
+    std::env::set_current_dir(&workspace).expect("enter temp workspace");
+
+    let runtime = OsSubprocessRuntime::new();
+    let result = runtime.run_command("pwned.bat", &[], None);
+
+    // Restore CWD before asserting so a failure cannot leave the suite in the
+    // temp directory.
+    std::env::set_current_dir(&original_cwd).expect("restore original cwd");
+
+    let marker_exists = marker.exists();
+    let _ = std::fs::remove_dir_all(&workspace);
+
+    assert!(
+        result.is_err(),
+        "a not-on-PATH bare name must fail closed at the chain entry; got: {result:?}"
+    );
+    assert!(
+        !marker_exists,
+        "SECURITY: planted CWD batch file was EXECUTED through run_command — the RCE is live"
     );
 }

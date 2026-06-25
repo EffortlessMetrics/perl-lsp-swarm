@@ -196,3 +196,37 @@ pub(crate) fn windows_requires_cmd_shell(program: &str) -> bool {
         .map(|ext| ext.eq_ignore_ascii_case("bat") || ext.eq_ignore_ascii_case("cmd"))
         .unwrap_or(false)
 }
+
+/// Resolve the absolute path to `cmd.exe`, used to execute `.bat`/`.cmd`
+/// wrappers.
+///
+/// # Security invariant
+///
+/// Never returns the bare string `"cmd.exe"`.  `Command::new("cmd.exe")` would
+/// let CreateProcess perform its CWD-first executable search, so a `cmd.exe`
+/// planted in the LSP workspace root could hijack *every* batch-wrapper
+/// invocation — the same binary-planting RCE that the PATH-only program search
+/// closes for the tool itself.  Only an absolute, existing file under
+/// `%SystemRoot%\System32` (canonical) or `%ComSpec%` (standard pointer) is
+/// accepted; otherwise `None` (fail closed — refusing to run is safer than
+/// running a planted shell).  Neither source is attacker-controlled in the
+/// threat model (the attacker controls workspace files / CWD, not the user's
+/// environment), but both are still required to be absolute existing files so a
+/// misconfiguration cannot reintroduce a relative lookup.
+pub(crate) fn resolve_cmd_exe() -> Option<String> {
+    // Canonical location first: %SystemRoot%\System32\cmd.exe.
+    if let Some(system_root) = std::env::var_os("SystemRoot") {
+        let candidate = Path::new(&system_root).join("System32").join("cmd.exe");
+        if candidate.is_absolute() && candidate.is_file() {
+            return candidate.to_str().map(str::to_string);
+        }
+    }
+    // Fallback: %ComSpec%, accepted only when it is itself an absolute file.
+    if let Some(comspec) = std::env::var_os("ComSpec") {
+        let candidate = Path::new(&comspec);
+        if candidate.is_absolute() && candidate.is_file() {
+            return candidate.to_str().map(str::to_string);
+        }
+    }
+    None
+}
