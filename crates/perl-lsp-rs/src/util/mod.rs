@@ -716,6 +716,25 @@ mod tests {
     }
 
     #[test]
+    fn read_text_file_with_encoding_reads_latin1_without_panic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::read_text_file_with_encoding;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("legacy_latin1.pm");
+        // "café" in Latin-1: 'é' is byte 0xE9, which is invalid UTF-8.
+        std::fs::write(&path, b"# caf\xE9\npackage Legacy;\n1;\n")?;
+
+        let text = read_text_file_with_encoding(&path)?;
+        // The 0xE9 byte decodes to U+00E9 ('é') via the Latin-1 path.
+        assert!(
+            text.contains('é'),
+            "Latin-1 'é' byte must survive as U+00E9, not a replacement char"
+        );
+        assert!(text.contains("package Legacy;"), "rest of file must decode cleanly");
+        Ok(())
+    }
+
+    #[test]
     fn decode_text_bytes_supports_utf16_le_bom() {
         let bytes = [0xFF, 0xFE, b'P', 0x00, b'e', 0x00, b'r', 0x00, b'l', 0x00];
         assert_eq!(decode_text_bytes(&bytes), "Perl");

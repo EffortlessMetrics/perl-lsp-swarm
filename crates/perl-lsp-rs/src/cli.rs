@@ -143,7 +143,7 @@ fn render_shell_completion(script: &str, command_name: &str) -> String {
 }
 
 fn run_perltidy_compat_report(profile: &str) -> i32 {
-    let raw = match std::fs::read_to_string(profile) {
+    let raw = match crate::util::read_text_file_with_encoding(Path::new(profile)) {
         Ok(raw) => raw,
         Err(error) => {
             eprintln!("{profile}: error reading perltidy profile: {error}");
@@ -157,7 +157,7 @@ fn run_perltidy_compat_report(profile: &str) -> i32 {
 }
 
 fn run_perlcritic_compat_report(profile: &str) -> i32 {
-    let raw = match std::fs::read_to_string(profile) {
+    let raw = match crate::util::read_text_file_with_encoding(Path::new(profile)) {
         Ok(raw) => raw,
         Err(error) => {
             eprintln!("{profile}: error reading perlcritic profile: {error}");
@@ -458,7 +458,7 @@ fn run_check(command_name: &str, files: &[String]) -> i32 {
 
     for path in files {
         total += 1;
-        let source = match std::fs::read_to_string(path) {
+        let source = match crate::util::read_text_file_with_encoding(Path::new(path)) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{path}: error reading file: {e}");

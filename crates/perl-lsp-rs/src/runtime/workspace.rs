@@ -41,8 +41,6 @@ use url::Url;
 
 #[cfg(feature = "workspace")]
 mod configuration_response;
-#[cfg(feature = "workspace")]
-mod text_decode;
 
 const WORKSPACE_CONFIGURATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -107,11 +105,11 @@ fn is_permission_denied_error(e: &std::io::Error) -> bool {
 }
 
 #[cfg(feature = "workspace")]
-use text_decode::read_text_with_encoding_fallback;
+use crate::util::read_text_file_with_encoding;
 
 #[cfg(feature = "workspace")]
 fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
-    uri_to_fs_path(uri).and_then(|path| match read_text_with_encoding_fallback(&path) {
+    uri_to_fs_path(uri).and_then(|path| match read_text_file_with_encoding(&path) {
         Ok(content) => Some(content),
         Err(e) => {
             tracing::debug!("Failed to read file for {} ({}): {}", purpose, path.display(), e);
@@ -1488,7 +1486,7 @@ impl LspServer {
                         let workspace_index = coordinator.index();
                         workspace_index.remove_file(old_uri);
                         if let Some(path) = uri_to_fs_path(new_uri) {
-                            if let Ok(content) = read_text_with_encoding_fallback(&path) {
+                            if let Ok(content) = read_text_file_with_encoding(&path) {
                                 if let Ok(url) = url::Url::parse(new_uri) {
                                     if let Err(e) = workspace_index.index_file(url, content.clone())
                                     {
@@ -1734,7 +1732,7 @@ impl LspServer {
                     if let Some(coordinator) = self.coordinator() {
                         if is_perl_source_uri(uri) {
                             if let Some(path) = uri_to_fs_path(uri) {
-                                match read_text_with_encoding_fallback(&path) {
+                                match read_text_file_with_encoding(&path) {
                                     Ok(content) => {
                                         coordinator.notify_change(uri);
                                         if let Ok(url) = url::Url::parse(uri) {
@@ -1807,7 +1805,7 @@ impl LspServer {
                         // Index new file if it's a Perl file
                         if is_perl_source_uri(new_uri) {
                             if let Some(path) = uri_to_fs_path(new_uri) {
-                                match read_text_with_encoding_fallback(&path) {
+                                match read_text_file_with_encoding(&path) {
                                     Ok(content) => {
                                         if let Ok(url) = url::Url::parse(new_uri) {
                                             match coordinator.index().index_file(url, content) {
@@ -2052,7 +2050,7 @@ impl LspServer {
                     break;
                 }
 
-                let content = match read_text_with_encoding_fallback(&path) {
+                let content = match read_text_file_with_encoding(&path) {
                     Ok(c) => c,
                     Err(e) => {
                         if is_permission_denied_error(&e) {
@@ -2431,7 +2429,7 @@ impl LspServer {
         // (the client requests cross-file edits and applies them).  This path
         // is restricted to workspace-root-relative paths by the caller and is
         // bounded to files that `find_dependents` already knows about.
-        uri_to_fs_path(uri).and_then(|path| read_text_with_encoding_fallback(&path).ok())
+        uri_to_fs_path(uri).and_then(|path| read_text_file_with_encoding(&path).ok())
     }
 }
 
@@ -2646,9 +2644,9 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "workspace")]
-    use super::read_text_with_encoding_fallback;
     use super::{LspServer, module_name_appears_in_text};
+    #[cfg(feature = "workspace")]
+    use crate::util::read_text_file_with_encoding;
     use serde_json::json;
     #[cfg(feature = "workspace")]
     use std::io::Write;
@@ -3046,8 +3044,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_decodes_utf16le_bom()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_file_with_encoding_decodes_utf16le_bom() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("utf16le.pm");
         let text = "my $x = \"π\";";
@@ -3057,40 +3055,39 @@ mod tests {
         }
         std::fs::File::create(&path)?.write_all(&bytes)?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, text);
         Ok(())
     }
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_strips_utf8_bom() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn read_text_file_with_encoding_strips_utf8_bom() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("utf8_bom.pm");
         std::fs::write(&path, [0xEF, 0xBB, 0xBF, b'p', b'a', b'c', b'k', b'a', b'g', b'e'])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, "package");
         Ok(())
     }
 
     /// Regression: a UTF-16 LE BOM followed by an odd number of payload
-    /// bytes must not panic or silently truncate. We fall back to lossy
-    /// UTF-8 of the original bytes so the caller still gets something
-    /// reasonable to index.
+    /// bytes must not panic or silently truncate. We fall back to Latin-1
+    /// byte-to-char mapping of the original bytes so the caller still gets
+    /// something reasonable to index.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16le()
+    fn read_text_file_with_encoding_handles_odd_length_utf16le()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16le.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
         std::fs::write(&path, [0xFF, 0xFE, 0x6D, 0x00, 0x79])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
-        // Must return something (not panic) — the replacement string is
-        // lossy but deterministic.
+        let read = read_text_file_with_encoding(&path)?;
+        // Must return something (not panic) — falls back to Latin-1
+        // byte-to-char mapping, which is deterministic.
         assert!(!read.is_empty());
         Ok(())
     }
@@ -3099,14 +3096,14 @@ mod tests {
     /// bytes must not panic or silently truncate.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16be()
+    fn read_text_file_with_encoding_handles_odd_length_utf16be()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16be.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
         std::fs::write(&path, [0xFE, 0xFF, 0x00, 0x6D, 0x00])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert!(!read.is_empty());
         Ok(())
     }
@@ -3114,13 +3111,12 @@ mod tests {
     /// Edge case: empty file should decode to an empty string without panic.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_empty_file()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_file_with_encoding_handles_empty_file() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("empty.pm");
         std::fs::write(&path, [])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, "", "Empty file should decode to empty string");
         Ok(())
     }
@@ -3129,13 +3125,13 @@ mod tests {
     /// to an empty string (BOM is stripped, nothing remains).
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_bom_only_file()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_file_with_encoding_handles_bom_only_file() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("bom_only.pm");
         std::fs::write(&path, [0xEF, 0xBB, 0xBF])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, "", "BOM-only file should decode to empty string after BOM strip");
         Ok(())
     }
