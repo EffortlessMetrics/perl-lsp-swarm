@@ -15,16 +15,18 @@ fi
 # system directory. Subpath deletes (e.g. `rm -rf /tmp/foo`, `rm -rf /home/user/proj/target`)
 # are allowed — the previous bare `rm -rf /` substring match blocked every absolute path.
 # Matched: `rm -rf /`, `rm -rf /*`, `rm -rf /etc`, `rm -rf /home/`, `rm -rf /usr/*`,
-#          `rm -rf /tmp`, `rm -rf /tmp/*` (whole shared-temp wipe removes active build
-#          files/sockets in container sessions — per Codex review on PR #1952),
+#          `rm -rf /run`, `rm -rf /tmp`, `rm -rf /tmp/*` (whole shared-temp wipe removes
+#          active build files/sockets in container sessions — per Codex review on PR #1952),
 #          separator-terminated forms `rm -rf /etc;`, `rm -rf /etc&`, `rm -rf /etc||`,
 #          and a dangerous dir at ANY argument position, e.g. `rm -rf /home/foo /etc`
 #          (both per factory-droid review on PR #1952).
 # Not matched: `rm -rf /tmp/x`, `rm -rf /home/user/...`, `rm -rf ./target`, `rm -rf /etc-backup`.
+# The dir alternation covers the FHS / common-Linux top-levels the old substring match used
+# to block (incl. /run, /media, /libexec, /snap — added per factory-droid review on PR #1952).
 # The `([^ ]+ +)*` prefix lets any earlier whitespace-delimited argument be skipped so the
 # dangerous dir is found wherever it appears; the trailing class (whitespace, EOL, or a
 # shell separator ; & | < >) ensures only a *whole* dir is matched, not a deeper subpath.
-if echo "$CMD" | grep -qE 'rm +([^ ]+ +)*/(\*?|(bin|boot|dev|etc|home|lib|lib64|opt|proc|root|sbin|srv|sys|tmp|usr|var|mnt)/?\*?)([[:space:];&|<>]|$)'; then
+if echo "$CMD" | grep -qE 'rm +([^ ]+ +)*/(\*?|(bin|boot|dev|etc|home|lib|lib32|lib64|libexec|media|mnt|opt|proc|root|run|sbin|snap|srv|sys|tmp|usr|var)/?\*?)([[:space:];&|<>]|$)'; then
   echo "Blocked: refusing to recursively delete the filesystem root or a whole system directory." >&2
   echo "Deleting a specific subpath (e.g. /tmp/foo, ./target) is allowed." >&2
   exit 2
