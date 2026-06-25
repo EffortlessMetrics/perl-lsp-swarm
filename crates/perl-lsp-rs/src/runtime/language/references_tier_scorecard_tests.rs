@@ -172,20 +172,23 @@ use warnings;
     // Each helper sets pub(crate) `index_coordinator` directly — Placement A.
     // No new public or pub(crate) method is added to LspServer.
     //
-    // IMPORTANT: these helpers must be called AFTER `open_document`.
+    // ALL helpers MUST be called AFTER `open_document` to avoid the following
+    // auto-promotion: when a unit test has no tokio runtime, `handle_did_open`
+    // (text_sync.rs:296) runs synchronously and calls `transition_to_ready()` if
+    // the coordinator is in `Building { phase: Idle }` state.  `IndexCoordinator::
+    // new()` initialises to exactly that state, so calling `set_index_building`
+    // BEFORE open would immediately promote to Ready.  Applying state AFTER open
+    // bypasses this auto-promotion.
     //
-    // When a unit test has no tokio runtime, `handle_did_open` (text_sync.rs:296)
-    // runs synchronously and calls `transition_to_ready()` if the coordinator is
-    // in `Building { phase: Idle }` state.  `IndexCoordinator::new()` initialises
-    // to exactly that state.  So calling `set_index_building` BEFORE `open_document`
-    // would immediately promote the coordinator to Ready, giving `observed_state =
-    // "full"` instead of "partial".  Setting state AFTER `open_document` bypasses
-    // this auto-promotion and gives the handlers a genuine Partial-access coordinator.
+    // For "full" scenarios the natural did_open auto-promotion already produces the
+    // desired state (Ready + document indexed in workspace), so `set_index_ready` is
+    // a no-op — replacing the coordinator would discard the indexed document and
+    // prevent `workspace_mixed` from firing.
     //
-    // State → IndexAccessMode → receipt `index_state` mapping (when applied post-open):
-    //   set_index_ready()    → IndexState::Ready    → Full    → "full"
-    //   set_index_building() → IndexState::Building → Partial → "partial"
-    //   set_index_none()     → None coordinator     → None    → "none"
+    // State → IndexAccessMode → receipt `index_state` mapping (applied post-open):
+    //   set_index_ready()    → already Ready (no-op)  → Full    → "full"
+    //   set_index_building() → fresh Building coord   → Partial → "partial"
+    //   set_index_none()     → removes coordinator    → None    → "none"
     // ---------------------------------------------------------------------------
 
     fn set_index_none(server: &mut LspServer) {
@@ -195,16 +198,24 @@ use warnings;
     }
 
     fn set_index_building(server: &mut LspServer) {
-        // Replaces the coordinator with a fresh Building coordinator AFTER open.
-        // The fresh coordinator has not yet had transition_to_ready called on it,
-        // so route_index_access will return Partial and the receipt will be "partial".
+        // Replaces the coordinator with a fresh Building coordinator.
+        // Called AFTER open_document: did_open already promoted the original
+        // coordinator to Ready, so this replacement gives the handler a genuine
+        // Partial-access coordinator while the document text is still in the store.
         server.index_coordinator = Some(Arc::new(IndexCoordinator::new()));
     }
 
-    fn set_index_ready(server: &mut LspServer) {
-        let coordinator = Arc::new(IndexCoordinator::new());
-        coordinator.transition_to_ready(3, 3);
-        server.index_coordinator = Some(coordinator);
+    fn set_index_ready(_server: &mut LspServer) {
+        // No-op when called after `open_document` in a unit-test environment.
+        //
+        // In unit tests (no tokio runtime) did_open runs synchronously and calls
+        // `transition_to_ready()` on the server's coordinator (text_sync.rs:296),
+        // leaving it in `IndexState::Ready` with the document already indexed.
+        // Replacing the coordinator here would discard those index facts and prevent
+        // `workspace_mixed` from firing (the fresh coordinator's index is empty).
+        //
+        // The coordinator is already Ready: this function exists only to document the
+        // "full" intent and provide a consistent apply-state signature for the loop.
     }
 
     /// Map an intended label to the expected receipt `index_state` value.
