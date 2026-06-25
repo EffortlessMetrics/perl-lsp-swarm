@@ -12,7 +12,7 @@ use process::run_os_command;
 use crate::{SubprocessError, SubprocessOutput, SubprocessRuntime};
 
 #[cfg(all(windows, test))]
-pub(crate) use windows::{windows_program_priority, windows_quote_for_cmd};
+pub(crate) use windows::{select_path_candidate, windows_program_priority, windows_quote_for_cmd};
 
 /// Default implementation using `std::process::Command`.
 pub struct OsSubprocessRuntime {

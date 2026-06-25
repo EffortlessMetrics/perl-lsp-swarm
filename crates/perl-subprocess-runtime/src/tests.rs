@@ -1,6 +1,7 @@
 #[cfg(windows)]
 use crate::os_runtime::{
-    resolve_command_invocation, windows_program_priority, windows_quote_for_cmd,
+    resolve_command_invocation, select_path_candidate, windows_program_priority,
+    windows_quote_for_cmd,
 };
 use crate::*;
 
@@ -269,4 +270,75 @@ fn test_subprocess_error_usable_as_std_error_trait_object() {
     let dyn_error: &dyn std::error::Error = &error;
     assert_eq!(dyn_error.to_string(), "disk full");
     assert!(dyn_error.source().is_none(), "leaf error has no source");
+}
+
+// --- Windows binary-planting RCE regression (CWD exclusion) ---
+//
+// These tests use `select_path_candidate`, the pure inner function of
+// `resolve_windows_program`, so they run on any OS and require no real PATH
+// or file system setup.  They validate the security invariant: a binary
+// located in the current working directory must NEVER be selected for a
+// bare-name tool resolution, even when it has a higher-priority extension.
+
+/// RCE regression: a planted `perltidy.exe` in the CWD must not be selected
+/// when a legitimate `perltidy.exe` exists on PATH.
+#[cfg(windows)]
+#[test]
+fn test_select_path_candidate_planted_cwd_binary_is_rejected_in_favor_of_path() {
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[
+        r"C:\Users\user\project\perltidy.exe", // planted — must be excluded
+        r"C:\Strawberry\perl\bin\perltidy.exe", // legitimate PATH install
+    ];
+    let result = select_path_candidate(candidates, &cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        "planted CWD binary must not be selected; legitimate PATH binary must win"
+    );
+}
+
+/// Security invariant: when the only candidate is under the CWD, resolve to
+/// `None` rather than executing a planted binary.
+#[cfg(windows)]
+#[test]
+fn test_select_path_candidate_cwd_only_returns_none() {
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\untrusted-workspace");
+    let candidates = &[r"C:\Users\user\untrusted-workspace\perltidy.exe"];
+    let result = select_path_candidate(candidates, &cwd);
+    assert!(
+        result.is_none(),
+        "a planted-only candidate list must return None, not execute the planted binary; got: {result:?}"
+    );
+}
+
+/// Baseline: a candidate on a real PATH directory (not CWD) resolves correctly.
+#[cfg(windows)]
+#[test]
+fn test_select_path_candidate_legitimate_path_binary_resolves() {
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[r"C:\Strawberry\perl\bin\perltidy.exe"];
+    let result = select_path_candidate(candidates, &cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        "a legitimate PATH binary must resolve when CWD is different"
+    );
+}
+
+/// Extension priority: among PATH candidates, `.exe` must beat `.bat`.
+/// The CWD exclusion must not disturb the priority ordering among safe
+/// candidates.
+#[cfg(windows)]
+#[test]
+fn test_select_path_candidate_extension_priority_preserved_among_path_candidates() {
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates =
+        &[r"C:\Strawberry\perl\bin\perltidy.bat", r"C:\Strawberry\perl\bin\perltidy.exe"];
+    let result = select_path_candidate(candidates, &cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        ".exe must beat .bat in extension priority ordering"
+    );
 }
