@@ -1,7 +1,10 @@
+// `select_path_candidate` and `candidate_priority` are cross-platform and
+// exported for test use on all platforms.  Import them unconditionally so the
+// ripr quality gate can observe call paths to these seams on Linux CI runners.
+use crate::os_runtime::{candidate_priority, select_path_candidate};
 #[cfg(windows)]
 use crate::os_runtime::{
-    resolve_cmd_exe, resolve_command_invocation, select_path_candidate, windows_program_priority,
-    windows_quote_for_cmd,
+    resolve_cmd_exe, resolve_command_invocation, windows_program_priority, windows_quote_for_cmd,
 };
 use crate::*;
 
@@ -287,6 +290,81 @@ fn test_subprocess_error_usable_as_std_error_trait_object() {
     let dyn_error: &dyn std::error::Error = &error;
     assert_eq!(dyn_error.to_string(), "disk full");
     assert!(dyn_error.source().is_none(), "leaf error has no source");
+}
+
+// --- CWD-exclusion security invariant: cross-platform call-observation tests ---
+//
+// `select_path_candidate` and `candidate_priority` are pure functions that use
+// only cross-platform APIs (`Path::is_absolute`, `std::fs::canonicalize`,
+// `Path::parent`).  These tests exercise the security-critical seams on ALL
+// platforms — including Linux CI — so the ripr quality gate can observe the
+// call paths without requiring a Windows runner.
+//
+// The tests use POSIX-absolute paths (`/usr/bin/perltidy`) on non-Windows and
+// Windows-absolute paths (`C:\tools\perltidy.exe`) on Windows.  The underlying
+// logic is identical on both; only the path syntax differs.
+
+/// Layer 1 — absolute check: a relative candidate is always rejected, returning
+/// `None`.  This pins the `!Path::new(c).is_absolute() { return false; }` seam.
+#[test]
+fn test_select_path_candidate_rejects_relative_candidates_on_all_platforms() {
+    let cwd = std::path::PathBuf::from(std::env::temp_dir());
+    let candidates = &["relative_tool"];
+    let result = select_path_candidate(candidates, &cwd);
+    assert!(
+        result.is_none(),
+        "a relative candidate must be rejected on all platforms; got: {result:?}"
+    );
+}
+
+/// Layer 1 — empty list: no candidates means `None` (tool not found, fail closed).
+#[test]
+fn test_select_path_candidate_empty_candidates_returns_none() {
+    let cwd = std::env::temp_dir();
+    let result = select_path_candidate(&[], &cwd);
+    assert!(result.is_none(), "empty candidate list must return None; got: {result:?}");
+}
+
+/// Layer 2 — CWD exclusion: a candidate whose parent is the CWD is rejected.
+///
+/// Uses a synthetic non-existent path so no real file system lookup is needed.
+/// When `canonicalize` fails for a non-existent dir the function falls back to
+/// raw path comparison, which is sufficient for this layer-2 proof.
+#[test]
+fn test_select_path_candidate_cwd_parent_candidate_rejected() {
+    // Build a fake CWD using the real temp dir so the absolute-path check passes,
+    // then construct a candidate whose parent IS that CWD.
+    let cwd = std::env::temp_dir();
+    // Construct a candidate path that has `cwd` as its parent directory.
+    let candidate = cwd.join("planted_tool");
+    let candidate_str = candidate.to_string_lossy().to_string();
+    let candidate_refs: Vec<&str> = vec![candidate_str.as_str()];
+    let result = select_path_candidate(&candidate_refs, &cwd);
+    // The candidate's parent == cwd, so it must be excluded (Layer 2).
+    assert!(
+        result.is_none(),
+        "a candidate whose parent is the CWD must be rejected; got: {result:?}"
+    );
+}
+
+/// Priority: `candidate_priority` assigns `.exe` > `.com` > `.cmd` > `.bat` >
+/// any other extension > no extension.  Pin all six priority tiers.
+#[test]
+fn test_candidate_priority_ordering_all_tiers() {
+    assert_eq!(candidate_priority("tool.exe"), 5, ".exe must be highest priority");
+    assert_eq!(candidate_priority("tool.com"), 4, ".com must be second");
+    assert_eq!(candidate_priority("tool.cmd"), 3, ".cmd must be third");
+    assert_eq!(candidate_priority("tool.bat"), 2, ".bat must be fourth");
+    assert_eq!(candidate_priority("tool.sh"), 1, "other extension must be fifth");
+    assert_eq!(candidate_priority("tool"), 0, "no extension must be lowest");
+}
+
+/// Priority is case-insensitive: `.EXE` and `.Exe` must score the same as `.exe`.
+#[test]
+fn test_candidate_priority_case_insensitive() {
+    assert_eq!(candidate_priority("tool.EXE"), candidate_priority("tool.exe"));
+    assert_eq!(candidate_priority("tool.BAT"), candidate_priority("tool.bat"));
+    assert_eq!(candidate_priority("tool.CMD"), candidate_priority("tool.cmd"));
 }
 
 // --- Windows binary-planting RCE regression (CWD exclusion) ---
