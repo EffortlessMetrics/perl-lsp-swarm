@@ -41,9 +41,16 @@ pub(crate) fn windows_quote_for_cmd(arg: &str) -> String {
 ///
 /// | Input form | Action |
 /// |---|---|
-/// | Contains `\` or `/` (real path) | Pass through unchanged — caller pre-resolved it |
+/// | Absolute path (`C:\…`, `\\unc\…`) | Pass through unchanged — already resolved |
+/// | Relative path with separator (`.\x.exe`, `sub\x`) | **Fail closed** (`None`) — CWD-relative |
 /// | Bare name, no extension (`perltidy`) | Search PATH dirs × PATHEXT extensions |
 /// | Bare name, with extension (`perltidy.exe`) | Search PATH dirs for that exact filename |
+///
+/// A *relative* path that merely contains a separator (`.\pwned.exe`,
+/// `..\pwned.exe`, `sub\tool`, `/x`, `\tool`) is **not** pre-resolved: Windows
+/// `CreateProcess` resolves it against the process CWD (the LSP workspace root),
+/// so it is the same binary-planting vector as a bare name and must fail closed.
+/// Only an absolute path is treated as a genuinely caller-resolved location.
 ///
 /// Bare names with an extension are **not** passed through unchanged.
 /// `Command::new("perltidy.exe")` would let Windows' CreateProcess CWD search
@@ -60,12 +67,16 @@ pub(crate) fn resolve_windows_program(program: &str) -> Option<String> {
     let program_path = Path::new(program);
     let has_separator = program.contains('\\') || program.contains('/');
 
-    // A name with a path separator is already a resolved path — pass through.
+    // A path-bearing program is treated as caller-resolved ONLY if it is
+    // absolute.  A relative path that merely contains a separator
+    // (".\\pwned.exe", "..\\pwned.exe", "sub\\tool", "/x", "\\tool") is still
+    // resolved by CreateProcess against the CWD (workspace root) — the same
+    // binary-planting vector — so it fails closed here.
     // Note: we do NOT early-return for bare names that happen to carry an
     // extension (e.g. "perltidy.exe").  Such names must go through the
-    // PATH-only search below to prevent CreateProcess CWD lookup.
+    // PATH-only search below to prevent the CreateProcess CWD lookup.
     if has_separator {
-        return Some(program.to_string());
+        return if program_path.is_absolute() { Some(program.to_string()) } else { None };
     }
 
     let has_extension = program_path.extension().is_some();

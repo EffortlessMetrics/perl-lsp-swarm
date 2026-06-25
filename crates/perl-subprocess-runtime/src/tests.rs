@@ -547,3 +547,38 @@ fn test_run_command_does_not_execute_planted_cwd_binary() {
         "SECURITY: planted CWD batch file was EXECUTED through run_command — the RCE is live"
     );
 }
+
+// --- Relative path-with-separator bypass regression ---
+//
+// `resolve_windows_program` passes a program through unchanged when it contains
+// a path separator — but ONLY when it is absolute.  A relative path that merely
+// contains a separator (".\pwned.exe", "..\x", "sub\tool", "/x", "\tool") is
+// still resolved by CreateProcess against the CWD (workspace root), so it must
+// fail closed rather than reach `Command::new`.
+
+/// Each relative path-with-separator form must fail closed at the invocation
+/// resolver — never handed to `Command::new` for a CWD-relative spawn.
+#[cfg(windows)]
+#[test]
+fn test_resolve_command_invocation_relative_separator_path_fails_closed() {
+    for rel in [r".\pwned.exe", r"..\pwned.exe", r"sub\pwned.exe", "pwned/evil.bat", r"\pwned.exe"]
+    {
+        let result = resolve_command_invocation(rel, &[]);
+        assert!(
+            result.is_err(),
+            "relative path-with-separator {rel:?} must fail closed (CWD-relative exec); got: {result:?}"
+        );
+    }
+}
+
+/// An absolute path with separators is still a legitimate caller-resolved
+/// location and must pass through unchanged.
+#[cfg(windows)]
+#[test]
+fn test_resolve_command_invocation_absolute_separator_path_passes_through() {
+    let (program, _args) = perl_tdd_support::must(resolve_command_invocation(
+        r"C:\tools\perltidy.exe",
+        &["--version"],
+    ));
+    assert_eq!(program, r"C:\tools\perltidy.exe");
+}
