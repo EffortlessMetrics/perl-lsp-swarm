@@ -16,7 +16,7 @@
 
 use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};
-use perl_pragma::{PragmaState, PragmaTracker};
+use perl_pragma::{CompileTimePragmaEnvironment, PragmaState, PragmaTracker};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -55,6 +55,10 @@ fn function_call(name: &str, start: usize, end: usize) -> Node {
         kind: NodeKind::FunctionCall { name: name.to_string(), args: vec![] },
         location: loc(start, end),
     }
+}
+
+fn block(stmts: Vec<Node>, start: usize, end: usize) -> Node {
+    Node { kind: NodeKind::Block { statements: stmts }, location: loc(start, end) }
 }
 
 fn program(stmts: Vec<Node>) -> Node {
@@ -231,5 +235,74 @@ fn use_feature_say_adds_to_the_default_bundle() -> TestResult {
     let state = final_state(vec![use_node("feature", &["say"], 0, 18)]);
     assert!(state.has_feature("say"));
     assert_has_all(&state, DEFAULT_BUNDLE);
+    Ok(())
+}
+
+// ===========================================================================
+// PragmaState ↔ CompileTimePragmaEnvironment interaction: seeded :default
+// ===========================================================================
+//
+// These two tests drive the NEW code path introduced by this PR: the custom
+// `Default for PragmaState` that seeds `features` with `DEFAULT_FEATURES`.
+// Both tests would FAIL if the PR's fix were reverted (empty `features` vec).
+
+/// `PragmaMap::snapshot_at` returns `PragmaSnapshot::default()` when the query
+/// offset is before any pragma entry (the `idx == 0` fallback path). That
+/// snapshot must carry the `:default` feature bundle because it delegates to
+/// `PragmaState::default()`, which now seeds `features` with `DEFAULT_FEATURES`.
+///
+/// Before the fix: `PragmaState::default()` had `features: vec![]`, so every
+/// feature query on the pre-pragma snapshot returned `false` — wrong for Perl's
+/// file-scope semantics where `:default` features are always active.
+#[test]
+fn pragma_environment_snapshot_before_first_pragma_has_default_bundle() -> TestResult {
+    // Place the pragma well past offset 0 so a query at offset 0 definitely
+    // hits the `idx == 0` branch (no entries at or before byte 0).
+    let ast = program(vec![use_node("strict", &[], 50, 62)]);
+    let environment = CompileTimePragmaEnvironment::build(&ast);
+
+    // Query before the first pragma — exercises PragmaMap::snapshot_at idx==0
+    // fallback, which returns PragmaSnapshot::default() → PragmaState::default().
+    let snapshot = environment.snapshot_at(0);
+    assert_has_all(snapshot.state(), DEFAULT_BUNDLE);
+    assert!(
+        !snapshot.state().strict_vars,
+        "pre-pragma snapshot must not have strict_vars"
+    );
+    Ok(())
+}
+
+/// `build_scoped_body` (in `range_builder/walk.rs`) saves the caller's
+/// `current_state` before entering a block and restores it on exit.  After the
+/// PR the initial `current_state` that `CompileTimePragmaEnvironment::build`
+/// passes in is `PragmaState::default()` — which carries the `:default` bundle.
+/// The scope-restore pushes that saved state as the post-scope entry, so any
+/// query after the block should still see the `:default` bundle.
+///
+/// Before the fix: the saved state had `features: vec![]`, so the post-scope
+/// restore also had empty features — the `:default` bundle would be lost after
+/// any lexical scope closed.
+#[test]
+fn build_scoped_body_restore_preserves_default_bundle() -> TestResult {
+    // A scoped block that adds `say`; after the block closes the state should
+    // restore to the parent (seeded :default, no `say`).
+    let inner_use = use_node("feature", &["say"], 10, 28);
+    let scoped = block(vec![inner_use], 5, 35);
+    let ast = program(vec![scoped]);
+    let environment = CompileTimePragmaEnvironment::build(&ast);
+
+    // Query inside the block — `say` was added on top of the seeded :default.
+    let in_scope = environment.snapshot_at(20);
+    assert!(in_scope.state().has_feature("say"), "inside block must see 'say'");
+    assert_has_all(in_scope.state(), DEFAULT_BUNDLE);
+
+    // Query after the block — state is restored to the seeded :default; `say`
+    // is gone but the `:default` bundle must still be present.
+    let after_scope = environment.snapshot_at(36);
+    assert!(
+        !after_scope.state().has_feature("say"),
+        "after block closes 'say' must be gone"
+    );
+    assert_has_all(after_scope.state(), DEFAULT_BUNDLE);
     Ok(())
 }
