@@ -57,11 +57,18 @@ pub(crate) fn resolve_windows_program(program: &str) -> Option<String> {
     }
 
     // Collect all candidate paths from PATH × PATHEXT.
+    //
+    // Security: skip any PATH entry that is empty or not absolute.  An empty
+    // entry (`;;` or trailing `;`) produces a relative path via `dir.join`,
+    // which resolves against the CWD at `.is_file()` time — the same
+    // binary-planting vector we are closing.  A relative PATH entry is equally
+    // dangerous and is almost always a misconfiguration, not intentional.
     let path_dirs = path_dirs_from_env();
     let path_exts = pathext_from_env();
 
     let candidates: Vec<String> = path_dirs
         .iter()
+        .filter(|dir| !dir.as_os_str().is_empty() && dir.is_absolute())
         .flat_map(|dir| {
             path_exts.iter().filter_map(|ext| {
                 let mut candidate = dir.join(program);
@@ -84,14 +91,39 @@ pub(crate) fn resolve_windows_program(program: &str) -> Option<String> {
 /// candidate lists and CWD values so the security invariant can be verified
 /// without touching the real file system or environment.
 ///
-/// Returns `None` when every candidate is under `cwd` (refuse to run a planted
-/// binary) or when `candidates` is empty (tool genuinely not on PATH).
+/// ## Security invariant (two layers of defense)
+///
+/// 1. **Absolute-only**: any candidate that is not an absolute path is dropped
+///    immediately.  A relative candidate (e.g. produced by an empty `;;` PATH
+///    entry via `dir.join`) resolves against the CWD and is indistinguishable
+///    from a planted binary.  This is the primary guard against the
+///    empty-PATH-entry bypass.
+/// 2. **CWD exclusion**: candidates whose parent directory canonicalizes to `cwd`
+///    are dropped.  If canonicalize fails (non-existent dir in a unit test)
+///    the raw path is compared instead — production candidates always come from
+///    real `.is_file()`-verified PATH dirs where canonicalize succeeds.
+///
+/// Returns `None` when every candidate is filtered out or when `candidates` is
+/// empty (tool genuinely not on PATH; better than running a planted binary).
 pub(crate) fn select_path_candidate(candidates: &[&str], cwd: &Path) -> Option<String> {
     let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
 
     candidates
         .iter()
         .filter(|&&c| {
+            // Layer 1: reject any candidate that is not absolute.  A relative
+            // path (e.g. produced by an empty `;;` PATH entry via `dir.join`)
+            // would silently resolve against the CWD and is indistinguishable
+            // from a planted binary.  This is the primary fix for the
+            // empty-PATH-entry bypass.
+            if !Path::new(c).is_absolute() {
+                return false;
+            }
+            // Layer 2: reject if the parent directory canonicalizes to the CWD.
+            // If canonicalize fails (directory does not exist on disk) fall back
+            // to the raw path for comparison — the candidate will not have passed
+            // `.is_file()` in `resolve_windows_program` anyway, so this path is
+            // only reachable in unit tests with synthetic candidate lists.
             let candidate_parent = Path::new(c).parent().unwrap_or(Path::new(""));
             let parent_canon = std::fs::canonicalize(candidate_parent)
                 .unwrap_or_else(|_| candidate_parent.to_path_buf());

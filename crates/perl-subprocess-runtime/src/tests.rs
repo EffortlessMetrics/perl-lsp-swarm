@@ -342,3 +342,43 @@ fn test_select_path_candidate_extension_priority_preserved_among_path_candidates
         ".exe must beat .bat in extension priority ordering"
     );
 }
+
+// --- Empty-PATH-entry bypass regression (relative-candidate rejection) ---
+//
+// An empty `;;` or trailing `;` PATH entry causes `split_paths` to yield an
+// empty dir, which `dir.join("perltidy")` turns into a RELATIVE path.  The
+// relative candidate resolves against the CWD at `.is_file()` time, so a
+// planted workspace binary survives into the candidate list.  These tests
+// verify that `select_path_candidate` rejects all relative candidates —
+// regardless of whether they happen to coincide with a CWD binary.
+
+/// A bare relative candidate (as produced by an empty PATH entry) must be
+/// rejected and return `None` — never executed.
+#[cfg(windows)]
+#[test]
+fn test_select_path_candidate_relative_candidate_returns_none() {
+    // `"perltidy.EXE"` is relative — no drive letter, no leading backslash.
+    // This is exactly what an empty PATH entry produces via `dir.join(program)`.
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &["perltidy.EXE"];
+    let result = select_path_candidate(candidates, &cwd);
+    assert!(result.is_none(), "a relative candidate must always be rejected; got: {result:?}");
+}
+
+/// A relative candidate alongside a legitimate absolute PATH candidate: only
+/// the absolute one is selected; the relative one is silently dropped.
+#[cfg(windows)]
+#[test]
+fn test_select_path_candidate_relative_candidate_dropped_absolute_path_wins() {
+    let cwd = std::path::PathBuf::from(r"C:\Users\user\project");
+    let candidates = &[
+        "perltidy.EXE",                         // relative — must be dropped
+        r"C:\Strawberry\perl\bin\perltidy.exe", // absolute PATH install — must win
+    ];
+    let result = select_path_candidate(candidates, &cwd);
+    assert_eq!(
+        result.as_deref(),
+        Some(r"C:\Strawberry\perl\bin\perltidy.exe"),
+        "relative candidate must be dropped; absolute PATH binary must win"
+    );
+}
