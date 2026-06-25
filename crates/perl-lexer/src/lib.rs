@@ -72,6 +72,7 @@
 //!     parse_interpolation: true,  // Parse string interpolation
 //!     track_positions: true,      // Track line/column positions
 //!     max_lookahead: 1024,        // Maximum lookahead for disambiguation
+//!     symbol_table: None,         // Optional per-file sub/constant table
 //! };
 //!
 //! let mut lexer = PerlLexer::with_config("my $x = 1;", config);
@@ -149,6 +150,7 @@ mod lexer;
 pub mod limits;
 pub mod mode;
 mod quote_handler;
+pub mod symbol_table;
 pub mod token;
 pub mod tokenizer;
 mod unicode;
@@ -161,6 +163,7 @@ pub use lexer::PerlLexer;
 pub use limits::MAX_REGEX_PARSE_STEPS;
 pub use mode::LexerMode;
 pub use perl_position_tracking::Position;
+pub use symbol_table::LocalSymbolTable;
 pub use token::{StringPart, Token, TokenType};
 
 use unicode::{is_perl_identifier_continue, is_perl_identifier_start};
@@ -1941,7 +1944,15 @@ impl<'a> PerlLexer<'a> {
             } else {
                 // Mirror parser bare-builtin handling so `/` after builtins like
                 // `join` or `print` is lexed as a regex term, not division.
-                if is_builtin_function(text) {
+                // Also treat user-declared subs/constants (from symbol_table) as
+                // term-introducing so `my_func /regex/` parses correctly.
+                let is_term_introducing = is_builtin_function(text)
+                    || self
+                        .config
+                        .symbol_table
+                        .as_ref()
+                        .is_some_and(|st| st.is_known_sub(text) || st.is_known_constant(text));
+                if is_term_introducing {
                     self.mode = LexerMode::ExpectTerm;
                 } else {
                     self.mode = LexerMode::ExpectOperator;
