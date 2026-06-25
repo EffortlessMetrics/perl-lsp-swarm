@@ -190,11 +190,7 @@ pub fn add_workspace_symbol_completions(
                     kind: CompletionItemKind::Variable,
                     detail: symbol.container_name.clone().or_else(|| Some("workspace".to_string())),
                     documentation: symbol.documentation.clone(),
-                    additional_edits: workspace_auto_import_edits(
-                        source,
-                        symbol.container_name.as_deref(),
-                        &context.current_package,
-                    ),
+                    additional_edits: vec![],
                     text_edit_range: Some((context.prefix_start, context.position)),
                     commit_characters: None,
                     label_details: None,
