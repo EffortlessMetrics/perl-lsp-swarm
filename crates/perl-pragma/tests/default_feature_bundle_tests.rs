@@ -265,10 +265,7 @@ fn pragma_environment_snapshot_before_first_pragma_has_default_bundle() -> TestR
     // fallback, which returns PragmaSnapshot::default() → PragmaState::default().
     let snapshot = environment.snapshot_at(0);
     assert_has_all(snapshot.state(), DEFAULT_BUNDLE);
-    assert!(
-        !snapshot.state().strict_vars,
-        "pre-pragma snapshot must not have strict_vars"
-    );
+    assert!(!snapshot.state().strict_vars, "pre-pragma snapshot must not have strict_vars");
     Ok(())
 }
 
@@ -299,10 +296,7 @@ fn build_scoped_body_restore_preserves_default_bundle() -> TestResult {
     // Query after the block — state is restored to the seeded :default; `say`
     // is gone but the `:default` bundle must still be present.
     let after_scope = environment.snapshot_at(36);
-    assert!(
-        !after_scope.state().has_feature("say"),
-        "after block closes 'say' must be gone"
-    );
+    assert!(!after_scope.state().has_feature("say"), "after block closes 'say' must be gone");
     assert_has_all(after_scope.state(), DEFAULT_BUNDLE);
     Ok(())
 }
