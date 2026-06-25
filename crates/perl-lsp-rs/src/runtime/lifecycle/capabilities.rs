@@ -369,7 +369,7 @@ impl LspServer {
                     .and_then(Value::as_array)
                 {
                     // Pick the first encoding from client list that server supports
-                    let supported = vec!["utf-8", "utf-16"]; // Server supports UTF-8 and UTF-16
+                    let supported = ["utf-8", "utf-16"]; // Server supports UTF-8 and UTF-16
                     encodings
                         .iter()
                         .find_map(|enc| {

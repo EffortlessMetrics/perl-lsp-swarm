@@ -350,7 +350,10 @@ fn test_positionEncoding_negotiation_respects_client_list() -> TestResult {
         .ok_or("positionEncoding not found or not string")?;
 
     // Server should pick utf-8 (first in client's list)
-    assert_eq!(encoding, "utf-8", "Server should negotiate to utf-8 when it's first in client list");
+    assert_eq!(
+        encoding, "utf-8",
+        "Server should negotiate to utf-8 when it's first in client list"
+    );
 
     // Scenario 2: Client prefers UTF-16 first, then UTF-8
     let mut harness = LspHarness::new();
@@ -372,7 +375,10 @@ fn test_positionEncoding_negotiation_respects_client_list() -> TestResult {
         .ok_or("positionEncoding not found or not string")?;
 
     // Server should pick utf-16 (first in client's list)
-    assert_eq!(encoding, "utf-16", "Server should negotiate to utf-16 when it's first in client list");
+    assert_eq!(
+        encoding, "utf-16",
+        "Server should negotiate to utf-16 when it's first in client list"
+    );
 
     // Scenario 3: Client doesn't specify positionEncodings - default to utf-16
     let mut harness = LspHarness::new();
@@ -390,7 +396,10 @@ fn test_positionEncoding_negotiation_respects_client_list() -> TestResult {
         .ok_or("positionEncoding not found or not string")?;
 
     // Server should default to utf-16 when client doesn't specify
-    assert_eq!(encoding, "utf-16", "Server should default to utf-16 when client doesn't specify positionEncodings");
+    assert_eq!(
+        encoding, "utf-16",
+        "Server should default to utf-16 when client doesn't specify positionEncodings"
+    );
 
     Ok(())
 }
