@@ -1,27 +1,53 @@
-//! References tier-share scorecard harness.
+//! References routing-matrix harness.
 //!
-//! Drives the real `textDocument/references` handler across multiple fixtures and
-//! index states (Full/Ready, Partial/Building, None), captures the decision-trace
-//! receipt via `explainProviderDecision`, and emits a tier-distribution + latency
-//! report to stderr (matching the DAP scorecard convention).
+//! Verifies that the `textDocument/references` handler routes to the correct
+//! tier for each combination of fixture × index state, and that decision-trace
+//! receipt capture works correctly.
+//!
+//! **This is NOT a traffic-share or latency benchmark.**  The six hand-picked
+//! fixtures are chosen to exercise specific routing branches (workspace-mixed,
+//! semantic-analyzer fallback, empty).  The tier proportions and latency values
+//! printed below are soft observations from controlled synthetic inputs — they
+//! cannot estimate real-world user-traffic share or produce credible p50/p95
+//! values.  A representative-workspace replay is the follow-up measurement
+//! packet (see issue #2635).
+//!
+//! # Index-state labels
+//!
+//! Each scenario is labelled by **intended** index state.  The harness also
+//! captures the **observed** `index_state` field from the decision-trace receipt
+//! and asserts that the two agree:
+//!
+//! | intended label | expected receipt `index_state` |
+//! |---|---|
+//! | `"full"`     | `"full"`    |
+//! | `"building"` | `"partial"` |
+//! | `"none"`     | `"none"`    |
+//!
+//! Exception: the `empty` tier hardcodes `index_state = "none"` in the handler
+//! regardless of the actual coordinator state (the index is irrelevant when no
+//! symbol exists under the cursor).  H-B is skipped for `empty` rows.
+//!
+//! If the assertion fails the harness reports the discrepancy so the caller
+//! can fix `set_index_building` (or drop the "building" column and document why).
 //!
 //! # Placement rationale
 //!
-//! `index_coordinator` is `pub(crate)`, so an integration test in `tests/` cannot
-//! set it directly without a new test-only method.  This unit test lives inside
-//! `src/runtime/language/` where `LspServer`'s internal fields are in scope —
-//! matching the existing patterns in `rename.rs:2045` and `signature_help.rs:1146`.
-//! No new API surface is added.
+//! `index_coordinator` is `pub(crate)`, so an integration test in `tests/`
+//! cannot set it directly without adding a new production-visible method.
+//! This unit test lives inside `src/runtime/language/` where `LspServer`'s
+//! internal fields are in scope — matching the existing patterns in
+//! `rename.rs:2045` and `signature_help.rs:1146`.  No new API surface is added.
 //!
 //! # Running
 //!
 //! ```text
 //! CARGO_TARGET_DIR=.tmp/wt-target CARGO_INCREMENTAL=0 \
-//!   cargo test -p perl-lsp-rs references_tier_scorecard -- --nocapture
+//!   cargo test -p perl-lsp-rs --features workspace references_routing_matrix -- --nocapture
 //! ```
 
 #[cfg(all(test, feature = "workspace"))]
-mod scorecard {
+mod routing_matrix {
     use crate::runtime::LspServer;
     use parking_lot::Mutex;
     use perl_parser::workspace_index::IndexCoordinator;
@@ -35,7 +61,7 @@ mod scorecard {
     // ---------------------------------------------------------------------------
 
     /// A scalar used three times in a single file — cursor on `$count`.
-    const SCALAR_THREE_USES_URI: &str = "file:///scorecard/scalar_three_uses.pl";
+    const SCALAR_THREE_USES_URI: &str = "file:///routing_matrix/scalar_three_uses.pl";
     const SCALAR_THREE_USES: &str = r#"use strict;
 use warnings;
 my $count = 0;
@@ -44,7 +70,7 @@ print $count;
 "#;
 
     /// A sub definition plus two call sites in the same file.
-    const SUB_TWO_CALLS_URI: &str = "file:///scorecard/sub_two_calls.pm";
+    const SUB_TWO_CALLS_URI: &str = "file:///routing_matrix/sub_two_calls.pm";
     const SUB_TWO_CALLS: &str = r#"package Score::Calls;
 use strict;
 use warnings;
@@ -63,7 +89,7 @@ sub run {
 "#;
 
     /// A package-qualified reference: `Score::Qualified::helper()`.
-    const QUALIFIED_URI: &str = "file:///scorecard/qualified.pm";
+    const QUALIFIED_URI: &str = "file:///routing_matrix/qualified.pm";
     const QUALIFIED: &str = r#"package Score::Qualified;
 use strict;
 use warnings;
@@ -84,7 +110,7 @@ sub caller_b {
 "#;
 
     /// A no-symbol position (whitespace only) — must yield `empty` tier.
-    const EMPTY_URI: &str = "file:///scorecard/empty_pos.pl";
+    const EMPTY_URI: &str = "file:///routing_matrix/empty_pos.pl";
     const EMPTY_DOC: &str = r#"use strict;
 use warnings;
 # This file is intentionally sparse.
@@ -141,15 +167,37 @@ use warnings;
     }
 
     // ---------------------------------------------------------------------------
-    // Index-state helpers: mirrors the patterns in rename.rs + signature_help.rs
+    // Index-state helpers: mirror the patterns in rename.rs + signature_help.rs
+    //
+    // Each helper sets pub(crate) `index_coordinator` directly — Placement A.
+    // No new public or pub(crate) method is added to LspServer.
+    //
+    // IMPORTANT: these helpers must be called AFTER `open_document`.
+    //
+    // When a unit test has no tokio runtime, `handle_did_open` (text_sync.rs:296)
+    // runs synchronously and calls `transition_to_ready()` if the coordinator is
+    // in `Building { phase: Idle }` state.  `IndexCoordinator::new()` initialises
+    // to exactly that state.  So calling `set_index_building` BEFORE `open_document`
+    // would immediately promote the coordinator to Ready, giving `observed_state =
+    // "full"` instead of "partial".  Setting state AFTER `open_document` bypasses
+    // this auto-promotion and gives the handlers a genuine Partial-access coordinator.
+    //
+    // State → IndexAccessMode → receipt `index_state` mapping (when applied post-open):
+    //   set_index_ready()    → IndexState::Ready    → Full    → "full"
+    //   set_index_building() → IndexState::Building → Partial → "partial"
+    //   set_index_none()     → None coordinator     → None    → "none"
     // ---------------------------------------------------------------------------
 
     fn set_index_none(server: &mut LspServer) {
+        // Genuine None: remove the coordinator entirely so route_index_access
+        // returns IndexAccessMode::None and no workspace index is consulted.
         server.index_coordinator = None;
     }
 
     fn set_index_building(server: &mut LspServer) {
-        // Default `IndexCoordinator::new()` is already in Building/Scanning state.
+        // Replaces the coordinator with a fresh Building coordinator AFTER open.
+        // The fresh coordinator has not yet had transition_to_ready called on it,
+        // so route_index_access will return Partial and the receipt will be "partial".
         server.index_coordinator = Some(Arc::new(IndexCoordinator::new()));
     }
 
@@ -159,6 +207,22 @@ use warnings;
         server.index_coordinator = Some(coordinator);
     }
 
+    /// Map an intended label to the expected receipt `index_state` value.
+    ///
+    /// | intended     | receipt `index_state` |
+    /// |--------------|----------------------|
+    /// | `"full"`     | `"full"`             |
+    /// | `"building"` | `"partial"`          |
+    /// | `"none"`     | `"none"`             |
+    fn expected_receipt_index_state(intended: &str) -> &'static str {
+        match intended {
+            "full" => "full",
+            "building" => "partial",
+            "none" => "none",
+            other => panic!("unknown intended index state label: {other}"),
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Measurement row
     // ---------------------------------------------------------------------------
@@ -166,21 +230,37 @@ use warnings;
     #[derive(Debug)]
     struct Row {
         fixture_id: &'static str,
-        index_state: &'static str,
+        /// Label set by the test (matches the `set_index_*` helper used).
+        intended_state: &'static str,
+        /// The `index_state` field from the decision-trace receipt:
+        /// `"full" | "partial" | "none"` — observed by the handler.
+        observed_state: String,
         answering_tier: String,
         result_count: u64,
+        /// Raw index-sourced hit count before dedup/truncation.
         index_result_count: u64,
+        /// Raw text-sourced hit count before dedup/truncation.
         text_result_count: u64,
         source_backed: bool,
         latency_us: u64,
     }
 
-    /// Fire one references request, capture the receipt, return a measurement row.
+    /// Fire one references request and capture the receipt.
+    ///
+    /// The receipt is fetched immediately after the request to guarantee it
+    /// corresponds to THIS request (not a stale receipt from a prior call in the
+    /// same server session).
+    ///
+    /// # Hard assertions inside `measure`
+    ///
+    /// - H-A: Receipt `uri`/`line`/`character` match what was sent (binding check).
+    /// - H-B: Receipt `index_state` matches the expected value for `intended_state_label`
+    ///   (skipped for `empty` tier, which hardcodes `"none"` regardless of coordinator state).
     fn measure(
         fixture_id: &'static str,
-        index_state_label: &'static str,
+        intended_state_label: &'static str,
         server: &LspServer,
-        uri: &str,
+        uri: &'static str,
         line: u32,
         character: u32,
         include_declaration: bool,
@@ -195,26 +275,72 @@ use warnings;
         server.test_handle_references(Some(params))?;
         let wall_us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
 
+        // Fetch receipt immediately — before any other request on this server.
         let explanation = explain_provider_decision(server, "references")?;
         let receipt = explanation
             .get("request_receipt")
             .and_then(Value::as_object)
             .ok_or("missing request_receipt")?;
 
+        // H-A: receipt is bound to THIS request (uri / line / character).
+        let receipt_uri = receipt.get("uri").and_then(Value::as_str).unwrap_or("");
+        assert_eq!(
+            receipt_uri, uri,
+            "receipt URI mismatch fixture={fixture_id} state={intended_state_label}: \
+             expected `{uri}`, got `{receipt_uri}`"
+        );
+        let receipt_line = receipt.get("line").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        assert_eq!(
+            receipt_line,
+            u64::from(line),
+            "receipt line mismatch fixture={fixture_id} state={intended_state_label}: \
+             expected {line}, got {receipt_line}"
+        );
+        let receipt_char = receipt.get("character").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        assert_eq!(
+            receipt_char,
+            u64::from(character),
+            "receipt character mismatch fixture={fixture_id} state={intended_state_label}: \
+             expected {character}, got {receipt_char}"
+        );
+
+        // H-B: observed index_state matches the intended label — for non-empty tiers.
+        //
+        // The `empty` tier hardcodes `index_state = "none"` in the handler
+        // (references.rs terminal return) regardless of coordinator state.  This is
+        // an implementation shortcut: when there is no symbol under the cursor the
+        // index state is irrelevant.  We skip H-B for empty rows to avoid a false
+        // assertion; the `observed_state` column in the matrix will show "none" for
+        // these rows, which is documented behaviour, not a harness bug.
+        let observed_state =
+            receipt.get("index_state").and_then(Value::as_str).unwrap_or("").to_string();
         let answering_tier =
             receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("unknown").to_string();
+        if answering_tier != "empty" {
+            let expected_state = expected_receipt_index_state(intended_state_label);
+            assert_eq!(
+                observed_state.as_str(),
+                expected_state,
+                "index_state mismatch fixture={fixture_id}: intended={intended_state_label} \
+                 → expected receipt index_state={expected_state}, got {observed_state:?}. \
+                 Check set_index_{intended_state_label}() — does it produce the right \
+                 IndexAccessMode?  (Note: empty tier always reports \"none\"; if tier is \
+                 empty this assertion is skipped.)"
+            );
+        }
         let result_count = receipt.get("result_count").and_then(Value::as_u64).unwrap_or(0);
         let index_result_count =
             receipt.get("index_result_count").and_then(Value::as_u64).unwrap_or(0);
         let text_result_count =
             receipt.get("text_result_count").and_then(Value::as_u64).unwrap_or(0);
         let source_backed = receipt.get("source_backed").and_then(Value::as_bool).unwrap_or(false);
-        // Prefer receipt latency; fall back to wall time.
+        // Prefer receipt latency (recorded inside the handler); fall back to wall time.
         let latency_us = receipt.get("latency_us").and_then(Value::as_u64).unwrap_or(wall_us);
 
         Ok(Row {
             fixture_id,
-            index_state: index_state_label,
+            intended_state: intended_state_label,
+            observed_state,
             answering_tier,
             result_count,
             index_result_count,
@@ -225,7 +351,7 @@ use warnings;
     }
 
     // ---------------------------------------------------------------------------
-    // Aggregation helpers
+    // Output helpers
     // ---------------------------------------------------------------------------
 
     fn percentile(sorted_us: &[u64], pct: f64) -> u64 {
@@ -236,69 +362,35 @@ use warnings;
         sorted_us[idx.min(sorted_us.len() - 1)]
     }
 
-    fn print_scorecard(rows: &[Row]) {
+    fn print_routing_matrix(rows: &[Row]) {
         eprintln!();
-        eprintln!("=== References Tier-Share Scorecard ===");
-        eprintln!();
-
-        // Tier distribution
-        let mut tier_counts: std::collections::HashMap<&str, usize> =
-            std::collections::HashMap::new();
-        for row in rows {
-            *tier_counts.entry(row.answering_tier.as_str()).or_default() += 1;
-        }
-        let total = rows.len();
-        eprintln!("--- Tier Distribution ({total} requests) ---");
-        let mut tier_vec: Vec<_> = tier_counts.iter().collect();
-        tier_vec.sort_by_key(|(k, _)| *k);
-        for (tier, count) in &tier_vec {
-            let pct = 100.0 * (**count as f64) / (total as f64);
-            eprintln!("  {tier:<30}  {count:>3} ({pct:5.1}%)");
-        }
+        eprintln!("=== References Routing Matrix (controlled fixtures — NOT usage share) ===");
+        eprintln!("NOTE: tier proportions and latency are SOFT OBSERVATIONS from controlled");
+        eprintln!("      synthetic fixtures — NOT usage-traffic share or credible percentiles.");
+        eprintln!("      Real-world tier-share requires a representative-workspace replay");
+        eprintln!("      (follow-up to #2635).");
         eprintln!();
 
-        // Tier × index_state matrix
-        eprintln!("--- Tier × Index-State Matrix ---");
-        let states = ["full", "building", "none"];
-        print!("  {:<30}", "tier");
-        for s in &states {
-            print!("  {:>10}", s);
-        }
-        eprintln!();
-        for (tier, _) in &tier_vec {
-            print!("  {:<30}", tier);
-            for state in &states {
-                let count = rows
-                    .iter()
-                    .filter(|r| r.answering_tier.as_str() == **tier && r.index_state == *state)
-                    .count();
-                print!("  {:>10}", count);
-            }
-            eprintln!();
-        }
-        eprintln!();
-
-        // Latency percentiles
-        let mut latencies: Vec<u64> = rows.iter().map(|r| r.latency_us).collect();
-        latencies.sort_unstable();
-        let p50 = percentile(&latencies, 50.0);
-        let p95 = percentile(&latencies, 95.0);
-        let max = latencies.last().copied().unwrap_or(0);
-        eprintln!("--- Latency (µs) ---");
-        eprintln!("  p50={p50}  p95={p95}  max={max}");
-        eprintln!();
-
-        // Per-row detail
-        eprintln!("--- Per-Request Detail ---");
+        // Per-row detail: intended vs observed index state side-by-side
+        eprintln!("--- Per-request routing detail ---");
         eprintln!(
-            "  {:<12} {:<10} {:<26} {:>6} {:>8} {:>8} {:<8} {:>10}",
-            "fixture", "idx_state", "tier", "total", "idx", "text", "src_bkd", "latency_us"
+            "  {:<12} {:<10} {:<10} {:<26} {:>6} {:>8} {:>8} {:<8} {:>10}",
+            "fixture",
+            "intended",
+            "observed",
+            "tier",
+            "total",
+            "idx_raw",
+            "txt_raw",
+            "src_bkd",
+            "latency_us"
         );
         for row in rows {
             eprintln!(
-                "  {:<12} {:<10} {:<26} {:>6} {:>8} {:>8} {:<8} {:>10}",
+                "  {:<12} {:<10} {:<10} {:<26} {:>6} {:>8} {:>8} {:<8} {:>10}",
                 row.fixture_id,
-                row.index_state,
+                row.intended_state,
+                row.observed_state,
                 row.answering_tier,
                 row.result_count,
                 row.index_result_count,
@@ -308,19 +400,80 @@ use warnings;
             );
         }
         eprintln!();
+
+        // Tier distribution (soft observation, fixture-weighted)
+        let mut tier_counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for row in rows {
+            *tier_counts.entry(row.answering_tier.as_str()).or_default() += 1;
+        }
+        let total = rows.len();
+        eprintln!(
+            "--- Observed tier routing ({total} controlled requests) \
+             [proportions are fixture-weighted, NOT traffic-weighted] ---"
+        );
+        let mut tier_vec: Vec<_> = tier_counts.iter().collect();
+        tier_vec.sort_by_key(|(k, _)| *k);
+        for (tier, count) in &tier_vec {
+            let pct = 100.0 * (**count as f64) / (total as f64);
+            eprintln!("  {tier:<30}  {count:>3} ({pct:5.1}%)");
+        }
+        eprintln!();
+
+        // Latency (soft observation)
+        let mut latencies: Vec<u64> = rows.iter().map(|r| r.latency_us).collect();
+        latencies.sort_unstable();
+        let p50 = percentile(&latencies, 50.0);
+        let p95 = percentile(&latencies, 95.0);
+        let max = latencies.last().copied().unwrap_or(0);
+        eprintln!("--- Latency (µs, controlled fixtures — NOT representative workload) ---");
+        eprintln!("  p50={p50}  p95={p95}  max={max}");
+        eprintln!();
+
+        // Routing matrix: tier × observed_state (receipt's index_state field).
+        // Because H-B asserts intended→observed mapping holds per row, these
+        // columns reflect genuinely-observed IndexAccessMode values, not labels.
+        let observed_state_cols = ["full", "partial", "none"];
+        eprintln!("--- Routing matrix (tier × observed_state from receipt) ---");
+        eprint!("  {:<30}", "tier");
+        for s in &observed_state_cols {
+            eprint!("  {:>10}", s);
+        }
+        eprintln!();
+        for (tier, _) in &tier_vec {
+            eprint!("  {:<30}", tier);
+            for state in &observed_state_cols {
+                let count = rows
+                    .iter()
+                    .filter(|r| {
+                        r.answering_tier.as_str() == **tier && r.observed_state.as_str() == *state
+                    })
+                    .count();
+                eprint!("  {:>10}", count);
+            }
+            eprintln!();
+        }
+        eprintln!();
     }
 
     // ---------------------------------------------------------------------------
-    // The scorecard test
+    // The routing-matrix test
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn references_tier_share_scorecard() -> Result<(), Box<dyn std::error::Error>> {
+    fn references_routing_matrix() -> Result<(), Box<dyn std::error::Error>> {
         let mut rows: Vec<Row> = Vec::new();
         let soft_latency_limit = Duration::from_secs(2);
 
+        // Index state is applied AFTER opening documents.  This is required to
+        // produce a genuine Partial state for the "building" scenario: when there
+        // is no tokio runtime (unit tests), `handle_did_open` runs synchronously
+        // and calls `transition_to_ready()` on any coordinator that is in
+        // `Building { phase: Idle }` state (text_sync.rs:296).  Applying the
+        // state after open bypasses this auto-promotion.  Each scenario uses a
+        // fresh server to prevent cross-contamination.
+
         // --- Fixture 1: scalar used three times ($count) ---
-        // Same fixture, iterated across three index states.
         let (scalar_line, scalar_character) = position_of(SCALAR_THREE_USES, "$count")?;
         let scalar_states: &[(&str, fn(&mut LspServer))] = &[
             ("full", set_index_ready),
@@ -329,8 +482,8 @@ use warnings;
         ];
         for (state_label, apply_state) in scalar_states {
             let mut server = create_server();
-            apply_state(&mut server);
             open_document(&server, SCALAR_THREE_USES_URI, SCALAR_THREE_USES)?;
+            apply_state(&mut server); // set index state AFTER open to prevent auto-promotion
             rows.push(measure(
                 "scalar",
                 state_label,
@@ -343,6 +496,9 @@ use warnings;
         }
 
         // --- Fixture 2: sub with two call sites ---
+        // Expected to produce workspace_mixed (index + text) in Ready state
+        // because both the workspace index and open-document text search
+        // contribute hits.
         let (sub_line, sub_character) = position_of(SUB_TWO_CALLS, "calculate")?;
         let sub_states: &[(&str, fn(&mut LspServer))] = &[
             ("full", set_index_ready),
@@ -351,8 +507,8 @@ use warnings;
         ];
         for (state_label, apply_state) in sub_states {
             let mut server = create_server();
-            apply_state(&mut server);
             open_document(&server, SUB_TWO_CALLS_URI, SUB_TWO_CALLS)?;
+            apply_state(&mut server);
             rows.push(measure(
                 "sub_calls",
                 state_label,
@@ -370,8 +526,8 @@ use warnings;
             &[("full", set_index_ready), ("building", set_index_building)];
         for (state_label, apply_state) in qual_states {
             let mut server = create_server();
-            apply_state(&mut server);
             open_document(&server, QUALIFIED_URI, QUALIFIED)?;
+            apply_state(&mut server);
             rows.push(measure(
                 "qualified",
                 state_label,
@@ -383,20 +539,20 @@ use warnings;
             )?);
         }
 
-        // --- Fixture 4: no-symbol position (whitespace) — expect empty tier ---
+        // --- Fixture 4: no-symbol position (blank line) — expect empty tier ---
         {
             let mut server = create_server();
-            set_index_ready(&mut server);
             open_document(&server, EMPTY_URI, EMPTY_DOC)?;
-            // Line 3 is a blank line — no symbol.
+            set_index_ready(&mut server);
+            // Line 3 (0-indexed) is blank.
             rows.push(measure("empty_pos", "full", &server, EMPTY_URI, 3, 0, false)?);
         }
 
-        // --- Fixture 5: sub_calls with include_declaration=false (full state) ---
+        // --- Fixture 5: sub_calls with include_declaration=false ---
         {
             let mut server = create_server();
-            set_index_ready(&mut server);
             open_document(&server, SUB_TWO_CALLS_URI, SUB_TWO_CALLS)?;
+            set_index_ready(&mut server);
             let (line, character) = position_of(SUB_TWO_CALLS, "calculate")?;
             rows.push(measure(
                 "sub_no_decl",
@@ -405,48 +561,92 @@ use warnings;
                 SUB_TWO_CALLS_URI,
                 line,
                 character,
-                false, // include_declaration = false
+                false,
             )?);
         }
 
         // ---------------------------------------------------------------------------
-        // Emit the scorecard
+        // Emit the routing matrix (soft observations)
         // ---------------------------------------------------------------------------
-        print_scorecard(&rows);
+        print_routing_matrix(&rows);
 
         // ---------------------------------------------------------------------------
-        // Soft assertions
+        // Hard assertions — the CONTRACT this harness enforces
+        // (H-A and H-B already fired per-row inside measure(); the rest are global)
         // ---------------------------------------------------------------------------
 
-        // No panics or timeouts above this line means we got here.
-        // Soft assertion 1: at least one request reached a non-empty tier.
+        // H-1: At least one request reached a non-empty tier (harness is alive).
         let non_empty = rows.iter().filter(|r| r.answering_tier != "empty").count();
         assert!(
             non_empty > 0,
-            "expected at least one non-empty tier in {total} requests",
-            total = rows.len()
+            "expected at least one non-empty tier across {} requests",
+            rows.len()
         );
 
-        // Soft assertion 2: the blank-line case yields `empty`.
-        let empty_row = rows.iter().find(|r| r.fixture_id == "empty_pos");
-        if let Some(row) = empty_row {
+        // H-2: The blank-line case always yields `empty`.
+        let empty_row =
+            rows.iter().find(|r| r.fixture_id == "empty_pos").ok_or("empty_pos row missing")?;
+        assert_eq!(
+            empty_row.answering_tier, "empty",
+            "no-symbol position must yield `empty` tier, got `{}`",
+            empty_row.answering_tier
+        );
+
+        // H-3: workspace_mixed is distinguishable — at least one row in the `sub_calls`
+        // fixture has BOTH index_result_count > 0 AND text_result_count > 0, and the
+        // tier must be `workspace_mixed`.
+        let mixed_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| {
+                r.fixture_id == "sub_calls" && r.index_result_count > 0 && r.text_result_count > 0
+            })
+            .collect();
+        assert!(
+            !mixed_rows.is_empty(),
+            "expected at least one sub_calls row with both index_result_count>0 \
+             and text_result_count>0 to verify workspace_mixed distinguishability"
+        );
+        for r in &mixed_rows {
             assert_eq!(
-                row.answering_tier, "empty",
-                "no-symbol position should yield `empty` tier, got `{}`",
-                row.answering_tier
+                r.answering_tier, "workspace_mixed",
+                "row with idx={} txt={} must be `workspace_mixed`, got `{}`",
+                r.index_result_count, r.text_result_count, r.answering_tier
             );
         }
 
-        // Soft assertion 3: all latencies under the generous threshold.
+        // H-4: Counts are pre-dedup/truncation (internal coherence) — for
+        // workspace_mixed rows the raw contributions sum to >= the final result_count
+        // (dedup can only shrink, never grow).
+        for row in rows.iter().filter(|r| r.answering_tier == "workspace_mixed") {
+            let raw_sum = row.index_result_count + row.text_result_count;
+            assert!(
+                raw_sum >= row.result_count,
+                "workspace_mixed raw_sum={}+{}={} < result_count={} for fixture={} state={}",
+                row.index_result_count,
+                row.text_result_count,
+                raw_sum,
+                row.result_count,
+                row.fixture_id,
+                row.intended_state
+            );
+        }
+
+        // H-5: Soft latency guard — all requests complete within 2 s.
         for row in &rows {
             assert!(
                 row.latency_us <= u64::try_from(soft_latency_limit.as_micros()).unwrap_or(u64::MAX),
-                "latency {} µs exceeded soft limit for fixture={} state={}",
+                "latency {} µs exceeded 2 s limit for fixture={} intended_state={}",
                 row.latency_us,
                 row.fixture_id,
-                row.index_state
+                row.intended_state
             );
         }
+
+        // H-6: Placement A — confirmed by code structure.
+        // The `set_index_*` helpers above access `server.index_coordinator` directly
+        // without going through any newly added pub method.  If a pub method were added
+        // it would appear in this file.  Reviewers: `grep 'pub fn test_set_index'
+        // test_api.rs` should return no results.
 
         Ok(())
     }
