@@ -6,6 +6,10 @@ use std::path::Path;
 /// This function is cross-platform so that `select_path_candidate` can be
 /// exercised on Linux CI without requiring a Windows runner.  The extension
 /// values are Windows-specific, but the comparison logic is pure Rust.
+///
+/// On non-Windows builds the function is not called from production code
+/// (only from tests) — the `allow(dead_code)` suppresses the resulting lint.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn candidate_priority(candidate: &str) -> u8 {
     match Path::new(candidate)
         .extension()
@@ -44,6 +48,10 @@ pub(crate) fn candidate_priority(candidate: &str) -> u8 {
 ///
 /// Returns `None` when every candidate is filtered out or when `candidates` is
 /// empty (tool genuinely not on PATH; better than running a planted binary).
+///
+/// On non-Windows builds the function is not called from production code
+/// (only from tests) — the `allow(dead_code)` suppresses the resulting lint.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn select_path_candidate(candidates: &[&str], cwd: &Path) -> Option<String> {
     let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
 
