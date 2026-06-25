@@ -4,7 +4,7 @@
 
 ## Orchestration Model
 
-perl-lsp's orchestration is an *Octopus Cluster* — see [docs/reference/OCTOPUS_CLUSTER.md](docs/reference/OCTOPUS_CLUSTER.md) for the umbrella framing.
+perl-lsp's orchestration is **orchestrator-driven**: a long-lived orchestrator routes work to consolidated, long-running warm agents under the closure discipline in *Operating doctrine* below. (The early *Octopus Cluster* framing — [docs/reference/OCTOPUS_CLUSTER.md](docs/reference/OCTOPUS_CLUSTER.md), Feb 2026 — is historical; the model has since consolidated into fewer, longer-lived agents with differently-directed review.)
 
 > For the design rationale and direction behind this orchestration model, see [docs/reference/ORCHESTRATION_DOCTRINE.md](docs/reference/ORCHESTRATION_DOCTRINE.md).
 >
