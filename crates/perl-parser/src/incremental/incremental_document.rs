@@ -1039,7 +1039,9 @@ impl IncrementalDocument {
             NodeKind::Assignment { .. } => SymbolPriority::Medium,
 
             // Low priority for literals and simple expressions
-            NodeKind::Number { .. } | NodeKind::String { .. } | NodeKind::VString { .. } => SymbolPriority::Low,
+            NodeKind::Number { .. } | NodeKind::String { .. } | NodeKind::VString { .. } => {
+                SymbolPriority::Low
+            }
             NodeKind::Binary { .. } | NodeKind::Unary { .. } => SymbolPriority::Low,
 
             // Default to medium for unknown types
