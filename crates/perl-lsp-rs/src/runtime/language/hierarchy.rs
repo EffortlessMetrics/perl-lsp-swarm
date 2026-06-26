@@ -571,6 +571,12 @@ impl LspServer {
                 if let Some(ref ast) = doc.ast {
                     let provider = CallHierarchyProvider::new(doc.text.clone(), uri.to_string());
                     if let Some(items) = provider.prepare(ast, line, character) {
+                        // Wait for the workspace index to finish building before enriching items.
+                        // enrich_call_hierarchy_item calls route_index_access; without the wait
+                        // items are returned with no workspace-enriched detail during indexing.
+                        // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                        #[cfg(feature = "workspace")]
+                        self.wait_for_index_ready_if_building();
                         #[cfg(feature = "workspace")]
                         let items: Vec<_> = items
                             .into_iter()
@@ -607,6 +613,12 @@ impl LspServer {
             let mut seen: std::collections::HashMap<(String, String), usize> =
                 std::collections::HashMap::new();
 
+            // Wait for the workspace index to finish building before querying it.
+            // Without this, an incomingCalls request while the index is in Building
+            // state routes to Partial and returns no cross-file callers.
+            // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+            #[cfg(feature = "workspace")]
+            self.wait_for_index_ready_if_building();
             #[cfg(feature = "workspace")]
             if let Some(symbol_key) = self.workspace_symbol_key(&ch_item) {
                 let access_mode = route_index_access(self.coordinator());
@@ -710,6 +722,12 @@ impl LspServer {
 
             let mut resolved_with_workspace = vec![false; calls.len()];
 
+            // Wait for the workspace index to finish building before querying it.
+            // Without this, an outgoingCalls request while the index is in Building
+            // state routes to Partial and callees are not resolved cross-file.
+            // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+            #[cfg(feature = "workspace")]
+            self.wait_for_index_ready_if_building();
             #[cfg(feature = "workspace")]
             {
                 let access_mode = route_index_access(self.coordinator());

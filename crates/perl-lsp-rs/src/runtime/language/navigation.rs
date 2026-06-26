@@ -1873,6 +1873,12 @@ impl LspServer {
                 let doc_map: HashMap<String, String> =
                     self.documents_text_snapshot().into_iter().collect();
 
+                // Wait for the workspace index to finish building before querying it.
+                // Without this, an implementation request while the index is in Building
+                // state routes to Partial and returns no cross-file implementors.
+                // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                self.wait_for_index_ready_if_building();
+
                 // Use routing policy - only provide workspace index in Full mode
                 let access_mode = route_index_access(self.coordinator());
                 let workspace_index = if let IndexAccessMode::Full(coordinator) = access_mode {

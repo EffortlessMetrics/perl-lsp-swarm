@@ -91,6 +91,14 @@ impl LspServer {
                     // infrastructure as get_user_function_signature.
                     // Designed as a clean reusable helper — a later slice will call this
                     // same entry point for inlay hints without rebuilding the lookup logic.
+                    //
+                    // Wait for the workspace index to finish building before querying it.
+                    // Without this, a signatureHelp request arriving while the index is in
+                    // IndexState::Building returns Partial from route_index_access and
+                    // resolve_method_in_workspace returns None — empty signatures on fresh open.
+                    // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                    #[cfg(feature = "workspace")]
+                    self.wait_for_index_ready_if_building();
                     #[cfg(feature = "workspace")]
                     if Self::is_method_call_context(&doc.text, offset) {
                         if let Some(signature) = self.resolve_method_in_workspace(&function_name) {
