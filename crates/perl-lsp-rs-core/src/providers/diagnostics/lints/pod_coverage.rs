@@ -593,11 +593,7 @@ sub something { 1 }
 
     fn make_assignment(lhs: Node, rhs: Node, start: usize, end: usize) -> Node {
         Node::new(
-            NodeKind::Assignment {
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-                op: "=".to_string(),
-            },
+            NodeKind::Assignment { lhs: Box::new(lhs), rhs: Box::new(rhs), op: "=".to_string() },
             SourceLocation { start, end },
         )
     }
@@ -632,10 +628,7 @@ sub helper {
                 "@",
                 "EXPORT_OK",
                 Some(make_array_literal(
-                    vec![
-                        make_string_node("helper", 90, 96),
-                        make_string_node("alias", 97, 102),
-                    ],
+                    vec![make_string_node("helper", 90, 96), make_string_node("alias", 97, 102)],
                     86,
                     103,
                 )),
