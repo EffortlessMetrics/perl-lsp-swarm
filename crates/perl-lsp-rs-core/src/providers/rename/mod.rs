@@ -454,7 +454,18 @@ mod tests {
         let provider = RenameProvider::new(&ast, code.to_string());
         assert!(validate_name("", SymbolKind::scalar(), &provider.symbol_table).is_err());
         assert!(validate_name("123abc", SymbolKind::scalar(), &provider.symbol_table).is_err());
-        assert!(validate_name("my", SymbolKind::scalar(), &provider.symbol_table).is_err());
+        // Variables may use keyword names: Perl permits `$my`, `$if`, `$while`, etc.
+        assert!(validate_name("my", SymbolKind::scalar(), &provider.symbol_table).is_ok());
+        assert!(validate_name("if", SymbolKind::scalar(), &provider.symbol_table).is_ok());
+        assert!(validate_name("while", SymbolKind::scalar(), &provider.symbol_table).is_ok());
+        // Subroutines must not use keyword names: `sub if { }` is a Perl syntax error.
+        assert!(validate_name("if", SymbolKind::Subroutine, &provider.symbol_table).is_err());
+        let err =
+            validate_name("while", SymbolKind::Subroutine, &provider.symbol_table).unwrap_err();
+        assert!(
+            err.contains("reserved") || err.contains("keyword"),
+            "error should mention 'reserved' or 'keyword', got: {err}"
+        );
         assert!(validate_name("test-var", SymbolKind::scalar(), &provider.symbol_table).is_err());
         assert!(validate_name("valid_name", SymbolKind::scalar(), &provider.symbol_table).is_ok());
         assert!(validate_name("_private", SymbolKind::scalar(), &provider.symbol_table).is_ok());

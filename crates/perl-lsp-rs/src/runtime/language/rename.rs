@@ -16,6 +16,7 @@ use crate::protocol::{REQUEST_FAILED, req_position, req_uri};
 use crate::runtime::readiness::{IndexReadinessOutcome, IndexReadinessPolicy};
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use perl_lexer::is_rename_keyword;
 #[cfg(feature = "workspace")]
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
@@ -977,6 +978,18 @@ impl LspServer {
                     return Err(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid identifier: {}", requested_name),
+                        data: None,
+                    });
+                }
+                // Non-sigiled targets are subroutine or package names.
+                // Renaming them to a reserved keyword would create a syntax error (`sub if {}`).
+                if is_rename_keyword(requested_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!(
+                            "'{}' is a reserved Perl keyword; subroutine names cannot be keywords",
+                            requested_name
+                        ),
                         data: None,
                     });
                 }
