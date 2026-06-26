@@ -292,3 +292,34 @@ fn trailing_files_without_check_flag_errors() {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
     cmd.arg("somefile.pl").assert().failure();
 }
+
+#[test]
+fn check_latin1_encoded_file_does_not_crash() -> Result<(), Box<dyn std::error::Error>> {
+    // Verify --check can read a Latin-1 encoded file without panicking.
+    // "René" contains 0xE9 (é in Latin-1) which is invalid UTF-8.
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("legacy.pl");
+    let latin1_content: &[u8] =
+        b"#!/usr/bin/perl\nuse strict;\nmy $name = \"Ren\xe9\";\nprint $name;\n";
+    std::fs::write(&file, latin1_content)?;
+    let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    // The file is syntactically valid Perl — should parse without error.
+    cmd.arg("--check").arg(file_str).assert().success();
+    Ok(())
+}
+
+#[test]
+fn check_project_with_latin1_file_does_not_crash() -> Result<(), Box<dyn std::error::Error>> {
+    // Verify --check-project survives a Latin-1 encoded .pm file in the project.
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("Legado.pm");
+    let latin1_content: &[u8] = b"package Legado;\nsub caf\xe9 { return 42; }\n1;\n";
+    std::fs::write(&file, latin1_content)?;
+    let dir_str = dir.path().to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.args(["--check-project", dir_str]).assert().success();
+    Ok(())
+}
