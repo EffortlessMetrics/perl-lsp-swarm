@@ -699,9 +699,9 @@ fn scenario_20_hover_inherited_method_call_in_app_pm() -> anyhow::Result<()> {
     harness.open_file("lib/RealBaseline/Base.pm", BASE_PM)?;
     std::thread::sleep(Duration::from_millis(300));
 
-    // Line 16 (0-indexed): `    return $self->shared;`
+    // Line 15 (0-indexed): `    return $self->shared;`
     // cursor at col 18, inside `shared`.
-    let result = harness.hover("lib/RealBaseline/App.pm", 16, 18);
+    let result = harness.hover("lib/RealBaseline/App.pm", 15, 18);
     assert!(
         result.is_ok(),
         "hover on inherited method call must not return JSON-RPC error: {result:?}"
@@ -1300,13 +1300,18 @@ fn scenario_20_hover_module_import_in_app_pm_hard_assert() -> anyhow::Result<()>
     Ok(())
 }
 
-/// Known gap — hover on inherited method call `$self->shared` in App.pm returns null.
+/// Known gap — hover on inherited method call `$self->shared` at line 15 of App.pm.
 ///
-/// Observed FAIL on current main: receiver type inference not yet implemented.
+/// After correcting the original off-by-one (line 16 was `}`, line 15 is the actual
+/// `return $self->shared;`), the hover provider returns the enclosing `sub run` context
+/// rather than hover info for the target inherited method `shared` from Base.pm.
+/// This confirms the gap: call-site hover for inherited method calls does not resolve
+/// to the callee, only to the enclosing subroutine.
+///
 /// Hard assertion written; test is ignored until the gap is fixed.
 /// Tracking: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3070
 #[test]
-#[ignore = "real gap — hover on inherited method call returns null; receiver type inference not implemented (tracking #3070)"]
+#[ignore = "real gap — hover on inherited method call site returns enclosing sub context, not callee; call-site hover does not resolve inherited method target (tracking #3070)"]
 fn scenario_20_hover_inherited_method_call_hard_assert() -> anyhow::Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_20: perl-lsp binary not found");
@@ -1316,10 +1321,12 @@ fn scenario_20_hover_inherited_method_call_hard_assert() -> anyhow::Result<()> {
     let harness = create_harness()?;
     harness.open_file("lib/RealBaseline/App.pm", APP_PM)?;
     harness.open_file("lib/RealBaseline/Base.pm", BASE_PM)?;
-    std::thread::sleep(Duration::from_millis(300));
+    // Give the workspace indexer time to settle before requesting hover.
+    std::thread::sleep(Duration::from_millis(500));
 
-    // Line 16 (0-indexed): `    return $self->shared;` — col 18 inside `shared`.
-    let result = harness.hover("lib/RealBaseline/App.pm", 16, 18);
+    // Line 15 (0-indexed): `    return $self->shared;` — col 18 inside `shared`.
+    // The hover provider resolves to the enclosing `sub run`, not the inherited `shared`.
+    let result = harness.hover("lib/RealBaseline/App.pm", 15, 18);
 
     assert!(
         result.is_ok(),
@@ -1328,7 +1335,14 @@ fn scenario_20_hover_inherited_method_call_hard_assert() -> anyhow::Result<()> {
 
     let hov = result?
         .expect("hover on `$self->shared` must return a non-null result with hover contents");
-    assert!(hov.get("contents").is_some(), "hover result must have `contents` field: {hov:?}");
+    let contents = hov.get("contents").expect("hover result must have `contents` field");
+    // The contents must mention `shared` — confirming the hover resolves to the right method.
+    // Currently fails: provider returns `sub run` context instead.
+    let contents_str = contents.to_string();
+    assert!(
+        contents_str.contains("shared"),
+        "hover contents for `$self->shared` must mention `shared` (not enclosing sub): {contents:?}"
+    );
 
     harness.assert_no_crash();
     Ok(())
