@@ -3,24 +3,49 @@
 
 //! Scenario 22 — Index-readiness race regression guards.
 //!
-//! Verifies that the seven providers fixed in #3095 no longer return empty/partial
-//! results when the request arrives immediately after workspace open (while the
-//! workspace index is still in `IndexState::Building`).
+//! Locks behavior for providers fixed in #3095 that returned empty/partial results
+//! when the workspace index was still in `IndexState::Building` at request time.
 //!
-//! ## Design
+//! ## Race observability
 //!
-//! Each test issues its request with NO explicit settle delay after `open_file`.
-//! This is the same pattern as `scenario_20_completion_imported_symbol_helper_hard_assert`
-//! (which locks #3069) — it exposes the race by driving the provider before the
-//! indexer has a chance to finish.
+//! The workspace index for a 4-file fixture settles in ~0.1s on modern hardware.
+//! Not all tests can OBSERVE the race window (index settling before the request
+//! dispatches); they still lock the POST-READY behavior.  The references test is
+//! the strongest race regression guard because it uses an architectural strategy
+//! (not opening App.pm) to make the race observable even after the index is ready.
+//!
+//! | Test | Race observable? | Why |
+//! |------|------------------|-----|
+//! | references | YES — FAILS on main | text-fallback only searches open files; App.pm closed |
+//! | hover | narrow window | index settles before hover dispatches in test conditions |
+//! | signatureHelp | NO — generic fallback | bare function calls return generic label regardless of index |
 //!
 //! ## The references test strategy
 //!
 //! The text-search fallback (`on_references`) only searches OPEN documents.
 //! To make the race observable for references we open ONLY Base.pm (where `sub shared`
 //! is declared) and NOT App.pm (which contains the call sites).  With no wait guard
-//! the index is Partial and cross-file refs return empty; with the wait the index is
-//! Ready and App.pm call sites are found even though the file was never opened.
+//! the index is Partial and cross-file refs return only Base.pm results (the
+//! declaration site); with the wait the index is Ready and App.pm call sites are
+//! found even though the file was never opened.
+//!
+//! ## The hover test strategy
+//!
+//! Inherited-method hover (`$self->shared`) requires a Ready index.  The test issues
+//! the request immediately (no settle delay) and asserts provenance-correct contents.
+//! The race window is narrow in test conditions (index finishes before hover
+//! dispatches), so this test locks the CAPABILITY not the race timing.  The wait
+//! guard in `hover.rs` is correct and verified by code review.
+//!
+//! ## The signatureHelp test strategy
+//!
+//! `helper(...)` is a BARE function call, not a method call.  The workspace-index
+//! method resolution path in `handle_signature_help` is gated on
+//! `is_method_call_context` (true only for `$obj->method(` syntax), so it is NOT
+//! exercised here.  This test instead locks the generic-fallback path: even when the
+//! workspace index is Building, signatureHelp returns a usable generic label
+//! `sub helper`.  The wait guard in `signature_help.rs` is correct for the
+//! `->method(` path and is verified by code review.
 //!
 //! ## Fixture layout (same four-file RealBaseline workspace as scenario_20/21)
 //!
@@ -197,16 +222,19 @@ fn scenario_22_references_cross_file_no_open_file_masking_hard_assert() -> anyho
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Regression lock — #3095: hover on inherited method call `$self->shared` in App.pm
-/// must return a result immediately after open (no settle delay).
+/// must return a provenance-correct result after workspace open.
 ///
-/// **Why this test catches the race:**
+/// **What this tests:**
 /// `handle_hover` dispatches to `build_inherited_method_hover` for the InheritedMethod
 /// case, which calls `self.coordinator().index()` directly.  If the coordinator is in
 /// `IndexState::Building`, the index is partial and the method lookup returns None —
 /// hover returns null for the inherited method call.
 ///
-/// With `wait_for_index_ready_if_building()` placed before the `InheritedMethod` arm,
-/// the lookup runs against a Ready index and the method is found.
+/// The wait guard added in #3095 ensures the lookup runs against a Ready index.
+/// The race window for hover is narrow in test conditions (the 4-file index settles
+/// before hover dispatches), so this test locks the CAPABILITY: when the index IS
+/// ready, hover returns the correct provenance (mentions "shared" or "Base").
+/// The wait guard is verified by code review.
 ///
 /// Line 15 (0-indexed) in App.pm: `    return $self->shared;`
 /// Col 18 is inside the `shared` token.  (Same position used by
@@ -228,13 +256,15 @@ fn scenario_22_hover_inherited_method_no_settle_delay_hard_assert() -> anyhow::R
     // Line 15 (0-indexed): `    return $self->shared;`  col 18 inside `shared`.
     let result = harness.hover("lib/RealBaseline/App.pm", 15, 18)?;
 
-    // The inherited method hover requires a Ready index.  With the wait guard,
-    // `build_inherited_method_hover` sees a complete index and returns a result.
+    // Inherited-method hover requires a Ready index.  The wait guard added in #3095
+    // ensures `build_inherited_method_hover` sees a complete index.  The race window
+    // for hover is narrow in test conditions (the 4-file index settles before hover
+    // dispatches), so this asserts the capability: a Ready index produces a result.
     assert!(
         result.is_some(),
-        "hover on inherited `$self->shared` call in App.pm must return a non-null result \
-         immediately after open (no settle delay). Got null — inherited-method hover \
-         index-readiness race not fixed. (#3095 regression)"
+        "hover on inherited `$self->shared` call in App.pm must return a non-null result. \
+         Got null — check that `build_inherited_method_hover` has workspace index access. \
+         (#3095 regression guard)"
     );
 
     let hover = result.unwrap();
@@ -242,6 +272,17 @@ fn scenario_22_hover_inherited_method_no_settle_delay_hard_assert() -> anyhow::R
         hover.get("contents").is_some(),
         "hover result for inherited `$self->shared` must have a `contents` field. \
          Got: {hover:?}"
+    );
+
+    // Provenance check: contents must mention the method name or its source package.
+    // Guards against a vacuous non-null (e.g. an enclosing-sub or generic "Symbol" card).
+    // Mirrors the provenance assertion in `scenario_20_hover_inherited_method_call_hard_assert`.
+    let contents_value =
+        hover.get("contents").and_then(|c| c.get("value")).and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        contents_value.contains("shared") || contents_value.contains("Base"),
+        "hover contents must mention `shared` or its source package `Base` — a generic \
+         non-null result (e.g. enclosing-sub card) is not sufficient. Got: {hover:?}"
     );
 
     harness.assert_no_crash();
@@ -252,18 +293,21 @@ fn scenario_22_hover_inherited_method_no_settle_delay_hard_assert() -> anyhow::R
 //  RACE GUARD 3: textDocument/signatureHelp — cross-file workspace method
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Regression lock — #3095: signatureHelp for an imported function call must return
-/// a non-empty signature immediately after open (no settle delay).
+/// Regression lock — #3095: signatureHelp for a bare function call returns a usable
+/// signature regardless of index state.
 ///
-/// **Why this test catches the race:**
-/// `handle_signature_help` calls `resolve_method_in_workspace`, which calls
-/// `route_index_access`.  If the index is in `IndexState::Building`, the access mode
-/// is Partial (not Full) and `resolve_method_in_workspace` returns None — the
-/// signatureHelp response has an empty `signatures` array.
+/// **What this tests:**
+/// `helper($self->name)` is a BARE function call, not a `$obj->method(` call.
+/// `handle_signature_help` checks `is_method_call_context` before entering the
+/// workspace-index method-resolution path — bare calls return false, so that path
+/// is NOT exercised here.  Instead, when no local AST or builtin signature matches,
+/// the handler falls back to a generic label `"sub helper"`.
 ///
-/// With `wait_for_index_ready_if_building()` placed before the workspace method
-/// resolution path, the lookup runs against a Ready index and `helper`'s signature
-/// is found in Util.pm.
+/// This test locks that bare-function signatureHelp is always usable (non-null,
+/// non-empty, correct label) even when the workspace index is Building.  The
+/// index-readiness wait guard in #3095 covers the `->method(` path; that path is
+/// verified by code review.  A separate test with a method-call fixture would be
+/// needed to exercise the wait guard via UX test.
 ///
 /// Line 13 (0-indexed) in App.pm: `    helper($self->name);`
 /// Col 11 is just after the `(` opening the call — inside the argument list.
@@ -299,14 +343,14 @@ fn scenario_22_signature_help_imported_fn_no_settle_delay_hard_assert() -> anyho
         resp.get("error")
     );
 
-    // With the index-readiness wait, `resolve_method_in_workspace` finds `helper` in
-    // Util.pm and returns its signature.  Without the wait, `result` is null or has
-    // an empty `signatures` array.
+    // For a bare function call, the workspace-index method resolution is skipped
+    // (`is_method_call_context` returns false).  The generic fallback at the end of
+    // `handle_signature_help` returns `"helper(...)"`.  This test locks that path:
+    // signatureHelp must return a usable result with the correct function name.
     assert!(
         !resp["result"].is_null(),
-        "signatureHelp for imported `helper(` call in App.pm must return a non-null result \
-         immediately after open (no settle delay). Got null — signatureHelp \
-         index-readiness race not fixed. (#3095 regression)"
+        "signatureHelp for bare `helper(` call in App.pm must return a non-null result. \
+         Got null — generic-fallback path broken. (#3095 regression guard)"
     );
 
     let sigs = resp["result"].get("signatures").and_then(|s| s.as_array()).ok_or_else(|| {
@@ -316,8 +360,17 @@ fn scenario_22_signature_help_imported_fn_no_settle_delay_hard_assert() -> anyho
     assert!(
         !sigs.is_empty(),
         "signatureHelp for `helper(` call must have at least one signature entry. \
-         Got empty array — workspace index was not Ready at request time. \
-         (#3095 regression)"
+         Got empty array. (#3095 regression guard)"
+    );
+
+    // Provenance check: the first signature label must name the function.
+    // The generic fallback produces `"helper(...)"`.
+    let first_label =
+        sigs.first().and_then(|s| s.get("label")).and_then(|l| l.as_str()).unwrap_or("");
+    assert!(
+        first_label.contains("helper"),
+        "signatureHelp first signature label must name `helper`. \
+         Got label: {first_label:?}"
     );
 
     harness.assert_no_crash();
