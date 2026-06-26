@@ -18,9 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{eyre, Context, Result};
 use perl_parser::NodeKind;
-use perl_parser_core::hir::{HirKind, disposition};
+use perl_parser_core::hir::{disposition, HirKind};
 use serde::Serialize;
 
 use crate::utils::project_root;
@@ -111,9 +111,13 @@ fn build_artifact() -> Result<HirCoverageArtifact> {
     })
 }
 
-fn coverage_rows() -> Result<Vec<HirCoverageRow>> {
-    // Guard: the shared registry must cover all AST kinds before we build rows.
-    let missing = disposition::missing_dispositions();
+/// Validate that the disposition registry covers every AST kind.
+///
+/// Returns `Err` if any names in `missing` are non-empty, describing which
+/// AST kinds lack a registered disposition.  Extracted so that tests can
+/// exercise the error path with synthetic missing-name lists without modifying
+/// the global registry.
+fn validate_registry_completeness(missing: &[&str]) -> Result<()> {
     if !missing.is_empty() {
         return Err(eyre!(
             "HIR disposition registry is incomplete; missing entries for AST kinds: {}\n\
@@ -122,18 +126,39 @@ fn coverage_rows() -> Result<Vec<HirCoverageRow>> {
             missing.join(", ")
         ));
     }
+    Ok(())
+}
+
+/// Validate that every HIR kind referenced by `hir_refs` exists in `valid_hir_kinds`.
+///
+/// `ast_kind` is the registry key being validated (used only in the error message).
+/// Extracted so that tests can exercise the error path with a synthetic unknown
+/// HIR kind name without modifying any global table.
+fn validate_hir_kind_ref(
+    ast_kind: &str,
+    hir_kind: &str,
+    valid_hir_kinds: &BTreeSet<&str>,
+) -> Result<()> {
+    if !valid_hir_kinds.contains(hir_kind) {
+        return Err(eyre!(
+            "disposition registry for `{ast_kind}` references unknown HIR kind \
+             `{hir_kind}`; update `hir_kinds_for()` in \
+             `crates/perl-parser-core/src/hir/disposition.rs`."
+        ));
+    }
+    Ok(())
+}
+
+fn coverage_rows() -> Result<Vec<HirCoverageRow>> {
+    // Guard: the shared registry must cover all AST kinds before we build rows.
+    let missing = disposition::missing_dispositions();
+    validate_registry_completeness(&missing)?;
 
     // Validate that the HIR kinds referenced in the registry actually exist.
     let valid_hir_kinds: BTreeSet<&str> = HirKind::ALL_KIND_NAMES.iter().copied().collect();
     for &ast_kind in NodeKind::ALL_KIND_NAMES {
         for &hir_kind in disposition::hir_kinds_for(ast_kind) {
-            if !valid_hir_kinds.contains(hir_kind) {
-                return Err(eyre!(
-                    "disposition registry for `{ast_kind}` references unknown HIR kind \
-                     `{hir_kind}`; update `hir_kinds_for()` in \
-                     `crates/perl-parser-core/src/hir/disposition.rs`."
-                ));
-            }
+            validate_hir_kind_ref(ast_kind, hir_kind, &valid_hir_kinds)?;
         }
     }
 
@@ -354,5 +379,49 @@ mod tests {
         assert_eq!(artifact.subsystem, "hir_coverage", "subsystem slug must be hir_coverage");
         assert!(artifact.total_hir_kinds > 0, "total_hir_kinds must be positive");
         Ok(())
+    }
+
+    #[test]
+    fn validate_registry_completeness_errors_on_missing_entries() {
+        // Drive the extracted error path: when missing is non-empty,
+        // validate_registry_completeness() must return Err with a message that
+        // names the missing AST kinds.  This test would FAIL if the error path
+        // were removed or the message text changed.
+        let missing = vec!["FakeKindA", "FakeKindB"];
+        let err = validate_registry_completeness(&missing).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("HIR disposition registry is incomplete"),
+            "error message must mention 'HIR disposition registry is incomplete'; got: {msg}"
+        );
+        assert!(msg.contains("FakeKindA"), "error message must name the missing kind; got: {msg}");
+        assert!(msg.contains("FakeKindB"), "error message must name all missing kinds; got: {msg}");
+        // Confirm the happy path: empty slice is Ok(()).
+        assert!(validate_registry_completeness(&[]).is_ok(), "empty missing list must be Ok");
+    }
+
+    #[test]
+    fn validate_hir_kind_ref_errors_on_unknown_hir_kind() {
+        // Drive the extracted error path: when a HIR kind name is not in the
+        // valid set, validate_hir_kind_ref() must return Err naming both the
+        // ast_kind and the unknown hir_kind.  This test would FAIL if the
+        // error path were removed or the message text changed.
+        let valid: BTreeSet<&str> = ["PackageDecl", "SubDecl"].iter().copied().collect();
+        let err = validate_hir_kind_ref("FakeAstKind", "NonExistentHirKind", &valid).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("FakeAstKind"), "error message must name the ast_kind; got: {msg}");
+        assert!(
+            msg.contains("NonExistentHirKind"),
+            "error message must name the unknown hir_kind; got: {msg}"
+        );
+        assert!(
+            msg.contains("references unknown HIR kind"),
+            "error message must include 'references unknown HIR kind'; got: {msg}"
+        );
+        // Confirm the happy path: a known HIR kind is Ok(()).
+        assert!(
+            validate_hir_kind_ref("FakeAstKind", "PackageDecl", &valid).is_ok(),
+            "known HIR kind must be Ok"
+        );
     }
 }
