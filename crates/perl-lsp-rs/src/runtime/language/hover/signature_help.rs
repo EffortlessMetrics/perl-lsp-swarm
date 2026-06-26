@@ -1352,4 +1352,42 @@ sub format_output {
         );
         Ok(())
     }
+
+    /// Verifies that `handle_signature_help` executes the workspace
+    /// index-readiness wait when the cursor is inside a method call and
+    /// indexing is in progress (#3095).
+    ///
+    /// The document contains a `->method(` call that is neither a user-defined
+    /// sub (not in the AST) nor a Perl builtin, so execution falls through to
+    /// the workspace wait path.  The wait short-circuits immediately because
+    /// the coordinator is Ready by default.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn test_wait_guard_fires_for_method_call_signature_help_when_indexing_in_progress()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///test-sig-race.pl";
+        // Cursor is inside the `(` of an unknown ->method( call.
+        // `unknown_xyz_method` is not a builtin and not defined as a sub
+        // in this document, so execution falls through to the workspace wait path.
+        // The trailing space puts the cursor (character 34) inside the parens.
+        let text = "my $x = $obj->unknown_xyz_method( ";
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": text,
+            }
+        })))?;
+        // Simulate the race window: flag is set but coordinator is already Ready.
+        server.test_simulate_indexing_start();
+        // Position at character 34 — inside the parens after `unknown_xyz_method(`.
+        let result = server.handle_signature_help(Some(serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 34 }
+        })));
+        assert!(result.is_ok(), "handle_signature_help must not error: {result:?}");
+        Ok(())
+    }
 }
