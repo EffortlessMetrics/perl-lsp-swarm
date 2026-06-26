@@ -1,8 +1,8 @@
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 
-use perl_parser_core::hir::{HirKind, lower_ast};
 use perl_parser_core::Parser;
+use perl_parser_core::hir::{HirKind, lower_ast};
 
 #[test]
 fn test_use_vstring() {
