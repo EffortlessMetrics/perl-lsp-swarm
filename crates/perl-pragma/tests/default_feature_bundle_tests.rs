@@ -269,6 +269,34 @@ fn pragma_environment_snapshot_before_first_pragma_has_default_bundle() -> TestR
     Ok(())
 }
 
+/// `PragmaQueryCursor::snapshot_at` falls back to `PragmaSnapshot::default()`
+/// (via `map_or_else(PragmaSnapshot::default, ...)`) when no entry matches —
+/// this is the `entry_for_offset` returning `None` branch.
+///
+/// Before the fix: `PragmaSnapshot::default()` derived from `PragmaState`
+/// which had `features: vec![]`, so `has_feature("indirect")` returned `false`
+/// on the cursor path even though Perl's pre-pragma file scope has `:default`
+/// features on.  After the fix `PragmaState::default()` seeds `features` with
+/// `DEFAULT_FEATURES`, so `PragmaSnapshot::default()` inherits the bundle.
+#[test]
+fn cursor_snapshot_at_on_empty_map_has_default_bundle() -> TestResult {
+    // An empty program produces no pragma entries — the cursor must return a
+    // default snapshot that carries the full `:default` bundle.
+    let ast = program(vec![]);
+    let environment = CompileTimePragmaEnvironment::build(&ast);
+    let pragma_map = environment.map();
+    let mut cursor = pragma_map.cursor();
+
+    // This exercises PragmaQueryCursor::snapshot_at → entry_for_offset → None
+    // → map_or_else(PragmaSnapshot::default, …) → PragmaState::default().
+    let snapshot = cursor.snapshot_at(pragma_map, 0);
+    assert_has_all(snapshot.state(), DEFAULT_BUNDLE);
+    // Strict/warnings must not bleed in from the default baseline.
+    assert!(!snapshot.state().strict_vars, "cursor default must not enable strict_vars");
+    assert!(!snapshot.state().warnings, "cursor default must not enable warnings");
+    Ok(())
+}
+
 /// `build_scoped_body` (in `range_builder/walk.rs`) saves the caller's
 /// `current_state` before entering a block and restores it on exit.  After the
 /// PR the initial `current_state` that `CompileTimePragmaEnvironment::build`
