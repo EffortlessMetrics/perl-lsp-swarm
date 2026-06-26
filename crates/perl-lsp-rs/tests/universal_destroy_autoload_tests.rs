@@ -28,17 +28,17 @@ fn extract_completions(response: &Value) -> Result<Vec<String>, Box<dyn std::err
 }
 
 /// Helper to find a completion item by label
-fn find_completion_item<'a>(response: &'a Value, label: &str) -> Result<Option<&'a Value>, Box<dyn std::error::Error>> {
+fn find_completion_item<'a>(
+    response: &'a Value,
+    label: &str,
+) -> Result<Option<&'a Value>, Box<dyn std::error::Error>> {
     let items = response
         .get("items")
         .and_then(|v| v.as_array())
         .ok_or("Expected completion items array")?;
 
     Ok(items.iter().find(|item| {
-        item.get("label")
-            .and_then(|l| l.as_str())
-            .map(|l| l == label)
-            .unwrap_or(false)
+        item.get("label").and_then(|l| l.as_str()).map(|l| l == label).unwrap_or(false)
     }))
 }
 
@@ -127,14 +127,11 @@ $obj->
     let destroy_item = find_completion_item(&response, "DESTROY")?
         .ok_or("DESTROY not found in completion items")?;
 
-    let doc = destroy_item
-        .get("documentation")
-        .ok_or("DESTROY completion item missing documentation")?;
+    let doc =
+        destroy_item.get("documentation").ok_or("DESTROY completion item missing documentation")?;
 
     // Verify documentation mentions "Destructor"
-    let doc_str = doc
-        .as_str()
-        .ok_or("Documentation should be a string")?;
+    let doc_str = doc.as_str().ok_or("Documentation should be a string")?;
 
     assert!(
         doc_str.contains("Destructor") || doc_str.contains("destructor"),
@@ -182,12 +179,12 @@ $obj->
         .get("documentation")
         .ok_or("AUTOLOAD completion item missing documentation")?;
 
-    let doc_str = doc
-        .as_str()
-        .ok_or("Documentation should be a string")?;
+    let doc_str = doc.as_str().ok_or("Documentation should be a string")?;
 
     assert!(
-        doc_str.contains("AUTOLOAD") || doc_str.contains("Automatic") || doc_str.contains("dispatcher"),
+        doc_str.contains("AUTOLOAD")
+            || doc_str.contains("Automatic")
+            || doc_str.contains("dispatcher"),
         "AUTOLOAD documentation should mention method dispatch, got: {}",
         doc_str
     );
@@ -253,16 +250,11 @@ $obj->DESTROY;
         }),
     )?;
 
-    let locations = response
-        .as_array()
-        .ok_or("Expected array result for definition")?;
+    let locations = response.as_array().ok_or("Expected array result for definition")?;
 
     // We should either get UNIVERSAL::DESTROY or a location in UNIVERSAL.pm
     // The important thing is that we get some result (not empty)
-    assert!(
-        !locations.is_empty(),
-        "Definition should be found for DESTROY method"
-    );
+    assert!(!locations.is_empty(), "Definition should be found for DESTROY method");
 
     Ok(())
 }
