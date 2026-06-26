@@ -1,6 +1,6 @@
 use crate::{
-    PragmaState, features_enabled_by_version, parse_perl_version, pragma_arg_items,
-    version::DEFAULT_FEATURES,
+    features_enabled_by_version, parse_perl_version, pragma_arg_items, version::DEFAULT_FEATURES,
+    PragmaState,
 };
 
 fn feature_items(arg: &str) -> Vec<String> {
