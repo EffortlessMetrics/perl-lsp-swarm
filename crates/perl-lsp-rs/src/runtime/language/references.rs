@@ -403,30 +403,45 @@ impl LspServer {
                             IndexAccessMode::Full(coordinator) => {
                                 let index = coordinator.index();
                                 if let Some(symbol_key) = workspace_symbol_key.as_ref() {
+                                    // Guard: for sigil-prefixed symbols (lexical variables) with
+                                    // include_declaration=true, skip the semantic tier.  Variable
+                                    // references are not "compiler-source-backed" in the sense
+                                    // required by the SemanticSourceBacked tier; they belong in
+                                    // the workspace-index tier regardless of include_declaration.
+                                    //
+                                    // Subroutine references (no sigil) may use the semantic tier
+                                    // with include_declaration=true — that is exactly the #2673
+                                    // fix: VS Code defaults to includeDeclaration=true and we now
+                                    // serve those requests from the high-fidelity source-backed
+                                    // path instead of falling back to the workspace-index tier.
                                     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
-                                    if let Some(mut live_locations) = self
-                                        .live_source_backed_reference_locations(
-                                            uri,
-                                            symbol_key.name.as_ref(),
-                                            offset,
-                                            include_declaration,
-                                        )
-                                    {
-                                        live_locations.truncate(cap);
-                                        tracing::debug!(
-                                            count = live_locations.len(),
-                                            elapsed = ?start.elapsed(),
-                                            "References: returned live source-backed compiler facts"
-                                        );
-                                        let result_count = live_locations.len();
-                                        return Ok((
-                                            Some(json!(live_locations)),
-                                            ReferencesAnsweringTier::SemanticSourceBacked,
-                                            index_state,
-                                            result_count,
-                                            0,
-                                            start.elapsed().as_micros(),
-                                        ));
+                                    let symbol_is_variable = symbol_key.sigil.is_some();
+                                    #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+                                    if !symbol_is_variable {
+                                        if let Some(mut live_locations) = self
+                                            .live_source_backed_reference_locations(
+                                                uri,
+                                                symbol_key.name.as_ref(),
+                                                offset,
+                                                include_declaration,
+                                            )
+                                        {
+                                            live_locations.truncate(cap);
+                                            tracing::debug!(
+                                                count = live_locations.len(),
+                                                elapsed = ?start.elapsed(),
+                                                "References: returned live source-backed compiler facts"
+                                            );
+                                            let result_count = live_locations.len();
+                                            return Ok((
+                                                Some(json!(live_locations)),
+                                                ReferencesAnsweringTier::SemanticSourceBacked,
+                                                index_state,
+                                                result_count,
+                                                0,
+                                                start.elapsed().as_micros(),
+                                            ));
+                                        }
                                     }
 
                                     tracing::debug!(key = ?symbol_key, "Looking for references");
