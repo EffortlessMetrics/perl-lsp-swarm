@@ -75,8 +75,12 @@ impl ParserContext {
         let mut tokens = VecDeque::new();
         let position_tracker = PositionTracker::new(source.clone());
 
-        // Tokenize the source using mode-aware lexer
-        let mut lexer = perl_lexer::PerlLexer::new(&source);
+        // Tokenize the source using mode-aware lexer.
+        // `with_source_symbols` performs a lightweight pre-pass to collect
+        // `sub NAME` declarations so the lexer can correctly treat unknown
+        // barewords followed by `/` as regex delimiters rather than division
+        // (issue #1353).
+        let mut lexer = perl_lexer::PerlLexer::with_source_symbols(&source);
         loop {
             match lexer.next_token() {
                 Some(token) => {

@@ -27,3 +27,6 @@ pub use crate::builtins::phf_lookup::{
 pub use crate::tokenizer::token_wrapper::{PositionTracker, TokenWithPosition};
 #[allow(deprecated)]
 pub use crate::tokenizer::util::{code_slice, find_data_marker_byte, find_data_marker_byte_lexed};
+
+// symbol_table module — pre-pass sub declaration table for slash disambiguation
+pub use crate::symbol_table::LocalSymbolTable;

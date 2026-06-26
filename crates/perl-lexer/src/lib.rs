@@ -72,6 +72,7 @@
 //!     parse_interpolation: true,  // Parse string interpolation
 //!     track_positions: true,      // Track line/column positions
 //!     max_lookahead: 1024,        // Maximum lookahead for disambiguation
+//!     symbol_table: None,         // No pre-pass symbol table
 //! };
 //!
 //! let mut lexer = PerlLexer::with_config("my $x = 1;", config);
@@ -149,6 +150,7 @@ mod lexer;
 pub mod limits;
 pub mod mode;
 mod quote_handler;
+pub mod symbol_table;
 pub mod token;
 pub mod tokenizer;
 mod unicode;
@@ -1941,7 +1943,11 @@ impl<'a> PerlLexer<'a> {
             } else {
                 // Mirror parser bare-builtin handling so `/` after builtins like
                 // `join` or `print` is lexed as a regex term, not division.
-                if is_builtin_function(text) {
+                // Also check the pre-pass symbol table for user-declared subs so
+                // that `sub foo; foo /regex/;` is correctly parsed (issue #1353).
+                let is_term_introducing = is_builtin_function(text)
+                    || self.config.symbol_table.as_ref().is_some_and(|st| st.is_known_sub(text));
+                if is_term_introducing {
                     self.mode = LexerMode::ExpectTerm;
                 } else {
                     self.mode = LexerMode::ExpectOperator;
