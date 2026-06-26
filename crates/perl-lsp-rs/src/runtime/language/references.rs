@@ -1655,4 +1655,119 @@ mod tests {
 
         Ok(())
     }
+
+    // ── includeDeclaration=true call-observation test (ripr+ gate) ──────────
+
+    /// Drive `live_source_backed_reference_locations` (lines 862–863) through the
+    /// real `textDocument/references` handler with `includeDeclaration=true`.
+    ///
+    /// Before #2673 the source-backed path bailed early with `return None` when
+    /// `include_declaration==true`, causing every such request to fall through to
+    /// the workspace-index tier and leaving the declaration off the result.
+    ///
+    /// This test proves the fix is live end-to-end:
+    /// - The `answering_tier` in the provider-decision trace must be
+    ///   `semantic_source_backed` (proving the early bail was removed).
+    /// - The result returned to the client must contain the declaration site
+    ///   (the `sub target` definition line), proving the append logic runs.
+    ///
+    /// The test would FAIL if the fix were reverted: the early bail would cause
+    /// `live_source_backed_reference_locations` to return `None`, the provider
+    /// would fall through to the workspace-index tier, `answering_tier` would be
+    /// `workspace_exact` or `workspace_text` rather than `semantic_source_backed`,
+    /// and the declaration-line assertion would be unreliable under both tiers.
+    #[test]
+    fn handle_references_include_declaration_true_reaches_source_backed_tier_and_appends_declaration()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>,
+        ));
+        let server = LspServer::with_output(output);
+
+        // A package with a named sub definition followed by a call site.
+        // This is the minimal fixture that triggers the semantic-source-backed tier
+        // because the workspace index resolves `target` to the `sub target`
+        // definition via semantic queries.
+        let uri = "file:///test/incl_decl.pl";
+        let text = concat!(
+            "package InclDecl;\n",
+            "\n",
+            "sub target {\n",      // line 2  — declaration site
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "sub caller {\n",
+            "    target();\n",     // line 7  — first call site
+            "    InclDecl::target();\n", // line 8  — second call site
+            "}\n",
+            "\n",
+            "1;\n",
+        );
+        server.test_apply_did_open(uri, text, 1)?;
+
+        // Position cursor on the bare `target` inside `caller` (line 7, col 4).
+        // `includeDeclaration: true` is the VS Code default.
+        let params = serde_json::json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 7, "character": 4},
+            "context": {"includeDeclaration": true}
+        });
+
+        let result = server.test_handle_references(Some(params))?;
+
+        // ── Tier assertion ────────────────────────────────────────────────────
+        // Read the provider-decision trace; the answering tier must be
+        // `semantic_source_backed`.  If the early bail (pre-fix) were present
+        // `live_source_backed_reference_locations` would return `None` and the
+        // provider would fall through to `workspace_exact` / `workspace_text`.
+        let explanation = server
+            .handle_execute_command(Some(serde_json::json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references"}]
+            })))?
+            .ok_or("missing explain-provider-decision response")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing request_receipt")?;
+
+        assert_eq!(
+            receipt.get("answering_tier").and_then(serde_json::Value::as_str),
+            Some("semantic_source_backed"),
+            "includeDeclaration=true must reach the semantic_source_backed tier, \
+             not fall through to a lower-fidelity workspace tier (pre-fix bail would produce workspace_exact)"
+        );
+        assert_eq!(
+            receipt.get("include_declaration").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "provider trace must record include_declaration=true"
+        );
+
+        // ── Declaration-append assertion ──────────────────────────────────────
+        // The result must contain the `sub target` declaration line (line 2).
+        // This proves that lines 940–953 (the dedup-append block) executed.
+        let locations = result
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .ok_or("textDocument/references must return a non-null array")?;
+
+        let decl_line: u64 = 2; // `sub target {` is at line index 2 (0-based)
+        let contains_decl = locations.iter().any(|loc| {
+            loc.pointer("/range/start/line")
+                .and_then(serde_json::Value::as_u64)
+                .map_or(false, |l| l == decl_line)
+        });
+        assert!(
+            contains_decl,
+            "includeDeclaration=true result must contain the declaration line ({decl_line}); \
+             got locations: {locations:?}"
+        );
+
+        Ok(())
+    }
 }
