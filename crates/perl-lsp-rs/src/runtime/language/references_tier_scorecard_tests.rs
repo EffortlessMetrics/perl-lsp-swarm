@@ -373,6 +373,27 @@ use warnings;
         sorted_us[idx.min(sorted_us.len() - 1)]
     }
 
+    /// Call-observation proof: `percentile` returns the exact index element
+    /// at the percentile position for a known sorted slice.
+    ///
+    /// Naming follows the `_call_observation` convention from rename.rs so ripr
+    /// can classify the seam as strongly discriminated.
+    ///
+    /// H-P-1: empty slice → 0 (no panic)
+    /// H-P-2: p0 of [10, 20, 30] → 10 (first element)
+    /// H-P-3: p100 of [10, 20, 30] → 30 (last element)
+    /// H-P-4: p50 of [10, 20, 30] → 20 (middle element)
+    /// H-P-5: p50 of [5] → 5 (singleton)
+    #[test]
+    fn percentile_call_observation() {
+        assert_eq!(percentile(&[], 50.0), 0, "H-P-1: empty slice must return 0");
+        let sorted = [10u64, 20, 30];
+        assert_eq!(percentile(&sorted, 0.0), 10, "H-P-2: p0 must be the first element");
+        assert_eq!(percentile(&sorted, 100.0), 30, "H-P-3: p100 must be the last element");
+        assert_eq!(percentile(&sorted, 50.0), 20, "H-P-4: p50 of 3-element slice must be middle");
+        assert_eq!(percentile(&[5], 50.0), 5, "H-P-5: singleton slice must return its only element");
+    }
+
     fn print_routing_matrix(rows: &[Row]) {
         eprintln!();
         eprintln!("=== References Routing Matrix (controlled fixtures — NOT usage share) ===");
@@ -575,6 +596,17 @@ use warnings;
                 false,
             )?);
         }
+
+        // H-0: Strong row-count discriminator — proves all five fixture blocks pushed
+        // their expected rows (scalar×3 + sub_calls×3 + qualified×2 + empty×1 +
+        // sub_no_decl×1 = 10).  This assertion would fail if any rows.push() call
+        // were removed, giving ripr a concrete binding for the push seams.
+        assert_eq!(
+            rows.len(),
+            10,
+            "expected 10 rows (3+3+2+1+1 across five fixture blocks), got {}",
+            rows.len()
+        );
 
         // ---------------------------------------------------------------------------
         // Emit the routing matrix (soft observations)
