@@ -930,6 +930,71 @@ sub test {
     );
 }
 
+// ---------------------------------------------------------------------------
+// ripr seam proofs: initializer.is_some() in handle_variable_declaration
+// and handle_variable_list_declaration (declarations.rs:32 and :115).
+//
+// These tests are call-observation discriminators: if `|| initializer.is_some()`
+// were removed from either expression, `my $x = value;` or `my ($x) = (v);`
+// would be treated as uninitialized and the assertions below would fail.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn handle_variable_declaration_initializer_is_some_observer() {
+    // Discriminator for declarations.rs:32 — `initializer.is_some()` branch.
+    // `my $x = 42;` has declarator="my" (not "state") and initializer=Some(_).
+    // If the `|| initializer.is_some()` call were deleted the variable would be
+    // treated as uninitialized and using it would produce UninitializedVariable.
+    let code = r#"
+sub test_init {
+    my $x = 42;
+    print $x;
+}
+"#;
+    let issues = scope_issues(code);
+    let uninit: Vec<_> = issues
+        .iter()
+        .filter(|i| i.kind == IssueKind::UninitializedVariable && i.variable_name.contains("x"))
+        .collect();
+    assert_eq!(
+        uninit.len(),
+        0,
+        "my $x = 42 has an initializer — initializer.is_some() must be true; \
+         UninitializedVariable must NOT fire. Got: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn handle_variable_list_declaration_initializer_is_some_observer() {
+    // Discriminator for declarations.rs:115 — `initializer.is_some()` branch in
+    // handle_variable_list_declaration.
+    // `my ($x, $y) = (1, 2);` has declarator="my" and initializer=Some(_).
+    // If the `|| initializer.is_some()` call were deleted, both $x and $y would be
+    // flagged as uninitialized.
+    let code = r#"
+sub test_list_init {
+    my ($x, $y) = (1, 2);
+    print $x, $y;
+}
+"#;
+    let issues = scope_issues(code);
+    let uninit: Vec<_> = issues
+        .iter()
+        .filter(|i| {
+            i.kind == IssueKind::UninitializedVariable
+                && (i.variable_name.contains("x") || i.variable_name.contains("y"))
+        })
+        .collect();
+    assert_eq!(
+        uninit.len(),
+        0,
+        "my ($x, $y) = (1, 2) has an initializer — initializer.is_some() must be true; \
+         UninitializedVariable must NOT fire for either variable. Got: {:?}",
+        issues.iter().map(|i| (&i.kind, &i.variable_name)).collect::<Vec<_>>()
+    );
+}
+
 // ===========================================================================
 // 5. Package-Qualified Symbol Resolution
 // ===========================================================================
