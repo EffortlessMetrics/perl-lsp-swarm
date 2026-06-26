@@ -1,6 +1,9 @@
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
 
+use perl_parser_core::hir::{HirKind, lower_ast};
+use perl_parser_core::Parser;
+
 #[test]
 fn test_use_vstring() {
     let source = r#"use v5.38.0;"#;
@@ -88,5 +91,44 @@ fn test_vstring_no_dot_single_component() {
         sexp.contains("(vstring \"v5\")"),
         "single-component vstring v5 should produce (vstring \"v5\") but got: {}",
         sexp
+    );
+}
+
+/// ripr+ gap 1: lower_ast must accept NodeKind::VString nodes produced by the
+/// parser without panic.  This test exercises the `TokenKind::VString →
+/// NodeKind::VString` arm in `primary.rs` (the core PR change) and then feeds
+/// the resulting AST through `lower_ast`, verifying that:
+///   1. The parser emits VString (sexp contains `(vstring ...)`), proving the
+///      new arm in primary.rs was reached.  The test FAILS if the arm is
+///      reverted — the sexp would contain `(string ...)` instead.
+///   2. `lower_ast` completes without panic and produces a HIR file with at
+///      least one `VariableDecl` item (from `my $v = v1.2.3;`), proving the
+///      VString literal is lowered gracefully through the HIR pipeline.
+#[test]
+fn test_vstring_lowered_by_lower_ast() {
+    let source = "my $v = v1.2.3;";
+    let mut parser = Parser::new(source);
+    let output = parser.parse_with_recovery();
+
+    // Verify the parser emitted the VString node (exercises primary.rs arm).
+    // If the PR's VString arm were reverted this assertion would fail because
+    // the sexp would contain `(string "v1.2.3")` not `(vstring "v1.2.3")`.
+    let sexp = output.ast.to_sexp();
+    assert!(
+        sexp.contains("(vstring \"v1.2.3\")"),
+        "primary.rs VString arm must emit (vstring ...) in AST; got: {}",
+        sexp
+    );
+
+    // lower_ast must not panic and must produce a HIR file.
+    let hir = lower_ast(&output.ast);
+
+    // The declaration `my $v = v1.2.3` must produce a VariableDecl item.
+    // This confirms the VString was encountered and lowered without error.
+    let has_var_decl = hir.items.iter().any(|item| matches!(item.kind, HirKind::VariableDecl(_)));
+    assert!(
+        has_var_decl,
+        "lower_ast must emit a VariableDecl item for `my $v = v1.2.3`; \
+         VString literal in the initializer must not cause lowering to skip the declaration"
     );
 }
