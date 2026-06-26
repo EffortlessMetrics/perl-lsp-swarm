@@ -198,6 +198,43 @@ impl LspServer {
             ));
         }
 
+        // Method call-site hover: check for `$invocant->method` BEFORE falling back to
+        // `find_definition`, which returns the enclosing sub body when the cursor is on
+        // an expression inside a sub.  Arrow-receiver detection is a pure text scan — it
+        // returns None when the cursor is NOT on a call site, so there is no false-positive
+        // risk for sub-declaration hovers.
+        #[cfg(feature = "workspace")]
+        if let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
+            let method_name = Self::get_token_at_position_static(text, offset);
+            if !method_name.is_empty() && !method_name.starts_with(['$', '@', '%']) {
+                let receiver_pkg = Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
+                if !receiver_pkg.is_empty() {
+                    // Try in-file ancestors first (no workspace lock needed)
+                    if let Some(hover_info) =
+                        analyzer.resolve_inherited_method_hover(&receiver_pkg, &method_name)
+                    {
+                        let details = hover_info.details.join("\n");
+                        return HoverExtracted::Complete(json!({
+                            "contents": {
+                                "kind": "markdown",
+                                "value": format!(
+                                    "**Method**\n\n`{}`\n\n{}",
+                                    hover_info.signature,
+                                    details
+                                ),
+                            },
+                        }));
+                    }
+                    // No in-file ancestor — defer to Phase 2 workspace BFS
+                    return HoverExtracted::InheritedMethod(
+                        receiver_pkg,
+                        method_name,
+                        uri.to_string(),
+                    );
+                }
+            }
+        }
+
         if let Some(symbol_info) = analyzer.find_definition(offset) {
             // Detect Moo/Moose attribute accessors (declaration == "has") early and
             // render a dedicated card that shows the attribute metadata clearly,
@@ -358,51 +395,6 @@ impl LspServer {
                     ),
                 },
             }));
-        }
-
-        // Inherited method hover: cursor is on a `->method()` call but find_definition
-        // found nothing in the current file.  Try the in-file class model first
-        // (resolve_inherited_method_hover handles same-file parent/role chains), then
-        // emit InheritedMethod for Phase 2 (workspace index BFS).
-        #[cfg(feature = "workspace")]
-        {
-            if let Some(raw_receiver) = Self::extract_arrow_receiver(text, offset) {
-                // Extract the method name token at the cursor
-                let method_name = Self::get_token_at_position_static(text, offset);
-                if !method_name.is_empty() && !method_name.starts_with(['$', '@', '%']) {
-                    // Resolve receiver to a package name.
-                    // `$self`, `$this`, `$class` map to current_package; bare identifiers
-                    // starting with uppercase are treated as package names.
-                    let receiver_pkg =
-                        Self::resolve_receiver_package_name(ast, offset, &raw_receiver);
-
-                    if !receiver_pkg.is_empty() {
-                        // Try in-file ancestors first (no workspace lock needed)
-                        if let Some(hover_info) =
-                            analyzer.resolve_inherited_method_hover(&receiver_pkg, &method_name)
-                        {
-                            let details = hover_info.details.join("\n");
-                            return HoverExtracted::Complete(json!({
-                                "contents": {
-                                    "kind": "markdown",
-                                    "value": format!(
-                                        "**Method**\n\n`{}`\n\n{}",
-                                        hover_info.signature,
-                                        details
-                                    ),
-                                },
-                            }));
-                        }
-
-                        // No in-file ancestor found — defer to Phase 2 workspace BFS
-                        return HoverExtracted::InheritedMethod(
-                            receiver_pkg,
-                            method_name,
-                            uri.to_string(),
-                        );
-                    }
-                }
-            }
         }
 
         Self::extract_token_hover(uri, text, offset)

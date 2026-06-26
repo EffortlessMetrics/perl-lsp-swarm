@@ -1300,18 +1300,14 @@ fn scenario_20_hover_module_import_in_app_pm_hard_assert() -> anyhow::Result<()>
     Ok(())
 }
 
-/// Known gap — hover on inherited method call `$self->shared` at line 15 of App.pm.
+/// Regression lock — hover on inherited method call `$self->shared` at line 15 of App.pm
+/// returns hover contents for the inherited `shared` method defined in Base.pm.
 ///
-/// After correcting the original off-by-one (line 16 was `}`, line 15 is the actual
-/// `return $self->shared;`), the hover provider returns the enclosing `sub run` context
-/// rather than hover info for the target inherited method `shared` from Base.pm.
-/// This confirms the gap: call-site hover for inherited method calls does not resolve
-/// to the callee, only to the enclosing subroutine.
-///
-/// Hard assertion written; test is ignored until the gap is fixed.
-/// Tracking: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3070
+/// Fixed in hover.rs: the arrow-receiver check is now hoisted BEFORE `find_definition`,
+/// so call-site hover dispatches to `build_inherited_method_hover` (workspace BFS over
+/// `ClassModel.parents`) instead of returning the enclosing `sub run` context.
+/// Closes #3070.
 #[test]
-#[ignore = "real gap — hover on inherited method call site returns enclosing sub context, not callee; call-site hover does not resolve inherited method target (tracking #3070)"]
 fn scenario_20_hover_inherited_method_call_hard_assert() -> anyhow::Result<()> {
     if !binary_available() {
         eprintln!("SKIP scenario_20: perl-lsp binary not found");
