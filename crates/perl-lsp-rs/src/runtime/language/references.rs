@@ -934,31 +934,30 @@ impl LspServer {
                 // candidate.  When resolving via definitions we keep the
                 // anchor around so we can include it as the declaration site.
                 let symbol_at = queries.symbol_at(file_id, byte_offset);
-                let entity_id = symbol_at
-                    .as_ref()
-                    .and_then(|(_, occurrence)| occurrence.entity_id)
-                    .or_else(|| {
-                        let exact_candidates: Vec<_> = queries
-                            .definitions(symbol, &ctx)
-                            .into_iter()
-                            .filter(|candidate| {
-                                candidate.confidence == perl_semantic_facts::Confidence::High
-                                    && matches!(
+                let entity_id =
+                    symbol_at.as_ref().and_then(|(_, occurrence)| occurrence.entity_id).or_else(
+                        || {
+                            let exact_candidates: Vec<_> = queries
+                                .definitions(symbol, &ctx)
+                                .into_iter()
+                                .filter(|candidate| {
+                                    candidate.confidence == perl_semantic_facts::Confidence::High
+                                        && matches!(
                                         candidate.provenance,
                                         perl_semantic_facts::Provenance::ExactAst
                                             | perl_semantic_facts::Provenance::ImportExportInference
                                             | perl_semantic_facts::Provenance::LiteralRequireImport
-                                    )
-                                    && workspace_index
+                                    ) && workspace_index
                                         .semantic_anchor_wire_location(candidate.anchor_id)
                                         .is_some()
-                            })
-                            .collect();
-                        match exact_candidates.as_slice() {
-                            [candidate] => Some(candidate.entity_id),
-                            _ => None,
-                        }
-                    })?;
+                                })
+                                .collect();
+                            match exact_candidates.as_slice() {
+                                [candidate] => Some(candidate.entity_id),
+                                _ => None,
+                            }
+                        },
+                    )?;
 
                 // Find the declaration anchor for this entity, used when
                 // `include_declaration` is true.  We accept the anchor from
@@ -1700,7 +1699,7 @@ mod tests {
         use std::sync::Arc;
 
         let output = Arc::new(Mutex::new(
-            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>,
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
         ));
         let server = LspServer::with_output(output);
 
@@ -1712,12 +1711,12 @@ mod tests {
         let text = concat!(
             "package InclDecl;\n",
             "\n",
-            "sub target {\n",      // line 2  — declaration site
+            "sub target {\n", // line 2  — declaration site
             "    return 1;\n",
             "}\n",
             "\n",
             "sub caller {\n",
-            "    target();\n",     // line 7  — first call site
+            "    target();\n",           // line 7  — first call site
             "    InclDecl::target();\n", // line 8  — second call site
             "}\n",
             "\n",
