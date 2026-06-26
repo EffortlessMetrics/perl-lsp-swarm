@@ -9,11 +9,7 @@ pub(crate) fn builtin_import_names(arg: &str) -> Vec<String> {
         return pragma_words(inner).into_iter().map(|name| name.to_string()).collect();
     }
 
-    if trimmed.is_empty() {
-        Vec::new()
-    } else {
-        vec![trimmed.to_string()]
-    }
+    if trimmed.is_empty() { Vec::new() } else { vec![trimmed.to_string()] }
 }
 
 pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {

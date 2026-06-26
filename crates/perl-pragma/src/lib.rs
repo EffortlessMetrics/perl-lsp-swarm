@@ -17,8 +17,8 @@ pub use map::{
     CompileTimePragmaEnvironment, PragmaEntry, PragmaMap, PragmaQueryCursor, PragmaStateQuery,
 };
 pub use version::{
-    features_enabled_by_version, parse_perl_version, version_implies_strict,
-    version_implies_warnings, PerlVersion,
+    PerlVersion, features_enabled_by_version, parse_perl_version, version_implies_strict,
+    version_implies_warnings,
 };
 
 pub(crate) use args::{

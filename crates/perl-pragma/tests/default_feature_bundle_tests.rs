@@ -14,8 +14,8 @@
 //!
 //! Reference: <https://perldoc.perl.org/feature#FEATURE-BUNDLES>
 
-use perl_ast::ast::{Node, NodeKind};
 use perl_ast::SourceLocation;
+use perl_ast::ast::{Node, NodeKind};
 use perl_pragma::{CompileTimePragmaEnvironment, PragmaState, PragmaTracker};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;

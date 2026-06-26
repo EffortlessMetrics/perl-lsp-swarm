@@ -1,7 +1,7 @@
 use perl_ast::ast::Node;
 use std::ops::Range;
 
-use crate::{range_builder, PragmaSnapshot, PragmaState};
+use crate::{PragmaSnapshot, PragmaState, range_builder};
 
 /// Query object describing compile-time pragma state at a byte offset.
 #[derive(Debug, Clone, PartialEq)]
@@ -261,10 +261,6 @@ impl PragmaQueryCursor {
             }
         }
 
-        if entries[self.index].range.start <= offset {
-            Some(&entries[self.index])
-        } else {
-            None
-        }
+        if entries[self.index].range.start <= offset { Some(&entries[self.index]) } else { None }
     }
 }
