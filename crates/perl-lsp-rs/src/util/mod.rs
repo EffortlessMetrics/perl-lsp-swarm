@@ -718,4 +718,39 @@ mod tests {
         let decoded = decode_text_bytes(&bytes);
         assert!(!decoded.is_empty());
     }
+
+    #[test]
+    fn read_text_file_with_encoding_handles_latin1_on_disk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::read_text_file_with_encoding;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("latin1.pl");
+        // Write a Latin-1 encoded byte sequence: "café" as raw Latin-1 bytes.
+        std::fs::write(&path, b"my $name = \"caf\xe9\";\n")?;
+
+        let decoded = read_text_file_with_encoding(&path)?;
+        // Latin-1 fallback preserves each byte as its Unicode code point.
+        assert!(decoded.contains("café"), "expected 'café' in decoded output, got: {decoded:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn read_text_file_with_encoding_accepts_legacy_corpus_fixture() {
+        use super::read_text_file_with_encoding;
+        // The test_corpus/legacy_latin1.pl fixture is ISO-8859-1 encoded.
+        // The LSP must not panic or fail to open it.
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let fixture = std::path::Path::new(manifest_dir)
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|root| root.join("test_corpus/legacy_latin1.pl"));
+        if let Some(fixture) = fixture {
+            if fixture.exists() {
+                let decoded = read_text_file_with_encoding(&fixture)
+                    .expect("should read legacy_latin1.pl without error");
+                assert!(!decoded.is_empty(), "legacy_latin1.pl decoded to empty");
+                assert!(decoded.contains("café"), "expected 'café' in legacy fixture");
+            }
+        }
+    }
 }

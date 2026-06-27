@@ -1,6 +1,7 @@
 //! Backend command implementations for run/debug/test and analyzer actions.
 
 use crate::perl_critic::{BuiltInAnalyzer, CriticAnalyzer, CriticConfig};
+use crate::util::read_text_file_with_encoding;
 #[cfg(not(target_arch = "wasm32"))]
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_lsp_rs_core::config::WorkspaceConfig;
@@ -511,7 +512,7 @@ impl ExecuteCommandProvider {
     pub(crate) fn run_builtin_critic(&self, file_path: &Path) -> Result<Value, String> {
         use crate::Parser;
 
-        let content = std::fs::read_to_string(file_path)
+        let content = read_text_file_with_encoding(file_path)
             .map_err(|e| format!("Failed to read file: {}", e))?;
 
         let code_text = perl_parser::util::code_slice(&content);
@@ -662,7 +663,7 @@ impl ExecuteCommandProvider {
     /// CPAN pragmas and test modules), then maps the first match to
     /// `lib/Foo/Bar.pm` relative to the workspace root.
     pub(crate) fn go_to_implementation(&self, test_path: &std::path::Path) -> Value {
-        let content = match std::fs::read_to_string(test_path) {
+        let content = match read_text_file_with_encoding(test_path) {
             Ok(c) => c,
             Err(_) => return json!({ "found": false }),
         };
