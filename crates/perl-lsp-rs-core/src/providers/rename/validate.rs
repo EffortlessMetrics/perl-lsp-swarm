@@ -55,9 +55,17 @@ pub fn validate_name(
         return Err("Name can only contain letters, numbers, and underscores".to_string());
     }
 
-    // Check if it's a keyword
-    if is_rename_keyword(name) {
-        return Err("Cannot use a keyword as a name".to_string());
+    // Keyword validation is kind-aware.
+    //
+    // Subroutines and methods cannot be renamed to reserved keywords because Perl
+    // parses `sub if { }` as a syntax error. Variables are exempt: `$if`, `@while`,
+    // and `%for` are all legal Perl because the sigil ($, @, %) disambiguates the
+    // token from the keyword.
+    if kind.is_callable() && is_rename_keyword(name) {
+        return Err(format!(
+            "Cannot rename to '{}': '{}' is a reserved Perl keyword and cannot be used as a subroutine name",
+            name, name
+        ));
     }
 
     // Check for naming conflicts

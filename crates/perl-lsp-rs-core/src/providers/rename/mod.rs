@@ -452,15 +452,57 @@ mod tests {
         let code = "my $x = 1;";
         let ast = must(Parser::new(code).parse());
         let provider = RenameProvider::new(&ast, code.to_string());
+        // Basic structural checks apply to all symbol kinds
         assert!(validate_name("", SymbolKind::scalar(), &provider.symbol_table).is_err());
         assert!(validate_name("123abc", SymbolKind::scalar(), &provider.symbol_table).is_err());
-        assert!(validate_name("my", SymbolKind::scalar(), &provider.symbol_table).is_err());
         assert!(validate_name("test-var", SymbolKind::scalar(), &provider.symbol_table).is_err());
         assert!(validate_name("valid_name", SymbolKind::scalar(), &provider.symbol_table).is_ok());
         assert!(validate_name("_private", SymbolKind::scalar(), &provider.symbol_table).is_ok());
         assert!(validate_name("camelCase", SymbolKind::scalar(), &provider.symbol_table).is_ok());
         assert!(validate_name("naïve", SymbolKind::scalar(), &provider.symbol_table).is_err());
         assert!(validate_name("１２name", SymbolKind::scalar(), &provider.symbol_table).is_err());
+        // Perl allows variables with keyword names: $my, $if, $while are all valid because
+        // the sigil ($, @, %) disambiguates the token. Only callables are restricted.
+        assert!(validate_name("my", SymbolKind::scalar(), &provider.symbol_table).is_ok());
+        assert!(validate_name("if", SymbolKind::scalar(), &provider.symbol_table).is_ok());
+        assert!(validate_name("while", SymbolKind::scalar(), &provider.symbol_table).is_ok());
+        // Subroutines cannot use reserved keywords — `sub if { }` is a Perl parse error.
+        assert!(validate_name("if", SymbolKind::Subroutine, &provider.symbol_table).is_err());
+        assert!(validate_name("while", SymbolKind::Subroutine, &provider.symbol_table).is_err());
+        assert!(validate_name("for", SymbolKind::Subroutine, &provider.symbol_table).is_err());
+    }
+
+    #[test]
+    fn test_rename_sub_to_keyword_fails() {
+        let code = "sub greet { return 'hello'; }\ngreet();\n";
+        let ast = must(Parser::new(code).parse());
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let pos = must_some(code.find("greet"));
+
+        // Renaming a subroutine to a reserved keyword must fail with a descriptive message
+        let result = provider.rename(pos, "if", &RenameOptions::default());
+        assert!(!result.is_valid, "renaming sub to keyword 'if' should fail");
+        let error = result.error.as_deref().unwrap_or("");
+        assert!(error.contains("reserved"), "error should mention 'reserved': {error}");
+        assert!(error.contains("if"), "error should name the rejected keyword: {error}");
+    }
+
+    #[test]
+    fn test_rename_variable_to_keyword_succeeds() {
+        // Perl allows $if, @while, %for — the sigil disambiguates from the keyword
+        let code = "my $count = 42;\nprint $count;\n";
+        let ast = must(Parser::new(code).parse());
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let pos = must_some(code.find("$count")) + 1;
+
+        let result = provider.rename(pos, "if", &RenameOptions::default());
+        assert!(
+            result.is_valid,
+            "renaming variable to keyword-name 'if' should succeed: {:?}",
+            result.error
+        );
+        let new_code = apply_rename_edits(code, &result.edits);
+        assert!(new_code.contains("$if"), "result should use keyword as variable name");
     }
 
     #[test]
