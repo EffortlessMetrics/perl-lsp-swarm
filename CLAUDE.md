@@ -228,12 +228,47 @@ gh pr list --search "label:merge-ready"              # ready to merge
 - **Idle warm agent** -> re-task it, don't let it expire (~5-min agent cache TTL vs ~1-hr orchestrator). Re-aim across adversarial angles / verification / cleanup *within the same focus*; spawn a fresh agent only when the focus changes. Cache is a discount, not a reason to manufacture low-value work.
 - **Independent verification** -> a different *direction* on the seam, not necessarily a fresh agent. Background subagents must **self-post** findings via SendMessage **and write them to a durable file** — verify the durable artifact, not the agent's word (background agents reliably drop reports otherwise).
 
+### Issue-scout protocol
+
+> **Post where the work lives. Verify in opposition. Land only on convergence.**
+
+The GitHub issue thread is not a report destination — it is the database, the whiteboard, the audit log, and the convergence rail. Findings become real *on the issue*, never solely in an agent's or the orchestrator's private context. Full doctrine and prompt templates: [docs/reference/ISSUE_SCOUT_PROTOCOL.md](docs/reference/ISSUE_SCOUT_PROTOCOL.md).
+
+- Scouts post findings directly on GitHub issues. Do **not** return substantive issue analysis only to the orchestrator.
+- Every scout comment must include: **current state, evidence (file:line / tests / PRs / commands), opposing checks, verdict, plan, acceptance criteria, residual uncertainty.**
+- Oppositional verifiers post `CONFIRMED` / `REFUTED` / `CORRECTED` on the same issue, with the exact correction when prior evidence was path-mis-scoped.
+- Posting may tolerate the expected ~12% hallucination rate — convergence corrects it. **Closing, merging, and `builder-ready` routing require a converged verdict** from an oppositional pass; a single scout's "dual evidence" is not enough if it may be path-mis-scoped.
+- **A real test is not enough if it exercises the wrong code path** (the #3106 lesson — same disease as NodeKind blindness: proof for one shape does not prove the semantic case).
+- The coordinator does not centralize raw analysis. It reads the converged issue state, routes labels / follow-up work, and gates landing actions. Asymmetric by design: **parallelize posting, parallelize opposition, serialize landing.**
+
 ### Merge Queue Protocol
 
 - Don't rebase PRs unless merge conflicts exist
 - Merge in batches of 3 (CI cancellation cascade -- rapid merges cancel each other's CI runs)
 - Run `just cpan-corpus-ratchet` after parser fix merges
 - `docs/project/status/*.md` subsystem files are regenerated automatically post-merge (no manual step needed)
+
+**Required CI checks for merge** — exactly three branch-protection required checks:
+- `Perl LSP Rust Small Result`
+- `ripr+ New Gap Gate`
+- `Codecov / Patch 95`
+
+(`CI Gate (Merge-Blocking)` and `PR Smoke` are **not** required — their failure does not block merge.)
+
+**Local preflight before merge** — run per-crate, separately (the combined `-p X -p Y` form glitches with a spurious failure):
+```bash
+cargo fmt --check -p <crate>                             # per-crate, one at a time
+cargo clippy -p <crate> --locked -- -D warnings -A missing_docs  # per-crate
+```
+This catches the #1 recurring failure: fmt/clippy drift landing on main through a PR that looked green.
+
+**Merge with UNSTABLE is OK** when all 3 required checks are green and the red check is non-required. Do not block on a non-required check.
+
+**CI timing** — CX53 self-hosted CI + the separate `ripr` workflow + Codecov upload take ~20-30 min. A sparse rollup (e.g. `EM CI Routed Rust = success` but Codecov/ripr+ still empty) means **RUNNING, not stuck**. Verify via `gh run list --branch <branch>`; don't re-poll faster than the gates complete.
+
+**`Codecov / Patch 95`** measures `--lib` coverage only. Integration-tested production code that lacks a `--lib` unit test will fail this gate. Fix: add a `--lib` unit test, or document a narrow/expiring exception. A SKIPPED-vs-SUCCESS duplicate for the same check (draft→ready transition) can briefly show BLOCKED — it reconciles on its own; do not re-push.
+
+See [docs/reference/CI_GATE_PLAYBOOK.md](docs/reference/CI_GATE_PLAYBOOK.md) for the full playbook.
 
 ## Quick Reference
 
@@ -287,7 +322,8 @@ just ci-lsp-def                       # Semantic definition tests
 ### Lint, Format, Quality
 
 ```bash
-cargo xtask fmt                       # Format code (per-crate, Windows-safe)
+cargo fmt --check -p <crate>          # Quick per-crate fmt check (run separately per crate — combined -p X -p Y glitches)
+cargo xtask fmt                       # Full-workspace formatter (heavyweight — cold build is slow; use for workspace-wide fmt, not routine checks)
 cargo clippy --workspace              # Lint all crates
 cargo clippy --workspace --lib        # Lint libraries only (faster)
 just dead-code                        # Dead code report
@@ -403,7 +439,7 @@ Invoke `/coding-standards` for full detail.
 
 ## Documentation
 
-[Status Overview](docs/project/status/index.md) | [CURRENT_STATUS.md](docs/project/CURRENT_STATUS.md) (stub) | [ROADMAP.md](docs/project/ROADMAP.md) | [COMMANDS_REFERENCE.md](docs/reference/COMMANDS_REFERENCE.md) | [LSP_IMPLEMENTATION_GUIDE.md](docs/reference/LSP_IMPLEMENTATION_GUIDE.md) | [FAILURE_MODES.md](docs/reference/FAILURE_MODES.md) | [CI_ARCHITECTURE.md](docs/reference/CI_ARCHITECTURE.md) | [features.toml](features.toml)
+[Status Overview](docs/project/status/index.md) | [CURRENT_STATUS.md](docs/project/CURRENT_STATUS.md) (stub) | [ROADMAP.md](docs/project/ROADMAP.md) | [COMMANDS_REFERENCE.md](docs/reference/COMMANDS_REFERENCE.md) | [LSP_IMPLEMENTATION_GUIDE.md](docs/reference/LSP_IMPLEMENTATION_GUIDE.md) | [FAILURE_MODES.md](docs/reference/FAILURE_MODES.md) | [CI_ARCHITECTURE.md](docs/reference/CI_ARCHITECTURE.md) | [CI_GATE_PLAYBOOK.md](docs/reference/CI_GATE_PLAYBOOK.md) | [PROVIDER_READINESS_CONTRACT.md](docs/reference/PROVIDER_READINESS_CONTRACT.md) | [features.toml](features.toml)
 
 **Learnings**: [docs/learnings/README.md](docs/learnings/README.md) (repo-specific incidents, greppable by symbol/PR/hazard-class/tag; key 2026-06 incidents: [2026-06-rerunning-broken-gates.md](docs/learnings/2026-06-rerunning-broken-gates.md), [2026-06-agent-claims-vs-ground-truth.md](docs/learnings/2026-06-agent-claims-vs-ground-truth.md), [2026-06-coverage-job-ran-tests.md](docs/learnings/2026-06-coverage-job-ran-tests.md), [2026-06-substrate-self-validation-bootstrap.md](docs/learnings/2026-06-substrate-self-validation-bootstrap.md)) | [docs/concepts/](docs/concepts/) (portable patterns: shift-left-ladder, cache-aware-agent-lanes, hazard-class-invariants, multi-angle-haiku-early-spec, serialize-merges-and-cancellation, re-create-over-untangle, orchestrator-substrate-model, model-conformance, human-corrects-substrate, type-level-id-space-promotion, slow-stochastic-compiler, stochastic-ready-pipelines, verify-the-instrument, gate-names-must-match-failure-classes, triage-as-claim-audit, non-exhaustive-check-silent-drop, enforcement-over-doctrine, doctrine-is-a-hypothesis)
 

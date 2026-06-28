@@ -387,7 +387,7 @@ impl LspServer {
     /// The wait is bounded and only polls while `indexing_in_progress` is set.
     /// Bounded by `INDEX_READY_WAIT_MS` milliseconds (default 2 s).
     #[cfg(feature = "workspace")]
-    fn wait_for_index_ready_if_building(&self) {
+    pub(in crate::runtime) fn wait_for_index_ready_if_building(&self) {
         use perl_parser::workspace_index::IndexState;
         use std::time::Instant;
 
@@ -2007,7 +2007,10 @@ impl LspServer {
                     continue;
                 };
 
-                let discovery = super::file_discovery::discover_perl_files(&root);
+                let discovery = super::file_discovery::discover_perl_files_with_include_paths(
+                    &root,
+                    &folder_state.effective_workspace_config.include_paths,
+                );
 
                 for path in discovery.files {
                     files.push(path);
