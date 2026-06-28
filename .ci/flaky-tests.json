@@ -22,7 +22,7 @@
       "failure_mode": "Nondeterministic + duplicate output: the folding-range provider emits each subroutine fold twice (no dedup across passes) and computes a nondeterministic start line for the second #region fold (observed startLine 6 vs the expected 7), so the test's region-fold filter only matches on ~1/3 of runs. Inside the merge-blocking unit_routed_full gate (pr-smoke), this single flake throttled the entire merge queue.",
       "issue": 3123,
       "first_seen": "2026-06-28",
-      "resolved_in": "TBD",
+      "resolved_in": 3168,
       "resolved_at": "2026-06-28",
       "notes": "Fixed by deduplicating folding ranges at the response-assembly seam and correcting the test's expected region-start-line from 7 to 6 (# region Main Logic is on line 6)."
     },
