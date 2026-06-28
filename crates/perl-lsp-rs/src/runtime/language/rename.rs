@@ -32,6 +32,63 @@ fn is_perl_sigil(c: char) -> bool {
     matches!(c, '$' | '@' | '%')
 }
 
+/// Returns true if `name` is a Perl reserved keyword.
+///
+/// These are words that the Perl parser treats as built-in syntax and that
+/// cannot be safely used as subroutine names — renaming a sub to any of them
+/// would break the surrounding code. Variables are exempt: Perl allows sigiled
+/// names like `$if`, `@for`, or `%while` without ambiguity.
+fn is_perl_reserved_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "my" | "our"
+            | "local"
+            | "state"
+            | "sub"
+            | "if"
+            | "elsif"
+            | "else"
+            | "unless"
+            | "while"
+            | "until"
+            | "for"
+            | "foreach"
+            | "return"
+            | "package"
+            | "use"
+            | "no"
+            | "BEGIN"
+            | "END"
+            | "CHECK"
+            | "INIT"
+            | "UNITCHECK"
+            | "eval"
+            | "do"
+            | "given"
+            | "when"
+            | "default"
+            | "try"
+            | "catch"
+            | "finally"
+            | "continue"
+            | "next"
+            | "last"
+            | "redo"
+            | "goto"
+            | "class"
+            | "method"
+            | "field"
+            | "format"
+            | "undef"
+            | "defer"
+            | "and"
+            | "or"
+            | "not"
+            | "xor"
+            | "cmp"
+    )
+}
+
 fn strip_perl_sigil(name: &str) -> &str {
     match name.chars().next() {
         Some(c) if is_perl_sigil(c) => &name[c.len_utf8()..],
@@ -960,6 +1017,15 @@ impl LspServer {
                     return Err(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid identifier: {}", requested_name),
+                        data: None,
+                    });
+                }
+                if is_perl_reserved_keyword(requested_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!(
+                            "Cannot rename subroutine to reserved Perl keyword '{requested_name}'"
+                        ),
                         data: None,
                     });
                 }
@@ -2813,5 +2879,113 @@ mod tests {
         assert!(LspServer::offset_is_generated_accessor_declaration(text, wrapped_accessor_offset));
         assert!(!LspServer::offset_is_generated_accessor_declaration(text, hash_offset));
         Ok(())
+    }
+
+    // ── Rename keyword validation tests ──
+
+    #[test]
+    fn rename_sub_to_keyword_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let result = server.normalize_rename_target(Some("my_sub"), "if");
+        assert!(result.is_err(), "expected Err when renaming sub to keyword 'if'");
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("reserved") || err.message.contains("keyword"),
+            "error message should mention 'reserved' or 'keyword', got: {}",
+            err.message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rename_sub_to_control_flow_keywords_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        // All of these must be rejected when renaming a sub (no sigil on current symbol).
+        let keywords = [
+            "if", "elsif", "else", "unless", "while", "until", "for", "foreach", "given", "when",
+            "default", "sub", "package", "return", "my", "our", "local", "state", "use", "no",
+            "eval", "do", "next", "last", "redo", "goto", "undef", "and", "or", "not",
+        ];
+        for keyword in keywords {
+            let result = server.normalize_rename_target(Some("my_sub"), keyword);
+            assert!(
+                result.is_err(),
+                "expected Err when renaming sub to keyword '{keyword}', but got Ok"
+            );
+            let err = result.unwrap_err();
+            assert_eq!(err.code, -32602, "error code must be -32602 for '{keyword}'");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rename_variable_to_keyword_name_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+        // Perl allows sigiled variables named after keywords: $if, @for, %while are valid.
+        let server = LspServer::default();
+
+        let result = server.normalize_rename_target(Some("$x"), "if")?;
+        assert_eq!(result, "$if", "scalar variable can be renamed to keyword name");
+
+        let result = server.normalize_rename_target(Some("@x"), "for")?;
+        assert_eq!(result, "@for", "array variable can be renamed to keyword name");
+
+        let result = server.normalize_rename_target(Some("%x"), "while")?;
+        assert_eq!(result, "%while", "hash variable can be renamed to keyword name");
+        Ok(())
+    }
+
+    #[test]
+    fn rename_sub_to_valid_non_keyword_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+        // Normal (non-keyword) identifiers must still be accepted for subs.
+        let server = LspServer::default();
+
+        let result = server.normalize_rename_target(Some("old_name"), "new_name")?;
+        assert_eq!(result, "new_name");
+
+        let result = server.normalize_rename_target(Some("process"), "handle_request")?;
+        assert_eq!(result, "handle_request");
+
+        let result = server.normalize_rename_target(Some("foo"), "_private")?;
+        assert_eq!(result, "_private");
+        Ok(())
+    }
+
+    #[test]
+    fn rename_sub_to_keyword_error_code_is_invalid_params() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // LSP spec: use -32602 (InvalidParams) for validation errors.
+        let server = LspServer::default();
+        let err = server.normalize_rename_target(Some("my_func"), "while").unwrap_err();
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("while"), "error message must include the offending keyword");
+        Ok(())
+    }
+
+    #[test]
+    fn is_perl_reserved_keyword_recognises_full_keyword_set() {
+        // Spot-check both canonical keywords and clear non-keywords.
+        assert!(is_perl_reserved_keyword("if"));
+        assert!(is_perl_reserved_keyword("while"));
+        assert!(is_perl_reserved_keyword("for"));
+        assert!(is_perl_reserved_keyword("foreach"));
+        assert!(is_perl_reserved_keyword("sub"));
+        assert!(is_perl_reserved_keyword("package"));
+        assert!(is_perl_reserved_keyword("given"));
+        assert!(is_perl_reserved_keyword("my"));
+        assert!(is_perl_reserved_keyword("our"));
+        assert!(is_perl_reserved_keyword("undef"));
+        assert!(is_perl_reserved_keyword("BEGIN"));
+        assert!(is_perl_reserved_keyword("END"));
+        assert!(is_perl_reserved_keyword("eval"));
+        assert!(is_perl_reserved_keyword("try"));
+        assert!(is_perl_reserved_keyword("class"));
+
+        assert!(!is_perl_reserved_keyword("handle"));
+        assert!(!is_perl_reserved_keyword("process"));
+        assert!(!is_perl_reserved_keyword("foo"));
+        assert!(!is_perl_reserved_keyword("_private"));
+        assert!(!is_perl_reserved_keyword(""));
+        assert!(!is_perl_reserved_keyword("IF")); // case-sensitive
+        assert!(!is_perl_reserved_keyword("While")); // case-sensitive
     }
 }
