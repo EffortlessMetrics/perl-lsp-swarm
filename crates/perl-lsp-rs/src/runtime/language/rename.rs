@@ -963,6 +963,16 @@ impl LspServer {
                         data: None,
                     });
                 }
+                if perl_lexer::is_rename_keyword(requested_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!(
+                            "Cannot rename subroutine to reserved Perl keyword '{}'",
+                            requested_name
+                        ),
+                        data: None,
+                    });
+                }
                 Ok(requested_name.to_string())
             }
         }
@@ -2641,6 +2651,26 @@ mod tests {
         assert!(
             server.normalize_rename_target(Some("target"), "bad-name").is_err(),
             "bare symbols still require valid Perl identifiers"
+        );
+
+        // Keyword rejection: subroutines (no sigil on current symbol) must reject keywords.
+        for kw in &["if", "while", "for", "package", "my", "sub", "return"] {
+            assert!(
+                server.normalize_rename_target(None, kw).is_err(),
+                "normalize_rename_target(None, '{kw}') must reject reserved keyword"
+            );
+        }
+
+        // Variable rename (sigil present) allows keyword bare-names: Perl allows $if, $while.
+        assert!(
+            server.normalize_rename_target(Some("$x"), "if").is_ok(),
+            "variables may be renamed to keyword bare-names ($if is valid Perl)"
+        );
+
+        // Case-sensitive: uppercase keyword variants are not reserved.
+        assert!(
+            server.normalize_rename_target(None, "If").is_ok(),
+            "uppercase keyword variant 'If' is not a reserved keyword"
         );
 
         Ok(())
