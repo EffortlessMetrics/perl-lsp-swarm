@@ -663,6 +663,115 @@ mod tests {
         assert!(result.is_err(), "a nonexistent dist must error");
     }
 
+    // --- Defensive / error-branch coverage (tempdir-constructed dists) ---
+
+    fn good_linux_tar() -> PathBuf {
+        fixtures_root().join("good/perllsp-9.9.9-x86_64-unknown-linux-gnu.tar.gz")
+    }
+
+    fn good_windows_zip() -> PathBuf {
+        fixtures_root().join("good/perllsp-9.9.9-x86_64-pc-windows-msvc.zip")
+    }
+
+    #[test]
+    fn read_zip_entries_rejects_non_zip() {
+        // A gzip stream has no ZIP End-Of-Central-Directory record.
+        assert!(read_archive_entries(&good_linux_tar(), ".zip").is_err());
+    }
+
+    #[test]
+    fn read_zip_entries_rejects_tiny_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = dir.path().join("tiny.zip");
+        fs::write(&p, b"PK")?;
+        assert!(read_archive_entries(&p, ".zip").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn read_tar_gz_entries_rejects_non_gzip() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let p = dir.path().join("bad.tar.gz");
+        fs::write(&p, b"this is not a gzip stream")?;
+        assert!(read_archive_entries(&p, ".tar.gz").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_flags_missing_checksums_file() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::copy(
+            good_linux_tar(),
+            dir.path().join("perllsp-9.9.9-x86_64-unknown-linux-gnu.tar.gz"),
+        )?;
+        let contract = test_contract()?;
+        let violations = validate_dist(dir.path(), &contract, None, true)?;
+        assert!(violations.iter().any(|v| v.message.contains("is missing")));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_flags_archive_not_in_checksums() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::copy(
+            good_linux_tar(),
+            dir.path().join("perllsp-9.9.9-x86_64-unknown-linux-gnu.tar.gz"),
+        )?;
+        fs::write(dir.path().join("SHA256SUMS"), "deadbeef  some-other-file.tar.gz\n")?;
+        let contract = test_contract()?;
+        let violations = validate_dist(dir.path(), &contract, None, true)?;
+        assert!(violations.iter().any(|v| v.message.contains("not listed")));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_flags_no_archives() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs::write(dir.path().join("README.txt"), b"nothing here")?;
+        let contract = test_contract()?;
+        let violations = validate_dist(dir.path(), &contract, None, true)?;
+        assert!(violations.iter().any(|v| v.message.contains("no release archives found")));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_flags_extension_mismatch() -> Result<()> {
+        // A .zip named for the unix (linux-gnu) triple: the name parses (known
+        // triple + known .zip ext) but the unix platform declares .tar.gz.
+        let dir = tempfile::tempdir()?;
+        fs::copy(
+            good_windows_zip(),
+            dir.path().join("perllsp-9.9.9-x86_64-unknown-linux-gnu.zip"),
+        )?;
+        let contract = test_contract()?;
+        let violations = validate_dist(dir.path(), &contract, None, true)?;
+        assert!(violations.iter().any(|v| v.message.contains("extension")));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_flags_target_platform_without_spec() -> Result<()> {
+        // A target referencing a platform that is not in `platforms` exercises
+        // the defensive "platform is not declared" branch.
+        let json = r#"{
+            "archive_name_pattern": "perllsp-{version}-{triple}{ext}",
+            "consolidated_checksums_file": "SHA256SUMS",
+            "platforms": {
+                "unix": { "required_binaries": ["perllsp"], "ext": ".tar.gz", "require_executable_bit": false }
+            },
+            "targets": [
+                { "triple": "x86_64-unknown-linux-gnu", "platform": "ghost" }
+            ]
+        }"#;
+        let contract: Contract = serde_json::from_str(json)?;
+        let violations = validate_dist(&fixtures_root().join("good"), &contract, None, true)?;
+        assert!(
+            violations.iter().any(|v| v.message.contains("platform `ghost` is not declared")),
+            "expected platform-not-declared violation: {violations:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn parses_unix_archive_name() {
         let triples = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"];
