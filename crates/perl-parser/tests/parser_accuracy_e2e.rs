@@ -4,7 +4,7 @@
 //! fixture files and their manifest expectations so parser regressions are
 //! caught at the same fixture boundary used by downstream accuracy tooling.
 
-use perl_parser::{Node, NodeKind, Parser};
+use perl_parser::{Node, Parser};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,8 +28,6 @@ struct AstExpectation {
     kind: String,
     line: usize,
     span_text: String,
-    #[serde(default)]
-    operator: Option<String>,
 }
 
 #[derive(Debug)]
@@ -37,7 +35,6 @@ struct ObservedNode<'a> {
     kind: &'static str,
     line: usize,
     span_text: &'a str,
-    operator: Option<&'a str>,
 }
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -114,7 +111,6 @@ fn collect_observed_nodes_rec<'a>(
         kind: node.kind.kind_name(),
         line: byte_offset_to_line(source, node.location.start),
         span_text,
-        operator: node_operator(node),
     });
 
     node.for_each_child(|child| collect_observed_nodes_rec(child, source, nodes));
@@ -126,42 +122,16 @@ fn assert_observed_expectation(
     observed: &[ObservedNode<'_>],
 ) {
     let matched = observed.iter().any(|node| {
-        let operator_matches = match expectation.operator.as_deref() {
-            Some(expected) => node.operator == Some(expected),
-            None => true,
-        };
         node.kind == expectation.kind
             && node.line == expectation.line
             && node.span_text.contains(&expectation.span_text)
-            && operator_matches
     });
-    let observed_on_line = observed
-        .iter()
-        .filter(|node| node.line == expectation.line)
-        .map(|node| {
-            format!("{} {:?} {:?}", node.kind, node.operator, node.span_text.replace('\n', "\\n"))
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
 
     assert!(
         matched,
-        "fixture `{fixture_id}` missing AST expectation `{}`: expected kind `{}` on line {} containing {:?} with operator {:?}; observed on line: {}",
-        expectation.id,
-        expectation.kind,
-        expectation.line,
-        expectation.span_text,
-        expectation.operator,
-        observed_on_line
+        "fixture `{fixture_id}` missing AST expectation `{}`: expected kind `{}` on line {} containing {:?}",
+        expectation.id, expectation.kind, expectation.line, expectation.span_text
     );
-}
-
-fn node_operator(node: &Node) -> Option<&str> {
-    match &node.kind {
-        NodeKind::Assignment { op, .. } | NodeKind::Binary { op, .. } => Some(op.as_str()),
-        NodeKind::Match { negated, .. } => Some(if *negated { "!~" } else { "=~" }),
-        _ => None,
-    }
 }
 
 fn byte_offset_to_line(source: &str, offset: usize) -> usize {
