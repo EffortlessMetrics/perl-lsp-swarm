@@ -517,6 +517,152 @@ mod tests {
         Ok(serde_json::from_str(json)?)
     }
 
+    fn fixtures_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/release-artifacts")
+    }
+
+    // The integration-only code paths (validate_dist, the archive readers,
+    // checksum verification, run, load_contract) are also exercised here as
+    // in-process unit tests so they are captured by the `--bin xtask` coverage
+    // run (the CLI integration tests run as a separate binary that the coverage
+    // command does not instrument).
+
+    #[test]
+    fn load_contract_reads_repo_contract() -> Result<()> {
+        let root = project_root()?;
+        let contract = load_contract(&root.join(DEFAULT_CONTRACT_REL))?;
+        assert!(!contract.targets.is_empty());
+        assert!(contract.platforms.contains_key("unix"));
+        Ok(())
+    }
+
+    #[test]
+    fn read_tar_gz_entries_lists_binaries_with_exec_bit() -> Result<()> {
+        let tar = fixtures_root().join("good/perllsp-9.9.9-x86_64-unknown-linux-gnu.tar.gz");
+        let entries = read_archive_entries(&tar, ".tar.gz")?;
+        assert!(entries.iter().any(|e| e.base_name == "perllsp"));
+        let dap = entries.iter().find(|e| e.base_name == "perl-dap");
+        assert!(dap.is_some_and(|e| e.mode & 0o111 != 0), "perl-dap should carry the exec bit");
+        Ok(())
+    }
+
+    #[test]
+    fn read_zip_entries_lists_windows_binaries() -> Result<()> {
+        let zip = fixtures_root().join("good/perllsp-9.9.9-x86_64-pc-windows-msvc.zip");
+        let entries = read_archive_entries(&zip, ".zip")?;
+        assert!(entries.iter().any(|e| e.base_name == "perllsp.exe"));
+        assert!(entries.iter().any(|e| e.base_name == "perl-dap.exe"));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_passes_on_good_fixture() -> Result<()> {
+        let contract = test_contract()?;
+        let violations =
+            validate_dist(&fixtures_root().join("good"), &contract, Some("9.9.9"), true)?;
+        assert!(violations.is_empty(), "good fixture should be clean: {violations:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_flags_missing_required_binary() -> Result<()> {
+        let contract = test_contract()?;
+        let violations =
+            validate_dist(&fixtures_root().join("bad-missing-dap"), &contract, None, true)?;
+        assert!(violations.iter().any(|v| v.message.contains("perl-dap")));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_flags_checksum_mismatch() -> Result<()> {
+        let contract = test_contract()?;
+        let violations =
+            validate_dist(&fixtures_root().join("bad-checksum"), &contract, None, true)?;
+        assert!(violations.iter().any(|v| v.message.contains("checksum mismatch")));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_flags_version_mismatch() -> Result<()> {
+        let contract = test_contract()?;
+        let violations =
+            validate_dist(&fixtures_root().join("good"), &contract, Some("0.0.0"), true)?;
+        assert!(violations.iter().any(|v| v.message.contains("does not match expected")));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_requires_all_targets_without_allow_partial() -> Result<()> {
+        // The good fixture covers only 2 of the contract's targets; with
+        // completeness enforced (allow_partial = false) the missing ones fail.
+        let contract = test_contract()?;
+        let violations =
+            validate_dist(&fixtures_root().join("good"), &contract, Some("9.9.9"), true)?;
+        assert!(violations.is_empty());
+        // bad-checksum has only the linux archive, so windows-msvc is missing.
+        let strict = validate_dist(&fixtures_root().join("bad-checksum"), &contract, None, false)?;
+        assert!(strict.iter().any(|v| v.message.contains("no archive found for target")));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dist_flags_undeclared_archive() -> Result<()> {
+        // A contract that knows the .zip extension (so the file "looks like" a
+        // release archive) but does not declare the windows triple must flag the
+        // good fixture's windows zip as undeclared.
+        let json = r#"{
+            "archive_name_pattern": "perllsp-{version}-{triple}{ext}",
+            "consolidated_checksums_file": "SHA256SUMS",
+            "platforms": {
+                "unix": { "required_binaries": ["perllsp", "perl-dap"], "ext": ".tar.gz", "require_executable_bit": true },
+                "windows": { "required_binaries": ["perllsp.exe", "perl-dap.exe"], "ext": ".zip", "require_executable_bit": false }
+            },
+            "targets": [
+                { "triple": "x86_64-unknown-linux-gnu", "platform": "unix" }
+            ]
+        }"#;
+        let contract: Contract = serde_json::from_str(json)?;
+        let violations = validate_dist(&fixtures_root().join("good"), &contract, None, true)?;
+        assert!(
+            violations.iter().any(|v| v.message.contains("does not match any target triple")),
+            "undeclared windows zip should be flagged: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_succeeds_on_good_fixture() -> Result<()> {
+        // `contract: None` resolves the in-repo contract via project_root().
+        run(Config {
+            dist: fixtures_root().join("good"),
+            contract: None,
+            version: None,
+            allow_partial: true,
+        })
+    }
+
+    #[test]
+    fn run_fails_on_missing_dap() {
+        let result = run(Config {
+            dist: fixtures_root().join("bad-missing-dap"),
+            contract: None,
+            version: None,
+            allow_partial: true,
+        });
+        assert!(result.is_err(), "missing perl-dap must make `run` bail");
+    }
+
+    #[test]
+    fn run_errors_on_missing_dist() {
+        let result = run(Config {
+            dist: fixtures_root().join("does-not-exist"),
+            contract: None,
+            version: None,
+            allow_partial: true,
+        });
+        assert!(result.is_err(), "a nonexistent dist must error");
+    }
+
     #[test]
     fn parses_unix_archive_name() {
         let triples = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"];
