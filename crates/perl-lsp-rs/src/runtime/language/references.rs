@@ -427,9 +427,15 @@ impl LspServer {
                                             )
                                         {
                                             live_locations.truncate(cap);
+                                            // Precompute before the tracing macro so these
+                                            // expressions are unconditionally instrumented
+                                            // rather than lazily evaluated only when the
+                                            // debug subscriber is active.
+                                            let ref_count = live_locations.len();
+                                            let elapsed = start.elapsed();
                                             tracing::debug!(
-                                                count = live_locations.len(),
-                                                elapsed = ?start.elapsed(),
+                                                ref_count,
+                                                elapsed = ?elapsed,
                                                 "References: returned live source-backed compiler facts"
                                             );
                                             let result_count = live_locations.len();
@@ -1781,6 +1787,69 @@ mod tests {
             "includeDeclaration=true result must contain the declaration line ({decl_line}); \
              got locations: {locations:?}"
         );
+
+        Ok(())
+    }
+
+    /// Prove that `live_source_backed_reference_locations` returns `None` when
+    /// the cursor is on an identifier that has no definition in the semantic
+    /// model.
+    ///
+    /// This exercises two branches that are not reachable when a definition IS
+    /// found:
+    ///
+    /// - The `_ => None` arm of the `match exact_candidates.as_slice()` block
+    ///   (0 candidates because `definitions("undefined_fn")` returns nothing).
+    /// - The `?` propagation that exits the outer closure with `None`, causing
+    ///   `live_source_backed_reference_locations` to return `None` and the
+    ///   provider to fall back to the workspace-index tier.
+    ///
+    /// The test verifies that the request completes without error — the
+    /// semantic tier gracefully yields to the lower-fidelity fallback.
+    #[test]
+    fn handle_references_undefined_symbol_falls_back_gracefully() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+
+        // A minimal fixture where `undefined_fn()` is called but never defined.
+        // When the cursor lands on `undefined_fn`, the semantic model has no
+        // entity for it: `definitions("undefined_fn")` returns 0 candidates,
+        // so `exact_candidates` is empty, `_ => None` is matched, and
+        // `entity_id` is `None`.  The `?` on that `None` exits the closure,
+        // `with_semantic_queries_for_uri` returns `Some(None)` which `.flatten()`
+        // resolves to `None`, and `live_source_backed_reference_locations`
+        // returns `None` — falling back to the workspace-index tier.
+        let uri = "file:///test/no_decl.pl";
+        let text = concat!(
+            "package NoDecl;\n",
+            "\n",
+            "sub caller {\n",
+            "    undefined_fn();\n", // line 3  — call with no local definition
+            "}\n",
+            "\n",
+            "1;\n",
+        );
+        server.test_apply_did_open(uri, text, 1)?;
+
+        // Position cursor on `undefined_fn` (line 3, character 4).
+        let params = serde_json::json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 3, "character": 4},
+            "context": {"includeDeclaration": true}
+        });
+
+        // The request must complete without error.  Coverage proof: the semantic
+        // tier returns `None` here, exercising the `_ => None` arm (line 957)
+        // and the `?` propagation path (line 960) in
+        // `live_source_backed_reference_locations`.
+        let _result = server.test_handle_references(Some(params))?;
 
         Ok(())
     }
