@@ -417,7 +417,7 @@ fn read_zip_entries(path: &Path) -> Result<Vec<ArchiveEntry>> {
     let max_back = data.len().saturating_sub(22);
     let mut eocd: Option<usize> = None;
     for i in (0..=max_back).rev() {
-        if data[i..i + 4] == EOCD_SIG {
+        if data.get(i..i + 4) == Some(&EOCD_SIG[..]) {
             eocd = Some(i);
             break;
         }
@@ -432,40 +432,53 @@ fn read_zip_entries(path: &Path) -> Result<Vec<ArchiveEntry>> {
     let mut out = Vec::new();
     let mut pos = cd_offset;
     for _ in 0..total_entries {
-        if pos + 46 > data.len() || data[pos..pos + 4] != CD_SIG {
+        // All offsets use checked arithmetic and `.get()` slicing so a malformed
+        // or hostile central directory can never overflow `usize` (even on 32-bit
+        // targets) into an out-of-bounds slice — it breaks the loop instead of
+        // panicking. read_u16/read_u32 are likewise `.get()`-based.
+        let Some(header_end) = pos.checked_add(46) else {
+            break;
+        };
+        if data.get(pos..pos + 4) != Some(&CD_SIG[..]) {
             break;
         }
         let external_attrs = read_u32(&data, pos + 38)?;
         let name_len = read_u16(&data, pos + 28)? as usize;
         let extra_len = read_u16(&data, pos + 30)? as usize;
         let comment_len = read_u16(&data, pos + 32)? as usize;
-        let name_start = pos + 46;
-        let name_end = name_start + name_len;
-        if name_end > data.len() {
+        let name_start = header_end;
+        let Some(name_end) = name_start.checked_add(name_len) else {
             break;
-        }
-        let raw_name = String::from_utf8_lossy(&data[name_start..name_end]);
-        let normalized = raw_name.replace('\\', "/");
+        };
+        let Some(raw_name) = data.get(name_start..name_end) else {
+            break;
+        };
+        let normalized = String::from_utf8_lossy(raw_name).replace('\\', "/");
         // Directory entries end in `/`.
         if !normalized.ends_with('/') {
             let base = normalized.rsplit('/').next().unwrap_or(&normalized).to_string();
             let mode = (external_attrs >> 16) & 0xffff;
             out.push(ArchiveEntry { base_name: base, mode });
         }
-        pos = name_end + extra_len + comment_len;
+        let Some(next_pos) =
+            name_end.checked_add(extra_len).and_then(|n| n.checked_add(comment_len))
+        else {
+            break;
+        };
+        pos = next_pos;
     }
     Ok(out)
 }
 
 fn read_u16(data: &[u8], at: usize) -> Result<u16> {
-    match data.get(at..at + 2) {
+    match at.checked_add(2).and_then(|end| data.get(at..end)) {
         Some([a, b]) => Ok(u16::from_le_bytes([*a, *b])),
         _ => bail!("zip: truncated u16 field at offset {at}"),
     }
 }
 
 fn read_u32(data: &[u8], at: usize) -> Result<u32> {
-    match data.get(at..at + 4) {
+    match at.checked_add(4).and_then(|end| data.get(at..end)) {
         Some([a, b, c, d]) => Ok(u32::from_le_bytes([*a, *b, *c, *d])),
         _ => bail!("zip: truncated u32 field at offset {at}"),
     }

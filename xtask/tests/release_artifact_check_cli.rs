@@ -54,3 +54,17 @@ fn missing_dist_directory_errors() -> Result<()> {
     assert!(!output.status.success(), "nonexistent dist should error");
     Ok(())
 }
+
+#[test]
+fn version_mismatch_fails() -> Result<()> {
+    // The good fixtures are version 9.9.9; demanding a different version must
+    // fail with a version-mismatch violation.
+    let output = Command::cargo_bin("xtask")?
+        .args(["release", "artifact-check", "--allow-partial", "--version", "0.0.0", "--dist"])
+        .arg(fixture("good"))
+        .output()?;
+    assert!(!output.status.success(), "wrong --version should fail the check");
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("version"), "failure should mention version; got: {stderr}");
+    Ok(())
+}
