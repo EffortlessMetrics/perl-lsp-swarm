@@ -1882,8 +1882,20 @@ fn ripr_binary() -> Result<String> {
     Ok(binary)
 }
 
+/// Drain all bytes from an optional I/O handle into `buf`.
+///
+/// When `pipe` is `None` (e.g. a handle that was never piped) the function
+/// returns `Ok(())` without touching `buf`. This helper is extracted so the
+/// `None` arm can be exercised in unit tests independently of spawning a real
+/// child process.
+fn drain_pipe<R: std::io::Read>(pipe: Option<R>, buf: &mut Vec<u8>, label: &str) -> Result<()> {
+    if let Some(mut r) = pipe {
+        r.read_to_end(buf).with_context(|| format!("failed to read {label}"))?;
+    }
+    Ok(())
+}
+
 fn run_output(cmd: &str, args: &[String]) -> Result<String> {
-    use std::io::Read;
     // Drain stdout incrementally to avoid the Windows single-pipe-write limit (~4 MB).
     // Command::output() calls wait_with_output() internally, which collects the full
     // payload via a blocking pipe read; on Windows this panics with "os error 87
@@ -1899,15 +1911,9 @@ fn run_output(cmd: &str, args: &[String]) -> Result<String> {
         .spawn()
         .with_context(|| format!("failed to run {cmd}"))?;
     let mut stdout_bytes = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
-        out.read_to_end(&mut stdout_bytes)
-            .with_context(|| format!("failed to read {cmd} stdout"))?;
-    }
+    drain_pipe(child.stdout.take(), &mut stdout_bytes, &format!("{cmd} stdout"))?;
     let mut stderr_bytes = Vec::new();
-    if let Some(mut err) = child.stderr.take() {
-        err.read_to_end(&mut stderr_bytes)
-            .with_context(|| format!("failed to read {cmd} stderr"))?;
-    }
+    drain_pipe(child.stderr.take(), &mut stderr_bytes, &format!("{cmd} stderr"))?;
     let status = child.wait().with_context(|| format!("failed to wait for {cmd}"))?;
     if !status.success() {
         bail!(
@@ -3967,6 +3973,18 @@ esac
             result.bytes().all(|b| b == b'x'),
             "Output must consist entirely of 'x' bytes — got unexpected content"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn drain_pipe_none_does_nothing_and_returns_ok() -> Result<()> {
+        // Covers the `None` arm of `drain_pipe`, which occurs when a child's
+        // stdout/stderr handle has already been consumed or was never piped.
+        // In `run_output` that arm is unreachable (Stdio::piped() is always
+        // configured), so this unit test exercises it directly.
+        let mut buf = Vec::new();
+        drain_pipe(None::<std::io::Cursor<Vec<u8>>>, &mut buf, "test-label")?;
+        assert!(buf.is_empty(), "buf must remain empty when pipe is None");
         Ok(())
     }
 
