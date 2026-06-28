@@ -45,9 +45,7 @@ mod tests {
         let perl_source = "1;sub foo{}";
         let index = WorkspaceIndex::new();
         let raw_uri = "file:///test_mid_surrogate_2478.pl";
-        index
-            .index_file_str(raw_uri, perl_source)
-            .expect("Perl source must parse without error");
+        index.index_file_str(raw_uri, perl_source).expect("Perl source must parse without error");
 
         // ── 2. Confirm the symbol is present and unused ───────────────────────
         let unused = index.find_unused_symbols();
@@ -58,10 +56,7 @@ mod tests {
 
         // The symbol must start at line=0, column=2 (UTF-16).
         // This is what drives the mid-surrogate branch in position_to_offset.
-        assert_eq!(
-            foo_sym.range.start.line, 0,
-            "sub foo should be on line 0 (0-based)"
-        );
+        assert_eq!(foo_sym.range.start.line, 0, "sub foo should be on line 0 (0-based)");
         assert_eq!(
             foo_sym.range.start.column, 2,
             "sub foo should start at UTF-16 column 2 (after the two-unit '1;' prefix)"
