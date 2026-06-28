@@ -316,6 +316,22 @@ mod overflow_hardening_tests {
         assert_eq!(index.utf16_column(1, 5), 0);
     }
 
+    // Discriminator for line 240 — the `checked_add` overflow arm.  The test
+    // above exercises it via the `line_start > text.len()` early-return at
+    // line 232 (usize::MAX > 3), never reaching `checked_add`.  This test
+    // places `line_start` exactly at `text.len()` (3 <= 3 passes the guard)
+    // and then passes a `byte_offset` large enough that
+    // `line_start + byte_offset` wraps past `usize::MAX`.
+    #[test]
+    fn utf16_column_checked_add_overflow_returns_zero() {
+        let mut index = LineIndex::new("abc".to_string());
+        // line_start = 3 == text.len(): passes the `> text.len()` guard.
+        index.line_starts = vec![0, 3];
+        // 3 + (usize::MAX - 2) = usize::MAX + 1, which overflows.
+        // checked_add must catch this and return None; we must return 0.
+        assert_eq!(index.utf16_column(1, usize::MAX - 2), 0);
+    }
+
     // Regression for #2484: out-of-range `line` index must not panic on the
     // `self.line_starts[line]` access.
     #[test]
