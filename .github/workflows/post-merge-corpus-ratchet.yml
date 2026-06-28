@@ -330,9 +330,12 @@ jobs:
       # months / 540 parser commits as of 2026-06-27) and the cpan-corpus-check
       # gate enforced out-of-date truth. Open a PR instead, via the repo's
       # established peter-evans/create-pull-request automation pattern (see
-      # version-bump.yml, badge-endpoints.yml). The PR flows through the normal
-      # required-check gate and merges, keeping the baseline + gate truthful.
-      # The action is a no-op when there is no diff in the tracked receipt paths,
+      # version-bump.yml, badge-endpoints.yml). NOTE: a PR created by GITHUB_TOKEN
+      # does not trigger the required checks (GitHub loop-prevention — same as the
+      # *-bump automation PRs), so it merges via admin/ops override; a bot token or
+      # GitHub App for full self-merge is the #1004 follow-up. Either way this is
+      # strictly better than the former push, which branch protection always
+      # rejected. The action is a no-op when there is no diff in the tracked paths,
       # so no empty PRs are created; a fixed branch updates the existing PR rather
       # than opening duplicates each run.
       - name: Open PR with refreshed corpus receipts (if changed)
