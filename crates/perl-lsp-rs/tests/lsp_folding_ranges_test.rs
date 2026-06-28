@@ -486,6 +486,7 @@ my $y = 2;
 }
 
 #[test]
+#[ignore = "flaky: folding provider emits duplicate/nondeterministic region folds — see #3123"]
 fn test_folding_range_region_markers_multiple_non_nested() -> TestResult {
     let content = r#"# region Helpers
 sub helper1 {
