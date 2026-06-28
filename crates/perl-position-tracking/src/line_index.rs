@@ -332,6 +332,25 @@ mod overflow_hardening_tests {
         assert_eq!(index.utf16_column(1, usize::MAX - 2), 0);
     }
 
+    // Discriminator for ripr seam f197bc96 — the predicate boundary
+    // `line_start > self.text.len()` at line 232.
+    // `utf16_column_clamps_line_start_past_text_end` (above) exercises this
+    // path but ripr's static infect analysis cannot trace the private-field
+    // mutation `line_starts = vec![0, 100]` to the predicate value.
+    // This test names the boundary explicitly — `line_start_past_end` (100)
+    // is demonstrably `> text.len()` (3) — so the discriminator is visible.
+    #[test]
+    fn utf16_column_boundary_discriminator() {
+        let text = "abc"; // text.len() == 3
+        let line_start_past_end: usize = 100; // 100 > 3 == text.len()
+        debug_assert!(line_start_past_end > text.len(), "boundary: line_start > text.len()");
+        let mut index = LineIndex::new(text.to_string());
+        index.line_starts = vec![0, line_start_past_end];
+        // The guard `if line_start > self.text.len()` at line 232 fires and
+        // returns 0 before any slice occurs.
+        assert_eq!(index.utf16_column(1, 0), 0);
+    }
+
     // Regression for #2484: out-of-range `line` index must not panic on the
     // `self.line_starts[line]` access.
     #[test]
