@@ -128,6 +128,9 @@ fn validate_dist(
     exts.dedup();
 
     let triples: Vec<&str> = contract.targets.iter().map(|t| t.triple.as_str()).collect();
+    // Single source of truth: the archive prefix comes from the contract's
+    // declared `archive_name_pattern`, not a hardcoded literal.
+    let prefix = archive_name_prefix(&contract.archive_name_pattern);
 
     // Collect the archives present in dist, tracked by triple.
     let mut seen_triples: BTreeSet<String> = BTreeSet::new();
@@ -144,13 +147,14 @@ fn validate_dist(
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let Some((triple, ext, version)) = parse_archive_name(file_name, &triples, &exts) else {
-            // A file that looks like one of our release archives (the `perllsp-`
-            // prefix + a known archive extension) but does not map to a declared
-            // target triple is a contract gap: a new release target was added to
-            // release.yml without updating the contract. Fail closed rather than
-            // letting an unvalidated, un-checksummed archive ship.
-            if file_name.starts_with("perllsp-") && exts.iter().any(|e| file_name.ends_with(e)) {
+        let Some((triple, ext, version)) = parse_archive_name(file_name, prefix, &triples, &exts)
+        else {
+            // A file that looks like one of our release archives (the contract's
+            // declared prefix + a known archive extension) but does not map to a
+            // declared target triple is a contract gap: a new release target was
+            // added to release.yml without updating the contract. Fail closed
+            // rather than letting an unvalidated, un-checksummed archive ship.
+            if file_name.starts_with(prefix) && exts.iter().any(|e| file_name.ends_with(e)) {
                 violations.push(Violation {
                     location: file_name.to_string(),
                     message:
@@ -250,15 +254,25 @@ fn validate_dist(
 
 /// Parse `perllsp-<version>-<triple><ext>` into `(triple, ext, version)`.
 /// Returns `None` for files that are not release archives.
+/// The literal prefix of `archive_name_pattern` — everything before the first
+/// `{...}` placeholder (e.g. `perllsp-` from `perllsp-{version}-{triple}{ext}`).
+/// Derived from the contract so the validator stays single-source-of-truth.
+fn archive_name_prefix(pattern: &str) -> &str {
+    match pattern.find('{') {
+        Some(idx) => &pattern[..idx],
+        None => pattern,
+    }
+}
+
 fn parse_archive_name(
     file_name: &str,
+    prefix: &str,
     triples: &[&str],
     exts: &[&str],
 ) -> Option<(String, String, String)> {
-    const PREFIX: &str = "perllsp-";
     let ext = exts.iter().copied().find(|e| file_name.ends_with(*e))?;
     let core = file_name.strip_suffix(ext)?;
-    let rest = core.strip_prefix(PREFIX)?; // "<version>-<triple>"
+    let rest = core.strip_prefix(prefix)?; // "<version>-<triple>"
 
     // Triples contain hyphens, so match the longest known triple suffix that is
     // preceded by a `-`.
@@ -773,11 +787,22 @@ mod tests {
     }
 
     #[test]
+    fn archive_name_prefix_strips_at_first_placeholder() {
+        assert_eq!(archive_name_prefix("perllsp-{version}-{triple}{ext}"), "perllsp-");
+        assert_eq!(archive_name_prefix("foo-bar-{version}{ext}"), "foo-bar-");
+        assert_eq!(archive_name_prefix("noplaceholders"), "noplaceholders");
+    }
+
+    #[test]
     fn parses_unix_archive_name() {
         let triples = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"];
         let exts = [".tar.gz", ".zip"];
-        let parsed =
-            parse_archive_name("perllsp-0.16.0-x86_64-unknown-linux-gnu.tar.gz", &triples, &exts);
+        let parsed = parse_archive_name(
+            "perllsp-0.16.0-x86_64-unknown-linux-gnu.tar.gz",
+            "perllsp-",
+            &triples,
+            &exts,
+        );
         assert_eq!(
             parsed,
             Some((
@@ -792,8 +817,12 @@ mod tests {
     fn parses_windows_zip_name() {
         let triples = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"];
         let exts = [".tar.gz", ".zip"];
-        let parsed =
-            parse_archive_name("perllsp-1.2.3-x86_64-pc-windows-msvc.zip", &triples, &exts);
+        let parsed = parse_archive_name(
+            "perllsp-1.2.3-x86_64-pc-windows-msvc.zip",
+            "perllsp-",
+            &triples,
+            &exts,
+        );
         assert_eq!(
             parsed,
             Some(("x86_64-pc-windows-msvc".to_string(), ".zip".to_string(), "1.2.3".to_string()))
@@ -804,10 +833,10 @@ mod tests {
     fn ignores_non_archive_files() {
         let triples = ["x86_64-unknown-linux-gnu"];
         let exts = [".tar.gz", ".zip"];
-        assert_eq!(parse_archive_name("SHA256SUMS", &triples, &exts), None);
-        assert_eq!(parse_archive_name("README.md", &triples, &exts), None);
+        assert_eq!(parse_archive_name("SHA256SUMS", "perllsp-", &triples, &exts), None);
+        assert_eq!(parse_archive_name("README.md", "perllsp-", &triples, &exts), None);
         assert_eq!(
-            parse_archive_name("perllsp-0.1.0-unknown-triple.tar.gz", &triples, &exts),
+            parse_archive_name("perllsp-0.1.0-unknown-triple.tar.gz", "perllsp-", &triples, &exts),
             None
         );
     }
