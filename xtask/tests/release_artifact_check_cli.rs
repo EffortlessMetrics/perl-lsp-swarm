@@ -56,6 +56,20 @@ fn missing_dist_directory_errors() -> Result<()> {
 }
 
 #[test]
+fn checksum_mismatch_fails() -> Result<()> {
+    // The bad-checksum fixture's consolidated SHA256SUMS lists a wrong digest
+    // for its archive; the check must flag the checksum mismatch.
+    let output = Command::cargo_bin("xtask")?
+        .args(["release", "artifact-check", "--allow-partial", "--dist"])
+        .arg(fixture("bad-checksum"))
+        .output()?;
+    assert!(!output.status.success(), "a bad consolidated SHA256SUMS should fail the check");
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("checksum"), "failure should mention checksum; got: {stderr}");
+    Ok(())
+}
+
+#[test]
 fn version_mismatch_fails() -> Result<()> {
     // The good fixtures are version 9.9.9; demanding a different version must
     // fail with a version-mismatch violation.

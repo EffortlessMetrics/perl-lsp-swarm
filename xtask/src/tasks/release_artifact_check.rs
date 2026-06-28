@@ -145,6 +145,19 @@ fn validate_dist(
             continue;
         };
         let Some((triple, ext, version)) = parse_archive_name(file_name, &triples, &exts) else {
+            // A file that looks like one of our release archives (the `perllsp-`
+            // prefix + a known archive extension) but does not map to a declared
+            // target triple is a contract gap: a new release target was added to
+            // release.yml without updating the contract. Fail closed rather than
+            // letting an unvalidated, un-checksummed archive ship.
+            if file_name.starts_with("perllsp-") && exts.iter().any(|e| file_name.ends_with(e)) {
+                violations.push(Violation {
+                    location: file_name.to_string(),
+                    message:
+                        "archive name does not match any target triple declared in the contract"
+                            .to_string(),
+                });
+            }
             continue;
         };
         archive_basenames.push(file_name.to_string());
@@ -488,7 +501,7 @@ fn read_u32(data: &[u8], at: usize) -> Result<u32> {
 mod tests {
     use super::*;
 
-    fn test_contract() -> Contract {
+    fn test_contract() -> Result<Contract> {
         let json = r#"{
             "archive_name_pattern": "perllsp-{version}-{triple}{ext}",
             "consolidated_checksums_file": "SHA256SUMS",
@@ -501,7 +514,7 @@ mod tests {
                 { "triple": "x86_64-pc-windows-msvc", "platform": "windows" }
             ]
         }"#;
-        serde_json::from_str(json).unwrap()
+        Ok(serde_json::from_str(json)?)
     }
 
     #[test]
@@ -601,10 +614,11 @@ mod tests {
     }
 
     #[test]
-    fn contract_platforms_present() {
-        let contract = test_contract();
+    fn contract_platforms_present() -> Result<()> {
+        let contract = test_contract()?;
         assert!(contract.platforms.contains_key("unix"));
         assert!(contract.platforms.contains_key("windows"));
         assert_eq!(platform_for_triple(&contract, "x86_64-pc-windows-msvc"), Some("windows"));
+        Ok(())
     }
 }
