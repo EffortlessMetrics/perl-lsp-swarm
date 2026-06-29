@@ -869,3 +869,218 @@ fn test_workspace_rename_workspace_edit_rolls_back_cleanly() -> TestResult {
 
     Ok(())
 }
+
+/// Renaming a subroutine to a reserved Perl keyword must be rejected.
+///
+/// `sub foo` → `if` is the prototypical case: `if` has parsing priority over
+/// user-defined subroutines, so calling `if()` after renaming would always parse
+/// as a control structure — the rename would silently break the program.
+#[test]
+fn test_rename_sub_to_keyword_fails() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///test_rename_sub_keyword.pl";
+    harness.open(doc_uri, "sub foo {\n    return 42;\n}\nmy $x = foo();\n")?;
+
+    // Cursor on `foo` declaration (line 0, character 4); target name `if`.
+    let result = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 },
+            "newName": "if"
+        }),
+    );
+
+    match result {
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("keyword") || msg.contains("32602") || msg.contains("reserved"),
+                "rename to keyword should be rejected with a descriptive error, got: {msg}"
+            );
+        }
+        Ok(response) => {
+            // The server must not have produced any edits if it didn't error.
+            let has_edits = response
+                .get("changes")
+                .and_then(|v| v.as_object())
+                .map(|m| m.values().any(|edits| !edits.as_array().map_or(true, |a| a.is_empty())))
+                .unwrap_or(false);
+            assert!(!has_edits, "rename to reserved keyword must not produce edits");
+        }
+    }
+
+    Ok(())
+}
+
+/// Renaming a subroutine to any of several control-flow keywords must be rejected.
+///
+/// Verifies that the full `RENAME_KEYWORDS` set is consulted rather than a
+/// hard-coded single entry.
+#[test]
+fn test_rename_sub_to_control_flow_keywords_fails() -> TestResult {
+    // Sample three keyword categories: control-flow, declaration, logical operator.
+    let keywords = ["while", "package", "return", "sub", "my"];
+
+    for keyword in keywords {
+        let mut harness = LspHarness::new();
+        let _init = harness.initialize(None)?;
+
+        let doc_uri = format!("file:///test_rename_sub_kw_{keyword}.pl");
+        harness.open(&doc_uri, "sub target {\n    return 1;\n}\ntarget();\n")?;
+
+        let result = harness.request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": doc_uri },
+                "position": { "line": 0, "character": 4 },
+                "newName": keyword
+            }),
+        );
+
+        match result {
+            Err(e) => {
+                let msg = format!("{e}");
+                assert!(
+                    msg.contains("keyword") || msg.contains("32602") || msg.contains("reserved"),
+                    "rename to keyword '{keyword}' should error, got: {msg}"
+                );
+            }
+            Ok(response) => {
+                let has_edits = response
+                    .get("changes")
+                    .and_then(|v| v.as_object())
+                    .map(|m| {
+                        m.values().any(|edits| !edits.as_array().map_or(true, |a| a.is_empty()))
+                    })
+                    .unwrap_or(false);
+                assert!(!has_edits, "rename to keyword '{keyword}' must not produce edits");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Renaming a variable to a name whose bare part is a keyword must be allowed.
+///
+/// Perl allows `$if = 5;` — sigiled variables with keyword names are valid
+/// syntax. Only bareword subroutine names conflict with the keyword grammar.
+#[test]
+fn test_rename_variable_to_keyword_name_succeeds() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///test_rename_var_keyword.pl";
+    harness.open(
+        doc_uri,
+        "sub process {\n    my $count = 0;\n    $count++;\n    return $count;\n}\n",
+    )?;
+
+    // `$count` → `$if`: valid Perl — `$if` is a legal sigiled variable.
+    let result = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 1, "character": 7 },
+            "newName": "$if"
+        }),
+    );
+
+    // Must not error: variable renames to keyword-named vars are allowed.
+    match result {
+        Ok(response) => {
+            // Verify the response is a valid WorkspaceEdit (may have no edits for small scope).
+            assert!(
+                response.is_object() || response.is_null(),
+                "variable rename to keyword-named var should return WorkspaceEdit or null, got: {response:?}"
+            );
+        }
+        Err(e) => {
+            // Some servers might still reject: that's acceptable, but the reason
+            // must NOT be "reserved keyword" (that check is for subroutines only).
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("reserved") && !msg.contains("keyword"),
+                "variable rename to $if must not fail with keyword rejection, got: {msg}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Renaming a subroutine to a name that starts with a keyword prefix must succeed.
+///
+/// `ifunc`, `whileloop`, `returning` are not keywords — they only share a prefix.
+/// The check must be exact-match, not prefix-match.
+#[test]
+fn test_rename_sub_to_keyword_prefix_name_succeeds() -> TestResult {
+    let non_keyword_names = ["ifunc", "whileloop", "returning", "submodule", "myhelper"];
+
+    for name in non_keyword_names {
+        let mut harness = LspHarness::new();
+        let _init = harness.initialize(None)?;
+
+        let doc_uri = format!("file:///test_rename_prefix_{name}.pl");
+        harness.open(&doc_uri, "sub target {\n    return 1;\n}\ntarget();\n")?;
+
+        let result = harness.request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": doc_uri },
+                "position": { "line": 0, "character": 4 },
+                "newName": name
+            }),
+        );
+
+        // Must not be rejected as a keyword — these are ordinary identifiers.
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("keyword") && !msg.contains("reserved"),
+                "name '{name}' is not a keyword and must not be rejected as one, got: {msg}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Renaming a subroutine to an uppercase variant of a keyword must succeed.
+///
+/// Perl keywords are lowercase only. `If`, `WHILE`, `Return` are ordinary
+/// identifiers — the check must be case-sensitive.
+#[test]
+fn test_rename_sub_to_uppercase_keyword_variant_succeeds() -> TestResult {
+    let uppercase_variants = ["If", "WHILE", "Return", "Package", "SUB"];
+
+    for name in uppercase_variants {
+        let mut harness = LspHarness::new();
+        let _init = harness.initialize(None)?;
+
+        let doc_uri = format!("file:///test_rename_uppercase_{name}.pl");
+        harness.open(&doc_uri, "sub target {\n    return 1;\n}\ntarget();\n")?;
+
+        let result = harness.request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": doc_uri },
+                "position": { "line": 0, "character": 4 },
+                "newName": name
+            }),
+        );
+
+        if let Err(e) = &result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("keyword") && !msg.contains("reserved"),
+                "uppercase '{name}' is not a Perl keyword and must not be rejected as one, got: {msg}"
+            );
+        }
+    }
+
+    Ok(())
+}

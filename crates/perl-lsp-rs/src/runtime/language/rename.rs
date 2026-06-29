@@ -16,6 +16,7 @@ use crate::protocol::{REQUEST_FAILED, req_position, req_uri};
 use crate::runtime::readiness::{IndexReadinessOutcome, IndexReadinessPolicy};
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use perl_lexer::is_rename_keyword;
 #[cfg(feature = "workspace")]
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
@@ -977,6 +978,16 @@ impl LspServer {
                     return Err(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid identifier: {}", requested_name),
+                        data: None,
+                    });
+                }
+                if is_rename_keyword(requested_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!(
+                            "Cannot rename subroutine to reserved Perl keyword '{}'",
+                            requested_name
+                        ),
                         data: None,
                     });
                 }
@@ -2884,6 +2895,53 @@ mod tests {
             server.normalize_rename_target(Some("target"), "bad-name").is_err(),
             "bare symbols still require valid Perl identifiers"
         );
+
+        // Keyword rejection: subroutine renames (None sigil) to any RENAME_KEYWORD must fail.
+        for kw in ["if", "while", "for", "my", "sub", "package", "return"] {
+            assert!(
+                server.normalize_rename_target(None, kw).is_err(),
+                "rename to reserved keyword '{kw}' must be rejected"
+            );
+            let err = server.normalize_rename_target(None, kw).unwrap_err();
+            assert!(
+                err.message.contains("keyword") || err.message.contains("reserved"),
+                "error for keyword '{kw}' must mention keyword/reserved, got: {}",
+                err.message
+            );
+        }
+
+        // Variable renames (Some sigil) to keyword-named bare parts are allowed ($if is valid Perl).
+        assert_eq!(
+            server.normalize_rename_target(Some("$count"), "$if")?,
+            "$if",
+            "variable rename to $if (sigiled keyword-name) must be allowed"
+        );
+        assert_eq!(
+            server.normalize_rename_target(Some("$count"), "if")?,
+            "$if",
+            "variable rename using bare keyword name infers sigil and is allowed"
+        );
+
+        // Uppercase keyword variants are not keywords — they must be accepted.
+        assert_eq!(
+            server.normalize_rename_target(None, "If")?,
+            "If",
+            "uppercase keyword variant 'If' is not a keyword and must be accepted"
+        );
+        assert_eq!(
+            server.normalize_rename_target(None, "WHILE")?,
+            "WHILE",
+            "uppercase keyword variant 'WHILE' is not a keyword and must be accepted"
+        );
+
+        // Non-keyword names with keyword prefixes must be accepted.
+        for name in ["ifunc", "whileloop", "returning", "submodule"] {
+            assert_eq!(
+                server.normalize_rename_target(None, name)?,
+                name,
+                "name '{name}' shares a keyword prefix but is not a keyword"
+            );
+        }
 
         Ok(())
     }
