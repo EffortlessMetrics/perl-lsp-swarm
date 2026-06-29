@@ -10,7 +10,9 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{HirFile, lower_ast};
-use perl_parser_core::pir::{PirAnchorKind, PirContext, PirGraph, PirOperation, lower_hir};
+use perl_parser_core::pir::{
+    PirAnchorKind, PirContext, PirEdgeKind, PirGraph, PirOperation, lower_hir,
+};
 use perl_tdd_support::must_some;
 
 fn lower(source: &str) -> PirGraph {
@@ -159,6 +161,61 @@ fn return_and_loop_control_in_same_fixture_are_discriminated() {
         graph.receipt.unsupported_construct_counts.get("ControlTransfer"),
         Some(&1),
         "the last must remain exactly one unsupported ControlTransfer"
+    );
+}
+
+#[test]
+fn goto_stays_unsupported_and_is_not_a_return() {
+    // `goto &sub` is a Goto transfer, not a subroutine return. It must stay an
+    // unsupported ControlTransfer and must NOT lower to a Return operation —
+    // this locks the discrimination boundary so a future change can't silently
+    // start treating goto as a return.
+    let graph = lower("sub f { goto &handler; }");
+    assert_eq!(
+        graph.receipt.operation_counts.get("Return"),
+        None,
+        "goto must not be lowered to a Return operation"
+    );
+    assert_eq!(
+        graph.receipt.unsupported_construct_counts.get("ControlTransfer"),
+        Some(&1),
+        "goto must stay an unsupported ControlTransfer"
+    );
+}
+
+#[test]
+fn return_is_terminal_no_outgoing_fallthrough_and_records_return_exit_edge() {
+    // A `return` is terminal: control leaves the subroutine. The Return node
+    // must NOT be a Fallthrough source, and it must record a Return exit edge
+    // (to: None) leaving the modeled graph — mirroring the DynamicExit shape.
+    let graph = lower("sub f { return 1; }");
+    let return_id = first_return_node(&graph).id;
+
+    let outgoing_fallthrough =
+        graph.edges.iter().any(|e| e.from == return_id && e.kind == PirEdgeKind::Fallthrough);
+    assert!(!outgoing_fallthrough, "a Return node must not be a Fallthrough source");
+
+    let has_return_exit = graph
+        .edges
+        .iter()
+        .any(|e| e.from == return_id && e.to.is_none() && e.kind == PirEdgeKind::Return);
+    assert!(has_return_exit, "a Return node must record a Return exit edge (to: None)");
+}
+
+#[test]
+fn return_with_call_does_not_fallthrough_from_return_to_callee() {
+    // `return foo();` — HIR emits the ControlTransfer item *before* the returned
+    // CallExpr sibling. The Return must not link to that Call (or to any later
+    // sibling) by a spurious Fallthrough edge; control does not continue past a
+    // terminal return.
+    let graph = lower("sub f { return foo(); }");
+    let return_id = first_return_node(&graph).id;
+    let no_fallthrough_from_return =
+        graph.edges.iter().all(|e| !(e.from == return_id && e.kind == PirEdgeKind::Fallthrough));
+    assert!(
+        no_fallthrough_from_return,
+        "return must not fall through to the returned-call sibling: {:?}",
+        graph.edges
     );
 }
 
