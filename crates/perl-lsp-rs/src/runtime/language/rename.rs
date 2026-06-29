@@ -13,6 +13,7 @@ use super::super::*;
 use crate::protocol::{req_position, req_uri};
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use perl_lexer::is_rename_keyword;
 #[cfg(feature = "workspace")]
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
@@ -960,6 +961,15 @@ impl LspServer {
                     return Err(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid identifier: {}", requested_name),
+                        data: None,
+                    });
+                }
+                if is_rename_keyword(requested_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!(
+                            "Cannot rename subroutine to reserved Perl keyword '{requested_name}'"
+                        ),
                         data: None,
                     });
                 }
@@ -2641,6 +2651,65 @@ mod tests {
         assert!(
             server.normalize_rename_target(Some("target"), "bad-name").is_err(),
             "bare symbols still require valid Perl identifiers"
+        );
+
+        // Subroutine renames (None sigil) must reject reserved Perl keywords.
+        assert!(
+            server.normalize_rename_target(Some("myfunc"), "if").is_err(),
+            "renaming a sub to 'if' must be rejected"
+        );
+        assert!(
+            server.normalize_rename_target(Some("myfunc"), "while").is_err(),
+            "renaming a sub to 'while' must be rejected"
+        );
+        assert!(
+            server.normalize_rename_target(Some("myfunc"), "package").is_err(),
+            "renaming a sub to 'package' must be rejected"
+        );
+
+        // Variable renames (Some sigil) must allow keyword-named targets — $if is valid Perl.
+        assert_eq!(
+            server.normalize_rename_target(Some("$count"), "$if")?,
+            "$if",
+            "renaming a variable to $if must succeed (sigiled keywords are valid Perl)"
+        );
+        assert_eq!(
+            server.normalize_rename_target(Some("$count"), "$while")?,
+            "$while",
+            "renaming a variable to $while must succeed"
+        );
+
+        // Keyword check is case-sensitive — Perl keywords are lowercase only.
+        assert_eq!(
+            server.normalize_rename_target(Some("myfunc"), "If")?,
+            "If",
+            "uppercase 'If' is not a reserved keyword and must be allowed"
+        );
+        assert_eq!(
+            server.normalize_rename_target(Some("myfunc"), "WHILE")?,
+            "WHILE",
+            "uppercase 'WHILE' is not a reserved keyword and must be allowed"
+        );
+
+        // Non-keyword sub renames must still succeed.
+        assert_eq!(
+            server.normalize_rename_target(Some("myfunc"), "helper")?,
+            "helper",
+            "renaming sub to a valid non-keyword identifier must succeed"
+        );
+        assert_eq!(
+            server.normalize_rename_target(Some("myfunc"), "ifunc")?,
+            "ifunc",
+            "renaming sub to 'ifunc' (starts with 'if' but is not a keyword) must succeed"
+        );
+
+        // Error message for keyword rejection must name the keyword.
+        let err = server.normalize_rename_target(Some("myfunc"), "return").unwrap_err();
+        assert_eq!(err.code, -32602, "keyword rejection must use InvalidParams error code");
+        assert!(
+            err.message.contains("return"),
+            "keyword rejection error must name the offending keyword; got: {}",
+            err.message
         );
 
         Ok(())
