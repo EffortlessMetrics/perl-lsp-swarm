@@ -152,8 +152,8 @@ fn builtin_ceil_has_hover_doc() {
         doc.description
     );
     assert!(
-        doc.description.contains("5.38"),
-        "ceil description must mention Perl 5.38: {}",
+        doc.description.contains("5.36"),
+        "ceil description must mention Perl 5.36: {}",
         doc.description
     );
 }
@@ -172,8 +172,8 @@ fn builtin_floor_has_hover_doc() {
         doc.description
     );
     assert!(
-        doc.description.contains("5.38"),
-        "floor description must mention Perl 5.38: {}",
+        doc.description.contains("5.36"),
+        "floor description must mention Perl 5.36: {}",
         doc.description
     );
 }
@@ -186,6 +186,11 @@ fn builtin_inf_has_hover_doc() {
         "inf description must mention infinity: {}",
         doc.description
     );
+    assert!(
+        doc.description.contains("5.40"),
+        "inf description must mention Perl 5.40: {}",
+        doc.description
+    );
 }
 
 #[test]
@@ -194,6 +199,11 @@ fn builtin_nan_has_hover_doc() {
     assert!(
         doc.description.contains("NaN") || doc.description.contains("Not-a-Number"),
         "nan description must mention NaN: {}",
+        doc.description
+    );
+    assert!(
+        doc.description.contains("5.40"),
+        "nan description must mention Perl 5.40: {}",
         doc.description
     );
 }
@@ -212,8 +222,8 @@ fn builtin_trim_has_hover_doc() {
         doc.description
     );
     assert!(
-        doc.description.contains("5.38"),
-        "trim description must mention Perl 5.38: {}",
+        doc.description.contains("5.36"),
+        "trim description must mention Perl 5.36: {}",
         doc.description
     );
 }

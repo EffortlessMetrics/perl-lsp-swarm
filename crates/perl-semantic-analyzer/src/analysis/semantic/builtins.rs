@@ -972,7 +972,7 @@ pub fn get_builtin_documentation(name: &str) -> Option<BuiltinDoc> {
             signature: "ceil(EXPR)",
             description: "Returns the smallest integer greater than or equal to EXPR (ceiling \
                           function). For example, `ceil(4.1)` returns 5 and `ceil(-3.7)` returns \
-                          -3. Available since Perl 5.38 via `use builtin 'ceil'`; also available \
+                          -3. Available since Perl 5.36 via `use builtin 'ceil'`; also available \
                           as `POSIX::ceil`.\n\n\
                           ```perl\nuse builtin 'ceil';\nceil(4.1);  # 5\nceil(-3.7); # -3\nceil(5.0);  # 5\n```",
         }),
@@ -980,7 +980,7 @@ pub fn get_builtin_documentation(name: &str) -> Option<BuiltinDoc> {
             signature: "floor(EXPR)",
             description: "Returns the largest integer less than or equal to EXPR (floor function). \
                           For example, `floor(4.9)` returns 4 and `floor(-3.1)` returns -4. \
-                          Available since Perl 5.38 via `use builtin 'floor'`; also available as \
+                          Available since Perl 5.36 via `use builtin 'floor'`; also available as \
                           `POSIX::floor`.\n\n\
                           ```perl\nuse builtin 'floor';\nfloor(4.9);  # 4\nfloor(-3.1); # -4\nfloor(5.0);  # 5\n```",
         }),
@@ -988,21 +988,21 @@ pub fn get_builtin_documentation(name: &str) -> Option<BuiltinDoc> {
             signature: "inf()",
             description: "Returns a floating-point positive infinity value. Can be used in \
                           arithmetic: `inf() + 1` is still `inf`, `inf() * -1` is `-inf`. \
-                          Available since Perl 5.38 via `use builtin 'inf'`.\n\n\
+                          Available since Perl 5.40 via `use builtin 'inf'`.\n\n\
                           ```perl\nuse builtin 'inf';\nmy $i = inf();\nprint $i > 1e308 ? \"huge\" : \"no\"; # huge\n```",
         }),
         "nan" => Some(BuiltinDoc {
             signature: "nan()",
             description: "Returns a floating-point Not-a-Number (NaN) value. Any arithmetic with \
                           NaN produces NaN, and NaN compares unequal to everything including itself. \
-                          Available since Perl 5.38 via `use builtin 'nan'`.\n\n\
+                          Available since Perl 5.40 via `use builtin 'nan'`.\n\n\
                           ```perl\nuse builtin 'nan';\nmy $n = nan();\nprint $n == $n ? \"equal\" : \"NaN\"; # NaN\n```",
         }),
         "trim" => Some(BuiltinDoc {
             signature: "trim(STRING)",
             description: "Returns STRING with leading and trailing ASCII whitespace (spaces, tabs, \
                           newlines, carriage returns, form feeds, vertical tabs) removed. Does not \
-                          modify the original string. Available since Perl 5.38 via \
+                          modify the original string. Available since Perl 5.36 via \
                           `use builtin 'trim'`.\n\n\
                           ```perl\nuse builtin 'trim';\ntrim(\"  hello  \");  # \"hello\"\ntrim(\"\\t foo\\n\"); # \"foo\"\n```",
         }),
@@ -1010,25 +1010,23 @@ pub fn get_builtin_documentation(name: &str) -> Option<BuiltinDoc> {
             signature: "indexed(LIST)",
             description: "Returns a flat list of (index, value) pairs for each element in LIST, \
                           starting at index 0. Useful for iterating a list with an explicit index \
-                          without needing to track a counter variable. Available since Perl 5.38 \
+                          without needing to track a counter variable. Available since Perl 5.36 \
                           via `use builtin 'indexed'`.\n\n\
-                          ```perl\nuse builtin 'indexed';\nmy @fruits = ('apple', 'banana', 'cherry');\nwhile (my ($i, $v) = each indexed @fruits) {\n    print \"$i: $v\\n\";\n}\n```",
+                          ```perl\nuse builtin 'indexed';\nmy @fruits = ('apple', 'banana', 'cherry');\nfor my ($i, $v) (indexed @fruits) {\n    print \"$i: $v\\n\";\n}\n```",
         }),
         "load_module" => Some(BuiltinDoc {
-            signature: "load_module(MODULE)\nload_module(MODULE, VERSION)\nload_module(MODULE, VERSION, LIST)",
-            description: "Loads the named MODULE at runtime, like `require` followed by \
-                          `MODULE->import(LIST)`. If VERSION is provided, checks that the module \
-                          version is at least that value. Equivalent to `use MODULE VERSION LIST` \
-                          but deferred to runtime. Available since Perl 5.40 via \
-                          `use builtin 'load_module'`.\n\n\
-                          ```perl\nuse builtin 'load_module';\nload_module('Scalar::Util', '1.50', 'looks_like_number');\n```",
+            signature: "load_module(MODULE)",
+            description: "Loads the named MODULE at runtime by its string name. Similar to \
+                          `require MODULE` but accepts a plain string (not a bareword or file \
+                          path). Available since Perl 5.40 via `use builtin 'load_module'`.\n\n\
+                          ```perl\nuse builtin 'load_module';\nload_module('Scalar::Util');\n```",
         }),
         "export_lexically" => Some(BuiltinDoc {
             signature: "export_lexically(NAME, REF, ...)",
             description: "Installs NAME into the current lexical scope, bound to REF. Unlike \
                           regular imports, the binding is visible only in the calling scope, not \
                           the entire package. Designed for use inside import methods that want \
-                          to create truly lexical aliases. Available since Perl 5.40 via \
+                          to create truly lexical aliases. Available since Perl 5.38 via \
                           `use builtin 'export_lexically'`.\n\n\
                           ```perl\nuse builtin 'export_lexically';\nexport_lexically('my_fn', \\&some_sub);\n```",
         }),
