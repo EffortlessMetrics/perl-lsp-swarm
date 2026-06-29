@@ -92,11 +92,18 @@ fn scan_subs_ignores_sub_in_single_quoted_string() {
 
 #[test]
 fn scan_subs_does_not_collect_anonymous_sub() {
-    // `sub { }` has no name after `sub`, so nothing should be collected.
-    let table = LocalSymbolTable::scan_subs("my $cb = sub { 1 };");
-    // There should be no named sub in the table — verify a few plausible names.
-    assert!(!table.is_known_sub("1"), "anonymous sub body must not be collected");
-    assert!(!table.is_known_sub("cb"), "variable name must not be collected");
+    // Control: a NAMED `sub cb` IS collected — proves the scanner can see that exact
+    // name, so the negative assertion below is meaningful rather than vacuous.
+    assert!(
+        LocalSymbolTable::scan_subs("sub cb { 1 }").is_known_sub("cb"),
+        "control: named sub 'cb' must be collected"
+    );
+    // The anonymous form `my $cb = sub { 1 };` has no `sub NAME`, so the scanner must
+    // NOT collect the surrounding variable name "cb" (the actual mis-collection risk).
+    assert!(
+        !LocalSymbolTable::scan_subs("my $cb = sub { 1 };").is_known_sub("cb"),
+        "anonymous sub must not collect the surrounding variable name"
+    );
 }
 
 #[test]
