@@ -1,14 +1,25 @@
 //! Literal-eval sub extractor for dynamic boundary evidence.
 //!
-//! Recognizes `eval "sub NAME { ... }"` patterns in an AST and emits an
-//! [`OccurrenceFact`] with `kind = OccurrenceKind::DynamicBoundary` keyed to
-//! the sub name `NAME`.
+//! Recognizes `eval "sub NAME { ... }"` and `eval "package Foo; sub NAME { ... }"`
+//! patterns in an AST and emits an [`OccurrenceFact`] with
+//! `kind = OccurrenceKind::DynamicBoundary` keyed to the sub name `NAME`.
 //!
 //! # Scope
 //!
 //! Only literal string evals whose string value textually contains `sub NAME`
 //! are recognized. Non-literal evals (e.g. `eval $code`) are out of scope —
 //! the module name is not statically known and no evidence is emitted.
+//!
+//! # Package tracking
+//!
+//! When a `package NAME;` declaration appears inside the eval string, subsequent
+//! subs are attributed to that package: the emitted `canonical_name` becomes
+//! `Package::sub_name` and the confidence is raised to `Confidence::Medium`
+//! (the package context is heuristic — the eval may be conditional or dead).
+//!
+//! Subs that appear before any `package` declaration, or in an eval string that
+//! contains no `package` declaration, retain `canonical_name = sub_name` and
+//! `Confidence::Low`.
 //!
 //! # Placement note — circular dependency debt
 //!
@@ -32,6 +43,8 @@
 //!   so that `dynamic_callable_may_be_visible_at` can suppress the
 //!   `UnquotedBareword` diagnostic for `NAME` at later call sites in the
 //!   same file.
+//! - **Req 7.5b**: When `eval "package Foo; sub bar { ... }"` is present,
+//!   emit evidence for the qualified name `Foo::bar` with `Confidence::Medium`.
 
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::{
@@ -40,7 +53,8 @@ use perl_semantic_facts::{
 };
 
 /// Walk an AST and return `(EntityFact, AnchorFact, OccurrenceFact)` triples
-/// for each `eval "sub NAME { ... }"` pattern found.
+/// for each `eval "sub NAME { ... }"` or `eval "package Foo; sub NAME { ... }"`
+/// pattern found.
 ///
 /// The returned facts should be merged into the file's [`FileFactShard`] by
 /// the caller so that `dynamic_callable_may_be_visible_at` can find them.
@@ -51,13 +65,16 @@ use perl_semantic_facts::{
 /// 2. For each `NodeKind::Eval { block }` where `block` is a
 ///    `NodeKind::String { value, .. }` (a literal string eval), extract
 ///    all sub names that appear as `sub NAME` in `value`.
-/// 3. For each name found, emit a triple with `Confidence::Low` and
-///    `Provenance::DynamicBoundary`.
+/// 3. Track `package NAME;` declarations within the eval string; apply the
+///    package as a prefix to subsequently-declared subs.
+/// 4. For each name found, emit a triple with `Confidence::Low` (bare) or
+///    `Confidence::Medium` (package-qualified) and `Provenance::DynamicBoundary`.
 ///
 /// # ID generation
 ///
-/// IDs are derived from a stable hash of `(file_id, node_start_byte, name)`
-/// to avoid collisions across multiple eval strings in the same file.
+/// IDs are derived from a stable hash of `(file_id, node_start_byte, canonical_name)`
+/// to avoid collisions across multiple eval strings in the same file or across
+/// subs with the same bare name in different packages.
 pub fn extract_eval_sub_boundaries(
     ast: &Node,
     file_id: FileId,
@@ -83,7 +100,12 @@ fn walk(node: &Node, file_id: FileId, out: &mut Vec<(EntityFact, AnchorFact, Occ
     }
 }
 
-/// Parse `eval_string` for `sub NAME` patterns and emit triples.
+/// Parse `eval_string` for `package NAME` and `sub NAME` patterns.
+///
+/// Processes keywords in source order: whichever keyword (`package` or `sub`)
+/// appears first in the remaining text is handled next. This preserves ordering
+/// semantics — a `package` declaration takes effect for all subsequent `sub`s,
+/// not for subs that appeared before it.
 ///
 /// Handles plausible Perl sub declarations of the form:
 /// - `sub NAME {`   — named sub with body
@@ -112,63 +134,108 @@ fn extract_from_eval_string(
         .trim_start_matches('\'')
         .trim_end_matches('\'');
 
-    // Scan for `sub IDENTIFIER` patterns in the string content.
+    let mut current_package: Option<String> = None;
     let mut search = content;
+
     while !search.is_empty() {
-        // Find the next `sub ` keyword.
-        let Some(sub_pos) = find_sub_keyword(search) else {
-            break;
+        let sub_pos = find_sub_keyword(search);
+        let pkg_pos = find_package_keyword(search);
+
+        // Determine which keyword comes first; process that one.
+        let process_package = match (sub_pos, pkg_pos) {
+            (None, None) => break,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+            (Some(s), Some(p)) => p < s,
         };
 
-        let after_sub = &search[sub_pos + 3..]; // skip "sub"
+        if process_package {
+            // Safety: process_package is only true when pkg_pos is Some.
+            let pkg_pos = pkg_pos.unwrap_or(0);
+            let after_pkg = &search[pkg_pos + 7..]; // "package" = 7 chars
 
-        // Skip whitespace between `sub` and the name.
-        let ws_len =
-            after_sub.len() - after_sub.trim_start_matches(|c: char| c.is_ascii_whitespace()).len();
-        let after_ws = &after_sub[ws_len..];
+            // Skip whitespace between `package` and the name.
+            let ws_len = after_pkg.len()
+                - after_pkg.trim_start_matches(|c: char| c.is_ascii_whitespace()).len();
+            let after_ws = &after_pkg[ws_len..];
 
-        // Reject: anonymous sub (`sub {`) or sigil-prefixed (`sub $name`).
-        if after_ws.starts_with('{') || after_ws.starts_with(['$', '@', '%', '&', '*']) {
-            let advance = sub_pos + 3 + ws_len.max(1);
+            // Extract package name: allow alphanumeric, _, and : (for Foo::Bar).
+            let name_len = after_ws
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != ':')
+                .unwrap_or(after_ws.len());
+            // Trim any trailing colons left from partial ::  sequences.
+            let pkg_name = after_ws[..name_len].trim_end_matches(':');
+
+            // Update current package when name is valid (starts with letter or _).
+            if !pkg_name.is_empty()
+                && pkg_name
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|&b| b.is_ascii_alphabetic() || b == b'_')
+            {
+                current_package = Some(pkg_name.to_string());
+            }
+
+            let advance = pkg_pos + 7 + ws_len + name_len.max(1);
             if advance >= search.len() {
                 break;
             }
             search = &search[advance..];
-            continue;
-        }
+        } else {
+            // Safety: process_package is false only when sub_pos is Some (or we broke above).
+            let sub_pos = sub_pos.unwrap_or(0);
+            let after_sub = &search[sub_pos + 3..]; // skip "sub"
 
-        // Extract the identifier name.
-        let name_len = after_ws
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .unwrap_or(after_ws.len());
+            // Skip whitespace between `sub` and the name.
+            let ws_len = after_sub.len()
+                - after_sub.trim_start_matches(|c: char| c.is_ascii_whitespace()).len();
+            let after_ws = &after_sub[ws_len..];
 
-        if name_len > 0 {
-            let name = &after_ws[..name_len];
-            // Validate: must start with a letter or underscore (not a digit).
-            if name.as_bytes().first().is_some_and(|&b| b.is_ascii_alphabetic() || b == b'_') {
-                // Validate: what follows the name must look like a Perl sub declaration.
-                // Accept: `{`, `;`, `(` (optionally preceded by whitespace).
-                // - `sub NAME {`   — named sub with body
-                // - `sub NAME ;`   — forward declaration
-                // - `sub NAME (`   — named sub with prototype or signature
-                // Reject everything else, including bare `sub NAME` at end-of-string
-                // (ambiguous — could be prose containing the word "sub").
-                let after_name = after_ws[name_len..].trim_start();
-                let plausible = after_name.starts_with('{')
-                    || after_name.starts_with(';')
-                    || after_name.starts_with('(');
-                if plausible {
-                    emit_triple(name, node_start_byte, node_end_byte, file_id, out);
+            // Reject: anonymous sub (`sub {`) or sigil-prefixed (`sub $name`).
+            if after_ws.starts_with('{') || after_ws.starts_with(['$', '@', '%', '&', '*']) {
+                let advance = sub_pos + 3 + ws_len.max(1);
+                if advance >= search.len() {
+                    break;
+                }
+                search = &search[advance..];
+                continue;
+            }
+
+            // Extract the identifier name.
+            let name_len = after_ws
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(after_ws.len());
+
+            if name_len > 0 {
+                let name = &after_ws[..name_len];
+                // Validate: must start with a letter or underscore (not a digit).
+                if name.as_bytes().first().is_some_and(|&b| b.is_ascii_alphabetic() || b == b'_') {
+                    // Validate: what follows the name must look like a Perl sub declaration.
+                    // Accept: `{`, `;`, `(` (optionally preceded by whitespace).
+                    let after_name = after_ws[name_len..].trim_start();
+                    let plausible = after_name.starts_with('{')
+                        || after_name.starts_with(';')
+                        || after_name.starts_with('(');
+                    if plausible {
+                        emit_triple(
+                            name,
+                            current_package.as_deref(),
+                            node_start_byte,
+                            node_end_byte,
+                            file_id,
+                            out,
+                        );
+                    }
                 }
             }
-        }
 
-        // Advance past the name to continue scanning.
-        let advance = sub_pos + 3 + ws_len + name_len.max(1);
-        if advance >= search.len() {
-            break;
+            // Advance past the name to continue scanning.
+            let advance = sub_pos + 3 + ws_len + name_len.max(1);
+            if advance >= search.len() {
+                break;
+            }
+            search = &search[advance..];
         }
-        search = &search[advance..];
     }
 }
 
@@ -198,21 +265,60 @@ fn find_sub_keyword(text: &str) -> Option<usize> {
     None
 }
 
+/// Find the byte offset of the next `package` keyword in `text` that is
+/// preceded by a word boundary (not part of a longer identifier like `repackage`).
+fn find_package_keyword(text: &str) -> Option<usize> {
+    let mut start = 0;
+    while start < text.len() {
+        let pos = text[start..].find("package")?;
+        let abs_pos = start + pos;
+
+        // Check left boundary: must be at start or preceded by non-word char.
+        let left_ok = abs_pos == 0
+            || !text.as_bytes()[abs_pos - 1].is_ascii_alphanumeric()
+                && text.as_bytes()[abs_pos - 1] != b'_';
+
+        // Check right boundary: must be followed by whitespace or end.
+        let right_byte = text.as_bytes().get(abs_pos + 7).copied(); // "package" = 7 chars
+        let right_ok = right_byte.map(|b| b.is_ascii_whitespace()).unwrap_or(true);
+
+        if left_ok && right_ok {
+            return Some(abs_pos);
+        }
+
+        start = abs_pos + 7;
+    }
+    None
+}
+
 /// Emit a `(EntityFact, AnchorFact, OccurrenceFact)` triple for a named sub
 /// found in an eval string.
 ///
 /// `node_start_byte` and `node_end_byte` are from the enclosing `Eval` AST
 /// node's `location.start` and `location.end` — these are the real source
 /// positions of the eval expression, used directly as the anchor span.
+///
+/// When `package` is `Some`, the `canonical_name` is `Package::name` and
+/// `confidence` is [`Confidence::Medium`] (the package declaration is heuristic
+/// but substantially narrows the symbol space). When `package` is `None`,
+/// `canonical_name` is the bare `name` and `confidence` is [`Confidence::Low`].
 fn emit_triple(
     name: &str,
+    package: Option<&str>,
     node_start_byte: usize,
     node_end_byte: usize,
     file_id: FileId,
     out: &mut Vec<(EntityFact, AnchorFact, OccurrenceFact)>,
 ) {
-    // Stable ID derivation: hash (file_id, node_start_byte, name).
-    let base_id = stable_id(file_id.0, node_start_byte as u64, name);
+    let canonical_name = match package {
+        Some(pkg) => format!("{pkg}::{name}"),
+        None => name.to_string(),
+    };
+    let confidence = if package.is_some() { Confidence::Medium } else { Confidence::Low };
+
+    // Stable ID uses full canonical name for uniqueness: two subs with the same
+    // bare name in different packages must produce different entity IDs.
+    let base_id = stable_id(file_id.0, node_start_byte as u64, &canonical_name);
 
     let entity_id = EntityId(base_id);
     let anchor_id = AnchorId(base_id + 1);
@@ -220,12 +326,12 @@ fn emit_triple(
 
     let entity = EntityFact {
         id: entity_id,
-        canonical_name: name.to_string(),
+        canonical_name,
         kind: EntityKind::Subroutine,
         anchor_id: Some(anchor_id),
         scope_id: None,
         provenance: Provenance::DynamicBoundary,
-        confidence: Confidence::Low,
+        confidence,
     };
 
     // Use the real AST span from the enclosing eval node.
@@ -240,7 +346,7 @@ fn emit_triple(
         span_end_byte: span_end as u32,
         scope_id: None,
         provenance: Provenance::DynamicBoundary,
-        confidence: Confidence::Low,
+        confidence,
     };
 
     let occurrence = OccurrenceFact {
@@ -250,7 +356,7 @@ fn emit_triple(
         anchor_id,
         scope_id: None,
         provenance: Provenance::DynamicBoundary,
-        confidence: Confidence::Low,
+        confidence,
     };
 
     out.push((entity, anchor, occurrence));
@@ -313,6 +419,41 @@ mod tests {
     fn find_sub_keyword_none_when_absent() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(find_sub_keyword("hello world"), None);
         assert_eq!(find_sub_keyword(""), None);
+        Ok(())
+    }
+
+    // ── Unit tests for find_package_keyword ──
+
+    #[test]
+    fn find_package_keyword_basic() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(find_package_keyword("package Foo;"), Some(0));
+        assert_eq!(find_package_keyword("  package Bar;"), Some(2));
+        assert_eq!(find_package_keyword("x; package Baz;"), Some(3));
+        Ok(())
+    }
+
+    #[test]
+    fn find_package_keyword_rejects_fragments() -> Result<(), Box<dyn std::error::Error>> {
+        // "repackage" has "package" but is part of a longer word — must not match.
+        assert_eq!(find_package_keyword("repackage"), None);
+        assert_eq!(find_package_keyword("mypackage Foo;"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn find_package_keyword_none_when_absent() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(find_package_keyword("sub foo { 1 }"), None);
+        assert_eq!(find_package_keyword(""), None);
+        Ok(())
+    }
+
+    #[test]
+    fn find_package_keyword_word_boundary_right() -> Result<(), Box<dyn std::error::Error>> {
+        // "package" must be followed by whitespace (not a letter or digit).
+        // "packageFoo" should NOT match.
+        assert_eq!(find_package_keyword("packageFoo;"), None);
+        // But "package Foo" should.
+        assert_eq!(find_package_keyword("package Foo;"), Some(0));
         Ok(())
     }
 
@@ -522,7 +663,7 @@ mod tests {
     #[test]
     fn emit_triple_normalizes_empty_or_reversed_spans() -> Result<(), Box<dyn std::error::Error>> {
         let mut out = Vec::new();
-        emit_triple("span_edge", 99, 42, FileId(13), &mut out);
+        emit_triple("span_edge", None, 99, 42, FileId(13), &mut out);
 
         assert_eq!(out.len(), 1);
         let (_entity, anchor, occurrence) = &out[0];
@@ -540,6 +681,217 @@ mod tests {
 
         let id3 = stable_id(1, 42, "bar");
         assert_ne!(id1, id3, "different names must produce different IDs");
+        Ok(())
+    }
+
+    // ── Package tracking tests ──
+
+    #[test]
+    fn package_declaration_prefixes_subsequent_subs() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(20);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string("package Foo; sub bar { 1 }", 0, 26, file_id, &mut out);
+            out
+        };
+
+        assert_eq!(triples.len(), 1);
+        let (entity, _, _) = &triples[0];
+        assert_eq!(
+            entity.canonical_name, "Foo::bar",
+            "sub after package declaration should use qualified name"
+        );
+        assert_eq!(
+            entity.confidence,
+            Confidence::Medium,
+            "package-attributed sub should have Medium confidence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sub_before_package_uses_bare_name() -> Result<(), Box<dyn std::error::Error>> {
+        // Subs that appear before any `package` declaration are bare (no package context).
+        let file_id = FileId(21);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string(
+                "sub early { 1 } package Bar; sub late { 2 }",
+                0,
+                44,
+                file_id,
+                &mut out,
+            );
+            out
+        };
+
+        assert_eq!(triples.len(), 2);
+        let names: Vec<(&str, Confidence)> =
+            triples.iter().map(|(e, _, _)| (e.canonical_name.as_str(), e.confidence)).collect();
+        assert!(
+            names.contains(&("early", Confidence::Low)),
+            "sub before package must be bare with Low confidence; got {names:?}"
+        );
+        assert!(
+            names.contains(&("Bar::late", Confidence::Medium)),
+            "sub after package must be qualified with Medium confidence; got {names:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn multiple_package_switches_attribute_subs_to_correct_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(22);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string(
+                "package Alpha; sub one { 1 } package Beta; sub two { 2 } sub three { 3 }",
+                0,
+                73,
+                file_id,
+                &mut out,
+            );
+            out
+        };
+
+        assert_eq!(triples.len(), 3);
+        let names: Vec<&str> = triples.iter().map(|(e, _, _)| e.canonical_name.as_str()).collect();
+        assert!(names.contains(&"Alpha::one"), "should include Alpha::one; got {names:?}");
+        assert!(names.contains(&"Beta::two"), "should include Beta::two; got {names:?}");
+        assert!(names.contains(&"Beta::three"), "should include Beta::three; got {names:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn package_with_nested_name() -> Result<(), Box<dyn std::error::Error>> {
+        // `package Foo::Bar;` — nested package names use :: separator.
+        let file_id = FileId(23);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string("package Foo::Bar; sub baz { 1 }", 0, 31, file_id, &mut out);
+            out
+        };
+
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].0.canonical_name, "Foo::Bar::baz");
+        assert_eq!(triples[0].0.confidence, Confidence::Medium);
+        Ok(())
+    }
+
+    #[test]
+    fn package_no_sub_produces_no_triples() -> Result<(), Box<dyn std::error::Error>> {
+        // A `package` declaration with no subsequent `sub` emits nothing.
+        let file_id = FileId(24);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string("package NoSubs;", 0, 15, file_id, &mut out);
+            out
+        };
+        assert!(triples.is_empty(), "package declaration alone must not produce evidence");
+        Ok(())
+    }
+
+    #[test]
+    fn multiple_subs_in_same_package_all_qualified() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(25);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string(
+                "package MyPkg; sub alpha { 1 } sub beta { 2 } sub gamma;",
+                0,
+                57,
+                file_id,
+                &mut out,
+            );
+            out
+        };
+
+        assert_eq!(triples.len(), 3);
+        let names: Vec<&str> = triples.iter().map(|(e, _, _)| e.canonical_name.as_str()).collect();
+        for name in &["MyPkg::alpha", "MyPkg::beta", "MyPkg::gamma"] {
+            assert!(names.contains(name), "expected {name} in {names:?}");
+        }
+        for (entity, _, _) in &triples {
+            assert_eq!(
+                entity.confidence,
+                Confidence::Medium,
+                "all package-qualified subs must have Medium confidence"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn package_attributed_subs_have_distinct_ids() -> Result<(), Box<dyn std::error::Error>> {
+        // Two subs with the same bare name but different packages must not collide.
+        let file_id = FileId(26);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string(
+                "package Alpha; sub helper { 1 } package Beta; sub helper { 2 }",
+                0,
+                63,
+                file_id,
+                &mut out,
+            );
+            out
+        };
+
+        assert_eq!(triples.len(), 2);
+        let ids: Vec<u64> = triples.iter().map(|(e, _, _)| e.id.0).collect();
+        assert_ne!(
+            ids[0], ids[1],
+            "same bare name in different packages must produce distinct entity IDs"
+        );
+        let names: Vec<&str> = triples.iter().map(|(e, _, _)| e.canonical_name.as_str()).collect();
+        assert!(names.contains(&"Alpha::helper"), "expected Alpha::helper");
+        assert!(names.contains(&"Beta::helper"), "expected Beta::helper");
+        Ok(())
+    }
+
+    #[test]
+    fn package_with_whitespace_variants() -> Result<(), Box<dyn std::error::Error>> {
+        // `package` keyword with tab/newline after it.
+        let file_id = FileId(27);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string(
+                "package\tTabPkg;\nsub tabbed { 1 }",
+                0,
+                31,
+                file_id,
+                &mut out,
+            );
+            out
+        };
+
+        assert_eq!(triples.len(), 1);
+        assert_eq!(triples[0].0.canonical_name, "TabPkg::tabbed");
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_package_name_does_not_update_context() -> Result<(), Box<dyn std::error::Error>> {
+        // A `package` keyword followed by a digit-starting name is invalid Perl —
+        // the extractor must not update current_package, so the sub stays bare.
+        let file_id = FileId(28);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string("package 123Bad; sub moo { 1 }", 0, 29, file_id, &mut out);
+            out
+        };
+
+        assert_eq!(triples.len(), 1);
+        assert_eq!(
+            triples[0].0.canonical_name, "moo",
+            "invalid package name must not qualify subsequent subs"
+        );
+        assert_eq!(
+            triples[0].0.confidence,
+            Confidence::Low,
+            "sub after invalid package must remain Low confidence"
+        );
         Ok(())
     }
 }
