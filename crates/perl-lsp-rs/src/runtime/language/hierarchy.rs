@@ -630,22 +630,41 @@ impl LspServer {
                     let refs = index.find_refs(&symbol_key);
 
                     for location in refs {
-                        if let Some(from) =
-                            self.find_workspace_enclosing_callable(&callable_symbols, &location)
-                        {
-                            let key = (from.name.clone(), from.uri.clone());
-                            let from_range = index_location_to_wire_range(&location);
-                            if let Some(&idx) = seen.get(&key) {
-                                all_calls[idx].from_ranges.push(from_range);
-                            } else {
-                                seen.insert(key, all_calls.len());
-                                all_calls.push(
-                                    crate::call_hierarchy_provider::CallHierarchyIncomingCall {
-                                        from,
-                                        from_ranges: vec![from_range],
-                                    },
-                                );
-                            }
+                        let from_range = index_location_to_wire_range(&location);
+                        let from = self
+                            .find_workspace_enclosing_callable(&callable_symbols, &location)
+                            .unwrap_or_else(|| {
+                                // Top-level call site — no enclosing callable in the
+                                // workspace index.  Synthesize a file-level caller so the
+                                // script appears in incomingCalls instead of being dropped.
+                                let raw_uri = location.uri.as_str();
+                                let basename = raw_uri
+                                    .rsplit('/')
+                                    .find(|s| !s.is_empty())
+                                    .unwrap_or(raw_uri)
+                                    .to_string();
+                                crate::call_hierarchy_provider::CallHierarchyItem {
+                                    name: basename,
+                                    kind: "file".to_string(),
+                                    uri: location.uri.clone(),
+                                    range: from_range,
+                                    selection_range: from_range,
+                                    detail: None,
+                                    package_name: None,
+                                    qualified_name: None,
+                                }
+                            });
+                        let key = (from.name.clone(), from.uri.clone());
+                        if let Some(&idx) = seen.get(&key) {
+                            all_calls[idx].from_ranges.push(from_range);
+                        } else {
+                            seen.insert(key, all_calls.len());
+                            all_calls.push(
+                                crate::call_hierarchy_provider::CallHierarchyIncomingCall {
+                                    from,
+                                    from_ranges: vec![from_range],
+                                },
+                            );
                         }
                     }
                 }

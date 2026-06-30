@@ -46,6 +46,14 @@ pub struct CallHierarchyProvider {
     position_mapper: PositionMapper,
 }
 
+/// Extract the filename from a URI (e.g. `"file:///path/to/foo.pl"` → `"foo.pl"`).
+///
+/// Used to name synthetic file-level callers for top-level call sites that are
+/// not enclosed in any named subroutine.
+fn uri_basename(uri: &str) -> String {
+    uri.rsplit('/').find(|s| !s.is_empty()).unwrap_or(uri).to_string()
+}
+
 impl CallHierarchyProvider {
     /// Create a new call hierarchy provider for a source file
     ///
@@ -222,47 +230,67 @@ impl CallHierarchyProvider {
                         qualified_name: None,
                     };
 
-                    // Search within this function
+                    // Search within this named function; return early so the
+                    // bottom visitor does not re-visit children with the outer
+                    // (possibly None) context, which would create spurious
+                    // file-level callers for calls inside this sub.
                     self.visit_children(node, |child| {
                         self.find_incoming_calls(child, target_name, calls, Some(&item));
                         None::<()>
                     });
+                    return;
                 }
+                // Anonymous sub — fall through to the bottom visitor.
             }
             NodeKind::FunctionCall { name, .. } => {
                 // Match exact name or package-qualified name (e.g. "Utils::format_string")
                 let matches = name == target_name || name.ends_with(&format!("::{}", target_name));
                 if matches {
-                    if let Some(from) = current_function {
-                        let ranges = vec![self.node_to_range(node)];
-
-                        // Check if we already have a call from this function
-                        if let Some(existing) = calls.iter_mut().find(|c| c.from.name == from.name)
-                        {
-                            existing.from_ranges.extend(ranges);
-                        } else {
-                            calls.push(CallHierarchyIncomingCall {
-                                from: from.clone(),
-                                from_ranges: ranges,
-                            });
+                    let call_range = self.node_to_range(node);
+                    let from = current_function.cloned().unwrap_or_else(|| {
+                        // Top-level call site — synthesize a file-level caller so the
+                        // script appears in incomingCalls instead of being silently dropped.
+                        CallHierarchyItem {
+                            name: uri_basename(uri),
+                            kind: "file".to_string(),
+                            uri: uri.clone(),
+                            range: call_range,
+                            selection_range: call_range,
+                            detail: None,
+                            package_name: None,
+                            qualified_name: None,
                         }
+                    });
+                    let ranges = vec![call_range];
+                    if let Some(existing) = calls.iter_mut().find(|c| c.from.name == from.name) {
+                        existing.from_ranges.extend(ranges);
+                    } else {
+                        calls.push(CallHierarchyIncomingCall { from, from_ranges: ranges });
                     }
                 }
             }
             NodeKind::MethodCall { method, .. } => {
                 if method == target_name {
-                    if let Some(from) = current_function {
-                        let ranges = vec![self.node_to_range(node)];
-
-                        if let Some(existing) = calls.iter_mut().find(|c| c.from.name == from.name)
-                        {
-                            existing.from_ranges.extend(ranges);
-                        } else {
-                            calls.push(CallHierarchyIncomingCall {
-                                from: from.clone(),
-                                from_ranges: ranges,
-                            });
+                    let call_range = self.node_to_range(node);
+                    let from = current_function.cloned().unwrap_or_else(|| {
+                        // Top-level call site — synthesize a file-level caller so the
+                        // script appears in incomingCalls instead of being silently dropped.
+                        CallHierarchyItem {
+                            name: uri_basename(uri),
+                            kind: "file".to_string(),
+                            uri: uri.clone(),
+                            range: call_range,
+                            selection_range: call_range,
+                            detail: None,
+                            package_name: None,
+                            qualified_name: None,
                         }
+                    });
+                    let ranges = vec![call_range];
+                    if let Some(existing) = calls.iter_mut().find(|c| c.from.name == from.name) {
+                        existing.from_ranges.extend(ranges);
+                    } else {
+                        calls.push(CallHierarchyIncomingCall { from, from_ranges: ranges });
                     }
                 }
             }
@@ -656,6 +684,7 @@ impl CallHierarchyItem {
             "kind": match self.kind.as_str() {
                 "function" => 12, // SymbolKind.Function
                 "method" => 6,    // SymbolKind.Method
+                "file" => 1,      // SymbolKind.File
                 _ => 12,
             },
             "uri": self.uri,
