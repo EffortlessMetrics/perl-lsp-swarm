@@ -493,6 +493,26 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn find_package_keyword_ripr_left_boundary_edges() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            find_package_keyword("package Foo;"),
+            Some(0),
+            "left boundary at abs_pos == 0 must be accepted"
+        );
+        assert_eq!(
+            find_package_keyword("_package"),
+            None,
+            "underscore before package must keep it inside an identifier"
+        );
+        assert_eq!(
+            find_package_keyword("xpackage"),
+            None,
+            "rejected candidate at the end must terminate the scan"
+        );
+        Ok(())
+    }
+
     // ── Unit tests for extract_eval_sub_boundaries ──
 
     fn parse_and_extract(
