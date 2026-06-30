@@ -346,7 +346,7 @@ mod tests {
     /// through into the Rust-source walk.  The correct predicate is a positive
     /// inclusion test: `is_some_and(|ext| ext == "rs")`.
     #[test]
-    fn is_rust_source_file_excludes_extensionless_files() {
+    fn is_rust_source_file_excludes_extensionless_files() -> Result<(), Box<dyn Error>> {
         use super::is_rust_source_file;
         use std::path::Path;
 
@@ -383,6 +383,7 @@ mod tests {
             !is_rust_source_file(Path::new("script.py")),
             "script.py must not be treated as a Rust source"
         );
+        Ok(())
     }
 
     #[test]
