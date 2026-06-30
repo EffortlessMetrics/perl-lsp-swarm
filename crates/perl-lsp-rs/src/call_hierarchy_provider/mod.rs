@@ -54,6 +54,28 @@ fn uri_basename(uri: &str) -> String {
     uri.rsplit('/').find(|s| !s.is_empty()).unwrap_or(uri).to_string()
 }
 
+/// Synthesize a `CallHierarchyItem` representing a file-level (top-level) caller.
+///
+/// Used when a call site is not enclosed in any named subroutine — the script
+/// file itself becomes the logical "caller" so it appears in `incomingCalls`
+/// instead of being silently dropped.
+///
+/// Both the open-document traversal path (`mod.rs`) and the workspace-index
+/// path (`hierarchy.rs`) use this helper, keeping synthesis logic in one
+/// `--lib`-testable location.
+pub(crate) fn synthetic_file_level_caller(uri: &str, range: Range) -> CallHierarchyItem {
+    CallHierarchyItem {
+        name: uri_basename(uri),
+        kind: "file".to_string(),
+        uri: uri.to_string(),
+        range,
+        selection_range: range,
+        detail: None,
+        package_name: None,
+        qualified_name: None,
+    }
+}
+
 impl CallHierarchyProvider {
     /// Create a new call hierarchy provider for a source file
     ///
@@ -250,16 +272,7 @@ impl CallHierarchyProvider {
                     let from = current_function.cloned().unwrap_or_else(|| {
                         // Top-level call site — synthesize a file-level caller so the
                         // script appears in incomingCalls instead of being silently dropped.
-                        CallHierarchyItem {
-                            name: uri_basename(uri),
-                            kind: "file".to_string(),
-                            uri: uri.clone(),
-                            range: call_range,
-                            selection_range: call_range,
-                            detail: None,
-                            package_name: None,
-                            qualified_name: None,
-                        }
+                        synthetic_file_level_caller(uri, call_range)
                     });
                     let ranges = vec![call_range];
                     if let Some(existing) = calls.iter_mut().find(|c| c.from.name == from.name) {
@@ -275,16 +288,7 @@ impl CallHierarchyProvider {
                     let from = current_function.cloned().unwrap_or_else(|| {
                         // Top-level call site — synthesize a file-level caller so the
                         // script appears in incomingCalls instead of being silently dropped.
-                        CallHierarchyItem {
-                            name: uri_basename(uri),
-                            kind: "file".to_string(),
-                            uri: uri.clone(),
-                            range: call_range,
-                            selection_range: call_range,
-                            detail: None,
-                            package_name: None,
-                            qualified_name: None,
-                        }
+                        synthetic_file_level_caller(uri, call_range)
                     });
                     let ranges = vec![call_range];
                     if let Some(existing) = calls.iter_mut().find(|c| c.from.name == from.name) {
@@ -943,6 +947,93 @@ sub helper {
             assert!(called_names.contains(&&"helper".to_string()));
             assert!(called_names.contains(&&"process_data".to_string()));
             assert!(called_names.contains(&&"method_call".to_string()));
+        }
+    }
+
+    /// `synthetic_file_level_caller` must return a `CallHierarchyItem` with kind
+    /// `"file"`, the basename of the URI as the name, and both `range` /
+    /// `selection_range` set to the supplied range.
+    #[test]
+    fn test_synthetic_file_level_caller_returns_file_item() {
+        let range = Range {
+            start: Position { line: 5, character: 0 },
+            end: Position { line: 5, character: 20 },
+        };
+        let item = synthetic_file_level_caller("file:///path/to/script.pl", range);
+        assert_eq!(item.name, "script.pl");
+        assert_eq!(item.kind, "file");
+        assert_eq!(item.uri, "file:///path/to/script.pl");
+        assert_eq!(item.range.start.line, 5);
+        assert_eq!(item.range.end.character, 20);
+        assert_eq!(item.selection_range.start.line, 5);
+        assert!(item.detail.is_none());
+        assert!(item.package_name.is_none());
+        assert!(item.qualified_name.is_none());
+    }
+
+    /// A top-level `MethodCall` (not inside any sub) must produce a file-level
+    /// caller rather than being silently dropped.
+    #[test]
+    fn test_incoming_calls_top_level_method_call_synthesizes_file_caller() {
+        let code = "App->run();\n";
+        let mut parser = Parser::new(code);
+        if let Ok(ast) = parser.parse() {
+            let provider =
+                CallHierarchyProvider::new(code.to_string(), "file:///script.pl".to_string());
+            let target_item = CallHierarchyItem {
+                name: "run".to_string(),
+                kind: "method".to_string(),
+                uri: "file:///App.pm".to_string(),
+                range: Range {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 2, character: 1 },
+                },
+                selection_range: Range {
+                    start: Position { line: 1, character: 4 },
+                    end: Position { line: 1, character: 7 },
+                },
+                detail: None,
+                package_name: None,
+                qualified_name: None,
+            };
+            let incoming = provider.incoming_calls(&ast, &target_item);
+            assert_eq!(incoming.len(), 1, "expected exactly one file-level caller");
+            assert_eq!(incoming[0].from.name, "script.pl");
+            assert_eq!(incoming[0].from.kind, "file");
+            assert_eq!(incoming[0].from.uri, "file:///script.pl");
+        }
+    }
+
+    /// A top-level `FunctionCall` (not inside any sub) must produce a file-level
+    /// caller rather than being silently dropped.
+    #[test]
+    fn test_incoming_calls_top_level_function_call_synthesizes_file_caller() {
+        let code = "target_func();\n";
+        let mut parser = Parser::new(code);
+        if let Ok(ast) = parser.parse() {
+            let provider =
+                CallHierarchyProvider::new(code.to_string(), "file:///script.pl".to_string());
+            let target_item = CallHierarchyItem {
+                name: "target_func".to_string(),
+                kind: "function".to_string(),
+                uri: "file:///lib.pm".to_string(),
+                range: Range {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 2, character: 1 },
+                },
+                selection_range: Range {
+                    start: Position { line: 0, character: 4 },
+                    end: Position { line: 0, character: 15 },
+                },
+                detail: None,
+                package_name: None,
+                qualified_name: None,
+            };
+            let incoming = provider.incoming_calls(&ast, &target_item);
+            assert_eq!(incoming.len(), 1, "expected exactly one file-level caller");
+            assert_eq!(incoming[0].from.name, "script.pl");
+            assert_eq!(incoming[0].from.kind, "file");
+            assert_eq!(incoming[0].from.uri, "file:///script.pl");
         }
     }
 }
