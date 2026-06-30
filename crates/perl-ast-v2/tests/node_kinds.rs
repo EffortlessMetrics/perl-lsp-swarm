@@ -155,37 +155,30 @@ fn test_node_equality() {
     assert_ne!(a, b);
 }
 
-// ---- Fallback `_` arm in to_sexp (Unary, If, VariableDeclaration, etc.) ---
-//
-// Variants without an explicit to_sexp arm use the wildcard:
-//   `_ => format!("({:?})", self)`
-// These tests exercise that path and verify it produces a non-empty string
-// that starts with `(` (the Debug representation wrapped in parens).
+// ---- Explicit to_sexp arms that replaced the old Debug fallback ---
 
 #[test]
-fn test_unary_sexp_fallback() {
+fn test_unary_sexp_explicit() {
     let mut id_gen = NodeIdGenerator::new();
     let operand = make_node(&mut id_gen, NodeKind::Number { value: "1".into() });
     let node =
         make_node(&mut id_gen, NodeKind::Unary { op: "-".into(), operand: Box::new(operand) });
     let sexp = node.to_sexp();
-    // The wildcard arm produces ({:?}) — it must start with '(' and contain Unary
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(sexp.contains("Unary"), "to_sexp fallback must contain variant name, got: {sexp}");
+    assert_eq!(sexp, "(unary_- (number 1))");
+    assert!(!sexp.contains('{'), "to_sexp must not use Debug struct syntax: {sexp}");
 }
 
 #[test]
-fn test_identifier_sexp_fallback() {
+fn test_identifier_sexp_explicit() {
     let mut id_gen = NodeIdGenerator::new();
     let node = make_node(&mut id_gen, NodeKind::Identifier { name: "foo".into() });
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(sexp.contains("Identifier"), "to_sexp fallback must contain variant name, got: {sexp}");
-    assert!(sexp.contains("foo"), "to_sexp fallback must include identifier name, got: {sexp}");
+    assert_eq!(sexp, "(identifier foo)");
+    assert!(!sexp.contains('{'), "to_sexp must not use Debug struct syntax: {sexp}");
 }
 
 #[test]
-fn test_variable_declaration_sexp_fallback() {
+fn test_variable_declaration_sexp_explicit() {
     let mut id_gen = NodeIdGenerator::new();
     let var = make_node(&mut id_gen, NodeKind::Variable { sigil: "$".into(), name: "x".into() });
     let node = make_node(
@@ -198,15 +191,12 @@ fn test_variable_declaration_sexp_fallback() {
         },
     );
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(
-        sexp.contains("VariableDeclaration"),
-        "to_sexp fallback must contain variant name, got: {sexp}"
-    );
+    assert_eq!(sexp, "(variable_declaration my (variable $ x))");
+    assert!(!sexp.contains('{'), "to_sexp must not use Debug struct syntax: {sexp}");
 }
 
 #[test]
-fn test_variable_list_declaration_sexp_fallback() {
+fn test_variable_list_declaration_sexp_explicit() {
     let mut id_gen = NodeIdGenerator::new();
     let var_a = make_node(&mut id_gen, NodeKind::Variable { sigil: "$".into(), name: "a".into() });
     let var_b = make_node(&mut id_gen, NodeKind::Variable { sigil: "$".into(), name: "b".into() });
@@ -220,15 +210,12 @@ fn test_variable_list_declaration_sexp_fallback() {
         },
     );
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(
-        sexp.contains("VariableListDeclaration"),
-        "to_sexp fallback must contain variant name, got: {sexp}"
-    );
+    assert_eq!(sexp, "(variable_list_declaration my (variable $ a) (variable $ b))");
+    assert!(!sexp.contains('{'), "to_sexp must not use Debug struct syntax: {sexp}");
 }
 
 #[test]
-fn test_if_sexp_fallback() {
+fn test_if_sexp_explicit() {
     let mut id_gen = NodeIdGenerator::new();
     let condition =
         make_node(&mut id_gen, NodeKind::Variable { sigil: "$".into(), name: "ok".into() });
@@ -243,8 +230,8 @@ fn test_if_sexp_fallback() {
         },
     );
     let sexp = node.to_sexp();
-    assert!(sexp.starts_with('('), "to_sexp fallback must start with '(', got: {sexp}");
-    assert!(sexp.contains("If"), "to_sexp fallback must contain variant name, got: {sexp}");
+    assert_eq!(sexp, "(if (variable $ ok) (block ))");
+    assert!(!sexp.contains('{'), "to_sexp must not use Debug struct syntax: {sexp}");
 }
 
 #[test]
@@ -296,7 +283,7 @@ fn test_error_sexp_ignores_recovery_metadata_but_equality_keeps_it() {
 }
 
 #[test]
-fn test_variable_declaration_fallback_includes_attributes_and_initializer() {
+fn test_variable_declaration_sexp_includes_attributes_and_initializer() {
     let mut id_gen = NodeIdGenerator::new();
     let var =
         make_node(&mut id_gen, NodeKind::Variable { sigil: "$".into(), name: "count".into() });
@@ -312,14 +299,37 @@ fn test_variable_declaration_fallback_includes_attributes_and_initializer() {
     );
 
     let sexp = node.to_sexp();
-    assert!(sexp.contains("VariableDeclaration"), "variant missing from {sexp}");
-    assert!(sexp.contains("state"), "declarator missing from {sexp}");
-    assert!(sexp.contains("shared"), "attribute missing from {sexp}");
-    assert!(sexp.contains("initializer: Some"), "initializer missing from {sexp}");
+    assert_eq!(
+        sexp,
+        "(variable_declaration state (variable $ count) (attributes shared) (number 1))"
+    );
 }
 
 #[test]
-fn test_if_fallback_includes_elsif_and_else_branches() {
+fn test_variable_list_declaration_sexp_includes_attributes_and_initializer() {
+    let mut id_gen = NodeIdGenerator::new();
+    let var =
+        make_node(&mut id_gen, NodeKind::Variable { sigil: "$".into(), name: "count".into() });
+    let initializer = make_node(&mut id_gen, NodeKind::Number { value: "1".into() });
+    let node = make_node(
+        &mut id_gen,
+        NodeKind::VariableListDeclaration {
+            declarator: "state".into(),
+            variables: vec![var],
+            attributes: vec!["shared".into()],
+            initializer: Some(Box::new(initializer)),
+        },
+    );
+
+    let sexp = node.to_sexp();
+    assert_eq!(
+        sexp,
+        "(variable_list_declaration state (variable $ count) (attributes shared) (number 1))"
+    );
+}
+
+#[test]
+fn test_if_sexp_includes_elsif_and_else_branches() {
     let mut id_gen = NodeIdGenerator::new();
     let condition =
         make_node(&mut id_gen, NodeKind::Variable { sigil: "$".into(), name: "a".into() });
@@ -339,8 +349,8 @@ fn test_if_fallback_includes_elsif_and_else_branches() {
     );
 
     let sexp = node.to_sexp();
-    assert!(sexp.contains("If"), "variant missing from {sexp}");
-    assert!(sexp.contains("elsif_branches"), "elsif branch field missing from {sexp}");
-    assert!(sexp.contains("else_branch: Some"), "else branch missing from {sexp}");
-    assert!(sexp.contains("name: \"b\""), "elsif condition missing from {sexp}");
+    assert_eq!(
+        sexp,
+        "(if (variable $ a) (block ) (elsif (variable $ b) (block )) (else (block )))"
+    );
 }

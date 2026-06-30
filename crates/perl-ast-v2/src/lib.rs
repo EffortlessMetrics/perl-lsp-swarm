@@ -278,27 +278,27 @@ impl NodeKind {
                 s
             }
 
-            VariableDeclaration { declarator, variable, initializer, .. } => match initializer {
-                Some(init) => format!(
-                    "(variable_declaration {} {} {})",
-                    declarator,
-                    variable.to_sexp(),
-                    init.to_sexp()
-                ),
-                None => format!("(variable_declaration {} {})", declarator, variable.to_sexp()),
-            },
-
-            VariableListDeclaration { declarator, variables, initializer, .. } => {
-                let vars = variables.iter().map(|v| v.to_sexp()).collect::<Vec<_>>().join(" ");
-                match initializer {
-                    Some(init) => format!(
-                        "(variable_list_declaration {} {} {})",
-                        declarator,
-                        vars,
-                        init.to_sexp()
-                    ),
-                    None => format!("(variable_list_declaration {} {})", declarator, vars),
+            VariableDeclaration { declarator, variable, attributes, initializer } => {
+                let mut s = format!("(variable_declaration {} {}", declarator, variable.to_sexp());
+                Self::push_attributes_sexp(&mut s, attributes);
+                if let Some(init) = initializer {
+                    s.push(' ');
+                    s.push_str(&init.to_sexp());
                 }
+                s.push(')');
+                s
+            }
+
+            VariableListDeclaration { declarator, variables, attributes, initializer } => {
+                let vars = variables.iter().map(|v| v.to_sexp()).collect::<Vec<_>>().join(" ");
+                let mut s = format!("(variable_list_declaration {} {}", declarator, vars);
+                Self::push_attributes_sexp(&mut s, attributes);
+                if let Some(init) = initializer {
+                    s.push(' ');
+                    s.push_str(&init.to_sexp());
+                }
+                s.push(')');
+                s
             }
 
             Error { message, .. } => format!("(ERROR {})", message),
@@ -310,6 +310,19 @@ impl NodeKind {
             MissingBlock => "(MISSING_BLOCK)".to_string(),
             Missing(kind) => format!("(MISSING {:?})", kind),
         }
+    }
+
+    fn push_attributes_sexp(s: &mut String, attributes: &[String]) {
+        if attributes.is_empty() {
+            return;
+        }
+
+        s.push_str(" (attributes");
+        for attribute in attributes {
+            s.push(' ');
+            s.push_str(attribute);
+        }
+        s.push(')');
     }
 }
 
