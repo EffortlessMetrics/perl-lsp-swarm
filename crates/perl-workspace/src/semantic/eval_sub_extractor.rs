@@ -153,30 +153,13 @@ fn extract_from_eval_string(
             // Safety: process_package is only true when pkg_pos is Some.
             let pkg_pos = pkg_pos.unwrap_or(0);
             let after_pkg = &search[pkg_pos + 7..]; // "package" = 7 chars
+            let (pkg_name, consumed) = parse_package_declaration(after_pkg);
 
-            // Skip whitespace between `package` and the name.
-            let ws_len = after_pkg.len()
-                - after_pkg.trim_start_matches(|c: char| c.is_ascii_whitespace()).len();
-            let after_ws = &after_pkg[ws_len..];
-
-            // Extract package name: allow alphanumeric, _, and : (for Foo::Bar).
-            let name_len = after_ws
-                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != ':')
-                .unwrap_or(after_ws.len());
-            // Trim any trailing colons left from partial ::  sequences.
-            let pkg_name = after_ws[..name_len].trim_end_matches(':');
-
-            // Update current package when name is valid (starts with letter or _).
-            if !pkg_name.is_empty()
-                && pkg_name
-                    .as_bytes()
-                    .first()
-                    .is_some_and(|&b| b.is_ascii_alphabetic() || b == b'_')
-            {
+            if let Some(pkg_name) = pkg_name {
                 current_package = Some(pkg_name.to_string());
             }
 
-            let advance = pkg_pos + 7 + ws_len + name_len.max(1);
+            let advance = pkg_pos + 7 + consumed;
             if advance >= search.len() {
                 break;
             }
@@ -236,6 +219,42 @@ fn extract_from_eval_string(
             }
             search = &search[advance..];
         }
+    }
+}
+
+/// Parse text after a `package` keyword.
+///
+/// Returns a package name only for declaration-like forms (`package NAME;` or
+/// `package NAME {`). The consumed byte count is always on a UTF-8 boundary so
+/// callers can safely continue scanning after malformed package candidates.
+fn parse_package_declaration(after_package: &str) -> (Option<&str>, usize) {
+    let ws_len = after_package.len() - after_package.trim_start_matches(char::is_whitespace).len();
+    let after_ws = &after_package[ws_len..];
+
+    if after_ws.is_empty() {
+        return (None, after_package.len());
+    }
+
+    let name_len = after_ws
+        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != ':')
+        .unwrap_or(after_ws.len());
+
+    if name_len == 0 {
+        let char_len = after_ws.chars().next().map(char::len_utf8).unwrap_or(0);
+        return (None, ws_len + char_len);
+    }
+
+    let raw_name = &after_ws[..name_len];
+    let pkg_name = raw_name.trim_end_matches(':');
+    let after_name = after_ws[name_len..].trim_start_matches(char::is_whitespace);
+    let has_declaration_delimiter = after_name.starts_with(';') || after_name.starts_with('{');
+    let valid_start =
+        pkg_name.as_bytes().first().is_some_and(|&b| b.is_ascii_alphabetic() || b == b'_');
+
+    if !pkg_name.is_empty() && valid_start && has_declaration_delimiter {
+        (Some(pkg_name), ws_len + name_len)
+    } else {
+        (None, ws_len + name_len)
     }
 }
 
@@ -457,6 +476,17 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn find_package_keyword_left_boundary_discriminators() -> Result<(), Box<dyn std::error::Error>>
+    {
+        assert_eq!(find_package_keyword("package"), Some(0));
+        assert_eq!(find_package_keyword(" package Foo;"), Some(1));
+        assert_eq!(find_package_keyword("_package Foo;"), None);
+        assert_eq!(find_package_keyword("prefix_package Foo;"), None);
+        assert_eq!(find_package_keyword("packageFoo package Bar;"), Some(11));
+        Ok(())
+    }
+
     // ── Unit tests for extract_eval_sub_boundaries ──
 
     fn parse_and_extract(
@@ -628,6 +658,35 @@ mod tests {
 
         assert_eq!(triples.len(), 1, "only the later static declaration should match");
         assert_eq!(triples[0].0.canonical_name, "valid_after_invalid");
+        Ok(())
+    }
+
+    #[test]
+    fn extract_from_eval_string_call_presence_observer() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(31);
+        let source = concat!(
+            "sub first { 0 } ",
+            "package Observed; sub one { 1 } sub two { 2 } ",
+            "package Bad package Good; sub ok { 3 }",
+        );
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string(source, 0, source.len(), file_id, &mut out);
+            out
+        };
+
+        let names: Vec<&str> =
+            triples.iter().map(|(entity, _, _)| entity.canonical_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["first", "Observed::one", "Observed::two", "Good::ok"],
+            "call presence observer for find_sub_keyword/find_package_keyword/parse_package_declaration"
+        );
+        assert!(
+            names.iter().all(|name| !name.starts_with("Bad::")),
+            "malformed package candidate must not update context before the later valid package"
+        );
+
         Ok(())
     }
 
@@ -892,6 +951,50 @@ mod tests {
             Confidence::Low,
             "sub after invalid package must remain Low confidence"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn package_without_declaration_delimiter_does_not_update_context()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `package Foo sub bar` is not a valid package declaration. Do not let
+        // prose-like text or malformed code qualify later sub evidence.
+        let file_id = FileId(29);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string("package Foo sub bar { 1 }", 0, 25, file_id, &mut out);
+            out
+        };
+
+        assert_eq!(triples.len(), 1);
+        assert_eq!(
+            triples[0].0.canonical_name, "bar",
+            "missing package delimiter must leave subsequent sub bare"
+        );
+        assert_eq!(
+            triples[0].0.confidence,
+            Confidence::Low,
+            "sub after malformed package declaration must remain Low confidence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn non_ascii_invalid_package_candidate_does_not_panic() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let file_id = FileId(30);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string("package ☃; sub snow { 1 }", 0, 27, file_id, &mut out);
+            out
+        };
+
+        assert_eq!(triples.len(), 1);
+        assert_eq!(
+            triples[0].0.canonical_name, "snow",
+            "non-ASCII invalid package candidate must not qualify subsequent sub"
+        );
+        assert_eq!(triples[0].0.confidence, Confidence::Low);
         Ok(())
     }
 }
