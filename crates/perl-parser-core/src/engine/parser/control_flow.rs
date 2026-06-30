@@ -990,3 +990,69 @@ impl<'a> Parser<'a> {
     }
 
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod goto_form_tests {
+    //! `--lib` unit coverage for `parse_goto`'s form classification (#1923).
+    //!
+    //! The goto-form distinction is also exercised by integration tests under
+    //! `tests/`, but `Codecov / Patch 95` measures `--lib` coverage only, so the
+    //! classification arms in `parse_goto` need in-crate unit tests as well.
+    use crate::ast::GotoTargetForm;
+    use crate::parser::Parser;
+    use crate::{Node, NodeKind};
+    use perl_tdd_support::must;
+
+    /// Parse `source` and return the classified form of the first `Goto` node.
+    fn first_goto_form(source: &str) -> GotoTargetForm {
+        fn find(node: &Node) -> Option<GotoTargetForm> {
+            if let NodeKind::Goto { form, .. } = &node.kind {
+                return Some(form.clone());
+            }
+            node.children().into_iter().find_map(find)
+        }
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        find(&ast).expect("source must contain a goto statement")
+    }
+
+    #[test]
+    fn parse_goto_bare_label_is_label_form() {
+        // `goto LABEL` — sigil-less bare identifier → Label form.
+        assert_eq!(first_goto_form("goto LABEL;"), GotoTargetForm::Label);
+    }
+
+    #[test]
+    fn parse_goto_named_sub_is_sub_form() {
+        // `goto &sub` — leading `&` → Sub form (frame replacement / tail call).
+        assert_eq!(first_goto_form("goto &handler;"), GotoTargetForm::Sub);
+    }
+
+    #[test]
+    fn parse_goto_dynamic_coderef_is_sub_form() {
+        // `goto &$dispatch` — leading `&` still drives Sub form for a coderef.
+        assert_eq!(first_goto_form("goto &$dispatch;"), GotoTargetForm::Sub);
+    }
+
+    #[test]
+    fn parse_goto_scalar_target_is_expr_form() {
+        // `goto $target` — variable (no `&`, not a bare identifier) → Expr form.
+        assert_eq!(first_goto_form("goto $target;"), GotoTargetForm::Expr);
+    }
+
+    #[test]
+    fn parse_goto_complex_expression_is_expr_form() {
+        // `goto E . $suffix` — a bareword followed by concat is a complex
+        // expression, not a label → Expr form (covers the `_ => Expr` arm).
+        assert_eq!(first_goto_form("goto E . $suffix;"), GotoTargetForm::Expr);
+    }
+
+    #[test]
+    fn parse_goto_form_renders_in_sexp() {
+        // Exercise the `GotoTargetForm` → sexp rendering ("label"/"sub"/"expr").
+        let mut parser = Parser::new("goto &handler;");
+        let ast = must(parser.parse());
+        assert!(ast.to_sexp().contains("goto"), "sexp must render the goto node");
+    }
+}
