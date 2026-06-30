@@ -2095,3 +2095,58 @@ fn test_warm_path_correct_with_data_section() -> Result<(), Box<dyn std::error::
     );
     Ok(())
 }
+
+/// If the stored incremental document has drifted from the open document text,
+/// a ranged didChange must reinitialize it from the current code slice instead
+/// of publishing a warm AST for the wrong source.
+#[cfg(feature = "incremental")]
+#[test]
+fn test_warm_path_reinitializes_when_incremental_source_diverges()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser::Parser;
+
+    let server = LspServer::new();
+    let uri = "file:///test_warm_diverged_source.pl";
+    let text = "my $x = 1;\n";
+
+    server.did_open(json!({
+        "textDocument": { "uri": uri, "languageId": "perl", "version": 1, "text": text }
+    }))?;
+
+    {
+        let mut docs = server.documents.lock();
+        let doc = docs.get_mut(uri).ok_or("document not stored after didOpen")?;
+        let inc = doc.incremental_doc.as_mut().ok_or("incremental_doc must be present")?;
+        inc.source = "my $y = 1;\n".to_string();
+    }
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 8 },
+                "end":   { "line": 0, "character": 9 }
+            },
+            "text": "2"
+        }]
+    })))?;
+
+    let docs = server.documents.lock();
+    let doc = docs.get(uri).ok_or("document not stored after didChange")?;
+    assert_eq!(doc.text, "my $x = 2;\n");
+
+    let inc = doc.incremental_doc.as_ref().ok_or("incremental_doc must be present")?;
+    let code = crate::util::code_slice(&doc.text);
+    assert_eq!(inc.source, code, "diverged incremental_doc must be rebuilt from code slice");
+    assert_eq!(inc.version, 0, "reinitialized incremental_doc starts a fresh generation");
+
+    let stored = doc.ast.as_ref().ok_or("AST must be present after didChange")?;
+    let mut parser = Parser::new(code);
+    let cold = parser.parse()?;
+    assert_eq!(
+        stored.to_sexp(),
+        cold.to_sexp(),
+        "stored AST must match a cold parse after divergence reinitialization"
+    );
+    Ok(())
+}

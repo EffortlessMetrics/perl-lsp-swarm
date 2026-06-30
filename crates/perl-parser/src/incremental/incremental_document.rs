@@ -1275,13 +1275,54 @@ mod tests {
     }
 
     #[test]
-    fn apply_edits_cancellable_returns_cancelled_when_flag_set() {
+    fn apply_edits_falls_back_when_batch_is_not_normalizable() -> ParseResult<()> {
+        let source = "my $value = 12345;\n";
+        let mut doc = IncrementalDocument::new(source.to_string())?;
+        let start = source.find("12345").ok_or_else(|| {
+            perl_parser_core::error::ParseError::SyntaxError {
+                message: "test source should contain '12345'".to_string(),
+                location: 0,
+            }
+        })?;
+
+        let mut edits = IncrementalEditSet::new();
+        edits.add(IncrementalEdit::new(start + 1, start + 4, "abc".to_string()));
+        edits.add(IncrementalEdit::new(start + 3, start + 5, "de".to_string()));
+
+        let expected = edits.apply_to_string(source);
+        doc.apply_edits(&edits)?;
+
+        assert_eq!(
+            doc.source, expected,
+            "non-normalizable overlapping batches must use deterministic fallback application"
+        );
+        assert_eq!(doc.version, 1, "fallback batch still advances the document version");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_edits_without_reusable_subtrees_uses_single_fresh_parse() -> ParseResult<()> {
+        let source = "my $value = 1;\n";
+        let mut doc = IncrementalDocument::new(source.to_string())?;
+
+        let mut edits = IncrementalEditSet::new();
+        edits.add(IncrementalEdit::new(0, source.len(), "my $other = ;\n".to_string()));
+        doc.apply_edits(&edits)?;
+
+        assert_eq!(doc.source, "my $other = ;\n");
+        assert!(
+            !doc.errors().is_empty(),
+            "fresh no-reuse batch parse must publish recoverable parse errors"
+        );
+        assert_eq!(doc.version, 1, "no-reuse batch still advances the document version");
+        Ok(())
+    }
+
+    #[test]
+    fn apply_edits_cancellable_returns_cancelled_when_flag_set() -> ParseResult<()> {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let mut doc = match IncrementalDocument::new("my $x = 1;\n".to_string()) {
-            Ok(d) => d,
-            Err(e) => panic!("setup parse failed: {e:?}"),
-        };
+        let mut doc = IncrementalDocument::new("my $x = 1;\n".to_string())?;
         let source_before = doc.source.clone();
 
         let flag = Arc::new(AtomicBool::new(true));
@@ -1300,10 +1341,9 @@ mod tests {
         flag.store(false, Ordering::SeqCst);
         let mut edits2 = IncrementalEditSet::new();
         edits2.add(IncrementalEdit::new(8, 9, "2".to_string()));
-        match doc.apply_edits_cancellable(&edits2, Some(&flag)) {
-            Ok(()) => assert!(doc.source.contains("= 2;"), "edit must apply when flag is clear"),
-            Err(e) => panic!("apply_edits with clear flag must succeed; got {e:?}"),
-        }
+        doc.apply_edits_cancellable(&edits2, Some(&flag))?;
+        assert!(doc.source.contains("= 2;"), "edit must apply when flag is clear");
+        Ok(())
     }
 
     #[test]
