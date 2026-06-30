@@ -2534,6 +2534,7 @@ impl WorkspaceIndex {
     pub fn clear(&self) {
         self.files.write().clear();
         self.symbols.write().clear();
+        self.search_index.write().clear();
         self.global_references.write().clear();
         self.fact_shards.write().clear();
         *self.semantic_reference_index.write() = ReferenceIndex::new();
