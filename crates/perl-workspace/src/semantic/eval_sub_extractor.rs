@@ -643,6 +643,22 @@ mod tests {
     }
 
     #[test]
+    fn package_keyword_before_sub_updates_context_before_emit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(36);
+        let mut out = Vec::new();
+
+        extract_from_eval_string("package Ordered; sub later { 1 }", 0, 32, file_id, &mut out);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].0.canonical_name, "Ordered::later",
+            "p < s branch must process package before the following sub"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn package_after_sub_does_not_retroactively_qualify_sub()
     -> Result<(), Box<dyn std::error::Error>> {
         let file_id = FileId(33);
@@ -685,6 +701,21 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0.canonical_name, "named");
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_sigil_sub_candidate_does_not_emit_or_loop() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let file_id = FileId(37);
+        let mut out = Vec::new();
+
+        extract_from_eval_string("sub $", 0, 5, file_id, &mut out);
+
+        assert!(
+            out.is_empty(),
+            "terminal sigil-prefixed sub candidate must not emit partial evidence"
+        );
         Ok(())
     }
 
@@ -732,6 +763,28 @@ mod tests {
     }
 
     #[test]
+    fn punctuated_sub_candidate_skips_to_later_valid_declaration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(38);
+        let mut out = Vec::new();
+
+        extract_from_eval_string(
+            "sub bad-name { 1 } sub valid_after_dash { 2 }",
+            0,
+            46,
+            file_id,
+            &mut out,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].0.canonical_name, "valid_after_dash",
+            "non-identifier punctuation after a candidate name must not stop later valid extraction"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn extract_from_eval_string_call_presence_observer() -> Result<(), Box<dyn std::error::Error>> {
         let file_id = FileId(31);
         let source = concat!(
@@ -757,6 +810,33 @@ mod tests {
             "malformed package candidate must not update context before the later valid package"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn package_keyword_boundaries_are_observed_in_emitted_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(39);
+        let source = concat!(
+            "package Root; sub first { 1 } ",
+            "_package Bad; sub stays_root { 2 } ",
+            "xpackage",
+        );
+        let mut out = Vec::new();
+
+        extract_from_eval_string(source, 0, source.len(), file_id, &mut out);
+
+        let names: Vec<&str> =
+            out.iter().map(|(entity, _, _)| entity.canonical_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Root::first", "Root::stays_root"],
+            "package keyword boundaries must be visible through emitted canonical names"
+        );
+        assert!(
+            names.iter().all(|name| !name.starts_with("Bad::")),
+            "underscore-prefixed package fragments must not update package context"
+        );
         Ok(())
     }
 
