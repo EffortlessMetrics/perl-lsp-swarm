@@ -1947,7 +1947,46 @@ mod tests_our_redecl {
         let issues = analyze("use strict;\npackage Foo;\nour $x = 1;\nour $x = 2;\nprint $x;\n");
         assert!(
             !redecls_for_var(&issues, "$x").is_empty(),
-            "expected VariableRedeclaration for same-package our $x; got: {:?}",
+            "input that hits the boundary: is_our; got: {:?}",
+            issues
+        );
+    }
+
+    /// Lexical `my` redeclaration still uses the non-`our` path (#1661 control).
+    #[test]
+    fn my_same_scope_redecl_exercises_non_our_branch() {
+        let issues = analyze("use strict;\nmy $x = 1;\nmy $x = 2;\nprint $x;\n");
+        assert!(
+            !redecls_for_var(&issues, "$x").is_empty(),
+            "input that hits the boundary: !is_our; got: {:?}",
+            issues
+        );
+    }
+
+    /// Redeclaration assertions must stay bound to the exact variable name.
+    #[test]
+    fn redecls_for_var_filters_exact_variable_name() {
+        let issues = analyze(
+            "use strict;\npackage Foo;\nour $x = 1;\nour $x = 2;\nour $y = 3;\nprint $x + $y;\n",
+        );
+
+        let x_redecls = redecls_for_var(&issues, "$x");
+        assert_eq!(
+            x_redecls.len(),
+            1,
+            "expected exactly one VariableRedeclaration for $x; got: {:?}",
+            x_redecls
+        );
+        assert!(
+            x_redecls.iter().all(|issue| issue.kind == IssueKind::VariableRedeclaration
+                && issue.variable_name == "$x"),
+            "expected only $x VariableRedeclaration issues; got: {:?}",
+            x_redecls
+        );
+
+        assert!(
+            redecls_for_var(&issues, "$y").is_empty(),
+            "non-redeclared $y must not match $x redeclaration issues; got: {:?}",
             issues
         );
     }
