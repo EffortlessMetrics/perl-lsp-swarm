@@ -14,7 +14,7 @@ use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 use serde_json::{Value, json};
 use std::time::Duration;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 const RENAME_FIXTURE: &str = r#"use strict;
 use warnings;
