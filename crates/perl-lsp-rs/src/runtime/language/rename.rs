@@ -13,6 +13,7 @@ use super::super::*;
 use crate::protocol::{req_position, req_uri};
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use perl_lexer::is_rename_keyword;
 #[cfg(feature = "workspace")]
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
@@ -579,6 +580,16 @@ impl LspServer {
                         data: None,
                     });
                 }
+                if is_rename_keyword(requested_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!(
+                            "Cannot rename subroutine to reserved Perl keyword '{}'",
+                            requested_name
+                        ),
+                        data: None,
+                    });
+                }
                 Ok(requested_name.to_string())
             }
         }
@@ -1114,6 +1125,59 @@ mod tests {
         ));
         assert!(!LspServer::offset_is_generated_accessor_declaration(text, sub_offset));
         Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_rejects_keyword_for_sub() {
+        let server = LspServer::default();
+        // None sigil = subroutine rename path; keywords must be rejected
+        for &kw in perl_lexer::RENAME_KEYWORDS {
+            let result = server.normalize_rename_target(None, kw);
+            assert!(result.is_err(), "keyword '{kw}' should be rejected for subroutine rename");
+            let err = result.unwrap_err();
+            assert_eq!(err.code, -32602);
+            assert!(
+                err.message.contains("reserved Perl keyword"),
+                "error message should mention reserved keyword, got: {}",
+                err.message
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_rename_target_allows_keyword_for_variable() {
+        let server = LspServer::default();
+        // Some(sigil) = variable rename path; $if, @while, %for are valid Perl
+        for &kw in &["if", "while", "for"] {
+            let result = server.normalize_rename_target(Some("$count"), kw);
+            assert!(
+                result.is_ok(),
+                "keyword bare-name '{kw}' should be allowed for variable rename (sigil path)"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_rename_target_allows_non_keyword_subs() {
+        let server = LspServer::default();
+        // Valid non-keyword sub names must still work
+        for name in &["helper", "ifunc", "whilex", "format_output", "_private"] {
+            let result = server.normalize_rename_target(None, name);
+            assert!(result.is_ok(), "valid name '{name}' should not be rejected as a keyword");
+        }
+    }
+
+    #[test]
+    fn normalize_rename_target_keyword_check_is_case_sensitive() {
+        let server = LspServer::default();
+        // Perl keywords are lowercase; mixed-case must be accepted
+        for name in &["If", "WHILE", "For", "PACKAGE", "Sub"] {
+            let result = server.normalize_rename_target(None, name);
+            assert!(
+                result.is_ok(),
+                "uppercase variant '{name}' should not be treated as a keyword"
+            );
+        }
     }
 
     #[test]

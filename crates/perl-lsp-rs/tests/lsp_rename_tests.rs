@@ -8,6 +8,7 @@
 //! - WorkspaceEdit response structure validation
 
 mod support;
+use perl_lexer::RENAME_KEYWORDS;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use support::lsp_harness::LspHarness;
@@ -866,6 +867,184 @@ fn test_workspace_rename_workspace_edit_rolls_back_cleanly() -> TestResult {
         rolled_back, originals,
         "workspace rename inverse edits must restore the original documents exactly"
     );
+
+    Ok(())
+}
+
+/// Renaming a subroutine to a reserved Perl keyword must be rejected with -32602.
+#[test]
+fn test_rename_sub_to_keyword_fails() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///test_rename_sub_keyword.pl";
+    harness.open(doc_uri, "sub foo {\n    return 1;\n}\nfoo();\n")?;
+
+    // Rename `foo` to `if` — `if` is a reserved keyword; must be rejected
+    let result = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 },
+            "newName": "if"
+        }),
+    );
+
+    match result {
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("keyword") || msg.contains("32602"),
+                "error should mention reserved keyword or -32602, got: {msg}"
+            );
+        }
+        Ok(response) => {
+            // If it didn't error, the response must be null (no edits produced)
+            assert!(
+                response.is_null(),
+                "renaming sub to reserved keyword 'if' must not produce edits, got: {response:?}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Multiple keywords from different categories must all be rejected for sub rename.
+#[test]
+fn test_rename_sub_to_control_flow_keywords_fails() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///test_rename_sub_multi_keyword.pl";
+    harness.open(doc_uri, "sub process {\n    return 1;\n}\n")?;
+
+    // Sample keywords from different categories in RENAME_KEYWORDS
+    let test_keywords = ["if", "while", "package", "return", "sub", "my"];
+    for kw in test_keywords {
+        // Only test keywords actually in RENAME_KEYWORDS
+        if !RENAME_KEYWORDS.contains(&kw) {
+            continue;
+        }
+        let result = harness.request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": doc_uri },
+                "position": { "line": 0, "character": 4 },
+                "newName": kw
+            }),
+        );
+        match result {
+            Err(e) => {
+                let msg = format!("{e}");
+                assert!(
+                    msg.contains("keyword") || msg.contains("32602"),
+                    "keyword '{kw}': error should mention reserved keyword, got: {msg}"
+                );
+            }
+            Ok(response) => {
+                assert!(
+                    response.is_null(),
+                    "keyword '{kw}': renaming sub to reserved keyword must not produce edits"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Renaming a variable to a keyword bare-name (e.g., $if) must succeed — Perl allows it.
+#[test]
+fn test_rename_variable_to_keyword_name_succeeds() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///test_rename_var_keyword.pl";
+    harness.open(doc_uri, "my $count = 0;\nprint $count;\n")?;
+
+    // Rename $count to $if — Perl legitimately allows sigiled variables named $if
+    let result = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 4 },
+            "newName": "$if"
+        }),
+    );
+
+    // The variable rename path must NOT reject $if — it's a valid sigiled variable
+    match result {
+        Err(e) => {
+            let msg = format!("{e}");
+            // An error is only acceptable if it's about something other than "reserved keyword"
+            assert!(
+                !msg.contains("reserved Perl keyword"),
+                "variable rename to '$if' must not be rejected as a reserved keyword: {msg}"
+            );
+        }
+        Ok(_) => {
+            // Success is the expected outcome
+        }
+    }
+
+    Ok(())
+}
+
+/// Renaming a subroutine to a valid, non-keyword name must succeed (no false positives).
+#[test]
+fn test_rename_sub_to_valid_non_keyword_succeeds() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///test_rename_sub_valid.pl";
+    harness.open(doc_uri, "sub foo {\n    return 1;\n}\nfoo();\n")?;
+
+    let valid_names = ["helper", "process_data", "ifunc", "whilex", "_internal"];
+    for name in valid_names {
+        let result = harness.request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": doc_uri },
+                "position": { "line": 0, "character": 4 },
+                "newName": name
+            }),
+        );
+        assert!(
+            result.is_ok(),
+            "valid sub name '{name}' should not be rejected, got: {:?}",
+            result.err()
+        );
+    }
+
+    Ok(())
+}
+
+/// Keyword check is case-sensitive: 'If', 'WHILE', 'For' are NOT Perl keywords.
+#[test]
+fn test_rename_sub_to_uppercase_keyword_variant_succeeds() -> TestResult {
+    let mut harness = LspHarness::new();
+    let _init = harness.initialize(None)?;
+
+    let doc_uri = "file:///test_rename_sub_case.pl";
+    harness.open(doc_uri, "sub foo {\n    return 1;\n}\n")?;
+
+    // These look like keywords but are capitalized — Perl keywords are lowercase
+    let case_variants = ["If", "WHILE", "For", "PACKAGE", "Sub"];
+    for name in case_variants {
+        let result = harness.request(
+            "textDocument/rename",
+            json!({
+                "textDocument": { "uri": doc_uri },
+                "position": { "line": 0, "character": 4 },
+                "newName": name
+            }),
+        );
+        assert!(
+            result.is_ok(),
+            "uppercase keyword variant '{name}' should not be rejected as a keyword"
+        );
+    }
 
     Ok(())
 }
