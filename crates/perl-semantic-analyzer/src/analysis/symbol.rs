@@ -717,9 +717,16 @@ impl SymbolExtractor {
                     if matches!(rhs.kind, NodeKind::Subroutine { .. }) {
                         let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
                         if !bare.is_empty() {
+                            // For `*Pkg::foo = sub {}` use the package from the glob name;
+                            // for unqualified `*foo = sub {}` (or `*::foo` where "::"
+                            // is shorthand for "main::") fall back to the current package.
+                            let pkg = match glob_name.rfind("::") {
+                                Some(pos) if pos > 0 => &glob_name[..pos],
+                                _ => self.table.current_package.as_str(),
+                            };
                             let sym = Symbol {
                                 name: bare.to_string(),
-                                qualified_name: format!("{}::{}", self.table.current_package, bare),
+                                qualified_name: format!("{pkg}::{bare}"),
                                 kind: SymbolKind::Subroutine,
                                 location: node.location,
                                 scope_id: self.table.current_scope(),
@@ -3890,7 +3897,11 @@ sub jump {
     // =========================================================================
 
     /// Edge case: Qualified typeglob `*Pkg::foo = sub { ... }` should synthesize
-    /// a symbol for the bare name `foo`, not the qualified name.
+    /// a symbol for the bare name `foo` with qualified_name `"Pkg::foo"`, not the
+    /// current-package-qualified `"main::foo"`.
+    ///
+    /// Regression guard for the bug where `qualified_name` was derived from
+    /// `self.table.current_package` instead of the package encoded in the glob itself.
     #[test]
     fn typeglob_sub_qualified_synthesizes_bare_name_symbol() {
         let code = "*Pkg::foo = sub { return 42; };";
@@ -3908,10 +3919,17 @@ sub jump {
             foo_syms.iter().any(|s| s.kind == SymbolKind::Subroutine),
             "'foo' from *Pkg::foo should be a Subroutine"
         );
+        // qualified_name must reflect the package encoded in the glob, not the
+        // current lexical package (which is "main" by default).
+        assert!(
+            foo_syms.iter().any(|s| s.qualified_name == "Pkg::foo"),
+            "'foo' from *Pkg::foo must have qualified_name 'Pkg::foo'; got: {:?}",
+            foo_syms.iter().map(|s| &s.qualified_name).collect::<Vec<_>>()
+        );
     }
 
     /// Edge case: Nested package `*Pkg::Sub::foo = sub { ... }` should also
-    /// synthesize a symbol for the bare name `foo`.
+    /// synthesize a symbol for the bare name `foo` with qualified_name `"Pkg::Sub::foo"`.
     #[test]
     fn typeglob_sub_nested_package_synthesizes_bare_name() {
         let code = "*Pkg::Sub::foo = sub { return 42; };";
@@ -3922,6 +3940,12 @@ sub jump {
         assert!(
             table.symbols.contains_key("foo"),
             "*Pkg::Sub::foo should synthesize a 'foo' symbol"
+        );
+        let foo_syms = &table.symbols["foo"];
+        assert!(
+            foo_syms.iter().any(|s| s.qualified_name == "Pkg::Sub::foo"),
+            "*Pkg::Sub::foo must have qualified_name 'Pkg::Sub::foo'; got: {:?}",
+            foo_syms.iter().map(|s| &s.qualified_name).collect::<Vec<_>>()
         );
     }
 
