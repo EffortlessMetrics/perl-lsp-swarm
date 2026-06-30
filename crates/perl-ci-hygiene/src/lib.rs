@@ -25,6 +25,23 @@ pub fn binary_path(root: &Path) -> PathBuf {
     path
 }
 
+/// Returns `true` if `path` should be treated as a Rust source file.
+///
+/// A file is a Rust source only when it has a `.rs` extension.  Files with no
+/// extension (e.g. `README`, `Makefile`, `LICENSE`) and files with any other
+/// extension (e.g. `.toml`, `.md`) return `false` and are excluded from
+/// Rust-source walks.
+///
+/// This is the canonical include-predicate used by all Rust-source walks in the
+/// CI hygiene tool.  Using a positive include test (`ext == "rs"`) rather than a
+/// negative skip test (`ext != "rs"`) avoids the subtle bug where
+/// `is_some_and(|ext| ext != "rs")` returns `false` for extensionless files,
+/// accidentally admitting them into the walk.
+#[must_use]
+pub fn is_rust_source_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "rs")
+}
+
 /// Collect the `Cargo.toml` plus every Rust source file shipped by this crate,
 /// sorted lexicographically.
 ///
@@ -319,6 +336,53 @@ mod tests {
 
         fs::remove_dir_all(&root)?;
         Ok(())
+    }
+
+    /// Regression guard for #2074: extensionless files (README, Makefile, LICENSE)
+    /// must NOT be included in Rust-source walks.
+    ///
+    /// Before the fix, `is_some_and(|ext| ext != "rs")` was used as a skip
+    /// predicate: it returns `false` for extensionless files, so they slipped
+    /// through into the Rust-source walk.  The correct predicate is a positive
+    /// inclusion test: `is_some_and(|ext| ext == "rs")`.
+    #[test]
+    fn is_rust_source_file_excludes_extensionless_files() {
+        use super::is_rust_source_file;
+        use std::path::Path;
+
+        // Must include .rs files.
+        assert!(
+            is_rust_source_file(Path::new("lib.rs")),
+            "lib.rs must be included as a Rust source"
+        );
+        assert!(
+            is_rust_source_file(Path::new("src/main.rs")),
+            "src/main.rs must be included as a Rust source"
+        );
+
+        // Must exclude extensionless files (#2074 regression guard).
+        assert!(
+            !is_rust_source_file(Path::new("README")),
+            "README (no extension) must not be treated as a Rust source"
+        );
+        assert!(
+            !is_rust_source_file(Path::new("Makefile")),
+            "Makefile (no extension) must not be treated as a Rust source"
+        );
+        assert!(
+            !is_rust_source_file(Path::new("LICENSE")),
+            "LICENSE (no extension) must not be treated as a Rust source"
+        );
+
+        // Must exclude other-extension files.
+        assert!(
+            !is_rust_source_file(Path::new("Cargo.toml")),
+            "Cargo.toml must not be treated as a Rust source"
+        );
+        assert!(
+            !is_rust_source_file(Path::new("script.py")),
+            "script.py must not be treated as a Rust source"
+        );
     }
 
     #[test]

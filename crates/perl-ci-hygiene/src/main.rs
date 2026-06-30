@@ -6,6 +6,7 @@
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use perl_ci_hygiene::categorize_ignore;
+use perl_ci_hygiene::is_rust_source_file;
 use perl_ci_hygiene::version_sync;
 
 use chrono::Utc;
@@ -1561,7 +1562,7 @@ fn walk_rust_sources(root: &Path) -> Vec<PathBuf> {
                 return None;
             }
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext != "rs") {
+            if !is_rust_source_file(path) {
                 return None;
             }
             if is_excluded_test_path(path) {
@@ -2395,7 +2396,7 @@ fn run_module_ratchet(
     let mut offenders = Vec::new();
     for path in walk_entries(dir).filter_map(|entry| {
         let path = entry.path();
-        if !entry.file_type().is_file() || path.extension().is_some_and(|ext| ext != "rs") {
+        if !entry.file_type().is_file() || !is_rust_source_file(path) {
             return None;
         }
         Some(path.to_path_buf())
@@ -2441,7 +2442,7 @@ pub(crate) fn walk_rust_source_files_for_ci_checks(repo_root: &Path) -> Result<V
         if !entry.file_type().is_file() {
             continue;
         }
-        if path.extension().is_some_and(|ext| ext != "rs") {
+        if !is_rust_source_file(path) {
             continue;
         }
         if is_excluded_test_path(path) {
@@ -2905,7 +2906,7 @@ fn collect_ignored_matches(crates_root: &Path, repo_root: &Path) -> Result<Vec<I
 
     for entry in walk_entries(crates_root) {
         let path = entry.path();
-        if !entry.file_type().is_file() || path.extension().is_some_and(|ext| ext != "rs") {
+        if !entry.file_type().is_file() || !is_rust_source_file(path) {
             continue;
         }
         let rel = display_path(repo_root, path);
