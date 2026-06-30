@@ -7710,8 +7710,9 @@ fn extract_fat_comma_keys_covers_quoted_and_bareword_forms() {
     let mut keys = Vec::new();
     let mut seen = std::collections::HashSet::new();
     CompletionProvider::extract_fat_comma_keys("host => 1, host => 2", &mut keys, &mut seen);
-    assert!(
-        keys.iter().filter(|k| *k == "host").count() <= 1,
+    assert_eq!(
+        keys.iter().filter(|k| *k == "host").count(),
+        1,
         "already-seen key must not be re-added"
     );
 }
