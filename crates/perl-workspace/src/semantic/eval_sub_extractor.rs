@@ -14,8 +14,8 @@
 //!
 //! When a `package NAME;` declaration appears inside the eval string, subsequent
 //! subs are attributed to that package: the emitted `canonical_name` becomes
-//! `Package::sub_name` and the confidence is raised to `Confidence::Medium`
-//! (the package context is heuristic — the eval may be conditional or dead).
+//! `Package::sub_name`. The evidence remains `Confidence::Low` because all
+//! `DynamicBoundary` facts are heuristic and share that confidence invariant.
 //!
 //! Subs that appear before any `package` declaration, or in an eval string that
 //! contains no `package` declaration, retain `canonical_name = sub_name` and
@@ -44,7 +44,7 @@
 //!   `UnquotedBareword` diagnostic for `NAME` at later call sites in the
 //!   same file.
 //! - **Req 7.5b**: When `eval "package Foo; sub bar { ... }"` is present,
-//!   emit evidence for the qualified name `Foo::bar` with `Confidence::Medium`.
+//!   emit evidence for the qualified name `Foo::bar`.
 
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::{
@@ -67,8 +67,8 @@ use perl_semantic_facts::{
 ///    all sub names that appear as `sub NAME` in `value`.
 /// 3. Track `package NAME;` declarations within the eval string; apply the
 ///    package as a prefix to subsequently-declared subs.
-/// 4. For each name found, emit a triple with `Confidence::Low` (bare) or
-///    `Confidence::Medium` (package-qualified) and `Provenance::DynamicBoundary`.
+/// 4. For each name found, emit a triple with `Confidence::Low` and
+///    `Provenance::DynamicBoundary`.
 ///
 /// # ID generation
 ///
@@ -213,7 +213,12 @@ fn extract_from_eval_string(
             }
 
             // Advance past the name to continue scanning.
-            let advance = sub_pos + 3 + ws_len + name_len.max(1);
+            let name_advance = if name_len > 0 {
+                name_len
+            } else {
+                after_ws.chars().next().map(char::len_utf8).unwrap_or(0)
+            };
+            let advance = sub_pos + 3 + ws_len + name_advance;
             if advance >= search.len() {
                 break;
             }
@@ -224,9 +229,11 @@ fn extract_from_eval_string(
 
 /// Parse text after a `package` keyword.
 ///
-/// Returns a package name only for declaration-like forms (`package NAME;` or
-/// `package NAME {`). The consumed byte count is always on a UTF-8 boundary so
-/// callers can safely continue scanning after malformed package candidates.
+/// Returns a package name only for declaration-like forms (`package NAME;`).
+/// Block-form packages are intentionally ignored because this heuristic scanner
+/// does not track the block close that restores the previous package context.
+/// The consumed byte count is always on a UTF-8 boundary so callers can safely
+/// continue scanning after malformed package candidates.
 fn parse_package_declaration(after_package: &str) -> (Option<&str>, usize) {
     let ws_len = after_package.len() - after_package.trim_start_matches(char::is_whitespace).len();
     let after_ws = &after_package[ws_len..];
@@ -247,7 +254,7 @@ fn parse_package_declaration(after_package: &str) -> (Option<&str>, usize) {
     let raw_name = &after_ws[..name_len];
     let pkg_name = raw_name.trim_end_matches(':');
     let after_name = after_ws[name_len..].trim_start_matches(char::is_whitespace);
-    let has_declaration_delimiter = after_name.starts_with(';') || after_name.starts_with('{');
+    let has_declaration_delimiter = after_name.starts_with(';');
     let valid_start =
         pkg_name.as_bytes().first().is_some_and(|&b| b.is_ascii_alphabetic() || b == b'_');
 
@@ -317,10 +324,9 @@ fn find_package_keyword(text: &str) -> Option<usize> {
 /// node's `location.start` and `location.end` — these are the real source
 /// positions of the eval expression, used directly as the anchor span.
 ///
-/// When `package` is `Some`, the `canonical_name` is `Package::name` and
-/// `confidence` is [`Confidence::Medium`] (the package declaration is heuristic
-/// but substantially narrows the symbol space). When `package` is `None`,
-/// `canonical_name` is the bare `name` and `confidence` is [`Confidence::Low`].
+/// When `package` is `Some`, the `canonical_name` is `Package::name`. When
+/// `package` is `None`, `canonical_name` is the bare `name`. Both paths emit
+/// [`Confidence::Low`] because `DynamicBoundary` evidence is heuristic.
 fn emit_triple(
     name: &str,
     package: Option<&str>,
@@ -333,7 +339,7 @@ fn emit_triple(
         Some(pkg) => format!("{pkg}::{name}"),
         None => name.to_string(),
     };
-    let confidence = if package.is_some() { Confidence::Medium } else { Confidence::Low };
+    let confidence = Confidence::Low;
 
     // Stable ID uses full canonical name for uniqueness: two subs with the same
     // bare name in different packages must produce different entity IDs.
@@ -788,12 +794,12 @@ mod tests {
         assert_eq!(out[0].0.canonical_name, "helper");
         assert_eq!(out[0].0.confidence, Confidence::Low);
         assert_eq!(out[1].0.canonical_name, "Pkg::helper");
-        assert_eq!(out[1].0.confidence, Confidence::Medium);
+        assert_eq!(out[1].0.confidence, Confidence::Low);
         assert_ne!(
             out[0].0.id, out[1].0.id,
             "bare and package-qualified eval subs must get distinct stable IDs"
         );
-        assert_eq!(out[1].1.confidence, Confidence::Medium);
+        assert_eq!(out[1].1.confidence, Confidence::Low);
         assert_eq!(out[1].2.entity_id, Some(out[1].0.id));
         Ok(())
     }
@@ -828,8 +834,8 @@ mod tests {
         );
         assert_eq!(
             entity.confidence,
-            Confidence::Medium,
-            "package-attributed sub should have Medium confidence"
+            Confidence::Low,
+            "package-attributed DynamicBoundary evidence must remain Low confidence"
         );
         Ok(())
     }
@@ -858,8 +864,8 @@ mod tests {
             "sub before package must be bare with Low confidence; got {names:?}"
         );
         assert!(
-            names.contains(&("Bar::late", Confidence::Medium)),
-            "sub after package must be qualified with Medium confidence; got {names:?}"
+            names.contains(&("Bar::late", Confidence::Low)),
+            "sub after package must be qualified with Low confidence; got {names:?}"
         );
         Ok(())
     }
@@ -900,7 +906,7 @@ mod tests {
 
         assert_eq!(triples.len(), 1);
         assert_eq!(triples[0].0.canonical_name, "Foo::Bar::baz");
-        assert_eq!(triples[0].0.confidence, Confidence::Medium);
+        assert_eq!(triples[0].0.confidence, Confidence::Low);
         Ok(())
     }
 
@@ -940,8 +946,8 @@ mod tests {
         for (entity, _, _) in &triples {
             assert_eq!(
                 entity.confidence,
-                Confidence::Medium,
-                "all package-qualified subs must have Medium confidence"
+                Confidence::Low,
+                "all package-qualified DynamicBoundary subs must have Low confidence"
             );
         }
         Ok(())
@@ -1046,9 +1052,35 @@ mod tests {
     }
 
     #[test]
+    fn package_block_form_does_not_leak_context() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(30);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string(
+                "package Foo { sub inside { 1 } } sub outside { 2 }",
+                0,
+                51,
+                file_id,
+                &mut out,
+            );
+            out
+        };
+
+        assert_eq!(triples.len(), 2);
+        let names: Vec<&str> = triples.iter().map(|(e, _, _)| e.canonical_name.as_str()).collect();
+        assert!(names.contains(&"inside"), "block-form package is not tracked; got {names:?}");
+        assert!(names.contains(&"outside"), "block-form package must not leak; got {names:?}");
+        assert!(
+            !names.iter().any(|name| name.starts_with("Foo::")),
+            "block-form package context must not leak into emitted facts; got {names:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn non_ascii_invalid_package_candidate_does_not_panic() -> Result<(), Box<dyn std::error::Error>>
     {
-        let file_id = FileId(30);
+        let file_id = FileId(31);
         let triples = {
             let mut out = Vec::new();
             extract_from_eval_string("package ☃; sub snow { 1 }", 0, 27, file_id, &mut out);
@@ -1059,6 +1091,24 @@ mod tests {
         assert_eq!(
             triples[0].0.canonical_name, "snow",
             "non-ASCII invalid package candidate must not qualify subsequent sub"
+        );
+        assert_eq!(triples[0].0.confidence, Confidence::Low);
+        Ok(())
+    }
+
+    #[test]
+    fn non_ascii_invalid_sub_candidate_does_not_panic() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(32);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string("sub ☃; sub snow { 1 }", 0, 22, file_id, &mut out);
+            out
+        };
+
+        assert_eq!(triples.len(), 1);
+        assert_eq!(
+            triples[0].0.canonical_name, "snow",
+            "non-ASCII invalid sub candidate must be skipped without corrupting the scan"
         );
         assert_eq!(triples[0].0.confidence, Confidence::Low);
         Ok(())
