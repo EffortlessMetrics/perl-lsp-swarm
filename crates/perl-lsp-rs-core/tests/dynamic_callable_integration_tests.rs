@@ -188,3 +188,44 @@ fn no_dynamic_evidence_always_diagnoses() -> Result<()> {
     );
     Ok(())
 }
+
+// ── Case 6: eval-sub declared AFTER bareword usage → ordering guard fires (Path 2) ──
+//
+// This is the discriminator test for the byte-offset ordering guard introduced in
+// `dynamic_callable_may_be_visible_at` Path 2 (queries.rs lines 1142–1153).
+//
+// Before the fix, Path 2 returned `Some(...)` unconditionally for any matching
+// eval-sub, regardless of whether the declaration preceded the usage site.  That
+// caused a false-negative: PL109 was silently suppressed even when the eval-sub
+// appeared AFTER the bareword in execution order.
+//
+// The fix checks `anchor.span_start_byte <= byte_offset`.  Here the eval-sub
+// anchor is at a byte offset AFTER the bareword call, so the guard rejects
+// suppression → `dynamic_callable_may_be_visible_at` returns `None` → the
+// diagnostic fires correctly.
+//
+// This test FAILS on un-fixed code (old code returns Some → suppresses → no
+// diagnostic) and PASSES on fixed code (ordering guard rejects → diagnostic fires).
+
+#[test]
+fn eval_sub_declared_after_bareword_still_diagnoses() -> Result<()> {
+    // "late_gen" appears first (byte 0); the eval-sub defining it appears later.
+    // The eval-sub anchor's span_start_byte will exceed the bareword's byte offset,
+    // so the Path 2 ordering guard must reject suppression.
+    let source = r#"late_gen(); eval "sub late_gen { 1 }";"#;
+    let (file_id, shards, ref_index, ie_index) =
+        build_real_queries(source, "file:///test/c6_eval_after_bareword.pl")?;
+    let queries = WorkspaceSemanticQueries::new(&ref_index, &ie_index, &shards);
+
+    // "late_gen" is at byte 0, length 8.
+    let issues = vec![bareword_issue("late_gen", (0, 8))];
+    let diagnostics = scope_issues_to_diagnostics_with_semantics(issues, file_id, &queries);
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "case 6: eval-sub declared after bareword must NOT suppress PL109 \
+         (Path 2 ordering guard), got: {diagnostics:?}"
+    );
+    Ok(())
+}

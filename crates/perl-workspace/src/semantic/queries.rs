@@ -245,16 +245,17 @@ pub trait SemanticQueries {
     ///
     /// If an `ImportSpec` is `Dynamic` but has no `span_start_byte` (None),
     /// it is **not** used for suppression — conservative default. The eval-sub
-    /// branch is name-scoped, not position-scoped (the entity name must match
-    /// `symbol`).
+    /// branch is also order-aware: the entity name must match `symbol`, the
+    /// occurrence anchor must exist, and the anchor's `span_start_byte` must be
+    /// at or before `byte_offset`.
     ///
     /// # Differences from `dynamic_boundary_at`
     ///
     /// - `dynamic_boundary_at` is *position-scoped* on a `DynamicBoundary`
     ///   occurrence's anchor span. Designed for `UndeclaredVariable`
     ///   suppression.
-    /// - `dynamic_callable_may_be_visible_at` is *order-aware* for the import
-    ///   path and *name-scoped* for the eval-sub path. Designed for
+    /// - `dynamic_callable_may_be_visible_at` is *order-aware* for both the
+    ///   import path and the eval-sub path. Designed for
     ///   `UnquotedBareword` suppression where the callable is plausibly
     ///   importable from a dynamic source visible at this position.
     ///
@@ -1137,7 +1138,20 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
             });
 
             if entity_matches {
-                return Some(DynamicCallableEvidence::EvalSub { occurrence: occurrence.clone() });
+                // Look up the occurrence's anchor for byte-offset ordering.
+                // Conservative: if the anchor is missing, fail closed (do not suppress).
+                let Some(anchor) = shard.anchors.iter().find(|a| a.id == occurrence.anchor_id)
+                else {
+                    continue;
+                };
+                // Only suppress when the eval-sub declaration precedes the usage site.
+                // Mirrors Path 1's order-awareness for dynamic imports (lines above).
+                if anchor.span_start_byte <= byte_offset {
+                    return Some(DynamicCallableEvidence::EvalSub {
+                        occurrence: occurrence.clone(),
+                    });
+                }
+                // Declaration appears after the usage site — not order-safe; try next.
             }
         }
 
@@ -5050,6 +5064,242 @@ mod tests {
         // FileId(999) has no shard and no import data.
         let result = queries.dynamic_callable_may_be_visible_at(FileId(999), 0, "any_sub");
         assert!(result.is_none(), "unknown file should return None");
+        Ok(())
+    }
+
+    // ── Ordering-guard tests for Path 2 eval-sub (PL109 suppression) ──
+    //
+    // These three tests directly exercise the byte-offset ordering guard introduced
+    // in `dynamic_callable_may_be_visible_at` Path 2 (lines 1142–1153).  They are
+    // call-observation tests: they drive the production function through the workspace
+    // suppression path and assert the order-dependent visibility outcome.
+    //
+    // Each test would FAIL if the PR's fix were reverted:
+    //   - Without the fix Path 2 returned Some unconditionally, so
+    //     `eval_sub_declared_after_usage_returns_none` would fail (got Some, expected None).
+    //   - The anchor-lookup and missing-anchor tests verify the new guard's internal
+    //     branches (lines 1142–1145) that were absent before the fix.
+
+    #[test]
+    fn dynamic_callable_eval_sub_declared_after_usage_returns_none()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Eval-sub declaration (span_start_byte=200) appears AFTER the bareword
+        // usage site (byte_offset=100).  Path 2 must NOT suppress — returns None.
+        // Without the PR fix this returned Some (false suppression of PL109).
+        let file_id = FileId(210);
+        let entity_id = EntityId(211);
+        let anchor_id = AnchorId(212);
+
+        // The anchor's span starts at byte 200 — after the query offset of 100.
+        let anchor = AnchorFact {
+            id: anchor_id,
+            file_id,
+            span_start_byte: 200,
+            span_end_byte: 250,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let entity = EntityFact {
+            id: entity_id,
+            canonical_name: "late_sub".to_string(),
+            kind: EntityKind::Subroutine,
+            anchor_id: Some(anchor_id),
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let occurrence = OccurrenceFact {
+            id: OccurrenceId(213),
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: Some(entity_id),
+            anchor_id,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+
+        let shard = make_shard(
+            "file:///test/late_eval_sub.pl",
+            file_id,
+            vec![anchor],
+            vec![entity],
+            vec![occurrence],
+            vec![],
+        );
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        // Query at byte 100: eval-sub at byte 200 is not yet visible → None.
+        let result = queries.dynamic_callable_may_be_visible_at(file_id, 100, "late_sub");
+        assert!(
+            result.is_none(),
+            "input that hits the boundary: anchor.span_start_byte <= byte_offset"
+        );
+
+        // Sanity: at byte 250 (past the declaration) it IS visible → Some.
+        let result_after = queries.dynamic_callable_may_be_visible_at(file_id, 250, "late_sub");
+        assert!(
+            result_after.is_some(),
+            "input that satisfies the boundary: anchor.span_start_byte <= byte_offset"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_callable_eval_sub_anchor_lookup_uses_occurrence_anchor_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Two anchors exist in the shard.  The occurrence points to the SECOND anchor
+        // (anchor_id_b, span_start_byte=200).  The first anchor (anchor_id_a,
+        // span_start_byte=5) must NOT be selected — the lookup at line 1142 must
+        // use `occurrence.anchor_id`, not the first anchor in the shard.
+        // At byte_offset=100 only anchor_id_a would satisfy the ordering guard;
+        // the correct anchor_id_b at byte 200 does not → result must be None.
+        let file_id = FileId(220);
+        let entity_id = EntityId(221);
+        let anchor_id_a = AnchorId(222); // early anchor — NOT the occurrence's anchor
+        let anchor_id_b = AnchorId(223); // late anchor — the occurrence's actual anchor
+
+        let anchor_a = AnchorFact {
+            id: anchor_id_a,
+            file_id,
+            span_start_byte: 5,
+            span_end_byte: 30,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        };
+        let anchor_b = AnchorFact {
+            id: anchor_id_b,
+            file_id,
+            span_start_byte: 200,
+            span_end_byte: 250,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let entity = EntityFact {
+            id: entity_id,
+            canonical_name: "anchored_sub".to_string(),
+            kind: EntityKind::Subroutine,
+            anchor_id: Some(anchor_id_b),
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        // Occurrence points to anchor_id_b (the late anchor).
+        let occurrence = OccurrenceFact {
+            id: OccurrenceId(224),
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: Some(entity_id),
+            anchor_id: anchor_id_b,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+
+        let shard = make_shard(
+            "file:///test/anchor_lookup.pl",
+            file_id,
+            vec![anchor_a, anchor_b],
+            vec![entity],
+            vec![occurrence],
+            vec![],
+        );
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        // At byte 100: anchor_id_a (byte 5) would satisfy `<= 100` but it is NOT
+        // the occurrence's anchor.  anchor_id_b (byte 200) is the correct anchor
+        // and does NOT satisfy `<= 100`.  Correct lookup → None.
+        let result = queries.dynamic_callable_may_be_visible_at(file_id, 100, "anchored_sub");
+        assert!(result.is_none(), "input that hits the boundary: a.id == occurrence.anchor_id");
+
+        // At byte 200: anchor_id_b satisfies `200 <= 200` → Some.
+        let result_at = queries.dynamic_callable_may_be_visible_at(file_id, 200, "anchored_sub");
+        match result_at {
+            Some(DynamicCallableEvidence::EvalSub { occurrence }) => {
+                assert_eq!(
+                    occurrence.anchor_id, anchor_id_b,
+                    "input that satisfies the boundary: a.id == occurrence.anchor_id"
+                );
+            }
+            Some(_) => {
+                return Err("expected EvalSub evidence at exact declaration byte".into());
+            }
+            None => {
+                return Err("expected EvalSub evidence at exact declaration byte, got None".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_callable_eval_sub_missing_anchor_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The occurrence has an anchor_id that does NOT match any anchor in the shard.
+        // Path 2 must continue (fail closed) and ultimately return None.
+        // This exercises the `else { continue }` branch at line 1143–1145 of the fix.
+        let file_id = FileId(230);
+        let entity_id = EntityId(231);
+        let anchor_id_real = AnchorId(232);
+        let anchor_id_phantom = AnchorId(999); // not present in the shard
+
+        let anchor_real = AnchorFact {
+            id: anchor_id_real,
+            file_id,
+            span_start_byte: 0,
+            span_end_byte: 50,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        };
+        let entity = EntityFact {
+            id: entity_id,
+            canonical_name: "orphaned_sub".to_string(),
+            kind: EntityKind::Subroutine,
+            anchor_id: Some(anchor_id_phantom),
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        // Occurrence points to anchor_id_phantom which is absent from the shard.
+        let occurrence = OccurrenceFact {
+            id: OccurrenceId(233),
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: Some(entity_id),
+            anchor_id: anchor_id_phantom,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+
+        let shard = make_shard(
+            "file:///test/missing_anchor.pl",
+            file_id,
+            vec![anchor_real], // anchor_id_phantom is deliberately absent
+            vec![entity],
+            vec![occurrence],
+            vec![],
+        );
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        // Missing anchor → fail closed → None (do not suppress PL109).
+        let result = queries.dynamic_callable_may_be_visible_at(file_id, 100, "orphaned_sub");
+        assert!(
+            result.is_none(),
+            "input that hits the missing-anchor boundary: a.id == occurrence.anchor_id"
+        );
         Ok(())
     }
 }

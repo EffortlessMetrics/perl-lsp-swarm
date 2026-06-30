@@ -350,6 +350,74 @@ fn case8_dynamic_import_receiver_does_not_suppress_bareword_pl109()
     Ok(())
 }
 
+// ── Case 9: eval-sub declared AFTER bareword usage must fire PL109 ────────────
+//
+// This is the order-violation counterpart to Case 3.  In Case 3 the eval-sub
+// declaration precedes the usage site and PL109 is correctly suppressed.  Here
+// the eval-sub comes *after* the usage — suppression would be wrong because at
+// the point Perl executes `print foo_after_eval`, the sub has not yet been
+// defined.  The fix adds byte-offset ordering to Path 2 of
+// `dynamic_callable_may_be_visible_at` (mirroring Path 1's existing guard).
+
+/// Case 9: `print foo_after_eval; eval "sub foo_after_eval { 1 }";`
+///
+/// The eval-sub declaration is at a byte offset *after* the bareword usage.
+/// PL109 must fire — suppression without ordering would be a false negative.
+///
+/// Strong oracle: asserts exactly 1 PL109 diagnostic with code "PL109" for
+/// the name "foo_after_eval", proving the ordering guard fires (not just
+/// that some diagnostic was emitted).
+#[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
+#[test]
+fn case9_eval_sub_declared_after_bareword_fires_pl109() -> Result<(), Box<dyn std::error::Error>> {
+    use perl_lsp::features::diagnostics::PullDiagnosticsContext;
+    use perl_workspace::workspace_index::WorkspaceIndex;
+
+    let uri_str = "file:///test_eval_sub_after_usage.pl";
+    let uri: Uri = uri_str.parse()?;
+
+    // `foo_after_eval` bareword appears at ~byte 25 (line 2).
+    // The eval-sub declaration begins at ~byte 47 (line 3) — after the usage.
+    let content = "use strict 'subs';\n\
+        print foo_after_eval;\n\
+        eval \"sub foo_after_eval { 1 }\";\n";
+
+    let index = Arc::new(WorkspaceIndex::new());
+    index.index_file(uri_str.parse()?, content.to_string())?;
+
+    let mut context = PullDiagnosticsContext::new();
+    context.workspace_index = Some(Arc::clone(&index));
+
+    let provider = PullDiagnosticsProvider::new();
+    let items = items_from_report(
+        provider.get_document_diagnostics_with_context(&uri, content, None, &context, None),
+    )?;
+
+    // Collect all PL109 diagnostics that mention "foo_after_eval".
+    // Exact-count assertion: the ordering guard must produce exactly one PL109
+    // for the bareword that appears before its eval-sub declaration.
+    let pl109_for_name: Vec<_> = items
+        .iter()
+        .filter(|d| has_code(d, "PL109") && d.message.contains("foo_after_eval"))
+        .collect();
+    assert_eq!(
+        pl109_for_name.len(),
+        1,
+        "Case 9: expected exactly 1 PL109 diagnostic for `foo_after_eval` \
+         (eval-sub after bareword must NOT suppress PL109). \
+         All diagnostics: {items:#?}"
+    );
+    // Strong oracle: verify the diagnostic code is the exact string "PL109".
+    assert_eq!(
+        pl109_for_name[0].code,
+        Some(lsp_types::NumberOrString::String("PL109".to_string())),
+        "Case 9: diagnostic code must be exactly PL109, got: {:?}",
+        pl109_for_name[0].code
+    );
+
+    Ok(())
+}
+
 /// Pull diagnostics case: the pull provider's textDocument/diagnostic path
 /// also threads semantic queries for eval-sub suppression (case 3 via pull path).
 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
