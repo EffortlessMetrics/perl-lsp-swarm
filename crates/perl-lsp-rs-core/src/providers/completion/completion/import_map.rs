@@ -40,15 +40,22 @@ fn collect_use_import(module: &str, args: &[String], map: &mut ImportMap) {
 
     let mut symbols: HashSet<String> = HashSet::new();
     let mut has_symbol_args = false;
+    let mut has_unresolved_tag = false;
 
     for arg in args.iter().filter(|arg| is_symbol_arg_candidate(arg)) {
         // The second tuple element signals an unresolvable export tag.  We used
         // to bail out on any unresolved tag, silently discarding all symbols
         // collected so far (#1700).  Now we treat it as a partial miss: the
-        // tag-expanded symbols are lost, but explicit symbol names survive.
-        let (has_symbols_in_arg, _unresolved_tag) =
+        // tag-expanded symbols are lost, but explicit symbol names survive.  If
+        // the import only contains unknown tags, leave the module unfiltered.
+        let (has_symbols_in_arg, unresolved_tag) =
             collect_import_symbols(module, arg, &mut symbols);
         has_symbol_args |= has_symbols_in_arg;
+        has_unresolved_tag |= unresolved_tag;
+    }
+
+    if has_symbol_args && has_unresolved_tag && symbols.is_empty() {
+        return;
     }
 
     if has_symbol_args {
@@ -131,8 +138,21 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_export_tag_without_explicit_symbols_records_empty_entry() {
+    fn unresolved_export_tag_without_explicit_symbols_remains_unknown() {
         let code = "use Module::Thing qw(:unknown_tag);\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        assert!(
+            !map.contains_key("Module::Thing"),
+            "unresolved-only tag imports should remain unknown instead of becoming an empty-set import; got: {map:?}"
+        );
+    }
+
+    #[test]
+    fn empty_qw_import_records_empty_entry() {
+        let code = "use Module::Thing qw();\n";
         let mut parser = Parser::new(code);
         let ast = must(parser.parse());
         let map = extract_import_map(&ast);
@@ -140,7 +160,7 @@ mod tests {
         let symbols = must_some(map.get("Module::Thing"));
         assert!(
             symbols.is_empty(),
-            "unresolved tag without explicit symbols should be tracked as an empty partial import; got: {symbols:?}"
+            "actually empty import lists should still record an empty entry; got: {symbols:?}"
         );
     }
 
