@@ -302,4 +302,22 @@ mod tests {
 
         assert_eq!(parser.count_nodes(&node), 9);
     }
+
+    #[test]
+    fn vstring_nodes_match_only_when_version_text_matches() {
+        let parser = SimpleIncrementalParser::new();
+        let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
+        let vstring = |value: &str| {
+            Node::new(NodeKind::VString { value: value.to_string() }, loc(0, value.len()))
+        };
+
+        assert!(
+            parser.nodes_match(&vstring("v1.2.3"), &vstring("v1.2.3")),
+            "simple incremental reuse should match equal v-string literals"
+        );
+        assert!(
+            !parser.nodes_match(&vstring("v1.2.3"), &vstring("v2.0.0")),
+            "simple incremental reuse must not match different v-string literals"
+        );
+    }
 }

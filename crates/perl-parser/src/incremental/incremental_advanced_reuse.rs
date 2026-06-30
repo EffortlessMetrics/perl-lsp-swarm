@@ -1042,6 +1042,34 @@ mod tests {
     }
 
     #[test]
+    fn vstring_hashes_preserve_kind_and_value_boundaries() {
+        let analyzer = AdvancedReuseAnalyzer::new();
+
+        let node1 = Node::new(
+            NodeKind::VString { value: "v1.2.3".to_string() },
+            SourceLocation { start: 0, end: 6 },
+        );
+        let node2 = Node::new(
+            NodeKind::VString { value: "v2.0.0".to_string() },
+            SourceLocation { start: 0, end: 6 },
+        );
+
+        let structural_hash1 = analyzer.calculate_structural_hash(&node1);
+        let structural_hash2 = analyzer.calculate_structural_hash(&node2);
+        assert_eq!(
+            structural_hash1, structural_hash2,
+            "v-string structural hash should depend on kind, not version text"
+        );
+
+        let content_hash1 = analyzer.calculate_content_hash(&node1);
+        let content_hash2 = analyzer.calculate_content_hash(&node2);
+        assert_ne!(
+            content_hash1, content_hash2,
+            "v-string content hash must distinguish version text"
+        );
+    }
+
+    #[test]
     fn test_children_count_calculation() {
         let analyzer = AdvancedReuseAnalyzer::new();
 

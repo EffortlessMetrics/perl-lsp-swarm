@@ -1325,6 +1325,24 @@ mod tests {
     }
 
     #[test]
+    fn vstring_nodes_match_only_when_version_text_matches() {
+        let parser = IncrementalParserV2::new();
+        let loc = |start, end| perl_parser_core::ast::SourceLocation { start, end };
+        let vstring = |value: &str| {
+            Node::new(NodeKind::VString { value: value.to_string() }, loc(0, value.len()))
+        };
+
+        assert!(
+            parser.nodes_match(&vstring("v1.2.3"), &vstring("v1.2.3")),
+            "incremental v2 reuse should match equal v-string literals"
+        );
+        assert!(
+            !parser.nodes_match(&vstring("v1.2.3"), &vstring("v2.0.0")),
+            "incremental v2 reuse must not match different v-string literals"
+        );
+    }
+
+    #[test]
     fn test_performance_timing_detailed() -> ParseResult<()> {
         let mut parser = IncrementalParserV2::new();
 
