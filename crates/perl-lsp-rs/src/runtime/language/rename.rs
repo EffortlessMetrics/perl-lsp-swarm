@@ -1892,12 +1892,12 @@ mod tests {
     #[test]
     fn token_span_at_logical_end_boundary_discriminator_offset_ge_content_len() {
         assert_eq!(
-            RenameRuntime::token_span_at("$target", "$target".len()),
+            LspServer::token_span_at("$target", "$target".len()),
             Some((1, "$target".len())),
             "input that hits the boundary: offset >= content.len()"
         );
         assert_eq!(
-            RenameRuntime::token_span_at("target", "target".len()),
+            LspServer::token_span_at("target", "target".len()),
             Some((0, "target".len())),
             "bare identifiers at logical EOF should still resolve to the token span"
         );
