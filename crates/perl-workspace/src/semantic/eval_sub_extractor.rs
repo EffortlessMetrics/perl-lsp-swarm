@@ -643,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn package_keyword_before_sub_updates_context_before_emit()
+    fn extract_from_eval_string_boundary_discriminator_input_that_hits_the_boundary_p_lt_s()
     -> Result<(), Box<dyn std::error::Error>> {
         let file_id = FileId(36);
         let mut out = Vec::new();
@@ -653,8 +653,48 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(
             out[0].0.canonical_name, "Ordered::later",
-            "p < s branch must process package before the following sub"
+            "input that hits the boundary: p < s"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn extract_from_eval_string_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+        let mut package_first = Vec::new();
+        extract_from_eval_string(
+            "package Boundary; sub later { 1 }",
+            0,
+            33,
+            FileId(41),
+            &mut package_first,
+        );
+        assert_eq!(package_first.len(), 1);
+        assert_eq!(
+            package_first[0].0.canonical_name, "Boundary::later",
+            "input that hits the boundary: p < s"
+        );
+
+        let mut terminal_invalid_sub = Vec::new();
+        extract_from_eval_string("sub $", 0, 5, FileId(42), &mut terminal_invalid_sub);
+        assert!(
+            terminal_invalid_sub.is_empty(),
+            "input that hits the boundary: advance >= search.len()"
+        );
+
+        let mut punctuation_delimited_name = Vec::new();
+        extract_from_eval_string(
+            "sub bad-name { 1 } sub valid_after_dash { 2 }",
+            0,
+            46,
+            FileId(43),
+            &mut punctuation_delimited_name,
+        );
+        assert_eq!(punctuation_delimited_name.len(), 1);
+        assert_eq!(
+            punctuation_delimited_name[0].0.canonical_name, "valid_after_dash",
+            "input that hits the boundary: !c.is_ascii_alphanumeric() && c != '_'"
+        );
+
         Ok(())
     }
 
@@ -705,17 +745,18 @@ mod tests {
     }
 
     #[test]
-    fn terminal_sigil_sub_candidate_does_not_emit_or_loop() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn extract_from_eval_string_boundary_discriminator_input_that_hits_the_boundary_advance_ge_search_len()
+    -> Result<(), Box<dyn std::error::Error>> {
         let file_id = FileId(37);
         let mut out = Vec::new();
 
         extract_from_eval_string("sub $", 0, 5, file_id, &mut out);
 
-        assert!(
-            out.is_empty(),
-            "terminal sigil-prefixed sub candidate must not emit partial evidence"
-        );
+        assert!(out.is_empty(), "input that hits the boundary: advance >= search.len()");
+
+        extract_from_eval_string("sub trailing", 0, 12, file_id, &mut out);
+
+        assert!(out.is_empty(), "input that hits the boundary: advance >= search.len()");
         Ok(())
     }
 
@@ -763,7 +804,41 @@ mod tests {
     }
 
     #[test]
-    fn punctuated_sub_candidate_skips_to_later_valid_declaration()
+    fn extract_from_eval_string_boundary_discriminator_input_that_hits_the_boundary_name_len_gt_zero()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(39);
+        let mut out = Vec::new();
+
+        extract_from_eval_string("sub named { 1 }", 0, 15, file_id, &mut out);
+
+        assert_eq!(out.len(), 1, "input that hits the boundary: name_len > 0");
+        assert_eq!(out[0].0.canonical_name, "named");
+        Ok(())
+    }
+
+    #[test]
+    fn extract_from_eval_string_boundary_discriminator_input_that_hits_the_boundary_b_is_ascii_alphabetic_or_b_eq_b_underscore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(40);
+        let mut out = Vec::new();
+
+        extract_from_eval_string("sub _private { 1 }", 0, 18, file_id, &mut out);
+
+        assert_eq!(
+            out.len(),
+            1,
+            "input that hits the boundary: b.is_ascii_alphabetic() || b == b'_'"
+        );
+        assert_eq!(out[0].0.canonical_name, "_private", "input that hits the boundary: b == b'_'");
+        assert_eq!(
+            out[0].0.canonical_name, "_private",
+            "input that hits the boundary: name.as_bytes().first().is_some_and(|&b| b.is_ascii_alphabetic() || b == b'_')"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn extract_from_eval_string_boundary_discriminator_input_that_hits_the_boundary_not_c_is_ascii_alphanumeric_and_c_ne_underscore()
     -> Result<(), Box<dyn std::error::Error>> {
         let file_id = FileId(38);
         let mut out = Vec::new();
@@ -779,7 +854,11 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(
             out[0].0.canonical_name, "valid_after_dash",
-            "non-identifier punctuation after a candidate name must not stop later valid extraction"
+            "input that hits the boundary: !c.is_ascii_alphanumeric() && c != '_'"
+        );
+        assert_eq!(
+            out[0].0.canonical_name, "valid_after_dash",
+            "input that hits the boundary: c != '_'"
         );
         Ok(())
     }
