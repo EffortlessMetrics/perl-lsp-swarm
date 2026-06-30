@@ -93,6 +93,14 @@ fn default_state_is_all_false() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn all_strict_enables_strict_but_not_warnings() -> Result<(), Box<dyn std::error::Error>> {
     let state = PragmaState::all_strict();
+    let expected = PragmaState {
+        strict_vars: true,
+        strict_subs: true,
+        strict_refs: true,
+        ..PragmaState::default()
+    };
+
+    assert_eq!(state, expected);
     assert!(state.strict_vars);
     assert!(state.strict_subs);
     assert!(state.strict_refs);

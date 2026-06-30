@@ -145,6 +145,29 @@ fn all_strict_keeps_the_default_bundle() -> TestResult {
 }
 
 #[test]
+fn all_strict_matches_the_exact_expected_state() -> TestResult {
+    let state = PragmaState::all_strict();
+    let expected = PragmaState {
+        strict_vars: true,
+        strict_subs: true,
+        strict_refs: true,
+        warnings: false,
+        utf8: false,
+        encoding: None,
+        unicode_strings: false,
+        locale: false,
+        locale_scope: None,
+        disabled_warning_categories: Vec::new(),
+        signatures_strict: false,
+        features: DEFAULT_BUNDLE.to_vec(),
+        builtin_imports: Vec::new(),
+    };
+
+    assert_eq!(state, expected);
+    Ok(())
+}
+
+#[test]
 fn use_strict_final_state_matches_all_strict() -> TestResult {
     // `use strict` only toggles the strict categories; the `:default` feature
     // bundle is untouched, so the effective state equals `all_strict()`.
