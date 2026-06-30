@@ -2697,4 +2697,193 @@ mod tests {
             "goto-definition on $code in $code->() must already resolve to the variable declaration"
         );
     }
+
+    // =========================================================================
+    // Additional edge case tests for cross-construct resolver (#3108)
+    // =========================================================================
+
+    /// Edge case: Qualified typeglob `*Pkg::foo = sub { ... }` should strip the package
+    /// qualifier and match bare name lookups for `foo()`.
+    #[test]
+    fn typeglob_sub_qualified_name_rsplit_strips_package() {
+        let source = "*Pkg::foo = sub { return 99; };\nfoo();\n";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        // Search for bare "foo" — the rsplit should strip "Pkg::" prefix
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut subs);
+        assert!(
+            !subs.is_empty(),
+            "collect_subroutine_declarations must find *Pkg::foo when searching for bare 'foo'"
+        );
+    }
+
+    /// Edge case: Nested package qualifier `*Pkg::Sub::foo = sub { ... }` should also
+    /// be found when searching for bare `foo`.
+    #[test]
+    fn typeglob_sub_nested_package_strips_all_qualifiers() {
+        let source = "*Pkg::Sub::foo = sub { return 99; };\nfoo();\n";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut subs);
+        assert!(
+            !subs.is_empty(),
+            "collect_subroutine_declarations must find *Pkg::Sub::foo when searching for bare 'foo'"
+        );
+    }
+
+    /// Edge case: Multiple typeglobs in the same scope should both be collected.
+    /// Tests that the collector doesn't stop after finding the first match.
+    #[test]
+    fn typeglob_sub_multiple_assignments_both_found() {
+        let source = "*foo = sub { return 1; };\n*bar = sub { return 2; };\n";
+        let provider = make_provider(source);
+        let mut foo_subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut foo_subs);
+        assert!(!foo_subs.is_empty(), "collect_subroutine_declarations must find *foo");
+
+        let mut bar_subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "bar", &mut bar_subs);
+        assert!(!bar_subs.is_empty(), "collect_subroutine_declarations must find *bar");
+    }
+
+    /// Edge case: Typeglob with underscore in name `*_private = sub { ... }`
+    /// should be found just like any other typeglob.
+    #[test]
+    fn typeglob_sub_with_underscore_name() {
+        let source = "*_private = sub { return 42; };\n";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "_private", &mut subs);
+        assert!(!subs.is_empty(), "collect_subroutine_declarations must find *_private");
+    }
+
+    /// Edge case: Case sensitivity — `*Foo` should NOT match search for `foo`.
+    /// Typeglob names are case-sensitive in Perl.
+    #[test]
+    fn typeglob_sub_case_sensitive_name_mismatch() {
+        let source = "*Foo = sub { return 42; };\n";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut subs);
+        assert!(
+            subs.is_empty(),
+            "collect_subroutine_declarations must NOT find *Foo when searching for lowercase 'foo'"
+        );
+    }
+
+    /// Edge case: `use constant` with qw form `use constant qw(A B C)` should
+    /// allow lookup by individual constant names.
+    #[test]
+    fn use_constant_qw_form_lookup() {
+        let source = "use constant qw(FOO BAR BAZ);\nFOO();\n";
+        let provider = make_provider(source);
+        let offset = source.find("FOO()").expect("FOO() must be in source");
+        let result = provider.find_declaration(offset, 0);
+        assert!(
+            result.is_some(),
+            "find_declaration on FOO() in qw form must resolve to the use constant"
+        );
+    }
+
+    /// Edge case: `use constant` with hash form `use constant { A => 1, B => sub {} }`
+    /// should allow lookup by individual constant names.
+    #[test]
+    fn use_constant_hash_form_lookup() {
+        let source = "use constant { FOO => 1, BAR => 2 };\nFOO();\n";
+        let provider = make_provider(source);
+        let offset = source.rfind("FOO").expect("FOO must appear in source");
+        let result = provider.find_declaration(offset, 0);
+        assert!(
+            result.is_some(),
+            "find_declaration on FOO() in hash form must resolve to the use constant"
+        );
+    }
+
+    /// Edge case: Verify that `use constant NAME => sub { ... }` with bare call `NAME`
+    /// (no parens) also resolves, not just `NAME()`.
+    #[test]
+    fn use_constant_sub_bare_call_without_parens() {
+        let source = "use constant ANSWER => sub { 42 };\nmy $x = ANSWER;\n";
+        let provider = make_provider(source);
+        let offset = source.rfind("ANSWER").expect("ANSWER must appear in source");
+        let result = provider.find_declaration(offset, 0);
+        assert!(
+            result.is_some(),
+            "find_declaration on bare ANSWER (Identifier form) must also resolve to the constant"
+        );
+    }
+
+    /// Edge case: Typeglob assignment to a reference (not directly a sub) should NOT
+    /// be collected. `*foo = \&bar` is different from `*foo = sub { ... }`.
+    #[test]
+    fn typeglob_sub_reference_rhs_not_collected() {
+        let source = "sub bar { 1 }\n*foo = \\&bar;\nfoo();\n";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut subs);
+        // The *foo = \&bar is NOT a direct Subroutine on the RHS, so it should not match
+        let has_assignment = subs.iter().any(|n| matches!(n.kind, NodeKind::Assignment { .. }));
+        // Note: this may fail if the parser creates a Subroutine node for \&bar,
+        // but the intent is to verify we only match `*foo = sub { ... }`, not `*foo = \&other`
+        assert!(
+            !has_assignment,
+            "collect_subroutine_declarations must NOT collect *foo = \\&bar as a sub"
+        );
+    }
+
+    /// Edge case: Typeglob assignment with complex RHS like `*foo = $bar ? sub {} : sub {}`
+    /// should NOT be collected since the RHS is not directly a Subroutine node.
+    #[test]
+    fn typeglob_sub_ternary_rhs_not_collected() {
+        let source = "*foo = 1 ? sub { 1 } : sub { 2 };\nfoo();\n";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut subs);
+        let has_assignment = subs.iter().any(|n| matches!(n.kind, NodeKind::Assignment { .. }));
+        assert!(
+            !has_assignment,
+            "collect_subroutine_declarations must NOT collect *foo = (ternary) as a sub"
+        );
+    }
+
+    /// Edge case: find_declaration on the typeglob name itself `*foo` should NOT crash.
+    /// Currently cursor on * or the typeglob may not match any known node type.
+    #[test]
+    fn typeglob_sub_cursor_on_asterisk_does_not_crash() {
+        let source = "*foo = sub { return 42; };";
+        let provider = make_provider(source);
+        let offset = source.find('*').expect("* must be in source");
+        let result = provider.find_declaration(offset, 0);
+        // Result can be None or Some, but must not panic
+        let _ = result;
+    }
+
+    /// Edge case: Both `sub foo {}` and `*foo = sub {}` in the same file.
+    /// The named sub should be found first, but the typeglob should also be discoverable.
+    #[test]
+    fn typeglob_sub_alongside_named_sub() {
+        let source = "sub foo { return 1; }\n*foo = sub { return 2; };\n";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut subs);
+        assert!(
+            subs.len() >= 2,
+            "collect_subroutine_declarations must find both the named sub and the typeglob assignment for 'foo'; got {count}",
+            count = subs.len()
+        );
+    }
+
+    /// Edge case: Typeglob with a string constant RHS `*foo = "string"` should NOT
+    /// be collected as a subroutine.
+    #[test]
+    fn typeglob_sub_string_rhs_not_collected() {
+        let source = "*foo = \"hello\";\n";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut subs);
+        assert!(
+            subs.is_empty(),
+            "collect_subroutine_declarations must NOT collect *foo = \"string\" as a sub"
+        );
+    }
 }

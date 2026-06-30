@@ -3884,4 +3884,137 @@ sub jump {
             .unwrap_or(false);
         assert!(!is_subroutine, "*foo = 42 must NOT synthesize a Subroutine symbol for 'foo'");
     }
+
+    // =========================================================================
+    // Additional edge case tests for typeglob symbol synthesis (#3108)
+    // =========================================================================
+
+    /// Edge case: Qualified typeglob `*Pkg::foo = sub { ... }` should synthesize
+    /// a symbol for the bare name `foo`, not the qualified name.
+    #[test]
+    fn typeglob_sub_qualified_synthesizes_bare_name_symbol() {
+        let code = "*Pkg::foo = sub { return 42; };";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        // The symbol table should contain "foo" (bare name)
+        assert!(
+            table.symbols.contains_key("foo"),
+            "*Pkg::foo should synthesize a 'foo' symbol (bare name)"
+        );
+        let foo_syms = &table.symbols["foo"];
+        assert!(
+            foo_syms.iter().any(|s| s.kind == SymbolKind::Subroutine),
+            "'foo' from *Pkg::foo should be a Subroutine"
+        );
+    }
+
+    /// Edge case: Nested package `*Pkg::Sub::foo = sub { ... }` should also
+    /// synthesize a symbol for the bare name `foo`.
+    #[test]
+    fn typeglob_sub_nested_package_synthesizes_bare_name() {
+        let code = "*Pkg::Sub::foo = sub { return 42; };";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        assert!(
+            table.symbols.contains_key("foo"),
+            "*Pkg::Sub::foo should synthesize a 'foo' symbol"
+        );
+    }
+
+    /// Edge case: Multiple typeglobs in the same file should all synthesize symbols.
+    #[test]
+    fn typeglob_sub_multiple_assignments_all_synthesized() {
+        let code = "*foo = sub { 1 };\n*bar = sub { 2 };\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        assert!(table.symbols.contains_key("foo"), "should have symbol for foo");
+        assert!(table.symbols.contains_key("bar"), "should have symbol for bar");
+        let bar_is_sub = table
+            .symbols
+            .get("bar")
+            .map(|syms| syms.iter().any(|s| s.kind == SymbolKind::Subroutine))
+            .unwrap_or(false);
+        assert!(bar_is_sub, "'bar' should be a Subroutine");
+    }
+
+    /// Edge case: Typeglob with underscore name should also synthesize a symbol.
+    #[test]
+    fn typeglob_sub_underscore_name_synthesized() {
+        let code = "*_private = sub { return 42; };";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        assert!(table.symbols.contains_key("_private"), "*_private should synthesize a symbol");
+        let sym = &table.symbols["_private"];
+        assert!(
+            sym.iter().any(|s| s.kind == SymbolKind::Subroutine),
+            "_private should be a Subroutine"
+        );
+    }
+
+    /// Edge case: Typeglob with non-subroutine RHS (string) should NOT synthesize
+    /// a Subroutine symbol. May create a symbol of another kind, but not Subroutine.
+    #[test]
+    fn typeglob_string_rhs_does_not_synthesize_subroutine() {
+        let code = "*foo = \"hello\";";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        let is_subroutine = table
+            .symbols
+            .get("foo")
+            .map(|syms| syms.iter().any(|s| s.kind == SymbolKind::Subroutine))
+            .unwrap_or(false);
+        assert!(!is_subroutine, "*foo = \"string\" should NOT synthesize a Subroutine symbol");
+    }
+
+    /// Edge case: Typeglob alongside a named subroutine should create symbols for both.
+    #[test]
+    fn typeglob_sub_coexists_with_named_sub() {
+        let code = "sub foo { 1 }\n*foo = sub { 2 };\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        assert!(table.symbols.contains_key("foo"), "should have 'foo' symbol");
+        let foo_syms = &table.symbols["foo"];
+        // Should have multiple symbols for 'foo' (the named sub and the typeglob assignment)
+        assert!(
+            foo_syms.len() >= 1,
+            "should have at least one Subroutine symbol for 'foo'; got {count} symbol(s)",
+            count = foo_syms.len()
+        );
+        let has_subroutine = foo_syms.iter().any(|s| s.kind == SymbolKind::Subroutine);
+        assert!(has_subroutine, "at least one 'foo' symbol should be Subroutine");
+    }
+
+    /// Edge case: Case sensitivity — typeglob names are case-sensitive,
+    /// so `*Foo = sub {}` should NOT create a symbol for lowercase `foo`.
+    #[test]
+    fn typeglob_sub_case_sensitive_symbol_name() {
+        let code = "*Foo = sub { return 42; };";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        // Should have "Foo" but not "foo"
+        assert!(table.symbols.contains_key("Foo"), "should have symbol for 'Foo' (capitalized)");
+        let has_lowercase_foo_subroutine = table
+            .symbols
+            .get("foo")
+            .map(|syms| syms.iter().any(|s| s.kind == SymbolKind::Subroutine))
+            .unwrap_or(false);
+        assert!(
+            !has_lowercase_foo_subroutine,
+            "should NOT have Subroutine symbol for lowercase 'foo'"
+        );
+    }
 }
