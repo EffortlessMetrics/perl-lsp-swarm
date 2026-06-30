@@ -32,7 +32,13 @@ pub fn can_rename_symbol(name: &str, _kind: SymbolKind) -> bool {
     true
 }
 
-/// Validate a new name
+/// Validate a new name for a rename operation.
+///
+/// Keyword rejection is context-aware: Perl allows variable names that shadow
+/// keywords (e.g. `my $if = 1` is valid syntax), so variables are only checked
+/// against the character-validity rules.  Subroutines, methods, and namespace
+/// symbols (`sub`, `package`, `class`, `role`) must not collide with reserved
+/// keywords because that would produce a syntax error at the call site.
 pub fn validate_name(
     name: &str,
     kind: SymbolKind,
@@ -55,9 +61,14 @@ pub fn validate_name(
         return Err("Name can only contain letters, numbers, and underscores".to_string());
     }
 
-    // Check if it's a keyword
-    if is_rename_keyword(name) {
-        return Err("Cannot use a keyword as a name".to_string());
+    // Keyword check is only enforced for callables and namespaces.
+    // Variables may be named after keywords: `my $if = 1` is valid Perl.
+    // Subroutines and packages must not collide with reserved words because
+    // `sub if { }` and `sub while { }` are syntax errors.
+    if (kind.is_callable() || kind.is_namespace()) && is_rename_keyword(name) {
+        return Err(format!(
+            "Cannot rename to '{name}': reserved keywords cannot be used as subroutine or package names"
+        ));
     }
 
     // Check for naming conflicts

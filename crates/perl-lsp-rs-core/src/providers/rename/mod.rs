@@ -454,13 +454,79 @@ mod tests {
         let provider = RenameProvider::new(&ast, code.to_string());
         assert!(validate_name("", SymbolKind::scalar(), &provider.symbol_table).is_err());
         assert!(validate_name("123abc", SymbolKind::scalar(), &provider.symbol_table).is_err());
-        assert!(validate_name("my", SymbolKind::scalar(), &provider.symbol_table).is_err());
+        // Variables may be named after keywords: `my $my = 1` is valid Perl.
+        assert!(validate_name("my", SymbolKind::scalar(), &provider.symbol_table).is_ok());
         assert!(validate_name("test-var", SymbolKind::scalar(), &provider.symbol_table).is_err());
         assert!(validate_name("valid_name", SymbolKind::scalar(), &provider.symbol_table).is_ok());
         assert!(validate_name("_private", SymbolKind::scalar(), &provider.symbol_table).is_ok());
         assert!(validate_name("camelCase", SymbolKind::scalar(), &provider.symbol_table).is_ok());
         assert!(validate_name("naïve", SymbolKind::scalar(), &provider.symbol_table).is_err());
         assert!(validate_name("１２name", SymbolKind::scalar(), &provider.symbol_table).is_err());
+    }
+
+    /// Subroutines must not be renamed to reserved Perl keywords because
+    /// `sub if { }` is a syntax error at the call site (issue #1401).
+    #[test]
+    fn rename_sub_to_keyword_fails() {
+        let code = "sub calculate { return 42; }";
+        let ast = must(Parser::new(code).parse());
+        let provider = RenameProvider::new(&ast, code.to_string());
+
+        // Control-flow keywords must be rejected (RENAME_KEYWORDS list).
+        for keyword in ["if", "while", "for", "foreach", "unless", "until"] {
+            let result = validate_name(keyword, SymbolKind::Subroutine, &provider.symbol_table);
+            assert!(result.is_err(), "expected err for keyword '{keyword}' but got ok");
+            let msg = result.unwrap_err();
+            assert!(
+                msg.contains("reserved keywords"),
+                "error message should mention 'reserved keywords', got: {msg}"
+            );
+        }
+
+        // Declaration keywords must also be rejected.
+        for keyword in ["sub", "package", "my", "our", "state", "local", "use", "return"] {
+            let result = validate_name(keyword, SymbolKind::Subroutine, &provider.symbol_table);
+            assert!(result.is_err(), "expected err for keyword '{keyword}' but got ok");
+        }
+
+        // Methods are callables — same rule applies.
+        for keyword in ["if", "sub", "package"] {
+            assert!(
+                validate_name(keyword, SymbolKind::Method, &provider.symbol_table).is_err(),
+                "expected err for keyword '{keyword}' on Method kind"
+            );
+        }
+
+        // Valid identifiers are allowed.
+        assert!(validate_name("compute", SymbolKind::Subroutine, &provider.symbol_table).is_ok());
+        assert!(
+            validate_name("compute_total", SymbolKind::Subroutine, &provider.symbol_table).is_ok()
+        );
+    }
+
+    /// Variables may be renamed to keyword-shadowing names because Perl allows
+    /// `my $if = 1`, `my @while = ()`, and `my %for = ()` as valid syntax.
+    /// Only character-validity rules apply for variables (issue #1401).
+    #[test]
+    fn rename_variable_to_keyword_allowed() {
+        let code = "my $x = 1;\nmy @arr = ();\nmy %h = ();";
+        let ast = must(Parser::new(code).parse());
+        let provider = RenameProvider::new(&ast, code.to_string());
+
+        for keyword in ["if", "my", "while", "for", "sub", "package", "use", "return"] {
+            assert!(
+                validate_name(keyword, SymbolKind::scalar(), &provider.symbol_table).is_ok(),
+                "expected ok for keyword '{keyword}' on scalar kind"
+            );
+            assert!(
+                validate_name(keyword, SymbolKind::array(), &provider.symbol_table).is_ok(),
+                "expected ok for keyword '{keyword}' on array kind"
+            );
+            assert!(
+                validate_name(keyword, SymbolKind::hash(), &provider.symbol_table).is_ok(),
+                "expected ok for keyword '{keyword}' on hash kind"
+            );
+        }
     }
 
     #[test]
