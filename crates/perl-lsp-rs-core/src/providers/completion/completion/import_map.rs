@@ -40,17 +40,15 @@ fn collect_use_import(module: &str, args: &[String], map: &mut ImportMap) {
 
     let mut symbols: HashSet<String> = HashSet::new();
     let mut has_symbol_args = false;
-    let mut has_unresolved_tag = false;
 
     for arg in args.iter().filter(|arg| is_symbol_arg_candidate(arg)) {
-        let (has_symbols_in_arg, unresolved_tag) =
+        // The second tuple element signals an unresolvable export tag.  We used
+        // to bail out on any unresolved tag, silently discarding all symbols
+        // collected so far (#1700).  Now we treat it as a partial miss: the
+        // tag-expanded symbols are lost, but explicit symbol names survive.
+        let (has_symbols_in_arg, _unresolved_tag) =
             collect_import_symbols(module, arg, &mut symbols);
         has_symbol_args |= has_symbols_in_arg;
-        has_unresolved_tag |= unresolved_tag;
-    }
-
-    if has_unresolved_tag {
-        return;
     }
 
     if has_symbol_args {
@@ -66,3 +64,58 @@ fn is_symbol_arg_candidate(arg: &str) -> bool {
 }
 
 pub(super) use used_modules::collect_used_module_names;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_parser_core::Parser;
+    use perl_tdd_support::{must, must_some};
+
+    /// Regression test for #1700: an unresolvable export tag must not silently
+    /// discard the explicit symbols collected alongside it.
+    ///
+    /// Before the fix, `collect_use_import` returned early on `has_unresolved_tag`,
+    /// leaving `Module::Thing` with no entry in the ImportMap even though `known_sub`
+    /// had already been added to `symbols`.
+    #[test]
+    fn unresolved_export_tag_keeps_explicit_symbols() {
+        let code = "use Module::Thing qw(:unknown_tag known_sub);\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Module::Thing"));
+        assert!(
+            symbols.contains("known_sub"),
+            "explicit symbol `known_sub` must survive an unresolved export tag; got: {symbols:?}"
+        );
+    }
+
+    /// Verify that a purely resolved import still works correctly after the change.
+    #[test]
+    fn resolved_only_import_unaffected() {
+        let code = "use Foo::Bar qw(alpha beta);\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Foo::Bar"));
+        assert!(symbols.contains("alpha"), "alpha must be present; got: {symbols:?}");
+        assert!(symbols.contains("beta"), "beta must be present; got: {symbols:?}");
+    }
+
+    /// Multiple explicit symbols alongside an unresolved tag — all explicit symbols
+    /// must survive; unresolvable tag symbols are silently omitted (acceptable partial miss).
+    #[test]
+    fn multiple_explicit_symbols_with_unresolved_tag() {
+        let code = "use My::Util qw(:nonexistent_tag foo bar baz);\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("My::Util"));
+        assert!(symbols.contains("foo"), "foo must survive; got: {symbols:?}");
+        assert!(symbols.contains("bar"), "bar must survive; got: {symbols:?}");
+        assert!(symbols.contains("baz"), "baz must survive; got: {symbols:?}");
+    }
+}
