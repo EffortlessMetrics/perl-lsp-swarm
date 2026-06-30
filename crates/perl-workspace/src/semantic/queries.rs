@@ -5241,6 +5241,118 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_callable_eval_sub_returns_exact_matching_occurrence_at_anchor_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Strong call-observation proof for Path 2:
+        // - an unrelated earlier DynamicBoundary occurrence must not match;
+        // - the matching occurrence must use its own anchor for ordering;
+        // - equality at the declaration byte is visible and returns the exact occurrence.
+        let file_id = FileId(240);
+        let unrelated_entity_id = EntityId(241);
+        let target_entity_id = EntityId(242);
+        let unrelated_anchor_id = AnchorId(243);
+        let target_anchor_id = AnchorId(244);
+        let unrelated_occurrence_id = OccurrenceId(245);
+        let target_occurrence_id = OccurrenceId(246);
+
+        let unrelated_anchor = AnchorFact {
+            id: unrelated_anchor_id,
+            file_id,
+            span_start_byte: 10,
+            span_end_byte: 30,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let target_anchor = AnchorFact {
+            id: target_anchor_id,
+            file_id,
+            span_start_byte: 120,
+            span_end_byte: 160,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let unrelated_entity = EntityFact {
+            id: unrelated_entity_id,
+            canonical_name: "Other::not_target".to_string(),
+            kind: EntityKind::Subroutine,
+            anchor_id: Some(unrelated_anchor_id),
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let target_entity = EntityFact {
+            id: target_entity_id,
+            canonical_name: "Generated::target_sub".to_string(),
+            kind: EntityKind::Subroutine,
+            anchor_id: Some(target_anchor_id),
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let unrelated_occurrence = OccurrenceFact {
+            id: unrelated_occurrence_id,
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: Some(unrelated_entity_id),
+            anchor_id: unrelated_anchor_id,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let target_occurrence = OccurrenceFact {
+            id: target_occurrence_id,
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: Some(target_entity_id),
+            anchor_id: target_anchor_id,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+
+        let shard = make_shard(
+            "file:///test/exact_eval_sub_boundary.pl",
+            file_id,
+            vec![unrelated_anchor, target_anchor],
+            vec![unrelated_entity, target_entity],
+            vec![unrelated_occurrence, target_occurrence],
+            vec![],
+        );
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        let before = queries.dynamic_callable_may_be_visible_at(file_id, 119, "target_sub");
+        assert!(
+            before.is_none(),
+            "input that hits the boundary: anchor.span_start_byte <= byte_offset"
+        );
+
+        let at_boundary = queries.dynamic_callable_may_be_visible_at(file_id, 120, "target_sub");
+        match at_boundary {
+            Some(DynamicCallableEvidence::EvalSub { occurrence }) => {
+                assert_eq!(occurrence.id, target_occurrence_id);
+                assert_eq!(occurrence.kind, OccurrenceKind::DynamicBoundary);
+                assert_eq!(occurrence.entity_id, Some(target_entity_id));
+                assert_eq!(
+                    occurrence.anchor_id, target_anchor_id,
+                    "input that satisfies the boundary: a.id == occurrence.anchor_id"
+                );
+            }
+            Some(other) => {
+                return Err(format!("expected EvalSub evidence, got {other:?}").into());
+            }
+            None => {
+                return Err("expected EvalSub evidence at exact anchor boundary".into());
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn dynamic_callable_eval_sub_missing_anchor_fails_closed()
     -> Result<(), Box<dyn std::error::Error>> {
         // The occurrence has an anchor_id that does NOT match any anchor in the shard.
