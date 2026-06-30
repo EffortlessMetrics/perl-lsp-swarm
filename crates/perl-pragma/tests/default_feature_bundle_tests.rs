@@ -139,13 +139,14 @@ fn plain_file_with_no_pragmas_reports_default_bundle() -> TestResult {
 fn all_strict_keeps_the_default_bundle() -> TestResult {
     let state = PragmaState::all_strict();
     assert!(state.strict_vars && state.strict_subs && state.strict_refs);
+    assert!(state.strict_refs, "input that hits the boundary: strict_refs: true");
     assert!(!state.warnings, "all_strict must not enable warnings");
     assert_has_all(&state, DEFAULT_BUNDLE);
     Ok(())
 }
 
 #[test]
-fn all_strict_matches_the_exact_expected_state() -> TestResult {
+fn all_strict_boundary_discriminator_input_that_hits_the_boundary_strict_refs_true() -> TestResult {
     let state = PragmaState::all_strict();
     let expected = PragmaState {
         strict_vars: true,
@@ -163,7 +164,8 @@ fn all_strict_matches_the_exact_expected_state() -> TestResult {
         builtin_imports: Vec::new(),
     };
 
-    assert_eq!(state, expected);
+    assert_eq!(state.strict_refs, true, "input that hits the boundary: strict_refs: true");
+    assert_eq!(state, expected, "all_strict should match the exact expected state");
     Ok(())
 }
 
