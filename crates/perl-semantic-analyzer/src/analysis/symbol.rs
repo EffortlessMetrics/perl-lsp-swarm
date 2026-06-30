@@ -710,6 +710,27 @@ impl SymbolExtractor {
 
             // Handle other node types by visiting children
             NodeKind::Assignment { lhs, rhs, .. } => {
+                // Cross-construct sub resolver (#3108): `*foo = sub { ... }` creates a
+                // callable named `foo`.  Synthesize a Subroutine symbol so workspace-index
+                // cross-file lookup can find it even without an explicit `sub foo {}`.
+                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind {
+                    if matches!(rhs.kind, NodeKind::Subroutine { .. }) {
+                        let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
+                        if !bare.is_empty() {
+                            let sym = Symbol {
+                                name: bare.to_string(),
+                                qualified_name: format!("{}::{}", self.table.current_package, bare),
+                                kind: SymbolKind::Subroutine,
+                                location: node.location,
+                                scope_id: self.table.current_scope(),
+                                declaration: None,
+                                documentation: None,
+                                attributes: vec![],
+                            };
+                            self.table.add_symbol(sym);
+                        }
+                    }
+                }
                 // Mark LHS as write reference
                 self.mark_write_reference(lhs);
                 self.visit_node(lhs);
@@ -3813,5 +3834,54 @@ sub jump {
             references.iter().any(|reference| reference.kind == SymbolKind::Subroutine),
             "goto &target should produce a subroutine reference"
         );
+    }
+
+    // =========================================================================
+    // Cross-construct sub resolver — #3108
+    //
+    // Covers the new typeglob-assignment symbol synthesis in visit_node.
+    // =========================================================================
+
+    /// `*foo = sub { ... }` synthesizes a Subroutine symbol named "foo" so that
+    /// workspace-index cross-file lookup can find it.
+    ///
+    /// Exercises the TRUE side of: `if matches!(rhs.kind, NodeKind::Subroutine { .. })`
+    /// inside the Assignment handler.
+    #[test]
+    fn typeglob_sub_assignment_synthesizes_subroutine_symbol() {
+        let code = "*foo = sub { return 42; };";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        assert!(
+            table.symbols.contains_key("foo"),
+            "*foo = sub {{}} must synthesize a 'foo' symbol in the table"
+        );
+        let foo_syms = &table.symbols["foo"];
+        assert!(
+            foo_syms.iter().any(|s| s.kind == SymbolKind::Subroutine),
+            "'foo' symbol must be of kind Subroutine; got: {foo_syms:?}"
+        );
+    }
+
+    /// `*foo = 42` does NOT synthesize a Subroutine symbol for "foo" — only the
+    /// Subroutine RHS form is indexed.
+    ///
+    /// Exercises the FALSE side of: `if matches!(rhs.kind, NodeKind::Subroutine { .. })`
+    #[test]
+    fn typeglob_non_sub_assignment_does_not_synthesize_subroutine_symbol() {
+        let code = "*foo = 42;";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        // "foo" must not appear as a Subroutine symbol
+        let is_subroutine = table
+            .symbols
+            .get("foo")
+            .map(|syms| syms.iter().any(|s| s.kind == SymbolKind::Subroutine))
+            .unwrap_or(false);
+        assert!(!is_subroutine, "*foo = 42 must NOT synthesize a Subroutine symbol for 'foo'");
     }
 }

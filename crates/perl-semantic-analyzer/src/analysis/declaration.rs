@@ -538,6 +538,19 @@ impl<'a> DeclarationProvider<'a> {
             )]);
         }
 
+        // Fall through: `use constant FOO => sub { ... }` creates a callable constant.
+        // When invoked with parens — `FOO()` — the node is a FunctionCall, so
+        // find_identifier_declaration's constant-fallthrough does not fire.  Search
+        // constant declarations here as a last resort.
+        let constants = self.find_constant_declarations(&self.ast, target_name);
+        if let Some(const_decl) = constants.first() {
+            return Some(vec![self.create_location_link(
+                node,
+                const_decl,
+                self.get_constant_name_range_for(const_decl, target_name),
+            )]);
+        }
+
         None
     }
 
@@ -853,6 +866,16 @@ impl<'a> DeclarationProvider<'a> {
             NodeKind::Method { name: method_name, .. } if method_name == sub_name => {
                 subs.push(node);
             }
+            // Typeglob assignment: `*foo = sub { ... }` creates a callable named `foo`.
+            // Strip the package qualifier so `*Pkg::foo` matches bare name `foo`.
+            NodeKind::Assignment { lhs, rhs, .. } => {
+                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind {
+                    let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
+                    if bare == sub_name && matches!(rhs.kind, NodeKind::Subroutine { .. }) {
+                        subs.push(node);
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -1109,10 +1132,11 @@ impl<'a> DeclarationProvider<'a> {
     }
 
     fn get_subroutine_name_range(&self, decl: &Node) -> (usize, usize) {
-        if let NodeKind::Subroutine { name_span: Some(loc), .. } = &decl.kind {
-            (loc.start, loc.end)
-        } else {
-            (decl.location.start, decl.location.end)
+        match &decl.kind {
+            NodeKind::Subroutine { name_span: Some(loc), .. } => (loc.start, loc.end),
+            // For `*foo = sub { ... }`, the "name" is the typeglob LHS (*foo).
+            NodeKind::Assignment { lhs, .. } => (lhs.location.start, lhs.location.end),
+            _ => (decl.location.start, decl.location.end),
         }
     }
 
@@ -2498,5 +2522,179 @@ mod tests {
         let key = result.unwrap();
         assert_eq!(key.name.as_ref(), "greet", "symbol name must be the bare method name");
         assert_eq!(key.pkg.as_ref(), "Foo", "pkg must be the current_pkg for bare method names");
+    }
+
+    // =========================================================================
+    // Cross-construct sub resolver — #3108
+    //
+    // Covers three new code paths added by the cross-construct resolver:
+    //   1. collect_subroutine_declarations — typeglob Assignment arm (TRUE side)
+    //   2. collect_subroutine_declarations — typeglob name mismatch (FALSE side)
+    //   3. collect_subroutine_declarations — typeglob with non-sub RHS (FALSE side)
+    //   4. find_subroutine_declaration — constant fallthrough (TRUE side)
+    //   5. find_subroutine_declaration — no constant found (FALSE side)
+    //   6. get_subroutine_name_range — Assignment arm
+    // =========================================================================
+
+    /// collect_subroutine_declarations finds an anonymous sub bound via typeglob.
+    ///
+    /// Exercises the TRUE side of the typeglob Assignment arm:
+    ///   NodeKind::Assignment { lhs: Typeglob { name == sub_name }, rhs: Subroutine }
+    #[test]
+    fn typeglob_sub_collect_finds_anonymous_sub() {
+        let source = "*foo = sub { return 42; };";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut subs);
+        assert!(
+            !subs.is_empty(),
+            "collect_subroutine_declarations must find the sub assigned to *foo; got empty vec"
+        );
+    }
+
+    /// Boundary discriminator: typeglob arm does NOT collect when name does not match.
+    ///
+    /// Exercises the FALSE side of the `bare == sub_name` guard in the typeglob arm.
+    #[test]
+    fn typeglob_sub_collect_boundary_rejects_different_name() {
+        let source = "*foo = sub { return 42; };";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "bar", &mut subs);
+        assert!(
+            subs.is_empty(),
+            "collect_subroutine_declarations must NOT collect *foo sub when searching for 'bar'; got {count}",
+            count = subs.len()
+        );
+    }
+
+    /// Boundary discriminator: typeglob arm does NOT collect when RHS is not a Subroutine.
+    ///
+    /// Exercises the FALSE side of the `matches!(rhs.kind, Subroutine)` guard.
+    #[test]
+    fn typeglob_sub_collect_boundary_rejects_non_sub_rhs() {
+        let source = "*foo = 42;";
+        let provider = make_provider(source);
+        let mut subs = Vec::new();
+        provider.collect_subroutine_declarations(&provider.ast, "foo", &mut subs);
+        assert!(
+            subs.is_empty(),
+            "collect_subroutine_declarations must NOT collect *foo = 42 as a sub; got {count}",
+            count = subs.len()
+        );
+    }
+
+    /// find_declaration on a FunctionCall site after `*foo = sub {}` resolves to the
+    /// typeglob Assignment node.
+    ///
+    /// End-to-end test: FunctionCall "foo" → collect_subroutine_declarations (typeglob arm)
+    /// → get_subroutine_name_range (Assignment arm) → LocationLink.
+    #[test]
+    fn typeglob_sub_find_declaration_resolves_function_call() {
+        // Two-statement source: assignment then call.
+        // rfind("foo") finds the one in foo() (rightmost occurrence).
+        let source = "*foo = sub { return 42; };\nfoo();\n";
+        let provider = make_provider(source);
+        let offset = source.rfind("foo").expect("foo() must be in source");
+        let result = provider.find_declaration(offset, 0);
+        assert!(
+            result.is_some(),
+            "find_declaration on foo() after *foo = sub {{...}} must resolve; source={source:?}"
+        );
+        let link = result.unwrap();
+        let link = link.first().expect("at least one LocationLink expected");
+        // selection range must overlap with *foo (the LHS typeglob)
+        let target_text = &source[link.target_selection_range.0..link.target_selection_range.1];
+        assert!(
+            target_text.contains("foo"),
+            "target_selection_range must include 'foo' from the *foo typeglob; got {target_text:?}"
+        );
+    }
+
+    /// get_subroutine_name_range on an Assignment node (typeglob LHS) returns the
+    /// span of the LHS typeglob, not the whole assignment.
+    ///
+    /// Exercises the `NodeKind::Assignment { lhs, .. }` arm in get_subroutine_name_range.
+    #[test]
+    fn get_subroutine_name_range_assignment_node_returns_lhs_span() {
+        let source = "*foo = sub { return 42; };";
+        let provider = make_provider(source);
+
+        fn find_assignment(node: &Node) -> Option<&Node> {
+            if matches!(node.kind, NodeKind::Assignment { .. }) {
+                return Some(node);
+            }
+            for child in node.children() {
+                if let Some(found) = find_assignment(child) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let assignment =
+            find_assignment(&provider.ast).expect("Assignment node must exist in the parsed AST");
+        let (start, end) = provider.get_subroutine_name_range(assignment);
+        assert!(start < end, "name range must be non-empty");
+        let text = &source[start..end];
+        assert!(
+            text.contains("foo"),
+            "name range must cover the typeglob name 'foo'; got {text:?}"
+        );
+    }
+
+    /// find_subroutine_declaration falls through to constant lookup when the callable
+    /// is declared as `use constant FOO => sub { ... }` and called with parens `FOO()`.
+    ///
+    /// Exercises the TRUE side of the new constant-fallthrough in find_subroutine_declaration.
+    #[test]
+    fn use_constant_sub_find_declaration_via_function_call() {
+        // `NOW()` is parsed as FunctionCall, not Identifier; the identifier path
+        // already falls through to constants, but FunctionCall did not before this fix.
+        let source = "use constant NOW => sub { 1 };\nmy $t = NOW();\n";
+        let provider = make_provider(source);
+        // Cursor on NOW in `NOW()` — rightmost occurrence is inside the call.
+        let offset = source.rfind("NOW").expect("NOW must appear in source");
+        let result = provider.find_declaration(offset, 0);
+        assert!(
+            result.is_some(),
+            "find_declaration on NOW() (FunctionCall form) must resolve to the use constant declaration"
+        );
+    }
+
+    /// Boundary discriminator: find_subroutine_declaration returns None when no sub
+    /// or constant matches the name — exercises the FALSE side of the constant fallthrough.
+    #[test]
+    fn find_subroutine_declaration_returns_none_for_unknown_function() {
+        let source = "completely_unknown_func();\n";
+        let provider = make_provider(source);
+        let result = provider.find_declaration(0, 0);
+        // Must be None (or empty) — no sub or constant named completely_unknown_func.
+        let is_empty = match &result {
+            None => true,
+            Some(v) => v.is_empty(),
+        };
+        assert!(
+            is_empty,
+            "find_declaration for an unknown function must return None; got {result:?}"
+        );
+    }
+
+    /// Pre-measurement: Form 1 (my $code = sub { ... }) is already handled.
+    ///
+    /// goto-definition on `$code` in `$code->()` reaches the `my $code = ...`
+    /// VariableDeclaration via the existing variable-declaration scope walker.
+    /// This test documents that no fix was needed for Form 1.
+    #[test]
+    fn anon_sub_in_lexical_variable_already_resolves_via_variable_decl() {
+        let source = "my $code = sub { return 42; };\n$code->();\n";
+        let provider = make_provider(source);
+        // Cursor on `$code` in `$code->()` — rightmost occurrence is in the call.
+        let offset = source.rfind("$code").expect("$code must appear in source");
+        let result = provider.find_declaration(offset, 0);
+        assert!(
+            result.is_some(),
+            "goto-definition on $code in $code->() must already resolve to the variable declaration"
+        );
     }
 }
