@@ -421,7 +421,7 @@ pub fn add_method_completions(
                 ("can", "Check if object can call method"),
                 ("DOES", "Check if object does role"),
                 ("VERSION", "Get version"),
-                ("DESTROY", "Destructor — called when object goes out of scope"),
+                ("DESTROY", "Destructor called when object goes out of scope"),
                 ("AUTOLOAD", "Automatic method dispatcher for undefined methods"),
             ]
         }

@@ -30,7 +30,7 @@ use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-const UNIVERSAL_METHODS: [&str; 4] = ["can", "isa", "DOES", "VERSION"];
+const UNIVERSAL_METHODS: [&str; 6] = ["can", "isa", "DOES", "VERSION", "DESTROY", "AUTOLOAD"];
 
 // Re-export the unified symbol types from perl-symbol
 /// Symbol kind enums used during Index/Analyze workflows.
@@ -3522,6 +3522,16 @@ mod tests {
     use super::*;
     use crate::parser::Parser;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn recognizes_destroy_and_autoload_as_universal_methods()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert!(is_universal_method("DESTROY"));
+        assert!(is_universal_method("AUTOLOAD"));
+        assert!(is_universal_method("can"));
+        assert!(!is_universal_method("new"));
+        Ok(())
+    }
 
     #[test]
     fn test_symbol_extraction() {
