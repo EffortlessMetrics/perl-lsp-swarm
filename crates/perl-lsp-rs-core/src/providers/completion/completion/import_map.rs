@@ -104,6 +104,46 @@ mod tests {
         assert!(symbols.contains("beta"), "beta must be present; got: {symbols:?}");
     }
 
+    #[test]
+    fn non_importable_module_with_args_is_skipped() {
+        let code = "use strict qw(vars refs);\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        assert!(
+            !map.contains_key("strict"),
+            "pragma imports should stay out of ImportMap even with args; got: {map:?}"
+        );
+    }
+
+    #[test]
+    fn importable_module_without_args_is_skipped() {
+        let code = "use Module::Thing;\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        assert!(
+            !map.contains_key("Module::Thing"),
+            "use statements without import args should not create ImportMap entries; got: {map:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_export_tag_without_explicit_symbols_records_empty_entry() {
+        let code = "use Module::Thing qw(:unknown_tag);\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let map = extract_import_map(&ast);
+
+        let symbols = must_some(map.get("Module::Thing"));
+        assert!(
+            symbols.is_empty(),
+            "unresolved tag without explicit symbols should be tracked as an empty partial import; got: {symbols:?}"
+        );
+    }
+
     /// Multiple explicit symbols alongside an unresolved tag — all explicit symbols
     /// must survive; unresolvable tag symbols are silently omitted (acceptable partial miss).
     #[test]
