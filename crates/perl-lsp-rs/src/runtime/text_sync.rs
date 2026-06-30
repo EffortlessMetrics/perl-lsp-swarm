@@ -668,7 +668,7 @@ impl LspServer {
                                 inc.apply_edits_cancellable(&edits, cancellation_token.as_ref());
                             match classify_incremental_doc_update(uri, code_text, inc, edit_result)
                             {
-                                IncrementalDocUpdate::Ready(inc) => Some(inc),
+                                IncrementalDocUpdate::Ready(inc) => Some(*inc),
                                 IncrementalDocUpdate::Reinitialize => reinit(),
                                 IncrementalDocUpdate::Cancelled => return Ok(()),
                             }
@@ -922,7 +922,9 @@ impl LspServer {
 
 #[cfg(feature = "incremental")]
 enum IncrementalDocUpdate {
-    Ready(perl_parser::incremental::incremental_document::IncrementalDocument),
+    // Boxed: an `IncrementalDocument` is far larger than the unit variants, so an
+    // unboxed payload trips `clippy::large_enum_variant` (-D warnings).
+    Ready(Box<perl_parser::incremental::incremental_document::IncrementalDocument>),
     Reinitialize,
     Cancelled,
 }
@@ -937,7 +939,7 @@ fn classify_incremental_doc_update(
     match edit_result {
         // Warm path: the edited source matches the cold parser's input exactly,
         // so `inc.root` is the authoritative AST.
-        Ok(()) if inc.source.as_str() == code_text => IncrementalDocUpdate::Ready(inc),
+        Ok(()) if inc.source.as_str() == code_text => IncrementalDocUpdate::Ready(Box::new(inc)),
         // Edit applied but the source diverged from the code slice (e.g.
         // interacting with a __DATA__/__END__ boundary). Reinitialize so this
         // round and the next are correct.
