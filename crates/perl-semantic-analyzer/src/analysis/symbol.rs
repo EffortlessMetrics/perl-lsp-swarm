@@ -3870,6 +3870,78 @@ sub jump {
         );
     }
 
+    #[test]
+    fn test_goto_dynamic_coderef_records_no_subroutine_reference() {
+        // goto &$dispatch — Sub form, but the FunctionCall name carries a sigil
+        // (dynamic coderef), so the `_ => visit_node` arm runs and NO subroutine
+        // reference is recorded for a clean named subroutine `dispatch`.
+        let code = r#"
+sub jump {
+    goto &$dispatch;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        assert!(
+            !table
+                .references
+                .values()
+                .flatten()
+                .any(|reference| reference.kind == SymbolKind::Subroutine
+                    && reference.name == "dispatch"),
+            "goto &$dispatch (dynamic coderef) must not record a subroutine named `dispatch`"
+        );
+    }
+
+    #[test]
+    fn test_goto_expr_form_records_no_label_or_subroutine_reference() {
+        // goto $target — Expr form; the Expr arm visits the target. No Label or
+        // Subroutine reference should be recorded for the scalar target.
+        let code = r#"
+sub jump {
+    my $target = 0;
+    goto $target;
+}
+"#;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(code);
+        let table = extractor.extract(&ast);
+        assert!(
+            table.references.get("$target").into_iter().flatten().all(|reference| {
+                reference.kind != SymbolKind::Label && reference.kind != SymbolKind::Subroutine
+            }),
+            "goto $target (Expr form) must not record label/subroutine references"
+        );
+    }
+
+    #[test]
+    fn test_goto_label_nonidentifier_target_visits_via_else() {
+        use crate::ast::GotoTargetForm;
+        // Synthetic AST the parser never produces (Label form is only assigned to
+        // identifier targets): a Label-form goto whose target is a Number literal.
+        // Exercises the defensive `else => visit_node` branch of the Label arm.
+        let target = Node::new(
+            NodeKind::Number { value: "1".to_string() },
+            SourceLocation { start: 0, end: 1 },
+        );
+        let goto = Node::new(
+            NodeKind::Goto { target: Box::new(target), form: GotoTargetForm::Label },
+            SourceLocation { start: 0, end: 1 },
+        );
+        let table = SymbolExtractor::new().extract(&goto);
+        assert!(
+            !table
+                .references
+                .values()
+                .flatten()
+                .any(|reference| reference.kind == SymbolKind::Label),
+            "a Label goto with a non-identifier target must not record a label reference"
+        );
+    }
+
     // =========================================================================
     // Cross-construct sub resolver — #3108
     //

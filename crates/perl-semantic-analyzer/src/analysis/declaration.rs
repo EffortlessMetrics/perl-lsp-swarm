@@ -2318,6 +2318,47 @@ mod tests {
         );
     }
 
+    /// `goto LABEL` (sigil-less bareword → Label form) exercises the Label arm,
+    /// which tries label resolution then falls back to subroutine resolution.
+    /// Here `helper` is a subroutine, so the `.or_else` fallback resolves it.
+    #[test]
+    fn goto_label_decl_resolves_via_subroutine_fallback() {
+        let source = "sub helper { 1 }\nsub jump { goto helper; }\n";
+        let provider = make_provider(source);
+        let offset = source.rfind("goto").expect("goto must be in source");
+        assert!(
+            provider.find_declaration(offset, 0).is_some(),
+            "goto helper (Label form) should resolve via the subroutine fallback"
+        );
+    }
+
+    /// `goto $target` (scalar → Expr form) exercises the `Expr => None` arm.
+    #[test]
+    fn goto_expr_decl_returns_none() {
+        let source = "sub jump { my $t = 0; goto $t; }\n";
+        let provider = make_provider(source);
+        let offset = source.rfind("goto").expect("goto must be in source");
+        assert!(
+            provider.find_declaration(offset, 0).is_none(),
+            "goto $target (Expr form) resolves to no declaration"
+        );
+    }
+
+    /// Cursor on the goto *target* identifier reaches `identifier_is_goto_target`,
+    /// which confirms the identifier is the target child of its `Goto` parent
+    /// before label/subroutine resolution.
+    #[test]
+    fn goto_target_identifier_resolves_via_goto_target_check() {
+        let source = "sub helper { 1 }\nsub jump { goto helper; }\n";
+        let provider = make_provider(source);
+        let goto_at = source.rfind("goto helper").expect("goto helper present");
+        let helper_off = goto_at + source[goto_at..].find("helper").expect("helper after goto");
+        assert!(
+            provider.find_declaration(helper_off, 0).is_some(),
+            "cursor on the goto target `helper` should resolve to the subroutine"
+        );
+    }
+
     // =========================================================================
     // NodeKind::Method — changed lines in declaration.rs (#854, patch-coverage)
     //
