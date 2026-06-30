@@ -350,8 +350,15 @@ impl<'a> DeclarationProvider<'a> {
                     }
                     GotoTargetForm::Sub => {
                         // goto &sub — navigate to the subroutine declaration.
+                        // Skip dynamic coderefs (e.g. `goto &$var`, where the parser
+                        // produces `FunctionCall { name: "$var", .. }`) so we don't
+                        // issue a wasted lookup for a non-existent subroutine. This
+                        // mirrors the sigil guard in symbol.rs so both consumers of
+                        // the `form` field agree on what the `Sub` arm means.
                         match &target.kind {
-                            NodeKind::FunctionCall { name, .. } => {
+                            NodeKind::FunctionCall { name, .. }
+                                if !name.is_empty() && !name.starts_with(['$', '@', '%']) =>
+                            {
                                 self.find_subroutine_declaration(node, name)
                             }
                             _ => None,
@@ -2263,6 +2270,52 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = parser.parse().expect("parse must succeed");
         DeclarationProvider::new(Arc::new(ast), source.to_string(), "file:///test.pl".to_string())
+    }
+
+    // =========================================================================
+    // NodeKind::Goto / GotoTargetForm::Sub — changed lines in declaration.rs (#1923)
+    //
+    // find_declaration Goto/Sub arm (lines ~351-366): `goto &sub` navigates to the
+    // subroutine declaration, but dynamic coderefs (`goto &$var`) are skipped via the
+    // sigil guard mirroring symbol.rs so no wasted lookup is issued.
+    // =========================================================================
+
+    /// `goto &target` (named subroutine) resolves to the sub declaration —
+    /// exercises the guarded `FunctionCall { name, .. }` arm of GotoTargetForm::Sub.
+    ///
+    /// Covered changed lines: ~351-360 (Sub arm, named-subroutine branch).
+    #[test]
+    fn goto_sub_decl_resolves_named_subroutine() {
+        let source = "sub target { return 42; }\nsub jump { goto &target; }\n";
+        let provider = make_provider(source);
+        // Cursor on the `goto` keyword inside `jump` so find_node_at_offset
+        // returns the Goto node (the keyword region has no child node).
+        let offset = source.rfind("goto").expect("goto must be in source");
+        let result = provider.find_declaration(offset, 0);
+        assert!(
+            result.is_some(),
+            "find_declaration on `goto &target` must resolve the subroutine; \
+             source={source:?} offset={offset}"
+        );
+    }
+
+    /// `goto &$dispatch` (dynamic coderef) is NOT treated as a named-subroutine
+    /// lookup — the sigil guard sends it to the `_ => None` arm, so no wasted
+    /// `find_subroutine_declaration("$dispatch")` is issued.
+    ///
+    /// Covered changed line: the `name.starts_with(['$','@','%'])` guard +
+    /// `_ => None` arm of GotoTargetForm::Sub.
+    #[test]
+    fn goto_sub_decl_skips_dynamic_coderef() {
+        let source = "sub jump { goto &$dispatch; }\n";
+        let provider = make_provider(source);
+        let offset = source.find("goto").expect("goto must be in source");
+        let result = provider.find_declaration(offset, 0);
+        assert!(
+            result.is_none(),
+            "find_declaration on `goto &$dispatch` must return None (dynamic coderef, \
+             not a named subroutine); source={source:?} offset={offset}"
+        );
     }
 
     // =========================================================================
