@@ -1855,17 +1855,38 @@ mod tests {
     }
 
     #[test]
-    fn perl_word_split_boundary_discriminator_c_eq_underscore() {
+    fn perl_word_split_boundary_boundary_discriminator_input_that_hits_the_boundary_c_eq_underscore()
+     {
         assert_eq!(perl_word_split_boundary('_'), false, "input that hits the boundary: c == '_'");
     }
 
     #[test]
-    fn perl_word_split_boundary_discriminator_c_ne_underscore() {
+    fn perl_word_split_boundary_boundary_discriminator() {
+        assert_eq!(
+            perl_word_split_boundary('-'),
+            true,
+            "input that hits the boundary: !c.is_alphanumeric() && c != '_'"
+        );
+    }
+
+    #[test]
+    fn perl_word_split_boundary_boundary_discriminator_input_that_hits_the_boundary_not_c_is_alphanumeric_and_c_ne_underscore()
+     {
         assert_eq!(perl_word_split_boundary(' '), true, "input that hits the boundary: c != '_'");
+        assert_eq!(
+            perl_word_split_boundary('_'),
+            false,
+            "underscore remains part of Perl word tokens"
+        );
         assert_eq!(
             perl_word_split_boundary('a'),
             false,
             "input that hits the boundary: c.is_alphanumeric()"
+        );
+        assert_eq!(
+            perl_word_split_boundary(' '),
+            true,
+            "input that hits the boundary: !c.is_alphanumeric() && c != '_'"
         );
     }
 
@@ -1890,16 +1911,25 @@ mod tests {
     }
 
     #[test]
-    fn token_span_at_logical_end_boundary_discriminator_offset_ge_content_len() {
+    fn token_span_at_boundary_discriminator_input_that_hits_the_boundary_offset_ge_content_len() {
         assert_eq!(
             LspServer::token_span_at("$target", "$target".len()),
-            Some((1, "$target".len())),
+            Some((0, "$target".len())),
             "input that hits the boundary: offset >= content.len()"
         );
         assert_eq!(
             LspServer::token_span_at("target", "target".len()),
             Some((0, "target".len())),
             "bare identifiers at logical EOF should still resolve to the token span"
+        );
+    }
+
+    #[test]
+    fn token_span_at_boundary_discriminator() {
+        assert_eq!(
+            LspServer::token_span_at("$target", "$target".len() + 1),
+            Some((0, "$target".len())),
+            "input that hits the boundary: offset >= content.len()"
         );
     }
 
@@ -2094,17 +2124,34 @@ mod tests {
     }
 
     #[test]
-    fn range_starts_with_sub_declaration_name_boundary_discriminator_ch_is_alphanumeric_or_ch_eq_underscore()
+    fn range_starts_with_sub_declaration_name_boundary_discriminator_input_that_hits_the_boundary_after_sub_chars_next_is_some_and_ch_is_alphanumeric_or_ch_eq_underscore()
     -> Result<(), Box<dyn std::error::Error>> {
         let absolute_start = 19;
 
         assert_eq!(
             range_starts_with_sub_declaration_name("subtarget { 1 }", absolute_start, "target"),
             None,
-            "input that hits the boundary: ch.is_alphanumeric() || ch == '_'"
+            "input that hits the boundary: after_sub.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_')"
         );
         assert_eq!(
             range_starts_with_sub_declaration_name("sub_target { 1 }", absolute_start, "target"),
+            None,
+            "input that hits the boundary: ch == '_'"
+        );
+        assert_eq!(
+            range_starts_with_sub_declaration_name("sub_target { 1 }", absolute_start, "target"),
+            None,
+            "input that hits the boundary: ch.is_alphanumeric() || ch == '_'"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_starts_with_sub_declaration_name_boundary_discriminator_input_that_hits_the_boundary_ch_eq_underscore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            range_starts_with_sub_declaration_name("sub_target { 1 }", 19, "target"),
             None,
             "input that hits the boundary: ch == '_'"
         );
@@ -2113,7 +2160,61 @@ mod tests {
     }
 
     #[test]
-    fn range_starts_with_sub_declaration_name_boundary_discriminator_source_range_get_name_start_name_end_ne_symbol()
+    fn range_starts_with_sub_declaration_name_boundary_discriminator_input_that_hits_the_boundary_ch_is_alphanumeric_or_ch_eq_underscore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            range_starts_with_sub_declaration_name("subtarget { 1 }", 19, "target"),
+            None,
+            "input that hits the boundary: ch.is_alphanumeric() || ch == '_'"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_starts_with_sub_declaration_name_boundary_discriminator()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            range_starts_with_sub_declaration_name("subtarget { 1 }", 19, "target"),
+            None,
+            "input that hits the boundary: after_sub.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_')"
+        );
+        assert_eq!(
+            range_starts_with_sub_declaration_name("sub_target { 1 }", 19, "target"),
+            None,
+            "input that hits the boundary: ch == '_'"
+        );
+        assert_eq!(
+            range_starts_with_sub_declaration_name("subtarget { 1 }", 19, "target"),
+            None,
+            "input that hits the boundary: ch.is_alphanumeric() || ch == '_'"
+        );
+        assert_eq!(
+            range_starts_with_sub_declaration_name("sub target { 1 }", 19, "other"),
+            None,
+            "input that hits the boundary: source_range.get(name_start..name_end)? != symbol"
+        );
+        assert_eq!(
+            range_starts_with_sub_declaration_name("sub targetSuffix { 1 }", 19, "target"),
+            None,
+            concat!(
+                "input that hits the boundary: source_range\n",
+                "        .get(name_end..)\n",
+                "        .and_then(|tail| tail.chars().next())\n",
+                "        .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')"
+            )
+        );
+        assert_eq!(
+            range_starts_with_sub_declaration_name("sub target_suffix { 1 }", 19, "target"),
+            None,
+            "input that hits the boundary: ch == '_'"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_starts_with_sub_declaration_name_boundary_discriminator_input_that_hits_the_boundary_source_range_get_name_start_name_end_ne_symbol()
     -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
             range_starts_with_sub_declaration_name("sub target { 1 }", 19, "other"),
@@ -2125,7 +2226,7 @@ mod tests {
     }
 
     #[test]
-    fn range_starts_with_sub_declaration_name_boundary_discriminator_tail_ch_is_alphanumeric_or_ch_eq_underscore()
+    fn range_starts_with_sub_declaration_name_boundary_discriminator_input_that_hits_the_boundary_source_range_get_name_end_and_then_tail_chars_next_is_some_and_ch_is_alphanumeric_or_ch_eq_underscore()
     -> Result<(), Box<dyn std::error::Error>> {
         let absolute_start = 19;
 
@@ -2146,6 +2247,35 @@ mod tests {
             ),
             None,
             "input that hits the boundary: ch == '_'"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_contains_single_bare_function_call_name_boundary_discriminator()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            range_contains_single_bare_function_call_name("target()", 7, "target"),
+            Some((7, 13)),
+            "input that hits the boundary: ch != '_'"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn range_contains_single_bare_function_call_name_boundary_discriminator_input_that_hits_the_boundary_ch_ne_underscore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            range_contains_single_bare_function_call_name("target()", 7, "target"),
+            Some((7, 13)),
+            "input that hits the boundary: ch != '_'"
+        );
+        assert_eq!(
+            range_contains_single_bare_function_call_name("_target()", 7, "target"),
+            None,
+            "underscore-prefixed bare names must not be treated as standalone target calls"
         );
 
         Ok(())
