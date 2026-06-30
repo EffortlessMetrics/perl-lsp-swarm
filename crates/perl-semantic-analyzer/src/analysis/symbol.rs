@@ -3988,7 +3988,7 @@ sub jump {
         let foo_syms = &table.symbols["foo"];
         // Should have multiple symbols for 'foo' (the named sub and the typeglob assignment)
         assert!(
-            foo_syms.len() >= 1,
+            !foo_syms.is_empty(),
             "should have at least one Subroutine symbol for 'foo'; got {count} symbol(s)",
             count = foo_syms.len()
         );
