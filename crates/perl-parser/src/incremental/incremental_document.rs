@@ -382,12 +382,12 @@ impl IncrementalDocument {
                         }
                     }
                 }
-                NodeKind::String { value, .. } => {
-                    // Update string content
+                NodeKind::String { value, .. } | NodeKind::VString { value } => {
+                    // Update literal content
                     let delta = edit.byte_shift();
                     let new_end = (node.location.end as isize + delta).max(0) as usize;
 
-                    // Safely extract new string value with bounds checking
+                    // Safely extract new literal value with bounds checking
                     if new_end <= source.len()
                         && source.is_char_boundary(node.location.start)
                         && source.is_char_boundary(new_end)

@@ -104,9 +104,8 @@ fn vstring_node_survives_incremental_edit_outside_literal() {
 /// AST and returns the VString node at bytes 8..14.  The match then hits the
 /// `NodeKind::VString { .. }` arm, returning `true`.
 ///
-/// The fast-path update falls back (VString has no update_token_in_tree arm),
-/// causing a full fresh reparse.  The result is a new v-string containing the
-/// inserted character.
+/// The fast-path update rewrites the VString node in place. The result is a
+/// v-string containing the inserted character.
 ///
 /// Non-vacuous guarantee: the sexp must contain `(vstring "v10.2.3")` — the
 /// v-string expanded by the insertion.  Reverting the primary.rs VString arm
@@ -133,8 +132,8 @@ fn vstring_edit_inside_literal_exercises_is_single_token_edit_arm() {
     // Reverting primary.rs VString arm would produce (string "v10.2.3") here.
     let sexp = doc.root.to_sexp();
     assert!(
-        sexp.contains("(vstring \"v10.2.3\")") || sexp.contains("vstring"),
-        "after inserting '0' inside VString, result must contain a vstring node; \
+        sexp.contains("(vstring \"v10.2.3\")"),
+        "after inserting '0' inside VString, result must contain the exact edited vstring; \
          reverting primary.rs VString arm would produce a string node instead. \
          Got: {}",
         sexp
