@@ -2150,3 +2150,53 @@ fn test_warm_path_reinitializes_when_incremental_source_diverges()
     );
     Ok(())
 }
+
+#[cfg(feature = "incremental")]
+#[test]
+fn test_incremental_doc_update_classifies_all_fallback_outcomes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser::error::ParseError;
+    use perl_parser::incremental::incremental_document::IncrementalDocument;
+
+    let uri = "file:///test_incremental_doc_update.pl";
+    let source = "my $x = 1;\n";
+
+    let ready_doc = IncrementalDocument::new(source.to_string())?;
+    match classify_incremental_doc_update(uri, source, ready_doc, Ok(())) {
+        IncrementalDocUpdate::Ready(doc) => assert_eq!(
+            doc.source, source,
+            "input that hits the boundary: inc.source.as_str() == code_text"
+        ),
+        IncrementalDocUpdate::Reinitialize | IncrementalDocUpdate::Cancelled => {
+            return Err("matching source must classify as Ready".into());
+        }
+    }
+
+    let diverged_doc = IncrementalDocument::new(source.to_string())?;
+    match classify_incremental_doc_update(uri, "my $x = 2;\n", diverged_doc, Ok(())) {
+        IncrementalDocUpdate::Reinitialize => {}
+        IncrementalDocUpdate::Ready(_) | IncrementalDocUpdate::Cancelled => {
+            return Err("diverged source must classify as Reinitialize".into());
+        }
+    }
+
+    let cancelled_doc = IncrementalDocument::new(source.to_string())?;
+    match classify_incremental_doc_update(uri, source, cancelled_doc, Err(ParseError::Cancelled)) {
+        IncrementalDocUpdate::Cancelled => {}
+        IncrementalDocUpdate::Ready(_) | IncrementalDocUpdate::Reinitialize => {
+            return Err("cancelled warm parse must classify as Cancelled".into());
+        }
+    }
+
+    let error_doc = IncrementalDocument::new(source.to_string())?;
+    let error =
+        ParseError::SyntaxError { message: "forced coverage error".to_string(), location: 0 };
+    match classify_incremental_doc_update(uri, source, error_doc, Err(error)) {
+        IncrementalDocUpdate::Reinitialize => {}
+        IncrementalDocUpdate::Ready(_) | IncrementalDocUpdate::Cancelled => {
+            return Err("non-cancellation warm parse error must classify as Reinitialize".into());
+        }
+    }
+
+    Ok(())
+}

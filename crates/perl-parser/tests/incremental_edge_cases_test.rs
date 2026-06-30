@@ -7,11 +7,70 @@
 mod support;
 
 use crate::support::incremental_test_utils::IncrementalTestUtils;
+use perl_parser::incremental::incremental_document::IncrementalDocument;
+use perl_parser::incremental::incremental_edit::{IncrementalEdit, IncrementalEditSet};
 use perl_parser::incremental_v2::IncrementalParserV2;
-// Remove unused imports - these were imported but not used in the current test implementation
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+#[test]
+fn test_incremental_document_batch_paths_for_coverage_pack() -> TestResult {
+    let source = "my $value = 12345;\n";
+    let mut document = IncrementalDocument::new(source.to_string())?;
+    let start = source.find("12345").ok_or("test source should contain 12345")?;
+
+    let mut overlapping = IncrementalEditSet::new();
+    overlapping.add(IncrementalEdit::new(start + 1, start + 4, "abc".to_string()));
+    overlapping.add(IncrementalEdit::new(start + 3, start + 5, "de".to_string()));
+    let fallback_expected = overlapping.apply_to_string(source);
+
+    document.apply_edits(&overlapping)?;
+    assert_eq!(
+        document.source, fallback_expected,
+        "input that hits the boundary: normalize_for_source(&self.source) == None"
+    );
+    assert_eq!(document.version, 1, "fallback batch must still advance the document version");
+
+    let source = "my $other = 1;\n";
+    let mut document = IncrementalDocument::new(source.to_string())?;
+    let mut replace_all = IncrementalEditSet::new();
+    replace_all.add(IncrementalEdit::new(0, source.len(), "my $other = ;\n".to_string()));
+
+    document.apply_edits(&replace_all)?;
+    assert_eq!(
+        document.source, "my $other = ;\n",
+        "input that hits the boundary: reusable.is_empty()"
+    );
+    assert!(
+        !document.errors().is_empty(),
+        "fresh no-reuse batch parse must publish recoverable parse errors"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_incremental_document_cancellable_batch_preserves_source_on_cancel() -> TestResult {
+    let source = "my $x = 1;\n";
+    let mut document = IncrementalDocument::new(source.to_string())?;
+    let cancel = Arc::new(AtomicBool::new(true));
+    let mut edits = IncrementalEditSet::new();
+    edits.add(IncrementalEdit::new(8, 9, "2".to_string()));
+
+    let result = document.apply_edits_cancellable(&edits, Some(&cancel));
+    assert!(
+        matches!(result, Err(perl_parser::error::ParseError::Cancelled)),
+        "input that hits the boundary: cancel.load(Ordering::SeqCst)"
+    );
+    assert_eq!(document.source, source, "cancelled batch must leave the source unchanged");
+
+    cancel.store(false, Ordering::SeqCst);
+    document.apply_edits_cancellable(&edits, Some(&cancel))?;
+    assert_eq!(document.source, "my $x = 2;\n", "clear cancellation flag must apply the edit");
+    Ok(())
+}
 
 /// Test incremental parsing with deeply nested structures
 #[test]

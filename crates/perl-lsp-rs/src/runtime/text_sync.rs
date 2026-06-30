@@ -664,37 +664,13 @@ impl LspServer {
                     };
                     match (doc_state.incremental_doc.take(), incremental_edits_opt) {
                         (Some(mut inc), Some(edits)) => {
-                            match inc.apply_edits_cancellable(&edits, cancellation_token.as_ref()) {
-                                // Warm path: the edited source matches the cold parser's
-                                // input exactly, so `inc.root` is the authoritative AST.
-                                Ok(()) if inc.source.as_str() == code_text => Some(inc),
-                                // Edit applied but the source diverged from the code slice
-                                // (e.g. interacting with a __DATA__/__END__ boundary).
-                                // Reinitialize so this round and the next are correct.
-                                Ok(()) => {
-                                    tracing::debug!(
-                                        "Incremental source diverged from code slice for {}, reinitializing",
-                                        uri
-                                    );
-                                    reinit()
-                                }
-                                // A newer change superseded this one mid-parse; drop the
-                                // result and let the next didChange reinitialize.
-                                Err(perl_parser::error::ParseError::Cancelled) => {
-                                    tracing::debug!(
-                                        "Incremental parse cancelled for {} — newer change pending",
-                                        uri
-                                    );
-                                    return Ok(());
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Incremental edit application failed for {}, reinitializing: {}",
-                                        uri,
-                                        e
-                                    );
-                                    reinit()
-                                }
+                            let edit_result =
+                                inc.apply_edits_cancellable(&edits, cancellation_token.as_ref());
+                            match classify_incremental_doc_update(uri, code_text, inc, edit_result)
+                            {
+                                IncrementalDocUpdate::Ready(inc) => Some(inc),
+                                IncrementalDocUpdate::Reinitialize => reinit(),
+                                IncrementalDocUpdate::Cancelled => return Ok(()),
                             }
                         }
                         // Full-document replace or no prior incremental state.
@@ -941,6 +917,51 @@ impl LspServer {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(feature = "incremental")]
+enum IncrementalDocUpdate {
+    Ready(perl_parser::incremental::incremental_document::IncrementalDocument),
+    Reinitialize,
+    Cancelled,
+}
+
+#[cfg(feature = "incremental")]
+fn classify_incremental_doc_update(
+    uri: &str,
+    code_text: &str,
+    inc: perl_parser::incremental::incremental_document::IncrementalDocument,
+    edit_result: perl_parser::error::ParseResult<()>,
+) -> IncrementalDocUpdate {
+    match edit_result {
+        // Warm path: the edited source matches the cold parser's input exactly,
+        // so `inc.root` is the authoritative AST.
+        Ok(()) if inc.source.as_str() == code_text => IncrementalDocUpdate::Ready(inc),
+        // Edit applied but the source diverged from the code slice (e.g.
+        // interacting with a __DATA__/__END__ boundary). Reinitialize so this
+        // round and the next are correct.
+        Ok(()) => {
+            tracing::debug!(
+                "Incremental source diverged from code slice for {}, reinitializing",
+                uri
+            );
+            IncrementalDocUpdate::Reinitialize
+        }
+        // A newer change superseded this one mid-parse; drop the result and let
+        // the next didChange reinitialize.
+        Err(perl_parser::error::ParseError::Cancelled) => {
+            tracing::debug!("Incremental parse cancelled for {} — newer change pending", uri);
+            IncrementalDocUpdate::Cancelled
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Incremental edit application failed for {}, reinitializing: {}",
+                uri,
+                e
+            );
+            IncrementalDocUpdate::Reinitialize
+        }
     }
 }
 
