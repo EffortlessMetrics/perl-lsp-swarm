@@ -578,6 +578,17 @@ mod tests {
     }
 
     #[test]
+    fn scan_loop_breaks_when_no_sub_or_package_keyword() -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(32);
+        let mut out = Vec::new();
+
+        extract_from_eval_string("my $x = 1; print $x;", 0, 20, file_id, &mut out);
+
+        assert!(out.is_empty(), "no sub/package keywords should produce no dynamic facts");
+        Ok(())
+    }
+
+    #[test]
     fn sub_with_semicolon_delimiter_is_accepted() -> Result<(), Box<dyn std::error::Error>> {
         // Forward declaration: `sub foo;`
         let file_id = FileId(7);
@@ -606,6 +617,20 @@ mod tests {
     }
 
     #[test]
+    fn package_after_sub_does_not_retroactively_qualify_sub()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(33);
+        let mut out = Vec::new();
+
+        extract_from_eval_string("sub early { 1 } package Later;", 0, 30, file_id, &mut out);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.canonical_name, "early");
+        assert_eq!(out[0].0.confidence, Confidence::Low);
+        Ok(())
+    }
+
+    #[test]
     fn interpolated_name_sub_does_not_produce_evidence() -> Result<(), Box<dyn std::error::Error>> {
         // `sub $name { ... }` — dynamic name, cannot be extracted.
         let file_id = FileId(9);
@@ -615,6 +640,25 @@ mod tests {
             out
         };
         assert!(triples.is_empty(), "sub with sigil-prefixed name must not produce evidence");
+        Ok(())
+    }
+
+    #[test]
+    fn anonymous_and_sigil_sub_candidates_skip_to_later_named_sub()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(34);
+        let mut out = Vec::new();
+
+        extract_from_eval_string(
+            "sub { 1 } sub $dynamic { 2 } sub named { 3 }",
+            0,
+            45,
+            file_id,
+            &mut out,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.canonical_name, "named");
         Ok(())
     }
 
@@ -729,6 +773,28 @@ mod tests {
         assert_eq!(anchor.span_start_byte, 99);
         assert_eq!(anchor.span_end_byte, 100);
         assert_eq!(occurrence.anchor_id, anchor.id);
+        Ok(())
+    }
+
+    #[test]
+    fn emit_triple_sets_bare_and_qualified_identity_contracts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut out = Vec::new();
+
+        emit_triple("helper", None, 10, 20, FileId(35), &mut out);
+        emit_triple("helper", Some("Pkg"), 10, 20, FileId(35), &mut out);
+
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0.canonical_name, "helper");
+        assert_eq!(out[0].0.confidence, Confidence::Low);
+        assert_eq!(out[1].0.canonical_name, "Pkg::helper");
+        assert_eq!(out[1].0.confidence, Confidence::Medium);
+        assert_ne!(
+            out[0].0.id, out[1].0.id,
+            "bare and package-qualified eval subs must get distinct stable IDs"
+        );
+        assert_eq!(out[1].1.confidence, Confidence::Medium);
+        assert_eq!(out[1].2.entity_id, Some(out[1].0.id));
         Ok(())
     }
 
