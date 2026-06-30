@@ -5353,6 +5353,108 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_callable_may_be_visible_at_call_presence_observer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let file_id = FileId(250);
+        let entity_id = EntityId(251);
+        let early_anchor_id = AnchorId(252);
+        let target_anchor_id = AnchorId(253);
+        let occurrence_id = OccurrenceId(254);
+
+        let early_anchor = AnchorFact {
+            id: early_anchor_id,
+            file_id,
+            span_start_byte: 1,
+            span_end_byte: 10,
+            scope_id: None,
+            provenance: Provenance::ExactAst,
+            confidence: Confidence::High,
+        };
+        let target_anchor = AnchorFact {
+            id: target_anchor_id,
+            file_id,
+            span_start_byte: 80,
+            span_end_byte: 120,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let entity = EntityFact {
+            id: entity_id,
+            canonical_name: "Observed::generated".to_string(),
+            kind: EntityKind::Subroutine,
+            anchor_id: Some(target_anchor_id),
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+        let occurrence = OccurrenceFact {
+            id: occurrence_id,
+            kind: OccurrenceKind::DynamicBoundary,
+            entity_id: Some(entity_id),
+            anchor_id: target_anchor_id,
+            scope_id: None,
+            provenance: Provenance::DynamicBoundary,
+            confidence: Confidence::Low,
+        };
+
+        let shard = make_shard(
+            "file:///test/eval_sub_call_observation.pl",
+            file_id,
+            vec![early_anchor, target_anchor],
+            vec![entity],
+            vec![occurrence],
+            vec![],
+        );
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        let before = queries.dynamic_callable_may_be_visible_at(file_id, 79, "generated");
+        assert!(
+            before.is_none(),
+            "input that reaches call shard.anchors.iter() and hits the boundary: anchor.span_start_byte <= byte_offset"
+        );
+
+        let at_boundary = queries.dynamic_callable_may_be_visible_at(file_id, 80, "generated");
+        match at_boundary {
+            Some(DynamicCallableEvidence::EvalSub { occurrence }) => {
+                assert_eq!(
+                    occurrence.id, occurrence_id,
+                    "call observation returns the exact eval-sub occurrence"
+                );
+                assert_eq!(
+                    occurrence.entity_id,
+                    Some(entity_id),
+                    "call observation keeps the matching entity id"
+                );
+                assert_eq!(
+                    occurrence.anchor_id, target_anchor_id,
+                    "input that reaches call Some(DynamicCallableEvidence::EvalSub {{ occurrence: occurrence.clone(), }})"
+                );
+                assert_eq!(
+                    occurrence.anchor_id, target_anchor_id,
+                    "input that reaches call Some(DynamicCallableEvidence::EvalSub {{\n                        occurrence: occurrence.clone(),\n                    }})"
+                );
+                assert_eq!(
+                    occurrence.id, occurrence_id,
+                    "input that reaches call occurrence.clone()"
+                );
+            }
+            Some(other) => {
+                return Err(format!("expected EvalSub evidence, got {other:?}").into());
+            }
+            None => {
+                return Err("expected EvalSub evidence at the eval-sub anchor boundary".into());
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn dynamic_callable_eval_sub_missing_anchor_fails_closed()
     -> Result<(), Box<dyn std::error::Error>> {
         // The occurrence has an anchor_id that does NOT match any anchor in the shard.
