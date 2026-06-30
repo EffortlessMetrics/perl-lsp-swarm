@@ -1934,12 +1934,10 @@ mod tests_our_redecl {
         ScopeAnalyzer::new().analyze(&ast, code, &pragma_map)
     }
 
-    fn redecls_for_var<'a>(issues: &'a [ScopeIssue], name_substr: &str) -> Vec<&'a ScopeIssue> {
+    fn redecls_for_var<'a>(issues: &'a [ScopeIssue], name: &str) -> Vec<&'a ScopeIssue> {
         issues
             .iter()
-            .filter(|i| {
-                i.kind == IssueKind::VariableRedeclaration && i.variable_name.contains(name_substr)
-            })
+            .filter(|i| i.kind == IssueKind::VariableRedeclaration && i.variable_name == name)
             .collect()
     }
 
@@ -1948,7 +1946,7 @@ mod tests_our_redecl {
     fn our_same_package_redecl_is_error() {
         let issues = analyze("use strict;\npackage Foo;\nour $x = 1;\nour $x = 2;\nprint $x;\n");
         assert!(
-            !redecls_for_var(&issues, "x").is_empty(),
+            !redecls_for_var(&issues, "$x").is_empty(),
             "expected VariableRedeclaration for same-package our $x; got: {:?}",
             issues
         );
@@ -1961,9 +1959,9 @@ mod tests_our_redecl {
             "use strict;\npackage Foo;\nour $x = 1;\npackage Bar;\nour $x = 2;\npackage Foo;\nour $x = 3;\nprint $x;\n",
         );
         assert!(
-            redecls_for_var(&issues, "x").is_empty(),
+            redecls_for_var(&issues, "$x").is_empty(),
             "expected no VariableRedeclaration across package switches; got: {:?}",
-            redecls_for_var(&issues, "x")
+            redecls_for_var(&issues, "$x")
         );
     }
 
@@ -1972,7 +1970,7 @@ mod tests_our_redecl {
     fn our_uninit_same_package_redecl_is_error() {
         let issues = analyze("use strict;\npackage Foo;\nour $x;\nour $x;\nprint $x;\n");
         assert!(
-            !redecls_for_var(&issues, "x").is_empty(),
+            !redecls_for_var(&issues, "$x").is_empty(),
             "expected VariableRedeclaration for uninitialized same-package our $x"
         );
     }
@@ -1984,9 +1982,9 @@ mod tests_our_redecl {
             "use strict;\npackage Foo;\nour $x = 1;\npackage Bar;\nour $x = 2;\nprint $x;\n",
         );
         assert!(
-            redecls_for_var(&issues, "x").is_empty(),
+            redecls_for_var(&issues, "$x").is_empty(),
             "expected no VariableRedeclaration across packages; got: {:?}",
-            redecls_for_var(&issues, "x")
+            redecls_for_var(&issues, "$x")
         );
     }
 }
