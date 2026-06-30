@@ -1077,6 +1077,32 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_find_package_at_offset_treats_identifier_hash_as_comment() -> Result<(), String> {
+        let text = concat!(
+            "package Real;\n",
+            "my $label = $asm# package Commented;\n",
+            "sub here { 1 }\n",
+        );
+        let sub_pos = text.find("sub here").ok_or_else(|| "missing sub here marker".to_string())?;
+
+        assert_eq!(find_package_at_offset(text, sub_pos), Some("Real".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_package_at_offset_keeps_escaped_hash_inside_regex() -> Result<(), String> {
+        let text = concat!(
+            "package Real;\n",
+            "my $rx = m#escaped \\# package Hidden#;\n",
+            "sub here { 1 }\n",
+        );
+        let sub_pos = text.find("sub here").ok_or_else(|| "missing sub here marker".to_string())?;
+
+        assert_eq!(find_package_at_offset(text, sub_pos), Some("Real".to_string()));
+        Ok(())
+    }
+
     // -------------------------------------------------------------------------
     // Char-boundary helpers (#956) - lib-level coverage for Codecov patch gate
     // -------------------------------------------------------------------------
