@@ -129,6 +129,14 @@ thread_local! {
     static TO_SEXP_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
+struct ToSexpDepthGuard;
+
+impl Drop for ToSexpDepthGuard {
+    fn drop(&mut self) {
+        TO_SEXP_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
 /// Core AST node representing any Perl language construct within parsing workflows.
 ///
 /// This is the fundamental building block for representing parsed Perl code. Each node
@@ -236,13 +244,12 @@ impl Node {
             d.set(v + 1);
             v
         });
-        let result = if depth >= MAX_AST_DEPTH {
+        let _depth_guard = ToSexpDepthGuard;
+        if depth >= MAX_AST_DEPTH {
             "(depth_limit_exceeded)".to_string()
         } else {
             self.to_sexp_impl()
-        };
-        TO_SEXP_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
-        result
+        }
     }
 
     /// Inner implementation of S-expression serialisation, called by [`to_sexp`].
@@ -3065,6 +3072,8 @@ mod tests {
 mod depth_guard_tests {
     use super::*;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     fn loc() -> SourceLocation {
         SourceLocation { start: 0, end: 1 }
     }
@@ -3087,7 +3096,7 @@ mod depth_guard_tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn count_nodes_does_not_overflow_on_deep_input() {
+    fn count_nodes_does_not_overflow_on_deep_input() -> TestResult {
         // 50 000 levels deep: without the depth guard this stack-overflows.
         let deep = deep_chain(50_000);
         let count = deep.count_nodes();
@@ -3102,15 +3111,17 @@ mod depth_guard_tests {
             count <= MAX_AST_DEPTH + 2,
             "count ({count}) must be bounded by the depth guard (MAX_AST_DEPTH={MAX_AST_DEPTH})"
         );
+        Ok(())
     }
 
     #[test]
-    fn count_nodes_exact_on_shallow_input() {
+    fn count_nodes_exact_on_shallow_input() -> TestResult {
         // Depth-2 chain: ExpressionStatement(Number) — both visible.
         let inner = Node::new(NodeKind::Number { value: "42".to_string() }, loc());
         let outer = Node::new(NodeKind::ExpressionStatement { expression: Box::new(inner) }, loc());
         // Depth guard must not fire: count must be exact.
         assert_eq!(outer.count_nodes(), 2, "shallow chain: ExpressionStatement + Number = 2");
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -3118,7 +3129,7 @@ mod depth_guard_tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn to_sexp_does_not_overflow_on_deep_input() {
+    fn to_sexp_does_not_overflow_on_deep_input() -> TestResult {
         // 50 000 levels deep: without the depth guard this stack-overflows.
         let deep = deep_chain(50_000);
         // Must return without panicking.
@@ -3131,10 +3142,11 @@ mod depth_guard_tests {
             sexp.contains("depth_limit_exceeded"),
             "expected depth-limit truncation marker in sexp output, got: {sexp:.120}..."
         );
+        Ok(())
     }
 
     #[test]
-    fn to_sexp_depth_counter_resets_between_calls() {
+    fn to_sexp_depth_counter_resets_between_calls() -> TestResult {
         // Calling to_sexp on a deep tree must not permanently raise the thread-local
         // counter, so a second independent call returns a fresh result.
         let deep = deep_chain(50_000);
@@ -3149,10 +3161,11 @@ mod depth_guard_tests {
             !sexp2.contains("depth_limit_exceeded"),
             "depth counter must reset after the first call; got: {sexp2}"
         );
+        Ok(())
     }
 
     #[test]
-    fn to_sexp_normal_output_on_shallow_input() {
+    fn to_sexp_normal_output_on_shallow_input() -> TestResult {
         let inner = Node::new(NodeKind::Number { value: "42".to_string() }, loc());
         let stmt = Node::new(NodeKind::ExpressionStatement { expression: Box::new(inner) }, loc());
         let program = Node::new(NodeKind::Program { statements: vec![stmt] }, loc());
@@ -3161,6 +3174,7 @@ mod depth_guard_tests {
         assert!(!sexp.contains("depth_limit_exceeded"), "shallow tree must not be truncated");
         assert!(sexp.starts_with("(source_file"), "expected source_file wrapper");
         assert!(sexp.contains("number"), "expected number node in output");
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -3168,7 +3182,7 @@ mod depth_guard_tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn find_deepest_containing_offset_does_not_overflow_on_deep_input() {
+    fn find_deepest_containing_offset_does_not_overflow_on_deep_input() -> TestResult {
         // 50 000 levels deep: without the depth guard this stack-overflows.
         let deep = deep_chain(50_000);
         // Must return without panicking; result must be Some (offset 0 is inside the root).
@@ -3179,10 +3193,11 @@ mod depth_guard_tests {
         );
         // Prevent the recursive Box<Node> drop-glue from overflowing the stack.
         std::mem::forget(deep);
+        Ok(())
     }
 
     #[test]
-    fn find_deepest_containing_offset_returns_none_for_out_of_range() {
+    fn find_deepest_containing_offset_returns_none_for_out_of_range() -> TestResult {
         // Offset 100 is outside the span (start: 0, end: 1) of every node in the chain.
         let deep = deep_chain(50_000);
         // Assert before mem::forget because the result borrows from `deep`.
@@ -3192,10 +3207,11 @@ mod depth_guard_tests {
         );
         // Prevent the recursive drop from overflowing the stack.
         std::mem::forget(deep);
+        Ok(())
     }
 
     #[test]
-    fn find_deepest_containing_offset_finds_deepest_on_shallow_input() {
+    fn find_deepest_containing_offset_finds_deepest_on_shallow_input() -> TestResult {
         // Build: Program(loc 0..10) → ExpressionStatement(0..10)
         //          → Number "42"(3..5)
         let number_loc = SourceLocation { start: 3, end: 5 };
@@ -3214,5 +3230,6 @@ mod depth_guard_tests {
             Some("Number"),
             "deepest node at offset 4 must be Number"
         );
+        Ok(())
     }
 }
