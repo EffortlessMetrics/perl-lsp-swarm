@@ -81,6 +81,37 @@ fn edit_offsets(text: &str, edit: &Value) -> TestResult<(usize, usize, String)> 
     ))
 }
 
+fn assert_workspace_edit_for_doc(
+    response: &Value,
+    doc_uri: &str,
+    expected_new_text: &str,
+    min_edits: usize,
+) -> TestResult {
+    assert!(response.is_object(), "rename should return a WorkspaceEdit object, got: {response:?}");
+
+    let changes = response
+        .get("changes")
+        .and_then(Value::as_object)
+        .ok_or("rename response should include `changes` object")?;
+    let edits = changes
+        .get(doc_uri)
+        .and_then(Value::as_array)
+        .ok_or("rename response should include edits for the current document")?;
+
+    assert!(
+        edits.len() >= min_edits,
+        "expected at least {min_edits} edits, got {}: {edits:?}",
+        edits.len()
+    );
+    for edit in edits {
+        assert!(edit["range"].is_object(), "each edit should have a range");
+        let new_text = edit["newText"].as_str().ok_or("newText should be a string")?;
+        assert_eq!(new_text, expected_new_text);
+    }
+
+    Ok(())
+}
+
 fn apply_edits_with_inverse(
     text: &str,
     edits: &[Value],
@@ -902,13 +933,10 @@ fn test_rename_sub_to_keyword_fails() -> TestResult {
             );
         }
         Ok(response) => {
-            // The server must not have produced any edits if it didn't error.
-            let has_edits = response
-                .get("changes")
-                .and_then(|v| v.as_object())
-                .map(|m| m.values().any(|edits| !edits.as_array().map_or(true, |a| a.is_empty())))
-                .unwrap_or(false);
-            assert!(!has_edits, "rename to reserved keyword must not produce edits");
+            return Err(format!(
+                "rename to reserved keyword must return InvalidParams, got response: {response:?}"
+            )
+            .into());
         }
     }
 
@@ -949,14 +977,10 @@ fn test_rename_sub_to_control_flow_keywords_fails() -> TestResult {
                 );
             }
             Ok(response) => {
-                let has_edits = response
-                    .get("changes")
-                    .and_then(|v| v.as_object())
-                    .map(|m| {
-                        m.values().any(|edits| !edits.as_array().map_or(true, |a| a.is_empty()))
-                    })
-                    .unwrap_or(false);
-                assert!(!has_edits, "rename to keyword '{keyword}' must not produce edits");
+                return Err(format!(
+                    "rename to keyword '{keyword}' must return InvalidParams, got response: {response:?}"
+                )
+                .into());
             }
         }
     }
@@ -989,25 +1013,8 @@ fn test_rename_variable_to_keyword_name_succeeds() -> TestResult {
         }),
     );
 
-    // Must not error: variable renames to keyword-named vars are allowed.
-    match result {
-        Ok(response) => {
-            // Verify the response is a valid WorkspaceEdit (may have no edits for small scope).
-            assert!(
-                response.is_object() || response.is_null(),
-                "variable rename to keyword-named var should return WorkspaceEdit or null, got: {response:?}"
-            );
-        }
-        Err(e) => {
-            // Some servers might still reject: that's acceptable, but the reason
-            // must NOT be "reserved keyword" (that check is for subroutines only).
-            let msg = format!("{e}");
-            assert!(
-                !msg.contains("reserved") && !msg.contains("keyword"),
-                "variable rename to $if must not fail with keyword rejection, got: {msg}"
-            );
-        }
-    }
+    let response = result?;
+    assert_workspace_edit_for_doc(&response, doc_uri, "$if", 3)?;
 
     Ok(())
 }
@@ -1036,14 +1043,8 @@ fn test_rename_sub_to_keyword_prefix_name_succeeds() -> TestResult {
             }),
         );
 
-        // Must not be rejected as a keyword — these are ordinary identifiers.
-        if let Err(e) = &result {
-            let msg = format!("{e}");
-            assert!(
-                !msg.contains("keyword") && !msg.contains("reserved"),
-                "name '{name}' is not a keyword and must not be rejected as one, got: {msg}"
-            );
-        }
+        let response = result?;
+        assert_workspace_edit_for_doc(&response, &doc_uri, name, 2)?;
     }
 
     Ok(())
@@ -1073,13 +1074,8 @@ fn test_rename_sub_to_uppercase_keyword_variant_succeeds() -> TestResult {
             }),
         );
 
-        if let Err(e) = &result {
-            let msg = format!("{e}");
-            assert!(
-                !msg.contains("keyword") && !msg.contains("reserved"),
-                "uppercase '{name}' is not a Perl keyword and must not be rejected as one, got: {msg}"
-            );
-        }
+        let response = result?;
+        assert_workspace_edit_for_doc(&response, &doc_uri, name, 2)?;
     }
 
     Ok(())

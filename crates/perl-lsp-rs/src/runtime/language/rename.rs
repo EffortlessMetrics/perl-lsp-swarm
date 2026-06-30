@@ -985,7 +985,7 @@ impl LspServer {
                     return Err(JsonRpcError {
                         code: -32602,
                         message: format!(
-                            "Cannot rename subroutine to reserved Perl keyword '{}'",
+                            "Cannot rename bare identifier to reserved Perl keyword '{}'",
                             requested_name
                         ),
                         data: None,
@@ -1870,6 +1870,40 @@ mod tests {
     }
 
     #[test]
+    fn lexical_declaration_keyword_before_boundary_discriminator_symbol_start_zero()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "target;\nmy $target;\n";
+        assert_eq!(
+            lexical_declaration_keyword_before(source, 0),
+            false,
+            "input that hits the boundary: symbol_start == 0"
+        );
+
+        let lexical_offset = source.find("$target").ok_or("missing lexical declaration")?;
+        assert_eq!(
+            lexical_declaration_keyword_before(source, lexical_offset),
+            true,
+            "lexical declaration names should still detect the preceding my keyword"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn token_span_at_logical_end_boundary_discriminator_offset_ge_content_len() {
+        assert_eq!(
+            RenameRuntime::token_span_at("$target", "$target".len()),
+            Some((1, "$target".len())),
+            "input that hits the boundary: offset >= content.len()"
+        );
+        assert_eq!(
+            RenameRuntime::token_span_at("target", "target".len()),
+            Some((0, "target".len())),
+            "bare identifiers at logical EOF should still resolve to the token span"
+        );
+    }
+
+    #[test]
     fn sub_declaration_keyword_before_boundary_discriminator_symbol_start_zero()
     -> Result<(), Box<dyn std::error::Error>> {
         let boundary_source = "target();\nsub target { 1 }\n";
@@ -1884,6 +1918,26 @@ mod tests {
             sub_declaration_keyword_before(boundary_source, sub_name_offset),
             true,
             "normal sub declaration names should still detect the preceding sub keyword"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn lexical_sub_declaration_keyword_before_boundary_discriminator()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "target();\nmy sub target { 1 }\n";
+        assert_eq!(
+            lexical_sub_declaration_keyword_before(source, 0),
+            false,
+            "input that hits the boundary: symbol_start == 0"
+        );
+
+        let lexical_sub_offset = source.find("target {").ok_or("missing lexical sub name")?;
+        assert_eq!(
+            lexical_sub_declaration_keyword_before(source, lexical_sub_offset),
+            true,
+            "lexical sub declarations should still detect the preceding my sub keywords"
         );
 
         Ok(())
@@ -2719,6 +2773,57 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
+    fn package_rename_open_document_qualified_workspace_edit_boundary_discriminator()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let request_uri = "file:///workspace/lib/Boundary/Pkg.pm";
+        let caller_uri = "file:///workspace/lib/Boundary/Caller.pm";
+        let request_source = "package Boundary::Pkg;\nsub target { 1 }\n1;\n";
+        let caller_source = "package Boundary::Caller;\nsub run { Boundary::Pkg::target(); }\n1;\n";
+        server.test_apply_did_open(request_uri, request_source, 1)?;
+        server.test_apply_did_open(caller_uri, caller_source, 1)?;
+
+        let matching_key = crate::workspace_index::SymbolKey {
+            pkg: "Boundary::Pkg".into(),
+            name: "target".into(),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        };
+        let mismatched_key = crate::workspace_index::SymbolKey {
+            pkg: "Boundary::Other".into(),
+            name: "target".into(),
+            sigil: None,
+            kind: crate::workspace_index::SymKind::Sub,
+        };
+
+        let (_, edit_count, fallback_state) = server
+            .package_rename_open_document_qualified_workspace_edit(
+                None,
+                request_uri,
+                &matching_key,
+                "renamed",
+            )
+            .ok_or("matching package should produce declaration and qualified-call edits")?;
+        assert_eq!(edit_count, 2);
+        assert_eq!(fallback_state, "current_source");
+        assert!(
+            server
+                .package_rename_open_document_qualified_workspace_edit(
+                    None,
+                    request_uri,
+                    &mismatched_key,
+                    "renamed",
+                )
+                .is_none(),
+            "input that hits the boundary: let Some((name_start, name_end)) = \
+             range_starts_with_sub_declaration_name(...) && current_package_at(...) == key.pkg"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
     fn package_rename_open_document_qualified_workspace_edit_uses_disk_fallback()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
@@ -2898,16 +3003,21 @@ mod tests {
 
         // Keyword rejection: subroutine renames (None sigil) to any RENAME_KEYWORD must fail.
         for kw in ["if", "while", "for", "my", "sub", "package", "return"] {
-            assert!(
-                server.normalize_rename_target(None, kw).is_err(),
-                "rename to reserved keyword '{kw}' must be rejected"
-            );
-            let err = server.normalize_rename_target(None, kw).unwrap_err();
-            assert!(
-                err.message.contains("keyword") || err.message.contains("reserved"),
-                "error for keyword '{kw}' must mention keyword/reserved, got: {}",
-                err.message
-            );
+            match server.normalize_rename_target(None, kw) {
+                Ok(name) => {
+                    return Err(
+                        format!("rename to reserved keyword '{kw}' returned {name:?}").into()
+                    );
+                }
+                Err(err) => {
+                    assert_eq!(err.code, -32602);
+                    assert!(
+                        err.message.contains("keyword") || err.message.contains("reserved"),
+                        "error for keyword '{kw}' must mention keyword/reserved, got: {}",
+                        err.message
+                    );
+                }
+            }
         }
 
         // Variable renames (Some sigil) to keyword-named bare parts are allowed ($if is valid Perl).
@@ -2942,6 +3052,30 @@ mod tests {
                 "name '{name}' shares a keyword prefix but is not a keyword"
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_boundary_discriminator() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+
+        match server.normalize_rename_target(Some("$value"), "@renamed") {
+            Ok(name) => return Err(format!("mismatched sigil returned {name:?}").into()),
+            Err(err) => {
+                assert_eq!(err.code, -32602);
+                assert!(
+                    err.message.contains("does not match"),
+                    "input that hits the boundary: first != sigil; got: {}",
+                    err.message
+                );
+            }
+        }
+        assert_eq!(
+            server.normalize_rename_target(Some("$value"), "renamed")?,
+            "$renamed",
+            "bare requested names should still infer the current symbol sigil"
+        );
 
         Ok(())
     }
