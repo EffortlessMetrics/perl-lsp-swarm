@@ -3534,6 +3534,72 @@ mod tests {
     }
 
     #[test]
+    fn extract_leading_comment_boundary_discriminator() {
+        let extractor = SymbolExtractor::new_with_source("# docs\nsub foo {}");
+
+        assert_eq!(
+            extractor.extract_leading_comment(0),
+            None,
+            "input that hits the boundary: start == 0"
+        );
+    }
+
+    #[test]
+    fn find_symbol_boundary_discriminator() {
+        let mut table = SymbolTable::new();
+        let package_scope =
+            table.push_scope(ScopeKind::Package, SourceLocation { start: 1, end: 2 });
+        let block_scope = table.push_scope(ScopeKind::Block, SourceLocation { start: 3, end: 4 });
+
+        table.add_symbol(Symbol {
+            name: "target".to_string(),
+            qualified_name: "main::target".to_string(),
+            kind: SymbolKind::Variable,
+            location: SourceLocation { start: 5, end: 11 },
+            scope_id: block_scope,
+            declaration: Some("my".to_string()),
+            documentation: None,
+            attributes: Vec::new(),
+        });
+        table.add_symbol(Symbol {
+            name: "target".to_string(),
+            qualified_name: "main::target".to_string(),
+            kind: SymbolKind::Subroutine,
+            location: SourceLocation { start: 12, end: 18 },
+            scope_id: block_scope,
+            declaration: None,
+            documentation: None,
+            attributes: Vec::new(),
+        });
+        table.add_symbol(Symbol {
+            name: "target".to_string(),
+            qualified_name: "main::target".to_string(),
+            kind: SymbolKind::Variable,
+            location: SourceLocation { start: 19, end: 25 },
+            scope_id: package_scope,
+            declaration: Some("our".to_string()),
+            documentation: None,
+            attributes: Vec::new(),
+        });
+
+        let results = table.find_symbol("target", block_scope, SymbolKind::Variable);
+
+        assert_eq!(results.len(), 2, "expected lexical and package-visible variable matches");
+        assert!(
+            results.iter().any(|symbol| symbol.scope_id == block_scope),
+            "input that hits the boundary: symbol.scope_id == scope_id"
+        );
+        assert!(
+            results.iter().all(|symbol| symbol.kind == SymbolKind::Variable),
+            "input that hits the boundary: symbol.kind == kind"
+        );
+        assert!(
+            results.iter().any(|symbol| symbol.declaration.as_deref() == Some("our")),
+            "input that hits the boundary: symbol.declaration.as_deref() == Some(\"our\")"
+        );
+    }
+
+    #[test]
     fn test_symbol_extraction() {
         let code = r#"
 package Foo;
