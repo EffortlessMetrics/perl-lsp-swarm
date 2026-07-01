@@ -16,6 +16,7 @@ use crate::protocol::{REQUEST_FAILED, req_position, req_uri};
 use crate::runtime::readiness::{IndexReadinessOutcome, IndexReadinessPolicy};
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use perl_lexer::is_rename_keyword;
 #[cfg(feature = "workspace")]
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
@@ -977,6 +978,16 @@ impl LspServer {
                     return Err(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid identifier: {}", requested_name),
+                        data: None,
+                    });
+                }
+                if is_rename_keyword(requested_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!(
+                            "Cannot rename subroutine to reserved Perl keyword '{}'",
+                            requested_name
+                        ),
                         data: None,
                     });
                 }
@@ -2885,6 +2896,123 @@ mod tests {
             "bare symbols still require valid Perl identifiers"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_rejects_sub_rename_to_control_flow_keyword()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        // None sigil = subroutine rename; "if" is a reserved keyword
+        let err = server
+            .normalize_rename_target(Some("myfunc"), "if")
+            .expect_err("rename to 'if' should be rejected");
+        assert_eq!(err.code, -32602, "error code must be -32602 (InvalidParams)");
+        assert!(
+            err.message.contains("reserved Perl keyword"),
+            "error message must mention reserved keyword; got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("if"),
+            "error message must name the offending keyword; got: {}",
+            err.message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_rejects_sub_rename_to_multiple_keywords()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        // Sample 8 keywords from RENAME_KEYWORDS to verify the full list is consulted
+        for keyword in &["while", "for", "foreach", "return", "sub", "my", "package", "use"] {
+            assert!(
+                server.normalize_rename_target(Some("myfunc"), keyword).is_err(),
+                "rename to '{}' should be rejected as a reserved keyword",
+                keyword
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_allows_variable_rename_to_keyword_bare_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        // $var → $if is valid Perl; the keyword check must NOT fire in the sigil branch
+        assert_eq!(
+            server.normalize_rename_target(Some("$count"), "if")?,
+            "$if",
+            "variable rename to keyword name should be allowed (Perl permits $if)"
+        );
+        assert_eq!(
+            server.normalize_rename_target(Some("$count"), "$while")?,
+            "$while",
+            "variable rename to sigil-prefixed keyword name should be allowed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_allows_non_keyword_sub_renames()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        // Names that look keyword-adjacent but are not keywords must be allowed
+        for name in &["helper", "ifunc", "whilex", "returning", "subclass", "_if"] {
+            assert_eq!(
+                server.normalize_rename_target(Some("myfunc"), name)?,
+                *name,
+                "rename to '{}' should succeed (not a reserved keyword)",
+                name
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_sub_rename_to_keyword_error_contains_keyword_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let err = server
+            .normalize_rename_target(Some("myfunc"), "return")
+            .expect_err("rename to 'return' should fail");
+        assert!(
+            err.message.contains("return"),
+            "error message must name the offending keyword 'return'; got: {}",
+            err.message
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_keyword_check_is_case_sensitive()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        // Perl keywords are lowercase; uppercase variants are valid identifiers
+        for name in &["If", "WHILE", "For", "Return", "Sub"] {
+            assert!(
+                server.normalize_rename_target(Some("myfunc"), name).is_ok(),
+                "rename to '{}' should succeed (Perl keywords are case-sensitive)",
+                name
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn normalize_rename_target_keyword_check_rejects_partial_prefix_exactly()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        // Prefix matches must NOT be rejected — only exact keyword matches
+        assert!(
+            server.normalize_rename_target(Some("myfunc"), "foreach2").is_ok(),
+            "partial prefix 'foreach2' must not be rejected as a keyword"
+        );
+        assert!(
+            server.normalize_rename_target(Some("myfunc"), "foreach").is_err(),
+            "exact keyword 'foreach' must still be rejected"
+        );
         Ok(())
     }
 
