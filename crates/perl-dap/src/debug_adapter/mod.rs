@@ -182,6 +182,13 @@ impl Default for DebugAdapter {
     }
 }
 
+impl Drop for DebugAdapter {
+    fn drop(&mut self) {
+        self.cancel_requested.store(true, Ordering::Release);
+        self.clear_active_session_state();
+    }
+}
+
 impl DebugAdapter {
     /// Create a new debug adapter
     pub fn new() -> Self {
