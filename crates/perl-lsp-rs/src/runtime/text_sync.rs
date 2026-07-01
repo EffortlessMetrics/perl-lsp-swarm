@@ -649,28 +649,22 @@ impl LspServer {
                 // document AST below without re-parsing.
                 #[cfg(feature = "incremental")]
                 let incremental_doc = {
-                    use perl_parser::incremental::incremental_document::IncrementalDocument;
                     let code_text = crate::util::code_slice(&text);
-                    let reinit = || match IncrementalDocument::new(code_text.to_string()) {
-                        Ok(doc) => Some(doc),
-                        Err(e) => {
-                            tracing::warn!(
-                                "Incremental parsing reinit failed for {}, falling back to full parsing: {}",
-                                uri,
-                                e
-                            );
-                            None
-                        }
+                    let reinit = || {
+                        finish_incremental_doc_reinit(
+                            uri,
+                            IncrementalDocument::new(code_text.to_string()),
+                        )
                     };
                     match (doc_state.incremental_doc.take(), incremental_edits_opt) {
                         (Some(mut inc), Some(edits)) => {
                             let edit_result =
                                 inc.apply_edits_cancellable(&edits, cancellation_token.as_ref());
-                            match classify_incremental_doc_update(uri, code_text, inc, edit_result)
-                            {
-                                IncrementalDocUpdate::Ready(inc) => Some(*inc),
-                                IncrementalDocUpdate::Reinitialize => reinit(),
-                                IncrementalDocUpdate::Cancelled => return Ok(()),
+                            let update =
+                                classify_incremental_doc_update(uri, code_text, inc, edit_result);
+                            match resolve_incremental_doc_update(update, reinit) {
+                                Ok(inc) => inc.map(|doc| *doc),
+                                Err(IncrementalDocCancelled) => return Ok(()),
                             }
                         }
                         // Full-document replace or no prior incremental state.
@@ -921,19 +915,56 @@ impl LspServer {
 }
 
 #[cfg(feature = "incremental")]
+type IncrementalDocument = perl_parser::incremental::incremental_document::IncrementalDocument;
+
+#[cfg(feature = "incremental")]
 enum IncrementalDocUpdate {
     // Boxed: an `IncrementalDocument` is far larger than the unit variants, so an
     // unboxed payload trips `clippy::large_enum_variant` (-D warnings).
-    Ready(Box<perl_parser::incremental::incremental_document::IncrementalDocument>),
+    Ready(Box<IncrementalDocument>),
     Reinitialize,
     Cancelled,
+}
+
+#[cfg(feature = "incremental")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IncrementalDocCancelled;
+
+#[cfg(feature = "incremental")]
+fn finish_incremental_doc_reinit(
+    uri: &str,
+    result: perl_parser::error::ParseResult<IncrementalDocument>,
+) -> Option<IncrementalDocument> {
+    match result {
+        Ok(doc) => Some(doc),
+        Err(e) => {
+            tracing::warn!(
+                "Incremental parsing reinit failed for {}, falling back to full parsing: {}",
+                uri,
+                e
+            );
+            None
+        }
+    }
+}
+
+#[cfg(feature = "incremental")]
+fn resolve_incremental_doc_update(
+    update: IncrementalDocUpdate,
+    reinit: impl FnOnce() -> Option<IncrementalDocument>,
+) -> Result<Option<Box<IncrementalDocument>>, IncrementalDocCancelled> {
+    match update {
+        IncrementalDocUpdate::Ready(inc) => Ok(Some(inc)),
+        IncrementalDocUpdate::Reinitialize => Ok(reinit().map(Box::new)),
+        IncrementalDocUpdate::Cancelled => Err(IncrementalDocCancelled),
+    }
 }
 
 #[cfg(feature = "incremental")]
 fn classify_incremental_doc_update(
     uri: &str,
     code_text: &str,
-    inc: perl_parser::incremental::incremental_document::IncrementalDocument,
+    inc: IncrementalDocument,
     edit_result: perl_parser::error::ParseResult<()>,
 ) -> IncrementalDocUpdate {
     match edit_result {

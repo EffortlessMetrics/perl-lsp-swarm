@@ -2200,3 +2200,64 @@ fn test_incremental_doc_update_classifies_all_fallback_outcomes()
 
     Ok(())
 }
+
+#[cfg(feature = "incremental")]
+#[test]
+fn test_incremental_doc_resolution_covers_reinit_error_and_cancelled()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::cell::Cell;
+
+    use perl_parser::error::ParseError;
+    use perl_parser::incremental::incremental_document::IncrementalDocument;
+
+    let uri = "file:///test_incremental_doc_resolution.pl";
+    let source = "my $x = 1;\n";
+
+    let ready_doc = IncrementalDocument::new(source.to_string())?;
+    let ready = match resolve_incremental_doc_update(
+        IncrementalDocUpdate::Ready(Box::new(ready_doc)),
+        || None,
+    ) {
+        Ok(Some(doc)) => doc,
+        Ok(None) => return Err("ready update must return an incremental document".into()),
+        Err(IncrementalDocCancelled) => return Err("ready update must not cancel".into()),
+    };
+    assert_eq!(
+        ready.source, source,
+        "input that hits the boundary: IncrementalDocUpdate::Ready(inc)"
+    );
+
+    let reinitialized =
+        match resolve_incremental_doc_update(IncrementalDocUpdate::Reinitialize, || {
+            finish_incremental_doc_reinit(uri, IncrementalDocument::new(source.to_string()))
+        }) {
+            Ok(Some(doc)) => doc,
+            Ok(None) => return Err("reinitialize update must return rebuilt doc on success".into()),
+            Err(IncrementalDocCancelled) => {
+                return Err("reinitialize update must not cancel".into());
+            }
+        };
+    assert_eq!(
+        reinitialized.source, source,
+        "input that hits the boundary: IncrementalDocUpdate::Reinitialize => reinit()"
+    );
+
+    let error =
+        ParseError::SyntaxError { message: "forced reinit failure".to_string(), location: 0 };
+    let failed = finish_incremental_doc_reinit(uri, Err(error));
+    assert!(failed.is_none(), "input that hits the boundary: Err(e) => None");
+
+    let reinit_called = Cell::new(false);
+    let cancelled = resolve_incremental_doc_update(IncrementalDocUpdate::Cancelled, || {
+        reinit_called.set(true);
+        None
+    });
+    assert_eq!(
+        cancelled,
+        Err(IncrementalDocCancelled),
+        "input that hits the boundary: IncrementalDocUpdate::Cancelled"
+    );
+    assert!(!reinit_called.get(), "cancelled update must return before calling reinit");
+
+    Ok(())
+}

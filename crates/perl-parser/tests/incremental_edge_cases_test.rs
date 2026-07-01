@@ -72,6 +72,36 @@ fn test_incremental_document_cancellable_batch_preserves_source_on_cancel() -> T
     Ok(())
 }
 
+#[test]
+fn test_incremental_document_apply_edit_large_change_uses_reparse_path() -> TestResult {
+    let old_literal = "x".repeat(120);
+    let new_literal = "y".repeat(120);
+    let source = format!("my $value = \"{old_literal}\";\n");
+    let mut document = IncrementalDocument::new(source.clone())?;
+    let start = source.find(&old_literal).ok_or("test source should contain old literal")?;
+
+    document.apply_edit(IncrementalEdit::new(
+        start,
+        start + old_literal.len(),
+        new_literal.clone(),
+    ))?;
+
+    assert!(
+        document.source.contains(&new_literal),
+        "large single edit must update the document source"
+    );
+    assert!(
+        !document.source.contains(&old_literal),
+        "large single edit must remove the old literal"
+    );
+    assert_eq!(document.version, 1, "single edit must advance the document version");
+    assert!(
+        document.metrics.nodes_reparsed > 0,
+        "input that hits the boundary: !self.is_single_token_edit(edit)"
+    );
+    Ok(())
+}
+
 /// Test incremental parsing with deeply nested structures
 #[test]
 fn test_deeply_nested_structures() -> TestResult {
