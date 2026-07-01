@@ -164,7 +164,7 @@ fn source_backed_document_symbol(
         detail: document_symbol_detail(symbol),
         kind: document_symbol_kind(symbol),
         range: symbol_range(source, symbol),
-        selection_range: symbol_range(source, symbol),
+        selection_range: symbol_name_range(source, symbol),
         children,
     })
 }
@@ -184,7 +184,7 @@ fn source_backed_leaf_symbol(
         detail: document_symbol_detail(symbol),
         kind: document_symbol_kind(symbol),
         range: symbol_range(source, symbol),
-        selection_range: symbol_range(source, symbol),
+        selection_range: symbol_name_range(source, symbol),
         children: Vec::new(),
     })
 }
@@ -209,6 +209,37 @@ fn is_source_backed(symbol: &Symbol, source: &str) -> bool {
 
 fn symbol_range(source: &str, symbol: &Symbol) -> WireRange {
     WireRange::from_byte_offsets(source, symbol.location.start, symbol.location.end)
+}
+
+/// Return a [`WireRange`] spanning only the symbol's identifier name, not its full declaration.
+///
+/// Per LSP 3.17, `selectionRange` must pinpoint the symbol name alone (e.g. just `greet` in
+/// `sub greet { ... }`), while `range` covers the entire construct.  This helper performs a
+/// byte-string search for `symbol.name` within the source slice bounded by `symbol.location`.
+///
+/// # Fallback
+/// If the name cannot be located within the bounds (malformed source, empty name, out-of-range
+/// location), the function falls back to `symbol_range()` — the full declaration span — so that
+/// clients always receive a valid, non-panicking range.
+fn symbol_name_range(source: &str, symbol: &Symbol) -> WireRange {
+    if symbol.name.is_empty() {
+        return symbol_range(source, symbol);
+    }
+    let slice = match source.get(symbol.location.start..symbol.location.end) {
+        Some(s) => s,
+        None => return symbol_range(source, symbol),
+    };
+    let rel_offset = match slice.find(symbol.name.as_str()) {
+        Some(o) => o,
+        None => return symbol_range(source, symbol),
+    };
+    let abs_start = symbol.location.start + rel_offset;
+    let abs_end = abs_start + symbol.name.len();
+    // Guard: name end must not exceed the symbol's declared bounds.
+    if abs_end > symbol.location.end {
+        return symbol_range(source, symbol);
+    }
+    WireRange::from_byte_offsets(source, abs_start, abs_end)
 }
 
 fn document_symbol_kind(symbol: &Symbol) -> u32 {
@@ -644,7 +675,10 @@ mod tests {
         let ast = must(parser.parse());
 
         let result = source_backed_document_symbols_from_ast(&ast, source);
-        let sub_symbol = result.symbols.iter().find(|s| s.name == "foo")
+        let sub_symbol = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "foo")
             .ok_or("expected 'foo' subroutine symbol")?;
 
         // "foo" starts at character 4 (after "sub ")
@@ -665,7 +699,8 @@ mod tests {
 
         // Verify selection_range is smaller than range
         let range_char_span = sub_symbol.range.end.character - sub_symbol.range.start.character;
-        let sel_char_span = sub_symbol.selection_range.end.character - sub_symbol.selection_range.start.character;
+        let sel_char_span =
+            sub_symbol.selection_range.end.character - sub_symbol.selection_range.start.character;
         assert!(
             sel_char_span < range_char_span,
             "selectionRange ({}) should be smaller than range ({})",
@@ -683,7 +718,10 @@ mod tests {
         let ast = must(parser.parse());
 
         let result = source_backed_document_symbols_from_ast(&ast, source);
-        let pkg_symbol = result.symbols.iter().find(|s| s.name == "MyPkg")
+        let pkg_symbol = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "MyPkg")
             .ok_or("expected 'MyPkg' package symbol")?;
 
         // "MyPkg" starts after "package "
@@ -698,7 +736,8 @@ mod tests {
 
         // Verify selection_range is smaller than range
         let range_char_span = pkg_symbol.range.end.character - pkg_symbol.range.start.character;
-        let sel_char_span = pkg_symbol.selection_range.end.character - pkg_symbol.selection_range.start.character;
+        let sel_char_span =
+            pkg_symbol.selection_range.end.character - pkg_symbol.selection_range.start.character;
         assert!(
             sel_char_span < range_char_span,
             "selectionRange ({}) should be smaller than range ({})",
@@ -716,11 +755,16 @@ mod tests {
         let ast = must(parser.parse());
 
         let result = source_backed_document_symbols_from_ast(&ast, source);
-        let var_symbol = result.symbols.iter().find(|s| s.name == "counter")
-            .ok_or("expected 'counter' variable symbol")?;
+        // DocumentSymbol.name for a scalar variable includes the sigil (e.g. "$counter").
+        let var_symbol = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "$counter")
+            .ok_or("expected '$counter' variable symbol")?;
 
         // "counter" starts after "my $"
-        let _name_start_byte = source.find("counter").ok_or("name 'counter' not found in source")?;
+        let _name_start_byte =
+            source.find("counter").ok_or("name 'counter' not found in source")?;
 
         // selection_range should span just "counter", not "$counter"
         assert!(
@@ -730,7 +774,8 @@ mod tests {
         );
 
         // Verify selection_range is smaller than or equal to range
-        let sel_char_span = var_symbol.selection_range.end.character - var_symbol.selection_range.start.character;
+        let sel_char_span =
+            var_symbol.selection_range.end.character - var_symbol.selection_range.start.character;
         let range_char_span = var_symbol.range.end.character - var_symbol.range.start.character;
         assert!(
             sel_char_span <= range_char_span,
@@ -749,8 +794,12 @@ mod tests {
         let ast = must(parser.parse());
 
         let result = source_backed_document_symbols_from_ast(&ast, source);
-        let var_symbol = result.symbols.iter().find(|s| s.name == "items")
-            .ok_or("expected 'items' variable symbol")?;
+        // DocumentSymbol.name for an array variable includes the sigil (e.g. "@items").
+        let var_symbol = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "@items")
+            .ok_or("expected '@items' variable symbol")?;
 
         // "items" starts after "my @"
         let _name_start_byte = source.find("items").ok_or("name 'items' not found in source")?;
@@ -763,7 +812,8 @@ mod tests {
         );
 
         // Verify selection_range is smaller than or equal to range
-        let sel_char_span = var_symbol.selection_range.end.character - var_symbol.selection_range.start.character;
+        let sel_char_span =
+            var_symbol.selection_range.end.character - var_symbol.selection_range.start.character;
         let range_char_span = var_symbol.range.end.character - var_symbol.range.start.character;
         assert!(
             sel_char_span <= range_char_span,
@@ -777,26 +827,36 @@ mod tests {
 
     #[test]
     fn test_symbol_name_range_moose_attribute() -> Result<(), Box<dyn std::error::Error>> {
-        let source = "has name => (is => 'ro');";
+        // `use Moose;` is required for the SymbolExtractor to recognise the `has` pattern.
+        // Without framework context the `has name => ...` expression is not synthesized into
+        // a symbol.  DocumentSymbol.name for a Moose attribute is the bare attribute name
+        // (no sigil) per document_symbol_name().
+        let source = "package Foo;\nuse Moose;\nhas name => (is => 'ro');\n";
         let mut parser = Parser::new(source);
         let ast = must(parser.parse());
 
         let result = source_backed_document_symbols_from_ast(&ast, source);
-        let attr_symbol = result.symbols.iter().find(|s| s.name == "name")
+        let attr_symbol = result
+            .symbols
+            .iter()
+            .flat_map(|s| std::iter::once(s).chain(s.children.iter()))
+            .find(|s| s.name == "name")
             .ok_or("expected 'name' Moose attribute symbol")?;
 
-        // "name" starts after "has "
+        // "name" starts after "has " within the has declaration.
+        // Source layout: line 0="package Foo;", line 1="use Moose;", line 2="has name => ..."
         let _name_start_byte = source.find("name").ok_or("name 'name' not found in source")?;
 
-        // selection_range should span just "name"
+        // selection_range should span just "name" at character 4 of line 2 (after "has ").
         assert!(
-            attr_symbol.selection_range.start.line == 0,
-            "selectionRange should start at line 0, got: {:?}",
+            attr_symbol.selection_range.start.line == 2,
+            "selectionRange should start at line 2 (the 'has name' declaration), got: {:?}",
             attr_symbol.selection_range.start
         );
 
         // Verify selection_range is smaller than or equal to range
-        let sel_char_span = attr_symbol.selection_range.end.character - attr_symbol.selection_range.start.character;
+        let sel_char_span =
+            attr_symbol.selection_range.end.character - attr_symbol.selection_range.start.character;
         let range_char_span = attr_symbol.range.end.character - attr_symbol.range.start.character;
         assert!(
             sel_char_span <= range_char_span,
@@ -820,7 +880,8 @@ mod tests {
         // (in byte span, not character span, but we verify via positions)
         for symbol in &result.symbols {
             let range_span = symbol.range.end.line as i32 - symbol.range.start.line as i32;
-            let sel_span = symbol.selection_range.end.line as i32 - symbol.selection_range.start.line as i32;
+            let sel_span =
+                symbol.selection_range.end.line as i32 - symbol.selection_range.start.line as i32;
 
             assert!(
                 sel_span <= range_span,
@@ -836,7 +897,8 @@ mod tests {
                 && symbol.range.start.line == symbol.selection_range.start.line
             {
                 let range_char_span = symbol.range.end.character - symbol.range.start.character;
-                let sel_char_span = symbol.selection_range.end.character - symbol.selection_range.start.character;
+                let sel_char_span =
+                    symbol.selection_range.end.character - symbol.selection_range.start.character;
 
                 assert!(
                     sel_char_span <= range_char_span,
@@ -854,10 +916,13 @@ mod tests {
         Ok(())
     }
 
-    fn check_children_ranges(children: &[DocumentSymbol]) -> Result<(), Box<dyn std::error::Error>> {
+    fn check_children_ranges(
+        children: &[DocumentSymbol],
+    ) -> Result<(), Box<dyn std::error::Error>> {
         for child in children {
             let range_span = child.range.end.line as i32 - child.range.start.line as i32;
-            let sel_span = child.selection_range.end.line as i32 - child.selection_range.start.line as i32;
+            let sel_span =
+                child.selection_range.end.line as i32 - child.selection_range.start.line as i32;
 
             assert!(
                 sel_span <= range_span,
@@ -886,7 +951,9 @@ mod tests {
         let symbol_table = extractor.extract(&ast);
 
         // Find a symbol from the table
-        let _test_symbol = symbol_table.symbols.values()
+        let _test_symbol = symbol_table
+            .symbols
+            .values()
             .flatten()
             .find(|s| s.name == "test")
             .ok_or("expected 'test' symbol")?;
