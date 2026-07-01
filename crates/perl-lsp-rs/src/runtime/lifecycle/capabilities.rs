@@ -1109,6 +1109,39 @@ mod tests {
     }
 
     #[test]
+    fn handle_initialize_boundary_discriminator() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "textDocument": {
+                    "completion": {
+                        "completionList": {
+                            "itemDefaults": ["commitCharacters", "data"]
+                        }
+                    },
+                    "codeAction": {
+                        "tagSupport": {
+                            "valueSet": [2, 1]
+                        }
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        let caps = server.client_capabilities.lock();
+        assert!(
+            caps.completion_list_item_defaults_data_support,
+            "input that hits the boundary: item.as_str() == Some(\"data\")"
+        );
+        assert!(
+            caps.code_action_llm_generated_tag_support,
+            "input that hits the boundary: tag.as_i64() == Some(1)"
+        );
+    }
+
+    #[test]
     fn initialize_leaves_completion_list_item_defaults_data_disabled_when_absent() {
         let server = LspServer::new();
         let params = json!({
@@ -1265,6 +1298,93 @@ mod tests {
         let _ = server.handle_initialize(Some(params));
 
         assert!(!server.client_capabilities.lock().code_action_llm_generated_tag_support);
+    }
+
+    #[test]
+    fn handle_initialize_exact_error_variant() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let params = json!({ "capabilities": {} });
+
+        server.handle_initialize(Some(params.clone()))?;
+        let err = match server.handle_initialize(Some(params)) {
+            Err(err) => err,
+            Ok(_) => return Err("second initialize should fail with InvalidRequest".into()),
+        };
+
+        assert_eq!(err.code, -32600, "duplicate initialize must return InvalidRequest");
+        assert_eq!(
+            err.message, "initialize may only be sent once",
+            "duplicate initialize must preserve the exact error message"
+        );
+        assert!(err.data.is_none(), "duplicate initialize error must not attach data");
+
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_prefers_first_supported_position_encoding() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-32", "utf-8", "utf-16"]
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        assert!(
+            matches!(
+                server.client_capabilities.lock().position_encoding,
+                crate::textdoc::PosEnc::Utf8
+            ),
+            "position encoding negotiation should skip unsupported entries and pick the first supported encoding"
+        );
+    }
+
+    #[test]
+    fn initialize_accepts_utf16_when_it_is_first_supported_position_encoding() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-16", "utf-8"]
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        assert!(
+            matches!(
+                server.client_capabilities.lock().position_encoding,
+                crate::textdoc::PosEnc::Utf16
+            ),
+            "position encoding negotiation should preserve utf-16 when it is the first supported client preference"
+        );
+    }
+
+    #[test]
+    fn initialize_falls_back_to_utf16_when_position_encodings_have_no_supported_values() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-32", "utf-7"]
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        assert!(
+            matches!(
+                server.client_capabilities.lock().position_encoding,
+                crate::textdoc::PosEnc::Utf16
+            ),
+            "unsupported position encoding lists must fall back to utf-16"
+        );
     }
 
     #[test]
