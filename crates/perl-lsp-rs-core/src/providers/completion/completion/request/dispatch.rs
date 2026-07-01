@@ -511,6 +511,41 @@ mod indirect_helper_tests {
     }
 
     #[test]
+    fn is_indirect_method_word_call_presence_observer() {
+        assert_eq!(is_indirect_method_word("new"), true, "input that reaches call word.chars()");
+        assert_eq!(
+            is_indirect_method_word(""),
+            false,
+            "input that reaches call chars.next() and takes the empty-word branch"
+        );
+        assert_eq!(
+            is_indirect_method_word("Foo"),
+            false,
+            "input that reaches call first.is_ascii_lowercase() and rejects uppercase receivers"
+        );
+        assert_eq!(
+            is_indirect_method_word("_private"),
+            true,
+            "input that reaches call first.is_ascii_lowercase() and accepts underscore methods"
+        );
+        assert_eq!(
+            is_indirect_method_word("new::Child"),
+            false,
+            "input that reaches call word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')"
+        );
+        assert_eq!(
+            is_indirect_method_word("print"),
+            false,
+            "input that reaches call INDIRECT_METHOD_EXCLUDED.contains(&word)"
+        );
+        assert_eq!(
+            is_indirect_method_word("length"),
+            false,
+            "input that reaches call perl_lexer::builtins::builtin_signatures_phf::is_builtin(word)"
+        );
+    }
+
+    #[test]
     fn is_indirect_method_word_rejects_non_method_words() {
         // Uppercase-initial (classes / filehandles) are receivers, not methods.
         assert!(!is_indirect_method_word("Foo"));
@@ -540,6 +575,30 @@ mod indirect_helper_tests {
     }
 
     #[test]
+    fn indirect_word_end_call_presence_observer() {
+        assert_eq!(
+            indirect_word_end("process $obj", 0),
+            7,
+            "input that reaches call source.as_bytes()"
+        );
+        assert_eq!(
+            indirect_word_end("process $obj", 9),
+            12,
+            "input that reaches call from.min(bytes.len())"
+        );
+        assert_eq!(
+            indirect_word_end("process $obj", 7),
+            7,
+            "input that rejects non-word boundary after bytes[i].is_ascii_alphanumeric()"
+        );
+        assert_eq!(
+            indirect_word_end("run_more Child", 0),
+            8,
+            "input that reaches call bytes[i].is_ascii_alphanumeric()"
+        );
+    }
+
+    #[test]
     fn parse_indirect_receiver_reads_uppercase_class() {
         // Grips dispatch.rs:231 — the uppercase-class branch.
         assert_eq!(parse_indirect_receiver("new Child", 3), Some("Child".to_string()));
@@ -553,6 +612,35 @@ mod indirect_helper_tests {
     fn parse_indirect_receiver_reads_scalar_variable() {
         assert_eq!(parse_indirect_receiver("process $obj", 7), Some("$obj".to_string()));
         assert_eq!(parse_indirect_receiver("m $self_ref", 1), Some("$self_ref".to_string()));
+    }
+
+    #[test]
+    fn parse_indirect_receiver_call_presence_observer() {
+        assert_eq!(
+            parse_indirect_receiver("process $obj", 7),
+            Some("$obj".to_string()),
+            "input that reaches call source.as_bytes()"
+        );
+        assert_eq!(
+            parse_indirect_receiver("process $obj_2", 7),
+            Some("$obj_2".to_string()),
+            "input that reaches call bytes[i].is_ascii_alphanumeric()"
+        );
+        assert_eq!(
+            parse_indirect_receiver("process $", 7),
+            None,
+            "input that hits scalar boundary i == id_start"
+        );
+        assert_eq!(
+            parse_indirect_receiver("new Child::Package", 3),
+            Some("Child::Package".to_string()),
+            "input that reaches class scan boundary bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b':'"
+        );
+        assert_eq!(
+            parse_indirect_receiver("new child", 3),
+            None,
+            "input that rejects lowercase receiver at bytes[i].is_ascii_uppercase()"
+        );
     }
 
     #[test]
