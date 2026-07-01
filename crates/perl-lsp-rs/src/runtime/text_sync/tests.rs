@@ -2252,9 +2252,11 @@ fn test_incremental_doc_resolution_covers_reinit_error_and_cancelled()
         reinit_called.set(true);
         None
     });
-    assert_eq!(
-        cancelled,
-        Err(IncrementalDocCancelled),
+    // `matches!` rather than `assert_eq!`: the `Ok` payload
+    // `Option<Box<IncrementalDocument>>` is not `PartialEq`, so the whole
+    // `Result` cannot be compared by equality.
+    assert!(
+        matches!(cancelled, Err(IncrementalDocCancelled)),
         "input that hits the boundary: IncrementalDocUpdate::Cancelled"
     );
     assert!(!reinit_called.get(), "cancelled update must return before calling reinit");
