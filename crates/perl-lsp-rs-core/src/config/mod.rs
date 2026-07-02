@@ -1875,6 +1875,59 @@ profile = "recommended"
         assert_eq!(config.formatting_engine, FormatterMode::Native);
     }
 
+    // Native-first formatter guards. The formatter engine must default to
+    // native and only ever select external `perltidy` when explicitly
+    // configured — merely having `perltidy` on PATH must not change the
+    // default. These tests lock that contract against future regressions
+    // ("auto-use perltidy if present").
+
+    #[test]
+    fn default_formatter_engine_is_native() {
+        let config = ServerConfig::default();
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
+        assert!(config.perltidy_enabled, "formatting is enabled by default via the native engine");
+    }
+
+    #[test]
+    fn external_perltidy_is_selected_only_by_explicit_engine() {
+        // `parse_formatter_mode` is a pure mapping with no environment/PATH
+        // probe: the external engine is reachable only through explicit config.
+        assert_eq!(parse_formatter_mode("external-perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(parse_formatter_mode("external-legacy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(parse_formatter_mode("perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(parse_formatter_mode("native"), Some(FormatterMode::Native));
+        // Unknown values do not silently select external; the caller keeps its
+        // current value (native by default).
+        assert_eq!(parse_formatter_mode("definitely-not-an-engine"), None);
+        assert_eq!(parse_formatter_mode(""), None);
+    }
+
+    #[test]
+    fn perltidy_on_path_does_not_change_default_formatter_engine() {
+        // The default engine is a fixed value, not derived from whether
+        // `perltidy` exists on PATH. Applying config that does not name an
+        // engine leaves the native default intact.
+        let mut config = ServerConfig::default();
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
+        config.update_from_value(&serde_json::json!({
+            "formatting": { "enabled": true }
+        }));
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
+    }
+
+    #[test]
+    fn perltidyrc_profile_does_not_force_external_formatting() {
+        // A `.perltidyrc` profile is usable for compatibility reporting or an
+        // explicit external mode, but setting it must NOT switch the engine
+        // away from native.
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "formatting": { "profile": "/path/to/.perltidyrc" }
+        }));
+        assert_eq!(config.perltidy_profile, Some("/path/to/.perltidyrc".to_string()));
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
+    }
+
     #[test]
     fn server_config_accepts_native_critic_engine() {
         let mut config = ServerConfig::default();
