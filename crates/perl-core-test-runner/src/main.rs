@@ -1,4 +1,5 @@
 //! Compatibility runner invoked as `t/perl` by an upstream Perl core harness.
+//! TAP invariant: emit_tap must complete before context-record writes begin.
 //! Context-record emission is append-only; a write failure does not corrupt TAP state.
 
 // TAP is the process protocol for this binary.
