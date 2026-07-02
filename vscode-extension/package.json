@@ -316,8 +316,8 @@
             "default": false,
             "scope": "resource",
             "order": 40,
-            "description": "Enable native critic diagnostics.",
-            "markdownDescription": "Enable native `perl-lsp` critic diagnostics. External `perlcritic` is used only when an explicit legacy/external critic engine is selected."
+            "description": "Enable external perlcritic diagnostics. Native critic diagnostics are on by default; this setting only takes effect when the critic engine is set to legacy in .perl-lsp.toml (the perlcritic binary must then be on PATH).",
+            "markdownDescription": "Enable external `perlcritic` diagnostics. Native critic diagnostics are always on by default; this setting only takes effect when `[critic].engine = \"legacy\"` is set in `.perl-lsp.toml`, in which case the `perlcritic` binary must be on `PATH`."
           },
           "perl-lsp.perlcritic.severity": {
             "type": "number",
