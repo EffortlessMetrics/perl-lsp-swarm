@@ -474,9 +474,14 @@ fn read_tar_gz_entries(path: &Path) -> Result<Vec<ArchiveEntry>> {
         }
         let mode = entry.header().mode().unwrap_or(0);
         let path_in_tar = entry.path().context("decoding tar entry path")?;
+        // Derive both fields from the same slash-normalized path so a tar member
+        // stored with backslashes (`pkg\bin\perltidy`) cannot yield a `base_name`
+        // that bypasses the native-stack negative check.
         let full_path = path_in_tar.to_string_lossy().replace('\\', "/");
-        if let Some(base) = path_in_tar.file_name().and_then(|n| n.to_str()) {
-            out.push(ArchiveEntry { base_name: base.to_string(), path: full_path, mode });
+        if let Some(base_name) =
+            full_path.rsplit('/').next().filter(|base| !base.is_empty()).map(str::to_string)
+        {
+            out.push(ArchiveEntry { base_name, path: full_path, mode });
         }
     }
     Ok(out)
@@ -1051,6 +1056,42 @@ mod tests {
         assert!(!violations.iter().any(|v| v.message.contains("missing required binary")));
         assert!(!violations.iter().any(|v| v.message.contains("checksum mismatch")));
         assert!(!violations.iter().any(|v| v.message.contains("not listed")));
+        Ok(())
+    }
+
+    #[test]
+    fn tar_entry_with_backslash_path_is_normalized_and_flagged() -> Result<()> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let dir = tempfile::tempdir()?;
+        let archive = dir.path().join("weird.tar.gz");
+        let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
+        {
+            let mut builder = tar::Builder::new(&mut gz);
+            let content: &[u8] = b"x";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            // A member stored with backslash separators must not be able to hide
+            // a forbidden binary from the base_name-based match.
+            builder.append_data(&mut header, "pkg\\bin\\perltidy", content)?;
+            builder.finish()?;
+        }
+        fs::write(&archive, gz.finish()?)?;
+
+        let entries = read_archive_entries(&archive, ".tar.gz")?;
+        assert!(
+            entries.iter().any(|e| e.base_name == "perltidy" && e.path == "pkg/bin/perltidy"),
+            "backslash tar member must normalize to base_name `perltidy`: {entries:?}"
+        );
+        let mut violations = Vec::new();
+        check_no_external_tooling("weird.tar.gz", &entries, &mut violations);
+        assert!(
+            violations.iter().any(|v| v.message.contains("perltidy")),
+            "normalized backslash member must be flagged: {violations:?}"
+        );
         Ok(())
     }
 
