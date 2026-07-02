@@ -1117,6 +1117,12 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
         //
         // This covers `eval "sub NAME { ... }"` patterns where the extractor
         // has emitted an OccurrenceFact with entity name == NAME.
+        //
+        // Order awareness (mirrors Path 1): only suppress when the eval-sub
+        // declaration's anchor `span_start_byte` is at or before `byte_offset`.
+        // This ensures `print foo;` followed by `eval "sub foo { }"` is NOT
+        // suppressed — the declaration comes after the usage.
+        // Fail closed: if the anchor cannot be found, do not suppress.
         let shard = self.shard_for_file(file_id)?;
 
         for occurrence in &shard.occurrences {
@@ -1137,7 +1143,20 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
             });
 
             if entity_matches {
-                return Some(DynamicCallableEvidence::EvalSub { occurrence: occurrence.clone() });
+                // Order check: look up the occurrence's anchor to get its byte position.
+                // Fail closed when the anchor is missing — no suppression.
+                let Some(anchor) = shard.anchors.iter().find(|a| a.id == occurrence.anchor_id)
+                else {
+                    continue;
+                };
+                // Suppress only when the eval-sub declaration precedes the usage site.
+                if anchor.span_start_byte <= byte_offset {
+                    return Some(DynamicCallableEvidence::EvalSub {
+                        occurrence: occurrence.clone(),
+                    });
+                }
+                // Declaration is after the usage — keep looking; there may be an
+                // earlier occurrence of the same name (unlikely but correct).
             }
         }
 
