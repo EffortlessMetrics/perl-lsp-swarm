@@ -171,9 +171,56 @@ fn cli_parse_failure_returns_nonzero_with_bucket() -> Result<()> {
 }
 
 #[test]
-fn cli_unsupported_mode_reports_internal_failure() -> Result<()> {
+fn cli_compile_inline_source_emits_tap_and_context() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let context = temp.path().join("records.jsonl");
+
     let output = Command::new(runner())
         .env("PERL_LSP_HARNESS_MODE", "compile")
+        .env("PERL_LSP_HARNESS_CONTEXT", &context)
+        .args(["-e", "my $x = 1;"])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("runner should pass compile mode for clean inline source");
+    }
+    assert_eq!(String::from_utf8(output.stdout)?, "1..1\nok 1 - compile -e\n");
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+
+    let record = read_record(&context)?;
+    assert_eq!(record["schema_version"], "perl_core_harness.runner_record.v1");
+    assert_eq!(record["mode"], "compile");
+    assert_eq!(record["path"], "-e");
+    assert_eq!(record["status"], "pass");
+    assert_eq!(record["assertions_passed"], 1);
+    assert_eq!(record["assertions_total"], 1);
+    assert!(record["bucket"].is_null());
+    assert!(record["first_diagnostic"].is_null());
+    Ok(())
+}
+
+#[test]
+fn cli_compile_failure_returns_nonzero_with_bucket() -> Result<()> {
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "compile")
+        .args(["-e", "require $module;"])
+        .output()?;
+
+    if output.status.success() {
+        bail!("runner should fail compile mode for unsupported dynamic boundary");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("1..1\nnot ok 1 - compile -e\n"));
+    assert!(stdout.contains("# bucket: compile_effect\n"));
+    assert!(stdout.contains("require target is not statically known"));
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+    Ok(())
+}
+
+#[test]
+fn cli_unsupported_mode_reports_internal_failure() -> Result<()> {
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "execute")
         .args(["-e", "my $x = 1;"])
         .output()?;
 
@@ -183,7 +230,7 @@ fn cli_unsupported_mode_reports_internal_failure() -> Result<()> {
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("not ok 1 - perl-core-test-runner internal failure"));
     assert!(stdout.contains("# bucket: cli_switch"));
-    assert!(stdout.contains("only supports parse mode"));
+    assert!(stdout.contains("execute mode is not implemented"));
     assert_eq!(String::from_utf8(output.stderr)?, "");
     Ok(())
 }
