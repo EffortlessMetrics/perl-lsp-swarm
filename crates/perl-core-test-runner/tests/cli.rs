@@ -218,6 +218,43 @@ fn cli_compile_failure_returns_nonzero_with_bucket() -> Result<()> {
 }
 
 #[test]
+fn cli_compile_parse_failure_returns_nonzero_with_parse_bucket() -> Result<()> {
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "compile")
+        .args(["-e", "my $x = ;"])
+        .output()?;
+
+    if output.status.success() {
+        bail!("runner should fail compile mode when parsing fails");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("1..1\nnot ok 1 - compile -e\n"));
+    assert!(stdout.contains("# bucket: parse_recovery\n"));
+    assert!(stdout.contains("# first diagnostic:"));
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+    Ok(())
+}
+
+#[test]
+fn cli_compile_unreadable_file_reports_source_decode_bucket() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let missing = temp.path().join("base").join("missing.t");
+
+    let output =
+        Command::new(runner()).env("PERL_LSP_HARNESS_MODE", "compile").arg(&missing).output()?;
+
+    if output.status.success() {
+        bail!("missing file should fail closed in compile mode");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("1..1\nnot ok 1 - compile "));
+    assert!(stdout.contains("# bucket: source_decode"));
+    assert!(stdout.contains("reading Perl test script"));
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+    Ok(())
+}
+
+#[test]
 fn cli_unsupported_mode_reports_internal_failure() -> Result<()> {
     let output = Command::new(runner())
         .env("PERL_LSP_HARNESS_MODE", "execute")
@@ -231,6 +268,24 @@ fn cli_unsupported_mode_reports_internal_failure() -> Result<()> {
     assert!(stdout.contains("not ok 1 - perl-core-test-runner internal failure"));
     assert!(stdout.contains("# bucket: cli_switch"));
     assert!(stdout.contains("execute mode is not implemented"));
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+    Ok(())
+}
+
+#[test]
+fn cli_unknown_mode_reports_internal_failure() -> Result<()> {
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "typo-mode")
+        .args(["-e", "my $x = 1;"])
+        .output()?;
+
+    if output.status.success() {
+        bail!("unknown mode should fail closed");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("not ok 1 - perl-core-test-runner internal failure"));
+    assert!(stdout.contains("# bucket: cli_switch"));
+    assert!(stdout.contains("unsupported perl-core-test-runner mode: typo-mode"));
     assert_eq!(String::from_utf8(output.stderr)?, "");
     Ok(())
 }
