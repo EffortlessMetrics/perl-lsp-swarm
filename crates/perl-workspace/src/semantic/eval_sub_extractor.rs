@@ -880,6 +880,124 @@ mod tests {
     }
 
     #[test]
+    fn package_switch_mid_eval_via_ast_parse() -> Result<(), Box<dyn std::error::Error>> {
+        // Call-observation test: exercises the real production entry point
+        // (extract_eval_sub_boundaries -> walk -> extract_from_eval_string) with
+        // a mid-eval package switch, rather than calling extract_from_eval_string
+        // directly with a synthetic string. Covers the package-active path
+        // through the actual AST-driven `Eval` node.
+        let file_id = FileId(28);
+        let triples = parse_and_extract(
+            r#"eval "package A; sub make_a { 1 } package B; sub make_b { 2 }";"#,
+            file_id,
+        );
+
+        assert_eq!(triples.len(), 2, "should extract two subs from two packages");
+        let names: Vec<&str> = triples.iter().map(|(e, _, _)| e.canonical_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["A::make_a", "B::make_b"],
+            "each sub must be attributed to its own active package, in source order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sub_before_package_remains_unscoped_via_ast_parse() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Call-observation test for the unscoped-before-package path: no `package`
+        // keyword precedes the `sub`, so the active_package lookup (rfind over an
+        // empty/irrelevant package_decls list) must yield None and the canonical
+        // name must remain the bare sub name.
+        let file_id = FileId(29);
+        let triples = parse_and_extract(r#"eval "sub bare_helper { 42 }";"#, file_id);
+
+        assert_eq!(triples.len(), 1, "should extract exactly one sub");
+        assert_eq!(
+            triples[0].0.canonical_name, "bare_helper",
+            "sub with no preceding package declaration must be unscoped"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn three_packages_middle_sub_uses_nearest_preceding_package()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Direct test of the multi-package rfind path in extract_from_eval_string:
+        // with three package declarations, a sub positioned between the 2nd and
+        // 3rd package must attribute to the 2nd (nearest preceding), not the 3rd
+        // (which comes later in the string and must be skipped by `rfind`'s
+        // predicate, not blindly picked as "the last package in the list").
+        let file_id = FileId(30);
+        let triples = {
+            let mut out = Vec::new();
+            extract_from_eval_string(
+                "package A; sub a { 1 } package B; sub b { 2 } package C; sub c { 3 }",
+                0,
+                70,
+                file_id,
+                &mut out,
+            );
+            out
+        };
+
+        assert_eq!(triples.len(), 3, "should extract three subs");
+        let names: Vec<&str> = triples.iter().map(|(e, _, _)| e.canonical_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["A::a", "B::b", "C::c"],
+            "each sub must attribute to the nearest preceding package, not a later one"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn three_packages_middle_sub_via_ast_parse() -> Result<(), Box<dyn std::error::Error>> {
+        // Same scenario as above but via the real production entry point
+        // (extract_eval_sub_boundaries -> walk), to confirm the rfind-skip
+        // behavior holds through the full AST-driven call path, not just the
+        // directly-invoked helper.
+        let file_id = FileId(31);
+        let triples = parse_and_extract(
+            r#"eval "package A; sub a { 1 } package B; sub b { 2 } package C; sub c { 3 }";"#,
+            file_id,
+        );
+
+        assert_eq!(triples.len(), 3, "should extract three subs");
+        let names: Vec<&str> = triples.iter().map(|(e, _, _)| e.canonical_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["A::a", "B::b", "C::c"],
+            "middle sub must attribute to its nearest preceding package via the real AST path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_packages_via_ast_parse_produce_distinct_ids()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Call-observation test for the id-hash-includes-qualified-name path:
+        // two subs with the *same* bare name but different active packages,
+        // reached through the real AST/eval-string pipeline, must resolve to
+        // distinct canonical names and distinct entity IDs (stable_id folds the
+        // qualified name into the hash, so `Foo::bar` and `Bar::bar` differ).
+        let file_id = FileId(32);
+        let triples = parse_and_extract(
+            r#"eval "package Foo; sub bar { 1 } package Bar; sub bar { 2 }";"#,
+            file_id,
+        );
+
+        assert_eq!(triples.len(), 2, "should extract two subs");
+        assert_eq!(triples[0].0.canonical_name, "Foo::bar");
+        assert_eq!(triples[1].0.canonical_name, "Bar::bar");
+        assert_ne!(
+            triples[0].0.id, triples[1].0.id,
+            "Foo::bar and Bar::bar reached via the real AST path must have distinct entity IDs"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn package_qualified_ids_differ_from_unqualified() -> Result<(), Box<dyn std::error::Error>> {
         // Foo::bar and bar must produce different IDs even at the same node position.
         let mut out_qualified = Vec::new();
