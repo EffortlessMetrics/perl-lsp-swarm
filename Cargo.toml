@@ -81,6 +81,7 @@ members = [
     "crates/tree-sitter-perl-c",
     "crates/tree-sitter-perl-rs",
     "crates/perl-ci-hygiene",
+    "crates/perl-kwalitee",
     "xtask",
 ]
 
