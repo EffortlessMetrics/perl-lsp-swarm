@@ -1239,6 +1239,92 @@ mod tests {
     }
 
     #[test]
+    fn build_packet_t_file_ids_resolve_when_root_has_ancestor_t() {
+        // #3361 regression: `collect_t_files` used `split_once("/t/")` to derive
+        // the repo-relative path for each `.t` file. When `root` sits under an
+        // ancestor directory named `t` (e.g. `target/ripr-3361-fixtures/t/proj/…`),
+        // the heuristic matched the ancestor segment and produced a corrupted path,
+        // causing `test.file_id`, `verify_command.test_id`, and
+        // `dynamic_boundary.file_id` to dangle from the `files[]` / `tests[]`
+        // facts that `emit_files_and_owners` derived via `strip_prefix(root)`.
+        // Fix: `collect_t_files` now accepts `root` and uses `strip_prefix(root)`,
+        // matching `collect_pm_files_recursive` which was fixed for the same class
+        // in #3358 / #3342.
+        let root = "target/ripr-3361-fixtures/t/proj/ancestor-t-root";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(format!("{root}/lib/Foo.pm"), "package Foo;\nsub run { }\n1;\n")
+            .expect("write pm");
+        // `eval {` triggers a dynamic_boundary fact so the dynamic_boundaries[]
+        // referential check below is non-trivial.
+        std::fs::write(
+            format!("{root}/t/Foo.t"),
+            "use Test::More;\nuse Foo;\neval { ok(Foo::run(), 'run ok') };\ndone_testing;\n",
+        )
+        .expect("write t");
+
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "tests,files",
+            diff: None,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+
+        let file_ids: std::collections::HashSet<&str> = p["files"]
+            .as_array()
+            .expect("files[]")
+            .iter()
+            .filter_map(|f| f["file_id"].as_str())
+            .collect();
+        assert!(!file_ids.is_empty(), "files[] must be non-empty for this fixture");
+
+        // test.file_id must resolve in files[].
+        let tests = p["tests"].as_array().expect("tests[]");
+        assert!(!tests.is_empty(), "fixture must produce at least one test");
+        for test in tests {
+            let fid = test["file_id"].as_str().expect("test.file_id is a string");
+            assert!(
+                file_ids.contains(fid),
+                "test.file_id {fid:?} must resolve in files[] even when root has an ancestor `t` \
+                 segment; files={file_ids:?}"
+            );
+        }
+
+        // verify_command.test_id must resolve in tests[].
+        let test_ids: std::collections::HashSet<&str> =
+            tests.iter().filter_map(|t| t["test_id"].as_str()).collect();
+        let cmds = p["verify_commands"].as_array().expect("verify_commands[]");
+        assert!(!cmds.is_empty(), "fixture must produce at least one verify_command");
+        for cmd in cmds {
+            let tid = cmd["test_id"].as_str().expect("verify_command.test_id is a string");
+            assert!(
+                test_ids.contains(tid),
+                "verify_command.test_id {tid:?} must resolve in tests[] even when root has \
+                 ancestor `t` segment; tests={test_ids:?}"
+            );
+        }
+
+        // dynamic_boundary.file_id (triggered by `eval {` in Foo.t) must resolve
+        // in files[].
+        let boundaries = p["dynamic_boundaries"].as_array().expect("dynamic_boundaries[]");
+        assert!(!boundaries.is_empty(), "eval {{}} in Foo.t must produce at least one boundary");
+        for boundary in boundaries {
+            if let Some(fid) = boundary["file_id"].as_str() {
+                assert!(
+                    file_ids.contains(fid),
+                    "dynamic_boundary.file_id {fid:?} must resolve in files[] even when root \
+                     has ancestor `t` segment; files={file_ids:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn build_packet_is_referentially_closed_across_fact_class_subsets() {
         // Every fact reference must resolve within the packet, and no test-side
         // provenance entry may be an orphan — for any fact-class subset. Guards

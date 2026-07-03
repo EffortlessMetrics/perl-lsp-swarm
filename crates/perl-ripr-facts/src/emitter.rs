@@ -94,8 +94,9 @@ pub(crate) fn emit_tests_and_oracles(
     let mut provenance = Vec::new();
     let mut limitations = Vec::new();
 
-    let t_dir = std::path::Path::new(root).join("t");
-    let mut t_files = collect_t_files(&t_dir);
+    let root_path = std::path::Path::new(root);
+    let t_dir = root_path.join("t");
+    let mut t_files = collect_t_files(&t_dir, root_path);
     // Deterministic order: sort discovered test files by repo-relative path.
     t_files.sort_by(|a, b| a.1.cmp(&b.1));
 
@@ -344,7 +345,18 @@ fn find_framework_use(node: &Node, best: &mut Option<(usize, &'static str, (usiz
 }
 
 /// Collect all `.t` files under a directory. Returns (full_path, relative_path, content).
-fn collect_t_files(t_dir: &std::path::Path) -> Vec<(String, String, String)> {
+///
+/// `relative_path` is derived via `strip_prefix(root)` — byte-identical to the path
+/// [`emit_files_and_owners`] derives for the same file. #3361: the previous
+/// `split_once("/t/")` heuristic matched the *first* `/t/` ancestor segment when
+/// `root` sits under an ancestor directory named `t` (e.g. `t/proj/...`,
+/// `fixtures/t/something`), producing a corrupted repo-relative path and dangling
+/// `test.file_id` / `boundary.file_id` references. `strip_prefix(root)` is
+/// unambiguous and matches the derivation used by `emit_files_and_owners`.
+fn collect_t_files(
+    t_dir: &std::path::Path,
+    root: &std::path::Path,
+) -> Vec<(String, String, String)> {
     let mut result = Vec::new();
     let Ok(entries) = std::fs::read_dir(t_dir) else {
         return result;
@@ -359,16 +371,16 @@ fn collect_t_files(t_dir: &std::path::Path) -> Vec<(String, String, String)> {
             if is_symlink {
                 continue;
             }
-            result.extend(collect_t_files(&path));
+            result.extend(collect_t_files(&path, root));
         } else if path.extension().is_some_and(|ext| ext == "t") {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            // Relative path from the workspace root (forward-slash).
-            let relative = path.to_string_lossy().replace('\\', "/");
-            // Strip everything before "t/" to make it repo-relative.
-            let relative =
-                relative.split_once("/t/").map(|(_, rest)| format!("t/{rest}")).unwrap_or(relative);
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(path.as_path())
+                .to_string_lossy()
+                .replace('\\', "/");
             result.push((path.to_string_lossy().to_string(), relative, content));
         }
     }
@@ -481,8 +493,9 @@ pub(crate) fn emit_relations_and_discriminators(
     // Collect + parse every `.t` file once, hoisted and reused by both the
     // relation loop below and the discriminator loop further down (which
     // previously called `collect_t_files` a second time).
-    let t_dir = std::path::Path::new(root).join("t");
-    let mut t_files = collect_t_files(&t_dir);
+    let root_path = std::path::Path::new(root);
+    let t_dir = root_path.join("t");
+    let mut t_files = collect_t_files(&t_dir, root_path);
     t_files.sort_by(|a, b| a.1.cmp(&b.1));
 
     let t_call_facts: std::collections::HashMap<&str, TestCallFacts> = t_files
@@ -794,9 +807,10 @@ pub(crate) fn emit_boundaries_and_commands(root: &str) -> (Vec<Value>, Vec<Value
     let mut verify_commands = Vec::new();
 
     // Scan .pm files for dynamic boundaries.
-    let pm_files = collect_pm_files(std::path::Path::new(root));
-    let t_dir = std::path::Path::new(root).join("t");
-    let t_files = collect_t_files(&t_dir);
+    let root_path = std::path::Path::new(root);
+    let pm_files = collect_pm_files(root_path);
+    let t_dir = root_path.join("t");
+    let t_files = collect_t_files(&t_dir, root_path);
 
     let mut boundary_counter = 0usize;
 
