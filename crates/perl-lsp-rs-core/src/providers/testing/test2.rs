@@ -157,7 +157,7 @@ const API: &[&str] = &["intercept", "context"];
 /// pair.
 const SUBTEST_OWN: &[&str] = &["subtest_streamed", "subtest_buffered"];
 
-/// The `subtest` name as exposed by the `Test2::V0`/`Test2::V1` bundles.
+/// The `subtest` name as exposed by the `Test2::V0` bundle.
 const SUBTEST_BUNDLE: &[&str] = &["subtest"];
 
 /// The complete `Test2::V0` default `@EXPORT` set, composed from the tool
@@ -189,6 +189,12 @@ static V0_DEFAULT: Lazy<Vec<&'static str>> = Lazy::new(|| {
     v
 });
 
+/// `Test2::V1`'s sole default export: the `T2()` handle. Unlike `Test2::V0`,
+/// `Test2::V1` does NOT export the tools as bare subs — they are methods on the
+/// returned handle (e.g. `T2->ok(...)`, `T2->is(...)`). Oracle: metacpan
+/// `Test2::V1` ("The only default export in Test2::V1 is `T2()`").
+const V1_DEFAULT: &[&str] = &["T2"];
+
 // ---------------------------------------------------------------------------
 // Module classification.
 // ---------------------------------------------------------------------------
@@ -217,10 +223,16 @@ pub fn is_test2_bundle(module: &str) -> bool {
 /// imports, otherwise unknown" — callers should not emit unknown-sub
 /// diagnostics for such modules.
 pub fn module_default_exports(module: &str) -> Option<&'static [&'static str]> {
-    // Bundles: V0/V1 share the recommended default set. Other bundles are
-    // recognized as strict/warnings providers but not enumerated.
-    if matches!(module, "Test2::V0" | "Test2::V1") {
+    // `Test2::V0` re-exports its tools as bare subs — the recommended default set.
+    if module == "Test2::V0" {
         return Some(V0_DEFAULT.as_slice());
+    }
+    // `Test2::V1` is a bundle (it enables strict/warnings, see `is_test2_bundle`)
+    // but — unlike V0 — its ONLY default export is the `T2()` handle; the tools
+    // are methods on that handle, not bare in-scope subs. Oracle: metacpan
+    // `Test2::V1`.
+    if module == "Test2::V1" {
+        return Some(V1_DEFAULT);
     }
     let group: &'static [&'static str] = match module {
         "Test2::Tools::Basic" => BASIC,
