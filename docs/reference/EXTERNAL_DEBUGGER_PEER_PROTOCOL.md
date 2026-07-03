@@ -61,6 +61,7 @@ Three message shapes, tagged by `type` (identical convention to DAP):
     "capabilities": {
       "canContinue": true,
       "canStep": true,
+      "canPause": true,
       "canEvaluate": true,
       "canSetBreakpoints": true,
       "canSetFunctionBreakpoints": true,
@@ -116,6 +117,7 @@ peer that cannot step never causes the editor to show a step button that fails.
 | `canListVariables`         | variables + scopes                     |
 | `canListStack`             | stackTrace                             |
 | `canStep`                  | continue / next / stepIn / stepOut     |
+| `canPause`                 | pause (async interrupt — separate from `canStep`) |
 
 A v1 peer never negotiates logpoints, hit-conditions, data breakpoints, or
 set-variable; those stay off.

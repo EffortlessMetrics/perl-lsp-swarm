@@ -106,6 +106,9 @@ struct Shared {
     events: Mutex<Vec<DebugEvent>>,
     peer_caps: Mutex<Option<PeerReportedCapabilities>>,
     handshake_done: Mutex<bool>,
+    /// Set when the handshake is rejected (e.g. protocol-version mismatch), so
+    /// `initialize()` returns a clear error instead of an opaque timeout.
+    handshake_error: Mutex<Option<String>>,
     handshake_cv: Condvar,
     host_seq: AtomicI64,
     closed: AtomicBool,
@@ -121,10 +124,20 @@ impl Shared {
     fn write_message(&self, msg: &PeerMessage) -> BackendResult<()> {
         let bytes = encode_message(msg).map_err(|e| BackendError::Protocol(e.to_string()))?;
         let mut guard = lock(&self.write);
-        guard
+        // A write timeout is set on the socket, so a peer that stops draining its
+        // receive buffer (flow control, no clean close) bounds this write instead
+        // of blocking `write_all` indefinitely while holding the mutex — which
+        // would wedge `request()` and `Drop::join()`. On any write failure the
+        // connection is dead: mark it closed so subsequent ops fail fast.
+        let result = guard
             .write_all(&bytes)
             .and_then(|()| guard.flush())
-            .map_err(|e| BackendError::Transport(e.to_string()))
+            .map_err(|e| BackendError::Transport(e.to_string()));
+        drop(guard);
+        if result.is_err() {
+            self.mark_closed();
+        }
+        result
     }
 
     fn mark_closed(&self) {
@@ -156,6 +169,11 @@ impl ExternalDebuggerPeerBackend {
         stream
             .set_read_timeout(Some(Duration::from_millis(200)))
             .map_err(|e| BackendError::Transport(e.to_string()))?;
+        // Bounded write timeout so a stalled (not closed) peer cannot block a
+        // writer forever while holding the write mutex.
+        write
+            .set_write_timeout(Some(timeout))
+            .map_err(|e| BackendError::Transport(e.to_string()))?;
 
         let shared = Arc::new(Shared {
             write: Mutex::new(write),
@@ -163,6 +181,7 @@ impl ExternalDebuggerPeerBackend {
             events: Mutex::new(Vec::new()),
             peer_caps: Mutex::new(None),
             handshake_done: Mutex::new(false),
+            handshake_error: Mutex::new(None),
             handshake_cv: Condvar::new(),
             host_seq: AtomicI64::new(0),
             closed: AtomicBool::new(false),
@@ -235,6 +254,9 @@ impl ExternalDebuggerPeerBackend {
         let mut done = lock(&self.shared.handshake_done);
         let deadline = Instant::now() + self.timeout;
         while !*done {
+            if let Some(reason) = lock(&self.shared.handshake_error).clone() {
+                return Err(BackendError::Protocol(reason));
+            }
             if self.shared.closed.load(Ordering::SeqCst) {
                 return Err(BackendError::NotConnected);
             }
@@ -565,11 +587,37 @@ fn handle_incoming(shared: &Arc<Shared>, msg: PeerMessage) {
 fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
     match req.command.as_str() {
         command::HELLO => {
-            // Record the peer's capabilities and complete the handshake.
-            if let Some(args) = req.arguments.clone() {
-                if let Ok(hello) = serde_json::from_value::<HelloArgs>(args) {
-                    *lock(&shared.peer_caps) = Some(hello.capabilities);
-                }
+            // Parse the hello; reject an unfamiliar protocol version rather than
+            // guess (per peer_protocol::PROTOCOL_VERSION's contract).
+            let hello =
+                req.arguments.clone().and_then(|a| serde_json::from_value::<HelloArgs>(a).ok());
+            let rejection = match &hello {
+                None => Some("malformed peer/hello arguments".to_string()),
+                Some(h) if h.protocol_version != PROTOCOL_VERSION => Some(format!(
+                    "unsupported peer protocol version {:?}; host speaks {:?}",
+                    h.protocol_version, PROTOCOL_VERSION
+                )),
+                Some(_) => None,
+            };
+
+            if let Some(reason) = rejection {
+                let resp = PeerMessage::Response(PeerResponse {
+                    seq: shared.next_host_seq(),
+                    request_seq: req.seq,
+                    success: false,
+                    command: command::HELLO.to_string(),
+                    message: Some(reason.clone()),
+                    body: None,
+                });
+                let _ = shared.write_message(&resp);
+                // Signal a clear rejection to `initialize()` and wake it.
+                *lock(&shared.handshake_error) = Some(reason);
+                shared.handshake_cv.notify_all();
+                return;
+            }
+
+            if let Some(h) = hello {
+                *lock(&shared.peer_caps) = Some(h.capabilities);
             }
             let body = HelloResponseBody {
                 protocol_version: PROTOCOL_VERSION.to_string(),
@@ -768,6 +816,15 @@ mod tests {
         caps: PeerReportedCapabilities,
         handler: impl Fn(&PeerRequest) -> Option<PeerResponse> + Send + 'static,
     ) -> JoinHandle<()> {
+        spawn_fake_peer_version(addr, PROTOCOL_VERSION.to_string(), caps, handler)
+    }
+
+    fn spawn_fake_peer_version(
+        addr: std::net::SocketAddr,
+        protocol_version: String,
+        caps: PeerReportedCapabilities,
+        handler: impl Fn(&PeerRequest) -> Option<PeerResponse> + Send + 'static,
+    ) -> JoinHandle<()> {
         std::thread::spawn(move || {
             let stream = match TcpStream::connect(addr) {
                 Ok(s) => s,
@@ -784,7 +841,7 @@ mod tests {
                 arguments: serde_json::to_value(HelloArgs {
                     peer: "FakePtkdb".to_string(),
                     peer_version: Some("0.1".to_string()),
-                    protocol_version: PROTOCOL_VERSION.to_string(),
+                    protocol_version,
                     capabilities: caps,
                 })
                 .ok(),
@@ -913,6 +970,49 @@ mod tests {
         backend.initialize(InitializeBackendParams::default()).expect("handshake");
         let err = backend.continue_thread(ThreadId(1)).expect_err("should reject");
         assert!(matches!(err, BackendError::Unsupported(_)));
+        drop(backend);
+        let _ = peer.join();
+    }
+
+    #[test]
+    fn pause_requires_dedicated_can_pause_capability() {
+        // A peer that can step but did NOT advertise async pause must not be
+        // sent a pause it never negotiated (mirror-mode honesty; capability #3).
+        let (listener, addr) = bind_ephemeral();
+        let caps =
+            PeerReportedCapabilities { can_step: true, can_pause: false, ..Default::default() };
+        let peer = spawn_fake_peer(addr, caps, |_req| None);
+        let mut backend = accept_backend(listener);
+        backend.initialize(InitializeBackendParams::default()).expect("handshake");
+        // Stepping is allowed...
+        assert!(backend.capabilities().stepping);
+        // ...but pause is not, because can_pause was false.
+        assert!(!backend.capabilities().pause);
+        let err = backend.pause(ThreadId(1)).expect_err("pause not negotiated");
+        assert!(matches!(err, BackendError::Unsupported(_)));
+        drop(backend);
+        let _ = peer.join();
+    }
+
+    #[test]
+    fn protocol_version_mismatch_rejects_handshake() {
+        // A peer speaking an incompatible version must be rejected with a clear
+        // error, not silently accepted (capability #2).
+        let (listener, addr) = bind_ephemeral();
+        let peer = spawn_fake_peer_version(
+            addr,
+            "perl-debug-peer-v99".to_string(),
+            PeerReportedCapabilities::default(),
+            |_req| None,
+        );
+        let mut backend = accept_backend_with_timeout(listener, Duration::from_secs(2));
+        let err = backend
+            .initialize(InitializeBackendParams::default())
+            .expect_err("mismatched version must be rejected");
+        assert!(
+            matches!(err, BackendError::Protocol(_)),
+            "expected a clear protocol rejection, got {err:?}"
+        );
         drop(backend);
         let _ = peer.join();
     }

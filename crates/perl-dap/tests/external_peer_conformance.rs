@@ -133,6 +133,7 @@ fn full_caps() -> PeerReportedCapabilities {
     PeerReportedCapabilities {
         can_continue: true,
         can_step: true,
+        can_pause: true,
         can_evaluate: true,
         can_set_breakpoints: true,
         can_set_function_breakpoints: true,

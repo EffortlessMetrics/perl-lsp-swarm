@@ -17,6 +17,13 @@ pub struct PeerReportedCapabilities {
     /// Peer can step on request.
     #[serde(default)]
     pub can_step: bool,
+    /// Peer can asynchronously pause a running debuggee.
+    ///
+    /// Distinct from [`Self::can_step`]: pausing a running program typically
+    /// needs out-of-band signal delivery, a real capability asymmetry from
+    /// stepping, so it is negotiated separately (mirror-mode honesty).
+    #[serde(default)]
+    pub can_pause: bool,
     /// Peer can evaluate expressions.
     #[serde(default)]
     pub can_evaluate: bool,
@@ -64,7 +71,7 @@ impl PeerReportedCapabilities {
             scopes: self.can_list_variables,
             stack_trace: self.can_list_stack,
             stepping: self.can_step,
-            pause: self.can_step,
+            pause: self.can_pause,
             set_variable: false,
             control_mode: self.control_mode,
         }
@@ -146,6 +153,9 @@ mod tests {
         assert!(!b.hit_conditions);
         assert!(!b.data_breakpoints);
         assert!(!b.set_variable);
+        // pause must NOT be inferred from can_step — the peer did not advertise
+        // can_pause, so pause stays off (mirror-mode honesty).
+        assert!(!b.pause, "pause must not be invented from can_step");
         assert!(b.evaluate && b.stepping && b.stack_trace);
     }
 

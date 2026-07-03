@@ -99,6 +99,26 @@ These are called out so the "done" claim is scoped honestly (closure discipline)
   modeled in types and negotiated, but their bidirectional control paths are
   future work.
 
+## Adversarial-review hardening
+
+An independent correctness/concurrency review (seam-anchored, opposite direction
+to the producer) confirmed the handshake Condvar, seq numbering, event draining,
+and frame handling are sound, and surfaced three real defects — all fixed with
+test coverage:
+
+- **Write timeout (was: a stalled-but-open peer could block `write_all` under the
+  write mutex, wedging `request()` and `Drop::join()`).** The write half now sets
+  `set_write_timeout`, and any write failure calls `mark_closed()` so subsequent
+  ops fail fast — honoring the documented "never hangs" guarantee even when the
+  peer stops draining (flow control, not a clean close).
+- **Protocol-version validation (was: `peer/hello` accepted any version).** The
+  handshake now rejects a mismatched `protocolVersion` with `success: false` and
+  surfaces a clear `BackendError::Protocol` to `initialize()` instead of an
+  opaque timeout.
+- **Pause capability honesty (was: `pause` inferred from `can_step`).** Added a
+  dedicated `canPause` peer capability; a peer that can step but did not advertise
+  async pause is never sent a `debugger/pause`.
+
 ## Closure receipt
 
 - repo: `effortlessmetrics/perl-lsp-swarm`

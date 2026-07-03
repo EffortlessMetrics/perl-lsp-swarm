@@ -40,7 +40,7 @@ Realistic v1 capability report for ptkdb (verified against the ptkdb POD):
 
 ```json
 {
-  "canContinue": true, "canStep": true, "canEvaluate": true,
+  "canContinue": true, "canStep": true, "canPause": true, "canEvaluate": true,
   "canSetBreakpoints": true, "canSetFunctionBreakpoints": true,
   "canConditionBreakpoints": true, "canListStack": true,
   "canListVariables": true, "canReportSubroutines": true,

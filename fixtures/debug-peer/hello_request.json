@@ -9,6 +9,7 @@
     "capabilities": {
       "canContinue": true,
       "canStep": true,
+      "canPause": true,
       "canEvaluate": true,
       "canSetBreakpoints": true,
       "canSetFunctionBreakpoints": true,
