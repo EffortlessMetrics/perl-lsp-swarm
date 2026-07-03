@@ -75,7 +75,13 @@ enum Commands {
 
     /// Verify first-mile product surfaces stay native-only (no legacy bridge /
     /// external-tool-required framing).
-    CheckNativeProductSurface,
+    CheckNativeProductSurface {
+        /// Also fail on bare external-tool names (`perltidy`, `perlcritic`,
+        /// `Perl::LanguageServer`, ...) that appear on a first-mile `.md`
+        /// surface without a native-first qualifier on the same line.
+        #[arg(long)]
+        strict: bool,
+    },
 
     /// Validate Real Perl Editor Trust provider/support claim tables.
     CheckProviderConfidenceMatrix,
@@ -859,6 +865,13 @@ enum Commands {
     NativeTooling {
         #[command(subcommand)]
         command: NativeToolingCommand,
+    },
+
+    /// Evaluate Perl distribution Kwalitee indicators (measurable
+    /// distribution quality) and emit a scored receipt.
+    PerlKwalitee {
+        #[command(subcommand)]
+        command: PerlKwaliteeCommand,
     },
 
     /// Run production security hardening checks.
@@ -2091,7 +2104,11 @@ enum PerlCoreHarnessCommand {
     Prepare {
         /// Upstream Perl tag or commit to prepare.
         #[arg(long = "ref")]
-        perl_ref: Option<String>,
+        perl_ref: String,
+
+        /// Output directory for source clone and prepared tree.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
     },
 
     /// Discover upstream Perl core tests through t/TEST or t/harness --dumptests.
@@ -2176,6 +2193,44 @@ enum PerlCoreHarnessCommand {
         /// Accept the latest report as the baseline.
         #[arg(long, conflicts_with = "check")]
         accept: bool,
+    },
+
+    /// Run manual/advisory real-tree discovery + parse/compile smoke receipts.
+    Smoke {
+        /// Prepared upstream Perl source/build tree.
+        #[arg(long)]
+        perl_tree: PathBuf,
+
+        /// Host Perl used to run upstream t/TEST or t/harness.
+        #[arg(long, default_value = "perl")]
+        host_perl: PathBuf,
+
+        /// Upstream scheduler to run.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
+        runner: perl_core_harness::HarnessRunner,
+
+        /// Staged upstream Perl core profile. Smoke is currently scoped to base.
+        #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessProfile::Base)]
+        profile: perl_core_harness::HarnessProfile,
+
+        /// Smoke modes to run, comma-separated. Defaults to parse,compile.
+        #[arg(long, value_enum, value_delimiter = ',', default_values_t = [
+            perl_core_harness::HarnessMode::Parse,
+            perl_core_harness::HarnessMode::Compile,
+        ])]
+        modes: Vec<perl_core_harness::HarnessMode>,
+
+        /// Directory for discovery, parse, compile, and smoke JSON receipts.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+
+        /// Prebuilt perl-core-test-runner binary. Defaults to target/agent/perl-core-test-runner.
+        #[arg(long)]
+        runner_binary: Option<PathBuf>,
+
+        /// Requested upstream Perl ref recorded in the smoke receipt.
+        #[arg(long = "perl-ref")]
+        perl_ref: Option<String>,
     },
 }
 
@@ -2369,6 +2424,42 @@ enum ReleaseCommand {
         /// Permit a dist that does not cover every contract target triple.
         #[arg(long)]
         allow_partial: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PerlKwaliteeCommand {
+    /// Evaluate the indicators and fail on a non-clean verdict.
+    Check {
+        /// Evaluation profile.
+        #[arg(long, value_enum, default_value = "pr")]
+        profile: perl_kwalitee::PerlKwaliteeProfile,
+        /// Release `dist` directory (required to satisfy release indicators).
+        #[arg(long)]
+        dist: Option<PathBuf>,
+        /// Treat unverified mandatory indicators as failures.
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Evaluate the indicators and write JSON + Markdown receipts.
+    Report {
+        /// Evaluation profile.
+        #[arg(long, value_enum, default_value = "pr")]
+        profile: perl_kwalitee::PerlKwaliteeProfile,
+        /// Release `dist` directory (required to satisfy release indicators).
+        #[arg(long)]
+        dist: Option<PathBuf>,
+        /// JSON receipt output path.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Markdown receipt output path.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
+    /// Explain a single indicator by id.
+    Explain {
+        /// The indicator id, e.g. `release.no_external_tooling`.
+        indicator: String,
     },
 }
 
@@ -3004,7 +3095,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckLintPolicy => check_lint_policy::run(),
         Commands::CheckToolchain { doctor } => check_toolchain::run(doctor),
         Commands::CheckDevexDocs => devex_docs::run(),
-        Commands::CheckNativeProductSurface => native_product_surface::run(),
+        Commands::CheckNativeProductSurface { strict } => native_product_surface::run_with(strict),
         Commands::CheckProviderConfidenceMatrix => provider_confidence_matrix::run(),
         Commands::CheckSupportClaims => provider_confidence_matrix::run_support_claims(),
         Commands::CheckActiveGoalManifest => active_goal_manifest::run(),
@@ -3435,6 +3526,19 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
+        Commands::PerlKwalitee { command } => match command {
+            PerlKwaliteeCommand::Check { profile, dist, strict } => {
+                perl_kwalitee::check(profile, dist, strict)
+            }
+            PerlKwaliteeCommand::Report { profile, dist, json, markdown } => {
+                let root = utils::project_root()?;
+                let json = json.unwrap_or_else(|| perl_kwalitee::default_json_path(&root));
+                let markdown =
+                    markdown.unwrap_or_else(|| perl_kwalitee::default_markdown_path(&root));
+                perl_kwalitee::report(profile, dist, json, markdown)
+            }
+            PerlKwaliteeCommand::Explain { indicator } => perl_kwalitee::explain(&indicator),
+        },
         Commands::SecurityHardening => hardening::security_hardening(),
         Commands::PerformanceHardening => hardening::performance_hardening(),
         Commands::ProductionGatesValidation => hardening::production_gates_validation(),
@@ -3507,7 +3611,12 @@ fn run_cli(cli: Cli) -> Result<()> {
             })
         }
         Commands::PerlCoreHarness { command } => match command {
-            PerlCoreHarnessCommand::Prepare { perl_ref: _ } => perl_core_harness::prepare(),
+            PerlCoreHarnessCommand::Prepare { perl_ref, output_dir } => {
+                perl_core_harness::prepare(perl_core_harness::PrepareConfig {
+                    perl_ref,
+                    output_dir,
+                })
+            }
             PerlCoreHarnessCommand::Discover { perl_tree, host_perl, runner, profile, output } => {
                 perl_core_harness::discover(perl_core_harness::DiscoverConfig {
                     perl_tree,
@@ -3548,6 +3657,25 @@ fn run_cli(cli: Cli) -> Result<()> {
                 report,
                 baseline,
                 accept,
+            }),
+            PerlCoreHarnessCommand::Smoke {
+                perl_tree,
+                host_perl,
+                runner,
+                profile,
+                modes,
+                output_dir,
+                runner_binary,
+                perl_ref,
+            } => perl_core_harness::smoke(perl_core_harness::SmokeConfig {
+                perl_tree,
+                host_perl,
+                runner,
+                profile,
+                modes,
+                output_dir,
+                runner_binary,
+                perl_ref,
             }),
         },
         Commands::ParserRatchet { command } => match command {
@@ -4062,7 +4190,6 @@ mod tests {
     #[test]
     fn perl_core_harness_dispatch_fails_closed_for_future_subcommands() -> TestResult {
         let cases = [
-            (PerlCoreHarnessCommand::Prepare { perl_ref: None }, "prepare is not implemented"),
             (
                 PerlCoreHarnessCommand::Run {
                     mode: perl_core_harness::HarnessMode::Execute,
