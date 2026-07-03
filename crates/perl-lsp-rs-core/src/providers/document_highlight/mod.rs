@@ -333,7 +333,13 @@ impl DocumentHighlightProvider {
                 Some(vec![variable.as_ref(), default_value.as_ref()])
             }
             NodeKind::SlurpyParameter { variable } => Some(vec![variable.as_ref()]),
-            NodeKind::NamedParameter { variable, .. } => Some(vec![variable.as_ref()]),
+            NodeKind::NamedParameter { variable, default_value, .. } => {
+                let mut children = vec![variable.as_ref()];
+                if let Some(default_value) = default_value {
+                    children.push(default_value.as_ref());
+                }
+                Some(children)
+            }
             // Fall back to the canonical AST traversal contract so newly-added
             // child-bearing node kinds are still visited by highlights.
             _ => Some(node.children()),

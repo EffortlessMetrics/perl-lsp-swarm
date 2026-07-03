@@ -7,7 +7,9 @@
 //! not be modeled downstream (signature help, completion, diagnostics).
 
 use perl_parser_core::{Node, NodeKind, Parser};
-use perl_tdd_support::must;
+use perl_tdd_support::{must, must_some};
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Find the first `NamedParameter` node in the tree, if any.
 fn find_named_parameter(node: &Node) -> Option<&NodeKind> {
@@ -29,40 +31,42 @@ fn parse(source: &str) -> Node {
 }
 
 #[test]
-fn required_named_parameter_has_no_default_and_is_required() {
+fn required_named_parameter_has_no_default_and_is_required() -> TestResult {
     let ast = parse("sub f (:$alpha) { }");
-    let kind = find_named_parameter(&ast).expect("expected a NamedParameter for :$alpha");
+    let kind = must_some(find_named_parameter(&ast));
 
     let NodeKind::NamedParameter {
         external_name, default_operator, default_value, required, ..
     } = kind
     else {
-        panic!("not a NamedParameter");
+        return Err("expected a NamedParameter for :$alpha".into());
     };
 
     assert_eq!(external_name, "alpha", "external name is the var name without sigil");
     assert!(default_operator.is_none(), "no default operator when undefaulted");
     assert!(default_value.is_none(), "no default value when undefaulted");
     assert!(*required, ":$alpha with no default is required");
+    Ok(())
 }
 
 #[test]
-fn defaulted_named_parameter_preserves_its_default() {
+fn defaulted_named_parameter_preserves_its_default() -> TestResult {
     // Regression: the `= 1` default used to be parsed and then thrown away.
     let ast = parse("sub f (:$beta = 1) { }");
-    let kind = find_named_parameter(&ast).expect("expected a NamedParameter for :$beta");
+    let kind = must_some(find_named_parameter(&ast));
 
     let NodeKind::NamedParameter {
         external_name, default_operator, default_value, required, ..
     } = kind
     else {
-        panic!("not a NamedParameter");
+        return Err("expected a NamedParameter for :$beta".into());
     };
 
     assert_eq!(external_name, "beta");
     assert_eq!(default_operator.as_deref(), Some("="), "records the `=` default operator");
     assert!(default_value.is_some(), "the default expression must be preserved");
     assert!(!*required, ":$beta with a default is optional");
+    Ok(())
 }
 
 #[test]
