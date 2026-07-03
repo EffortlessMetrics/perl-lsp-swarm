@@ -142,8 +142,14 @@ pub fn build_ripr_facts_packet(
     let has_relation_facts = !relations.is_empty();
 
     // Emit `tests[]`/`oracles[]` only for the specifically-requested classes; the
-    // facts computed above may exist solely to feed `relations`.
-    let tests = if wants_tests { tests } else { Vec::new() };
+    // facts computed above may exist solely to feed `relations`. One exception:
+    // a `relation` carries a required `test_id`, so any emitted relation would
+    // dangle into an empty `tests[]` if we dropped the referenced test facts.
+    // Keep `tests[]` whenever relations were emitted, preserving the referential
+    // integrity origin/main had by always populating `tests[]`. Relations set
+    // `oracle_id: null` in this slice, so `oracles[]` stays gated on the explicit
+    // request — nothing references it.
+    let tests = if wants_tests || has_relation_facts { tests } else { Vec::new() };
     let oracles = if wants_oracles { oracles } else { Vec::new() };
     let has_test_facts = !tests.is_empty();
     let has_oracle_facts = !oracles.is_empty();
@@ -968,6 +974,44 @@ mod tests {
         let p = packet_for_t("gate", "use Test::More;\nis(1, 1);\nok(1);\n", "files");
         assert!(tests_of(&p).is_empty(), "tests not requested → empty");
         assert!(oracles_of(&p).is_empty(), "oracles not requested → empty");
+    }
+
+    #[test]
+    fn build_packet_relations_request_keeps_referenced_test_facts() {
+        // A `relations`-only request still parses tests to build relations. Every
+        // relation carries a required `test_id`; dropping the test facts would
+        // leave `relation.test_id` dangling into an empty `tests[]`. Regression
+        // guard for the fact-class gating added in #3293 PR 4.
+        let root = "target/ripr-p4-fixtures/relations-refint";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        // pm basename "foo" appears in test path "t/foo.t" → file_references_package.
+        std::fs::write(format!("{root}/lib/foo.pm"), "package Foo;\nsub run { }\n1;\n")
+            .expect("write pm");
+        std::fs::write(format!("{root}/t/foo.t"), "use Test::More;\nuse Foo;\nok(Foo::run());\n")
+            .expect("write t");
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "relations",
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+
+        let relations = p["relations"].as_array().expect("relations[]");
+        assert!(!relations.is_empty(), "fixture must produce at least one relation");
+        let tests = tests_of(&p);
+        // Every relation.test_id must resolve to a present test fact — no dangling ref.
+        for rel in relations {
+            let tid = rel["test_id"].as_str().expect("relation.test_id is a string");
+            assert!(
+                tests.iter().any(|t| t["test_id"] == tid),
+                "relation.test_id {tid} must resolve to a test fact in the packet"
+            );
+        }
     }
 
     #[test]
