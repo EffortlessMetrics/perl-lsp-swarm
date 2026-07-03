@@ -48,8 +48,14 @@ const DISALLOWED: &[&str] = &[
 
 /// Entry point for `cargo xtask check-native-product-surface`.
 pub fn run() -> Result<()> {
-    let root = project_root()?;
-    let violations = scan(&root)?;
+    run_at(&project_root()?)
+}
+
+/// Scan the first-mile surfaces under `root` and report. Split from [`run`] so
+/// both the clean and the regressed paths are unit-testable against a fixture
+/// tree without touching the live repository.
+fn run_at(root: &Path) -> Result<()> {
+    let violations = scan(root)?;
 
     if violations.is_empty() {
         println!(
@@ -89,10 +95,16 @@ fn scan(root: &Path) -> Result<Vec<String>> {
 
 /// Pure per-surface scan, separated so it is unit-testable without touching the
 /// repository.
+///
+/// Each line is normalized before matching — Markdown backticks stripped and
+/// lowercased — so a banned phrasing cannot slip past by wrapping it in
+/// `` `code` `` or changing its capitalization (e.g. `` requires `perltidy` ``
+/// or `Requires perltidy`).
 fn collect_violations(surface: &str, text: &str, violations: &mut Vec<String>) {
     for (idx, line) in text.lines().enumerate() {
+        let normalized = line.replace('`', "").to_ascii_lowercase();
         for marker in DISALLOWED {
-            if line.contains(marker) {
+            if normalized.contains(&marker.to_ascii_lowercase()) {
                 violations.push(format!(
                     "{surface}:{}: disallowed native-stack marker `{marker}`",
                     idx + 1
@@ -142,18 +154,45 @@ Enable external `perlcritic` diagnostics; native critic is always on by default.
         assert!(violations[0].starts_with("guide.md:3:"), "got: {}", violations[0]);
     }
 
-    /// The live repository's first-mile surfaces must be clean. This is the
-    /// enforcement that makes the check meaningful: if a future edit reintroduces
-    /// a legacy/external-tool product framing on a first-mile surface, this
-    /// fails.
+    #[test]
+    fn flags_markdown_wrapped_and_capitalized_variants() {
+        // The just-removed style must not be able to sneak back in wrapped in
+        // Markdown backticks or with different casing.
+        for text in [
+            "This requires `perltidy` to be installed.\n",
+            "Requires perltidy on PATH.\n",
+            "Enable external `Perl::Critic` diagnostics from the extension.\n",
+        ] {
+            let mut violations = Vec::new();
+            collect_violations("surface.md", text, &mut violations);
+            assert!(!violations.is_empty(), "variant must be flagged: {text:?}");
+        }
+    }
+
+    /// The live repository's first-mile surfaces must be clean, exercised
+    /// through the real `run` entry point. This is the enforcement that makes
+    /// the check meaningful: if a future edit reintroduces a legacy/external-tool
+    /// product framing on a first-mile surface, `run` bails and this fails.
     #[test]
     fn live_product_surface_is_clean() -> Result<()> {
-        let root = project_root()?;
-        let violations = scan(&root)?;
-        assert!(
-            violations.is_empty(),
-            "first-mile product surfaces must be free of legacy/external-tool framing: {violations:#?}"
-        );
+        run()
+    }
+
+    #[test]
+    fn run_at_is_ok_on_a_clean_tree() -> Result<()> {
+        // A tree missing every surface file scans clean (missing surfaces are
+        // skipped), so run_at returns Ok and prints the pass message.
+        let dir = tempfile::tempdir()?;
+        run_at(dir.path())
+    }
+
+    #[test]
+    fn run_at_errors_when_a_surface_regresses() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let pkg_dir = dir.path().join("vscode-extension");
+        std::fs::create_dir_all(&pkg_dir)?;
+        std::fs::write(pkg_dir.join("package.json"), "\"desc\": \"requires perltidy\"\n")?;
+        assert!(run_at(dir.path()).is_err(), "a regressed surface must make run_at bail");
         Ok(())
     }
 }
