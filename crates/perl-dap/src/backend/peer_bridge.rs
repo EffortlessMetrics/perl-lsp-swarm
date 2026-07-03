@@ -30,6 +30,7 @@ use super::{
     LaunchBackendParams, SetBackendBreakpointsParams, SetFunctionBreakpointsParams,
     StackTraceParams,
 };
+use crate::breakpoint_oracle::{AstBreakpointOracle, BreakpointOracle};
 use crate::debug_adapter::DapMessage;
 use crate::model::{
     DebugBreakpoint, DebugEvent, DebugFunctionBreakpoint, DebugSource, FrameId, OutputCategory,
@@ -235,6 +236,12 @@ impl DapPeerBridge {
             "configurationDone" => {
                 out.push(self.response(request_seq, command, true, None, None));
             }
+            "breakpointLocations" => {
+                // Answered locally from the AST oracle (the source file is on the
+                // same host as perl-dap), independent of the peer.
+                let body = handle_breakpoint_locations(arguments.as_ref());
+                out.push(self.response(request_seq, command, true, Some(body), None));
+            }
             "disconnect" => {
                 let terminate = arguments
                     .as_ref()
@@ -288,6 +295,8 @@ impl DapPeerBridge {
         json!({
             "supportsConfigurationDoneRequest": true,
             "supportsTerminateRequest": true,
+            // Answered locally from the AST oracle, so always available.
+            "supportsBreakpointLocationsRequest": true,
             "supportsConditionalBreakpoints": negotiated.supports_conditional_breakpoints,
             "supportsHitConditionalBreakpoints": negotiated.supports_hit_conditional_breakpoints,
             "supportsLogPoints": negotiated.supports_log_points,
@@ -629,6 +638,35 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(ToString::to_string)
 }
 
+/// Answer a DAP `breakpointLocations` request from the local AST oracle.
+///
+/// Reads the source from disk (it is on the same host as `perl-dap`) and returns
+/// the breakable lines within the requested `[line, endLine]` range. On any error
+/// (missing args, unreadable/unparseable source) returns an empty set rather than
+/// failing the request — the editor treats "no breakable locations" gracefully.
+fn handle_breakpoint_locations(args: Option<&Value>) -> Value {
+    let empty = json!({ "breakpoints": [] });
+    let Some(args) = args else { return empty };
+    let Some(path) = args.get("source").and_then(|s| s.get("path")).and_then(Value::as_str) else {
+        return empty;
+    };
+    let start = args.get("line").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let end = args.get("endLine").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(start);
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return empty;
+    };
+    let Ok(oracle) = AstBreakpointOracle::new(DebugSource::from_path(path), &text) else {
+        return empty;
+    };
+    let locations: Vec<Value> = oracle
+        .breakable_line_candidates()
+        .into_iter()
+        .filter(|&line| line >= start && line <= end)
+        .map(|line| json!({ "line": line }))
+        .collect();
+    json!({ "breakpoints": locations })
+}
+
 fn dap_stop_reason(reason: &StopReason) -> String {
     match reason {
         StopReason::Entry => "entry".into(),
@@ -806,6 +844,7 @@ mod tests {
         assert!(ok);
         let caps = body.expect("capabilities");
         assert_eq!(caps["supportsConfigurationDoneRequest"], true);
+        assert_eq!(caps["supportsBreakpointLocationsRequest"], true);
         // ptkdb v1 negotiated: no logpoints/data breakpoints.
         assert_eq!(caps["supportsLogPoints"], false);
         assert_eq!(caps["supportsDataBreakpoints"], false);
@@ -870,6 +909,28 @@ mod tests {
 
         let ev = b.dispatch(7, "evaluate", Some(json!({ "expression": "$x", "context": "watch" })));
         assert_eq!(as_response(&ev[0]).2.expect("body")["result"], "=$x");
+    }
+
+    #[test]
+    fn breakpoint_locations_reports_breakable_lines_from_ast() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().expect("tmp");
+        writeln!(f, "# a comment").expect("w"); // line 1 — not breakable
+        writeln!(f, "my $x = 1;").expect("w"); // line 2 — breakable
+        writeln!(f, "print $x;").expect("w"); // line 3 — breakable
+        let path = f.path().to_string_lossy().to_string();
+
+        let mut b = bridge();
+        let out = b.dispatch(
+            9,
+            "breakpointLocations",
+            Some(json!({ "source": { "path": path }, "line": 1, "endLine": 3 })),
+        );
+        let bps =
+            as_response(&out[0]).2.expect("body")["breakpoints"].as_array().expect("array").clone();
+        let lines: Vec<i64> = bps.iter().filter_map(|b| b["line"].as_i64()).collect();
+        assert!(lines.contains(&2), "line 2 is breakable: {lines:?}");
+        assert!(!lines.contains(&1), "comment line 1 is excluded: {lines:?}");
     }
 
     #[test]
