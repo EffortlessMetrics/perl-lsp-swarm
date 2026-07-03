@@ -16,6 +16,7 @@ members = [
     "crates/perl-semantic-analyzer",
     "crates/perl-semantic-facts",
     "crates/perl-workspace",
+    "crates/perl-workspace-core",
     "crates/perl-refactoring",
     "crates/perl-incremental-parsing",
     "crates/perl-tdd-support",
@@ -134,6 +135,8 @@ allow = [
     # Tier 3 — Analysis and indexing
     "perl-workspace",
     "perl-semantic-facts",
+    # perl-workspace-core: LSP-free project-facts substrate (depends only on perl-semantic-facts)
+    "perl-workspace-core",
     "perl-semantic-analyzer",
     "perl-diagnostics",
     # (perl-lsp-diagnostics absorbed into perl-lsp-rs-core::providers::diagnostics — Wave G1b)
@@ -303,6 +306,7 @@ perl-test-generators = { path = "crates/perl-test-generators", version = "0.17.0
 perl-diagnostics = { path = "crates/perl-diagnostics", version = "0.17.0" }
 # Tier 3: Two-level dependencies
 perl-workspace = { path = "crates/perl-workspace", version = "0.17.0" }
+perl-workspace-core = { path = "crates/perl-workspace-core", version = "0.17.0" }
 perl-incremental-parsing = { path = "crates/perl-incremental-parsing", version = "0.17.0" }
 perl-refactoring = { path = "crates/perl-refactoring", version = "0.17.0" }
 

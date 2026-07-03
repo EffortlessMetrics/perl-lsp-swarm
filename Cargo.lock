@@ -2054,6 +2054,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-workspace-core"
+version = "0.17.0"
+dependencies = [
+ "perl-semantic-facts",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "perllsp"
 version = "0.17.0"
 dependencies = [
