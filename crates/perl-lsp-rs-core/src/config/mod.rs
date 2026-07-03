@@ -1930,10 +1930,12 @@ profile = "recommended"
         //
         // PATH is process-global, so serialize against any other PATH-touching
         // test and restore it before asserting (a leaked mutation would poison
-        // sibling tests).
+        // sibling tests). The lock is crate-shared (`crate::test_support`), not
+        // function-local, so every PATH-mutating test acquires the SAME guard.
         use std::io::Write as _;
-        static PATH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = PATH_ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = crate::test_support::PATH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let dir = tempfile::tempdir()?;
         let bin_name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
