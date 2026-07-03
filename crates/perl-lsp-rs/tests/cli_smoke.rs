@@ -336,8 +336,11 @@ fn ripr_facts_emits_schema_valid_deterministic_packet() -> Result<(), Box<dyn st
     let packet: serde_json::Value = serde_json::from_slice(&packet_bytes)?;
     let obj = packet.as_object().ok_or("packet is not a JSON object")?;
 
-    // All 17 required top-level keys are present (schema `additionalProperties:false`).
-    for key in [
+    // The schema is `additionalProperties:false` with all 17 top-level
+    // properties required, so the packet's key set must be *exactly* these 17 —
+    // assert both directions (every required key present AND no extras) so an
+    // accidental extra top-level field is caught as the schema violation it is.
+    let required_keys = [
         "schema_version",
         "packet_id",
         "packet_status",
@@ -355,9 +358,17 @@ fn ripr_facts_emits_schema_valid_deterministic_packet() -> Result<(), Box<dyn st
         "verify_commands",
         "limitations",
         "provenance",
-    ] {
+    ];
+    for key in required_keys {
         assert!(obj.contains_key(key), "packet is missing required key `{key}`");
     }
+    let actual_keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    assert_eq!(
+        obj.len(),
+        required_keys.len(),
+        "packet has unexpected top-level keys (schema is additionalProperties:false); \
+         required {required_keys:?}, got {actual_keys:?}"
+    );
 
     assert_eq!(packet["schema_version"], "ripr-perl-facts-v1");
 
