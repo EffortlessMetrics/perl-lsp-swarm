@@ -1343,6 +1343,44 @@ mod prototype_heuristic_tests {
         }
     }
 
+    /// `--lib` coverage for the named-parameter construction branch in
+    /// `parse_signature_param`: the external name is derived from the variable
+    /// (sigil-stripped), a `= <expr>` default is preserved (not discarded), the
+    /// default operator is recorded, and `required` reflects default presence.
+    #[test]
+    fn named_parameter_carries_external_name_and_default() {
+        fn find_named(node: &Node, out: &mut Vec<(String, bool, bool, Option<String>)>) {
+            if let NodeKind::NamedParameter {
+                external_name, default_value, required, default_operator, ..
+            } = &node.kind
+            {
+                out.push((
+                    external_name.clone(),
+                    *required,
+                    default_value.is_some(),
+                    default_operator.clone(),
+                ));
+            }
+            node.for_each_child(|c| find_named(c, out));
+        }
+
+        let node = parse_sub("sub f (:$alpha, :$beta = 1) {}").expect("parse named-param sub");
+        let mut found = Vec::new();
+        find_named(&node, &mut found);
+
+        assert_eq!(found.len(), 2, "both named params surface, got {found:?}");
+
+        let alpha = found.iter().find(|f| f.0 == "alpha").expect("named param :$alpha");
+        assert!(alpha.1, ":$alpha has no default → required");
+        assert!(!alpha.2, ":$alpha has no default value");
+        assert!(alpha.3.is_none(), ":$alpha has no default operator");
+
+        let beta = found.iter().find(|f| f.0 == "beta").expect("named param :$beta");
+        assert!(!beta.1, ":$beta has a default → optional");
+        assert!(beta.2, ":$beta preserves its default value");
+        assert_eq!(beta.3.as_deref(), Some("="), ":$beta records the `=` default operator");
+    }
+
     #[test]
     fn signature_with_multiple_params() {
         let node = parse_sub("sub foo($x, $y) {}");
