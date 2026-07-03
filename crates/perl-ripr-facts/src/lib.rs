@@ -230,14 +230,23 @@ pub fn build_ripr_facts_packet(
         }
     }
 
-    // `limitations` is a meta-class that aggregates every emitter's limitations,
-    // so surface the test-pass limitations whenever the test parse actually ran —
-    // i.e. for the same `tests`/`oracles`/`relations` gate that produced them. A
-    // `relations`(-driven) request parses the test files, so its test-parse
-    // failures must not be silently dropped (they'd make an empty `limitations[]`
-    // look like a clean run). Gating only on `tests`/`oracles` would hide them.
-    let test_limitations =
-        if wants_tests || wants_oracles || wants_relations { test_limitations } else { Vec::new() };
+    // `limitations` is a meta-class aggregating every emitter's limitations, and
+    // `test_limitations` is already gated at its source (empty unless the
+    // tests/oracles/relations parse above ran), so it flows through as-is — a
+    // `relations`-driven parse still surfaces its `test-parse-failed` limitations.
+    // One entry needs an extra guard: `oracle-representation` is a schema-note
+    // about the *oracle facts*. If the caller's request dropped `oracles[]` from
+    // the packet (e.g. `tests`-only), that note describes facts that aren't
+    // present — the same referential-integrity class as the relation→test_id fix.
+    // Drop it when no oracle facts made it into the packet.
+    let test_limitations: Vec<serde_json::Value> = if has_oracle_facts {
+        test_limitations
+    } else {
+        test_limitations
+            .into_iter()
+            .filter(|l| l["limitation_id"].as_str() != Some("oracle-representation"))
+            .collect()
+    };
 
     // Upgrade status + merge limitations if we found any facts. Parse/read
     // limitations from the test and files passes are always surfaced (even with
@@ -1102,6 +1111,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn build_packet_drops_oracle_representation_note_when_oracles_not_in_packet() {
+        // The `oracle-representation` schema-note describes emitted oracle facts.
+        // A `tests`-only request drops `oracles[]`, so that note must not linger —
+        // it would describe facts absent from the packet (droid P3, same
+        // referential-integrity class). The mirror request keeps it.
+        let t = "use Test::More;\nis(1, 1, 'exact');\nok(1, 'smoke');\n";
+        let has_note = |p: &serde_json::Value| {
+            p["limitations"]
+                .as_array()
+                .expect("limitations[]")
+                .iter()
+                .any(|l| l["limitation_id"].as_str() == Some("oracle-representation"))
+        };
+
+        let tests_only = packet_for_t("orep-tests", t, "tests");
+        assert!(oracles_of(&tests_only).is_empty(), "oracles not requested → empty");
+        assert!(
+            !has_note(&tests_only),
+            "oracle-representation note must not linger when oracles[] is dropped"
+        );
+
+        let with_oracles = packet_for_t("orep-oracles", t, "oracles");
+        assert!(!oracles_of(&with_oracles).is_empty(), "oracles present");
+        assert!(has_note(&with_oracles), "oracle-representation note present with oracle facts");
     }
 
     #[test]
