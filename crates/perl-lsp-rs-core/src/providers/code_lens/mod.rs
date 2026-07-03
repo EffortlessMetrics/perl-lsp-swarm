@@ -164,6 +164,12 @@ impl CodeLensProvider {
             NodeKind::FunctionCall { name, args } => {
                 if name == "subtest" {
                     self.add_subtest_lens(node, args, lenses);
+                    // Recurse into the subtest's block so nested subtests also
+                    // get "Run Subtest" lenses (the block is the anonymous-sub
+                    // argument). Non-subtest calls do not recurse.
+                    for arg in args {
+                        self.visit_node(arg, lenses);
+                    }
                 }
             }
 
@@ -538,6 +544,27 @@ mod tests {
         assert!(
             titles.contains(&"\u{25b6} Run Subtest: string ops"),
             "missing 'string ops' subtest lens"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_subtest_lenses() -> Result<(), String> {
+        let source = "use Test2::V0;\nsubtest \"outer\" => sub {\n    subtest \"inner\" => sub { ok(1) };\n};\ndone_testing();\n";
+        let lenses = extract_lenses_with_path(source, "t/nested.t")?;
+        let subtest_titles: Vec<_> = lenses
+            .iter()
+            .filter_map(|l| l.command.as_ref())
+            .filter(|c| c.command == "perl.runSubtest")
+            .map(|c| c.title.as_str())
+            .collect();
+        assert!(
+            subtest_titles.contains(&"\u{25b6} Run Subtest: outer"),
+            "missing outer subtest lens: {subtest_titles:?}"
+        );
+        assert!(
+            subtest_titles.contains(&"\u{25b6} Run Subtest: inner"),
+            "missing nested inner subtest lens: {subtest_titles:?}"
         );
         Ok(())
     }

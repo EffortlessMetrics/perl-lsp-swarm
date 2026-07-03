@@ -8,4 +8,5 @@
 //!
 //! Today it covers [Test2](https://metacpan.org/pod/Test2::V0) via [`test2`].
 
+pub mod subtest;
 pub mod test2;
