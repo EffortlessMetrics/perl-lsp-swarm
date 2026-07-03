@@ -511,7 +511,11 @@ fn expand_qw(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if raw[i..].starts_with("qw") {
+        // Only treat `qw` as the quote-word operator on a word boundary, so
+        // barewords like `qwerty` or `my_qw` are not misread as `qw`.
+        let on_word_boundary =
+            i == 0 || !matches!(bytes[i - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
+        if on_word_boundary && raw[i..].starts_with("qw") {
             // Find the delimiter after optional whitespace.
             let mut j = i + 2;
             while j < bytes.len() && (bytes[j] as char).is_whitespace() {
@@ -519,20 +523,24 @@ fn expand_qw(raw: &str) -> String {
             }
             if j < bytes.len() {
                 let open = bytes[j] as char;
-                let close = match open {
-                    '(' => ')',
-                    '{' => '}',
-                    '[' => ']',
-                    '<' => '>',
-                    other => other,
-                };
-                if let Some(end_rel) = raw[j + 1..].find(close) {
-                    let inner = &raw[j + 1..j + 1 + end_rel];
-                    out.push(' ');
-                    out.push_str(inner);
-                    out.push(' ');
-                    i = j + 1 + end_rel + 1;
-                    continue;
+                // A real delimiter is non-word, non-whitespace (`qwords` would
+                // otherwise treat `o` as the delimiter).
+                if !open.is_alphanumeric() && open != '_' && !open.is_whitespace() {
+                    let close = match open {
+                        '(' => ')',
+                        '{' => '}',
+                        '[' => ']',
+                        '<' => '>',
+                        other => other,
+                    };
+                    if let Some(end_rel) = raw[j + 1..].find(close) {
+                        let inner = &raw[j + 1..j + 1 + end_rel];
+                        out.push(' ');
+                        out.push_str(inner);
+                        out.push(' ');
+                        i = j + 1 + end_rel + 1;
+                        continue;
+                    }
                 }
             }
         }
@@ -564,6 +572,7 @@ fn use_statements(source: &str) -> Vec<String> {
     let mut in_single = false;
     let mut in_double = false;
     let mut in_comment = false;
+    let mut escaped = false;
     for c in source.chars() {
         if in_comment {
             if c == '\n' {
@@ -571,7 +580,18 @@ fn use_statements(source: &str) -> Vec<String> {
             }
             continue;
         }
+        // A backslash inside a string escapes the next char, so an escaped
+        // quote does not close the string (e.g. `use Foo "a\"b";`).
+        if escaped {
+            cur.push(c);
+            escaped = false;
+            continue;
+        }
         match c {
+            '\\' if in_single || in_double => {
+                escaped = true;
+                cur.push(c);
+            }
             '#' if !in_single && !in_double => in_comment = true,
             '\'' if !in_double => {
                 in_single = !in_single;

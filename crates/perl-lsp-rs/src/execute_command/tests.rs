@@ -1873,6 +1873,17 @@ fn test_command_routing_perl_debug_test() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
+fn test_debug_tests_bare_filename_uses_dot_cwd() -> Result<(), Box<dyn std::error::Error>> {
+    // A single-component path has a Some("") parent; the launch cwd must fall
+    // back to "." rather than an empty string (which can fail to launch).
+    let provider = ExecuteCommandProvider::new();
+    let value = provider.debug_tests(std::path::Path::new("bare.t"))?;
+    assert_eq!(value["configuration"]["cwd"], ".");
+    assert_eq!(value["configuration"]["program"], "bare.t");
+    Ok(())
+}
+
+#[test]
 fn test_perl_run_subtest_missing_subroutine_arg() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
     let temp_file = temp_dir.path().join("test_subtest_no_arg.t");

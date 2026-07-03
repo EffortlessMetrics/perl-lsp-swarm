@@ -211,3 +211,32 @@ fn test2_imports_target_option_does_not_drop_exports() {
     assert!(resolved.symbols.contains("is"));
     assert_eq!(resolved.pragmas, Some(Test2Pragmas { strict: true, warnings: true }));
 }
+
+#[test]
+fn expand_qw_only_fires_on_word_boundary_and_real_delimiter() {
+    // Genuine qw list expands to space-separated words.
+    assert_eq!(expand_qw("qw(ok is like)"), " ok is like ");
+    assert_eq!(expand_qw("qw{ok is}"), " ok is ");
+    // `qw` preceded by a word char (`eqw`) is not the operator — must stay intact.
+    assert_eq!(expand_qw("eqw(x)"), "eqw(x)");
+    // A word char immediately after `qw` is not a delimiter (`qwoo` is a bareword).
+    assert_eq!(expand_qw("qwoo"), "qwoo");
+    // A symbol name embedding `qw` at a word boundary is left intact.
+    assert_eq!(expand_qw("my_qw"), "my_qw");
+}
+
+#[test]
+fn use_statements_survive_escaped_quotes() {
+    // An escaped quote inside a double-quoted string must not close the string
+    // early; otherwise the `;` terminator is missed and the following `use`
+    // statement is never seen. The second Test2 module only appears if the
+    // first statement terminated at the right `;`.
+    let src = "use Test2::V0 -target => \"a\\\"b\";\nuse Test2::Tools::Basic;\n";
+    let facts = Test2Facts::from_source(src);
+    assert!(facts.modules.iter().any(|m| m == "Test2::V0"), "modules: {:?}", facts.modules);
+    assert!(
+        facts.modules.iter().any(|m| m == "Test2::Tools::Basic"),
+        "second statement lost after escaped quote: {:?}",
+        facts.modules
+    );
+}

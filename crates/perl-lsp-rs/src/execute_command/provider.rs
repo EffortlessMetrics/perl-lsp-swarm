@@ -539,9 +539,15 @@ impl ExecuteCommandProvider {
     /// working directory follows the same policy as `runTests` (the file's
     /// directory), and `PERL_TEST_HARNESS_DUMP_TAP` is set so the session emits
     /// TAP the editor can read back.
-    fn debug_tests(&self, file_path: &Path) -> Result<Value, String> {
+    pub(crate) fn debug_tests(&self, file_path: &Path) -> Result<Value, String> {
         let ext_path = normalize_path_for_external_command(file_path);
-        let cwd = ext_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        // A single-component path (bare filename) has a `Some("")` parent; an
+        // empty cwd can fail to launch, so fall back to the current directory.
+        let cwd = ext_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
         let file_name = file_path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
