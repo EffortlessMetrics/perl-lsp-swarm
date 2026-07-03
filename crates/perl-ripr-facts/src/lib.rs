@@ -25,8 +25,8 @@
 mod emitter;
 
 use emitter::{
-    emit_boundaries_and_commands, emit_files_and_owners, emit_relations_and_discriminators,
-    emit_tests_and_oracles,
+    emit_boundaries_and_commands, emit_changes_from_diff, emit_files_and_owners,
+    emit_relations_and_discriminators, emit_tests_and_oracles,
 };
 
 /// Expected schema version for `ripr-perl-facts-v1` packets.
@@ -50,6 +50,13 @@ pub struct RiprFactsRequest<'a> {
     pub head: Option<&'a str>,
     /// Comma-separated fact classes to request; validated + normalized internally.
     pub fact_classes: &'a str,
+    /// Pre-computed unified diff (base→head) text, supplied by a managed-producer
+    /// caller and consumed only when `changes` is requested. `None` in the batch
+    /// / CLI path (which does not yet produce one — see #3293 PR 5). The diff is
+    /// treated as opaque text: no git is run, no process is spawned, and its
+    /// paths are expected in `git diff`'s default repo-root-relative `a/`/`b/`
+    /// form. base/head/diff are caller-asserted, never verified here.
+    pub diff: Option<&'a str>,
 }
 
 /// A validation failure from [`build_ripr_facts_packet`] that prevents packet
@@ -102,7 +109,7 @@ impl std::error::Error for RiprFactsError {}
 pub fn build_ripr_facts_packet(
     request: &RiprFactsRequest<'_>,
 ) -> Result<serde_json::Value, RiprFactsError> {
-    let &RiprFactsRequest { schema, root, base, head, fact_classes } = request;
+    let &RiprFactsRequest { schema, root, base, head, fact_classes, diff } = request;
 
     // Validate schema version.
     if schema != EXPECTED_RIPR_FACTS_SCHEMA {
@@ -165,22 +172,58 @@ pub fn build_ripr_facts_packet(
     // parse when the caller actually requested `files`/`owners`/`provenance`, so
     // a subset request (e.g. `tests,oracles`) stays cheap and the packet does
     // not carry facts outside the advertised `requested_fact_classes`.
-    let wants_file_facts = normalized_classes
+    // `changes` needs the parsed owners to attribute each diff hunk, so the walk
+    // runs when files/owners/provenance are explicitly requested OR when
+    // `changes` is requested (the "computed for internal need" split PR 4 used
+    // for tests feeding relations).
+    let wants_changes = normalized_classes.iter().any(|c| c == "changes");
+    let wants_file_facts_explicit = normalized_classes
         .iter()
         .any(|class| class == "files" || class == "owners" || class == "provenance");
-    let (files, owners, file_provenance, file_limitations) = if wants_file_facts {
-        emit_files_and_owners(root)
+    let (files, owners, file_provenance, file_limitations) =
+        if wants_file_facts_explicit || wants_changes {
+            emit_files_and_owners(root)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        };
+
+    // PR 5 (perl-lsp-swarm#3293): emit diff-owned `changes[]` from a caller-
+    // supplied unified diff (`RiprFactsRequest.diff`). No git, no subprocess —
+    // the diff is opaque text. `changes` requested without a diff yields an empty
+    // array plus a `no-diff-supplied` limitation, so a downstream consumer can
+    // distinguish "not analyzed" from "nothing changed".
+    let (changes, change_limitations) = if wants_changes {
+        match diff {
+            Some(diff_text) if !diff_text.trim().is_empty() => {
+                emit_changes_from_diff(diff_text, &files, &owners)
+            }
+            _ => (
+                Vec::new(),
+                vec![serde_json::json!({
+                    "limitation_id": "no-diff-supplied",
+                    "kind": "missing_input",
+                    "message": "`changes` was requested but no diff was supplied on RiprFactsRequest.diff; the batch/CLI path does not yet produce one. An empty `changes[]` here means \"not analyzed\", not \"nothing changed\".",
+                    "evidence_refs": []
+                })],
+            ),
+        }
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        (Vec::new(), Vec::new())
+    };
+    let has_change_facts = !changes.is_empty();
+
+    // Referential integrity: a change's `file_id`/`owner_id` must resolve to a
+    // `files[]`/`owners[]` fact present in the SAME packet. Force files+owners
+    // into the packet output whenever a change was emitted, exactly as PR 4 kept
+    // `tests[]` whenever a relation referenced a `test_id`. Otherwise gate them
+    // on the explicit request.
+    let (files, owners) = if wants_file_facts_explicit || has_change_facts {
+        (files, owners)
+    } else {
+        (Vec::new(), Vec::new())
     };
     let has_file_facts = !files.is_empty();
     let has_owner_facts = !owners.is_empty();
-
-    // Diff-derived changes are not emitted yet: batch mode has no git diff, and
-    // the managed-producer mode that would supply one lands in a later slice.
-    // Emit an empty `changes[]` so the packet stays honest (partial, not final).
-    let changes: Vec<serde_json::Value> = Vec::new();
-    let has_change_facts = !changes.is_empty();
 
     let mut packet = build_unavailable_packet(schema, root, base, head, &normalized_classes);
 
@@ -213,7 +256,7 @@ pub fn build_ripr_facts_packet(
     // Populate relations array (PR 7).
     packet["relations"] = serde_json::Value::Array(relations);
 
-    // Populate changes array (P2).
+    // Populate diff-owned changes array (#3293 PR 5).
     packet["changes"] = serde_json::Value::Array(changes);
 
     // Populate dynamic_boundaries + verify_commands arrays (PR 8).
@@ -261,22 +304,28 @@ pub fn build_ripr_facts_packet(
     if has_facts {
         packet["packet_status"] = serde_json::json!("partial");
         // Merge boundary limitations, the emitter-partial note, and the
-        // test/file parse limitations.
+        // test/change/file limitations.
         let mut all_limitations = boundary_limitations;
         all_limitations.push(serde_json::json!({
             "limitation_id": "emitter-partial",
             "kind": "partial_emitter",
-            "message": "Parser-backed tests/oracles, relations/discriminators, boundaries/commands, and files/owners are emitted. Diff-derived changes (managed-producer mode) are not yet emitted.",
+            "message": "Parser-backed tests/oracles, relations/discriminators, boundaries/commands, files/owners, and (when a diff is supplied) diff-owned changes are emitted. Semantic relations, the packet fingerprint, and the managed-producer diff source land in later slices.",
             "evidence_refs": []
         }));
         all_limitations.extend(test_limitations);
+        all_limitations.extend(change_limitations);
         all_limitations.extend(file_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
-    } else if !test_limitations.is_empty() || !file_limitations.is_empty() {
-        // No facts, but the test/files passes hit parse/read failures — surface
-        // them next to the base `emitter-not-yet-implemented` limitation.
+    } else if !test_limitations.is_empty()
+        || !change_limitations.is_empty()
+        || !file_limitations.is_empty()
+    {
+        // No facts, but a pass produced limitations (test/file parse failures, or
+        // a `changes` request with no diff) — surface them next to the base
+        // `emitter-not-yet-implemented` limitation so they are never dropped.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
             limitations.extend(test_limitations);
+            limitations.extend(change_limitations);
             limitations.extend(file_limitations);
         }
     }
@@ -315,15 +364,21 @@ pub fn run_ripr_facts(
         return 1;
     }
 
-    let packet =
-        match build_ripr_facts_packet(&RiprFactsRequest { schema, root, base, head, fact_classes })
-        {
-            Ok(packet) => packet,
-            Err(error) => {
-                eprintln!("ripr-facts: {error}");
-                return 1;
-            }
-        };
+    let packet = match build_ripr_facts_packet(&RiprFactsRequest {
+        schema,
+        root,
+        base,
+        head,
+        fact_classes,
+        // The CLI wrapper does not yet supply a diff (#3293 PR 5 scope).
+        diff: None,
+    }) {
+        Ok(packet) => packet,
+        Err(error) => {
+            eprintln!("ripr-facts: {error}");
+            return 1;
+        }
+    };
 
     // Write the assembled packet to disk.
     if let Err(error) = write_packet(out, &packet) {
@@ -480,6 +535,7 @@ mod tests {
             base: Some("origin/main"),
             head: Some("HEAD"),
             fact_classes,
+            diff: None,
         }
     }
 
@@ -581,6 +637,7 @@ mod tests {
             base: None,
             head: None,
             fact_classes: "files,owners,provenance,limitations",
+            diff: None,
         })
         .expect("valid request builds a packet");
         let _ = std::fs::remove_dir_all(&root);
@@ -774,6 +831,7 @@ mod tests {
             base: None,
             head: None,
             fact_classes: "files,owners",
+            diff: None,
         })
         .expect("valid request");
         // Sanity: the fixture actually yields owners, so parity covers PR-3 facts.
@@ -799,6 +857,7 @@ mod tests {
             base: None,
             head: None,
             fact_classes: "tests,oracles",
+            diff: None,
         })
         .expect("valid request");
         let _ = std::fs::remove_dir_all(root);
@@ -822,6 +881,7 @@ mod tests {
             base: None,
             head: None,
             fact_classes,
+            diff: None,
         })
         .expect("valid request builds a packet");
         let _ = std::fs::remove_dir_all(&root);
@@ -1029,6 +1089,7 @@ mod tests {
             base: None,
             head: None,
             fact_classes: "relations",
+            diff: None,
         })
         .expect("valid request builds a packet");
         let _ = std::fs::remove_dir_all(root);
@@ -1209,6 +1270,7 @@ mod tests {
             base: None,
             head: None,
             fact_classes: "tests,oracles,provenance,limitations",
+            diff: None,
         })
         .expect("valid request");
         assert_eq!(built, written, "batch API packet == wrapper-written packet");
@@ -1469,5 +1531,123 @@ mod tests {
         assert!(validate_ripr_facts_path("./rel", "test").is_err());
         assert!(validate_ripr_facts_path("../escape", "test").is_err());
         assert!(validate_ripr_facts_path("C:/drive", "test").is_err());
+    }
+
+    // ── #3293 PR 5: diff-owned changes[] wiring (packet level) ──
+
+    /// Build a packet over a fixture with `lib/App.pm` (a `sub discount`) and a
+    /// caller-supplied `diff`.
+    fn packet_for_diff(dir: &str, fact_classes: &str, diff: Option<&str>) -> serde_json::Value {
+        let root = format!("target/ripr-p5-fixtures/{dir}");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::write(
+            format!("{root}/lib/App.pm"),
+            "package App;\nsub discount {\n    my ($amount) = @_;\n    return $amount;\n}\n1;\n",
+        )
+        .expect("write pm");
+        let packet = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root: &root,
+            base: Some("origin/main"),
+            head: Some("HEAD"),
+            fact_classes,
+            diff,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(&root);
+        packet
+    }
+
+    /// A diff adding a line inside `sub discount` (0-based head line 3).
+    const APP_DIFF: &str = "+++ b/lib/App.pm\n@@ -3,2 +3,3 @@\n     my ($amount) = @_;\n+    return $amount / 2;\n     return $amount;\n";
+
+    fn changes_of(p: &serde_json::Value) -> Vec<serde_json::Value> {
+        p["changes"].as_array().expect("changes[]").clone()
+    }
+    fn has_limitation(p: &serde_json::Value, id_prefix: &str) -> bool {
+        p["limitations"]
+            .as_array()
+            .expect("limitations[]")
+            .iter()
+            .any(|l| l["limitation_id"].as_str().is_some_and(|s| s.starts_with(id_prefix)))
+    }
+
+    #[test]
+    fn build_packet_skips_change_parsing_when_changes_not_requested() {
+        // A non-empty diff is ignored unless `changes` is requested.
+        let p = packet_for_diff("skip", "files,owners", Some(APP_DIFF));
+        assert!(changes_of(&p).is_empty(), "changes not requested → empty even with a diff");
+    }
+
+    #[test]
+    fn build_packet_emits_no_diff_supplied_limitation_when_changes_requested_without_diff() {
+        let p = packet_for_diff("nodiff", "changes", None);
+        assert!(changes_of(&p).is_empty(), "no diff → no changes");
+        assert!(has_limitation(&p, "no-diff-supplied"), "must surface no-diff-supplied");
+    }
+
+    #[test]
+    fn build_packet_emits_no_diff_supplied_limitation_for_blank_diff() {
+        let p = packet_for_diff("blankdiff", "changes", Some("   \n  "));
+        assert!(changes_of(&p).is_empty(), "blank diff behaves like no diff");
+        assert!(has_limitation(&p, "no-diff-supplied"), "blank diff → no-diff-supplied");
+    }
+
+    #[test]
+    fn build_packet_change_owner_id_resolves_to_present_owners_fact() {
+        // Referential integrity (PR-4 lesson): even a `changes`-only request must
+        // carry the owners[]/files[] the change references.
+        let p = packet_for_diff("refint", "changes", Some(APP_DIFF));
+        let changes = changes_of(&p);
+        assert!(!changes.is_empty(), "the fixture diff must produce a change");
+        let owner_ids: std::collections::HashSet<&str> = p["owners"]
+            .as_array()
+            .expect("owners[]")
+            .iter()
+            .filter_map(|o| o["owner_id"].as_str())
+            .collect();
+        let file_ids: std::collections::HashSet<&str> = p["files"]
+            .as_array()
+            .expect("files[]")
+            .iter()
+            .filter_map(|f| f["file_id"].as_str())
+            .collect();
+        for change in &changes {
+            let oid = change["owner_id"].as_str().expect("change.owner_id");
+            let fid = change["file_id"].as_str().expect("change.file_id");
+            assert!(
+                owner_ids.contains(oid),
+                "change.owner_id {oid} must resolve to an owners[] fact"
+            );
+            assert!(file_ids.contains(fid), "change.file_id {fid} must resolve to a files[] fact");
+        }
+        // The change is attributed to the sub, not the package.
+        assert_eq!(changes[0]["behavior_hint"], "return_value");
+    }
+
+    #[test]
+    fn build_packet_changes_request_alone_does_not_leak_files_owners_when_no_changes_emitted() {
+        // Diff touches a file outside root → zero changes → files/owners stay
+        // empty (no force-include when nothing references them).
+        let unknown = "+++ b/other/Nope.pm\n@@ -1,0 +1,1 @@\n+return 1;\n";
+        let p = packet_for_diff("noleak", "changes", Some(unknown));
+        assert!(changes_of(&p).is_empty(), "unknown-file hunk → no change");
+        assert!(p["files"].as_array().expect("files[]").is_empty(), "files[] not force-included");
+        assert!(
+            p["owners"].as_array().expect("owners[]").is_empty(),
+            "owners[] not force-included"
+        );
+        assert!(
+            has_limitation(&p, "diff-file-not-found:"),
+            "unknown path surfaced as a limitation"
+        );
+    }
+
+    #[test]
+    fn build_packet_changes_are_deterministically_ordered() {
+        let a = packet_for_diff("det-a", "changes", Some(APP_DIFF));
+        let b = packet_for_diff("det-b", "changes", Some(APP_DIFF));
+        assert_eq!(changes_of(&a), changes_of(&b), "same request → identical changes[]");
     }
 }
