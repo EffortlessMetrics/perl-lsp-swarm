@@ -3972,6 +3972,7 @@ dependencies = [
  "notify",
  "perl-ci-hygiene",
  "perl-corpus",
+ "perl-kwalitee",
  "perl-lsp-rs-core",
  "perl-lsp-ux-tests",
  "perl-parser",
