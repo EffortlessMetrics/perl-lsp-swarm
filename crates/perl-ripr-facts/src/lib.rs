@@ -142,17 +142,19 @@ pub fn build_ripr_facts_packet(
     let has_relation_facts = !relations.is_empty();
 
     // Emit `tests[]`/`oracles[]` only for the specifically-requested classes; the
-    // facts computed above may exist solely to feed `relations`. One exception:
-    // a `relation` carries a required `test_id`, so any emitted relation would
-    // dangle into an empty `tests[]` if we dropped the referenced test facts.
-    // Keep `tests[]` whenever relations were emitted, preserving the referential
-    // integrity origin/main had by always populating `tests[]`. Relations set
-    // `oracle_id: null` in this slice, so `oracles[]` stays gated on the explicit
-    // request — nothing references it.
-    let tests = if wants_tests || has_relation_facts { tests } else { Vec::new() };
+    // facts computed above may exist solely to feed `relations`. But referential
+    // integrity trumps strict gating: an `oracle` carries a required `test_id` and
+    // a `relation` carries a required `test_id`, so keeping either while dropping
+    // the referenced `test` facts would dangle. So gate `oracles[]` on the explicit
+    // request (nothing references an oracle — relations set `oracle_id: null` in
+    // this slice), then keep `tests[]` whenever a relation OR an oracle references
+    // one. This preserves the referential integrity origin/main had by always
+    // populating `tests[]`.
     let oracles = if wants_oracles { oracles } else { Vec::new() };
-    let has_test_facts = !tests.is_empty();
     let has_oracle_facts = !oracles.is_empty();
+    let tests =
+        if wants_tests || has_relation_facts || has_oracle_facts { tests } else { Vec::new() };
+    let has_test_facts = !tests.is_empty();
 
     let (boundaries, boundary_limitations, verify_commands) = emit_boundaries_and_commands(root);
     let has_boundary_facts = !boundaries.is_empty();
@@ -186,9 +188,25 @@ pub fn build_ripr_facts_packet(
     // `test_discovery` / `oracle_extraction` provenance the facts reference by id.
     packet["tests"] = serde_json::Value::Array(tests);
     packet["oracles"] = serde_json::Value::Array(oracles);
+    // Each `test_provenance` entry is referenced by exactly one fact class
+    // (`test_discovery` ← tests, `oracle_extraction` ← oracles). Extend with only
+    // the entries whose referenced class is actually in the packet — a coarse
+    // `has_test_facts || has_oracle_facts` gate on the whole Vec would leak a
+    // dangling `oracle_extraction`/`test_discovery` id when only one of
+    // tests/oracles is requested (same referential class as the relation→test_id
+    // fix).
     if has_test_facts || has_oracle_facts {
         if let Some(provenance) = packet["provenance"].as_array_mut() {
-            provenance.extend(test_provenance);
+            for entry in test_provenance {
+                let keep = match entry["source"].as_str() {
+                    Some("test_discovery") => has_test_facts,
+                    Some("oracle_extraction") => has_oracle_facts,
+                    _ => true,
+                };
+                if keep {
+                    provenance.push(entry);
+                }
+            }
         }
     }
 
@@ -1016,6 +1034,73 @@ mod tests {
                 tests.iter().any(|t| t["test_id"] == tid),
                 "relation.test_id {tid} must resolve to a test fact in the packet"
             );
+        }
+    }
+
+    #[test]
+    fn build_packet_is_referentially_closed_across_fact_class_subsets() {
+        // Every fact reference must resolve within the packet, and no test-side
+        // provenance entry may be an orphan — for any fact-class subset. Guards
+        // the recurring referential-integrity class: relation→test_id (96dd5f9),
+        // oracle→test_id, and provenance→fact (droid P2 on lib.rs:189).
+        let t = "use Test::More;\nok(1, 'smoke');\nis(1, 1, 'exact');\n";
+        for classes in ["tests", "oracles", "tests,oracles", "relations", "tests,oracles,relations"]
+        {
+            let p = packet_for_t(&format!("refclose-{}", classes.replace(',', "-")), t, classes);
+
+            let ids = |arr: &[serde_json::Value], key: &str| -> std::collections::HashSet<String> {
+                arr.iter().filter_map(|v| v[key].as_str().map(str::to_owned)).collect()
+            };
+            let tests = tests_of(&p);
+            let oracles = oracles_of(&p);
+            let relations = p["relations"].as_array().expect("relations[]").clone();
+            let provenance = p["provenance"].as_array().expect("provenance[]").clone();
+
+            let test_ids = ids(&tests, "test_id");
+            let oracle_ids = ids(&oracles, "oracle_id");
+            let prov_ids = ids(&provenance, "provenance_id");
+
+            // Forward references resolve.
+            for o in &oracles {
+                let tid = o["test_id"].as_str().expect("oracle.test_id");
+                assert!(test_ids.contains(tid), "[{classes}] oracle.test_id {tid} must resolve");
+            }
+            for r in &relations {
+                let tid = r["test_id"].as_str().expect("relation.test_id");
+                assert!(test_ids.contains(tid), "[{classes}] relation.test_id {tid} must resolve");
+                if let Some(oid) = r["oracle_id"].as_str() {
+                    assert!(
+                        oracle_ids.contains(oid),
+                        "[{classes}] relation.oracle_id must resolve"
+                    );
+                }
+            }
+            // Every provenance_ref on any fact resolves, and gather what's referenced.
+            let mut referenced_prov = std::collections::HashSet::new();
+            for fact in tests.iter().chain(oracles.iter()).chain(relations.iter()) {
+                if let Some(refs) = fact["provenance_refs"].as_array() {
+                    for r in refs {
+                        let rid = r.as_str().expect("provenance_ref is a string");
+                        assert!(
+                            prov_ids.contains(rid),
+                            "[{classes}] provenance_ref {rid} must resolve"
+                        );
+                        referenced_prov.insert(rid.to_owned());
+                    }
+                }
+            }
+            // No orphan test-side provenance: a `test_discovery`/`oracle_extraction`
+            // entry present in the packet must be referenced by some fact.
+            for prov in &provenance {
+                let source = prov["source"].as_str().unwrap_or("");
+                if source == "test_discovery" || source == "oracle_extraction" {
+                    let pid = prov["provenance_id"].as_str().expect("provenance_id");
+                    assert!(
+                        referenced_prov.contains(pid),
+                        "[{classes}] orphan {source} provenance {pid} referenced by no fact"
+                    );
+                }
+            }
         }
     }
 
