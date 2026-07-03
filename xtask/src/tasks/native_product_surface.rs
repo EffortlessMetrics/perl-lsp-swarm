@@ -79,6 +79,14 @@ const STRICT_BARE_MARKERS: &[&str] = &[
 /// is framed as optional / legacy / compatibility, a negation, or a conflict
 /// warning, rather than as a product requirement. Matched as a lowercase
 /// substring of the backtick-stripped line.
+///
+/// These are deliberately *narrow*. Broad single words like a bare "native" or
+/// "default" are intentionally NOT here: they would exempt genuine leaks such as
+/// "install perltidy for native support" or "our native formatter requires
+/// perltidy". Every qualifier below itself signals *optionality / negation /
+/// legacy*, not mere co-occurrence with a native mention. (A requirement framing
+/// such as "requires perltidy" is additionally caught by the default
+/// [`DISALLOWED`] pass regardless of any qualifier on the line.)
 const NATIVE_FIRST_QUALIFIERS: &[&str] = &[
     "not require",
     "not required",
@@ -86,23 +94,15 @@ const NATIVE_FIRST_QUALIFIERS: &[&str] = &[
     "does not",
     "doesn't",
     "no external",
-    "avoid", // "native path avoids Perl::LanguageServer dependency"
+    "avoids", // "native path avoids Perl::LanguageServer dependency" (plural form only)
     "optional",
     "compatibility",
     "conformance",
     "legacy",
     "opt-in",
-    "only when",
-    "only used",
-    "only for",
-    "only if",
-    "instead of",
     "migration",
-    "default", // "native formatting is the default"
-    "native",  // native-first framing on the same line
     "overlap", // "Perl::Critic ... can overlap with perl-lsp features"
     "conflict",
-    "auto-detect",
 ];
 
 /// Path fragments whose surfaces are exempt from strict bare-name scanning.
@@ -243,7 +243,10 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
 /// violation.
 fn collect_strict_violations(surface: &str, text: &str, violations: &mut Vec<String>) {
     for (idx, line) in text.lines().enumerate() {
-        let normalized = line.replace('`', "").to_ascii_lowercase();
+        // Strip Markdown code/emphasis markers so a qualifier is still detected
+        // when it is bolded or wrapped — e.g. "does **not** require" must read as
+        // "does not require", not defeat the "does not" / "not require" match.
+        let normalized = line.replace(['`', '*'], "").to_ascii_lowercase();
         if NATIVE_FIRST_QUALIFIERS.iter().any(|q| normalized.contains(q)) {
             continue;
         }
@@ -365,6 +368,23 @@ Enable external `perlcritic` diagnostics; native critic is always on by default.
     }
 
     #[test]
+    fn strict_does_not_exempt_on_bare_native_or_default() {
+        // Regression for the qualifier-too-broad loophole (PR #3315 review): a
+        // bare "native"/"default"/"only for" must NOT exempt a real leak.
+        for leak in [
+            "Install perltidy for native support.",
+            "Our native formatter requires perltidy.",
+            "perlcritic is the default linter — install it first.",
+            "Install perltidy only for full formatting.",
+            "Use perltidy instead of the built-in formatter.",
+        ] {
+            let mut violations = Vec::new();
+            collect_strict_violations("surface.md", &format!("{leak}\n"), &mut violations);
+            assert!(!violations.is_empty(), "leak must still flag under strict: {leak:?}");
+        }
+    }
+
+    #[test]
     fn strict_allows_native_first_qualified_lines() {
         // Every line names a tool but is framed native-first — none should flag.
         let text = "\
@@ -377,6 +397,16 @@ Install `perltidy` only if you selected the external compatibility engine.\n";
         let mut violations = Vec::new();
         collect_strict_violations("surface.md", text, &mut violations);
         assert!(violations.is_empty(), "native-first lines must pass strict: {violations:?}");
+    }
+
+    #[test]
+    fn strict_qualifier_survives_markdown_emphasis() {
+        // A bolded/italicized negation must still count as a native-first
+        // qualifier (mirrors the live README line 87).
+        let text = "The native path does **not** require `Perl::LanguageServer`.\n";
+        let mut violations = Vec::new();
+        collect_strict_violations("readme.md", text, &mut violations);
+        assert!(violations.is_empty(), "bolded negation must qualify: {violations:?}");
     }
 
     #[test]
