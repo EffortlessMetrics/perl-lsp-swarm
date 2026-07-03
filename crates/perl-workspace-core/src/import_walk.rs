@@ -295,3 +295,110 @@ fn record_require(
         None => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::Digest;
+    use perl_parser_core::Parser;
+
+    fn walk(src: &str) -> (ImportWalkResult, FileId) {
+        let ast = Parser::new(src).parse().unwrap();
+        let idx = Utf8LineIndex::new(src);
+        let fid = FileId::new("lib/M.pm", &Digest::of(src));
+        let result = walk_imports(&ast, &fid, &idx);
+        (result, fid)
+    }
+
+    fn boundary_kinds(result: &ImportWalkResult) -> Vec<DynamicBoundaryKind> {
+        result.boundaries.iter().map(|b| b.kind).collect()
+    }
+
+    #[test]
+    fn string_eval_records_string_eval_boundary() {
+        let (result, fid) = walk("my $code = '1+1';\neval \"$code\";\n");
+        assert_eq!(
+            boundary_kinds(&result),
+            vec![DynamicBoundaryKind::StringEval],
+            "string eval is a single StringEval boundary; got {:?}",
+            result.boundaries
+        );
+        assert_eq!(result.boundaries[0].file_id, fid, "boundary carries the walked file id");
+    }
+
+    #[test]
+    fn block_eval_is_not_a_boundary() {
+        let (result, _) = walk("eval { 1 + 1 };\n");
+        assert!(
+            result.boundaries.is_empty(),
+            "block-form eval is statically visible, not a boundary; got {:?}",
+            result.boundaries
+        );
+    }
+
+    #[test]
+    fn typeglob_assignment_records_boundary() {
+        let (result, fid) = walk("*alias = \\&target;\n");
+        assert_eq!(boundary_kinds(&result), vec![DynamicBoundaryKind::TypeglobAssignment]);
+        assert_eq!(result.boundaries[0].file_id, fid);
+    }
+
+    #[test]
+    fn runtime_require_of_expression_records_boundary() {
+        let (result, fid) = walk("my $mod = 'Foo';\nrequire $mod;\n");
+        assert_eq!(
+            boundary_kinds(&result),
+            vec![DynamicBoundaryKind::RuntimeRequire],
+            "require of a computed expression is a RuntimeRequire boundary; got {:?}",
+            result.boundaries
+        );
+        assert_eq!(result.boundaries[0].file_id, fid);
+    }
+
+    #[test]
+    fn static_require_of_bareword_is_import_not_boundary() {
+        let (result, _) = walk("require Foo::Bar;\n");
+        assert!(
+            result.boundaries.is_empty(),
+            "a bareword require is a static import, not a boundary; got {:?}",
+            result.boundaries
+        );
+        assert!(
+            result.imports.iter().any(|i| i.module == "Foo::Bar" && i.kind == ImportKind::Require),
+            "bareword require is recorded as an import; got {:?}",
+            result.imports
+        );
+    }
+
+    #[test]
+    fn source_filter_use_records_import_into_dynamic() {
+        let (result, fid) = walk("use Filter::Util::Call;\n");
+        assert_eq!(
+            boundary_kinds(&result),
+            vec![DynamicBoundaryKind::ImportIntoDynamic],
+            "a known source filter use is an ImportIntoDynamic boundary; got {:?}",
+            result.boundaries
+        );
+        assert_eq!(result.boundaries[0].file_id, fid);
+    }
+
+    #[test]
+    fn use_parent_records_inheritance_for_current_package() {
+        let (result, _) = walk("package Child;\nuse parent -norequire, 'Base';\n");
+        assert_eq!(
+            result.parents_by_package.get("Child").map(Vec::as_slice),
+            Some(["Base".to_string()].as_slice()),
+            "use parent attributes Base to Child; got {:?}",
+            result.parents_by_package
+        );
+    }
+
+    #[test]
+    fn exporter_array_records_export_symbols() {
+        let (result, fid) = walk("package Foo;\nour @EXPORT = qw(alpha beta);\n");
+        assert!(!result.exports.is_empty(), "@EXPORT records an export fact");
+        let export = &result.exports[0];
+        assert_eq!(export.symbols, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(export.file_id, fid, "export fact carries the walked file id");
+    }
+}
