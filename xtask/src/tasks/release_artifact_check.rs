@@ -329,8 +329,29 @@ fn check_required_binaries(
 }
 
 /// Executable payloads (matched by final component, with or without a Windows
-/// `.exe` suffix) that must never be bundled in a native-stack release archive.
+/// executable suffix) that must never be bundled in a native-stack release
+/// archive.
 const FORBIDDEN_EXTERNAL_BINARIES: &[&str] = &["perltidy", "perlcritic"];
+
+/// Windows executable/launcher suffixes stripped before matching a payload's
+/// final component against [`FORBIDDEN_EXTERNAL_BINARIES`]. `.bat`/`.cmd`
+/// wrappers are as executable as `.exe`, so `perltidy.bat` must be flagged the
+/// same as `perltidy.exe`. Matched case-insensitively (archives may store
+/// `PERLTIDY.EXE`).
+const WINDOWS_EXECUTABLE_SUFFIXES: &[&str] = &[".exe", ".bat", ".cmd"];
+
+/// Strip a single trailing Windows executable suffix from `base_name`,
+/// case-insensitively, returning the bare stem. Returns `base_name` unchanged
+/// when no known suffix matches (e.g. a bare Unix `perltidy`).
+fn strip_windows_executable_suffix(base_name: &str) -> &str {
+    let lower = base_name.to_ascii_lowercase();
+    for suffix in WINDOWS_EXECUTABLE_SUFFIXES {
+        if lower.ends_with(suffix) {
+            return &base_name[..base_name.len() - suffix.len()];
+        }
+    }
+    base_name
+}
 
 /// Path markers for legacy conformance / external-tool module payloads that
 /// must never appear anywhere inside a native-stack release archive.
@@ -349,8 +370,8 @@ fn check_no_external_tooling(
     violations: &mut Vec<Violation>,
 ) {
     for entry in entries {
-        let stem = entry.base_name.strip_suffix(".exe").unwrap_or(&entry.base_name);
-        if FORBIDDEN_EXTERNAL_BINARIES.contains(&stem) {
+        let stem = strip_windows_executable_suffix(&entry.base_name).to_ascii_lowercase();
+        if FORBIDDEN_EXTERNAL_BINARIES.contains(&stem.as_str()) {
             violations.push(Violation {
                 location: location.to_string(),
                 message: format!(
@@ -993,6 +1014,36 @@ mod tests {
         check_no_external_tooling("pkg.zip", &entries, &mut violations);
         assert_eq!(violations.len(), 1);
         assert!(violations[0].message.contains("perltidy.exe"));
+    }
+
+    #[test]
+    fn windows_external_tool_bat_and_cmd_launchers_are_flagged() {
+        // `.bat`/`.cmd` launchers are as executable as `.exe`, and archives may
+        // store them with any casing — none may slip past the stem match.
+        for (base, path) in [
+            ("perltidy.bat", "pkg/perltidy.bat"),
+            ("perlcritic.cmd", "pkg/bin/perlcritic.cmd"),
+            ("PERLTIDY.EXE", "pkg/PERLTIDY.EXE"),
+            ("PerlCritic.Bat", "pkg/PerlCritic.Bat"),
+        ] {
+            let mut violations = Vec::new();
+            check_no_external_tooling("pkg.zip", &[entry(base, path, 0)], &mut violations);
+            assert_eq!(violations.len(), 1, "`{base}` must be flagged: {violations:?}");
+            assert!(violations[0].message.contains(path));
+        }
+    }
+
+    #[test]
+    fn native_binary_with_incidental_suffix_is_not_stripped_into_a_false_positive() {
+        // Stripping a Windows suffix must not turn an allowed payload into a
+        // forbidden stem: only the exact `.exe`/`.bat`/`.cmd` tails are removed.
+        let entries = vec![
+            entry("perltidyx", "pkg/perltidyx", 0o755),
+            entry("perltidy.txt", "pkg/docs/perltidy.txt", 0o644),
+        ];
+        let mut violations = Vec::new();
+        check_no_external_tooling("pkg.tar.gz", &entries, &mut violations);
+        assert!(violations.is_empty(), "no false positives: {violations:?}");
     }
 
     #[test]
