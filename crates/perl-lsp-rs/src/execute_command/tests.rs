@@ -857,8 +857,10 @@ fn test_command_routing_perl_debug_tests() -> Result<(), Box<dyn std::error::Err
     assert!(result.is_ok(), "perl.debugTests should execute successfully");
     let result_value = result?;
     assert!(result_value.is_object(), "Should return a structured result");
-    assert_eq!(result_value["success"], false, "Debug should indicate not implemented");
-    assert!(result_value["output"].is_string(), "Should have output field");
+    // Debug now returns a real perl-dap launch configuration.
+    assert_eq!(result_value["success"], true, "Debug should return a launch config");
+    assert_eq!(result_value["action"], "startDebugging");
+    assert_eq!(result_value["configuration"]["type"], "perl");
     Ok(())
 }
 
@@ -1326,8 +1328,8 @@ fn test_execute_command_return_value_mutations() -> Result<(), Box<dyn std::erro
         "Should have success field"
     );
     assert!(
-        result_value.as_object().ok_or("expected object")?.contains_key("output"),
-        "Should have output field"
+        result_value.as_object().ok_or("expected object")?.contains_key("configuration"),
+        "Should have a launch configuration field"
     );
 
     // The result should be meaningful, not just Default::default()
@@ -1822,7 +1824,9 @@ fn test_command_routing_perl_run_subtest() -> Result<(), Box<dyn std::error::Err
     let value = result?;
     assert!(value.is_object(), "Should return a structured result");
     assert!(value["success"].is_boolean(), "Should have success field");
-    assert!(value["subroutine"].is_string(), "Should have subroutine field");
+    // Whole-file-focused run (never executes the subtest block in isolation).
+    assert_eq!(value["subtestMode"], "whole-file-focused");
+    assert_eq!(value["requestedSubtest"], "my_subtest");
     Ok(())
 }
 
@@ -1840,8 +1844,10 @@ fn test_command_routing_perl_debug_file() -> Result<(), Box<dyn std::error::Erro
     assert!(result.is_ok(), "perl.debugFile should dispatch without Unknown command error");
     let value = result?;
     assert!(value.is_object(), "Should return a structured result");
-    assert_eq!(value["success"], false, "Debug should indicate not yet implemented");
-    assert!(value["output"].is_string(), "Should have output field");
+    // Debug now returns a real perl-dap launch configuration.
+    assert_eq!(value["success"], true, "Debug should return a launch config");
+    assert_eq!(value["action"], "startDebugging");
+    assert_eq!(value["configuration"]["type"], "perl");
     Ok(())
 }
 
@@ -1859,8 +1865,10 @@ fn test_command_routing_perl_debug_test() -> Result<(), Box<dyn std::error::Erro
     assert!(result.is_ok(), "perl.debugTest should dispatch without Unknown command error");
     let value = result?;
     assert!(value.is_object(), "Should return a structured result");
-    assert_eq!(value["success"], false, "Debug should indicate not yet implemented");
-    assert!(value["output"].is_string(), "Should have output field");
+    // Debug now returns a real perl-dap launch configuration.
+    assert_eq!(value["success"], true, "Debug should return a launch config");
+    assert_eq!(value["action"], "startDebugging");
+    assert_eq!(value["configuration"]["type"], "perl");
     Ok(())
 }
 
@@ -1875,11 +1883,11 @@ fn test_perl_run_subtest_missing_subroutine_arg() -> Result<(), Box<dyn std::err
     let result = provider
         .execute_command("perl.runSubtest", vec![Value::String(temp_file.display().to_string())]);
 
-    assert!(result.is_err(), "perl.runSubtest should fail without subroutine name");
+    assert!(result.is_err(), "perl.runSubtest should fail without a subtest name");
     let err = result.err().ok_or("expected error")?;
     assert!(
-        err.contains("Missing subroutine name"),
-        "Should report missing subroutine name, got: {}",
+        err.contains("Missing subtest name"),
+        "Should report missing subtest name, got: {}",
         err
     );
     Ok(())
