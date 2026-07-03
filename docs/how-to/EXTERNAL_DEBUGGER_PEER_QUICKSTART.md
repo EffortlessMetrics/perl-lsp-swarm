@@ -42,9 +42,20 @@ perl -d:ptkdb path/to/script.pl
 ```
 
 `ptkdb` reads `.ptkdbrc` from the current directory before the first stop. The
-generated file is plain Perl (safely escaped) that seeds ptkdb from the same
-source facts `perl-lsp` computes — so your ptkdb session starts aligned with what
-the editor knows.
+generated file is plain Perl (safely escaped). It applies any breakpoints and
+watch expressions carried in the session plan, and — so a plain run isn't empty
+— lists every subroutine `perl-lsp` discovered as a **ready-to-uncomment
+`brkonsub` menu**:
+
+```perl
+# Subroutines discovered by perl-lsp — uncomment to break on entry:
+# eval { brkonsub('greet'); };  # lines 5..8
+```
+
+Uncomment the subs you care about (they are commented by default — breaking on
+every sub is rarely what you want) and re-run. This is a convenience seed, not a
+full session; richer breakpoint/watch seeding comes from a session plan built via
+the programmatic API.
 
 ## 2. Inspect the session plan (JSON)
 

@@ -118,6 +118,27 @@ pub fn render_ptkdbrc(packet: &DebugSessionPacket, stop_on_entry: bool) -> Strin
         out.push_str(&format!("eval {{ add_exprs({}); }};\n\n", exprs.join(", ")));
     }
 
+    // Subroutines perl-lsp discovered in the program's source facts, rendered as
+    // a ready-to-uncomment `brkonsub` menu. These are intentionally commented,
+    // not active: breaking on *every* sub is rarely wanted, so the user enables
+    // the ones they care about in a single edit. This is what makes the plain
+    // `--ptkdb-bootstrap-rc PROGRAM` (which carries no configured breakpoints)
+    // useful rather than near-empty.
+    if packet.source_facts.values().any(|f| !f.subroutines.is_empty()) {
+        out.push_str("# Subroutines discovered by perl-lsp — uncomment to break on entry:\n");
+        for facts in packet.source_facts.values() {
+            for sub in &facts.subroutines {
+                out.push_str(&format!(
+                    "# eval {{ brkonsub({}); }};  # lines {}..{}\n",
+                    perl_single_quoted(&sub.name),
+                    sub.start_line,
+                    sub.end_line,
+                ));
+            }
+        }
+        out.push('\n');
+    }
+
     out.push_str("1;\n");
     out
 }
@@ -225,6 +246,35 @@ mod tests {
     fn rc_omits_no_stop_when_stop_on_entry() {
         let rc = render_ptkdbrc(&packet(), true);
         assert!(!rc.contains("no_stop_at_start"));
+    }
+
+    #[test]
+    fn rc_lists_discovered_subroutines_as_commented_menu() {
+        use crate::model::{DebugFunctionSymbol, SourceDebugFacts};
+        // A packet with no configured breakpoints but source facts (the shape the
+        // `--ptkdb-bootstrap-rc PROGRAM` CLI path produces) must still emit
+        // something useful: the discovered subs as a ready-to-uncomment menu.
+        let mut p = DebugSessionPacket::new("/work/script.pl");
+        p.source_facts.insert(
+            "/work/script.pl".into(),
+            SourceDebugFacts {
+                breakable_line_candidates: vec![2, 5],
+                subroutines: vec![DebugFunctionSymbol {
+                    name: "main::greet".into(),
+                    source: DebugSource::from_path("/work/script.pl"),
+                    start_line: 5,
+                    end_line: 8,
+                }],
+            },
+        );
+        let rc = render_ptkdbrc(&p, true);
+        // The sub is listed...
+        assert!(rc.contains("brkonsub('main::greet')"), "sub must be listed: {rc}");
+        assert!(rc.contains("lines 5..8"), "line span must be shown: {rc}");
+        // ...but COMMENTED, never auto-activated (breaking on every sub is wrong).
+        for line in rc.lines().filter(|l| l.contains("brkonsub('main::greet')")) {
+            assert!(line.trim_start().starts_with('#'), "brkonsub menu must be commented: {line}");
+        }
     }
 
     #[test]
