@@ -716,6 +716,40 @@ describe('extension UX warnings', () => {
     );
   });
 
+  test('forwards native critic.* overrides configured inside a "[perl]" language block', async () => {
+    const sendNotification = jest.fn();
+
+    // A user sets `"[perl]": { "perl-lsp.critic.severity": 5 }` in settings.json.
+    // VS Code exposes that through inspect().globalLanguageValue (not
+    // globalValue), so hasExplicitOverride must detect the language-scoped field.
+    const languageScoped: Record<string, unknown> = {
+      'critic.severity': 5,
+    };
+    (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+      get: jest.fn((key: string, defaultValue?: any) =>
+        key in languageScoped ? languageScoped[key] : defaultValue
+      ),
+      has: jest.fn(() => false),
+      inspect: jest.fn((key: string) =>
+        key in languageScoped ? { globalLanguageValue: languageScoped[key] } : undefined
+      ),
+      update: jest.fn(async () => undefined),
+    }));
+
+    await syncPerlCriticConfiguration({ sendNotification } as any);
+
+    expect(sendNotification).toHaveBeenCalledWith(
+      'workspace/didChangeConfiguration',
+      expect.objectContaining({
+        settings: expect.objectContaining({
+          perl: expect.objectContaining({
+            critic: expect.objectContaining({ severity: 5 }),
+          }),
+        }),
+      })
+    );
+  });
+
   test('explains a provider decision through the LSP execute command', async () => {
     const sendRequest = jest.fn(async () => ({
       provider: 'goto_definition',

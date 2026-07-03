@@ -135,12 +135,21 @@ function hasExplicitOverride(config: vscode.WorkspaceConfiguration, key: string)
         globalValue?: unknown;
         workspaceValue?: unknown;
         workspaceFolderValue?: unknown;
+        globalLanguageValue?: unknown;
+        workspaceLanguageValue?: unknown;
+        workspaceFolderLanguageValue?: unknown;
     } | undefined;
+    // Also honor language-specific overrides — VS Code users commonly configure
+    // these settings inside a `"[perl]"` block in settings.json, which populates
+    // the *LanguageValue fields rather than the plain scope fields.
     return Boolean(
         value &&
         (value.globalValue !== undefined ||
             value.workspaceValue !== undefined ||
-            value.workspaceFolderValue !== undefined)
+            value.workspaceFolderValue !== undefined ||
+            value.globalLanguageValue !== undefined ||
+            value.workspaceLanguageValue !== undefined ||
+            value.workspaceFolderLanguageValue !== undefined)
     );
 }
 
