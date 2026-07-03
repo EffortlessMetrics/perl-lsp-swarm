@@ -116,17 +116,37 @@ pub fn build_ripr_facts_packet(
     let normalized_classes =
         normalize_fact_classes(fact_classes).map_err(RiprFactsError::InvalidFactClasses)?;
 
-    // Emit the packet. Tests/oracles (perl-lsp-swarm#2593), relations/
+    // Emit the packet. Parser-backed tests/oracles (#3293 PR 4), relations/
     // discriminators (#2594), boundaries/commands (#2595), and parser-backed
     // files/owners (#3293 PR 3) are populated; diff-derived changes still land in
     // a later slice. When any facts are found, `packet_status` upgrades from
     // `unavailable` to `partial`.
-    let (tests, oracles) = emit_tests_and_oracles(root);
-    let has_test_facts = !tests.is_empty();
+    //
+    // PR 4: parse test files only when `tests`/`oracles` — or `relations`, a
+    // downstream consumer of the test/oracle facts (out of scope here, kept
+    // behavior-identical by sharing the gate) — are requested, so a subset like
+    // `files` stays cheap. The packet carries `tests[]`/`oracles[]` only for the
+    // classes actually requested.
+    let wants_tests = normalized_classes.iter().any(|c| c == "tests");
+    let wants_oracles = normalized_classes.iter().any(|c| c == "oracles");
+    let wants_relations = normalized_classes.iter().any(|c| c == "relations");
+    let (tests, oracles, test_provenance, test_limitations) =
+        if wants_tests || wants_oracles || wants_relations {
+            emit_tests_and_oracles(root)
+        } else {
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+        };
 
     let (relations, _changed_observables, _observed_sinks) =
         emit_relations_and_discriminators(root, &tests, &oracles);
     let has_relation_facts = !relations.is_empty();
+
+    // Emit `tests[]`/`oracles[]` only for the specifically-requested classes; the
+    // facts computed above may exist solely to feed `relations`.
+    let tests = if wants_tests { tests } else { Vec::new() };
+    let oracles = if wants_oracles { oracles } else { Vec::new() };
+    let has_test_facts = !tests.is_empty();
+    let has_oracle_facts = !oracles.is_empty();
 
     let (boundaries, boundary_limitations, verify_commands) = emit_boundaries_and_commands(root);
     let has_boundary_facts = !boundaries.is_empty();
@@ -156,9 +176,15 @@ pub fn build_ripr_facts_packet(
 
     let mut packet = build_unavailable_packet(schema, root, base, head, &normalized_classes);
 
-    // Populate tests + oracles arrays.
+    // Populate tests + oracles arrays (parser-backed, #3293 PR 4) and append the
+    // `test_discovery` / `oracle_extraction` provenance the facts reference by id.
     packet["tests"] = serde_json::Value::Array(tests);
     packet["oracles"] = serde_json::Value::Array(oracles);
+    if has_test_facts || has_oracle_facts {
+        if let Some(provenance) = packet["provenance"].as_array_mut() {
+            provenance.extend(test_provenance);
+        }
+    }
 
     // Populate relations array (PR 7).
     packet["relations"] = serde_json::Value::Array(relations);
@@ -180,9 +206,15 @@ pub fn build_ripr_facts_packet(
         }
     }
 
+    // Test parse/framework limitations describe the tests/oracles classes, so
+    // only surface them when those classes were requested.
+    let test_limitations = if wants_tests || wants_oracles { test_limitations } else { Vec::new() };
+
     // Upgrade status + merge limitations if we found any facts. Parse/read
-    // limitations from the files pass are always surfaced (even with no facts).
+    // limitations from the test and files passes are always surfaced (even with
+    // no facts).
     let has_facts = has_test_facts
+        || has_oracle_facts
         || has_relation_facts
         || has_boundary_facts
         || has_change_facts
@@ -190,21 +222,23 @@ pub fn build_ripr_facts_packet(
         || has_owner_facts;
     if has_facts {
         packet["packet_status"] = serde_json::json!("partial");
-        // Merge boundary limitations, the emitter-partial note, and any
-        // parse/read limitations from the files pass.
+        // Merge boundary limitations, the emitter-partial note, and the
+        // test/file parse limitations.
         let mut all_limitations = boundary_limitations;
         all_limitations.push(serde_json::json!({
             "limitation_id": "emitter-partial",
             "kind": "partial_emitter",
-            "message": "Tests/oracles, relations/discriminators, boundaries/commands, and files/owners (parser-backed) are emitted. Diff-derived changes (managed-producer mode) are not yet emitted.",
+            "message": "Parser-backed tests/oracles, relations/discriminators, boundaries/commands, and files/owners are emitted. Diff-derived changes (managed-producer mode) are not yet emitted.",
             "evidence_refs": []
         }));
+        all_limitations.extend(test_limitations);
         all_limitations.extend(file_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
-    } else if !file_limitations.is_empty() {
-        // No facts, but the files pass hit read/parse failures — surface them
-        // next to the base `emitter-not-yet-implemented` limitation.
+    } else if !test_limitations.is_empty() || !file_limitations.is_empty() {
+        // No facts, but the test/files passes hit parse/read failures — surface
+        // them next to the base `emitter-not-yet-implemented` limitation.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
+            limitations.extend(test_limitations);
             limitations.extend(file_limitations);
         }
     }
@@ -733,6 +767,259 @@ mod tests {
 
         assert!(packet["files"].as_array().unwrap().is_empty(), "files not requested → empty");
         assert!(packet["owners"].as_array().unwrap().is_empty(), "owners not requested → empty");
+    }
+
+    // ── PR 4 parser-backed tests/oracles tests (#3293) ──
+
+    /// Build a packet from a single synthetic `t/foo.t` file with the given
+    /// requested fact classes, then clean the fixture up.
+    fn packet_for_t(dir: &str, t_content: &str, fact_classes: &str) -> serde_json::Value {
+        let root = format!("target/ripr-p4-fixtures/{dir}");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/ dir");
+        std::fs::write(format!("{root}/t/foo.t"), t_content).expect("write t file");
+        let packet = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root: &root,
+            base: None,
+            head: None,
+            fact_classes,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(&root);
+        packet
+    }
+
+    fn tests_of(packet: &serde_json::Value) -> Vec<serde_json::Value> {
+        packet["tests"].as_array().expect("tests[]").clone()
+    }
+    fn oracles_of(packet: &serde_json::Value) -> Vec<serde_json::Value> {
+        packet["oracles"].as_array().expect("oracles[]").clone()
+    }
+
+    #[test]
+    fn build_packet_detects_test_more_import() {
+        let p = packet_for_t("tm-import", "use Test::More;\nok(1);\n", "tests");
+        assert_eq!(tests_of(&p)[0]["framework"], "Test::More");
+    }
+
+    #[test]
+    fn build_packet_detects_test2_v0_import() {
+        let p = packet_for_t("t2v0-import", "use Test2::V0;\nok(1);\n", "tests");
+        assert_eq!(tests_of(&p)[0]["framework"], "Test2::V0");
+    }
+
+    #[test]
+    fn build_packet_detects_test2_v1_import() {
+        let p = packet_for_t("t2v1-import", "use Test2::V1;\nok(1);\n", "tests");
+        assert_eq!(tests_of(&p)[0]["framework"], "Test2::V1");
+    }
+
+    #[test]
+    fn build_packet_detects_test2_suite_import() {
+        let p = packet_for_t("t2suite-import", "use Test2::Suite;\nok(1);\n", "tests");
+        assert_eq!(tests_of(&p)[0]["framework"], "Test2::Suite");
+    }
+
+    #[test]
+    fn build_packet_detects_test_exception_import() {
+        let p = packet_for_t("te-import", "use Test::Exception;\nok(1);\n", "tests");
+        assert_eq!(tests_of(&p)[0]["framework"], "Test::Exception");
+    }
+
+    #[test]
+    fn build_packet_detects_test_fatal_import() {
+        let p = packet_for_t("tf-import", "use Test::Fatal;\nok(1);\n", "tests");
+        assert_eq!(tests_of(&p)[0]["framework"], "Test::Fatal");
+    }
+
+    #[test]
+    fn build_packet_emits_test_fact_for_t_file() {
+        let p = packet_for_t("test-fact", "use Test::More;\nok(1);\ndone_testing;\n", "tests");
+        let t = tests_of(&p);
+        assert_eq!(t.len(), 1, "one test fact for the .t file");
+        assert_eq!(t[0]["name"], "t/foo.t");
+        assert_eq!(t[0]["test_id"], "test:t/foo.t");
+        assert_eq!(t[0]["file_id"], "file:t/foo.t");
+    }
+
+    #[test]
+    fn build_packet_emits_subtest_owner_or_test_fact_with_real_range() {
+        // Subtest ownership is not required; the file-level test fact must carry a
+        // real (non-placeholder) range spanning the file.
+        let src = "use Test::More;\nsubtest 'grp' => sub {\n  ok(1);\n};\ndone_testing;\n";
+        let p = packet_for_t("subtest", src, "tests");
+        let t = tests_of(&p);
+        assert_eq!(t.len(), 1);
+        let placeholder =
+            serde_json::json!({"start_line": 1, "start_column": 1, "end_line": 1, "end_column": 1});
+        assert_ne!(t[0]["range"], placeholder, "real file range, not a 1:1 placeholder");
+        assert!(t[0]["range"]["end_line"].as_u64().expect("end_line") >= 3, "spans the file");
+    }
+
+    #[test]
+    fn build_packet_emits_test_more_ok_oracle() {
+        let p = packet_for_t("tm-ok", "use Test::More;\nok(1, 'name');\n", "tests,oracles");
+        assert!(oracles_of(&p).iter().any(|o| o["kind"] == "smoke_ok"), "ok → smoke_ok");
+    }
+
+    #[test]
+    fn build_packet_emits_test_more_is_oracle() {
+        let p = packet_for_t("tm-is", "use Test::More;\nis($x, 1, 'name');\n", "tests,oracles");
+        assert!(
+            oracles_of(&p).iter().any(|o| o["kind"] == "exact_return_assertion"),
+            "is → exact_return_assertion"
+        );
+    }
+
+    #[test]
+    fn build_packet_emits_test_more_like_oracle() {
+        let p =
+            packet_for_t("tm-like", "use Test::More;\nlike($x, qr/y/, 'name');\n", "tests,oracles");
+        assert!(
+            oracles_of(&p)
+                .iter()
+                .any(|o| o["kind"] == "predicate_boundary_assertion"
+                    && o["strength"] == "weak_broad"),
+            "like → predicate_boundary_assertion / weak_broad"
+        );
+    }
+
+    #[test]
+    fn build_packet_emits_test_more_cmp_ok_oracle() {
+        let p = packet_for_t(
+            "tm-cmpok",
+            "use Test::More;\ncmp_ok($x, '==', 1, 'name');\n",
+            "tests,oracles",
+        );
+        assert!(
+            oracles_of(&p)
+                .iter()
+                .any(|o| o["kind"] == "predicate_boundary_assertion"
+                    && o["strength"] == "strong_exact"),
+            "cmp_ok → predicate_boundary_assertion / strong_exact"
+        );
+    }
+
+    #[test]
+    fn build_packet_emits_test2_is_oracle() {
+        let p = packet_for_t("t2-is", "use Test2::V0;\nis($x, 1, 'name');\n", "tests,oracles");
+        assert!(
+            oracles_of(&p).iter().any(|o| o["kind"] == "exact_return_assertion"),
+            "Test2 is → exact_return_assertion"
+        );
+        assert_eq!(tests_of(&p)[0]["framework"], "Test2::V0");
+    }
+
+    #[test]
+    fn build_packet_emits_test_exception_throws_ok_oracle() {
+        let p = packet_for_t(
+            "te-throws",
+            "use Test::Exception;\nthrows_ok { die } qr/x/, 'name';\n",
+            "tests,oracles",
+        );
+        assert!(
+            oracles_of(&p).iter().any(|o| o["kind"] == "exception_observer"),
+            "throws_ok → exception_observer"
+        );
+    }
+
+    #[test]
+    fn build_packet_emits_test_fatal_exception_oracle() {
+        let p = packet_for_t(
+            "tf-exception",
+            "use Test::Fatal;\nis(exception { die }, undef, 'name');\n",
+            "tests,oracles",
+        );
+        assert!(
+            oracles_of(&p).iter().any(|o| o["kind"] == "exception_observer"
+                && o["expression"].as_str().is_some_and(|e| e.contains("exception"))),
+            "Test::Fatal exception(...) → exception_observer"
+        );
+    }
+
+    #[test]
+    fn build_packet_oracle_ranges_are_not_placeholder() {
+        let p = packet_for_t(
+            "no-placeholder",
+            "use Test::More;\nis(1, 1, 'a');\nok(1, 'b');\n",
+            "tests,oracles",
+        );
+        let placeholder =
+            serde_json::json!({"start_line": 1, "start_column": 1, "end_line": 1, "end_column": 1});
+        let os = oracles_of(&p);
+        assert!(!os.is_empty(), "must emit oracles");
+        assert!(os.iter().all(|o| o["range"] != placeholder), "no 1:1 placeholder ranges");
+    }
+
+    #[test]
+    fn build_packet_test_oracles_are_deterministically_ordered() {
+        let src = "use Test::More;\nis(1, 1);\nok(1);\nis(2, 2);\n";
+        let a = packet_for_t("det-a", src, "tests,oracles");
+        let b = packet_for_t("det-b", src, "tests,oracles");
+        assert_eq!(a["oracles"], b["oracles"], "identical input → identical oracle order");
+        assert!(oracles_of(&a).len() >= 3, "all three assertions extracted");
+    }
+
+    #[test]
+    fn build_packet_skips_test_parse_when_tests_or_oracles_not_requested() {
+        // A `files`-only request must not emit tests/oracles even though the .t
+        // file has assertions.
+        let p = packet_for_t("gate", "use Test::More;\nis(1, 1);\nok(1);\n", "files");
+        assert!(tests_of(&p).is_empty(), "tests not requested → empty");
+        assert!(oracles_of(&p).is_empty(), "oracles not requested → empty");
+    }
+
+    #[test]
+    fn build_packet_reports_unparseable_t_file_as_limitation() {
+        // Deeply unbalanced braces trip the parser's recursion guard → parse() Err.
+        let bad = "{".repeat(5000);
+        let p = packet_for_t("unparseable", &bad, "tests,oracles,limitations");
+        // Not silent: a test fact is still emitted (unknown framework) ...
+        assert!(tests_of(&p).iter().any(|t| t["name"] == "t/foo.t"), "test fact emitted");
+        // ... and a parse-failure limitation is recorded.
+        let lims = p["limitations"].as_array().expect("limitations[]");
+        assert!(
+            lims.iter().any(|l| l["limitation_id"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("test-parse-failed:"))),
+            "unparseable .t must surface a test-parse-failed limitation"
+        );
+    }
+
+    #[test]
+    fn wrapper_output_matches_batch_packet_after_test_oracle_facts() -> std::io::Result<()> {
+        // Parity means batch API == wrapper-written packet (not PR4 == PR3).
+        let root = "target/ripr-p4-parity";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/t"))?;
+        std::fs::write(
+            format!("{root}/t/foo.t"),
+            "use Test::More;\nis(1, 1, 'a');\nok(1, 'b');\n",
+        )?;
+        let out = format!("{root}/packet.json");
+        let rc = run_ripr_facts(
+            "ripr-perl-facts-v1",
+            root,
+            None,
+            None,
+            "tests,oracles,provenance,limitations",
+            &out,
+        );
+        assert_eq!(rc, 0, "wrapper succeeds");
+        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out)?)?;
+        let built = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "tests,oracles,provenance,limitations",
+        })
+        .expect("valid request");
+        assert_eq!(built, written, "batch API packet == wrapper-written packet");
+        assert!(!built["oracles"].as_array().expect("oracles[]").is_empty(), "oracles present");
+        let _ = std::fs::remove_dir_all(root);
+        Ok(())
     }
 
     // ── ripr-facts command tests (Campaign 31 PR 4, perl-lsp-swarm#2591) ──
