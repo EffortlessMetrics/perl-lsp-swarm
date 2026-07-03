@@ -419,6 +419,17 @@ impl Test2Facts {
         !self.modules.is_empty()
     }
 
+    /// Whether an imported Test2 bundle turns on the named pragma. Only
+    /// `strict` and `warnings` are provided by Test2 bundles; every other
+    /// feature returns `false`.
+    pub fn provides_pragma(&self, feature: &str) -> bool {
+        match feature {
+            "strict" => self.strict,
+            "warnings" => self.warnings,
+            _ => false,
+        }
+    }
+
     /// Whether the file imports any Test2 *bundle* (`Test2::V0`, etc.).
     pub fn uses_test2_bundle(&self) -> bool {
         self.modules.iter().any(|m| is_test2_bundle(m))
