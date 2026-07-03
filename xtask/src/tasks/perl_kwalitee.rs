@@ -155,7 +155,16 @@ pub fn explain(id: &str) -> Result<()> {
 /// workspace and are skipped.
 fn resolve_root(repo_root: Option<PathBuf>) -> Result<(PathBuf, bool)> {
     match repo_root {
-        Some(root) => Ok((root, false)),
+        Some(root) => {
+            // Fail loudly on a typo/missing path rather than silently evaluating
+            // an empty tree (every native indicator would just read missing
+            // files and report Unverified, letting a non-strict `check` pass
+            // without having evaluated anything).
+            if !root.is_dir() {
+                bail!("--repo-root {} is not an existing directory", root.display());
+            }
+            Ok((root, false))
+        }
         None => Ok((project_root()?, true)),
     }
 }
@@ -286,20 +295,35 @@ fn write_file(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// Git HEAD of the evaluated tree; `"unknown"` when `root` is not a git repo or
-/// git is unavailable. Scoped to `root` so a `--repo-root` receipt records the
-/// commit of the tree it describes, not the live workspace.
+/// Git HEAD of the evaluated tree; `"unknown"` when `root` is not the top level
+/// of a git repo or git is unavailable.
+///
+/// `git -C <root> rev-parse HEAD` walks *up* the directory tree, so if `root`
+/// is a subdirectory of a repo (e.g. `--repo-root crates/foo` or a `target/`
+/// subdir of the live workspace) it would return the parent repo's HEAD. Guard
+/// with `--show-toplevel` and only stamp HEAD when `root` is itself the repo
+/// top level; otherwise the receipt records `"unknown"` rather than leaking an
+/// unrelated commit.
 fn current_commit(root: &Path) -> String {
-    Command::new("git")
-        .current_dir(root)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|c| !c.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
+    let git = |args: &[&str]| -> Option<String> {
+        Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    let is_own_toplevel = git(&["rev-parse", "--show-toplevel"])
+        .is_some_and(|top| std::fs::canonicalize(&top).ok() == std::fs::canonicalize(root).ok());
+    if !is_own_toplevel {
+        return "unknown".to_string();
+    }
+
+    git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string())
 }
 
 /// RFC 3339 timestamp for the receipt envelope.

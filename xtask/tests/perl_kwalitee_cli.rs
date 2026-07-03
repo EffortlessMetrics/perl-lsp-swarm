@@ -6,11 +6,12 @@
 //! codes, and profile scoping. `report`/`check` are driven against a hermetic
 //! fixture tree via `--repo-root` so they are fast and deterministic (no live
 //! workspace gates, no `update-status`).
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use assert_cmd::Command;
 use color_eyre::eyre::Result;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 /// Build a minimal, *clean* distribution tree the native indicators all pass on.
@@ -44,9 +45,14 @@ fn write(root: &Path, rel: &str, contents: &str) -> Result<()> {
 }
 
 /// Run `perl-kwalitee report` against `root` and return the parsed JSON receipt.
+///
+/// Receipts are written to a throwaway directory (not into `root`) so the
+/// evaluated tree is never polluted — this lets `root` point at a real
+/// subdirectory of the live repo without dirtying tracked files.
 fn report_json(root: &Path, profile: &str) -> Result<Value> {
-    let out = root.join("kwalitee.json");
-    let md = root.join("kwalitee.md");
+    let out_dir = tempfile::tempdir()?;
+    let out = out_dir.path().join("kwalitee.json");
+    let md = out_dir.path().join("kwalitee.md");
     let output = Command::cargo_bin("xtask")?
         .args(["perl-kwalitee", "report", "--profile", profile, "--repo-root"])
         .arg(root)
@@ -149,6 +155,39 @@ fn report_repo_root_stamps_commit_of_evaluated_tree() -> Result<()> {
     let dir = clean_fixture()?;
     let receipt = report_json(dir.path(), "pr")?;
     assert_eq!(receipt["commit"], "unknown", "non-git fixture must not stamp the live HEAD");
+    Ok(())
+}
+
+#[test]
+fn report_repo_root_subdir_of_git_repo_stamps_unknown() -> Result<()> {
+    // A --repo-root pointing at a SUBDIRECTORY of a git repo (here: the xtask
+    // crate dir inside the live workspace) must still stamp "unknown", not the
+    // parent repo's HEAD — `git rev-parse HEAD` walks up, so the commit is only
+    // valid when root is the repo top level.
+    let subdir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let receipt = report_json(&subdir, "pr")?;
+    assert_eq!(receipt["commit"], "unknown", "a repo subdir must not stamp the parent HEAD");
+    Ok(())
+}
+
+#[test]
+fn missing_repo_root_errors() -> Result<()> {
+    // A typo/missing --repo-root must error, not silently evaluate an empty tree
+    // (which would let a non-strict `check` pass without evaluating anything).
+    let dir = tempfile::tempdir()?;
+    let missing = dir.path().join("does-not-exist");
+    for sub in ["check", "report"] {
+        let output = Command::cargo_bin("xtask")?
+            .args(["perl-kwalitee", sub, "--repo-root"])
+            .arg(&missing)
+            .output()?;
+        assert!(!output.status.success(), "{sub} with a missing --repo-root must error");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("not an existing directory"),
+            "{sub} should explain the bad --repo-root: {stderr}"
+        );
+    }
     Ok(())
 }
 
