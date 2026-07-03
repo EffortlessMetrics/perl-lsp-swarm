@@ -212,9 +212,14 @@ pub fn build_ripr_facts_packet(
         }
     }
 
-    // Test parse/framework limitations describe the tests/oracles classes, so
-    // only surface them when those classes were requested.
-    let test_limitations = if wants_tests || wants_oracles { test_limitations } else { Vec::new() };
+    // `limitations` is a meta-class that aggregates every emitter's limitations,
+    // so surface the test-pass limitations whenever the test parse actually ran —
+    // i.e. for the same `tests`/`oracles`/`relations` gate that produced them. A
+    // `relations`(-driven) request parses the test files, so its test-parse
+    // failures must not be silently dropped (they'd make an empty `limitations[]`
+    // look like a clean run). Gating only on `tests`/`oracles` would hide them.
+    let test_limitations =
+        if wants_tests || wants_oracles || wants_relations { test_limitations } else { Vec::new() };
 
     // Upgrade status + merge limitations if we found any facts. Parse/read
     // limitations from the test and files passes are always surfaced (even with
@@ -1012,6 +1017,31 @@ mod tests {
                 "relation.test_id {tid} must resolve to a test fact in the packet"
             );
         }
+    }
+
+    #[test]
+    fn build_packet_relations_request_surfaces_test_parse_limitation() {
+        // `relations` drives the test parse (to build relations), so a parse
+        // failure in a .t file must still surface a limitation even though
+        // `tests`/`oracles` weren't requested — `limitations` is a meta-class.
+        // Guards against silently dropping test-side limitations (droid P2).
+        // No `lib/`, so no relation is emitted (the parse still runs because
+        // `relations` is requested) — this isolates the limitation-surfacing
+        // behavior from the referential-integrity retention of `tests[]`.
+        let p = packet_for_t("relations-limitations", &"{".repeat(5000), "relations,limitations");
+
+        // Tests/oracles were not requested and no relation references them →
+        // not emitted...
+        assert!(tests_of(&p).is_empty(), "tests not requested → empty");
+        assert!(oracles_of(&p).is_empty(), "oracles not requested → empty");
+        // ...but the test-parse-failed limitation is NOT dropped.
+        let lims = p["limitations"].as_array().expect("limitations[]");
+        assert!(
+            lims.iter().any(|l| l["limitation_id"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("test-parse-failed:"))),
+            "relations-driven test parse failure must surface a limitation"
+        );
     }
 
     #[test]

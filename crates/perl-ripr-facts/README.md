@@ -77,9 +77,10 @@ parser-backed files/owners slice (PR 3). Both `files[]`/`owners[]` and now
 This uses the clean leaf crates `perl-parser-core` (parse + `LineIndex`
 byte→line/column) and `perl-symbol` (`extract_symbol_decls` /
 `extract_symbol_refs`) — not `perl-workspace` (which pulls `lsp-types`).
-Relations and dynamic boundaries remain from earlier conservative slices;
-diff-derived `changes[]`, `direct_owner_call` relations, and the packet
-fingerprint land in later slices.
+Relations (including a heuristic `direct_owner_call`) and dynamic boundaries
+remain from earlier conservative slices; diff-derived `changes[]`, the
+parser-backed/semantic relations that will replace the current string-heuristic
+`direct_owner_call`, and the packet fingerprint land in later slices.
 
 The `perl-lsp` / `perllsp` binaries retain the `ripr-facts` subcommand as a
 thin wrapper that calls [`run_ripr_facts`].
