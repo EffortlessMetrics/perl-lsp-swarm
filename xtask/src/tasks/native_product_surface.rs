@@ -28,9 +28,11 @@
 //! user-facing **prose values** only. `package.json` legitimately contains the
 //! tool names inside setting keys (`perl-lsp.perlcritic.enabled`) and command
 //! ids, so a naive bare-name rule over the whole file would be all false
-//! positives; instead the JSON scan walks only [`STRICT_PROSE_KEYS`] string
-//! values (`description` / `markdownDescription` / `title` / `detail`) — the copy
-//! a user actually reads — while leaving keys and ids untouched. Their
+//! positives; instead the JSON scan walks only [`STRICT_PROSE_KEYS`] values
+//! (`description` / `markdownDescription` / `title` / `detail` /
+//! `enumDescriptions` / `deprecationMessage` and their markdown variants) — the
+//! copy a user actually reads in the Settings UI — while leaving keys and ids
+//! untouched. Their
 //! product-surface risk in keys/ids is still covered by the default
 //! [`DISALLOWED`] pass. Reference/compatibility/conformance/archive material and
 //! tests are exempt via [`STRICT_PATH_ALLOWLIST`] — that is where legacy detail
@@ -125,13 +127,29 @@ const STRICT_PATH_ALLOWLIST: &[&str] = &[
     ".spec",
 ];
 
-/// JSON object keys whose *string values* are user-facing prose on a manifest
-/// surface (`package.json`): setting descriptions, command titles, walkthrough
-/// copy. Strict mode scans these values for bare external-tool names while
-/// leaving keys, setting ids, and command ids untouched — those legitimately
-/// contain the tool names (`perl-lsp.perlcritic.enabled`) and are covered by the
-/// default [`DISALLOWED`] pass, not the strict bare-name rule.
-const STRICT_PROSE_KEYS: &[&str] = &["description", "markdowndescription", "title", "detail"];
+/// JSON object keys whose values are user-facing prose on a manifest surface
+/// (`package.json`): setting descriptions, dropdown-option descriptions,
+/// deprecation tooltips, command titles, walkthrough copy. Strict mode scans
+/// these values for bare external-tool names while leaving keys, setting ids,
+/// and command ids untouched — those legitimately contain the tool names
+/// (`perl-lsp.perlcritic.enabled`) and are covered by the default [`DISALLOWED`]
+/// pass, not the strict bare-name rule.
+///
+/// Both scalar-string values (`description`) and array-of-string values
+/// (`enumDescriptions`, one entry per dropdown option) are covered — see
+/// [`collect_json_prose`]. All are rendered in the same VS Code Settings UI a
+/// user reads, so a leak in any of them is as user-visible as one in
+/// `description`.
+const STRICT_PROSE_KEYS: &[&str] = &[
+    "description",
+    "markdowndescription",
+    "title",
+    "detail",
+    "enumdescriptions",
+    "markdownenumdescriptions",
+    "deprecationmessage",
+    "markdowndeprecationmessage",
+];
 
 /// Entry point for `cargo xtask check-native-product-surface`, honoring the
 /// `--strict` flag.
@@ -316,17 +334,27 @@ fn collect_strict_json_prose_violations(surface: &str, text: &str, violations: &
     }
 }
 
-/// Recursively collect the string values of every [`STRICT_PROSE_KEYS`] object
+/// Recursively collect the prose values of every [`STRICT_PROSE_KEYS`] object
 /// key into `out`. Keys are matched case-insensitively so `markdownDescription`
 /// and `markdowndescription` both count.
+///
+/// A prose key's value may be a scalar string (`description`) or an array of
+/// strings (`enumDescriptions` — one entry per dropdown option); both are
+/// flattened into `out`. Values that are neither (numbers, nested objects) are
+/// ignored at the prose-key level but still recursed into, so prose keys nested
+/// deeper in the tree are still found.
 fn collect_json_prose(value: &serde_json::Value, out: &mut Vec<String>) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, v) in map {
-                if STRICT_PROSE_KEYS.contains(&key.to_ascii_lowercase().as_str())
-                    && let Some(s) = v.as_str()
-                {
-                    out.push(s.to_string());
+                if STRICT_PROSE_KEYS.contains(&key.to_ascii_lowercase().as_str()) {
+                    match v {
+                        serde_json::Value::String(s) => out.push(s.clone()),
+                        serde_json::Value::Array(arr) => {
+                            out.extend(arr.iter().filter_map(|el| el.as_str().map(String::from)));
+                        }
+                        _ => {}
+                    }
                 }
                 collect_json_prose(v, out);
             }
@@ -599,6 +627,63 @@ Install `perltidy` only if you selected the external compatibility engine.\n";
         collect_strict_json_prose_violations("package.json", json, &mut violations);
         // title:perltidy, description:perlcritic, detail:perltidy => 3
         assert_eq!(violations.len(), 3, "title/description/detail all scanned: {violations:?}");
+    }
+
+    #[test]
+    fn json_prose_scans_enum_descriptions_and_deprecation_messages() {
+        // `enumDescriptions` (array of per-option strings) and
+        // `deprecationMessage` (string) are user-facing Settings-UI copy. A bare
+        // external-tool requirement in either must flag — this is the leak class
+        // a `description`-only key list missed (the live `perl-lsp.critic.engine`
+        // enumDescription names Perl::Critic and is saved only by an incidental
+        // "legacy"; without a qualifier it must be caught).
+        let json = r#"{
+            "contributes": {
+                "configuration": {
+                    "properties": {
+                        "perl-lsp.critic.engine": {
+                            "enum": ["native", "legacy"],
+                            "enumDescriptions": [
+                                "Native built-in critic (no external tools)",
+                                "Requires the perlcritic binary on PATH"
+                            ],
+                            "deprecationMessage": "Install perltidy to format."
+                        }
+                    }
+                }
+            }
+        }"#;
+        let mut violations = Vec::new();
+        collect_strict_json_prose_violations("package.json", json, &mut violations);
+        // enumDescriptions[1]:perlcritic (unqualified), deprecationMessage:perltidy => 2.
+        // enumDescriptions[0] carries no marker; a native-first qualifier is absent
+        // on the two leaking entries, so both flag.
+        assert_eq!(violations.len(), 2, "enum + deprecation prose scanned: {violations:?}");
+        assert!(violations.iter().any(|v| v.contains("perlcritic")));
+        assert!(violations.iter().any(|v| v.contains("perltidy")));
+    }
+
+    #[test]
+    fn json_prose_enum_description_with_legacy_qualifier_passes() {
+        // Mirrors the live manifest: an enumDescription that names the external
+        // tool but frames it as `legacy` is native-first and must NOT flag.
+        let json = r#"{
+            "contributes": {
+                "configuration": {
+                    "properties": {
+                        "perl-lsp.critic.engine": {
+                            "enumDescriptions": [
+                                "Native built-in critic (default, no external tools required)",
+                                "Legacy external Perl::Critic (requires the perlcritic binary on PATH)"
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+        let mut violations = Vec::new();
+        collect_strict_json_prose_violations("package.json", json, &mut violations);
+        assert!(violations.is_empty(), "legacy-qualified enum prose must pass: {violations:?}");
     }
 
     #[test]
