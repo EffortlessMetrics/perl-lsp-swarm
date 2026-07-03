@@ -5,10 +5,16 @@
 //! library-only path. This indicator guards against a clap `--bridge` flag
 //! being reintroduced onto the product CLI.
 //!
-//! The check is deliberately precise: it looks for an actual clap flag
-//! definition (`long = "bridge"`), not the string `"--bridge"`. That keeps it
-//! from false-positiving on the crate's own regression test, which asserts the
-//! flag is *absent* by matching the `"--bridge"` string.
+//! The check catches both ways clap can expose a `--bridge` flag:
+//!
+//! - an explicit long name — `long = "bridge"`; and
+//! - the derive **shorthand** `#[arg(long)]` (or `#[clap(long)]`) on a field
+//!   literally named `bridge`, where clap derives the flag name from the field
+//!   (the same mechanism that turns `log_level` into `--log-level`).
+//!
+//! It is deliberately precise: a bare `"--bridge"` string (as in the crate's own
+//! regression test, which asserts the flag is *absent*) is not a flag
+//! definition and must not trip the check.
 
 use std::path::Path;
 
@@ -18,8 +24,48 @@ use crate::indicator::EvidenceRef;
 /// CLI source files scanned for a reintroduced bridge flag.
 const CLI_SOURCES: &[&str] = &["crates/perl-dap/src/main.rs"];
 
-/// clap flag-definition markers that would expose a `--bridge` product flag.
-const BRIDGE_FLAG_MARKERS: &[&str] = &["long = \"bridge\"", "long = \"Bridge\""];
+/// How many preceding lines to look back for a clap arg attribute above a
+/// `bridge` field declaration (the attribute usually sits on its own line).
+const ATTR_LOOKBACK: usize = 3;
+
+/// Whether `line` is a clap arg attribute that opts a field into a long flag
+/// (`#[arg(long ...)]` / `#[clap(long ...)]`), covering both the shorthand
+/// `long` and the explicit `long = "..."` forms.
+fn is_clap_long_attr(line: &str) -> bool {
+    let l = line.to_ascii_lowercase();
+    (l.contains("#[arg(") || l.contains("#[clap(")) && l.contains("long")
+}
+
+/// Whether `line` declares a struct field literally named `bridge`
+/// (e.g. `bridge: bool` / `pub bridge : Bar`). Anchored at the start of the
+/// trimmed line so comments and paths like `bridge_adapter::new` do not match.
+fn is_bridge_field_decl(line: &str) -> bool {
+    let t = line.trim().trim_start_matches("pub ").trim_start();
+    t.starts_with("bridge:") || t.starts_with("bridge :")
+}
+
+/// Scan CLI source text; return 1-based line numbers that expose a bridge flag.
+fn scan(text: &str) -> Vec<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut hits = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        // Explicit long name, or a same-line `#[arg(long)] bridge: ...`.
+        if line.to_ascii_lowercase().contains("long = \"bridge\"")
+            || (is_clap_long_attr(line) && line.replace(' ', "").contains("bridge:"))
+        {
+            hits.push(idx + 1);
+            continue;
+        }
+        // Shorthand: a `bridge` field under a nearby clap long attribute.
+        if is_bridge_field_decl(line) {
+            let start = idx.saturating_sub(ATTR_LOOKBACK);
+            if lines[start..idx].iter().any(|l| is_clap_long_attr(l)) {
+                hits.push(idx + 1);
+            }
+        }
+    }
+    hits
+}
 
 /// `dap.cli_native_only`.
 pub(crate) fn cli_native_only(repo_root: &Path) -> Outcome {
@@ -34,11 +80,8 @@ pub(crate) fn cli_native_only(repo_root: &Path) -> Outcome {
             continue;
         };
         any_source_read = true;
-        for (idx, line) in text.lines().enumerate() {
-            let normalized = line.to_ascii_lowercase();
-            if BRIDGE_FLAG_MARKERS.iter().any(|m| normalized.contains(&m.to_ascii_lowercase())) {
-                hits.push(format!("{source}:{}", idx + 1));
-            }
+        for line in scan(&text) {
+            hits.push(format!("{source}:{line}"));
         }
     }
 
@@ -88,10 +131,45 @@ mod tests {
     }
 
     #[test]
-    fn reintroduced_flag_fails() {
+    fn reintroduced_explicit_flag_fails() {
         let dir = tempfile::tempdir().expect("tmp");
         write_main(dir.path(), "struct Args {\n  #[arg(long = \"bridge\")]\n  bridge: bool,\n}\n");
         assert_eq!(cli_native_only(dir.path()).status, IndicatorStatus::Fail);
+    }
+
+    #[test]
+    fn reintroduced_shorthand_flag_fails() {
+        // The idiomatic clap form: `#[arg(long)]` derives `--bridge` from the
+        // field name. Must be caught even though there is no `long = "bridge"`.
+        let dir = tempfile::tempdir().expect("tmp");
+        write_main(dir.path(), "struct Args {\n  #[arg(long)]\n  bridge: bool,\n}\n");
+        assert_eq!(cli_native_only(dir.path()).status, IndicatorStatus::Fail);
+    }
+
+    #[test]
+    fn shorthand_on_same_line_fails() {
+        let dir = tempfile::tempdir().expect("tmp");
+        write_main(dir.path(), "struct Args {\n  #[arg(long)] bridge: bool,\n}\n");
+        assert_eq!(cli_native_only(dir.path()).status, IndicatorStatus::Fail);
+    }
+
+    #[test]
+    fn bridge_field_without_clap_attr_passes() {
+        // A `bridge` field with no clap long attribute is not a CLI flag.
+        let dir = tempfile::tempdir().expect("tmp");
+        write_main(dir.path(), "struct Internal {\n  bridge: bool,\n}\n");
+        assert_eq!(cli_native_only(dir.path()).status, IndicatorStatus::Pass);
+    }
+
+    #[test]
+    fn unrelated_long_flag_passes() {
+        // A different long flag (log_level -> --log-level) must not false-positive.
+        let dir = tempfile::tempdir().expect("tmp");
+        write_main(
+            dir.path(),
+            "struct Args {\n  #[arg(long, default_value = \"info\")]\n  log_level: String,\n}\n",
+        );
+        assert_eq!(cli_native_only(dir.path()).status, IndicatorStatus::Pass);
     }
 
     #[test]

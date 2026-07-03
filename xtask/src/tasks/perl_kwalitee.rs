@@ -72,8 +72,11 @@ pub fn check(profile: PerlKwaliteeProfile, dist: Option<PathBuf>, strict: bool) 
 
     if receipt.verdict.is_failure() {
         bail!(
-            "Perl Kwalitee check failed: {} mandatory indicator(s) not passing",
-            receipt.mandatory_failed_count.max(1)
+            "Perl Kwalitee check failed (verdict {}, score {}/100): {} mandatory failed, {} unverified",
+            receipt.verdict.label(),
+            receipt.score,
+            receipt.mandatory_failed_count,
+            receipt.unverified_count
         );
     }
     Ok(())
@@ -201,6 +204,12 @@ fn add_release_results(results: &mut BTreeMap<String, ExternalResult>, dist: Opt
 }
 
 /// Run `update-status --check` and record the docs.status_current result.
+///
+/// Note: `update-status --check` returns `Err` both for genuine doc drift and
+/// for a tooling failure; we map any `Err` to Fail (drift is the expected
+/// common case). This is why the Kwalitee CI job starts advisory — a tooling
+/// error would otherwise spuriously fail a mandatory indicator. The appended
+/// error `note` distinguishes the two on inspection.
 fn add_docs_status_result(results: &mut BTreeMap<String, ExternalResult>) {
     let run = update_status::run(false, true, None);
     let evidence = vec![EvidenceRef::command("cargo xtask update-status --check")];

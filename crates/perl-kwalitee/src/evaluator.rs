@@ -177,12 +177,17 @@ fn evaluate_spec(spec: &IndicatorSpec, options: &KwaliteeOptions) -> KwaliteeInd
         status: outcome.status,
         score_weight: spec.weight,
         evidence: outcome.evidence,
-        remediation: outcome.remediation.or_else(|| Some(spec.remediation.to_string())).filter(
-            |_| {
-                // Only attach remediation when the indicator did not pass.
-                !matches!(outcome.status, IndicatorStatus::Pass | IndicatorStatus::NotApplicable)
-            },
-        ),
+        // Only attach remediation when the indicator did not pass; fall back to
+        // the catalog default. Scoped so the default string is not allocated for
+        // passing/not-applicable indicators.
+        remediation: if matches!(
+            outcome.status,
+            IndicatorStatus::Pass | IndicatorStatus::NotApplicable
+        ) {
+            None
+        } else {
+            outcome.remediation.or_else(|| Some(spec.remediation.to_string()))
+        },
     }
 }
 

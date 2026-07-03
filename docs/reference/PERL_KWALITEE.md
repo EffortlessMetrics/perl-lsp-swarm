@@ -155,7 +155,7 @@ Each indicator:
 | `mandatory` | bool | blocks the mandatory gate |
 | `status` | string | `pass` / `fail` / `warn` / `not_applicable` / `unverified` |
 | `score_weight` | int | weight in the numeric score |
-| `evidence` | array | `{ kind, value }` pointers (command / receipt / file / test / pr) |
+| `evidence` | array | `{ kind, value }` pointers; `kind` is an open set — the evaluator emits `command` / `receipt` / `file` / `test` / `criterion` / `decision` / `note` |
 | `remediation` | string? | how to fix a non-pass |
 
 ## Publishability

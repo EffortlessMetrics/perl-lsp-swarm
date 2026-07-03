@@ -111,21 +111,34 @@ fn scan(root: &Path, strict: bool) -> Vec<Violation> {
 /// lowercased) before matching so a banned phrasing cannot slip past wrapped in
 /// backticks or recapitalized.
 fn collect(surface: &str, text: &str, strict: bool, out: &mut Vec<Violation>) {
-    let markers: Vec<&&str> = DISALLOWED
+    // Pre-lowercase each marker once, paired with its original casing for the
+    // report, rather than re-lowercasing per line.
+    let markers: Vec<(String, &'static str)> = DISALLOWED
         .iter()
         .chain(if strict { RELEASE_STRICT_DISALLOWED.iter() } else { [].iter() })
+        .map(|&m| (m.to_ascii_lowercase(), m))
         .collect();
 
     for (idx, line) in text.lines().enumerate() {
         let normalized = line.replace('`', "").to_ascii_lowercase();
-        for marker in &markers {
-            if normalized.contains(&marker.to_ascii_lowercase()) {
-                out.push(Violation {
-                    surface: surface.to_string(),
-                    line: idx + 1,
-                    marker: (**marker).to_string(),
-                });
+        // Collect the matching markers on this line, then drop any that are a
+        // substring of another match on the same line (e.g. "perltidy" ⊂
+        // "requires perltidy", or "Perl::LanguageServer" ⊂ its "requirement"
+        // phrase) so one offending line yields one violation, not duplicates.
+        let matched: Vec<&(String, &'static str)> =
+            markers.iter().filter(|(lc, _)| normalized.contains(lc)).collect();
+        for (lc, original) in &matched {
+            let subsumed = matched
+                .iter()
+                .any(|(other_lc, _)| other_lc.len() > lc.len() && other_lc.contains(lc.as_str()));
+            if subsumed {
+                continue;
             }
+            out.push(Violation {
+                surface: surface.to_string(),
+                line: idx + 1,
+                marker: (*original).to_string(),
+            });
         }
     }
 }
@@ -154,6 +167,16 @@ mod tests {
         );
         // In non-strict (pr) mode the raw name alone is allowed.
         assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn substring_markers_do_not_double_report() {
+        // Under release-strict, "requires perltidy" (DISALLOWED) and "perltidy"
+        // (RELEASE_STRICT) both match; only the broader one should be reported.
+        let mut out = Vec::new();
+        collect("s.md", "requires perltidy\n", true, &mut out);
+        assert_eq!(out.len(), 1, "one line -> one violation, got {out:?}");
+        assert_eq!(out[0].marker, "requires perltidy");
     }
 
     #[test]

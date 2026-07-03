@@ -56,8 +56,10 @@ pub(crate) fn no_new_severe_gaps(path: Option<&Path>, expected_commit: &str) -> 
 
     let mut evidence = vec![receipt_ev, EvidenceRef::new("decision", decision)];
 
-    let stale =
-        !expected_commit.is_empty() && !receipt.head.is_empty() && receipt.head != expected_commit;
+    let stale = !expected_commit.is_empty()
+        && expected_commit != "unknown"
+        && !receipt.head.is_empty()
+        && receipt.head != expected_commit;
     if stale {
         evidence.push(EvidenceRef::new(
             "note",
@@ -115,5 +117,11 @@ mod tests {
     fn stale_pass_downgrades_to_warn() {
         let (_d, p) = write("pass", "oldsha");
         assert_eq!(no_new_severe_gaps(Some(&p), "newsha").status, IndicatorStatus::Warn);
+    }
+
+    #[test]
+    fn unknown_expected_commit_does_not_downgrade() {
+        let (_d, p) = write("pass", "realsha");
+        assert_eq!(no_new_severe_gaps(Some(&p), "unknown").status, IndicatorStatus::Pass);
     }
 }

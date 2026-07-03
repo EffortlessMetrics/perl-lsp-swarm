@@ -84,6 +84,7 @@ fn native_default(path: Option<&Path>, expected_commit: &str, area: &str, fix: &
 
     // Freshness: a receipt from a different commit is not trustworthy as a pass.
     let stale = !expected_commit.is_empty()
+        && expected_commit != "unknown"
         && !receipt.commit.is_empty()
         && receipt.commit != expected_commit;
     if stale {
@@ -169,6 +170,17 @@ mod tests {
             "[{\"area\":\"formatter\",\"name\":\"native-default engine\",\"status\":\"ready\"}]",
         );
         assert_eq!(formatter_native_default(Some(&path), "newsha").status, IndicatorStatus::Warn);
+    }
+
+    #[test]
+    fn unknown_expected_commit_does_not_downgrade() {
+        // When git is unavailable the wrapper passes "unknown"; that must not be
+        // treated as a real HEAD and downgrade a ready criterion to warn.
+        let (_d, path) = write_receipt(
+            "realsha",
+            "[{\"area\":\"formatter\",\"name\":\"native-default engine\",\"status\":\"ready\"}]",
+        );
+        assert_eq!(formatter_native_default(Some(&path), "unknown").status, IndicatorStatus::Pass);
     }
 
     #[test]

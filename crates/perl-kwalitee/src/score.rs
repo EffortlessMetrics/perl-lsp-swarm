@@ -85,8 +85,12 @@ pub(crate) fn score(indicators: &[KwaliteeIndicator], strict: bool) -> Scored {
         (KwaliteeVerdict::Pass, 100)
     };
 
-    // mandatory_passed: every mandatory indicator is Pass (none Fail/Unverified).
-    let mandatory_passed = mandatory_failed_count == 0 && mandatory_unverified_count == 0;
+    // mandatory_passed: every applicable mandatory indicator is *Pass*. A
+    // mandatory Warn (e.g. a stale-but-passing receipt downgraded to Warn) is a
+    // non-pass and must make this false, matching the documented contract
+    // ("every mandatory indicator passed").
+    let mandatory_passed =
+        applicable.iter().filter(|i| i.mandatory).all(|i| i.status == IndicatorStatus::Pass);
 
     Scored {
         score,
@@ -167,6 +171,19 @@ mod tests {
         assert!((90..=99).contains(&s.score), "score was {}", s.score);
         // mandatory all passed even though a non-mandatory warned.
         assert!(s.mandatory_passed);
+    }
+
+    #[test]
+    fn mandatory_warn_makes_mandatory_passed_false() {
+        // A mandatory indicator in Warn is a non-pass: mandatory_passed must be
+        // false even though the verdict is only Warn (not Fail).
+        let inds = vec![
+            ind("a", true, 10, IndicatorStatus::Pass),
+            ind("b", true, 5, IndicatorStatus::Warn),
+        ];
+        let s = score(&inds, false);
+        assert_eq!(s.verdict, KwaliteeVerdict::Warn);
+        assert!(!s.mandatory_passed, "mandatory Warn must not report mandatory_passed");
     }
 
     #[test]

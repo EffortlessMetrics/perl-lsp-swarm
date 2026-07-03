@@ -50,7 +50,9 @@ impl IndicatorStatus {
 /// A single piece of evidence backing an indicator's status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceRef {
-    /// Evidence category: `"command"`, `"receipt"`, `"file"`, `"test"`, `"pr"`.
+    /// Evidence category. An open set; the values the evaluator emits are
+    /// `"command"`, `"receipt"`, `"file"`, `"test"`, `"criterion"`,
+    /// `"decision"`, and `"note"` (free-form context such as an error message).
     pub kind: String,
     /// The concrete pointer (a command line, receipt path, file:line, etc.).
     pub value: String,

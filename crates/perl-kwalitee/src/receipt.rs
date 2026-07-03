@@ -137,7 +137,7 @@ fn render_table(out: &mut String, heading: &str, indicators: &[&KwaliteeIndicato
         } else {
             ind.evidence
                 .iter()
-                .map(|e| format!("`{}`", e.value.replace('|', "\\|")))
+                .map(|e| format!("`{}`", sanitize_cell(&e.value)))
                 .collect::<Vec<_>>()
                 .join("<br>")
         };
@@ -165,6 +165,14 @@ fn render_table(out: &mut String, heading: &str, indicators: &[&KwaliteeIndicato
 
 fn status_cell(status: IndicatorStatus) -> &'static str {
     status.as_str()
+}
+
+/// Sanitize a free-form evidence value for a Markdown table cell wrapped in a
+/// backtick code span. Evidence values can carry arbitrary error text
+/// (`Display` of a gate error), so collapse newlines to spaces, neutralize
+/// backticks (which would break the code span), and escape the cell separator.
+fn sanitize_cell(value: &str) -> String {
+    value.replace(['\r', '\n'], " ").replace('`', "'").replace('|', "\\|")
 }
 
 #[cfg(test)]
@@ -228,6 +236,17 @@ mod tests {
         assert_eq!(v["schema_version"], 1);
         assert_eq!(v["verdict"], "pass");
         assert_eq!(v["profile"], "release");
+    }
+
+    #[test]
+    fn markdown_cell_sanitizes_newlines_and_backticks() {
+        let mut r = sample_receipt();
+        r.indicators[0].evidence =
+            vec![EvidenceRef::new("note", "failed:\n  detail with `backtick` and | pipe")];
+        let md = r.to_markdown();
+        // No raw newline may leak inside the table row for that evidence.
+        assert!(!md.contains("failed:\n"));
+        assert!(md.contains("failed:   detail with 'backtick' and \\| pipe"));
     }
 
     #[test]

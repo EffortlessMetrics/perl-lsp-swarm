@@ -22,6 +22,24 @@ fn read_toml(path: &Path) -> Option<toml::Value> {
     toml::from_str::<toml::Value>(&text).ok()
 }
 
+/// Whether a `[workspace].members` entry `pattern` covers `target`.
+///
+/// Cargo allows glob members (e.g. `crates/*`). We handle exact matches and the
+/// common trailing-`/*` glob (a directory's direct children); other glob shapes
+/// fall back to exact match.
+fn member_pattern_covers(pattern: &str, target: &str) -> bool {
+    if pattern == target {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("/*") {
+        // `crates/*` covers `crates/perl-kwalitee` (a direct child, no deeper slash).
+        if let Some(rest) = target.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) {
+            return !rest.contains('/');
+        }
+    }
+    false
+}
+
 /// `manifest.workspace_member_declared`.
 pub(crate) fn workspace_member_declared(repo_root: &Path) -> Outcome {
     let root_manifest = repo_root.join("Cargo.toml");
@@ -38,7 +56,12 @@ pub(crate) fn workspace_member_declared(repo_root: &Path) -> Outcome {
         .get("workspace")
         .and_then(|w| w.get("members"))
         .and_then(|m| m.as_array())
-        .map(|members| members.iter().filter_map(|v| v.as_str()).any(|m| m == CRATE_MEMBER_PATH))
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|v| v.as_str())
+                .any(|m| member_pattern_covers(m, CRATE_MEMBER_PATH))
+        })
         .unwrap_or(false);
 
     if is_member {
@@ -85,15 +108,24 @@ pub(crate) fn publish_policy_clean(repo_root: &Path) -> Outcome {
     }
 
     // Otherwise it must be allowlisted to be an intentional public crate.
-    let allowlisted = read_toml(&root_manifest)
-        .and_then(|v| {
-            v.get("workspace")
-                .and_then(|w| w.get("metadata"))
-                .and_then(|m| m.get("publish"))
-                .and_then(|p| p.get("allow"))
-                .and_then(|a| a.as_array())
-                .map(|allow| allow.iter().filter_map(|x| x.as_str()).any(|c| c == CRATE_NAME))
-        })
+    // The crate manifest was readable but publish is not `false`; we must check
+    // the allowlist. If the root manifest cannot be read we cannot decide, so
+    // report unverified rather than a false "ambiguous" failure — consistent
+    // with `workspace_member_declared`.
+    let Some(root_value) = read_toml(&root_manifest) else {
+        return Outcome::unverified(
+            evidence,
+            "Root Cargo.toml could not be read or parsed as TOML to check the publish allowlist.",
+        );
+    };
+
+    let allowlisted = root_value
+        .get("workspace")
+        .and_then(|w| w.get("metadata"))
+        .and_then(|m| m.get("publish"))
+        .and_then(|p| p.get("allow"))
+        .and_then(|a| a.as_array())
+        .map(|allow| allow.iter().filter_map(|x| x.as_str()).any(|c| c == CRATE_NAME))
         .unwrap_or(false);
 
     if allowlisted {
@@ -187,6 +219,22 @@ mod tests {
     }
 
     #[test]
+    fn member_declared_via_glob() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        write(root, "Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n");
+        assert_eq!(workspace_member_declared(root).status, IndicatorStatus::Pass);
+    }
+
+    #[test]
+    fn glob_does_not_match_deeper_path() {
+        assert!(member_pattern_covers("crates/*", "crates/perl-kwalitee"));
+        assert!(!member_pattern_covers("crates/*", "crates/sub/deeper"));
+        assert!(!member_pattern_covers("other/*", "crates/perl-kwalitee"));
+        assert!(member_pattern_covers("crates/perl-kwalitee", "crates/perl-kwalitee"));
+    }
+
+    #[test]
     fn publish_false_is_clean() {
         let dir = tempfile::tempdir().expect("tmp");
         let root = dir.path();
@@ -206,6 +254,16 @@ mod tests {
         write(root, "Cargo.toml", "[workspace.metadata.publish]\nallow = [\"perl-kwalitee\"]\n");
         write(root, "crates/perl-kwalitee/Cargo.toml", "[package]\nname = \"perl-kwalitee\"\n");
         assert_eq!(publish_policy_clean(root).status, IndicatorStatus::Pass);
+    }
+
+    #[test]
+    fn unreadable_root_manifest_is_unverified() {
+        // Crate manifest readable and not publish=false, but no root manifest to
+        // check the allowlist against → unverified, not a false ambiguity fail.
+        let dir = tempfile::tempdir().expect("tmp");
+        let root = dir.path();
+        write(root, "crates/perl-kwalitee/Cargo.toml", "[package]\nname = \"perl-kwalitee\"\n");
+        assert_eq!(publish_policy_clean(root).status, IndicatorStatus::Unverified);
     }
 
     #[test]
