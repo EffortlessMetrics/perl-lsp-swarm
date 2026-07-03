@@ -1393,7 +1393,7 @@ mod prototype_heuristic_tests {
     /// Perl 5.44 named parameters accept `//=` and `||=` default operators in
     /// addition to `=` (PPC0024). Positional parameters accept only `=`.
     #[test]
-    fn named_parameter_records_slash_slash_and_pipe_pipe_default_operators() {
+    fn named_parameter_records_slash_slash_and_pipe_pipe_default_operators() -> Result<(), String> {
         fn find_op(node: &Node, name: &str) -> Option<Option<String>> {
             if let NodeKind::NamedParameter { external_name, default_operator, .. } = &node.kind {
                 if external_name == name {
@@ -1410,11 +1410,12 @@ mod prototype_heuristic_tests {
         }
 
         let node = parse_sub("sub f (:$a = 1, :$b //= 2, :$c ||= 3) {}")
-            .expect("parse named params with //= and ||= defaults");
+            .ok_or("parse named params with //= and ||= defaults")?;
 
         assert_eq!(find_op(&node, "a"), Some(Some("=".to_string())), ":$a uses `=`");
         assert_eq!(find_op(&node, "b"), Some(Some("//=".to_string())), ":$b uses `//=`");
         assert_eq!(find_op(&node, "c"), Some(Some("||=".to_string())), ":$c uses `||=`");
+        Ok(())
     }
 
     #[test]
