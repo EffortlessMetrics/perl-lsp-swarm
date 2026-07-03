@@ -257,7 +257,7 @@ The GitHub issue thread is not a report destination — it is the database, the 
 
 **Local preflight before merge** — run per-crate, separately (the combined `-p X -p Y` form glitches with a spurious failure). Prefer the agent-safe per-crate recipes (#3230) so builds stay on the routed, incremental-off, cache-warm path instead of raw `cargo` (default `dev` profile → sccache misses):
 ```bash
-just agent-fmt-crate <crate>       # cargo_safe fmt -p <crate> -- --check
+just agent-fmt-crate <crate>       # cargo_safe fmt -p <crate> --check
 just agent-clippy-crate <crate>    # cargo_safe clippy -p <crate> --profile agent --locked -- -D warnings -A missing_docs
 just agent-test-crate <crate>      # cargo_safe test -p <crate> --profile agent --locked
 ```

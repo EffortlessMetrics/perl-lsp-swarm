@@ -49,7 +49,7 @@ agent-clippy-crate CRATE:
     {{cargo_safe}} clippy -p {{CRATE}} --profile agent --locked -- -D warnings -A missing_docs
 
 agent-fmt-crate CRATE:
-    {{cargo_safe}} fmt -p {{CRATE}} -- --check
+    {{cargo_safe}} fmt -p {{CRATE}} --check
 
 # ============================================================================
 # Tiered CI Execution (works locally via Nix and in GitHub Actions)
