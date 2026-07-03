@@ -476,8 +476,9 @@ enum Step {
 /// interleave (the same technique the peer backend uses internally).
 ///
 /// A concrete `TcpStream` is required (not a generic reader) because the
-/// interleave depends on `set_read_timeout`; the external-peer launch uses the
-/// socket transport. stdio async-event delivery is a follow-up.
+/// interleave depends on `set_read_timeout`; the socket transport uses this.
+/// The stdio counterpart is [`run_external_peer_session_stdio`], which uses a
+/// reader thread + channel to interleave events since stdin has no read timeout.
 ///
 /// # Errors
 /// Returns a transport error if the socket read/write fails irrecoverably.
@@ -486,7 +487,7 @@ pub fn run_external_peer_session(
     mut bridge: DapPeerBridge,
     poll_interval: Duration,
 ) -> std::io::Result<()> {
-    use perl_lsp_rs_core::transport::{ContentLengthFramer, frame};
+    use perl_lsp_rs_core::transport::ContentLengthFramer;
 
     stream.set_read_timeout(Some(poll_interval))?;
     let mut reader = stream.try_clone()?;
@@ -494,26 +495,11 @@ pub fn run_external_peer_session(
     let mut framer = ContentLengthFramer::new();
     let mut buf = [0u8; 8 * 1024];
 
-    let write_msgs = |writer: &mut TcpStream, msgs: &[DapMessage]| -> std::io::Result<()> {
-        for m in msgs {
-            // On the (practically impossible) serialize failure, skip the message
-            // rather than writing a `Content-Length: 0` frame that would corrupt
-            // the stream and desync the client.
-            match serde_json::to_vec(m) {
-                Ok(body) => writer.write_all(&frame(&body))?,
-                Err(e) => {
-                    tracing::error!(error = %e, "peer bridge: dropping unserializable DAP message")
-                }
-            }
-        }
-        writer.flush()
-    };
-
     loop {
         // Deliver any asynchronous backend events first.
         let events = bridge.poll_events();
         if !events.is_empty() {
-            write_msgs(&mut writer, &events)?;
+            write_dap_msgs(&mut writer, &events)?;
         }
 
         match reader.read(&mut buf) {
@@ -523,23 +509,9 @@ pub fn run_external_peer_session(
                 loop {
                     match framer.try_next() {
                         Ok(Some(body)) => {
-                            // DAP requires a response to every request. Parse the
-                            // frame leniently (extracting command + seq even if the
-                            // typed `Request` shape doesn't match exactly, e.g. seq
-                            // sent as a JSON float) so a client is never left hanging.
-                            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-                            let command = v.get("command").and_then(Value::as_str);
-                            let Some(command) = command else {
-                                tracing::warn!("peer bridge: dropping DAP frame with no `command`");
-                                continue;
-                            };
-                            let seq = v
-                                .get("seq")
-                                .and_then(|s| s.as_i64().or_else(|| s.as_f64().map(|f| f as i64)))
-                                .unwrap_or(0);
-                            let out = bridge.dispatch(seq, command, v.get("arguments").cloned());
-                            write_msgs(&mut writer, &out)?;
-                            if command == "disconnect" {
+                            let (out, disconnect) = dispatch_frame(&mut bridge, &body);
+                            write_dap_msgs(&mut writer, &out)?;
+                            if disconnect {
                                 return Ok(());
                             }
                         }
@@ -558,6 +530,143 @@ pub fn run_external_peer_session(
         }
     }
     Ok(())
+}
+
+/// Drive a [`DapPeerBridge`] over **stdio** — the default DAP transport an editor
+/// uses when it spawns the adapter as a child process (`perl-dap --external-peer
+/// HOST:PORT` with no `--socket`).
+///
+/// stdin has no read timeout, so a dedicated reader thread frames requests off
+/// stdin and forwards each frame body over a channel; the main loop interleaves
+/// draining backend events to stdout with a `recv_timeout` on that channel, so
+/// asynchronous stops/output reach the editor promptly without blocking on
+/// stdin. This is the stdio counterpart of [`run_external_peer_session`].
+///
+/// # Errors
+/// Returns a transport error if writing framed messages to stdout fails.
+pub fn run_external_peer_session_stdio(
+    bridge: DapPeerBridge,
+    poll_interval: Duration,
+) -> std::io::Result<()> {
+    // `stdin()`/`stdout()` are `'static` and `Send`, so they move cleanly into
+    // the generic threaded driver (the reader half runs on its own thread).
+    run_peer_session_threaded(std::io::stdin(), std::io::stdout(), bridge, poll_interval)
+}
+
+/// Generic threaded driver: read framed DAP requests from `reader_src` on a
+/// dedicated thread, dispatch them to `bridge`, and write framed
+/// responses/events to `writer` on the calling thread, interleaving backend
+/// event delivery on `poll_interval` ticks.
+///
+/// Used by [`run_external_peer_session_stdio`] (stdin/stdout) and exercised in
+/// tests over in-memory pipes. The reader thread is detached rather than joined:
+/// on a DAP `disconnect` the editor may not close its write half immediately, so
+/// joining could block; the thread exits on stdin EOF or process teardown.
+///
+/// # Errors
+/// Returns a transport error if writing framed messages to `writer` fails.
+fn run_peer_session_threaded<R, W>(
+    reader_src: R,
+    mut writer: W,
+    mut bridge: DapPeerBridge,
+    poll_interval: Duration,
+) -> std::io::Result<()>
+where
+    R: Read + Send + 'static,
+    W: Write,
+{
+    use perl_lsp_rs_core::transport::ContentLengthFramer;
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let _reader = std::thread::spawn(move || {
+        let mut src = reader_src;
+        let mut framer = ContentLengthFramer::new();
+        let mut buf = [0u8; 8 * 1024];
+        loop {
+            match src.read(&mut buf) {
+                Ok(0) => break, // EOF: editor closed its write half
+                Ok(n) => {
+                    framer.push(&buf[..n]);
+                    loop {
+                        match framer.try_next() {
+                            // Receiver gone (session ended) — stop reading.
+                            Ok(Some(body)) => {
+                                if tx.send(body).is_err() {
+                                    return;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(_) => return, // malformed stream: end session
+                        }
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    });
+
+    loop {
+        // Deliver any asynchronous backend events first.
+        let events = bridge.poll_events();
+        if !events.is_empty() {
+            write_dap_msgs(&mut writer, &events)?;
+        }
+
+        match rx.recv_timeout(poll_interval) {
+            Ok(body) => {
+                let (out, disconnect) = dispatch_frame(&mut bridge, &body);
+                write_dap_msgs(&mut writer, &out)?;
+                if disconnect {
+                    break;
+                }
+            }
+            // No editor input this tick; loop to poll events again.
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            // Reader thread ended (stdin closed / malformed): end the session.
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
+}
+
+/// Serialize and Content-Length frame each DAP message to `writer`.
+///
+/// On the (practically impossible) serialize failure, the message is skipped
+/// rather than writing a `Content-Length: 0` frame that would corrupt the
+/// stream and desync the client.
+fn write_dap_msgs<W: Write>(writer: &mut W, msgs: &[DapMessage]) -> std::io::Result<()> {
+    use perl_lsp_rs_core::transport::frame;
+    for m in msgs {
+        match serde_json::to_vec(m) {
+            Ok(body) => writer.write_all(&frame(&body))?,
+            Err(e) => {
+                tracing::error!(error = %e, "peer bridge: dropping unserializable DAP message")
+            }
+        }
+    }
+    writer.flush()
+}
+
+/// Dispatch one raw DAP request frame to the bridge, returning the messages to
+/// write back and whether the request was a `disconnect` (session should end).
+///
+/// The frame is parsed leniently: `command` and `seq` are extracted from the raw
+/// JSON even if the typed `Request` shape doesn't match exactly (e.g. `seq` sent
+/// as a JSON float), so a client is never left hanging without a response. A
+/// frame with no `command` is dropped.
+fn dispatch_frame(bridge: &mut DapPeerBridge, body: &[u8]) -> (Vec<DapMessage>, bool) {
+    let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let Some(command) = v.get("command").and_then(Value::as_str) else {
+        tracing::warn!("peer bridge: dropping DAP frame with no `command`");
+        return (Vec::new(), false);
+    };
+    let seq =
+        v.get("seq").and_then(|s| s.as_i64().or_else(|| s.as_f64().map(|f| f as i64))).unwrap_or(0);
+    let out = bridge.dispatch(seq, command, v.get("arguments").cloned());
+    let disconnect = command == "disconnect";
+    (out, disconnect)
 }
 
 // ---------------------------------------------------------------------------
@@ -970,5 +1079,67 @@ mod tests {
         let mut out = Vec::new();
         b.push_dap_events(DebugEvent::Initialized, &mut out);
         assert!(out.is_empty(), "peer readiness must not emit a DAP event");
+    }
+
+    #[test]
+    fn threaded_driver_runs_a_dap_session_over_pipes() {
+        use perl_lsp_rs_core::transport::{ContentLengthFramer, frame};
+        use std::io::Cursor;
+        use std::sync::{Arc, Mutex};
+
+        // A `Write` sink that appends into a shared buffer, so the test thread
+        // can inspect what the driver wrote after it returns. This exercises the
+        // same generic driver that `run_external_peer_session_stdio` uses over
+        // real stdin/stdout, but over in-memory pipes.
+        #[derive(Clone)]
+        struct SharedSink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // Editor input: an initialize request, then disconnect. The driver must
+        // respond to both and return once it sees disconnect.
+        let frame_of = |v: Value| frame(&serde_json::to_vec(&v).expect("ser"));
+        let mut input = frame_of(
+            json!({ "seq": 1, "type": "request", "command": "initialize", "arguments": {} }),
+        );
+        input.extend_from_slice(&frame_of(
+            json!({ "seq": 2, "type": "request", "command": "disconnect" }),
+        ));
+
+        let out_buf = Arc::new(Mutex::new(Vec::new()));
+        run_peer_session_threaded(
+            Cursor::new(input),
+            SharedSink(out_buf.clone()),
+            bridge(),
+            Duration::from_millis(5),
+        )
+        .expect("session ok");
+
+        // Reparse the framed output stream and collect response commands + events.
+        let raw = out_buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut framer = ContentLengthFramer::new();
+        framer.push(&raw);
+        let (mut commands, mut events) = (Vec::new(), Vec::new());
+        while let Ok(Some(body)) = framer.try_next() {
+            let v: Value = serde_json::from_slice(&body).expect("json");
+            if v.get("type").and_then(Value::as_str) == Some("response") {
+                if let Some(c) = v.get("command").and_then(Value::as_str) {
+                    commands.push(c.to_string());
+                }
+            }
+            if let Some(e) = v.get("event").and_then(Value::as_str) {
+                events.push(e.to_string());
+            }
+        }
+        assert!(commands.contains(&"initialize".to_string()), "commands: {commands:?}");
+        assert!(commands.contains(&"disconnect".to_string()), "commands: {commands:?}");
+        assert!(events.contains(&"initialized".to_string()), "events: {events:?}");
     }
 }

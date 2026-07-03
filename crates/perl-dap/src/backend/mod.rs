@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub use capabilities::{DebugBackendCapabilities, intersect_dap_capabilities};
-pub use peer_bridge::{DapPeerBridge, run_external_peer_session};
+pub use peer_bridge::{DapPeerBridge, run_external_peer_session, run_external_peer_session_stdio};
 
 use crate::model::{
     DebugBreakpoint, DebugEvent, DebugFunctionBreakpoint, DebugScope, DebugSource, DebugStackFrame,

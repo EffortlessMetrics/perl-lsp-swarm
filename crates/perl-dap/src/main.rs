@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use clap::Parser;
 use perl_dap::backend::external_peer::ExternalDebuggerPeerBackend;
-use perl_dap::backend::{DapPeerBridge, run_external_peer_session};
+use perl_dap::backend::{
+    DapPeerBridge, run_external_peer_session, run_external_peer_session_stdio,
+};
 use perl_dap::model::{DebugSessionPacket, DebugSource};
 use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
 use perl_dap::session_plan::DebugSessionPlanBuilder;
@@ -40,6 +42,19 @@ fn run_external_peer_bridge(editor_port: u16, peer_addr: &str) -> anyhow::Result
 
     let (editor, _) = listener.accept()?;
     run_external_peer_session(editor, bridge, EXTERNAL_PEER_POLL)?;
+    Ok(())
+}
+
+/// Run an external-peer DAP session over **stdio**: the editor spawns us as a
+/// child process and drives DAP over our stdin/stdout, while we connect to the
+/// running debugger peer at `peer_addr` and bridge DAP ↔ the Perl Debugger Peer
+/// Protocol. This is the default transport when no `--socket`/`--port` is given.
+fn run_external_peer_bridge_stdio(peer_addr: &str) -> anyhow::Result<()> {
+    tracing::info!(peer = peer_addr, "Starting external-peer DAP bridge on stdio");
+    let backend = ExternalDebuggerPeerBackend::connect(peer_addr, EXTERNAL_PEER_TIMEOUT)
+        .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
+    let bridge = DapPeerBridge::new(Box::new(backend));
+    run_external_peer_session_stdio(bridge, EXTERNAL_PEER_POLL)?;
     Ok(())
 }
 
@@ -113,8 +128,10 @@ fn main() -> anyhow::Result<()> {
     // the peer protocol while the editor speaks DAP. Additive path — the native
     // adapter is unchanged.
     if let Some(peer_addr) = args.external_peer.as_deref() {
-        let port = resolve_socket_port(&args.transport).unwrap_or(DEFAULT_DAP_PORT);
-        return run_external_peer_bridge(port, peer_addr);
+        return match resolve_socket_port(&args.transport) {
+            Some(port) => run_external_peer_bridge(port, peer_addr),
+            None => run_external_peer_bridge_stdio(peer_addr),
+        };
     }
 
     // The shipped `perl-dap` binary always runs the native adapter. The legacy
