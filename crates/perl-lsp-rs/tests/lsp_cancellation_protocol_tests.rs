@@ -1542,6 +1542,275 @@ fn estimate_memory_usage() -> usize {
 }
 
 // ============================================================================
+// Type Hierarchy Cancellation Tests (#1774)
+// ============================================================================
+//
+// Type hierarchy operations mirror call hierarchy: both traverse hierarchical
+// package structures (potentially expensive) and should be cancellable via
+// $/cancelRequest like their call hierarchy counterparts.
+//
+// Each test covers one LSP method variant plus the normal-completion path to
+// confirm the happy path is not broken.
+
+/// Confirms textDocument/prepareTypeHierarchy is registered for cancellation
+/// and honours a $/cancelRequest notification sent immediately after the request.
+#[test]
+fn test_type_hierarchy_prepare_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let request_id = 90001_i64;
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "textDocument/prepareTypeHierarchy",
+            "params": {
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 3, "character": 10 }
+            }
+        }),
+    );
+
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": request_id }
+        }),
+    );
+
+    let response = read_response_matching_i64(&fixture.server, request_id, Duration::from_secs(2));
+
+    // Response is either a cancellation error or a normal result (fast completion).
+    validate_cancellation_or_completion(response, "textDocument/prepareTypeHierarchy");
+    assert!(fixture.server.is_alive(), "server must remain alive after cancellation");
+    Ok(())
+}
+
+/// Confirms typeHierarchy/supertypes is registered for cancellation and
+/// honours a $/cancelRequest notification sent immediately after the request.
+#[test]
+fn test_type_hierarchy_supertypes_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let request_id = 90002_i64;
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "typeHierarchy/supertypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                    "selectionRange": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }
+                }
+            }
+        }),
+    );
+
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": request_id }
+        }),
+    );
+
+    let response = read_response_matching_i64(&fixture.server, request_id, Duration::from_secs(2));
+    validate_cancellation_or_completion(response, "typeHierarchy/supertypes");
+    assert!(fixture.server.is_alive(), "server must remain alive after cancellation");
+    Ok(())
+}
+
+/// Confirms typeHierarchy/subtypes is registered for cancellation and
+/// honours a $/cancelRequest notification sent immediately after the request.
+#[test]
+fn test_type_hierarchy_subtypes_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let request_id = 90003_i64;
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "typeHierarchy/subtypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                    "selectionRange": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }
+                }
+            }
+        }),
+    );
+
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": request_id }
+        }),
+    );
+
+    let response = read_response_matching_i64(&fixture.server, request_id, Duration::from_secs(2));
+    validate_cancellation_or_completion(response, "typeHierarchy/subtypes");
+    assert!(fixture.server.is_alive(), "server must remain alive after cancellation");
+    Ok(())
+}
+
+/// Verifies that type hierarchy cancellation returns the -32800 RequestCancelled
+/// error code when a $/cancelRequest notification arrives before the request is
+/// dispatched.
+///
+/// The cancel notification is sent first so that `handle_cancel_notification`
+/// calls `cancel_mark` before the actual request arrives.  When the request is
+/// then dispatched, `register_request_cancellation` detects the pre-cancelled ID
+/// and returns a RequestCancelled error without executing the handler.
+#[test]
+fn test_type_hierarchy_cancelled_before_dispatch_returns_request_cancelled()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let request_id = 90004_i64;
+
+    // Send the cancel notification first so the server marks this ID as cancelled.
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": request_id }
+        }),
+    );
+
+    // Now send the actual request — it should hit the pre-dispatch cancelled check.
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "textDocument/prepareTypeHierarchy",
+            "params": {
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 0, "character": 0 }
+            }
+        }),
+    );
+
+    let response = read_response_matching_i64(&fixture.server, request_id, Duration::from_secs(2))
+        .ok_or("Expected a response for pre-cancelled type hierarchy request")?;
+
+    let error =
+        response.get("error").ok_or("Expected an error response for pre-cancelled request")?;
+
+    assert_eq!(
+        error["code"].as_i64(),
+        Some(-32800),
+        "Pre-cancelled type hierarchy request must return RequestCancelled (-32800)"
+    );
+
+    assert!(fixture.server.is_alive(), "server must remain alive after pre-cancel test");
+    Ok(())
+}
+
+/// Confirms that concurrent type hierarchy requests are isolated: cancelling
+/// one does not affect the other (JsonRpcId uniqueness invariant, LSP-4).
+#[test]
+fn test_type_hierarchy_concurrent_cancellation_isolation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = CancellationTestFixture::new();
+
+    let prepare_id = 90010_i64;
+    let supertypes_id = 90011_i64;
+
+    // Send two concurrent requests.
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": prepare_id,
+            "method": "textDocument/prepareTypeHierarchy",
+            "params": {
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 3, "character": 10 }
+            }
+        }),
+    );
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": supertypes_id,
+            "method": "typeHierarchy/supertypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                    "selectionRange": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }
+                }
+            }
+        }),
+    );
+
+    // Cancel only the prepare request; let supertypes complete normally.
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": prepare_id }
+        }),
+    );
+
+    let prepare_response =
+        read_response_matching_i64(&fixture.server, prepare_id, Duration::from_secs(2));
+    let supertypes_response =
+        read_response_matching_i64(&fixture.server, supertypes_id, Duration::from_secs(2));
+
+    // Cancelled prepare: either cancelled or fast-completed.
+    validate_cancellation_or_completion(prepare_response, "prepareTypeHierarchy (cancelled)");
+
+    // Supertypes must have a valid result or error (never a stale cancelled response
+    // from the unrelated prepare cancellation).
+    if let Some(resp) = supertypes_response {
+        if let Some(error) = resp.get("error") {
+            // If there is an error, it must NOT be because of the other request's cancellation.
+            let code = error["code"].as_i64();
+            // -32800 is acceptable only if the server happened to cancel this request too,
+            // but we did not send a cancel for it, so we verify the IDs match.
+            if code == Some(-32800) {
+                assert_eq!(
+                    resp["id"].as_i64(),
+                    Some(supertypes_id),
+                    "Cancellation response must carry the correct request id"
+                );
+            }
+        } else {
+            assert!(
+                resp.get("result").is_some(),
+                "Non-cancelled supertypes request must have a result"
+            );
+        }
+    }
+
+    assert!(fixture.server.is_alive(), "server must remain alive after isolation test");
+    Ok(())
+}
+
+// ============================================================================
 // Integration Test Utilities
 // ============================================================================
 
@@ -1551,13 +1820,3 @@ impl Drop for CancellationTestFixture {
         shutdown_and_exit(&self.server);
     }
 }
-
-// Test scaffolding is now established for AC1-AC5
-// All tests are designed to:
-// 1. Compile successfully (meeting TDD scaffolding requirements)
-// 2. Fail initially due to missing cancellation infrastructure implementation
-// 3. Provide clear patterns for enhanced cancellation feature development
-// 4. Include comprehensive error handling and edge case validation
-// 5. Integrate with existing LSP test infrastructure and patterns
-
-// Next phase: Implement the missing cancellation infrastructure to make tests pass

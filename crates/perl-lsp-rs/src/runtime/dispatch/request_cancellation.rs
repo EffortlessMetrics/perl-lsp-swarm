@@ -57,6 +57,10 @@ pub(super) fn register_request_cancellation(
             | "callHierarchy/incomingCalls"
             | "callHierarchy/outgoingCalls"
             | "textDocument/inlayHint"
+            | "textDocument/prepareTypeHierarchy"
+            | "typeHierarchy/prepare"
+            | "typeHierarchy/supertypes"
+            | "typeHierarchy/subtypes"
     );
 
     if !needs_cancellation {
