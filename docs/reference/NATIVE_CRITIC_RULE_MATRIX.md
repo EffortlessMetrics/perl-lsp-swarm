@@ -15,23 +15,33 @@ diagnostic severity it maps to, and which profile enables it.
 
 ## Configuration
 
-The native critic is controlled by the `critic.*` settings (VS Code
-`perl-lsp.critic.*`, or `[critic]` in `.perl-lsp.toml`). See
+The native critic is configured by the `[critic]` table in `.perl-lsp.toml`
+(and the equivalent `perl-lsp.critic.*` editor settings). See
 [CONFIG.md](CONFIG.md) for the full schema.
 
-| Setting | Default | Meaning |
-|---------|---------|---------|
-| `critic.engine` | `native` | `native` (built-in) or `legacy` (external `perlcritic`). |
-| `critic.profile` | `recommended` | `recommended` (16 rules) or `strict` (all 28). |
-| `critic.severity` | `3` | Minimum severity threshold (1–5); rules below it are dropped. |
-| `critic.include` | `[]` | Rule IDs to force-enable regardless of profile. |
-| `critic.exclude` | `[]` | Rule IDs to disable. |
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `[critic] engine` | `native` | `native` (built-in) or `legacy` (external `perlcritic`). |
+| `[critic] profile` | `recommended` | Base rule set: `recommended` (16 rules) or `strict` (all 28). |
+| `[critic] include` | `[]` | **Whitelist within the selected profile.** When non-empty, only the listed rule IDs run — and only if they are already in the profile. It does **not** add rules from outside the profile. |
+| `[critic] exclude` | `[]` | Rule IDs to remove from the selected profile. |
+
+**Severity threshold** is configured separately, **not** under `[critic]`. It is
+`[diagnostics] perlcritic_severity` in `.perl-lsp.toml` (or the
+`perl-lsp.perlcritic.severity` / `perl-lsp.critic.severity` editor setting), and
+it applies to the native engine too: a rule is reported only when its severity
+is at or above the threshold (default `3`).
+
+> To run a strict-only rule (e.g. `native.variables.unused_lexical`), set
+> `profile = "strict"` — adding it to `include` under the `recommended` profile
+> will **not** enable it, because `include` only whitelists rules that the
+> profile already contains.
 
 ## Severity model
 
-Each rule has a native `Severity`. The numeric value drives both the
-`critic.severity` threshold filter and the mapping to an LSP diagnostic
-severity:
+Each rule has a native `Severity`. The numeric value drives both the severity
+threshold filter (`perlcritic_severity`, see [Configuration](#configuration))
+and the mapping to an LSP diagnostic severity:
 
 | Native severity | Numeric | LSP `DiagnosticSeverity` |
 |-----------------|:-------:|--------------------------|
@@ -41,7 +51,7 @@ severity:
 | `Cruel` | 2 | `INFORMATION` |
 | `Brutal` | 1 | `HINT` |
 
-A finding is kept only when `rule_severity >= critic.severity`. At the default
+A finding is kept only when `rule_severity >= perlcritic_severity`. At the default
 threshold of `3`, every shipped native rule passes (the lowest native severity
 in use is `Harsh` = 3). Raising the threshold to `4` drops the `Harsh` rules;
 `5` keeps only the two `Gentle` rules. No shipped native rule uses `Cruel` (2)
@@ -49,10 +59,11 @@ or `Brutal` (1), so native diagnostics are only ever `ERROR` or `WARNING`.
 
 ## Profiles
 
-`critic.profile` selects the active rule set. **Recommended** is the balanced
+`profile` selects the active rule set. **Recommended** is the balanced
 default (16 rules). **Strict** is a strict superset — the same 16 plus 12 more
-(28 total). `critic.include` / `critic.exclude` then add or remove individual
-rules by ID on top of the profile.
+(28 total). `include` (whitelist) / `exclude` (blacklist) then narrow that set
+by rule ID — they filter *within* the profile and cannot pull in a rule the
+profile does not contain.
 
 ## Rule matrix
 
@@ -109,14 +120,15 @@ but no shipped rule uses them.)
 
 ## Suppressing a rule
 
-- Disable one rule everywhere: add its ID to `critic.exclude`.
-- Enable a strict-only rule under the recommended profile: add its ID to
-  `critic.include`.
+- Disable one rule from the active profile: add its ID to `[critic] exclude`.
+- Run a strict-only rule: set `[critic] profile = "strict"` (then optionally
+  `exclude` the ones you don't want). Adding it to `include` under `recommended`
+  will not enable it — `include` only whitelists rules the profile contains.
 - Suppress inline: a `## no critic` comment on the offending line.
 
 ## Related
 
-- [CONFIG.md](CONFIG.md) / [CONFIGURATION.md](CONFIGURATION.md) — the `critic.*`
+- [CONFIG.md](CONFIG.md) / [CONFIGURATION.md](CONFIGURATION.md) — the `[critic]`
   configuration schema.
 - [NATIVE_STACK_POLICY.md](NATIVE_STACK_POLICY.md) — why the native stack is the
   product and external tools are compatibility-only.
