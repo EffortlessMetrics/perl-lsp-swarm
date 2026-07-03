@@ -532,19 +532,26 @@ impl LspServer {
             // unconditionally (as before) leaked the `Perl::Critic` brand onto
             // the native product surface and produced quick-fixes whose source +
             // code never matched the published native diagnostic.
-            let critic_engine = { self.config.lock().critic_engine };
+            // Read the engine and every critic field in ONE lock scope so the
+            // code action is built from a single coherent config snapshot. A
+            // split lock (engine, then the rest) could tear if
+            // didChangeConfiguration lands between the two acquisitions —
+            // "we decided Native" (stale) + a fresh profile/include/exclude — a
+            // state that never coherently existed. This mirrors
+            // `collect_native_critic_diagnostics` in runtime/diagnostics.rs.
+            let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
+                let cfg = self.config.lock();
+                (
+                    cfg.critic_engine,
+                    cfg.perlcritic_severity,
+                    cfg.perlcritic_profile.clone(),
+                    cfg.native_critic_profile.clone(),
+                    cfg.native_critic_include.clone(),
+                    cfg.native_critic_exclude.clone(),
+                )
+            };
             match critic_engine {
                 perl_lsp_rs_core::config::CriticEngine::Native => {
-                    let (severity, profile, native_profile, native_include, native_exclude) = {
-                        let cfg = self.config.lock();
-                        (
-                            cfg.perlcritic_severity,
-                            cfg.perlcritic_profile.clone(),
-                            cfg.native_critic_profile.clone(),
-                            cfg.native_critic_include.clone(),
-                            cfg.native_critic_exclude.clone(),
-                        )
-                    };
                     let critic_config = crate::perl_critic::CriticConfig {
                         severity: severity.clamp(1, 5),
                         profile,
@@ -561,11 +568,18 @@ impl LspServer {
                         crate::perl_critic::NativeCriticRegistry::for_profile(native_profile);
                     for finding in registry.check(&critic_context) {
                         // Only findings that carry an automatic edit become
-                        // quick-fixes; diagnostic-only guidance is skipped here.
+                        // quick-fixes. A finding with no fix, an explicitly
+                        // manual-only fix, or empty edits is diagnostic-only
+                        // guidance — never surface it as an "apply fix" action.
+                        // Checking FixSafety (not just emptiness) keeps the type's
+                        // own safety tier load-bearing: a future ManualOnly fix
+                        // that ships illustrative edits must still be skipped.
                         let Some(fix) = finding.fix.as_ref() else {
                             continue;
                         };
-                        if fix.edits.is_empty() {
+                        if fix.safety == crate::perl_critic::FixSafety::ManualOnly
+                            || fix.edits.is_empty()
+                        {
                             continue;
                         }
                         let (start_line, start_char) =

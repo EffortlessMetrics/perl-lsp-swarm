@@ -3391,17 +3391,30 @@ print \"unreachable\\n\";\n";
             .unwrap_or_default();
         let text = result.to_string();
 
-        assert!(
-            text.contains("native.testing.require_use_strict"),
-            "native engine code actions must use the native rule id; got: {text}"
-        );
-        assert!(
-            text.contains("perl-lsp-critic"),
-            "native engine code actions must use source perl-lsp-critic; got: {text}"
-        );
+        // The brand must never appear anywhere in the native response.
         assert!(
             !text.contains("Perl::Critic"),
             "native engine code actions must NOT leak the Perl::Critic brand; got: {text}"
+        );
+
+        // Structural check: SOME code action must carry an embedded diagnostic
+        // whose `code` and `source` are BOTH native on the same object — a loose
+        // whole-response substring match would pass even if the native code and
+        // native source landed on two different actions. This is the exact
+        // guarantee the PR makes (code + source line up with the published
+        // native diagnostic, so the client associates the fix).
+        let actions = result.as_array().cloned().unwrap_or_default();
+        let has_native_diag = actions.iter().any(|a| {
+            a["diagnostics"].as_array().is_some_and(|diags| {
+                diags.iter().any(|d| {
+                    d["code"].as_str() == Some("native.testing.require_use_strict")
+                        && d["source"].as_str() == Some("perl-lsp-critic")
+                })
+            })
+        });
+        assert!(
+            has_native_diag,
+            "a native code action must carry code `native.testing.require_use_strict` AND source `perl-lsp-critic` on the SAME diagnostic; got: {text}"
         );
     }
 
