@@ -601,13 +601,19 @@ impl LspServer {
         }
 
         // Add fields not yet in lsp-types 0.97
-        // Use the negotiated position encoding instead of hardcoding utf-16
-        let position_encoding = self.client_capabilities.lock().position_encoding;
-        let encoding_str = match position_encoding {
-            crate::textdoc::PosEnc::Utf8 => "utf-8",
-            crate::textdoc::PosEnc::Utf16 => "utf-16",
-        };
-        capabilities["positionEncoding"] = json!(encoding_str);
+        //
+        // Phase 1 (this PR) only negotiates and stores the client's preferred
+        // position encoding on `ClientCapabilities.position_encoding` for
+        // future use. `text_sync` and every feature provider (hover,
+        // definition, diagnostics, ...) still compute positions in UTF-16
+        // code units. Per the LSP 3.17 spec, client and server MUST agree on
+        // one encoding or offsets are misinterpreted, so the *advertised*
+        // `positionEncoding` MUST stay pinned to "utf-16" — the mandatory
+        // default — until phase 2 threads the negotiated encoding through the
+        // providers. Advertising anything else here would silently corrupt
+        // document sync and every position-bearing response for non-ASCII
+        // content on a client that prefers a different encoding.
+        capabilities["positionEncoding"] = json!("utf-16");
         if features.declaration {
             capabilities["declarationProvider"] = json!(true);
         }
