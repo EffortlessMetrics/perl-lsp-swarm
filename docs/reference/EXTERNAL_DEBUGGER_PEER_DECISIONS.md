@@ -99,9 +99,12 @@ These are called out so the "done" claim is scoped honestly (closure discipline)
   `run_external_peer_session` (socket) and `run_external_peer_session_stdio`
   (stdin/stdout, via a reader thread + channel so async events interleave without
   a stdin read timeout). `perl-dap --external-peer HOST:PORT` uses stdio by
-  default and the socket path when `--socket`/`--port` is given. *Residual:* the
-  VS Code extension must pass the `--external-peer` flag through, and validation
-  against a live `Devel::ptkdb` build (vs. the faithful fake peer) remains a follow-up.
+  default and the socket path when `--socket`/`--port` is given. The VS Code
+  extension passes it through: a debug config with `externalPeer: "HOST:PORT"`
+  launches the adapter in bridge mode (`buildDapExecutableArgs`), and an
+  "External Debugger Peer (ptkdb)" launch.json template + wizard entry make it
+  discoverable. *Residual:* validation against a live `Devel::ptkdb` build (vs.
+  the faithful fake peer) remains a follow-up.
 - **DF3 — `NativePerlDbBackend` full delegation.** The native backend implements
   the model-typed contract for the surface that does not require a live `perl -d`
   process (capabilities from the catalog, AST-backed `set_breakpoints`), and

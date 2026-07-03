@@ -19,7 +19,12 @@ export interface DebugTestLaunchTarget {
 // ---------------------------------------------------------------------------
 
 /** Template names available in the debug config wizard. */
-export type DebugConfigTemplate = 'launch-script' | 'attach-process' | 'remote-ssh' | 'all';
+export type DebugConfigTemplate =
+    | 'launch-script'
+    | 'attach-process'
+    | 'remote-ssh'
+    | 'external-peer'
+    | 'all';
 
 /**
  * Build the content of a `.vscode/launch.json` file for the given template.
@@ -55,6 +60,15 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
         timeout: 10000
     };
 
+    const externalPeer = {
+        type: 'perl',
+        request: 'attach',
+        name: 'Perl: External Debugger Peer (ptkdb)',
+        // perl-dap bridges DAP ↔ the Perl Debugger Peer Protocol, driving the
+        // external engine (e.g. Devel::ptkdb) listening at HOST:PORT.
+        externalPeer: 'localhost:9000'
+    };
+
     let configurations: object[];
 
     switch (template) {
@@ -64,8 +78,11 @@ export function buildLaunchJsonContent(template: DebugConfigTemplate | string): 
         case 'remote-ssh':
             configurations = [remoteSSH];
             break;
+        case 'external-peer':
+            configurations = [externalPeer];
+            break;
         case 'all':
-            configurations = [launchScript, attachProcess, remoteSSH];
+            configurations = [launchScript, attachProcess, remoteSSH, externalPeer];
             break;
         case 'launch-script':
         default:
@@ -169,6 +186,12 @@ export async function createDebugConfigWizard(): Promise<void> {
             description: 'Attach to a remote Perl process via SSH tunnel',
             detail: 'Adds a remote attach configuration — edit the host to match your SSH target.',
             template: 'remote-ssh'
+        },
+        {
+            label: '$(debug-console) External Debugger Peer (ptkdb)',
+            description: 'Bridge to an external Perl debugger engine over the peer protocol',
+            detail: 'Adds an "External Debugger Peer" configuration — perl-dap bridges DAP to a running Devel::ptkdb-style engine at HOST:PORT.',
+            template: 'external-peer'
         },
         {
             label: '$(list-flat) All Templates',
@@ -371,11 +394,29 @@ function normalizeDebugArgs(value: unknown): string[] {
     return value.filter((entry): entry is string => typeof entry === 'string');
 }
 
+/**
+ * Build the argv `perl-dap` is spawned with, from a resolved debug config.
+ *
+ * When the config sets `externalPeer: "HOST:PORT"`, the adapter is launched in
+ * external-peer bridge mode (`--external-peer HOST:PORT`) so it drives an
+ * external Perl debugger engine (e.g. Devel::ptkdb) over the Perl Debugger Peer
+ * Protocol while VS Code speaks DAP over stdio. The value must look like
+ * `host:port`; anything else is ignored (the native adapter runs, args empty)
+ * rather than passed through unvalidated.
+ */
+export function buildDapExecutableArgs(config: vscode.DebugConfiguration | undefined): string[] {
+    const peer = config?.externalPeer;
+    if (typeof peer === 'string' && /^[^\s:]+:\d+$/.test(peer.trim())) {
+        return ['--external-peer', peer.trim()];
+    }
+    return [];
+}
+
 export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {
     constructor(private readonly context: vscode.ExtensionContext) {}
 
     createDebugAdapterDescriptor(
-        _session: vscode.DebugSession,
+        session: vscode.DebugSession,
         _executable: vscode.DebugAdapterExecutable | undefined
     ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
         // Try to find perl-dap in PATH or use bundled version
@@ -398,7 +439,8 @@ export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDes
             return undefined;
         }
 
-        return new vscode.DebugAdapterExecutable(dapPath, [], {
+        const args = buildDapExecutableArgs(session?.configuration);
+        return new vscode.DebugAdapterExecutable(dapPath, args, {
             env: { ...process.env, RUST_LOG: 'debug' }
         });
     }
