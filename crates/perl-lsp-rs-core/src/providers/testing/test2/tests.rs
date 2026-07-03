@@ -114,6 +114,22 @@ fn test2_v1_pragmas_require_an_explicit_option() {
 }
 
 #[test]
+fn test2_v1_grouped_short_flags() {
+    // `use Test2::V1 -ipP;` — grouped short flags: -i (import) + -p (pragmas)
+    // + -P (plugins). Oracle: metacpan Test2::V1 SYNOPSIS.
+    let facts = Test2Facts::from_source("use Test2::V1 -ipP;\n");
+    assert!(facts.is_imported("ok"), "grouped -i imports the bare set");
+    assert!(facts.is_imported("is"));
+    assert!(facts.is_imported("subtest"));
+    assert_eq!((facts.strict, facts.warnings), (true, true), "grouped -p enables pragmas");
+
+    // `-P` alone (plugins) is neither import nor pragmas.
+    let plugins_only = Test2Facts::from_source("use Test2::V1 -P;\n");
+    assert!(!plugins_only.is_imported("ok"), "-P (plugins) does not import the bare set");
+    assert_eq!((plugins_only.strict, plugins_only.warnings), (false, false));
+}
+
+#[test]
 fn test2_imports_plain_use_v0_scope_and_pragmas() {
     let facts = Test2Facts::from_source("use Test2::V0;\nok(1);\ndone_testing;\n");
     assert!(facts.uses_test2());
