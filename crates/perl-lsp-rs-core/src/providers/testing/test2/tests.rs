@@ -72,6 +72,24 @@ fn test2_imports_v0_default_exports_cover_common_tools() {
 }
 
 #[test]
+fn test2_v1_default_exports_only_the_t2_handle() {
+    // Test2::V1's ONLY default export is the `T2()` handle — its tools are
+    // methods on that handle, not bare subs (oracle: metacpan Test2::V1). It
+    // must NOT surface the Test2::V0 bare export set.
+    let defaults = module_default_exports("Test2::V1").expect("V1 has a default set");
+    assert_eq!(defaults, &["T2"], "V1 default-exports only the T2 handle");
+
+    let facts = Test2Facts::from_source("use Test2::V1;\n");
+    assert!(facts.uses_test2_bundle(), "Test2::V1 is still a bundle");
+    // V1, like V0, enables strict/warnings.
+    assert_eq!((facts.strict, facts.warnings), (true, true));
+    assert!(facts.is_imported("T2"), "V1 imports the T2 handle");
+    assert!(!facts.is_imported("ok"), "V1 must not export bare ok");
+    assert!(!facts.is_imported("is"), "V1 must not export bare is");
+    assert!(!facts.is_imported("subtest"), "V1 must not export bare subtest");
+}
+
+#[test]
 fn test2_imports_plain_use_v0_scope_and_pragmas() {
     let facts = Test2Facts::from_source("use Test2::V0;\nok(1);\ndone_testing;\n");
     assert!(facts.uses_test2());
