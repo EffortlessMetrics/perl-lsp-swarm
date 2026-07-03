@@ -738,6 +738,13 @@ describe('extension UX warnings', () => {
 
     await syncPerlCriticConfiguration({ sendNotification } as any);
 
+    // The config must be requested with a language scope, otherwise VS Code
+    // never populates the *LanguageValue fields the [perl] block lives in.
+    expect(vscode.workspace.getConfiguration).toHaveBeenCalledWith(
+      'perl-lsp',
+      expect.objectContaining({ languageId: 'perl' })
+    );
+
     expect(sendNotification).toHaveBeenCalledWith(
       'workspace/didChangeConfiguration',
       expect.objectContaining({

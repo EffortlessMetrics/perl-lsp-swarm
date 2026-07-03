@@ -204,6 +204,19 @@ function getLegacyPerlCriticSyncSettings(
     return settings;
 }
 
+// Resolve the `perl-lsp` configuration for critic syncing. The scope carries
+// `languageId: 'perl'` so that `inspect()` populates the *LanguageValue fields —
+// otherwise a `"[perl]": { "perl-lsp.critic.*": ... }` override in settings.json
+// is invisible to `hasExplicitOverride` and never forwarded to the server. When
+// there is no document (the config-change path passes `undefined`), the
+// language-only scope still exposes language-block overrides.
+function getPerlCriticConfiguration(documentUri?: vscode.Uri): vscode.WorkspaceConfiguration {
+    const scope: { uri?: vscode.Uri; languageId: string } = documentUri
+        ? { uri: documentUri, languageId: 'perl' }
+        : { languageId: 'perl' };
+    return vscode.workspace.getConfiguration('perl-lsp', scope);
+}
+
 // Build the `didChangeConfiguration` payload. Native `critic.*` and legacy
 // `perlcritic.*` blocks are forwarded under their own keys so the server can
 // apply precedence (critic wins). A `severityOverride` (from Set Critic
@@ -212,7 +225,7 @@ function buildPerlCriticConfiguration(
     documentUri?: vscode.Uri,
     severityOverride?: number
 ): Record<string, unknown> | undefined {
-    const config = vscode.workspace.getConfiguration('perl-lsp', documentUri);
+    const config = getPerlCriticConfiguration(documentUri);
     const critic = getNativeCriticSyncSettings(config, severityOverride);
     const perlcritic = getLegacyPerlCriticSyncSettings(config);
 
@@ -236,7 +249,7 @@ function buildPerlCriticConfiguration(
 }
 
 function hasExplicitPerlCriticOverrides(documentUri?: vscode.Uri): boolean {
-    const config = vscode.workspace.getConfiguration('perl-lsp', documentUri);
+    const config = getPerlCriticConfiguration(documentUri);
     return [...NATIVE_CRITIC_KEYS, ...LEGACY_CRITIC_KEYS].some(key =>
         hasExplicitOverride(config, key)
     );
