@@ -3,11 +3,28 @@
 //! This binary provides the Debug Adapter Protocol server for Perl debugging.
 //! It follows the TDD approach with comprehensive test scaffolding for 19 acceptance criteria.
 
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
 use clap::Parser;
+use perl_dap::model::{DebugSessionPacket, DebugSource};
+use perl_dap::ptkdb_bootstrap::render_ptkdbrc;
+use perl_dap::session_plan::DebugSessionPlanBuilder;
 use perl_dap::{DapConfig, DapMode, DapServer};
 use perl_lsp_rs_core::runtime::launcher::{init_logging, log_server_startup};
 
 const DEFAULT_DAP_PORT: u16 = 13_603;
+
+/// Build a debug-session packet for `program`, deriving source facts from the
+/// program text when it is readable.
+fn build_session_packet(program: &Path) -> DebugSessionPacket {
+    let mut builder = DebugSessionPlanBuilder::new(program);
+    if let Ok(text) = std::fs::read_to_string(program) {
+        let source = DebugSource::from_path(program);
+        builder = builder.source_facts_from_text(&source, &text);
+    }
+    builder.build()
+}
 
 fn resolve_socket_port(args: &perl_lsp_rs_core::runtime::launcher::TransportArgs) -> Option<u16> {
     if args.socket || args.port.is_some() {
@@ -27,10 +44,33 @@ struct Args {
     /// Logging level (error, warn, info, debug, trace)
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Emit a Devel::ptkdb `.ptkdbrc` bootstrap for PROGRAM to stdout and exit.
+    #[arg(long, value_name = "PROGRAM")]
+    ptkdb_bootstrap_rc: Option<PathBuf>,
+
+    /// Emit a `perl-lsp-debug-session-v1` JSON session plan for PROGRAM to
+    /// stdout and exit.
+    #[arg(long, value_name = "PROGRAM")]
+    debug_session_plan: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    // One-shot emit surfaces: these do not start a server. Write directly to
+    // the stdout handle (rather than the print!/println! macros) so the shipped
+    // binary stays clear of the `clippy::print_stdout` restriction lint.
+    if let Some(program) = args.ptkdb_bootstrap_rc.as_deref() {
+        let packet = build_session_packet(program);
+        write!(std::io::stdout(), "{}", render_ptkdbrc(&packet, true))?;
+        return Ok(());
+    }
+    if let Some(program) = args.debug_session_plan.as_deref() {
+        let packet = build_session_packet(program);
+        writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&packet)?)?;
+        return Ok(());
+    }
 
     init_logging(&args.log_level);
     log_server_startup("perl-dap", env!("CARGO_PKG_VERSION"), args.transport.mode(), None, None);
