@@ -516,7 +516,19 @@ pub fn run_external_peer_session(
                             }
                         }
                         Ok(None) => break,
-                        Err(_) => return Ok(()), // malformed stream: end session
+                        // `ContentLengthFramer::try_next` already discards the
+                        // malformed header block before returning an error, so a
+                        // valid subsequent frame can still be parsed. Skip and keep
+                        // going rather than tearing down the whole session on one
+                        // bad frame — same recoverable handling as the stdio driver
+                        // (`run_peer_session_threaded`) and
+                        // `ContentLengthMessageReader::read_next`.
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "peer bridge (socket): dropping malformed DAP frame"
+                            );
+                        }
                     }
                 }
             }

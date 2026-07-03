@@ -327,3 +327,66 @@ fn run_external_peer_session_serves_dap_over_a_socket() {
     let _ = server.join();
     let _ = peer.join();
 }
+
+#[test]
+fn socket_session_recovers_from_a_leading_malformed_frame() {
+    // A malformed frame arriving before a valid request must NOT tear down the
+    // whole socket session: the framer discards just the bad header block, and
+    // the driver keeps parsing the well-formed `initialize` that follows.
+    let peer_listener = TcpListener::bind(("127.0.0.1", 0)).expect("peer bind");
+    let peer_addr = peer_listener.local_addr().expect("peer addr");
+    let peer = spawn_fake_peer(peer_addr);
+
+    let editor_listener = TcpListener::bind(("127.0.0.1", 0)).expect("editor bind");
+    let editor_addr = editor_listener.local_addr().expect("editor addr");
+
+    let server = std::thread::spawn(move || {
+        let (peer_stream, _) = peer_listener.accept().expect("accept peer");
+        let backend =
+            ExternalDebuggerPeerBackend::from_connected_stream(peer_stream, Duration::from_secs(5))
+                .expect("backend");
+        let bridge = DapPeerBridge::new(Box::new(backend));
+        let (editor, _) = editor_listener.accept().expect("accept editor");
+        let _ = run_external_peer_session(editor, bridge, Duration::from_millis(50));
+    });
+
+    let mut client = TcpStream::connect(editor_addr).expect("editor connect");
+    client.set_read_timeout(Some(Duration::from_secs(3))).ok();
+
+    // A syntactically-framed header with a non-numeric Content-Length: the framer
+    // returns an error but drains the bad block, so parsing can continue.
+    client.write_all(b"Content-Length: notanumber\r\n\r\n").expect("write bad frame");
+    // Then a valid initialize request.
+    let body = serde_json::to_vec(
+        &serde_json::json!({ "seq": 1, "type": "request", "command": "initialize", "arguments": { "adapterID": "perl" } }),
+    )
+    .expect("ser");
+    client.write_all(&frame(&body)).expect("write");
+    client.flush().expect("flush");
+
+    let mut framer = ContentLengthFramer::new();
+    let mut buf = [0u8; 4096];
+    let mut saw_initialize = false;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    'outer: while Instant::now() < deadline {
+        let n = match client.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        framer.push(&buf[..n]);
+        while let Ok(Some(body)) = framer.try_next() {
+            let v: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            if v["type"] == "response" && v["command"] == "initialize" {
+                assert_eq!(v["success"], true);
+                saw_initialize = true;
+                break 'outer;
+            }
+        }
+    }
+    assert!(saw_initialize, "session survived the malformed frame and answered initialize");
+
+    drop(client);
+    let _ = server.join();
+    let _ = peer.join();
+}
