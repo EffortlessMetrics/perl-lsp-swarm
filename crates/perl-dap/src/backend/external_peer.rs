@@ -551,13 +551,17 @@ impl DebugBackend for ExternalDebuggerPeerBackend {
         std::mem::take(&mut *lock(&self.shared.events))
     }
 
-    fn disconnect(&mut self, _terminate_debuggee: bool) -> BackendResult<()> {
-        // Best-effort goodbye; ignore errors since we are tearing down.
+    fn disconnect(&mut self, terminate_debuggee: bool) -> BackendResult<()> {
+        // Best-effort goodbye; ignore errors since we are tearing down. Thread
+        // the editor's terminate intent to the peer in the goodbye arguments so
+        // a mirror peer can distinguish "kill the debuggee" from "just close the
+        // protocol session" (peers that ignore the field still disconnect
+        // cleanly). Mirrors `native_perldb`, which forwards `terminateDebuggee`.
         let seq = self.shared.next_host_seq();
         let _ = self.shared.write_message(&PeerMessage::Request(PeerRequest {
             seq,
             command: command::GOODBYE.to_string(),
-            arguments: None,
+            arguments: Some(serde_json::json!({ "terminateDebuggee": terminate_debuggee })),
         }));
         self.shared.mark_closed();
         Ok(())
@@ -679,6 +683,22 @@ fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
                 return;
             }
 
+            // A second `peer/hello` during a live session must NOT silently
+            // rewrite the already-negotiated capabilities — they are part of the
+            // immutable session contract that `negotiated_caps()` reads per
+            // request. Reject the replay and leave `peer_caps` untouched.
+            if *lock(&shared.handshake_done) {
+                let resp = PeerMessage::Response(PeerResponse {
+                    seq: shared.next_host_seq(),
+                    request_seq: req.seq,
+                    success: false,
+                    command: command::HELLO.to_string(),
+                    message: Some("already handshaken".to_string()),
+                    body: None,
+                });
+                let _ = shared.write_message(&resp);
+                return;
+            }
             if let Some(h) = hello {
                 *lock(&shared.peer_caps) = Some(h.capabilities);
             }
@@ -696,6 +716,16 @@ fn handle_peer_request(shared: &Arc<Shared>, req: PeerRequest) {
                 body: serde_json::to_value(body).ok(),
             });
             let _ = shared.write_message(&resp);
+            // `write_message` calls `mark_closed()` on any write failure. If the
+            // hello response never reached the peer (disconnect / SIGPIPE between
+            // building and flushing), do NOT report handshake success against a
+            // dead stream — surface an error so `initialize()` fails cleanly
+            // instead of the first real request hitting `NotConnected`.
+            if shared.closed.load(Ordering::SeqCst) {
+                *lock(&shared.handshake_error) = Some("peer closed during handshake".to_string());
+                shared.handshake_cv.notify_all();
+                return;
+            }
             *lock(&shared.handshake_done) = true;
             shared.handshake_cv.notify_all();
         }

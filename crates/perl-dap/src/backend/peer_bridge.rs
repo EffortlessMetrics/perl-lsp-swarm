@@ -275,6 +275,15 @@ impl DapPeerBridge {
                     .unwrap_or(false);
                 let _ = self.backend.disconnect(terminate);
                 out.push(self.response(request_seq, command, true, None, None));
+                // `disconnect { terminateDebuggee: true }` carries the same intent
+                // as `terminate`, so emit `terminated` (and arm the dedup guard)
+                // here too. Otherwise a client that takes this path never gets a
+                // `terminated`, and a later peer-queued `debugger/terminated`
+                // would reach the editor as an un-deduped event.
+                if terminate && !self.terminated_emitted {
+                    self.terminated_emitted = true;
+                    out.push(self.event("terminated", None));
+                }
             }
             other => {
                 // Lenient: acknowledge unrecognized requests so a client is not
@@ -335,38 +344,48 @@ impl DapPeerBridge {
     fn handle_set_breakpoints(&mut self, args: Option<&Value>) -> super::BackendResult<Value> {
         let args = args.ok_or_else(|| super::BackendError::Protocol("missing arguments".into()))?;
         let source = dap_source(args.get("source"));
-        let breakpoints = args
-            .get("breakpoints")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|b| {
-                        let line = b.get("line").and_then(Value::as_u64)? as u32;
-                        Some(DebugBreakpoint {
-                            id: None,
-                            source: source.clone(),
-                            line,
-                            column: b.get("column").and_then(Value::as_u64).map(|c| c as u32),
-                            condition: str_field(b, "condition"),
-                            hit_condition: str_field(b, "hitCondition"),
-                            log_message: str_field(b, "logMessage"),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let input = args.get("breakpoints").and_then(Value::as_array).cloned().unwrap_or_default();
+        // DAP requires the response `breakpoints` array to match the request
+        // positionally and in length. An entry missing `line` can't be sent to
+        // the backend, but must still occupy its slot as `verified: false` rather
+        // than being dropped (which would shift every later entry onto the wrong
+        // requested line). Track, per input position, the index of its resolved
+        // result — or `None` for the unbuildable entries.
+        let mut breakpoints = Vec::new();
+        let mut slots: Vec<Option<usize>> = Vec::with_capacity(input.len());
+        for b in &input {
+            match b.get("line").and_then(Value::as_u64) {
+                Some(line) => {
+                    slots.push(Some(breakpoints.len()));
+                    breakpoints.push(DebugBreakpoint {
+                        id: None,
+                        source: source.clone(),
+                        line: line as u32,
+                        column: b.get("column").and_then(Value::as_u64).map(|c| c as u32),
+                        condition: str_field(b, "condition"),
+                        hit_condition: str_field(b, "hitCondition"),
+                        log_message: str_field(b, "logMessage"),
+                    });
+                }
+                None => slots.push(None),
+            }
+        }
         let resolved =
             self.backend.set_breakpoints(SetBackendBreakpointsParams { source, breakpoints })?;
-        let bps: Vec<Value> = resolved
-            .into_iter()
-            .map(|r| {
-                json!({
+        let bps: Vec<Value> = slots
+            .iter()
+            .map(|slot| match slot.and_then(|i| resolved.get(i)) {
+                Some(r) => json!({
                     "id": r.id,
                     "verified": r.verified,
                     "line": r.actual_position.line,
                     "column": r.actual_position.column,
                     "message": r.message,
-                })
+                }),
+                // Either the entry lacked a `line`, or the backend returned fewer
+                // results than requested — echo an unverified slot to keep the
+                // response positionally aligned with the request.
+                None => json!({ "verified": false, "message": "line required" }),
             })
             .collect();
         Ok(json!({ "breakpoints": bps }))
@@ -376,24 +395,37 @@ impl DapPeerBridge {
         &mut self,
         args: Option<&Value>,
     ) -> super::BackendResult<Value> {
-        let breakpoints = args
+        let input = args
             .and_then(|a| a.get("breakpoints"))
             .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|b| {
-                        Some(DebugFunctionBreakpoint {
-                            name: str_field(b, "name")?,
-                            condition: str_field(b, "condition"),
-                        })
-                    })
-                    .collect()
-            })
+            .cloned()
             .unwrap_or_default();
+        // Positional/length contract as in `handle_set_breakpoints`: an entry
+        // missing `name` keeps its slot as `verified: false` instead of shifting
+        // the array.
+        let mut breakpoints = Vec::new();
+        let mut slots: Vec<Option<usize>> = Vec::with_capacity(input.len());
+        for b in &input {
+            match str_field(b, "name") {
+                Some(name) => {
+                    slots.push(Some(breakpoints.len()));
+                    breakpoints.push(DebugFunctionBreakpoint {
+                        name,
+                        condition: str_field(b, "condition"),
+                    });
+                }
+                None => slots.push(None),
+            }
+        }
         let resolved =
             self.backend.set_function_breakpoints(SetFunctionBreakpointsParams { breakpoints })?;
-        let bps: Vec<Value> =
-            resolved.into_iter().map(|r| json!({ "id": r.id, "verified": r.verified })).collect();
+        let bps: Vec<Value> = slots
+            .iter()
+            .map(|slot| match slot.and_then(|i| resolved.get(i)) {
+                Some(r) => json!({ "id": r.id, "verified": r.verified }),
+                None => json!({ "verified": false, "message": "name required" }),
+            })
+            .collect();
         Ok(json!({ "breakpoints": bps }))
     }
 
@@ -1029,6 +1061,69 @@ mod tests {
         assert_eq!(bps.len(), 2);
         assert_eq!(bps[0]["verified"], true);
         assert_eq!(bps[0]["line"], 42);
+    }
+
+    #[test]
+    fn set_breakpoints_keeps_positional_slots_for_line_less_entries() {
+        // DAP requires the response array to match the request positionally and
+        // in length. A middle entry missing `line` must occupy its slot as
+        // `verified: false`, not be dropped (which would shift line 9 onto slot 1).
+        let mut b = bridge();
+        let args = json!({
+            "source": { "path": "/work/script.pl" },
+            "breakpoints": [{ "line": 3 }, { "condition": "$x" }, { "line": 9 }],
+        });
+        let out = b.dispatch(2, "setBreakpoints", Some(args));
+        let bps =
+            as_response(&out[0]).2.expect("body")["breakpoints"].as_array().expect("array").clone();
+        assert_eq!(bps.len(), 3, "response length must equal request length: {bps:?}");
+        assert_eq!(bps[0]["verified"], true);
+        assert_eq!(bps[0]["line"], 3);
+        assert_eq!(bps[1]["verified"], false, "the line-less entry stays in slot 1");
+        assert_eq!(bps[1]["message"], "line required");
+        assert_eq!(bps[2]["verified"], true);
+        assert_eq!(bps[2]["line"], 9);
+    }
+
+    #[test]
+    fn set_function_breakpoints_keeps_positional_slots_for_name_less_entries() {
+        let mut b = bridge();
+        // The ScriptBackend returns no function breakpoints, so the only slot that
+        // can be `verified: true` is none — but the name-less entry must still be
+        // echoed as its own `verified: false` slot rather than dropped.
+        let args = json!({ "breakpoints": [{ "condition": "1" }, { "name": "main::run" }] });
+        let out = b.dispatch(2, "setFunctionBreakpoints", Some(args));
+        let bps =
+            as_response(&out[0]).2.expect("body")["breakpoints"].as_array().expect("array").clone();
+        assert_eq!(bps.len(), 2, "response length must equal request length: {bps:?}");
+        assert_eq!(bps[0]["verified"], false);
+        assert_eq!(bps[0]["message"], "name required");
+    }
+
+    #[test]
+    fn disconnect_with_terminate_emits_terminated_and_arms_dedup() {
+        let mut b = bridge();
+        let out = b.dispatch(2, "disconnect", Some(json!({ "terminateDebuggee": true })));
+        assert!(
+            out.iter()
+                .any(|m| matches!(m, DapMessage::Event { event, .. } if event == "terminated")),
+            "disconnect(terminateDebuggee=true) must emit terminated: {out:?}"
+        );
+        // Dedup armed: a subsequent peer-queued terminated is suppressed.
+        let mut more = Vec::new();
+        b.push_dap_events(DebugEvent::Terminated { exit_code: Some(0) }, &mut more);
+        assert!(more.is_empty(), "second terminated must be suppressed: {more:?}");
+    }
+
+    #[test]
+    fn disconnect_without_terminate_does_not_emit_terminated() {
+        let mut b = bridge();
+        let out = b.dispatch(2, "disconnect", Some(json!({ "terminateDebuggee": false })));
+        assert!(
+            !out.iter()
+                .any(|m| matches!(m, DapMessage::Event { event, .. } if event == "terminated")),
+            "a plain disconnect must not synthesize terminated: {out:?}"
+        );
     }
 
     #[test]

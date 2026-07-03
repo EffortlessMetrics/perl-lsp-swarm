@@ -5,7 +5,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use perl_dap::backend::external_peer::ExternalDebuggerPeerBackend;
@@ -40,7 +40,27 @@ fn run_external_peer_bridge(editor_port: u16, peer_addr: &str) -> anyhow::Result
         .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
     let bridge = DapPeerBridge::new(Box::new(backend));
 
-    let (editor, _) = listener.accept()?;
+    // Bound the editor accept: a plain blocking `accept()` would hang the whole
+    // process forever (holding the peer connection open, recoverable only by
+    // SIGKILL) if the editor crashes before connecting or `--port` is
+    // misconfigured. Poll non-blocking against a deadline, matching
+    // `ExternalDebuggerPeerBackend::listen`.
+    listener.set_nonblocking(true)?;
+    let deadline = Instant::now() + EXTERNAL_PEER_TIMEOUT;
+    let editor = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    anyhow::bail!("no editor connected within {EXTERNAL_PEER_TIMEOUT:?}");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(anyhow::anyhow!("editor accept failed: {e}")),
+        }
+    };
+    // Restore blocking mode; the session driver manages its own read timeout.
+    editor.set_nonblocking(false)?;
     run_external_peer_session(editor, bridge, EXTERNAL_PEER_POLL)?;
     Ok(())
 }
@@ -97,9 +117,10 @@ struct Args {
     #[arg(long, value_name = "PROGRAM")]
     debug_session_plan: Option<PathBuf>,
 
-    /// Bridge to an external debugger peer at HOST:PORT (e.g. Devel::ptkdb) over
-    /// the Perl Debugger Peer Protocol. Requires `--socket`/`--port` for the
-    /// editor connection; the editor drives DAP, we drive the peer.
+    /// Connect to an external debugger peer at HOST:PORT (e.g. Devel::ptkdb) and
+    /// relay DAP <-> the Perl Debugger Peer Protocol: the editor drives DAP, we
+    /// drive the peer. Uses stdio by default (the editor spawns us); add
+    /// `--socket`/`--port` for a socket editor connection instead.
     #[arg(long, value_name = "HOST:PORT")]
     external_peer: Option<String>,
 }
