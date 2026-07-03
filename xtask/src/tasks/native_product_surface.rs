@@ -247,7 +247,13 @@ fn collect_strict_violations(surface: &str, text: &str, violations: &mut Vec<Str
         // when it is bolded or wrapped — e.g. "does **not** require" must read as
         // "does not require", not defeat the "does not" / "not require" match.
         let normalized = line.replace(['`', '*'], "").to_ascii_lowercase();
-        if NATIVE_FIRST_QUALIFIERS.iter().any(|q| normalized.contains(q)) {
+        // Word-boundary match, not raw substring: a plain `.contains(q)` lets an
+        // unrelated word that merely *embeds* a qualifier wrongly exempt a real
+        // leak — "incompatibility" embeds "compatibility", "immigration" embeds
+        // "migration". `contains_word` (already used for the bare-marker side
+        // below) requires non-alphanumeric boundaries on both sides of the whole
+        // qualifier phrase, so those embeddings no longer count.
+        if NATIVE_FIRST_QUALIFIERS.iter().any(|q| contains_word(&normalized, q)) {
             continue;
         }
         for marker in STRICT_BARE_MARKERS {
@@ -397,6 +403,26 @@ Install `perltidy` only if you selected the external compatibility engine.\n";
         let mut violations = Vec::new();
         collect_strict_violations("surface.md", text, &mut violations);
         assert!(violations.is_empty(), "native-first lines must pass strict: {violations:?}");
+    }
+
+    #[test]
+    fn strict_qualifier_requires_word_boundary() {
+        // "incompatibility" embeds "compatibility" and "immigration" embeds
+        // "migration" as raw substrings. A plain `.contains(q)` qualifier check
+        // would wrongly treat these as native-first framing and let a real
+        // requirement leak through. The qualifier match must respect word
+        // boundaries the same way the bare-marker match already does.
+        for leak in [
+            "There is a known incompatibility; perlcritic must be installed for diagnostics to appear.",
+            "As part of the immigration to v2 tooling, perltidy must be installed first.",
+        ] {
+            let mut violations = Vec::new();
+            collect_strict_violations("surface.md", &format!("{leak}\n"), &mut violations);
+            assert!(
+                !violations.is_empty(),
+                "embedded-substring qualifier collision must not exempt a real leak: {leak:?}"
+            );
+        }
     }
 
     #[test]
