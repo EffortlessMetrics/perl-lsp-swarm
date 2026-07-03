@@ -1603,6 +1603,7 @@ impl LspServer {
                 | "perl.goToTest"
                 | "perl.goToImplementation"
                 | "perl.debugTests"
+                | "perl.debugTestFile"
                 | "perl.explainProviderDecision" => {
                     match provider.execute_command(command, arguments) {
                         Ok(result) => return Ok(Some(result)),

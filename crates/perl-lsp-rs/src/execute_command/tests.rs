@@ -1250,6 +1250,32 @@ fn test_all_command_routing_paths() {
 }
 
 #[test]
+fn test_debug_tests_returns_perl_dap_launch_config() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let test_file = temp_dir.path().join("debug_me.t");
+    fs::write(&test_file, "use Test2::V0;\nok(1);\ndone_testing;\n")?;
+
+    let provider =
+        ExecuteCommandProvider::with_workspace_roots(vec![temp_dir.path().to_path_buf()]);
+    let result = provider.execute_command(
+        "perl.debugTestFile",
+        vec![Value::String(test_file.display().to_string())],
+    )?;
+
+    assert_eq!(result["success"], true, "debug should no longer be a 'coming soon' stub");
+    assert_eq!(result["action"], "startDebugging");
+    assert_eq!(result["adapter"], "perl-dap");
+    let config = &result["configuration"];
+    assert_eq!(config["type"], "perl", "launches through the native perl debug type");
+    assert_eq!(config["request"], "launch");
+    assert_eq!(config["stopOnEntry"], false);
+    assert!(config["program"].as_str().unwrap_or("").ends_with("debug_me.t"));
+    assert!(config["cwd"].is_string(), "cwd follows the runner policy (file dir)");
+    assert_eq!(config["env"]["PERL_TEST_HARNESS_DUMP_TAP"], "1");
+    Ok(())
+}
+
+#[test]
 fn test_run_subtest_reports_whole_file_focused_mode() -> Result<(), Box<dyn std::error::Error>> {
     // The focused-run metadata (mode/requestedSubtest/note) is set regardless of
     // whether `perl` is present, so this test is robust to the environment.

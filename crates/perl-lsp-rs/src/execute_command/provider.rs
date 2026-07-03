@@ -197,7 +197,7 @@ impl ExecuteCommandProvider {
                     .ok_or_else(|| "Missing subroutine name argument".to_string())?;
                 self.run_test_sub(&file_path, sub_name)
             }
-            "perl.debugTests" | "perl.debugFile" | "perl.debugTest" => {
+            "perl.debugTests" | "perl.debugTestFile" | "perl.debugFile" | "perl.debugTest" => {
                 let file_path = self.resolve_path_from_args(&arguments)?;
                 self.debug_tests(&file_path)
             }
@@ -529,12 +529,38 @@ impl ExecuteCommandProvider {
         }
     }
 
+    /// Build a Debug Adapter Protocol launch configuration for debugging a test
+    /// file through the native `perl-dap` adapter.
+    ///
+    /// `perl-lsp` does not run the debugger itself: it returns a launch
+    /// configuration (`action: "startDebugging"`) that the editor hands to the
+    /// `perl` debug type (backed by `perl-dap`). The program is the `.t` file
+    /// run under the real Perl interpreter — no Test2 runtime is emulated. The
+    /// working directory follows the same policy as `runTests` (the file's
+    /// directory), and `PERL_TEST_HARNESS_DUMP_TAP` is set so the session emits
+    /// TAP the editor can read back.
     fn debug_tests(&self, file_path: &Path) -> Result<Value, String> {
-        let file_path_str = file_path.to_string_lossy();
+        let ext_path = normalize_path_for_external_command(file_path);
+        let cwd = ext_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        let file_name = file_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ext_path.to_string_lossy().into_owned());
+
         Ok(json!({
-            "success": false,
-            "output": format!("Debug mode not yet implemented for {}", file_path_str),
-            "error": Some("Debugging support coming soon".to_string())
+            "success": true,
+            "action": "startDebugging",
+            "adapter": "perl-dap",
+            "configuration": {
+                "type": "perl",
+                "request": "launch",
+                "name": format!("Debug Test: {file_name}"),
+                "program": ext_path.to_string_lossy(),
+                "cwd": cwd.to_string_lossy(),
+                "stopOnEntry": false,
+                "args": [],
+                "env": { "PERL_TEST_HARNESS_DUMP_TAP": "1" }
+            }
         }))
     }
 
@@ -1491,6 +1517,7 @@ pub fn get_supported_commands() -> Vec<String> {
         "perl.runSubtest".to_string(),
         "perl.debugFile".to_string(),
         "perl.debugTest".to_string(),
+        "perl.debugTestFile".to_string(),
         "perl.goToTest".to_string(),
         "perl.goToImplementation".to_string(),
         "perl.explainProviderDecision".to_string(),
