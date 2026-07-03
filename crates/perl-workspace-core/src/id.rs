@@ -224,4 +224,18 @@ mod tests {
         assert_ne!(a, b);
         assert!(a.as_str().starts_with("pkg:fnv64:"));
     }
+
+    #[test]
+    fn id_display_impls_match_as_str() {
+        // Display is the format!("{id}") path used throughout the codebase's
+        // logging/debug output; it must agree with `as_str()` exactly.
+        let file = FileId::new("lib/A.pm", &Digest::of("x"));
+        assert_eq!(format!("{file}"), file.as_str());
+
+        let package = PackageId::new(&file, "App", 0);
+        assert_eq!(format!("{package}"), package.as_str());
+
+        let symbol = SymbolId::new(&file, "sub", "App::run", 0, 10);
+        assert_eq!(format!("{symbol}"), symbol.as_str());
+    }
 }

@@ -89,6 +89,11 @@ mod tests {
         let _ = parse_to_tree(&bad);
     }
 
+    #[test]
+    fn tree_error_displays_readably() {
+        assert_eq!(TreeError::ParseFailed.to_string(), "could not parse source as Perl");
+    }
+
     fn has_node_starting_on_row(node: &TsNode, row: u32) -> bool {
         node.start_point.row == row
             || node.children.iter().any(|c| has_node_starting_on_row(c, row))

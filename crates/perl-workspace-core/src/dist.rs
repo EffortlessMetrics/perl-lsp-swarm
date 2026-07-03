@@ -65,6 +65,7 @@ const CPANFILE_KEYWORDS: &[(&str, &str, &str)] = &[
     ("requires", "requires", "runtime"),
     ("recommends", "recommends", "runtime"),
     ("suggests", "suggests", "runtime"),
+    ("conflicts", "conflicts", "runtime"),
 ];
 
 /// Parse a `META.json` (CPAN Meta Spec v2, with a v1.4 flat fallback).
@@ -389,5 +390,24 @@ mod tests {
         );
         let p = facts.prereqs.iter().find(|p| p.module == "ExtUtils::MakeMaker").unwrap();
         assert_eq!(p.phase, "configure");
+    }
+
+    #[test]
+    fn cpanfile_conflicts_is_recognized() {
+        // Regression: `conflicts` is a documented cpanfile/META relation
+        // (RELATIONS includes it), but CPANFILE_KEYWORDS previously had no
+        // entry for it, so `conflicts 'Foo';` was silently dropped.
+        let facts = parse_cpanfile(
+            FileId::new("cpanfile", &Digest::of("x")),
+            "conflicts 'Some::Broken::Module';\n",
+        );
+        assert!(
+            facts.prereqs.iter().any(|p| p.module == "Some::Broken::Module"),
+            "conflicts statement must produce a prereq entry; prereqs={:?}",
+            facts.prereqs
+        );
+        let p = facts.prereqs.iter().find(|p| p.module == "Some::Broken::Module").unwrap();
+        assert_eq!(p.relation, "conflicts");
+        assert_eq!(p.phase, "runtime");
     }
 }

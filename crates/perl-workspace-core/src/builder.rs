@@ -350,10 +350,11 @@ fn collect_perl_files(root: &Path) -> Vec<String> {
 }
 
 /// True for files the substrate indexes: Perl source **or** distribution
-/// metadata. Metadata files are indexed (as [`FileRole::DistMetadata`]) but not
-/// parsed — their contents are read by the dist-metadata fact pass (PR 7).
+/// metadata **or** an extensionless script with a Perl shebang. Metadata
+/// files are indexed (as [`FileRole::DistMetadata`]) but not parsed — their
+/// contents are read by the dist-metadata fact pass (PR 7).
 fn is_indexable(path: &Path) -> bool {
-    is_perl_source(path) || is_dist_metadata(path)
+    is_perl_source(path) || is_dist_metadata(path) || is_shebang_perl_script(path)
 }
 
 /// True for file extensions the substrate treats as Perl source.
@@ -362,6 +363,32 @@ fn is_perl_source(path: &Path) -> bool {
         path.extension().and_then(|e| e.to_str()),
         Some("pm") | Some("pl") | Some("t") | Some("pod") | Some("psgi")
     )
+}
+
+/// True for a regular file with **no** extension whose first line is a Perl
+/// shebang (`#!/usr/bin/perl`, `#!/usr/bin/env perl`, …).
+///
+/// Distributions commonly ship executables under `bin/`/`script/` with no
+/// `.pl` suffix; without this check such a script would be silently invisible
+/// to the substrate even though [`FileRole::from_path`] already classifies a
+/// `bin/`/`script/` path as [`FileRole::Script`]. Kept tight: only files with
+/// no extension are even considered, and only a real Perl shebang qualifies —
+/// an extensionless non-Perl file (`README`, a shell script, …) stays out.
+fn is_shebang_perl_script(path: &Path) -> bool {
+    path.extension().is_none() && has_perl_shebang(path)
+}
+
+/// Read a small bounded prefix of `path` and check whether its first line is
+/// a Perl shebang. Never panics or reads the whole file: any I/O or encoding
+/// failure — or a first line beyond the bounded prefix — reads as "no".
+fn has_perl_shebang(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    let mut buf = [0u8; 256];
+    let Ok(n) = file.read(&mut buf) else { return false };
+    let Ok(text) = std::str::from_utf8(&buf[..n]) else { return false };
+    let first_line = text.lines().next().unwrap_or("");
+    first_line.starts_with("#!") && first_line.contains("perl")
 }
 
 /// Known distribution-metadata filenames.
@@ -594,6 +621,87 @@ mod tests {
         assert!(
             had_limitation || file.parse_status == ParseStatus::Clean,
             "parse failure must surface a limitation"
+        );
+    }
+
+    #[test]
+    fn extensionless_shebang_script_is_indexed_as_script() {
+        // Regression: `bin/app` with no `.pl` suffix but a real Perl shebang
+        // must be indexed and classified `Script`, not silently invisible.
+        let model = model_for(
+            "shebang-perl",
+            &[("bin/app", "#!/usr/bin/perl\nuse strict;\nprint \"hi\\n\";\n")],
+            FactClasses::FILES,
+        );
+        let file = model.file_by_path("bin/app").unwrap();
+        assert_eq!(file.role, FileRole::Script, "shebang'd extensionless file is a Script");
+    }
+
+    #[test]
+    fn extensionless_env_perl_shebang_is_indexed() {
+        // The `#!/usr/bin/env perl` form is at least as common as a direct path.
+        let model = model_for(
+            "shebang-env-perl",
+            &[("script/tool", "#!/usr/bin/env perl\nuse strict;\n1;\n")],
+            FactClasses::FILES,
+        );
+        assert!(model.file_by_path("script/tool").is_some(), "env-perl shebang is recognized");
+    }
+
+    #[test]
+    fn extensionless_non_perl_shebang_is_not_indexed() {
+        // A non-Perl extensionless script (shell, in this case) must stay out —
+        // the shebang check is deliberately tight.
+        let model = model_for(
+            "shebang-sh",
+            &[("bin/sh-thing", "#!/bin/sh\necho hi\n")],
+            FactClasses::FILES,
+        );
+        assert!(
+            model.file_by_path("bin/sh-thing").is_none(),
+            "a non-Perl shebang script must not be indexed"
+        );
+    }
+
+    #[test]
+    fn visibility_of_maps_declarators() {
+        assert_eq!(visibility_of(Some("my")), Visibility::Private);
+        assert_eq!(visibility_of(Some("state")), Visibility::Private);
+        assert_eq!(visibility_of(Some("our")), Visibility::Public);
+        assert_eq!(visibility_of(Some("local")), Visibility::Public);
+        assert_eq!(
+            visibility_of(None),
+            Visibility::Public,
+            "no declarator (sub/package) is public"
+        );
+        assert_eq!(visibility_of(Some("weird")), Visibility::Unknown);
+    }
+
+    #[test]
+    fn unreadable_file_records_limitation_not_silent_drop() {
+        // Invalid UTF-8 content makes `read_to_string` fail regardless of
+        // process privilege (unlike permission bits, which root ignores in CI
+        // sandboxes) — a portable trigger for the read-failure path.
+        let root = std::env::temp_dir().join("pwc-builder-unreadable");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        std::fs::write(root.join("lib/Bad.pm"), [0x50, 0x61, 0x63, 0xFF, 0xFE]).unwrap();
+
+        let model = build_project_model(&ProjectModelRequest {
+            root: root.to_str().unwrap(),
+            fact_classes: FactClasses::FILES,
+        })
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(model.file_by_path("lib/Bad.pm").is_none(), "unreadable file emits no FileRecord");
+        assert!(
+            model
+                .limitations
+                .iter()
+                .any(|l| l.kind == "read_failure" && l.id.contains("lib/Bad.pm")),
+            "read failure surfaces a limitation, not a silent drop; limitations={:?}",
+            model.limitations
         );
     }
 }

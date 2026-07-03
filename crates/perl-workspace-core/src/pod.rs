@@ -98,11 +98,11 @@ fn scan_sections(source: &str, line_index: &Utf8LineIndex) -> Vec<PodSection> {
         let line_len = u32::try_from(line.len()).unwrap_or(u32::MAX);
         let content_len = u32::try_from(trimmed.len()).unwrap_or(u32::MAX);
 
-        if trimmed.starts_with('=') && !in_pod && !trimmed.starts_with("=cut") {
+        if trimmed.starts_with('=') && !in_pod && !is_cut_directive(trimmed) {
             in_pod = true;
         }
         if in_pod {
-            if trimmed.starts_with("=cut") {
+            if is_cut_directive(trimmed) {
                 in_pod = false;
             } else if let Some((kind, title)) = classify_directive(trimmed) {
                 let range = line_index.source_range(byte, byte.saturating_add(content_len));
@@ -112,6 +112,15 @@ fn scan_sections(source: &str, line_index: &Utf8LineIndex) -> Vec<PodSection> {
         byte = byte.saturating_add(line_len);
     }
     sections
+}
+
+/// True when a line's directive token is exactly `=cut` — not merely
+/// *prefixed* by it. A prefix match (`starts_with("=cut")`) would wrongly
+/// treat an unrelated/unknown directive like `=cutlery` as closing the POD
+/// block; real Perl parses the directive as the first whitespace-delimited
+/// token, so only an exact `=cut` token ends the block.
+fn is_cut_directive(line: &str) -> bool {
+    line.split_whitespace().next() == Some("=cut")
 }
 
 /// Classify a POD directive line into a section kind + title.
@@ -174,5 +183,36 @@ mod tests {
         // ordinary code never starts a line with `=item`, but guard anyway.
         let src = "my $x = 1;\nmy $y = 2;\n";
         assert!(facts(src).is_none());
+    }
+
+    #[test]
+    fn cut_lookalike_directive_does_not_close_pod() {
+        // Regression: `=cutlery` (or any directive merely *prefixed* by "cut")
+        // must not be mistaken for the `=cut` terminator via a starts_with
+        // prefix match. Perl parses the directive as the first
+        // whitespace-delimited token, so only an exact `=cut` line closes POD.
+        let src = "package App;\n\n=head1 NAME\n\nApp - does things\n\n=cutlery not a real directive\n\n=head2 run\n\nRuns it.\n\n=cut\n\nsub run { 1 }\n1;\n";
+        let f = facts(src).unwrap();
+        assert!(
+            f.sections.iter().any(|s| s.kind == PodSectionKind::Head2 && s.title == "run"),
+            "the =head2 after the =cutlery lookalike is still inside POD; sections={:?}",
+            f.sections
+        );
+        assert!(
+            f.documented_methods.contains(&"run".to_string()),
+            "run is still documented despite the =cutlery lookalike line"
+        );
+    }
+
+    #[test]
+    fn is_cut_directive_matches_exact_token_only() {
+        // Direct unit coverage of the token-boundary fix: `=cut` (with or
+        // without trailing text — only the first token is the directive name)
+        // matches; a lookalike directive or ordinary code does not.
+        assert!(is_cut_directive("=cut"));
+        assert!(is_cut_directive("=cut trailing junk is ignored"));
+        assert!(!is_cut_directive("=cutlery not a real directive"));
+        assert!(!is_cut_directive("=customs"));
+        assert!(!is_cut_directive("code();"));
     }
 }
