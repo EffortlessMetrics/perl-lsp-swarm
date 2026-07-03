@@ -2058,7 +2058,7 @@ impl ExtractionWalk {
             }
             NodeKind::MandatoryParameter { variable }
             | NodeKind::SlurpyParameter { variable }
-            | NodeKind::NamedParameter { variable } => {
+            | NodeKind::NamedParameter { variable, .. } => {
                 self.visit_parameter(node, variable);
             }
             NodeKind::OptionalParameter { variable, default_value } => {

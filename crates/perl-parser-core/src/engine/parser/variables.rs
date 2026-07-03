@@ -1031,7 +1031,28 @@ impl<'a> Parser<'a> {
 
         // Create the appropriate parameter node type
         let param_kind = if named {
-            NodeKind::NamedParameter { variable: Box::new(variable) }
+            // The external argument name is the lexical variable name without
+            // its sigil (`:$alpha` is supplied by callers as `alpha => ...`).
+            let external_name = match &variable.kind {
+                NodeKind::Variable { name, .. } => name.clone(),
+                _ => String::new(),
+            };
+            // A named parameter without a default is required; with a default
+            // it is optional. Only `=` is recognized here today — `//=`/`||=`
+            // default operators are a follow-up (the operator field is already
+            // modeled so that change needs no further struct-shape churn).
+            let (default_operator, required) = if default_value.is_some() {
+                (Some("=".to_string()), false)
+            } else {
+                (None, true)
+            };
+            NodeKind::NamedParameter {
+                variable: Box::new(variable),
+                external_name,
+                default_operator,
+                default_value,
+                required,
+            }
         } else if is_slurpy {
             NodeKind::SlurpyParameter { variable: Box::new(variable) }
         } else if let Some(default) = default_value {

@@ -332,7 +332,16 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             1,
         ),
         (
-            Node::new(NodeKind::NamedParameter { variable: Box::new(leaf("var")) }, loc()),
+            Node::new(
+                NodeKind::NamedParameter {
+                    variable: Box::new(leaf("var")),
+                    external_name: String::new(),
+                    default_operator: None,
+                    default_value: None,
+                    required: true,
+                },
+                loc(),
+            ),
             "NamedParameter",
             1,
         ),

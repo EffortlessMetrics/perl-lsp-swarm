@@ -1976,7 +1976,7 @@ fn visit_node(
         }
         NodeKind::MandatoryParameter { variable }
         | NodeKind::SlurpyParameter { variable }
-        | NodeKind::NamedParameter { variable } => {
+        | NodeKind::NamedParameter { variable, .. } => {
             let name = extract_var_name(variable);
             if in_range {
                 declared_in_range.insert(name);

@@ -1003,7 +1003,7 @@ where
         NodeKind::SlurpyParameter { variable } => {
             find_nodes_recursive(variable, predicate, results);
         }
-        NodeKind::NamedParameter { variable } => {
+        NodeKind::NamedParameter { variable, .. } => {
             find_nodes_recursive(variable, predicate, results);
         }
         NodeKind::IndirectCall { object, args, .. } => {

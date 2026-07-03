@@ -333,7 +333,7 @@ impl DocumentHighlightProvider {
                 Some(vec![variable.as_ref(), default_value.as_ref()])
             }
             NodeKind::SlurpyParameter { variable } => Some(vec![variable.as_ref()]),
-            NodeKind::NamedParameter { variable } => Some(vec![variable.as_ref()]),
+            NodeKind::NamedParameter { variable, .. } => Some(vec![variable.as_ref()]),
             // Fall back to the canonical AST traversal contract so newly-added
             // child-bearing node kinds are still visited by highlights.
             _ => Some(node.children()),
@@ -760,7 +760,7 @@ impl DocumentHighlightProvider {
                         // Signature parameters are writes (value binding on call)
                         NodeKind::MandatoryParameter { variable }
                         | NodeKind::SlurpyParameter { variable }
-                        | NodeKind::NamedParameter { variable } => {
+                        | NodeKind::NamedParameter { variable, .. } => {
                             if std::ptr::eq(variable.as_ref(), node) {
                                 DocumentHighlightKind::Write
                             } else {

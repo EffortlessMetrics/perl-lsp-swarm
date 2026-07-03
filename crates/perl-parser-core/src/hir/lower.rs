@@ -1041,9 +1041,9 @@ impl Lowerer {
 
     fn record_signature_parameter(&mut self, parameter: &Node, scope_id: HirScopeId) {
         match &parameter.kind {
-            NodeKind::MandatoryParameter { variable }
-            | NodeKind::SlurpyParameter { variable }
-            | NodeKind::NamedParameter { variable } => {
+            NodeKind::MandatoryParameter { variable, .. }
+            | NodeKind::SlurpyParameter { variable, .. }
+            | NodeKind::NamedParameter { variable, .. } => {
                 if let Some(binding) = variable_binding(variable) {
                     self.record_binding(
                         binding.sigil,
