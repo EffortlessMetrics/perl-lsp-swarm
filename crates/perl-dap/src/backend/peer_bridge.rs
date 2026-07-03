@@ -808,7 +808,13 @@ fn handle_breakpoint_locations(args: Option<&Value>) -> Value {
     let Some(path) = args.get("source").and_then(|s| s.get("path")).and_then(Value::as_str) else {
         return empty;
     };
-    let start = args.get("line").and_then(Value::as_u64).unwrap_or(0) as u32;
+    // DAP requires `line`; `endLine` is optional and defaults to `line` (a
+    // single-line query). A request without `line` is malformed — return the
+    // empty set rather than treating a lone `endLine` as `1..=endLine`, which
+    // would leak every breakable line up to it.
+    let Some(start) = args.get("line").and_then(Value::as_u64).map(|v| v as u32) else {
+        return empty;
+    };
     let end = args.get("endLine").and_then(Value::as_u64).map(|v| v as u32).unwrap_or(start);
     let Ok(text) = std::fs::read_to_string(path) else {
         return empty;
@@ -1108,6 +1114,50 @@ mod tests {
         assert!(ok, "the request itself still succeeds");
         let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
         assert!(bps.is_empty(), "missing line yields empty set, not every line: {bps:?}");
+    }
+
+    #[test]
+    fn breakpoint_locations_only_end_line_returns_empty_not_all_lines() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().expect("tmp");
+        writeln!(f, "my $x = 1;").expect("w"); // line 1 — breakable
+        writeln!(f, "my $y = 2;").expect("w"); // line 2 — breakable
+        let path = f.path().to_string_lossy().to_string();
+
+        let mut b = bridge();
+        // `endLine` present but `line` absent is the same malformed class as
+        // "missing line" — it must NOT return every breakable line up to endLine.
+        let out = b.dispatch(
+            22,
+            "breakpointLocations",
+            Some(json!({ "source": { "path": path }, "endLine": 100 })),
+        );
+        let (_, ok, body) = as_response(&out[0]);
+        assert!(ok, "the request itself still succeeds");
+        let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+        assert!(bps.is_empty(), "endLine-only (no line) yields empty set: {bps:?}");
+    }
+
+    #[test]
+    fn breakpoint_locations_line_only_defaults_end_to_that_line() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().expect("tmp");
+        writeln!(f, "# comment").expect("w"); // line 1 — not breakable
+        writeln!(f, "my $x = 1;").expect("w"); // line 2 — breakable
+        let path = f.path().to_string_lossy().to_string();
+
+        let mut b = bridge();
+        // A valid single-line query (`line` with no `endLine`) must still work:
+        // endLine defaults to line, so line 2 is reported.
+        let out = b.dispatch(
+            23,
+            "breakpointLocations",
+            Some(json!({ "source": { "path": path }, "line": 2 })),
+        );
+        let bps =
+            as_response(&out[0]).2.expect("body")["breakpoints"].as_array().expect("array").clone();
+        let lines: Vec<i64> = bps.iter().filter_map(|b| b["line"].as_i64()).collect();
+        assert_eq!(lines, vec![2], "line-only query reports just that breakable line: {lines:?}");
     }
 
     #[test]

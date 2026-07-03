@@ -431,6 +431,14 @@ describe('buildDapExecutableArgs', () => {
     expect(buildDapExecutableArgs({ externalPeer: 42 } as any)).toEqual([]);
   });
 
+  test('falls back to native for a non-connectable port in the flat shape', () => {
+    // `host:0` (0 = "allocate", not connectable) and out-of-range ports must
+    // fall back to the native adapter, consistent with the structured shape —
+    // not spawn an unconnectable `--external-peer host:0`.
+    expect(buildDapExecutableArgs({ externalPeer: 'localhost:0' } as any)).toEqual([]);
+    expect(buildDapExecutableArgs({ externalPeer: 'localhost:70000' } as any)).toEqual([]);
+  });
+
   test('falls back to the native adapter for a bracketed IPv6 peer address', () => {
     // The validator requires the host segment to contain no ':' (so a plain
     // "host:port" split is unambiguous), so a bracketed IPv6 literal like

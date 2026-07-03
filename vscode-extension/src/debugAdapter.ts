@@ -394,8 +394,13 @@ function normalizeDebugArgs(value: unknown): string[] {
     return value.filter((entry): entry is string => typeof entry === 'string');
 }
 
-/** Regex for a well-formed `host:port` peer address (IPv4/hostname, not IPv6). */
-const PEER_ADDR_RE = /^[^\s:]+:\d+$/;
+/** Regex for the shape of a `host:port` peer address (IPv4/hostname, not IPv6). */
+const PEER_ADDR_RE = /^([^\s:]+):(\d+)$/;
+
+/** A connectable TCP port: an integer in 1..=65535 (0 = "allocate" is not connectable). */
+function isConnectablePort(port: unknown): port is number {
+    return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535;
+}
 
 /**
  * Resolve the external-peer `HOST:PORT` a debug config asks perl-dap to connect
@@ -418,8 +423,15 @@ function resolveExternalPeerAddress(
     }
 
     const flat = config.externalPeer;
-    if (typeof flat === 'string' && PEER_ADDR_RE.test(flat.trim())) {
-        return flat.trim();
+    if (typeof flat === 'string') {
+        const m = PEER_ADDR_RE.exec(flat.trim());
+        // Validate the port range too, not just the shape, so `host:0` (and
+        // out-of-range ports) fall back to the native adapter — consistent with
+        // the structured shape below — rather than spawning an unconnectable
+        // `--external-peer host:0` that then fails with a transport error.
+        if (m && isConnectablePort(Number(m[2]))) {
+            return `${m[1]}:${Number(m[2])}`;
+        }
     }
 
     if (config.debuggerBackend === 'external' && config.externalDebugger
@@ -427,11 +439,9 @@ function resolveExternalPeerAddress(
         const ext = config.externalDebugger as { host?: unknown; port?: unknown; mode?: unknown };
         const mode = typeof ext.mode === 'string' ? ext.mode : 'connect';
         const host = typeof ext.host === 'string' && ext.host.trim() ? ext.host.trim() : '127.0.0.1';
-        const port = ext.port;
-        if (mode === 'connect'
-            && typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535
+        if (mode === 'connect' && isConnectablePort(ext.port)
             && !host.includes(':') && !/\s/.test(host)) {
-            return `${host}:${port}`;
+            return `${host}:${ext.port}`;
         }
     }
 
