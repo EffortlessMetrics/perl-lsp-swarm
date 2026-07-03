@@ -13,7 +13,14 @@
 //! layering.
 #![allow(clippy::print_stderr)]
 
+use std::path::PathBuf;
 use std::process::Command;
+
+/// The workspace root, derived from this crate's manifest dir.
+fn workspace_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR is `<root>/crates/perl-workspace-core`.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+}
 
 /// Crate names that must never appear in `perl-workspace-core`'s dependency
 /// tree. Matched as whole tokens so substrings of unrelated crates do not
@@ -44,6 +51,11 @@ fn crate_token(line: &str) -> Option<&str> {
     if token.is_empty() { None } else { Some(token) }
 }
 
+/// Solo view: resolve `perl-workspace-core`'s own subgraph and assert no
+/// forbidden crate appears. Fast and catches direct/most transitive leaks, but
+/// note it uses *per-package* feature resolution and therefore does **not**
+/// reflect workspace feature unification — that gap is covered by
+/// [`workspace_core_not_a_forbidden_consumer_under_unification`] below.
 #[test]
 fn workspace_core_has_no_editor_or_runtime_deps() {
     let output = Command::new(env!("CARGO"))
@@ -80,6 +92,64 @@ fn workspace_core_has_no_editor_or_runtime_deps() {
         violations.is_empty(),
         "perl-workspace-core must not depend on editor/runtime/tool crates, \
          but its dependency tree contains:\n{}\n\nFull tree:\n{stdout}",
+        violations.join("\n")
+    );
+}
+
+/// Unification view: for each forbidden crate, invert the **workspace-wide**
+/// dependency tree (`cargo tree -i <forbidden>`) with full feature unification
+/// and assert `perl-workspace-core` is not among its consumers.
+///
+/// This is the authoritative guard for the contract's stated intent — "no
+/// forbidden dep, directly or transitively, *including via feature
+/// unification*." The solo `cargo tree -p perl-workspace-core` view resolves
+/// features for that crate's subgraph alone; if a future dependency pulled
+/// `perl-position-tracking` and some *other* workspace crate enabled its
+/// `lsp-compat` feature, unification would drag `lsp-types` into
+/// `perl-workspace-core`'s real build while the solo view still showed it clean.
+/// The inverted, root-resolved view sees the unified feature set and catches it.
+#[test]
+fn workspace_core_not_a_forbidden_consumer_under_unification() {
+    let root = workspace_root();
+    let mut violations: Vec<String> = Vec::new();
+
+    for forbidden in FORBIDDEN {
+        let output = Command::new(env!("CARGO"))
+            .current_dir(&root)
+            .args(["tree", "-i", forbidden, "--edges", "normal"])
+            .output();
+
+        let output = match output {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("skipping unification check: cannot run cargo tree: {e}");
+                return;
+            }
+        };
+
+        // A non-zero exit here means the forbidden crate is not in the resolved
+        // workspace graph at all (`did not match any packages`) — trivially, no
+        // one depends on it, so this crate does not either.
+        if !output.status.success() {
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if crate_token(line) == Some("perl-workspace-core") {
+                violations.push(format!(
+                    "  perl-workspace-core consumes forbidden `{forbidden}` under workspace \
+                     feature unification (line: {})",
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "perl-workspace-core must not reach any editor/runtime/tool crate even under \
+         workspace feature unification:\n{}",
         violations.join("\n")
     );
 }

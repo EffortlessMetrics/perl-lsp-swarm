@@ -30,8 +30,26 @@ pub enum PathError {
 /// - no `..` components (no traversal outside the repo root);
 /// - `\` normalised to `/`; redundant `.` and empty components collapsed;
 /// - non-empty.
+///
+/// Deserialization is routed through [`RepoRelativePath::new`] (via
+/// `#[serde(try_from)]`) so the invariants hold on *every* construction path —
+/// a serialized absolute or traversal path is rejected, not silently admitted.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct RepoRelativePath(String);
+
+impl TryFrom<String> for RepoRelativePath {
+    type Error = PathError;
+    fn try_from(raw: String) -> Result<Self, PathError> {
+        Self::new(&raw)
+    }
+}
+
+impl From<RepoRelativePath> for String {
+    fn from(path: RepoRelativePath) -> String {
+        path.0
+    }
+}
 
 impl RepoRelativePath {
     /// Normalise and validate `raw` into a repo-relative path.
@@ -42,8 +60,10 @@ impl RepoRelativePath {
     pub fn new(raw: &str) -> Result<Self, PathError> {
         let unified = raw.replace('\\', "/");
 
-        // Reject absolutes up front, on the ORIGINAL shape.
-        if raw.starts_with('/') || raw.starts_with("\\\\") || is_windows_drive_absolute(raw) {
+        // Reject absolutes on the NORMALISED shape, so a path that is absolute
+        // only after `\`->`/` conversion (`\foo`, UNC `\\srv\share`) is caught
+        // rather than silently coerced to a relative key.
+        if unified.starts_with('/') || is_windows_drive_absolute(raw) {
             return Err(PathError::Absolute(raw.to_string()));
         }
 
@@ -102,13 +122,13 @@ impl core::fmt::Display for RepoRelativePath {
     }
 }
 
-/// Detect a `C:\` / `C:/` style Windows drive-absolute prefix.
+/// Detect a Windows drive-qualified prefix (`C:`, `C:\`, `C:/`, or the
+/// drive-relative `C:foo`). Any `<letter>:` two-byte prefix is non-portable and
+/// must not become a repo-relative key — `C:foo` is relative to the current
+/// directory *on drive C*, which still leaks host drive state.
 fn is_windows_drive_absolute(raw: &str) -> bool {
     let bytes = raw.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 #[cfg(test)]
@@ -159,6 +179,42 @@ mod tests {
             RepoRelativePath::new("\\\\server\\share\\Foo.pm"),
             Err(PathError::Absolute(_))
         ));
+    }
+
+    #[test]
+    fn rejects_backslash_root_absolute() {
+        // Absolute only after `\`->`/` normalisation; must not become `foo`.
+        assert!(matches!(RepoRelativePath::new("\\foo"), Err(PathError::Absolute(_))));
+        assert!(matches!(RepoRelativePath::new("\\lib\\Foo.pm"), Err(PathError::Absolute(_))));
+    }
+
+    #[test]
+    fn rejects_drive_relative_without_separator() {
+        // `C:foo` is drive-qualified (relative to CWD on drive C) — non-portable
+        // and leaks host drive state.
+        assert!(matches!(RepoRelativePath::new("C:foo"), Err(PathError::Absolute(_))));
+        assert!(matches!(RepoRelativePath::new("C:"), Err(PathError::Absolute(_))));
+        assert!(matches!(RepoRelativePath::new("z:lib/Foo.pm"), Err(PathError::Absolute(_))));
+    }
+
+    #[test]
+    fn deserialize_is_validated() {
+        // Deserialization must route through `new` — no bypass of the invariants.
+        assert!(serde_json::from_str::<RepoRelativePath>("\"/etc/passwd\"").is_err());
+        assert!(serde_json::from_str::<RepoRelativePath>("\"../../secret\"").is_err());
+        assert!(serde_json::from_str::<RepoRelativePath>("\"C:foo\"").is_err());
+        let ok: RepoRelativePath =
+            serde_json::from_str("\"lib/Foo.pm\"").expect("valid relative path");
+        assert_eq!(ok.as_str(), "lib/Foo.pm");
+    }
+
+    #[test]
+    fn serialize_roundtrips_through_validation() {
+        let p = RepoRelativePath::new("lib/Foo/Bar.pm").expect("valid");
+        let json = serde_json::to_string(&p).expect("serialize");
+        assert_eq!(json, "\"lib/Foo/Bar.pm\"");
+        let back: RepoRelativePath = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(p, back);
     }
 
     #[test]

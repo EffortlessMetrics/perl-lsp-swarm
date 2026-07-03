@@ -13,10 +13,30 @@ use serde::{Deserialize, Serialize};
 /// The range is always well-formed: `start_byte <= end_byte` is an invariant
 /// established at construction. Offsets are byte offsets into the UTF-8 source
 /// text — not character counts, and not UTF-16 code units.
+///
+/// Deserialization is routed through validation (via `#[serde(try_from)]`) so a
+/// serialized reversed range is rejected rather than admitted — otherwise
+/// [`SourceRange::len`] would underflow on a bypassed value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "SourceRangeRepr")]
 pub struct SourceRange {
     start_byte: u32,
     end_byte: u32,
+}
+
+/// Wire representation for validated deserialization of [`SourceRange`].
+#[derive(Deserialize)]
+struct SourceRangeRepr {
+    start_byte: u32,
+    end_byte: u32,
+}
+
+impl TryFrom<SourceRangeRepr> for SourceRange {
+    type Error = &'static str;
+    fn try_from(repr: SourceRangeRepr) -> Result<Self, Self::Error> {
+        Self::try_new(repr.start_byte, repr.end_byte)
+            .ok_or("SourceRange start_byte must be <= end_byte")
+    }
 }
 
 impl SourceRange {
@@ -80,7 +100,25 @@ impl SourceRange {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn deserialize_rejects_reversed_range() {
+        // A bypassed reversed range would make `len()` underflow-panic.
+        assert!(serde_json::from_str::<SourceRange>("{\"start_byte\":10,\"end_byte\":4}").is_err());
+        let ok: SourceRange =
+            serde_json::from_str("{\"start_byte\":4,\"end_byte\":10}").expect("valid range");
+        assert_eq!(ok.len(), 6);
+    }
+
+    #[test]
+    fn serialize_roundtrips() {
+        let r = SourceRange::new(3, 9);
+        let json = serde_json::to_string(&r).expect("serialize");
+        let back: SourceRange = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(r, back);
+    }
 
     #[test]
     fn new_normalises_reversed_pair() {
