@@ -13,6 +13,23 @@
 //! design/architecture docs and reference/legacy/compatibility/conformance docs
 //! are out of scope by design; legacy details are expected to live in
 //! `docs/reference/DAP_LEGACY_BRIDGE_COMPAT.md`.
+//!
+//! ## Strict mode (`--strict`)
+//!
+//! The default pass only catches the known bad *phrasings* in [`DISALLOWED`].
+//! Strict mode adds a second, stronger pass: on first-mile **prose** surfaces
+//! (`.md`), any bare external-tool name ([`STRICT_BARE_MARKERS`]) that appears
+//! on a line **without** a native-first qualifier ([`NATIVE_FIRST_QUALIFIERS`])
+//! is a violation. This catches *new* leaks a fixed phrase list would miss —
+//! e.g. a future "install perlcritic first" that isn't spelled exactly like an
+//! existing banned marker.
+//!
+//! Strict mode deliberately scans `.md` prose only. `package.json` legitimately
+//! contains the tool names inside setting keys (`perl-lsp.perlcritic.enabled`)
+//! and command ids, so a bare-name rule there would be all false positives; its
+//! product-surface risk is covered by the default [`DISALLOWED`] pass instead.
+//! Reference/compatibility/conformance/archive material and tests are exempt via
+//! [`STRICT_PATH_ALLOWLIST`] — that is where legacy detail is meant to live.
 
 use color_eyre::eyre::{Result, bail};
 use std::fs;
@@ -46,20 +63,82 @@ const DISALLOWED: &[&str] = &[
     "--bridge",
 ];
 
-/// Entry point for `cargo xtask check-native-product-surface`.
-pub fn run() -> Result<()> {
-    run_at(&project_root()?)
+/// Bare external-tool tokens that must not appear on a first-mile prose surface
+/// (`.md`) without a native-first qualifier on the same line. Strict mode only.
+const STRICT_BARE_MARKERS: &[&str] = &[
+    "perltidy",
+    "perlcritic",
+    "perl::critic",
+    "perl::tidy",
+    "perl::languageserver",
+    "devel::tsperldap",
+];
+
+/// Native-first qualifiers. In strict mode a line that names a bare external
+/// tool is allowed when it also carries one of these signals — i.e. the mention
+/// is framed as optional / legacy / compatibility, a negation, or a conflict
+/// warning, rather than as a product requirement. Matched as a lowercase
+/// substring of the backtick-stripped line.
+const NATIVE_FIRST_QUALIFIERS: &[&str] = &[
+    "not require",
+    "not required",
+    "not needed",
+    "does not",
+    "doesn't",
+    "no external",
+    "avoid", // "native path avoids Perl::LanguageServer dependency"
+    "optional",
+    "compatibility",
+    "conformance",
+    "legacy",
+    "opt-in",
+    "only when",
+    "only used",
+    "only for",
+    "only if",
+    "instead of",
+    "migration",
+    "default", // "native formatting is the default"
+    "native",  // native-first framing on the same line
+    "overlap", // "Perl::Critic ... can overlap with perl-lsp features"
+    "conflict",
+    "auto-detect",
+];
+
+/// Path fragments whose surfaces are exempt from strict bare-name scanning.
+/// Reference / compatibility / conformance / archive material and tests are
+/// where legacy external-tool detail is meant to live, so a bare name there is
+/// expected, not a leak.
+const STRICT_PATH_ALLOWLIST: &[&str] = &[
+    "reference/",
+    "compatibility/",
+    "conformance/",
+    "archive/",
+    "/tests/",
+    "tests/",
+    "/test/",
+    ".spec",
+];
+
+/// Entry point for `cargo xtask check-native-product-surface`, honoring the
+/// `--strict` flag.
+pub fn run_with(strict: bool) -> Result<()> {
+    run_at(&project_root()?, strict)
 }
 
 /// Scan the first-mile surfaces under `root` and report. Split from [`run`] so
 /// both the clean and the regressed paths are unit-testable against a fixture
 /// tree without touching the live repository.
-fn run_at(root: &Path) -> Result<()> {
-    let violations = scan(root)?;
+fn run_at(root: &Path, strict: bool) -> Result<()> {
+    let mut violations = scan(root)?;
+    if strict {
+        violations.extend(scan_strict(root)?);
+    }
 
     if violations.is_empty() {
+        let mode = if strict { " (strict)" } else { "" };
         println!(
-            "Native product-surface check passed: {} first-mile surface(s) are free of legacy/external-tool product framing.",
+            "Native product-surface check passed{mode}: {} first-mile surface(s) are free of legacy/external-tool product framing.",
             SURFACES.len()
         );
         return Ok(());
@@ -107,6 +186,71 @@ fn collect_violations(surface: &str, text: &str, violations: &mut Vec<String>) {
             if normalized.contains(&marker.to_ascii_lowercase()) {
                 violations.push(format!(
                     "{surface}:{}: disallowed native-stack marker `{marker}`",
+                    idx + 1
+                ));
+            }
+        }
+    }
+}
+
+/// Strict pass: scan every `.md` first-mile surface for bare external-tool names
+/// lacking a native-first qualifier. Non-`.md` surfaces and allowlisted paths
+/// are skipped (see the module docs for why).
+fn scan_strict(root: &Path) -> Result<Vec<String>> {
+    let mut violations = Vec::new();
+    for surface in SURFACES {
+        if !surface.ends_with(".md") || is_strict_allowlisted(surface) {
+            continue;
+        }
+        let path = root.join(surface);
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        collect_strict_violations(surface, &text, &mut violations);
+    }
+    Ok(violations)
+}
+
+/// True when a surface path is exempt from strict bare-name scanning.
+fn is_strict_allowlisted(surface: &str) -> bool {
+    let lowered = surface.to_ascii_lowercase();
+    STRICT_PATH_ALLOWLIST.iter().any(|frag| lowered.contains(frag))
+}
+
+/// Whole-word containment check: `needle` (already lowercase) must appear in
+/// `haystack` bounded by non-alphanumeric characters (or the string edges) on
+/// both sides. This lets `perltidy` match the standalone word while never
+/// matching `perltidyconfig` or `.perltidyrc`, so setting names and config
+/// filenames are not mistaken for a product-requirement mention.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = haystack[from..].find(needle) {
+        let start = from + pos;
+        let end = start + needle.len();
+        let before_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        let after_ok = end >= bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + needle.len();
+    }
+    false
+}
+
+/// Pure per-surface strict scan. A line naming a bare external tool passes when
+/// it carries any native-first qualifier; otherwise every bare marker on it is a
+/// violation.
+fn collect_strict_violations(surface: &str, text: &str, violations: &mut Vec<String>) {
+    for (idx, line) in text.lines().enumerate() {
+        let normalized = line.replace('`', "").to_ascii_lowercase();
+        if NATIVE_FIRST_QUALIFIERS.iter().any(|q| normalized.contains(q)) {
+            continue;
+        }
+        for marker in STRICT_BARE_MARKERS {
+            if contains_word(&normalized, marker) {
+                violations.push(format!(
+                    "{surface}:{}: unqualified external-tool name `{marker}` on a first-mile surface (strict) — add a native-first qualifier (optional/legacy/compatibility/not required) or move the detail to reference/compatibility",
                     idx + 1
                 ));
             }
@@ -170,12 +314,13 @@ Enable external `perlcritic` diagnostics; native critic is always on by default.
     }
 
     /// The live repository's first-mile surfaces must be clean, exercised
-    /// through the real `run` entry point. This is the enforcement that makes
-    /// the check meaningful: if a future edit reintroduces a legacy/external-tool
-    /// product framing on a first-mile surface, `run` bails and this fails.
+    /// through the real entry point. This is the enforcement that makes the
+    /// check meaningful: if a future edit reintroduces a legacy/external-tool
+    /// product framing on a first-mile surface, the default pass bails and this
+    /// fails.
     #[test]
     fn live_product_surface_is_clean() -> Result<()> {
-        run()
+        run_with(false)
     }
 
     #[test]
@@ -183,7 +328,7 @@ Enable external `perlcritic` diagnostics; native critic is always on by default.
         // A tree missing every surface file scans clean (missing surfaces are
         // skipped), so run_at returns Ok and prints the pass message.
         let dir = tempfile::tempdir()?;
-        run_at(dir.path())
+        run_at(dir.path(), false)
     }
 
     #[test]
@@ -192,7 +337,76 @@ Enable external `perlcritic` diagnostics; native critic is always on by default.
         let pkg_dir = dir.path().join("vscode-extension");
         std::fs::create_dir_all(&pkg_dir)?;
         std::fs::write(pkg_dir.join("package.json"), "\"desc\": \"requires perltidy\"\n")?;
-        assert!(run_at(dir.path()).is_err(), "a regressed surface must make run_at bail");
+        assert!(run_at(dir.path(), false).is_err(), "a regressed surface must make run_at bail");
         Ok(())
+    }
+
+    #[test]
+    fn contains_word_respects_boundaries() {
+        assert!(contains_word("install perltidy first", "perltidy"));
+        assert!(contains_word("perltidy", "perltidy"));
+        assert!(contains_word("run perlcritic.", "perlcritic"));
+        // Setting keys and config filenames must NOT match the bare word.
+        assert!(!contains_word("perl-lsp.perltidyconfig setting", "perltidy"));
+        assert!(!contains_word("path to .perltidyrc file", "perltidy"));
+        assert!(!contains_word("perltidyrc", "perltidy"));
+        // `::`-qualified markers.
+        assert!(contains_word("uses perl::critic policy", "perl::critic"));
+    }
+
+    #[test]
+    fn strict_flags_unqualified_bare_names() {
+        let text = "Install perltidy to enable formatting.\nRun perlcritic on your code.\n";
+        let mut violations = Vec::new();
+        collect_strict_violations("guide.md", text, &mut violations);
+        assert_eq!(violations.len(), 2, "both unqualified names flagged: {violations:?}");
+        assert!(violations[0].contains("perltidy"));
+        assert!(violations[1].contains("perlcritic"));
+    }
+
+    #[test]
+    fn strict_allows_native_first_qualified_lines() {
+        // Every line names a tool but is framed native-first — none should flag.
+        let text = "\
+The native path does not require `Perl::LanguageServer`.\n\
+Native document formatting works; `perltidy` is not required.\n\
+`perlcritic` is only used for explicit legacy compatibility.\n\
+Perl::Critic and PerlTidy extensions can overlap with perl-lsp features.\n\
+Native path avoids `Perl::LanguageServer` dependency.\n\
+Install `perltidy` only if you selected the external compatibility engine.\n";
+        let mut violations = Vec::new();
+        collect_strict_violations("surface.md", text, &mut violations);
+        assert!(violations.is_empty(), "native-first lines must pass strict: {violations:?}");
+    }
+
+    #[test]
+    fn strict_ignores_setting_keys_and_config_filenames() {
+        // Lines that only reference the setting id / config filename (not the
+        // bare tool as a requirement) must not flag under strict.
+        let text = "\
+| `perl-lsp.perltidyConfig` | `\"\"` | Path to `.perltidyrc` (auto-detected if empty) |\n";
+        let mut violations = Vec::new();
+        collect_strict_violations("readme.md", text, &mut violations);
+        assert!(violations.is_empty(), "setting-key/filename lines must pass: {violations:?}");
+    }
+
+    #[test]
+    fn strict_path_allowlist_matches_reference_and_tests() {
+        assert!(is_strict_allowlisted("docs/reference/DAP_LEGACY_BRIDGE_COMPAT.md"));
+        assert!(is_strict_allowlisted("docs/reference/compatibility/perlcritic.md"));
+        assert!(is_strict_allowlisted("docs/reference/conformance/perltidy.md"));
+        assert!(is_strict_allowlisted("docs/reference/archive/old.md"));
+        assert!(is_strict_allowlisted("crates/perl-dap/tests/legacy.md"));
+        assert!(!is_strict_allowlisted("vscode-extension/README.md"));
+        assert!(!is_strict_allowlisted("docs/tutorials/DAP_USER_GUIDE.md"));
+    }
+
+    /// The live repository's first-mile `.md` surfaces must pass strict mode.
+    /// This is the enforcement that gives `--strict` teeth: a future edit that
+    /// drops an unqualified `perltidy`/`perlcritic`/`Perl::LanguageServer` onto a
+    /// first-mile prose surface makes `run_with(true)` bail and this fails.
+    #[test]
+    fn live_strict_surface_is_clean() -> Result<()> {
+        run_with(true)
     }
 }
