@@ -2881,6 +2881,20 @@ mod tests {
         assert_eq!(server.normalize_rename_target(Some("$value"), "$renamed")?, "$renamed");
         assert_eq!(server.normalize_rename_target(Some("target"), "renamed")?, "renamed");
 
+        // Non-sigiled (subroutine/package) targets renamed to a reserved keyword are rejected
+        // by the handler guard — `sub if {}` / `package for` are Perl syntax errors.
+        assert!(
+            server.normalize_rename_target(Some("greet"), "if").is_err(),
+            "renaming a subroutine to a reserved keyword must be rejected"
+        );
+        assert!(
+            server.normalize_rename_target(Some("helper"), "while").is_err(),
+            "renaming a subroutine to a control-flow keyword must be rejected"
+        );
+        // Sigiled (variable) targets may take keyword names — the sigil disambiguates (`$if`).
+        assert_eq!(server.normalize_rename_target(Some("$flag"), "$if")?, "$if");
+        assert_eq!(server.normalize_rename_target(Some("$flag"), "if")?, "$if");
+
         assert!(
             server.normalize_rename_target(Some("$value"), "").is_err(),
             "empty requested names must be rejected"
