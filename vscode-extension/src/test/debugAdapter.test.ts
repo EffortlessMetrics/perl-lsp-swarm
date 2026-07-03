@@ -448,6 +448,31 @@ describe('buildDapExecutableArgs', () => {
     expect(buildDapExecutableArgs({ externalPeer: 'host --flag:9000' } as any)).toEqual([]);
     expect(buildDapExecutableArgs({ externalPeer: 'host:9000 --flag' } as any)).toEqual([]);
   });
+
+  test('translates the shipped structured externalDebugger (connect) shape', () => {
+    const config = {
+      debuggerBackend: 'external',
+      externalDebugger: { kind: 'ptkdb', mode: 'connect', control: 'mirror', host: '127.0.0.1', port: 13604 },
+    };
+    expect(buildDapExecutableArgs(config as any)).toEqual(['--external-peer', '127.0.0.1:13604']);
+  });
+
+  test('defaults host to 127.0.0.1 and mode to connect for the structured shape', () => {
+    expect(buildDapExecutableArgs({ debuggerBackend: 'external', externalDebugger: { port: 9001 } } as any))
+      .toEqual(['--external-peer', '127.0.0.1:9001']);
+  });
+
+  test('does not fabricate an address for unimplemented modes or port 0', () => {
+    // listen / launchPeer and port 0 (allocate) are not wired — fall back to native.
+    expect(buildDapExecutableArgs({ debuggerBackend: 'external', externalDebugger: { mode: 'listen', port: 13604 } } as any)).toEqual([]);
+    expect(buildDapExecutableArgs({ debuggerBackend: 'external', externalDebugger: { mode: 'launchPeer', port: 13604 } } as any)).toEqual([]);
+    expect(buildDapExecutableArgs({ debuggerBackend: 'external', externalDebugger: { mode: 'connect', port: 0 } } as any)).toEqual([]);
+  });
+
+  test('the native backend (or absent debuggerBackend) yields no bridge args', () => {
+    expect(buildDapExecutableArgs({ debuggerBackend: 'native', program: '/x.pl' } as any)).toEqual([]);
+    expect(buildDapExecutableArgs({ request: 'launch', program: '/x.pl' } as any)).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

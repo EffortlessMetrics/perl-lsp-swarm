@@ -44,6 +44,12 @@ pub struct DebugBackendCapabilities {
     pub scopes: bool,
     /// Can produce stack traces.
     pub stack_trace: bool,
+    /// Supports resuming execution (DAP `continue`).
+    ///
+    /// Distinct from [`Self::stepping`]: a peer can be able to resume a stopped
+    /// program without supporting single-step, so the two are negotiated
+    /// separately (mirror-mode honesty).
+    pub continue_execution: bool,
     /// Supports stepping (next/stepIn/stepOut).
     pub stepping: bool,
     /// Supports pause.
@@ -69,6 +75,7 @@ impl DebugBackendCapabilities {
             variables: true,
             scopes: true,
             stack_trace: true,
+            continue_execution: true,
             stepping: true,
             pause: true,
             set_variable: true,
@@ -90,6 +97,7 @@ impl DebugBackendCapabilities {
             variables: false,
             scopes: false,
             stack_trace: false,
+            continue_execution: false,
             stepping: false,
             pause: false,
             set_variable: false,
@@ -116,6 +124,7 @@ impl DebugBackendCapabilities {
             variables: true,
             scopes: true,
             stack_trace: true,
+            continue_execution: true,
             stepping: true,
             pause: true,
             set_variable: false,

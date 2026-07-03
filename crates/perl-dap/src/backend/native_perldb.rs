@@ -103,6 +103,7 @@ impl DebugBackend for NativePerlDbBackend {
             variables: true,
             scopes: true,
             stack_trace: true,
+            continue_execution: true,
             stepping: true,
             pause: true,
             set_variable: negotiated.supports_set_variable,

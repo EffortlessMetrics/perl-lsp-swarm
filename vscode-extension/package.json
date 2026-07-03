@@ -220,12 +220,17 @@
                   "mode": {
                     "type": "string",
                     "enum": [
-                      "listen",
                       "connect",
+                      "listen",
                       "launchPeer"
                     ],
-                    "description": "How perl-dap rendezvous with the peer: listen for it, connect to it, or launch it",
-                    "default": "listen"
+                    "enumDescriptions": [
+                      "perl-dap connects out to a peer already listening at host:port (the supported rendezvous)",
+                      "perl-dap listens for the peer to connect (not yet implemented)",
+                      "perl-dap launches the peer itself (not yet implemented)"
+                    ],
+                    "description": "How perl-dap rendezvous with the peer. 'connect' is the supported mode; 'listen'/'launchPeer' are future work.",
+                    "default": "connect"
                   },
                   "control": {
                     "type": "string",
@@ -244,8 +249,8 @@
                   },
                   "port": {
                     "type": "number",
-                    "description": "Port for the peer socket (0 = allocate a free local port)",
-                    "default": 0
+                    "description": "Port of the running debugger peer to connect to",
+                    "default": 13604
                   }
                 }
               }
@@ -299,10 +304,10 @@
             "debuggerBackend": "external",
             "externalDebugger": {
               "kind": "ptkdb",
-              "mode": "listen",
+              "mode": "connect",
               "control": "mirror",
               "host": "127.0.0.1",
-              "port": 0
+              "port": 13604
             }
           }
         ]

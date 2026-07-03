@@ -242,6 +242,17 @@ impl DapPeerBridge {
                 let body = handle_breakpoint_locations(arguments.as_ref());
                 out.push(self.response(request_seq, command, true, Some(body), None));
             }
+            "terminate" => {
+                // DAP `terminate` (the editor's Stop button when the adapter
+                // advertises `supportsTerminateRequest`): end the debuggee. In
+                // mirror mode the peer owns the process, so this is best-effort —
+                // ask the backend to disconnect *with* termination, then emit a
+                // `terminated` event so the editor tears the session down instead
+                // of leaving it running.
+                let _ = self.backend.disconnect(true);
+                out.push(self.response(request_seq, command, true, None, None));
+                out.push(self.event("terminated", None));
+            }
             "disconnect" => {
                 let terminate = arguments
                     .as_ref()
@@ -1140,6 +1151,24 @@ mod tests {
         assert!(ok, "even a bodyless breakpointLocations request must get a success response");
         let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
         assert!(bps.is_empty(), "missing arguments yields empty set: {bps:?}");
+    }
+
+    #[test]
+    fn terminate_disconnects_the_backend_and_emits_terminated() {
+        // The bridge advertises supportsTerminateRequest, so a DAP `terminate`
+        // must be handled explicitly (not fall through the lenient default):
+        // a success response plus a `terminated` event so the editor ends the
+        // session rather than leaving the external-peer debuggee running.
+        let mut b = bridge();
+        let out = b.dispatch(9, "terminate", None);
+        let (cmd, ok, _) = as_response(&out[0]);
+        assert_eq!(cmd, "terminate");
+        assert!(ok, "terminate must be acknowledged");
+        assert!(
+            out.iter()
+                .any(|m| matches!(m, DapMessage::Event { event, .. } if event == "terminated")),
+            "terminate must emit a `terminated` event: {out:?}"
+        );
     }
 
     #[test]

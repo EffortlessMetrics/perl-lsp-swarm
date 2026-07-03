@@ -394,22 +394,64 @@ function normalizeDebugArgs(value: unknown): string[] {
     return value.filter((entry): entry is string => typeof entry === 'string');
 }
 
+/** Regex for a well-formed `host:port` peer address (IPv4/hostname, not IPv6). */
+const PEER_ADDR_RE = /^[^\s:]+:\d+$/;
+
+/**
+ * Resolve the external-peer `HOST:PORT` a debug config asks perl-dap to connect
+ * to, or `undefined` if the config does not (or cannot) request the bridge.
+ *
+ * Two config shapes are accepted, so both the launch.json wizard template and
+ * the richer schema shipped in `package.json` drive the same bridge:
+ * - flat: `externalPeer: "HOST:PORT"`
+ * - structured: `debuggerBackend: "external"` + `externalDebugger: { host, port }`
+ *   (the shipped ptkdb config). Only the implemented `connect` rendezvous with a
+ *   concrete non-zero port yields an address; `listen`/`launchPeer` and `port: 0`
+ *   are not wired yet, so they resolve to `undefined` (native adapter) rather
+ *   than fabricating an unconnectable `--external-peer host:0`.
+ */
+function resolveExternalPeerAddress(
+    config: vscode.DebugConfiguration | undefined
+): string | undefined {
+    if (!config) {
+        return undefined;
+    }
+
+    const flat = config.externalPeer;
+    if (typeof flat === 'string' && PEER_ADDR_RE.test(flat.trim())) {
+        return flat.trim();
+    }
+
+    if (config.debuggerBackend === 'external' && config.externalDebugger
+        && typeof config.externalDebugger === 'object') {
+        const ext = config.externalDebugger as { host?: unknown; port?: unknown; mode?: unknown };
+        const mode = typeof ext.mode === 'string' ? ext.mode : 'connect';
+        const host = typeof ext.host === 'string' && ext.host.trim() ? ext.host.trim() : '127.0.0.1';
+        const port = ext.port;
+        if (mode === 'connect'
+            && typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535
+            && !host.includes(':') && !/\s/.test(host)) {
+            return `${host}:${port}`;
+        }
+    }
+
+    return undefined;
+}
+
 /**
  * Build the argv `perl-dap` is spawned with, from a resolved debug config.
  *
- * When the config sets `externalPeer: "HOST:PORT"`, the adapter is launched in
- * external-peer bridge mode (`--external-peer HOST:PORT`) so it drives an
- * external Perl debugger engine (e.g. Devel::ptkdb) over the Perl Debugger Peer
- * Protocol while VS Code speaks DAP over stdio. The value must look like
- * `host:port`; anything else is ignored (the native adapter runs, args empty)
- * rather than passed through unvalidated.
+ * When the config requests an external debugger peer (see
+ * {@link resolveExternalPeerAddress}), the adapter is launched in external-peer
+ * bridge mode (`--external-peer HOST:PORT`) so it drives an external Perl
+ * debugger engine (e.g. Devel::ptkdb) over the Perl Debugger Peer Protocol while
+ * VS Code speaks DAP over stdio. Any config that does not resolve to a concrete
+ * `host:port` runs the native adapter with no extra args rather than passing an
+ * unvalidated value through.
  */
 export function buildDapExecutableArgs(config: vscode.DebugConfiguration | undefined): string[] {
-    const peer = config?.externalPeer;
-    if (typeof peer === 'string' && /^[^\s:]+:\d+$/.test(peer.trim())) {
-        return ['--external-peer', peer.trim()];
-    }
-    return [];
+    const peer = resolveExternalPeerAddress(config);
+    return peer ? ['--external-peer', peer] : [];
 }
 
 export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {

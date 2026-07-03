@@ -70,6 +70,7 @@ impl PeerReportedCapabilities {
             variables: self.can_list_variables,
             scopes: self.can_list_variables,
             stack_trace: self.can_list_stack,
+            continue_execution: self.can_continue,
             stepping: self.can_step,
             pause: self.can_pause,
             set_variable: false,
@@ -157,6 +158,26 @@ mod tests {
         // can_pause, so pause stays off (mirror-mode honesty).
         assert!(!b.pause, "pause must not be invented from can_step");
         assert!(b.evaluate && b.stepping && b.stack_trace);
+    }
+
+    #[test]
+    fn continue_and_step_are_negotiated_independently() {
+        // A peer that can resume but not single-step must map to
+        // continue_execution=true, stepping=false — DAP `continue` stays
+        // available even though next/stepIn/stepOut do not.
+        let resume_only =
+            PeerReportedCapabilities { can_continue: true, can_step: false, ..Default::default() };
+        let b = resume_only.to_backend_capabilities();
+        assert!(b.continue_execution, "can_continue must enable resume");
+        assert!(!b.stepping, "can_step=false must keep stepping off");
+
+        // And the inverse: a stepping-only peer still reports it can continue
+        // only if it said so.
+        let step_only =
+            PeerReportedCapabilities { can_continue: false, can_step: true, ..Default::default() };
+        let b2 = step_only.to_backend_capabilities();
+        assert!(!b2.continue_execution, "continue must not be invented from can_step");
+        assert!(b2.stepping);
     }
 
     #[test]

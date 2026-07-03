@@ -135,6 +135,25 @@ test coverage:
   dedicated `canPause` peer capability; a peer that can step but did not advertise
   async pause is never sent a `debugger/pause`.
 
+A later automated review (Codex, on the bridge/reachability layer) surfaced three
+more claim-vs-reality gaps — all fixed with test coverage:
+
+- **Resume-without-step honesty (was: `continue` gated on `stepping`).** A peer
+  advertising `canContinue` but not `canStep` was wrongly refused DAP `continue`.
+  Added a dedicated `continue_execution` backend capability mapped from
+  `can_continue`; `continue_thread` now gates on it, independent of `stepping`.
+- **`terminate` actually handled (was: advertised, then swallowed).** The bridge
+  advertised `supportsTerminateRequest` but had no `terminate` dispatch arm, so a
+  client's Stop fell through the lenient ack without disconnecting the peer. Added
+  a `terminate` arm that calls `disconnect(true)` and emits a `terminated` event.
+- **VS Code config actually drives the bridge (was: two divergent shapes).** The
+  shipped `debuggerBackend: "external"` + `externalDebugger` config was ignored by
+  the descriptor (which only read a flat `externalPeer` string), so selecting it
+  ran the native adapter. `buildDapExecutableArgs` now resolves both shapes; the
+  shipped ptkdb config uses the implemented `connect` mode + a concrete port, and
+  `listen`/`launchPeer`/`port: 0` (not yet wired) fall back rather than fabricate
+  an unconnectable address.
+
 ## Closure receipt
 
 - repo: `effortlessmetrics/perl-lsp-swarm`

@@ -433,7 +433,9 @@ impl DebugBackend for ExternalDebuggerPeerBackend {
     }
 
     fn continue_thread(&mut self, thread_id: ThreadId) -> BackendResult<ContinueResult> {
-        self.require(self.negotiated_caps().stepping, "peer cannot continue")?;
+        // Gate on the dedicated resume capability, not `stepping`: a peer can
+        // resume a stopped program without supporting single-step.
+        self.require(self.negotiated_caps().continue_execution, "peer cannot continue")?;
         let args = ThreadArgs { thread_id: thread_id.0 };
         self.request(command::CONTINUE, Some(to_value(&args)?))?;
         Ok(ContinueResult { all_threads_continued: true })
