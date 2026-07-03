@@ -1006,8 +1006,17 @@ pub(crate) fn emit_changes_from_diff(
 fn infer_behavior_and_discriminator(line: &str) -> (&'static str, String) {
     let trimmed = line.trim();
 
-    // Predicate boundary: comparison operators in conditionals.
-    if (trimmed.contains("if ") || trimmed.contains("unless ") || trimmed.contains("while "))
+    // Predicate boundary: a LEADING conditional (if/unless/while/elsif at the
+    // start of the line, after trim) with a comparison operator. A trailing
+    // modifier-if is NOT a predicate boundary — `return $x if $y > 5;` is a
+    // return_value and `die "x" if $y > 5;` is an exception_path, so those must
+    // fall through to the branches below rather than match on the mere presence
+    // of `if `.
+    if (trimmed.starts_with("if ")
+        || trimmed.starts_with("unless ")
+        || trimmed.starts_with("while ")
+        || trimmed.starts_with("elsif ")
+        || trimmed.starts_with("} elsif "))
         && (trimmed.contains("==")
             || trimmed.contains("!=")
             || trimmed.contains(">=")
@@ -1040,16 +1049,15 @@ fn infer_behavior_and_discriminator(line: &str) -> (&'static str, String) {
     ("unknown", String::new())
 }
 
-/// Extract the condition expression from an if/unless/while line.
+/// Extract the condition expression from a leading if/unless/while/elsif line.
 fn extract_condition(line: &str) -> Option<String> {
     let after_kw = line
         .strip_prefix("if ")
         .or_else(|| line.strip_prefix("unless "))
         .or_else(|| line.strip_prefix("while "))
-        .or_else(|| line.find("if ").map(|i| &line[i + 3..]))
-        .or_else(|| line.find("unless ").map(|i| &line[i + 7..]))
-        .or_else(|| line.find("while ").map(|i| &line[i + 6..]))?;
-    let cond = after_kw.trim_end_matches('{').trim_end_matches('{').trim();
+        .or_else(|| line.strip_prefix("elsif "))
+        .or_else(|| line.strip_prefix("} elsif "))?;
+    let cond = after_kw.trim_end_matches('{').trim().trim_end_matches('{').trim();
     Some(cond.to_string())
 }
 
@@ -1681,6 +1689,30 @@ mod tests {
         let (kind, disc) = infer_behavior_and_discriminator("    my $x = 1;");
         assert_eq!(kind, "unknown");
         assert!(disc.is_empty(), "unknown must have empty discriminator");
+    }
+
+    #[test]
+    fn infer_modifier_if_is_not_predicate_boundary() {
+        // A trailing modifier-if/unless must NOT hijack the classification — the
+        // statement's own category wins (droid P1).
+        assert_eq!(infer_behavior_and_discriminator("    return $x if $y > 5;").0, "return_value");
+        assert_eq!(
+            infer_behavior_and_discriminator("    die \"bad\" if $y > 5;").0,
+            "exception_path"
+        );
+        assert_eq!(
+            infer_behavior_and_discriminator("    croak \"x\" unless $y >= 3;").0,
+            "exception_path"
+        );
+        // A LEADING conditional is still a predicate boundary.
+        assert_eq!(infer_behavior_and_discriminator("    if ($x > 5) {").0, "predicate_boundary");
+        assert_eq!(
+            infer_behavior_and_discriminator("    while ($i < 10) {").0,
+            "predicate_boundary"
+        );
+        let (kind, disc) = infer_behavior_and_discriminator("    } elsif ($y < 3) {");
+        assert_eq!(kind, "predicate_boundary");
+        assert!(disc.contains("$y < 3"), "elsif condition extracted cleanly: {disc}");
     }
 
     // ── PR 5 (#3293): diff-owned changes[] ──
