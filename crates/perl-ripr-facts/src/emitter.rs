@@ -860,6 +860,14 @@ fn find_enclosing_owner<'a>(
 /// return value → exception path) wins. No match on any line → `"unknown"`.
 fn behavior_hint_for_hunk(lines: &[String]) -> (&'static str, String) {
     for line in lines {
+        // A whole-line comment is never executable, so it must never yield a
+        // concrete behavior hint (e.g. `# return $x;` is not a return). This is
+        // a cheap, safe filter; false positives from `die`/`return` substrings
+        // *inside string literals* remain possible and are documented as a
+        // limitation (a robust fix needs tokenization, out of this slice's scope).
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
         let (hint, discriminator) = infer_behavior_and_discriminator(line);
         if hint != "unknown" {
             return (hint, discriminator);
@@ -868,12 +876,25 @@ fn behavior_hint_for_hunk(lines: &[String]) -> (&'static str, String) {
     ("unknown", String::new())
 }
 
+/// Normalize a `git diff` head path (repo-root-relative, e.g.
+/// `crates/perl-parser/src/Foo.pm`) to a `root`-relative path matching the
+/// `file_id`s [`emit_files_and_owners`] emits (e.g. `src/Foo.pm` when `root` is
+/// `crates/perl-parser`). A `.` / empty root, or a path not under `root`, is
+/// returned unchanged (an outside-root path stays unmatched → `diff-file-not-found`).
+fn strip_root_prefix<'a>(path: &'a str, root: &str) -> &'a str {
+    if root == "." || root.is_empty() {
+        return path;
+    }
+    path.strip_prefix(root).and_then(|rest| rest.strip_prefix('/')).unwrap_or(path)
+}
+
 /// Emit `changes[]` + `limitations[]` from a **caller-supplied** unified diff
 /// (`RiprFactsRequest.diff`), resolving each contiguous added-line hunk's owner
 /// by smallest-enclosing-line-range containment against `owners` (as emitted by
 /// [`emit_files_and_owners`]). `files` supplies the set of parsed file ids so a
 /// hunk touching a path outside `root` is surfaced as a limitation, not silently
-/// dropped (#3293 PR 5).
+/// dropped. `root` normalizes the diff's repo-root-relative paths to the
+/// `root`-relative `file_id`s the packet uses (#3293 PR 5).
 ///
 /// This is pure text processing — no filesystem access, no subprocess, no git.
 /// Referential integrity: a `change` is emitted only when its file is a known
@@ -884,6 +905,7 @@ fn behavior_hint_for_hunk(lines: &[String]) -> (&'static str, String) {
 /// `"unknown"` and `missing_discriminator` is always `null` in this slice.
 pub(crate) fn emit_changes_from_diff(
     diff_text: &str,
+    root: &str,
     files: &[Value],
     owners: &[Value],
 ) -> (Vec<Value>, Vec<Value>) {
@@ -903,7 +925,9 @@ pub(crate) fn emit_changes_from_diff(
         files.iter().filter_map(|file| file["file_id"].as_str()).collect();
 
     for hunk in parse_diff_hunks(diff_text) {
-        let file_id = format!("file:{}", hunk.file_path);
+        // git diff paths are repo-root-relative; file_ids are root-relative.
+        let rel_path = strip_root_prefix(&hunk.file_path, root);
+        let file_id = format!("file:{rel_path}");
 
         if !known_files.contains(file_id.as_str()) {
             limitations.push(json!({
@@ -966,7 +990,7 @@ pub(crate) fn emit_changes_from_diff(
         limitations.push(json!({
             "limitation_id": "change-behavior-hint-partial",
             "kind": "partial_inference",
-            "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from a syntactic diff; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice.",
+            "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped, but a die/return/comparison token inside a string literal can still be misclassified (a robust fix needs tokenization).",
             "evidence_refs": [],
         }));
     }
@@ -1696,7 +1720,7 @@ mod tests {
 +    return $amount / 2;
  }
 ";
-        let (changes, _limitations) = emit_changes_from_diff(diff, &files, &owners);
+        let (changes, _limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
         assert_eq!(changes.len(), 1, "one added line inside a sub → one change");
         assert_eq!(changes[0]["owner_id"], "owner:lib/My/App.pm:sub:main::discount:60-140");
         assert_eq!(changes[0]["behavior_hint"], "return_value");
@@ -1725,7 +1749,7 @@ mod tests {
 @@ -1,0 +1,1 @@
 +use strict;
 ";
-        let (changes, limitations) = emit_changes_from_diff(diff, &files, &owners);
+        let (changes, limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
         assert!(changes.is_empty(), "file-scope hunk (no enclosing owner) → no change fact");
         assert!(
             limitations.iter().any(|l| l["limitation_id"]
@@ -1746,7 +1770,7 @@ mod tests {
 @@ -1,0 +1,1 @@
 +return 1;
 ";
-        let (changes, limitations) = emit_changes_from_diff(diff, &files, &owners);
+        let (changes, limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
         assert!(changes.is_empty(), "hunk in an unknown file → no change");
         assert!(
             limitations.iter().any(|l| l["limitation_id"]
@@ -1764,9 +1788,9 @@ mod tests {
         let header = "+++ b/lib/My/App.pm\n";
         let ab = format!("{header}{hunk_a}{hunk_b}");
         let ba = format!("{header}{hunk_b}{hunk_a}");
-        let (changes_ab, _) = emit_changes_from_diff(&ab, &files, &owners);
-        let (changes_ab2, _) = emit_changes_from_diff(&ab, &files, &owners);
-        let (changes_ba, _) = emit_changes_from_diff(&ba, &files, &owners);
+        let (changes_ab, _) = emit_changes_from_diff(&ab, ".", &files, &owners);
+        let (changes_ab2, _) = emit_changes_from_diff(&ab, ".", &files, &owners);
+        let (changes_ba, _) = emit_changes_from_diff(&ba, ".", &files, &owners);
         // Same input → byte-identical output.
         assert_eq!(changes_ab, changes_ab2, "same diff → identical changes");
         // change_id is derived from (file_id, start_line, end_line), so each
@@ -1809,10 +1833,46 @@ mod tests {
     }
 
     #[test]
+    fn behavior_hint_for_hunk_skips_comment_lines() {
+        // A whole-line comment is not executable → never a concrete hint.
+        assert_eq!(behavior_hint_for_hunk(&["# return $x;".into()]).0, "unknown");
+        assert_eq!(behavior_hint_for_hunk(&["    # die now".into()]).0, "unknown");
+        // Real code after a comment still wins.
+        let lines = vec!["# comment".into(), "    return $x;".into()];
+        assert_eq!(behavior_hint_for_hunk(&lines).0, "return_value");
+    }
+
+    #[test]
+    fn strip_root_prefix_normalizes_subdir_paths() {
+        assert_eq!(strip_root_prefix("crates/p/lib/A.pm", "crates/p"), "lib/A.pm");
+        assert_eq!(strip_root_prefix("lib/A.pm", "."), "lib/A.pm");
+        // A path not under root is left unchanged (→ diff-file-not-found).
+        assert_eq!(strip_root_prefix("other/A.pm", "crates/p"), "other/A.pm");
+    }
+
+    #[test]
+    fn emit_changes_from_diff_normalizes_git_paths_against_subdir_root() {
+        // git diff paths are repo-root-relative; file_ids are root-relative. A
+        // subdir root must not make every hunk diff-file-not-found.
+        let files = vec![json!({ "file_id": "file:lib/App.pm" })];
+        let owners = vec![json!({
+            "owner_id": "owner:lib/App.pm:sub:main::f:0-40",
+            "file_id": "file:lib/App.pm",
+            "kind": "sub",
+            "range": {"start_line": 0, "start_column": 0, "end_line": 10, "end_column": 1},
+        })];
+        let diff =
+            "+++ b/crates/perl-parser/lib/App.pm\n@@ -1,1 +1,2 @@\n sub f {\n+    return 1;\n";
+        let (changes, _l) = emit_changes_from_diff(diff, "crates/perl-parser", &files, &owners);
+        assert_eq!(changes.len(), 1, "subdir-root git path must normalize and match the file_id");
+        assert_eq!(changes[0]["file_id"], "file:lib/App.pm");
+    }
+
+    #[test]
     fn emit_changes_from_diff_digest_uses_fnv64_prefix_not_sha256() {
         let (files, owners) = app_files_and_owners();
         let diff = "+++ b/lib/My/App.pm\n@@ -5,2 +5,3 @@\n sub discount {\n+    return 1;\n";
-        let (changes, _) = emit_changes_from_diff(diff, &files, &owners);
+        let (changes, _) = emit_changes_from_diff(diff, ".", &files, &owners);
         let digest = changes[0]["changed_text_digest"].as_str().expect("digest string");
         assert!(
             digest.starts_with("fnv64:"),
@@ -1825,7 +1885,7 @@ mod tests {
     fn emit_changes_from_diff_missing_discriminator_is_always_null() {
         let (files, owners) = app_files_and_owners();
         let diff = "+++ b/lib/My/App.pm\n@@ -5,2 +5,3 @@\n sub discount {\n+    return 1;\n";
-        let (changes, _) = emit_changes_from_diff(diff, &files, &owners);
+        let (changes, _) = emit_changes_from_diff(diff, ".", &files, &owners);
         assert!(
             changes.iter().all(|c| c["missing_discriminator"].is_null()),
             "missing_discriminator is always null in this slice"
@@ -1857,7 +1917,7 @@ mod tests {
             "range": {"start_line": 4, "start_column": 0, "end_line": 5, "end_column": 1},
         })];
         let diff = "+++ b/lib/My/App.pm\n@@ -5,1 +5,2 @@\n-old\n\\ No newline at end of file\n+    return 1;\n";
-        let (changes, _limitations) = emit_changes_from_diff(diff, &files, &owners);
+        let (changes, _limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
         assert_eq!(changes.len(), 1, "the added line stays inside the owner");
         assert_eq!(changes[0]["owner_id"], "owner:lib/My/App.pm:sub:main::tiny:40-70");
     }
@@ -1899,7 +1959,7 @@ mod tests {
         let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
         let owners: Vec<Value> = Vec::new();
         let diff = "+++ b/lib/My/App.pm\n@@ -5,2 +5,1 @@\n sub discount {\n-    return $x;\n";
-        let (changes, _limitations) = emit_changes_from_diff(diff, &files, &owners);
+        let (changes, _limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
         assert!(changes.is_empty(), "a deletion-only hunk produces no change facts");
     }
 

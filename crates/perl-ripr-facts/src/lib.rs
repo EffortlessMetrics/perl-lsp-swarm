@@ -195,7 +195,7 @@ pub fn build_ripr_facts_packet(
     let (changes, change_limitations) = if wants_changes {
         match diff {
             Some(diff_text) if !diff_text.trim().is_empty() => {
-                emit_changes_from_diff(diff_text, &files, &owners)
+                emit_changes_from_diff(diff_text, root, &files, &owners)
             }
             _ => (
                 Vec::new(),
