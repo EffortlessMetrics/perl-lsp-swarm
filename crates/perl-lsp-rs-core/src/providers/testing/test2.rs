@@ -381,16 +381,14 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     let has_explicit = !positives.is_empty() || !renames.is_empty() || include_all_tag;
     let use_default = !has_explicit || include_default_tag;
 
+    // `:ALL` is handled via `use_default` above: we do not enumerate EXPORT_OK,
+    // so the default set is our best-effort superset for known bundles.
     let mut symbols: BTreeSet<String> = BTreeSet::new();
     if use_default {
         if let Some(defaults) = default_set {
             for &sym in defaults {
                 symbols.insert(sym.to_string());
             }
-        }
-        if include_all_tag {
-            // `:ALL` — we do not enumerate EXPORT_OK; the default set is our
-            // best-effort superset for known bundles.
         }
     }
     for name in &positives {
@@ -539,9 +537,16 @@ fn expand_qw(raw: &str) -> String {
                 j += 1;
             }
             if let Some(&open) = bytes.get(j) {
-                // A real delimiter is non-word, non-whitespace, ASCII (`qwords`
-                // would otherwise treat `o` as the delimiter).
-                if !open.is_ascii_alphanumeric() && open != b'_' && !open.is_ascii_whitespace() {
+                // A real delimiter is non-word, non-whitespace, and must be
+                // ASCII: a non-ASCII byte here is a multi-byte lead/continuation
+                // byte, and treating it as the delimiter would slice `raw`
+                // mid-codepoint below and panic. (`qwords` would otherwise treat
+                // `o` as the delimiter.)
+                if open.is_ascii()
+                    && !open.is_ascii_alphanumeric()
+                    && open != b'_'
+                    && !open.is_ascii_whitespace()
+                {
                     let close = match open {
                         b'(' => b')',
                         b'{' => b'}',

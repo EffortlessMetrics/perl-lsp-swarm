@@ -5,6 +5,9 @@
 use perl_lsp_rs_core::providers::testing::test2::{
     Test2Facts, is_test2_bundle, is_test2_module, module_default_exports, resolve_import,
 };
+use perl_tdd_support::must_some;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// The canonical "done enough" Test2 file from the integration spec must not
 /// produce false unknown-symbol conditions: every assertion/plan/subtest name
@@ -32,18 +35,19 @@ fn test2_imports_done_enough_example_symbols_all_resolve() {
 }
 
 #[test]
-fn test2_imports_public_api_is_reachable() {
+fn test2_imports_public_api_is_reachable() -> TestResult {
     assert!(is_test2_module("Test2::V0"));
     assert!(is_test2_bundle("Test2::V0"));
     assert!(!is_test2_bundle("Test2::Tools::Basic"));
 
-    let defaults = module_default_exports("Test2::V0").expect("V0 default set");
+    let defaults = must_some(module_default_exports("Test2::V0"));
     assert!(defaults.contains(&"ok"));
     assert!(defaults.contains(&"subtest"));
 
-    let resolved = resolve_import("Test2::V0", "'!ok'").expect("recognized module");
+    let resolved = must_some(resolve_import("Test2::V0", "'!ok'"));
     assert!(!resolved.symbols.contains("ok"));
     assert!(resolved.symbols.contains("is"));
+    Ok(())
 }
 
 #[test]

@@ -52,7 +52,7 @@ subtest 'user lookup' => sub {
 };
 ```
 
-```
+```text
 t/user.t
 └── user lookup            (subtest)
     └── email              (subtest)
@@ -65,7 +65,7 @@ Discovery: [`providers::testing::subtest`](../../crates/perl-lsp-rs-core/src/pro
 When you run tests, `perl-lsp` reads the TAP the runner emits and maps failures
 back to source:
 
-```
+```text
 not ok 3 - email matches
 #   at t/user.t line 12.
 #          got: 'wrong@example.com'
@@ -98,8 +98,10 @@ Reader: [`providers::testing::tap`](../../crates/perl-lsp-rs-core/src/providers/
 
 ## Snippets
 
-The VS Code extension ships Test2 snippets: `usetest2`, `subtest`,
-`done_testing`, `ok`, `is`, `like`, `dies`, `lives`
+The VS Code extension ships Test2-specific snippets: `usetest2` (a `Test2::V0`
+file skeleton), `dies`, and `lives` (Test2::Tools::Exception). The common
+assertion/structure snippets (`ok`, `is`, `like`, `subtest`, `done_testing`)
+are already provided by the shared test snippets
 ([`snippets/perl.json`](../../vscode-extension/snippets/perl.json)).
 
 ## Architecture

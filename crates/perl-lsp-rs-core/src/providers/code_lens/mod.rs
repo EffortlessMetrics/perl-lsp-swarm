@@ -172,7 +172,10 @@ impl CodeLensProvider {
             }
 
             NodeKind::FunctionCall { name, args } => {
-                if name == "subtest" {
+                // Same call names the subtest discovery path recognizes, so the
+                // outline and the "Run Subtest" lens never disagree (covers
+                // `subtest`, `subtest_buffered`, `subtest_streamed`).
+                if crate::providers::testing::subtest::is_subtest_call_name(name) {
                     self.add_subtest_lens(node, args, lenses);
                     // Recurse into the subtest's block so nested subtests also
                     // get "Run Subtest" lenses (the block is the anonymous-sub
@@ -589,6 +592,29 @@ mod tests {
         assert!(
             titles.contains(&"\u{25b6} Run Subtest: string ops"),
             "missing 'string ops' subtest lens"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_subtest_buffered_and_streamed_lenses() -> Result<(), String> {
+        // The discovery/outline path recognizes subtest_buffered/subtest_streamed;
+        // the "Run Subtest" lens must recognize the same variants so the two
+        // surfaces do not disagree.
+        let source = "use Test2::V0;\n\nsubtest_buffered 'buffered one' => sub {\n    ok(1);\n};\n\nsubtest_streamed 'streamed one' => sub {\n    ok(1);\n};\n\ndone_testing;\n";
+        let lenses = extract_lenses_with_path(source, "t/variants.t")?;
+        let titles: Vec<_> = lenses
+            .iter()
+            .filter(|l| l.command.as_ref().is_some_and(|c| c.command == "perl.runSubtest"))
+            .filter_map(|l| l.command.as_ref().map(|c| c.title.as_str()))
+            .collect();
+        assert!(
+            titles.contains(&"\u{25b6} Run Subtest: buffered one"),
+            "missing subtest_buffered lens, got: {titles:?}"
+        );
+        assert!(
+            titles.contains(&"\u{25b6} Run Subtest: streamed one"),
+            "missing subtest_streamed lens, got: {titles:?}"
         );
         Ok(())
     }

@@ -50,9 +50,10 @@ pub struct TapTest {
 
 impl TapTest {
     /// Whether this line is a *hard* failure: a `not ok` that is not marked
-    /// TODO. TODO failures and SKIP lines are not hard failures.
+    /// TODO or SKIP. TODO failures and SKIP lines are not hard failures — this
+    /// must agree with `summarize()`, which counts skipped tests separately.
     pub fn is_failure(&self) -> bool {
-        !self.ok && !matches!(self.directive, Some(TapDirective::Todo(_)))
+        !self.ok && !self.is_todo() && !self.is_skipped()
     }
 
     /// Whether this test was skipped.

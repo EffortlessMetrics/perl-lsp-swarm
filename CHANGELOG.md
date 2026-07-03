@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Run/Debug** — "Run Subtest" runs the whole file and focuses output on the
     named subtest; `perl.debugTestFile` returns a real `perl-dap` launch
     configuration for `.t` files (replacing the previous placeholder). Test2
-    editor snippets (`usetest2`, `subtest`, `is`, `like`, `dies`, `lives`, …)
+    editor snippets (`usetest2`, `dies`, `lives`)
     are shipped. See [docs/reference/TEST2_INTEGRATION.md](docs/reference/TEST2_INTEGRATION.md).
 
 ## [0.17.0] - 2026-06-28

@@ -233,6 +233,10 @@ fn expand_qw_does_not_panic_on_non_ascii() {
     assert_eq!(expand_qw("-target => 'Café::Módulo'"), "-target => 'Café::Módulo'");
     // A multi-byte char immediately before `qw` still parses safely.
     assert_eq!(expand_qw("café qw(ok)"), "café  ok ");
+    // A non-ASCII byte must never be treated as a qw delimiter: doing so would
+    // set `close` to a lead byte and slice `raw` mid-codepoint (panic). Here the
+    // qw is left unexpanded rather than crashing.
+    assert_eq!(expand_qw("qw é a é b"), "qw é a é b");
 }
 
 #[test]

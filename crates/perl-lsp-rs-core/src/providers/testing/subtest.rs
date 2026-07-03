@@ -118,13 +118,20 @@ fn walk(node: &Node, source: &str, out: &mut Vec<DiscoveredSubtest>) {
     }
 }
 
+/// Whether `name` is a Test2 subtest-defining call. Shared by the discovery
+/// path (this module) and the code-lens path so the two never diverge on which
+/// call names are treated as subtests.
+pub fn is_subtest_call_name(name: &str) -> bool {
+    matches!(name, "subtest" | "subtest_buffered" | "subtest_streamed")
+}
+
 /// If `node` is a `subtest NAME => sub { ... }` call, build a
 /// [`DiscoveredSubtest`] (with nested children discovered inside its block).
 fn try_as_subtest(node: &Node, source: &str) -> Option<DiscoveredSubtest> {
     let NodeKind::FunctionCall { name, args } = &node.kind else {
         return None;
     };
-    if name != "subtest" && name != "subtest_buffered" && name != "subtest_streamed" {
+    if !is_subtest_call_name(name) {
         return None;
     }
 
