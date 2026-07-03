@@ -388,6 +388,60 @@ mod tests {
         let _ = std::fs::remove_file(out);
     }
 
+    /// Call-observation test for the success-*with-facts* path.
+    ///
+    /// The other `run_ripr_facts` tests hit early-return validation (rc==1) or
+    /// the empty-root success path (root=".", which finds no `.t` files and
+    /// stays `unavailable`). This drives the full fact-producing chain end to
+    /// end — the emitter discovers a real `.t` file, detects the framework,
+    /// upgrades the packet to `partial`, and writes it — so the emitter seams
+    /// are observed via a real call. It pairs with the string-scan ripr
+    /// suppression in `policy/ripr-suppressions.toml` (ripr#1429 class): RIPR's
+    /// static tracer cannot follow the string scans, but this observably
+    /// exercises them.
+    #[test]
+    fn ripr_facts_success_with_test_facts_writes_partial_packet() -> std::io::Result<()> {
+        // `run_ripr_facts` resolves `root`/`out` relative to the process CWD (the
+        // crate dir under `cargo test`), so keep them repo-relative to pass the
+        // path validator. A unique subdir avoids collision with the other tests.
+        let root = "target/ripr-facts-selftest";
+        let t_dir = format!("{root}/t");
+        std::fs::create_dir_all(&t_dir)?;
+        std::fs::write(
+            format!("{t_dir}/basic.t"),
+            "use Test::More;\nok(1, 'truthy');\nis(1, 1, 'one equals one');\ndone_testing;\n",
+        )?;
+        let out = format!("{root}/packet.json");
+
+        let rc = run_ripr_facts(
+            "ripr-perl-facts-v1",
+            root,
+            None,
+            None,
+            "tests,oracles,relations,limitations",
+            &out,
+        );
+        assert_eq!(rc, 0, "valid invocation with a .t file must exit 0");
+
+        let written = std::fs::read_to_string(&out)?;
+        let parsed: serde_json::Value = serde_json::from_str(&written)?;
+        // Discovering a `.t` file upgrades the packet from `unavailable` to `partial`.
+        assert_eq!(
+            parsed["packet_status"], "partial",
+            "a discovered .t file must yield a partial packet"
+        );
+        let tests = parsed["tests"].as_array().expect("tests[] is an array");
+        assert!(!tests.is_empty(), "the discovered .t file must produce a test fact");
+        assert_eq!(
+            tests[0]["framework"], "Test::More",
+            "framework must be detected from `use Test::More`"
+        );
+
+        // Clean up the synthetic tree.
+        let _ = std::fs::remove_dir_all(root);
+        Ok(())
+    }
+
     #[test]
     fn ripr_facts_deduplicates_and_orders_fact_classes() {
         let normalized = normalize_fact_classes("changes,owners,owners,changes,tests")
