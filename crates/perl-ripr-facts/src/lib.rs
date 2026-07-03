@@ -174,8 +174,10 @@ pub fn build_ripr_facts_packet(
 /// on success, `1` on any validation or write failure). Diagnostics go to
 /// stderr with a `ripr-facts: ` prefix.
 ///
-/// The `out` path is validated here (a write concern owned by the wrapper, not
-/// part of the packet), after the packet is assembled.
+/// The `out` path (a write concern owned by the wrapper, not part of the
+/// packet) is validated first: it is the cheapest check, so failing on it before
+/// building the packet avoids a needless workspace scan when the write
+/// destination is invalid.
 #[expect(
     clippy::print_stderr,
     reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
@@ -188,6 +190,13 @@ pub fn run_ripr_facts(
     fact_classes: &str,
     out: &str,
 ) -> i32 {
+    // Validate the output path first — the cheapest check — so an invalid write
+    // destination fails fast, before the emitter scans the workspace.
+    if let Err(reason) = validate_ripr_facts_path(out, "out") {
+        eprintln!("ripr-facts: {reason}");
+        return 1;
+    }
+
     let packet =
         match build_ripr_facts_packet(&RiprFactsRequest { schema, root, base, head, fact_classes })
         {
@@ -198,12 +207,7 @@ pub fn run_ripr_facts(
             }
         };
 
-    // Validate the output path (a write destination owned by the CLI wrapper),
-    // then write the assembled packet to disk.
-    if let Err(reason) = validate_ripr_facts_path(out, "out") {
-        eprintln!("ripr-facts: {reason}");
-        return 1;
-    }
+    // Write the assembled packet to disk.
     if let Err(error) = write_packet(out, &packet) {
         eprintln!("ripr-facts: failed to write packet to `{out}`: {error}");
         return 1;
