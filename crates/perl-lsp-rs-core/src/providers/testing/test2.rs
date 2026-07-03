@@ -323,8 +323,11 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     // brings in only the `T2()` handle. Oracle: metacpan `Test2::V1`.
     let v1_import_all = module == "Test2::V1"
         && (args_contains_option(raw_args, "import") || v1_short_flag(raw_args, 'i'));
-    let default_set =
-        if v1_import_all { Some(V0_DEFAULT.as_slice()) } else { module_default_exports(module) };
+    let default_set = if v1_import_all {
+        Some(V0_DEFAULT.as_slice())
+    } else {
+        module_default_exports(module)
+    };
 
     // Pragma resolution (bundles only). Most bundles (`Test2::V0`, `Test2::Suite`,
     // `Test2::Bundle::*`) enable strict/warnings by default and opt OUT via
@@ -334,8 +337,7 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     // PRAGMAS ARE ENABLED BY DEFAULT").
     let pragmas = if bundle {
         if module == "Test2::V1" {
-            let all =
-                args_contains_option(raw_args, "pragmas") || v1_short_flag(raw_args, 'p');
+            let all = args_contains_option(raw_args, "pragmas") || v1_short_flag(raw_args, 'p');
             Some(Test2Pragmas {
                 strict: all || args_contains_option(raw_args, "strict"),
                 warnings: all || args_contains_option(raw_args, "warnings"),
