@@ -129,22 +129,24 @@ const STRICT_PATH_ALLOWLIST: &[&str] = &[
 
 /// JSON object keys whose values are user-facing prose on a manifest surface
 /// (`package.json`): setting descriptions, dropdown-option descriptions,
-/// deprecation tooltips, command titles, walkthrough copy. Strict mode scans
-/// these values for bare external-tool names while leaving keys, setting ids,
-/// and command ids untouched — those legitimately contain the tool names
-/// (`perl-lsp.perlcritic.enabled`) and are covered by the default [`DISALLOWED`]
-/// pass, not the strict bare-name rule.
+/// deprecation tooltips, command titles, command-palette categories, walkthrough
+/// copy. Strict mode scans these values for bare external-tool names while
+/// leaving keys, setting ids, and command ids untouched — those legitimately
+/// contain the tool names (`perl-lsp.perlcritic.enabled`) and are covered by the
+/// default [`DISALLOWED`] pass, not the strict bare-name rule.
 ///
-/// Both scalar-string values (`description`) and array-of-string values
-/// (`enumDescriptions`, one entry per dropdown option) are covered — see
-/// [`collect_json_prose`]. All are rendered in the same VS Code Settings UI a
-/// user reads, so a leak in any of them is as user-visible as one in
-/// `description`.
+/// Both scalar-string values (`description`, `category`) and array-of-string
+/// values (`enumDescriptions`, one entry per dropdown option) are covered — see
+/// [`collect_json_prose`]. All are rendered in the same VS Code Settings UI or
+/// command palette a user reads, so a leak in any of them is as user-visible as
+/// one in `description` (a future `"category": "Perl::Critic"` prefix would show
+/// on every command in the palette).
 const STRICT_PROSE_KEYS: &[&str] = &[
     "description",
     "markdowndescription",
     "title",
     "detail",
+    "category",
     "enumdescriptions",
     "markdownenumdescriptions",
     "deprecationmessage",
@@ -325,13 +327,50 @@ fn collect_strict_json_prose_violations(surface: &str, text: &str, violations: &
     let mut prose = Vec::new();
     collect_json_prose(&value, &mut prose);
     for field in prose {
-        for marker in unqualified_markers(&field) {
-            let snippet: String = field.chars().take(60).collect();
-            violations.push(format!(
-                "{surface}: unqualified external-tool name `{marker}` in a user-facing prose field (strict): \"{snippet}\" — reword native-first (optional/legacy/compatibility) or move the detail to reference/compatibility"
-            ));
+        // Scope the qualifier check to each sentence/clause, not the whole
+        // value. `unqualified_markers` exempts a segment as soon as any
+        // native-first qualifier appears in it, so checking a whole
+        // multi-sentence value at once would let a qualifier in one sentence
+        // excuse an unqualified requirement in another — e.g. "Legacy mode is
+        // documented below. Install perltidy to enable formatting." must still
+        // flag the second sentence.
+        for segment in prose_segments(&field) {
+            for marker in unqualified_markers(segment) {
+                let snippet: String = segment.trim().chars().take(60).collect();
+                violations.push(format!(
+                    "{surface}: unqualified external-tool name `{marker}` in a user-facing prose field (strict): \"{snippet}\" — reword native-first (optional/legacy/compatibility) or move the detail to reference/compatibility"
+                ));
+            }
         }
     }
+}
+
+/// Split a prose value into sentence/clause units for per-segment qualifier
+/// scoping. Breaks on `;` and newlines unconditionally, and on a sentence
+/// terminator (`.` / `!` / `?`) only when it is followed by whitespace or ends
+/// the value. The whitespace condition is deliberate: an intra-token dot in a
+/// config path or filename (`.perl-lsp.toml`, `Foo/Bar.pm`) is *not* followed by
+/// whitespace, so it never fragments a sentence and separates a native-first
+/// qualifier from the marker it qualifies.
+fn prose_segments(field: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut chars = field.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        let boundary = match ch {
+            ';' | '\n' => true,
+            '.' | '!' | '?' => chars.peek().is_none_or(|(_, next)| next.is_whitespace()),
+            _ => false,
+        };
+        if boundary {
+            segments.push(&field[start..i]);
+            start = i + ch.len_utf8();
+        }
+    }
+    if start < field.len() {
+        segments.push(&field[start..]);
+    }
+    segments
 }
 
 /// Recursively collect the prose values of every [`STRICT_PROSE_KEYS`] object
@@ -684,6 +723,53 @@ Install `perltidy` only if you selected the external compatibility engine.\n";
         let mut violations = Vec::new();
         collect_strict_json_prose_violations("package.json", json, &mut violations);
         assert!(violations.is_empty(), "legacy-qualified enum prose must pass: {violations:?}");
+    }
+
+    #[test]
+    fn json_prose_qualifier_does_not_cross_sentences() {
+        // A native-first qualifier in one sentence must NOT exempt an
+        // unqualified external-tool requirement in another sentence of the same
+        // prose value. The qualifier check is scoped per sentence/clause.
+        let json = r#"{
+            "contributes": {
+                "configuration": {
+                    "properties": {
+                        "perl-lsp.critic.engine": {
+                            "description": "Legacy mode is documented below. Install perltidy to enable formatting."
+                        }
+                    }
+                }
+            }
+        }"#;
+        let mut violations = Vec::new();
+        collect_strict_json_prose_violations("package.json", json, &mut violations);
+        assert_eq!(violations.len(), 1, "cross-sentence leak must flag: {violations:?}");
+        assert!(violations[0].contains("perltidy"));
+        // The snippet must be the offending sentence, not the whole value.
+        assert!(
+            violations[0].contains("Install perltidy"),
+            "snippet is the leaking sentence: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn json_prose_qualifier_in_same_clause_passes() {
+        // A marker framed native-first within its own clause must still pass,
+        // even when other clauses exist.
+        let json = r#"{
+            "contributes": {
+                "configuration": {
+                    "properties": {
+                        "perl-lsp.critic.engine": {
+                            "description": "Native critic is the default; the legacy engine shells out to an external perlcritic binary for compatibility."
+                        }
+                    }
+                }
+            }
+        }"#;
+        let mut violations = Vec::new();
+        collect_strict_json_prose_violations("package.json", json, &mut violations);
+        assert!(violations.is_empty(), "clause-local qualifier must pass: {violations:?}");
     }
 
     #[test]
