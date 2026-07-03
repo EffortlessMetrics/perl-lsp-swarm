@@ -369,9 +369,21 @@ fn ripr_facts_emits_schema_valid_deterministic_packet() -> Result<(), Box<dyn st
         "packet_fingerprint should be an fnv64 digest, got `{fingerprint}`"
     );
 
-    // The fixture was actually parsed: the `.pm` and `.t` files became facts.
+    // The `.pm` and `.t` files were discovered as facts.
     let files = packet["files"].as_array().ok_or("files is not an array")?;
     assert!(!files.is_empty(), "files[] should not be empty for a parsed workspace");
+
+    // The fixture was actually *parsed*, not merely read: owners come only from
+    // successfully-parsed symbol declarations (a parse failure emits the file
+    // fact with zero owners plus a `parse_failure` limitation), so a non-empty
+    // owners[] carrying the fixture's `Calc` package proves the parser produced
+    // semantic facts — file discovery alone would leave owners[] empty.
+    let owners = packet["owners"].as_array().ok_or("owners is not an array")?;
+    let owner_names: Vec<&str> = owners.iter().filter_map(|o| o["name"].as_str()).collect();
+    assert!(
+        owner_names.contains(&"Calc"),
+        "owners[] should contain the parsed `Calc` package declaration, got {owner_names:?}"
+    );
 
     Ok(())
 }
