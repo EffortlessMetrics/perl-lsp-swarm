@@ -31,6 +31,11 @@
 //! ```
 
 #![warn(missing_docs)]
+// Production code stays under the workspace `unwrap_used`/`expect_used` deny;
+// test code may use `expect()`/`unwrap()` for brevity. Matches the precedent in
+// perl-incremental-parsing and perl-lsp-perltidy, and keeps `cargo clippy
+// --all-targets` green without threading `Result`/`must` through every fixture.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod evaluator;
 mod evidence;
