@@ -1415,6 +1415,98 @@ mod prototype_heuristic_tests {
         assert_eq!(find_op(&node, "a"), Some(Some("=".to_string())), ":$a uses `=`");
         assert_eq!(find_op(&node, "b"), Some(Some("//=".to_string())), ":$b uses `//=`");
         assert_eq!(find_op(&node, "c"), Some(Some("||=".to_string())), ":$c uses `||=`");
+
+        // Discriminator for the `external_name == name` boundary: no parameter
+        // in this signature is literally called `name`, so every recursive
+        // comparison in `find_op` evaluates false and the lookup must return
+        // `None` rather than silently matching the wrong parameter.
+        assert_eq!(
+            find_op(&node, "name"),
+            None,
+            "looking up a parameter that doesn't exist exercises the false side \
+             of the `external_name == name` boundary"
+        );
+        Ok(())
+    }
+
+    /// `--lib` call-observation coverage for `parse_signature_param`'s
+    /// default-operator match (`match self.peek_kind() { ... }`): call the
+    /// seam-owning method directly — not through the full `parse_sub` chain
+    /// — so each match arm is exercised and observed with an exact-value
+    /// assertion on the resulting node, rather than only inferred from a
+    /// downstream parse error.
+    #[test]
+    fn parse_signature_param_directly_selects_each_default_operator_arm() -> Result<(), String> {
+        fn parse_param(src: &str) -> Result<Node, String> {
+            let mut parser = Parser::new(src);
+            parser.parse_signature_param().map_err(|e| format!("parse `{src}`: {e:?}"))
+        }
+
+        // `=` arm: available to named parameters (and, separately, to
+        // positional parameters via `OptionalParameter`).
+        let node = parse_param(":$a = 1")?;
+        match &node.kind {
+            NodeKind::NamedParameter { default_operator, required, .. } => {
+                assert_eq!(default_operator.as_deref(), Some("="), ":$a = 1 selects the `=` arm");
+                assert!(!required, ":$a = 1 has a default -> optional");
+            }
+            other => return Err(format!("expected NamedParameter, got {}", other.kind_name())),
+        }
+
+        // `//=` arm: named-only, gated by `named`.
+        let node = parse_param(":$b //= 2")?;
+        match &node.kind {
+            NodeKind::NamedParameter { default_operator, required, .. } => {
+                assert_eq!(
+                    default_operator.as_deref(),
+                    Some("//="),
+                    ":$b //= 2 selects the `//=` arm"
+                );
+                assert!(!required, ":$b //= 2 has a default -> optional");
+            }
+            other => return Err(format!("expected NamedParameter, got {}", other.kind_name())),
+        }
+
+        // `||=` arm: named-only, gated by `named`.
+        let node = parse_param(":$c ||= 3")?;
+        match &node.kind {
+            NodeKind::NamedParameter { default_operator, required, .. } => {
+                assert_eq!(
+                    default_operator.as_deref(),
+                    Some("||="),
+                    ":$c ||= 3 selects the `||=` arm"
+                );
+                assert!(!required, ":$c ||= 3 has a default -> optional");
+            }
+            other => return Err(format!("expected NamedParameter, got {}", other.kind_name())),
+        }
+
+        // Fallback `_ => None` arm for a named parameter: no default token
+        // follows, so no default operator is recorded and the parameter is
+        // required.
+        let node = parse_param(":$d")?;
+        match &node.kind {
+            NodeKind::NamedParameter { default_operator, required, .. } => {
+                assert!(default_operator.is_none(), ":$d has no default token -> None arm");
+                assert!(required, ":$d has no default -> required");
+            }
+            other => return Err(format!("expected NamedParameter, got {}", other.kind_name())),
+        }
+
+        // Fallback `_ => None` arm for a *positional* parameter: `named` is
+        // false, so the `//=` guard fails even though `DefinedOrAssign`
+        // follows, and default_op falls through to `_ => None`. The `//= 1`
+        // tokens are left unconsumed by this call (the caller reports the
+        // error), but this seam-owner call directly observes that no default
+        // was consumed at all -- proving the guard, not an incidental
+        // downstream parse failure.
+        let node = parse_param("$x //= 1")?;
+        assert!(
+            matches!(&node.kind, NodeKind::MandatoryParameter { .. }),
+            "positional `$x //= 1`: named=false so the `//=` arm guard fails, \
+             falling through to `_ => None` (no default consumed)"
+        );
+
         Ok(())
     }
 
