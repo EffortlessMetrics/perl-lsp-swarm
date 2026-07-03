@@ -41,19 +41,16 @@ In PR #3315:
 
 2. **Substring matching fix**: Replaced `str::contains()` with `contains_word()` (a helper that checks for whole-word boundaries) and narrowed the qualifier list to words that themselves signal optionality/legacy (e.g., "optional", "legacy", "experimental", not "native" or "default" without context). The list was made explicit and the matching was made precise.
 
-3. **Cross-PR coupling deferral**: Left the JSON scan in place but deferred the command-definition fixes to a follow-up PR that lands after #3308. The current PR scans and reports; the follow-up applies the fixes cleanly.
+3. **Cross-PR coupling deferral**: A prototyped JSON-prose scan of `package.json` correctly flagged leaks in command titles that sibling PR #3308 owned, so it was **reverted from #3315** and deferred to a follow-up that lands after #3308 (only the reusable `unqualified_markers` core was kept). Reaching across PR boundaries to fix another PR's files would have coupled merge order.
 
-All changes were made to `crates/xtask/src/policy_checks.rs` and related enforcement code.
+The scanner logic lives in `xtask/src/tasks/native_product_surface.rs`; the always-run gate wiring is the `policy_checks` entry in `.ci/gate-policy.yaml`.
 
 ## Spec impact
 
-Added a new acceptance criterion to [docs/agents/SPEC_UPDATE_CHECKLIST.md](../../agents/SPEC_UPDATE_CHECKLIST.md):
+Follow-up tracked (not yet written — this PR only touched `docs/learnings/`):
 
-- "Enforcement guards: trigger condition must cover the exact change-shape the guard exists to police. Unit tests for guards must run unconditionally, not under optional conditions (diff scope, crate selection)."
-
-Also documented in [docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md](../reference/SUBSYSTEM_HAZARD_DEFAULTS.md):
-
-- "Native-surface scanner: whole-word matching on qualifiers, explicit allow/deny lists, automatic trigger on all PRs."
+- Add an acceptance criterion to [docs/agents/SPEC_UPDATE_CHECKLIST.md](../../agents/SPEC_UPDATE_CHECKLIST.md): "Enforcement guards: the trigger condition must cover the exact change-shape the guard exists to police; a guard's enforcing test must run unconditionally, not only under a diff-scoped/crate-scoped selection."
+- Add a row to [docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md](../reference/SUBSYSTEM_HAZARD_DEFAULTS.md): "Text-scanner guards: whole-word matching on qualifiers/markers, explicit allow/deny lists, and an always-on trigger across all PRs."
 
 ## Portable lesson
 

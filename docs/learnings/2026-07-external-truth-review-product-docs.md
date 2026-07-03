@@ -39,7 +39,7 @@ Two distinct findings in the native-stack campaign (#3276):
 
 2. **Cross-PR feature reference**: When a doc references a feature in a sibling in-flight PR, the reference is only valid after that PR merges. Documenting `perl-lsp.critic.*` before #3308 landed meant the doc was temporarily false. Fact-checking must account for merge order.
 
-3. **CI noise**: Non-required checks are exactly that — not required. The merge gate has three required checks; all others are advisory. A failed advisory check is not a blocker. A cancelled run is not a failure — it's a superseded attempt. Without this triage, the CI dashboard looks red when the required gates are actually green.
+3. **CI noise**: Non-required checks are exactly that — not required. The merge gate has **two** required checks (`Perl LSP Rust Small Result`, `ripr+ New Gap Gate`); all others are advisory. A failed advisory check is not a blocker. A cancelled run is not a failure — it's a superseded attempt. Without this triage, the CI dashboard looks red when the required gates are actually green.
 
 ## Fix
 
@@ -58,20 +58,19 @@ In PRs #3319 and #3315 + #3324:
 
    In this case, native-surface docs were included in PR #3319 because the feature was already merged in #3308 at review time.
 
-3. **CI noise triage (procedural)**: Added clear guidance in [docs/reference/CI_GATE_PLAYBOOK.md](../reference/CI_GATE_PLAYBOOK.md) to distinguish:
-   - Required checks (3 gates, must pass to merge)
-   - Advisory checks (all others, failures are informational)
-   - Cancelled runs (not failures, caused by new push or force-push)
+3. **CI noise triage (procedural)**: The distinction is already documented — [docs/reference/CI_GATE_PLAYBOOK.md](../reference/CI_GATE_PLAYBOOK.md) and the authoritative [`.ci/policies/required-checks.toml`](../../.ci/policies/required-checks.toml) are the source of truth:
+   - Required checks: **two** gates (`Perl LSP Rust Small Result`, `ripr+ New Gap Gate`), `required = true`
+   - Advisory checks: all others (`Codecov / Patch 95`, `CI Gate (Merge-Blocking)`, `PR Smoke`, `droid-review`), failures are informational
+   - Cancelled runs: not failures, caused by a new push or a superseding run
 
    Tracking in issue #3324: future improvement to label or filter non-required checks in the CI dashboard.
 
 ## Spec impact
 
-Updated [docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md](../reference/SUBSYSTEM_HAZARD_DEFAULTS.md):
+Follow-up tracked (not yet written — this PR only touched `docs/learnings/`):
 
-- "Product-surface documentation: every user-visible fact (config keys, settings, version-gated behavior, diagnostic wording) must be verified against the source (code, spec, or running behavior) before merge. Cross-PR feature references must account for merge order."
-
-Noted in [docs/concepts/external-truth-gate.md](../concepts/external-truth-gate.md) that the gate applies to docs as well as code: "Any PR that adds or changes a user-visible fact must pass a correctness review against an external oracle."
+- Add a row to [docs/reference/SUBSYSTEM_HAZARD_DEFAULTS.md](../reference/SUBSYSTEM_HAZARD_DEFAULTS.md): "Product-surface documentation: every user-visible fact (config keys, settings, version-gated behavior, diagnostic wording) must be verified against the source (code, spec, or running behavior) before merge; cross-PR feature references must account for merge order."
+- The [external-truth-gate](../concepts/external-truth-gate.md) concept already states the gate applies to user-visible facts; a small addition could make its application to **docs** (not just code) explicit.
 
 ## Portable lesson
 
