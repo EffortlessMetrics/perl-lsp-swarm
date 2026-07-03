@@ -72,21 +72,45 @@ fn test2_imports_v0_default_exports_cover_common_tools() {
 }
 
 #[test]
-fn test2_v1_default_exports_only_the_t2_handle() {
-    // Test2::V1's ONLY default export is the `T2()` handle — its tools are
-    // methods on that handle, not bare subs (oracle: metacpan Test2::V1). It
-    // must NOT surface the Test2::V0 bare export set.
+fn test2_v1_default_exports_only_t2_and_no_pragmas() {
+    // Test2::V1's ONLY default export is the `T2()` handle, and it enables NO
+    // pragmas by default — its tools are methods on the handle, not bare subs
+    // (oracle: metacpan Test2::V1 — "Only 1 export by default: T2()", "NO
+    // PRAGMAS ARE ENABLED BY DEFAULT").
     let defaults = module_default_exports("Test2::V1").expect("V1 has a default set");
     assert_eq!(defaults, &["T2"], "V1 default-exports only the T2 handle");
 
     let facts = Test2Facts::from_source("use Test2::V1;\n");
-    assert!(facts.uses_test2_bundle(), "Test2::V1 is still a bundle");
-    // V1, like V0, enables strict/warnings.
-    assert_eq!((facts.strict, facts.warnings), (true, true));
+    assert!(facts.uses_test2_bundle(), "Test2::V1 is still a bundle module");
+    assert_eq!((facts.strict, facts.warnings), (false, false), "V1 enables no pragmas by default");
     assert!(facts.is_imported("T2"), "V1 imports the T2 handle");
-    assert!(!facts.is_imported("ok"), "V1 must not export bare ok");
-    assert!(!facts.is_imported("is"), "V1 must not export bare is");
-    assert!(!facts.is_imported("subtest"), "V1 must not export bare subtest");
+    assert!(!facts.is_imported("ok"), "V1 does not export bare ok by default");
+    assert!(!facts.is_imported("is"), "V1 does not export bare is by default");
+    assert!(!facts.is_imported("subtest"), "V1 does not export bare subtest by default");
+}
+
+#[test]
+fn test2_v1_import_option_brings_in_the_full_bare_set() {
+    // `-import` (and its `-i` shorthand) imports all tools as bare subs, like V0.
+    for src in ["use Test2::V1 -import;\n", "use Test2::V1 -i;\n"] {
+        let facts = Test2Facts::from_source(src);
+        assert!(facts.is_imported("ok"), "{src:?}: -import brings in bare ok");
+        assert!(facts.is_imported("is"), "{src:?}: -import brings in bare is");
+        assert!(facts.is_imported("subtest"), "{src:?}: -import brings in bare subtest");
+    }
+}
+
+#[test]
+fn test2_v1_pragmas_require_an_explicit_option() {
+    // V1 strict/warnings only via -strict/-warnings/-p/-pragmas.
+    let pragmas = Test2Facts::from_source("use Test2::V1 -pragmas;\n");
+    assert_eq!((pragmas.strict, pragmas.warnings), (true, true), "-pragmas enables both");
+    let strict_only = Test2Facts::from_source("use Test2::V1 -strict;\n");
+    assert_eq!(
+        (strict_only.strict, strict_only.warnings),
+        (true, false),
+        "-strict enables strict only"
+    );
 }
 
 #[test]
