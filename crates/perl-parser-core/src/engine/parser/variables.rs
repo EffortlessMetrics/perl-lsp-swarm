@@ -1008,9 +1008,19 @@ impl<'a> Parser<'a> {
         let mut end = variable.location.end;
         end = self.consume_signature_param_attributes(end)?;
 
-        // Check for default value (= expression)
-        let default_value = if self.peek_kind() == Some(TokenKind::Assign) {
-            self.tokens.next()?; // consume =
+        // Check for a default value. Positional parameters accept only `=`;
+        // named parameters (Perl 5.44 / PPC0024) additionally accept the `//=`
+        // and `||=` default operators (`sub f (:$x //= 1)`), which apply the
+        // default when the caller omits the argument or passes undef / a false
+        // value respectively.
+        let default_op: Option<&'static str> = match self.peek_kind() {
+            Some(TokenKind::Assign) => Some("="),
+            Some(TokenKind::DefinedOrAssign) if named => Some("//="),
+            Some(TokenKind::LogicalOrAssign) if named => Some("||="),
+            _ => None,
+        };
+        let default_value = if default_op.is_some() {
+            self.tokens.next()?; // consume the default operator
             // Parse a full scalar expression for the default value (perlsub: "any scalar
             // expression").  parse_ternary covers calls, binops, and ternary expressions
             // while stopping at the `,` or `)` that delimits signature parameters, since
@@ -1038,13 +1048,12 @@ impl<'a> Parser<'a> {
                 _ => String::new(),
             };
             // A named parameter without a default is required; with a default
-            // it is optional. Only `=` is recognized here today — `//=`/`||=`
-            // default operators are a follow-up (the operator field is already
-            // modeled so that change needs no further struct-shape churn).
-            let (default_operator, required) = if default_value.is_some() {
-                (Some("=".to_string()), false)
-            } else {
-                (None, true)
+            // it is optional. Preserve which operator introduced the default
+            // (`=`, `//=`, or `||=`) so downstream layers can distinguish the
+            // defaulting semantics.
+            let (default_operator, required) = match default_op {
+                Some(op) => (Some(op.to_string()), false),
+                None => (None, true),
             };
             NodeKind::NamedParameter {
                 variable: Box::new(variable),
@@ -1379,6 +1388,33 @@ mod prototype_heuristic_tests {
         assert!(!beta.1, ":$beta has a default → optional");
         assert!(beta.2, ":$beta preserves its default value");
         assert_eq!(beta.3.as_deref(), Some("="), ":$beta records the `=` default operator");
+    }
+
+    /// Perl 5.44 named parameters accept `//=` and `||=` default operators in
+    /// addition to `=` (PPC0024). Positional parameters accept only `=`.
+    #[test]
+    fn named_parameter_records_slash_slash_and_pipe_pipe_default_operators() {
+        fn find_op(node: &Node, name: &str) -> Option<Option<String>> {
+            if let NodeKind::NamedParameter { external_name, default_operator, .. } = &node.kind {
+                if external_name == name {
+                    return Some(default_operator.clone());
+                }
+            }
+            let mut found = None;
+            node.for_each_child(|c| {
+                if found.is_none() {
+                    found = find_op(c, name);
+                }
+            });
+            found
+        }
+
+        let node = parse_sub("sub f (:$a = 1, :$b //= 2, :$c ||= 3) {}")
+            .expect("parse named params with //= and ||= defaults");
+
+        assert_eq!(find_op(&node, "a"), Some(Some("=".to_string())), ":$a uses `=`");
+        assert_eq!(find_op(&node, "b"), Some(Some("//=".to_string())), ":$b uses `//=`");
+        assert_eq!(find_op(&node, "c"), Some(Some("||=".to_string())), ":$c uses `||=`");
     }
 
     #[test]
