@@ -426,8 +426,8 @@
             "order": 41,
             "deprecationMessage": "Deprecated: use perl-lsp.critic.severity. This alias still works but perl-lsp.critic.* wins if both are set.",
             "markdownDeprecationMessage": "**Deprecated:** use `perl-lsp.critic.severity`. This alias still works but `perl-lsp.critic.*` wins if both are set.",
-            "description": "Perl::Critic minimum severity (1 = least severe/reports more, 5 = most severe/reports less).",
-            "markdownDescription": "Perl::Critic minimum severity (`1` = least severe/reports more, `5` = most severe/reports less)."
+            "description": "Critic minimum severity (1 = least severe/reports more, 5 = most severe/reports less). Applies to the native critic; the legacy external engine uses the same scale.",
+            "markdownDescription": "Critic minimum severity (`1` = least severe/reports more, `5` = most severe/reports less). Applies to the native critic; the legacy external engine uses the same scale."
           },
           "perl-lsp.perlcritic.profile": {
             "type": "string",

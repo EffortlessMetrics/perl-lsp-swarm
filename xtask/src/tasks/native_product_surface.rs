@@ -24,16 +24,17 @@
 //! e.g. a future "install perlcritic first" that isn't spelled exactly like an
 //! existing banned marker.
 //!
-//! Strict mode deliberately scans `.md` prose only. `package.json` legitimately
-//! contains the tool names inside setting keys (`perl-lsp.perlcritic.enabled`)
-//! and command ids, so a naive bare-name rule there would be all false
-//! positives; its product-surface risk is covered by the default [`DISALLOWED`]
-//! pass. (A prose-value-only JSON scan — checking `description` /
-//! `markdownDescription` / walkthrough / `title` values while skipping keys — is
-//! a planned follow-up once the native command retitle lands, so the live
-//! manifest is prose-clean.) Reference/compatibility/conformance/archive
-//! material and tests are exempt via [`STRICT_PATH_ALLOWLIST`] — that is where
-//! legacy detail is meant to live.
+//! Strict mode scans `.md` surfaces line-by-line and `.json` manifests by their
+//! user-facing **prose values** only. `package.json` legitimately contains the
+//! tool names inside setting keys (`perl-lsp.perlcritic.enabled`) and command
+//! ids, so a naive bare-name rule over the whole file would be all false
+//! positives; instead the JSON scan walks only [`STRICT_PROSE_KEYS`] string
+//! values (`description` / `markdownDescription` / `title` / `detail`) — the copy
+//! a user actually reads — while leaving keys and ids untouched. Their
+//! product-surface risk in keys/ids is still covered by the default
+//! [`DISALLOWED`] pass. Reference/compatibility/conformance/archive material and
+//! tests are exempt via [`STRICT_PATH_ALLOWLIST`] — that is where legacy detail
+//! is meant to live.
 
 use color_eyre::eyre::{Result, bail};
 use std::fs;
@@ -124,6 +125,14 @@ const STRICT_PATH_ALLOWLIST: &[&str] = &[
     ".spec",
 ];
 
+/// JSON object keys whose *string values* are user-facing prose on a manifest
+/// surface (`package.json`): setting descriptions, command titles, walkthrough
+/// copy. Strict mode scans these values for bare external-tool names while
+/// leaving keys, setting ids, and command ids untouched — those legitimately
+/// contain the tool names (`perl-lsp.perlcritic.enabled`) and are covered by the
+/// default [`DISALLOWED`] pass, not the strict bare-name rule.
+const STRICT_PROSE_KEYS: &[&str] = &["description", "markdowndescription", "title", "detail"];
+
 /// Entry point for `cargo xtask check-native-product-surface`, honoring the
 /// `--strict` flag.
 pub fn run_with(strict: bool) -> Result<()> {
@@ -197,20 +206,26 @@ fn collect_violations(surface: &str, text: &str, violations: &mut Vec<String>) {
     }
 }
 
-/// Strict pass: scan every `.md` first-mile surface for bare external-tool names
-/// lacking a native-first qualifier. Non-`.md` surfaces and allowlisted paths
-/// are skipped (see the module docs for why).
+/// Strict pass: scan first-mile surfaces for bare external-tool names lacking a
+/// native-first qualifier. `.md` surfaces are scanned line-by-line; `.json`
+/// manifests are scanned by their user-facing *prose values* only (setting
+/// descriptions, command titles) so keys and setting/command ids are left
+/// untouched. Allowlisted paths are skipped (see the module docs for why).
 fn scan_strict(root: &Path) -> Result<Vec<String>> {
     let mut violations = Vec::new();
     for surface in SURFACES {
-        if !surface.ends_with(".md") || is_strict_allowlisted(surface) {
+        if is_strict_allowlisted(surface) {
             continue;
         }
         let path = root.join(surface);
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        collect_strict_violations(surface, &text, &mut violations);
+        if surface.ends_with(".md") {
+            collect_strict_violations(surface, &text, &mut violations);
+        } else if surface.ends_with(".json") {
+            collect_strict_json_prose_violations(surface, &text, &mut violations);
+        }
     }
     Ok(violations)
 }
@@ -276,6 +291,52 @@ fn collect_strict_violations(surface: &str, text: &str, violations: &mut Vec<Str
                 idx + 1
             ));
         }
+    }
+}
+
+/// Strict scan of a JSON manifest's user-facing prose values. Parses the JSON,
+/// walks every [`STRICT_PROSE_KEYS`] string value, and flags any bare
+/// external-tool marker lacking a native-first qualifier. Keys, setting ids, and
+/// command ids are never inspected — only the human-readable copy. An unparseable
+/// manifest is skipped silently (the default [`DISALLOWED`] pass still greps its
+/// raw text).
+fn collect_strict_json_prose_violations(surface: &str, text: &str, violations: &mut Vec<String>) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let mut prose = Vec::new();
+    collect_json_prose(&value, &mut prose);
+    for field in prose {
+        for marker in unqualified_markers(&field) {
+            let snippet: String = field.chars().take(60).collect();
+            violations.push(format!(
+                "{surface}: unqualified external-tool name `{marker}` in a user-facing prose field (strict): \"{snippet}\" — reword native-first (optional/legacy/compatibility) or move the detail to reference/compatibility"
+            ));
+        }
+    }
+}
+
+/// Recursively collect the string values of every [`STRICT_PROSE_KEYS`] object
+/// key into `out`. Keys are matched case-insensitively so `markdownDescription`
+/// and `markdowndescription` both count.
+fn collect_json_prose(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map {
+                if STRICT_PROSE_KEYS.contains(&key.to_ascii_lowercase().as_str())
+                    && let Some(s) = v.as_str()
+                {
+                    out.push(s.to_string());
+                }
+                collect_json_prose(v, out);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_json_prose(v, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -469,10 +530,92 @@ Install `perltidy` only if you selected the external compatibility engine.\n";
         assert!(!is_strict_allowlisted("docs/tutorials/DAP_USER_GUIDE.md"));
     }
 
-    /// The live repository's first-mile `.md` surfaces must pass strict mode.
-    /// This is the enforcement that gives `--strict` teeth: a future edit that
-    /// drops an unqualified `perltidy`/`perlcritic`/`Perl::LanguageServer` onto a
-    /// first-mile prose surface makes `run_with(true)` bail and this fails.
+    #[test]
+    fn json_prose_flags_unqualified_marker_in_description() {
+        // A bare external-tool requirement in a user-facing description value
+        // must flag, even though the surrounding JSON keys/ids are clean.
+        let json = r#"{
+            "contributes": {
+                "configuration": {
+                    "properties": {
+                        "perl-lsp.perlcritic.enabled": {
+                            "type": "boolean",
+                            "description": "Install perltidy to enable formatting."
+                        }
+                    }
+                }
+            }
+        }"#;
+        let mut violations = Vec::new();
+        collect_strict_json_prose_violations("package.json", json, &mut violations);
+        assert_eq!(violations.len(), 1, "unqualified prose value must flag: {violations:?}");
+        assert!(violations[0].contains("perltidy"));
+        assert!(violations[0].contains("prose field"));
+    }
+
+    #[test]
+    fn json_prose_ignores_keys_and_ids() {
+        // Setting ids and command ids legitimately contain the tool name; only
+        // prose VALUES are scanned, so a manifest whose descriptions are all
+        // native-first must pass even with `perlcritic` all over its keys/ids.
+        let json = r#"{
+            "contributes": {
+                "commands": [
+                    { "command": "perl-lsp.runPerlCritic", "title": "Perl: Run Critic" }
+                ],
+                "configuration": {
+                    "properties": {
+                        "perl-lsp.perlcritic.enabled": {
+                            "description": "Enable the native critic (external perlcritic is optional).",
+                            "markdownDescription": "Native critic runs by default; `perlcritic` is not required."
+                        }
+                    }
+                }
+            }
+        }"#;
+        let mut violations = Vec::new();
+        collect_strict_json_prose_violations("package.json", json, &mut violations);
+        assert!(violations.is_empty(), "clean prose + tool-named ids must pass: {violations:?}");
+    }
+
+    #[test]
+    fn json_prose_scans_title_and_detail_and_nested_values() {
+        // All four prose keys are scanned, at any nesting depth (walkthrough
+        // steps, nested config), and each unqualified marker flags once.
+        let json = r#"{
+            "contributes": {
+                "walkthroughs": [{
+                    "steps": [{
+                        "title": "Set up perltidy",
+                        "description": "You must install perlcritic before starting."
+                    }]
+                }],
+                "menus": {
+                    "commandPalette": [{ "detail": "Runs perltidy on save." }]
+                }
+            }
+        }"#;
+        let mut violations = Vec::new();
+        collect_strict_json_prose_violations("package.json", json, &mut violations);
+        // title:perltidy, description:perlcritic, detail:perltidy => 3
+        assert_eq!(violations.len(), 3, "title/description/detail all scanned: {violations:?}");
+    }
+
+    #[test]
+    fn json_prose_skips_unparseable_manifest() {
+        // A manifest that does not parse is skipped silently (the default
+        // DISALLOWED pass still greps its raw text); no panic, no violations.
+        let mut violations = Vec::new();
+        collect_strict_json_prose_violations("package.json", "{ not valid json", &mut violations);
+        assert!(violations.is_empty());
+    }
+
+    /// The live repository's first-mile `.md` surfaces must pass strict mode,
+    /// and the `package.json` manifest must be prose-clean. This is the
+    /// enforcement that gives `--strict` teeth: a future edit that drops an
+    /// unqualified `perltidy`/`perlcritic`/`Perl::LanguageServer` onto a
+    /// first-mile prose surface — a `.md` line or a manifest description/title —
+    /// makes `run_with(true)` bail and this fails.
     #[test]
     fn live_strict_surface_is_clean() -> Result<()> {
         run_with(true)
