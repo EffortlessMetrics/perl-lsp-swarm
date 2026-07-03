@@ -448,8 +448,7 @@ pub(crate) fn emit_relations_and_discriminators(
 
     // Collect .pm files from lib/, sorted for deterministic traversal order
     // (`std::fs::read_dir` order is filesystem/OS-dependent).
-    let lib_dir = std::path::Path::new(root).join("lib");
-    let mut pm_files = collect_pm_files(&lib_dir);
+    let mut pm_files = collect_pm_files(std::path::Path::new(root));
     pm_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Parse each candidate `.pm` once, hoisted above the test loop below —
@@ -593,30 +592,39 @@ pub(crate) fn emit_relations_and_discriminators(
     (relations, changed_observables, observed_sinks, limitations)
 }
 
-/// Collect all `.pm` files under a directory. Returns (relative_path, content).
-fn collect_pm_files(lib_dir: &std::path::Path) -> Vec<(String, String)> {
+/// Collect all `.pm` files under `<root>/lib`. Returns (relative_path, content),
+/// where `relative_path` is `strip_prefix(root)` — byte-identical to the path
+/// [`emit_files_and_owners`] derives for the same file. #3342: the previous
+/// `split_once("/lib/")` heuristic diverged from that path whenever `root` had
+/// an ancestor segment named `lib` (e.g. `vendor/lib/proj`, `t/lib/...`),
+/// re-dangling a relation's resolved `owner_id`; both now strip the same `root`.
+fn collect_pm_files(root: &std::path::Path) -> Vec<(String, String)> {
     let mut result = Vec::new();
-    collect_pm_files_recursive(lib_dir, &mut result);
+    collect_pm_files_recursive(&root.join("lib"), root, &mut result);
     result
 }
 
-fn collect_pm_files_recursive(dir: &std::path::Path, result: &mut Vec<(String, String)>) {
+fn collect_pm_files_recursive(
+    dir: &std::path::Path,
+    root: &std::path::Path,
+    result: &mut Vec<(String, String)>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_pm_files_recursive(&path, result);
+            collect_pm_files_recursive(&path, root, result);
         } else if path.extension().is_some_and(|ext| ext == "pm") {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let relative = path.to_string_lossy().replace('\\', "/");
-            let relative = relative
-                .split_once("/lib/")
-                .map(|(_, rest)| format!("lib/{rest}"))
-                .unwrap_or(relative);
+            let relative = path
+                .strip_prefix(root)
+                .unwrap_or(path.as_path())
+                .to_string_lossy()
+                .replace('\\', "/");
             result.push((relative, content));
         }
     }
@@ -786,8 +794,7 @@ pub(crate) fn emit_boundaries_and_commands(root: &str) -> (Vec<Value>, Vec<Value
     let mut verify_commands = Vec::new();
 
     // Scan .pm files for dynamic boundaries.
-    let lib_dir = std::path::Path::new(root).join("lib");
-    let pm_files = collect_pm_files(&lib_dir);
+    let pm_files = collect_pm_files(std::path::Path::new(root));
     let t_dir = std::path::Path::new(root).join("t");
     let t_files = collect_t_files(&t_dir);
 

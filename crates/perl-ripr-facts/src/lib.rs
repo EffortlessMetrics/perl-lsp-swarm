@@ -1195,6 +1195,50 @@ mod tests {
     }
 
     #[test]
+    fn build_packet_relation_owner_id_resolves_when_root_has_ancestor_lib() {
+        // #3342 regression: the relation emitter's `.pm` path derivation must
+        // match `emit_files_and_owners` even when `root` has an ANCESTOR path
+        // segment named `lib` (e.g. `.../lib/proj`, `t/lib/...`). The old
+        // `split_once("/lib/")` heuristic matched the first `/lib/` — the
+        // ancestor one — and corrupted the relation's `owner_id` path, re-
+        // dangling the reference. Both derivations now `strip_prefix(root)`.
+        let root = "target/ripr-3342-fixtures/lib/proj/relation-owner-ancestor-lib";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(format!("{root}/lib/Foo.pm"), "package Foo;\nsub run { }\n1;\n")
+            .expect("write pm");
+        std::fs::write(format!("{root}/t/Foo.t"), "use Test::More;\nuse Foo;\nok(Foo::run());\n")
+            .expect("write t");
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "relations",
+            diff: None,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+
+        let relations = p["relations"].as_array().expect("relations[]");
+        assert!(!relations.is_empty(), "fixture must produce at least one relation");
+        let owner_ids: std::collections::HashSet<&str> = p["owners"]
+            .as_array()
+            .expect("owners[]")
+            .iter()
+            .filter_map(|o| o["owner_id"].as_str())
+            .collect();
+        for rel in relations {
+            let oid = rel["owner_id"].as_str().expect("relation.owner_id is a string");
+            assert!(
+                owner_ids.contains(oid),
+                "relation.owner_id {oid} must resolve even under an ancestor-lib root; owners={owner_ids:?}"
+            );
+        }
+    }
+
+    #[test]
     fn build_packet_is_referentially_closed_across_fact_class_subsets() {
         // Every fact reference must resolve within the packet, and no test-side
         // provenance entry may be an orphan — for any fact-class subset. Guards
