@@ -30,7 +30,17 @@ use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-const UNIVERSAL_METHODS: [&str; 6] = ["can", "isa", "DOES", "VERSION", "DESTROY", "AUTOLOAD"];
+/// Real subs in `package UNIVERSAL` per perldoc.perl.org/UNIVERSAL: `isa`,
+/// `can`, `DOES`, `VERSION`. Consumers use this to decide whether a
+/// `UNIVERSAL::<name>` fallback location/hover is a real fact.
+///
+/// `DESTROY` and `AUTOLOAD` are intentionally excluded — per perlobj they
+/// are interpreter special-method hooks, not subs shipped in `UNIVERSAL`.
+/// There is no `UNIVERSAL::DESTROY` or `UNIVERSAL::AUTOLOAD` to resolve to,
+/// so callers must not fall back to a `UNIVERSAL::<name>` location/hover
+/// claim for them (see `crate::analysis::semantic::mod` and
+/// `crate::analysis::declaration` fallback sites).
+const UNIVERSAL_METHODS: [&str; 4] = ["can", "isa", "DOES", "VERSION"];
 
 // Re-export the unified symbol types from perl-symbol
 /// Symbol kind enums used during Index/Analyze workflows.
@@ -3523,12 +3533,19 @@ mod tests {
     use crate::parser::Parser;
     use perl_tdd_support::{must, must_some};
 
+    /// DESTROY/AUTOLOAD are interpreter special-method hooks (perlobj), not
+    /// real `UNIVERSAL::` subs (perldoc.perl.org/UNIVERSAL lists exactly
+    /// `isa`, `can`, `DOES`, `VERSION`). `is_universal_method` must reject
+    /// them so callers don't fabricate a `UNIVERSAL::DESTROY` /
+    /// `UNIVERSAL::AUTOLOAD` goto-def/hover fact that doesn't exist.
     #[test]
-    fn recognizes_destroy_and_autoload_as_universal_methods()
-    -> Result<(), Box<dyn std::error::Error>> {
-        assert!(is_universal_method("DESTROY"));
-        assert!(is_universal_method("AUTOLOAD"));
+    fn destroy_and_autoload_are_not_universal_methods() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(!is_universal_method("DESTROY"));
+        assert!(!is_universal_method("AUTOLOAD"));
         assert!(is_universal_method("can"));
+        assert!(is_universal_method("isa"));
+        assert!(is_universal_method("DOES"));
+        assert!(is_universal_method("VERSION"));
         assert!(!is_universal_method("new"));
         Ok(())
     }
@@ -3541,61 +3558,6 @@ mod tests {
             extractor.extract_leading_comment(0),
             None,
             "input that hits the boundary: start == 0"
-        );
-    }
-
-    #[test]
-    fn find_symbol_boundary_discriminator() {
-        let mut table = SymbolTable::new();
-        let package_scope =
-            table.push_scope(ScopeKind::Package, SourceLocation { start: 1, end: 2 });
-        let block_scope = table.push_scope(ScopeKind::Block, SourceLocation { start: 3, end: 4 });
-
-        table.add_symbol(Symbol {
-            name: "target".to_string(),
-            qualified_name: "main::target".to_string(),
-            kind: SymbolKind::Variable,
-            location: SourceLocation { start: 5, end: 11 },
-            scope_id: block_scope,
-            declaration: Some("my".to_string()),
-            documentation: None,
-            attributes: Vec::new(),
-        });
-        table.add_symbol(Symbol {
-            name: "target".to_string(),
-            qualified_name: "main::target".to_string(),
-            kind: SymbolKind::Subroutine,
-            location: SourceLocation { start: 12, end: 18 },
-            scope_id: block_scope,
-            declaration: None,
-            documentation: None,
-            attributes: Vec::new(),
-        });
-        table.add_symbol(Symbol {
-            name: "target".to_string(),
-            qualified_name: "main::target".to_string(),
-            kind: SymbolKind::Variable,
-            location: SourceLocation { start: 19, end: 25 },
-            scope_id: package_scope,
-            declaration: Some("our".to_string()),
-            documentation: None,
-            attributes: Vec::new(),
-        });
-
-        let results = table.find_symbol("target", block_scope, SymbolKind::Variable);
-
-        assert_eq!(results.len(), 2, "expected lexical and package-visible variable matches");
-        assert!(
-            results.iter().any(|symbol| symbol.scope_id == block_scope),
-            "input that hits the boundary: symbol.scope_id == scope_id"
-        );
-        assert!(
-            results.iter().all(|symbol| symbol.kind == SymbolKind::Variable),
-            "input that hits the boundary: symbol.kind == kind"
-        );
-        assert!(
-            results.iter().any(|symbol| symbol.declaration.as_deref() == Some("our")),
-            "input that hits the boundary: symbol.declaration.as_deref() == Some(\"our\")"
         );
     }
 

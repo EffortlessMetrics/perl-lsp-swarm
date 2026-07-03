@@ -1,9 +1,14 @@
-//! Tests for DESTROY and AUTOLOAD UNIVERSAL method recognition
+//! Tests for DESTROY and AUTOLOAD method recognition
 //!
 //! Validates that:
-//! - DESTROY is recognized in goto-definition (navigation to UNIVERSAL::DESTROY)
-//! - AUTOLOAD is recognized in goto-definition (navigation to UNIVERSAL::AUTOLOAD)
-//! - Both methods appear in completion lists with correct documentation
+//! - DESTROY and AUTOLOAD appear in completion lists with correct documentation
+//! - DESTROY does NOT fall back to a fabricated `UNIVERSAL::DESTROY` goto-def
+//!   target — per perldoc.perl.org/UNIVERSAL, only `isa`/`can`/`DOES`/`VERSION`
+//!   are real subs in `package UNIVERSAL`. DESTROY (GC destructor hook) and
+//!   AUTOLOAD (failed-method-lookup hook) are interpreter special-method
+//!   hooks (perlobj) with no corresponding `UNIVERSAL::` sub to navigate to.
+//! - `isa` (a real UNIVERSAL method) still resolves via the UNIVERSAL::
+//!   goto-def fallback, for contrast.
 
 mod support;
 
@@ -130,12 +135,12 @@ $obj->
     let doc =
         destroy_item.get("documentation").ok_or("DESTROY completion item missing documentation")?;
 
-    // Verify documentation mentions "Destructor"
+    // Verify documentation describes the GC/last-reference-released hook.
     let doc_str = doc.as_str().ok_or("Documentation should be a string")?;
 
     assert!(
-        doc_str.contains("Destructor") || doc_str.contains("destructor"),
-        "DESTROY documentation should mention 'Destructor', got: {}",
+        doc_str.contains("released") || doc_str.contains("garbage collected"),
+        "DESTROY documentation should describe the last-reference-released/GC hook, got: {}",
         doc_str
     );
 
@@ -193,20 +198,39 @@ $obj->
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: DESTROY goto-definition on Package->DESTROY resolves to UNIVERSAL
+// Test 4: DESTROY goto-definition does NOT fabricate a UNIVERSAL:: target,
+// while a real UNIVERSAL method (isa) still does.
+//
+// perldoc.perl.org/UNIVERSAL lists exactly four real subs shipped in
+// `package UNIVERSAL`: isa, can, DOES, VERSION. DESTROY (GC destructor hook)
+// and AUTOLOAD (failed-method-lookup hook) are interpreter special-method
+// hooks (perlobj) — there is no `UNIVERSAL::DESTROY` sub to navigate to,
+// even when a workspace happens to define one under `package UNIVERSAL`
+// (that definition isn't reachable through MyPackage's inheritance chain
+// unless MyPackage actually lists UNIVERSAL in @ISA/use parent, which it
+// does not here). Goto-definition must not claim otherwise.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn goto_definition_on_package_destroy_resolves_to_universal() -> TestResult {
+fn goto_definition_on_destroy_does_not_resolve_to_universal() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
 
-    // Create a UNIVERSAL::DESTROY definition
+    // A workspace file that defines `package UNIVERSAL` with both a real
+    // UNIVERSAL method (isa) and a special hook (DESTROY). MyPackage below
+    // does not explicitly inherit from UNIVERSAL (it is the implicit,
+    // universal ancestor only insofar as the interpreter consults it for
+    // real method dispatch — the LSP's inheritance-chain walker does not
+    // treat it as an explicit @ISA entry).
     harness.open(
         "file:///lib/UNIVERSAL.pm",
         r#"package UNIVERSAL;
 use strict;
 use warnings;
+
+sub isa {
+    my ($self, $class) = @_;
+}
 
 sub DESTROY {
     my ($self) = @_;
@@ -217,7 +241,6 @@ sub DESTROY {
 "#,
     )?;
 
-    // Create a test file that calls Package->DESTROY
     harness.open(
         "file:///test.pl",
         r#"#!/usr/bin/perl
@@ -234,27 +257,43 @@ package main;
 
 my $obj = bless {}, 'MyPackage';
 $obj->DESTROY;
+$obj->isa('MyPackage');
 "#,
     )?;
 
     harness.barrier();
 
-    // Request definition at "DESTROY" on line 14 (0-indexed)
-    // The line is: $obj->DESTROY;
-    // We need to position on the DESTROY token
-    let response = harness.request(
+    // "DESTROY" on `$obj->DESTROY;` (line 13, 0-indexed).
+    let destroy_response = harness.request(
         "textDocument/definition",
         json!({
             "textDocument": { "uri": "file:///test.pl" },
             "position": { "line": 13, "character": 10 }  // On "DESTROY"
         }),
     )?;
+    let destroy_locations =
+        destroy_response.as_array().ok_or("Expected array result for definition")?;
+    assert!(
+        destroy_locations.is_empty(),
+        "DESTROY must NOT resolve to a fabricated UNIVERSAL:: target \
+         (no UNIVERSAL::DESTROY sub is reachable from MyPackage), got: {:?}",
+        destroy_locations
+    );
 
-    let locations = response.as_array().ok_or("Expected array result for definition")?;
-
-    // We should either get UNIVERSAL::DESTROY or a location in UNIVERSAL.pm
-    // The important thing is that we get some result (not empty)
-    assert!(!locations.is_empty(), "Definition should be found for DESTROY method");
+    // "isa" on `$obj->isa('MyPackage');` (line 14, 0-indexed) — a real
+    // UNIVERSAL method, so the UNIVERSAL:: fallback is expected to fire.
+    let isa_response = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": { "uri": "file:///test.pl" },
+            "position": { "line": 14, "character": 10 }  // On "isa"
+        }),
+    )?;
+    let isa_locations = isa_response.as_array().ok_or("Expected array result for definition")?;
+    assert!(
+        !isa_locations.is_empty(),
+        "isa should resolve via the UNIVERSAL:: fallback (isa is a real UNIVERSAL method)"
+    );
 
     Ok(())
 }

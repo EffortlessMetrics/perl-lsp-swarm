@@ -1837,7 +1837,7 @@ $obj->"#;
     assert_eq!(destroy.detail.as_deref(), Some("method"));
     assert_eq!(
         destroy.documentation.as_deref(),
-        Some("Destructor called when object goes out of scope")
+        Some("Called when the last reference to the object is released (garbage collected)")
     );
     assert_eq!(destroy.insert_text.as_deref(), Some("DESTROY()"));
     assert_eq!(destroy.sort_text.as_deref(), Some("2_DESTROY"));
