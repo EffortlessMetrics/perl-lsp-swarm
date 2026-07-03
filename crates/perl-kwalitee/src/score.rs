@@ -22,6 +22,7 @@ pub(crate) struct Scored {
     pub verdict: KwaliteeVerdict,
     pub mandatory_passed: bool,
     pub mandatory_failed_count: usize,
+    pub mandatory_unverified_count: usize,
     pub warning_count: usize,
     pub unverified_count: usize,
 }
@@ -97,6 +98,7 @@ pub(crate) fn score(indicators: &[KwaliteeIndicator], strict: bool) -> Scored {
         verdict,
         mandatory_passed,
         mandatory_failed_count,
+        mandatory_unverified_count,
         warning_count,
         unverified_count,
     }

@@ -161,6 +161,7 @@ and flip the catalog entry to mandatory.
 | `verdict` | string | `pass` / `warn` / `fail` |
 | `mandatory_passed` | bool | every mandatory indicator passed |
 | `mandatory_failed_count` | int | mandatory indicators that failed |
+| `mandatory_unverified_count` | int | mandatory indicators that are unverified (drive `fail` under `--strict`) |
 | `warning_count` | int | indicators in `warn` |
 | `unverified_count` | int | indicators in `unverified` |
 | `indicators` | array | the full indicator table |

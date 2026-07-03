@@ -162,6 +162,7 @@ pub fn evaluate(options: &KwaliteeOptions) -> KwaliteeReceipt {
         verdict: scored.verdict,
         mandatory_passed: scored.mandatory_passed,
         mandatory_failed_count: scored.mandatory_failed_count,
+        mandatory_unverified_count: scored.mandatory_unverified_count,
         warning_count: scored.warning_count,
         unverified_count: scored.unverified_count,
         indicators,
@@ -327,6 +328,14 @@ mod tests {
             "[package]\nname = \"perl-kwalitee\"\nlicense.workspace = true\npublish = false\n",
         )
         .expect("write crate");
+        // A clean first-mile surface so product_surface.native_only can report
+        // Pass (an empty tree is now Unverified).
+        std::fs::create_dir_all(root.join("vscode-extension")).expect("mkdir ext");
+        std::fs::write(
+            root.join("vscode-extension/package.json"),
+            "\"description\": \"native Perl language server + debugger\"\n",
+        )
+        .expect("write surface");
         dir
     }
 

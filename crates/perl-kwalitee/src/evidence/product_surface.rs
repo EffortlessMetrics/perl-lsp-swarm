@@ -75,9 +75,19 @@ impl Violation {
 /// `product_surface.native_only`.
 pub(crate) fn native_only(repo_root: &Path, profile: KwaliteeProfile) -> Outcome {
     let strict = profile.requires_release_artifacts();
-    let violations = scan(repo_root, strict);
+    let (violations, scanned) = scan(repo_root, strict);
 
     let mut evidence = vec![EvidenceRef::command("cargo xtask check-native-product-surface")];
+
+    // If none of the first-mile surfaces could be read (e.g. they were all
+    // renamed away), we cannot assert native-only cleanliness — report
+    // Unverified rather than a false Pass, matching `dap.cli_native_only`.
+    if !scanned {
+        return Outcome::unverified(
+            evidence,
+            "Could not read any first-mile product surface to verify native-only status.",
+        );
+    }
 
     if violations.is_empty() {
         Outcome::pass(evidence)
@@ -94,17 +104,21 @@ pub(crate) fn native_only(repo_root: &Path, profile: KwaliteeProfile) -> Outcome
 }
 
 /// Scan every surface under `root`. Missing surfaces are skipped (not
-/// violations) so the check is robust to file moves.
-fn scan(root: &Path, strict: bool) -> Vec<Violation> {
+/// violations) so the check is robust to individual file moves. Returns the
+/// violations plus whether *any* surface was actually read, so the caller can
+/// distinguish "all surfaces clean" from "all surfaces missing".
+fn scan(root: &Path, strict: bool) -> (Vec<Violation>, bool) {
     let mut violations = Vec::new();
+    let mut scanned = false;
     for surface in SURFACES {
         let path = root.join(surface);
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
+        scanned = true;
         collect(surface, &text, strict, &mut violations);
     }
-    violations
+    (violations, scanned)
 }
 
 /// Pure per-surface scan. Each line is normalized (backticks stripped,
@@ -192,8 +206,21 @@ mod tests {
     }
 
     #[test]
-    fn clean_tree_passes() {
+    fn empty_tree_is_unverified() {
+        // No first-mile surface present at all → cannot assert cleanliness.
         let dir = tempfile::tempdir().expect("tmp");
+        assert_eq!(
+            native_only(dir.path(), KwaliteeProfile::Pr).status,
+            IndicatorStatus::Unverified
+        );
+    }
+
+    #[test]
+    fn clean_surface_passes() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let p = dir.path().join("vscode-extension/package.json");
+        std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
+        std::fs::write(p, "\"description\": \"native Perl debugger\"\n").expect("write");
         assert_eq!(native_only(dir.path(), KwaliteeProfile::Pr).status, IndicatorStatus::Pass);
     }
 

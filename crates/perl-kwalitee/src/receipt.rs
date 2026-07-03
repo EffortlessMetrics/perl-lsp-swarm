@@ -74,6 +74,10 @@ pub struct KwaliteeReceipt {
     pub mandatory_passed: bool,
     /// Count of mandatory indicators that failed.
     pub mandatory_failed_count: usize,
+    /// Count of mandatory indicators that are unverified. Distinct from
+    /// `mandatory_failed_count`: under `--strict` these drive the `fail`
+    /// verdict, but they are not counted as failures otherwise.
+    pub mandatory_unverified_count: usize,
     /// Count of indicators in `warn`.
     pub warning_count: usize,
     /// Count of indicators in `unverified`.
@@ -191,6 +195,7 @@ mod tests {
             verdict: KwaliteeVerdict::Pass,
             mandatory_passed: true,
             mandatory_failed_count: 0,
+            mandatory_unverified_count: 0,
             warning_count: 0,
             unverified_count: 0,
             indicators: vec![
