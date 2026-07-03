@@ -342,7 +342,6 @@ fn find_framework_use(node: &Node, best: &mut Option<(usize, &'static str, (usiz
     node.for_each_child(|child| find_framework_use(child, best));
 }
 
-/// Collect all `.t` files under a directory. Returns (full_path, relative_path, content).
 /// Collect all `.t` files under `<root>/t`. Returns (absolute_path,
 /// relative_path, content), where `relative_path` is `strip_prefix(root)` —
 /// byte-identical to the path [`emit_files_and_owners`] derives for the same
