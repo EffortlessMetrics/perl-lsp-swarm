@@ -725,11 +725,16 @@ pub(crate) fn emit_files_and_owners(
         let provenance_id = format!("prov:syntax:{file_id}");
         let mut package_names: Vec<String> = Vec::new();
 
-        // Parse and project declarations into owner facts.
-        let mut parser = Parser::new(&content);
-        match parser.parse() {
+        // Parse and project declarations into owner facts. Scope the parser's
+        // borrow of `content` to the parse so `content` can move into
+        // `LineIndex` afterwards (no per-file clone).
+        let parsed = {
+            let mut parser = Parser::new(&content);
+            parser.parse()
+        };
+        match parsed {
             Ok(ast) => {
-                let line_index = LineIndex::new(content.clone());
+                let line_index = LineIndex::new(content);
                 for decl in extract_symbol_decls(&ast, Some("main")) {
                     let Some(kind) = owner_kind(&decl.kind) else {
                         continue;
@@ -855,6 +860,13 @@ fn collect_perl_files_recursive(
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        // Skip symlinks entirely: a directory-symlink loop would otherwise cause
+        // infinite recursion (`is_dir()` follows the link), and a file symlink
+        // could escape the root. `entry.file_type()` reports the link's own type
+        // without following it.
+        if entry.file_type().is_ok_and(|file_type| file_type.is_symlink()) {
+            continue;
+        }
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
         if path.is_dir() {

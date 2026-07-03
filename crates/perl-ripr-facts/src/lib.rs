@@ -133,8 +133,18 @@ pub fn build_ripr_facts_packet(
 
     // PR 3 (perl-lsp-swarm#3293): emit parser-backed files + owners facts (plus
     // per-file provenance and parse/read limitations) by parsing every Perl
-    // source/test file under `root`.
-    let (files, owners, file_provenance, file_limitations) = emit_files_and_owners(root);
+    // source/test file under `root`. Only do the (potentially expensive) walk +
+    // parse when the caller actually requested `files`/`owners`/`provenance`, so
+    // a subset request (e.g. `tests,oracles`) stays cheap and the packet does
+    // not carry facts outside the advertised `requested_fact_classes`.
+    let wants_file_facts = normalized_classes
+        .iter()
+        .any(|class| class == "files" || class == "owners" || class == "provenance");
+    let (files, owners, file_provenance, file_limitations) = if wants_file_facts {
+        emit_files_and_owners(root)
+    } else {
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+    };
     let has_file_facts = !files.is_empty();
     let has_owner_facts = !owners.is_empty();
 
@@ -700,6 +710,29 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(root);
         Ok(())
+    }
+
+    #[test]
+    fn build_packet_skips_files_when_not_requested() {
+        // A subset request that omits files/owners/provenance must not walk +
+        // parse the workspace: files[]/owners[] stay empty even with a .pm present.
+        let root = "target/ripr-p3-gate";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("mkdir");
+        std::fs::write(format!("{root}/lib/App.pm"), "package App;\nsub run { 1 }\n1;\n")
+            .expect("write");
+        let packet = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "tests,oracles",
+        })
+        .expect("valid request");
+        let _ = std::fs::remove_dir_all(root);
+
+        assert!(packet["files"].as_array().unwrap().is_empty(), "files not requested → empty");
+        assert!(packet["owners"].as_array().unwrap().is_empty(), "owners not requested → empty");
     }
 
     // ── ripr-facts command tests (Campaign 31 PR 4, perl-lsp-swarm#2591) ──
