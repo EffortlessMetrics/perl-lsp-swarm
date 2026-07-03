@@ -1524,6 +1524,33 @@ impl LspServer {
                     }
                 }
                 "perl.runSubtest" => {
+                    // Two argument forms:
+                    //   [file, subtest_name] -> run the whole file through the
+                    //       runner and focus TAP output on the named subtest
+                    //       (we never execute the anonymous block in isolation).
+                    //   [subtest_name]       -> legacy echo (no file to run).
+                    if arguments.len() >= 2 {
+                        match provider.execute_command(command, arguments) {
+                            Ok(result) => return Ok(Some(result)),
+                            Err(e) => {
+                                let error_code = if e.contains("Missing") || e.contains("argument")
+                                {
+                                    -32602
+                                } else {
+                                    -32603
+                                };
+                                return Err(JsonRpcError {
+                                    code: error_code,
+                                    message: format!("Execute command failed: {}", e),
+                                    data: Some(json!({
+                                        "command": command,
+                                        "errorType": "executeCommand",
+                                        "originalError": e
+                                    })),
+                                });
+                            }
+                        }
+                    }
                     let subtest_name = arguments
                         .first()
                         .and_then(|v| v.as_str())

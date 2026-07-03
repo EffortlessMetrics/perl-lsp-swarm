@@ -123,6 +123,30 @@ fn diagnostics_before_any_test_are_ignored() {
 }
 
 #[test]
+fn focus_subtest_matches_summary_line_and_inner_failures() {
+    // Buffered subtest: two nested lines then a depth-0 summary line.
+    let output =
+        "    ok 1 - found\n    not ok 2 - email\nnot ok 1 - user lookup\nok 2 - other\n1..2\n";
+    let report = parse_tap(output);
+
+    let focus = focus_subtest(&report, "user lookup").expect("subtest present");
+    assert!(focus.found);
+    assert!(!focus.passed, "the subtest summary line is `not ok`");
+    assert_eq!(focus.inner_failed, 1, "one nested `not ok` belongs to the subtest");
+
+    // A passing subtest.
+    let focus_other = focus_subtest(&report, "other").expect("subtest present");
+    assert!(focus_other.passed);
+    assert_eq!(focus_other.inner_failed, 0);
+}
+
+#[test]
+fn focus_subtest_absent_returns_none() {
+    let report = parse_tap("1..1\nok 1 - something\n");
+    assert!(focus_subtest(&report, "no such subtest").is_none());
+}
+
+#[test]
 fn todo_that_unexpectedly_passes_is_not_a_failure() {
     let report = parse_tap("1..1\nok 1 - surprise # TODO should fail\n");
     assert!(report.passed());

@@ -106,6 +106,35 @@ fn document_symbols_mirror_the_tree() {
 }
 
 #[test]
+fn nearest_subtest_resolves_innermost_at_cursor() {
+    // Lines (0-based):
+    // 0: subtest 'outer' => sub {
+    // 1:     ok(1);
+    // 2:     subtest 'inner' => sub {
+    // 3:         ok(2);
+    // 4:     };
+    // 5: };
+    let source = "subtest 'outer' => sub {\n    ok(1);\n    subtest 'inner' => sub {\n        ok(2);\n    };\n};\n";
+    let subtests = discover(source);
+
+    // Cursor on line 3 (inside inner) resolves to the inner subtest.
+    let inner = nearest_subtest_at_line(&subtests, 3).expect("cursor is inside a subtest");
+    assert_eq!(inner.name, SubtestName::Named("inner".to_string()));
+
+    // Cursor on line 1 (inside outer, before inner) resolves to outer.
+    let outer = nearest_subtest_at_line(&subtests, 1).expect("cursor is inside a subtest");
+    assert_eq!(outer.name, SubtestName::Named("outer".to_string()));
+}
+
+#[test]
+fn nearest_subtest_returns_none_outside_any_subtest() {
+    let source = "use Test2::V0;\nok(1);\nsubtest 'x' => sub { ok(1); };\ndone_testing;\n";
+    let subtests = discover(source);
+    // Line 1 is the bare `ok(1);` — not inside any subtest.
+    assert!(nearest_subtest_at_line(&subtests, 1).is_none());
+}
+
+#[test]
 fn buffered_and_streamed_variants_are_discovered() {
     let source = "subtest_buffered 'buf' => sub { ok(1); };\n\
         subtest_streamed 'str' => sub { ok(1); };\n";

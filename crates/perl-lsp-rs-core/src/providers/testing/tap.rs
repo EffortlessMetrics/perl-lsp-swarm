@@ -127,6 +127,53 @@ impl TapReport {
     }
 }
 
+/// The result of focusing a TAP report on one named subtest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtestFocus {
+    /// The requested subtest name.
+    pub name: String,
+    /// Whether a subtest summary line with that name was found in the output.
+    pub found: bool,
+    /// Whether that subtest passed (its summary line was `ok`). Meaningless
+    /// when `found` is false.
+    pub passed: bool,
+    /// Number of nested `not ok` (hard) failures attributed to the subtest.
+    pub inner_failed: usize,
+}
+
+/// Focus a parsed TAP report on a single subtest by name.
+///
+/// Test2/Test::More print a buffered subtest as a run of indented (`depth > 0`)
+/// assertion lines followed by a `depth == 0` summary line whose description is
+/// the subtest name. We match that summary line and attribute the immediately
+/// preceding nested failures to it. Returns `None` when no summary line with
+/// `name` is present — the caller then reports a whole-file run without focus
+/// (e.g. a dynamic subtest name, or a runner that did not label the subtest).
+pub fn focus_subtest(report: &TapReport, name: &str) -> Option<SubtestFocus> {
+    let summary_idx =
+        report.tests.iter().position(|test| test.depth == 0 && test.description == name)?;
+    let summary = &report.tests[summary_idx];
+
+    // Count nested failures in the contiguous depth>0 run just before the
+    // summary line (buffered subtest body).
+    let mut inner_failed = 0;
+    for test in report.tests[..summary_idx].iter().rev() {
+        if test.depth == 0 {
+            break;
+        }
+        if test.is_failure() {
+            inner_failed += 1;
+        }
+    }
+
+    Some(SubtestFocus {
+        name: name.to_string(),
+        found: true,
+        passed: !summary.is_failure(),
+        inner_failed,
+    })
+}
+
 static PLAN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^1\.\.(\d+)\s*(?:#\s*[Ss][Kk][Ii][Pp]\S*\s*(.*))?$")
         .unwrap_or_else(|_| unreachable!("static TAP plan pattern is valid"))

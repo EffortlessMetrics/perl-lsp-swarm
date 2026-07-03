@@ -234,13 +234,20 @@ impl CodeLensProvider {
         let name = subtest_name.unwrap_or("<anonymous>");
         let range =
             WireRange::from_byte_offsets(&self.source, node.location.start, node.location.end);
+        // Pass the file path (when known) as the first argument so the command
+        // can run the whole file and focus its output on this subtest. When no
+        // path is available, fall back to the name-only (legacy) argument shape.
+        let arguments = match self.file_path.as_deref() {
+            Some(path) => vec![json!(path), json!(name)],
+            None => vec![json!(name)],
+        };
         lenses.push(CodeLens {
             range,
             command: Some(Command {
                 title: format!("\u{25b6} Run Subtest: {name}"),
                 command: "perl.runSubtest".to_string(),
                 tooltip: Some(format!("Run Perl subtest {name}")),
-                arguments: Some(vec![json!(name)]),
+                arguments: Some(arguments),
             }),
             data: None,
         });

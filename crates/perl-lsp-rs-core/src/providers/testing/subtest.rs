@@ -70,6 +70,29 @@ pub fn subtest_document_symbols(subtests: &[DiscoveredSubtest]) -> Vec<DocumentS
     subtests.iter().map(to_document_symbol).collect()
 }
 
+/// Find the innermost subtest whose range contains the 0-based `line`.
+///
+/// Used by "run/debug nearest subtest": given the cursor line, resolve which
+/// subtest the caller is inside. Returns `None` when the line is not inside any
+/// subtest. Descends into children so the *innermost* enclosing subtest wins.
+pub fn nearest_subtest_at_line(
+    subtests: &[DiscoveredSubtest],
+    line: u32,
+) -> Option<&DiscoveredSubtest> {
+    for candidate in subtests {
+        if candidate.range.start.line <= line && line <= candidate.range.end.line {
+            return Some(nearest_subtest_at_line(&candidate.children, line).unwrap_or(candidate));
+        }
+    }
+    None
+}
+
+/// Discover subtests in `ast` and resolve the innermost one enclosing `line`.
+pub fn nearest_subtest_in_source(ast: &Node, source: &str, line: u32) -> Option<DiscoveredSubtest> {
+    let subtests = discover_subtests(ast, source);
+    nearest_subtest_at_line(&subtests, line).cloned()
+}
+
 fn to_document_symbol(subtest: &DiscoveredSubtest) -> DocumentSymbol {
     DocumentSymbol {
         name: subtest.name.label(),

@@ -1249,6 +1249,30 @@ fn test_all_command_routing_paths() {
     }
 }
 
+#[test]
+fn test_run_subtest_reports_whole_file_focused_mode() -> Result<(), Box<dyn std::error::Error>> {
+    // The focused-run metadata (mode/requestedSubtest/note) is set regardless of
+    // whether `perl` is present, so this test is robust to the environment.
+    let temp_dir = tempdir()?;
+    let test_file = temp_dir.path().join("focus.t");
+    fs::write(&test_file, "use Test2::V0;\nsubtest 'alpha' => sub { ok(1); };\ndone_testing;\n")?;
+
+    let provider = provider_with_execute_perl(vec![temp_dir.path().to_path_buf()]);
+    let canonical = test_file.canonicalize()?;
+    let result = provider.run_subtest(&canonical, "alpha")?;
+
+    assert_eq!(result["requestedSubtest"], "alpha", "should echo the requested subtest name");
+    assert_eq!(
+        result["subtestMode"], "whole-file-focused",
+        "runs whole file; never executes the subtest block in isolation"
+    );
+    assert!(result["note"].as_str().unwrap_or("").contains("does not execute subtest blocks"));
+    assert!(result["subtestFocus"].is_object(), "should include a subtest focus object");
+    // Raw runner fields are preserved from the whole-file run.
+    assert!(result["output"].is_string(), "raw output preserved");
+    Ok(())
+}
+
 // ============= ADDITIONAL MUTATION KILLER TESTS =============
 // These tests specifically target remaining surviving mutants
 

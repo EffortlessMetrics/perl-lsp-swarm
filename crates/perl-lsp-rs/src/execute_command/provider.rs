@@ -207,11 +207,11 @@ impl ExecuteCommandProvider {
             }
             "perl.runSubtest" => {
                 let file_path = self.resolve_path_from_args(&arguments)?;
-                let sub_name = arguments
+                let subtest_name = arguments
                     .get(1)
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| "Missing subroutine name argument".to_string())?;
-                self.run_test_sub(&file_path, sub_name)
+                    .ok_or_else(|| "Missing subtest name argument".to_string())?;
+                self.run_subtest(&file_path, subtest_name)
             }
             "perl.runCritic" => self.run_critic_secure(&arguments),
             "perl.goToTest" => {
@@ -471,6 +471,49 @@ impl ExecuteCommandProvider {
                 format!("Failed to run test subroutine: {error}"),
             )),
         }
+    }
+
+    /// Run a Test2/Test::More subtest by name.
+    ///
+    /// A Test2 `subtest 'name' => sub { ... }` is an anonymous block that is
+    /// part of the file's runtime — `perl-lsp` does **not** extract and execute
+    /// it in isolation (that would misrepresent the test). Instead this runs the
+    /// whole file through the configured runner and *focuses* the resulting TAP
+    /// output on the named subtest, clearly labelling the result as a
+    /// whole-file-focused run rather than filtered execution.
+    pub(crate) fn run_subtest(
+        &self,
+        file_path: &Path,
+        subtest_name: &str,
+    ) -> Result<Value, String> {
+        use perl_lsp_rs_core::providers::testing::tap::{focus_subtest, parse_tap};
+
+        let mut result = self.run_tests(file_path)?;
+
+        let raw = result.get("output").and_then(|value| value.as_str()).unwrap_or("");
+        let report = parse_tap(raw);
+        let focus = focus_subtest(&report, subtest_name);
+
+        result["requestedSubtest"] = json!(subtest_name);
+        // No cross-runner subtest filtering yet: always a whole-file run whose
+        // output we focus on the requested subtest.
+        result["subtestMode"] = json!("whole-file-focused");
+        result["subtestFocus"] = match focus {
+            Some(focus) => json!({
+                "found": true,
+                "passed": focus.passed,
+                "innerFailed": focus.inner_failed,
+                "name": focus.name,
+            }),
+            None => json!({
+                "found": false,
+                "reason": "no labelled subtest with that name in the runner output (dynamic name, or runner did not emit a subtest summary line)",
+            }),
+        };
+        result["note"] = json!(
+            "Ran the whole test file through the runner and focused output on the requested subtest. perl-lsp does not execute subtest blocks in isolation."
+        );
+        Ok(result)
     }
 
     pub(crate) fn run_file(&self, file_path: &Path) -> Result<Value, String> {
