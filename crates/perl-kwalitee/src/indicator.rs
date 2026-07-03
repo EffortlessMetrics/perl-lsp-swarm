@@ -195,6 +195,20 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
                     check-native-product-surface`.",
     },
     IndicatorSpec {
+        id: "dap.cli_native_only",
+        area: "dap",
+        title: "shipped perl-dap CLI stays native-only",
+        mandatory: true,
+        weight: 7,
+        source: EvalSource::Native,
+        release_only: false,
+        remediation: "Remove the `--bridge` flag from the shipped perl-dap CLI; bridge mode is a \
+                      library-only path, not a product surface.",
+        rationale: "The legacy `--bridge` proxy to Perl::LanguageServer was removed from the \
+                    shipped perl-dap CLI (#3277). Reintroducing it as a product flag would put \
+                    an external-tool path back on the product surface.",
+    },
+    IndicatorSpec {
         id: "release.native_binaries_present",
         area: "release",
         title: "release archives contain the native binaries",

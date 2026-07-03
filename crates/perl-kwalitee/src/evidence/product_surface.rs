@@ -45,8 +45,18 @@ const DISALLOWED: &[&str] = &[
 
 /// Additional raw external-tool markers banned on first-mile surfaces under the
 /// stricter *release* profile ("if it is not native, we do not ship it").
-const RELEASE_STRICT_DISALLOWED: &[&str] =
-    &["Perl::LanguageServer", "Devel::TSPerlDAP", "TSPerlDAP.pm"];
+///
+/// `BridgeAdapter` and `--bridge` are already in [`DISALLOWED`]; this list adds
+/// the raw external-tool names that are tolerated on `pr` surfaces (in
+/// native-first negations) but must not appear on a release surface at all.
+const RELEASE_STRICT_DISALLOWED: &[&str] = &[
+    "Perl::LanguageServer",
+    "perltidy",
+    "perlcritic",
+    "Perl::Critic",
+    "Devel::TSPerlDAP",
+    "TSPerlDAP.pm",
+];
 
 /// One violation: `surface:line` plus the offending marker.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -8,6 +8,7 @@
 //! [`ExternalResult`](crate::ExternalResult)s; the crate never shells out.
 
 pub(crate) mod cargo_manifest;
+pub(crate) mod dap;
 pub(crate) mod product_surface;
 pub(crate) mod quality_gate;
 pub(crate) mod readiness;

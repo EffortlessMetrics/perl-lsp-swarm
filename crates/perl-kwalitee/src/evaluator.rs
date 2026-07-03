@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::evidence::{Outcome, cargo_manifest, product_surface, quality_gate, readiness};
+use crate::evidence::{Outcome, cargo_manifest, dap, product_surface, quality_gate, readiness};
 use crate::indicator::{
     CATALOG, EvalSource, EvidenceRef, IndicatorSpec, IndicatorStatus, KwaliteeIndicator, spec_for,
 };
@@ -195,6 +195,7 @@ fn obtain_outcome(spec: &IndicatorSpec, options: &KwaliteeOptions) -> Outcome {
             "manifest.publish_policy_clean" => cargo_manifest::publish_policy_clean(root),
             "license.declared" => cargo_manifest::license_declared(root),
             "product_surface.native_only" => product_surface::native_only(root, options.profile),
+            "dap.cli_native_only" => dap::cli_native_only(root),
             other => Outcome::unverified(
                 vec![EvidenceRef::new("note", format!("no native evaluator wired for {other}"))],
                 "This indicator has no native evaluator; wire one in evaluator.rs.",

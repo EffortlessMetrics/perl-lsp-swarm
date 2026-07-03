@@ -60,6 +60,7 @@ table**.
 | `manifest.publish_policy_clean` | manifest | yes | native (crate Cargo.toml + allowlist) | all |
 | `license.declared` | license | yes | native (crate Cargo.toml) | all |
 | `product_surface.native_only` | product_surface | yes | native (first-mile surface scan) | all |
+| `dap.cli_native_only` | dap | yes | native (perl-dap CLI source scan) | all |
 | `release.native_binaries_present` | release | yes | external (`release artifact-check`) | release |
 | `release.no_external_tooling` | release | yes | external (`release artifact-check`) | release |
 | `release.checksums_valid` | release | yes | external (`release artifact-check`) | release |
@@ -95,8 +96,16 @@ The authoritative product-surface CI gate remains
 `cargo xtask check-native-product-surface`; the crate mirrors its surface and
 marker lists so `perl_kwalitee::evaluate` produces a real verdict from the repo
 alone. Under the `release` profile the mirror additionally bans raw external
-tool names (`Perl::LanguageServer`, `Devel::TSPerlDAP`, `TSPerlDAP.pm`) on
-first-mile surfaces.
+tool names (`Perl::LanguageServer`, `perltidy`, `perlcritic`, `Perl::Critic`,
+`Devel::TSPerlDAP`, `TSPerlDAP.pm`) on first-mile surfaces — the stricter
+"if it is not native, we do not ship it" bar. `BridgeAdapter` and `--bridge`
+are banned on all profiles.
+
+`dap.cli_native_only` is a native indicator that scans the `perl-dap` CLI
+source for a reintroduced `--bridge` clap flag (the legacy proxy to
+`Perl::LanguageServer`, removed in #3277). It looks for an actual flag
+definition (`long = "bridge"`), not the string `"--bridge"`, so it does not
+false-positive on the crate's own regression test.
 
 ### `critic.run_critic_registry_parity`
 
