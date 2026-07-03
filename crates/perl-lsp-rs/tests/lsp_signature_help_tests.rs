@@ -731,7 +731,7 @@ my $r = $calc->compute("add", 1, 2);
 #[test]
 fn test_signature_help_parameter_labels_distinguish_kinds() -> TestResult {
     let doc = r#"
-sub configure($host, $port = 8080, :$secure, @extra) {
+sub configure($host, $port = 8080, $mode = 'fast', :$secure, @extra) {
     return 1;
 }
 
@@ -785,6 +785,19 @@ my $r = configure("localhost");
     assert!(
         label.contains("$port = 8080"),
         "optional param must render its default as `$port = 8080`, got: {}",
+        label
+    );
+
+    // Optional param with a STRING default renders the string verbatim (its
+    // source quotes are preserved) — not double-wrapped as `"'fast'"`.
+    assert!(
+        label.contains("$mode = 'fast'"),
+        "optional string-default param must render as `$mode = 'fast'`, got: {}",
+        label
+    );
+    assert!(
+        !label.contains("\"'fast'\""),
+        "string default must not be double-quoted (no `\"'fast'\"`), got: {}",
         label
     );
 

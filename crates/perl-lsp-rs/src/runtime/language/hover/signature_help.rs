@@ -504,7 +504,7 @@ impl LspServer {
                     params.push(name);
                 }
             }
-            NodeKind::NamedParameter { variable } => {
+            NodeKind::NamedParameter { variable, .. } => {
                 if let Some(name) = Self::format_param_variable(variable) {
                     params.push(format!(":{}", name));
                 }
@@ -537,10 +537,14 @@ impl LspServer {
     /// Simple literals (numbers and non-interpolated strings) are shown
     /// verbatim; anything more complex renders as `...` to keep the label
     /// truthful without re-serializing arbitrary expressions.
+    ///
+    /// `NodeKind::String { value }` already retains its source quote
+    /// delimiters (e.g. `'world'`, `q(hi)`), so it is emitted as-is — wrapping
+    /// it in extra double quotes would produce an untruthful `"'world'"`.
     fn render_default_value(default_value: &Node) -> String {
         match &default_value.kind {
             NodeKind::Number { value } => value.clone(),
-            NodeKind::String { value, interpolated: false } => format!("\"{}\"", value),
+            NodeKind::String { value, interpolated: false } => value.clone(),
             _ => "...".to_string(),
         }
     }
