@@ -106,14 +106,8 @@ pub(crate) fn emit_tests_and_oracles(
         let test_id = format!("test:{relative_path}");
         let import_prov_id = format!("prov:test_discovery:{file_id}");
 
-        // `LineIndex` needs an owned `String`; `content` is retained afterwards
-        // for the oracle `expression` source slices, so a clone is required here.
-        let line_index = LineIndex::new(content.clone());
-        let ((f_sl, f_sc), (f_el, f_ec)) = line_index.range(0, content.len());
-        let full_range =
-            json!({"start_line": f_sl, "start_column": f_sc, "end_line": f_el, "end_column": f_ec});
-
-        // Parse; scope the parser's borrow so `content` stays available.
+        // Parse first (borrowing `content`), so `content` can then move into
+        // `LineIndex` without a per-file clone.
         let parsed = {
             let mut parser = Parser::new(&content);
             parser.parse()
@@ -123,6 +117,9 @@ pub(crate) fn emit_tests_and_oracles(
             Err(_) => {
                 // Never silent, never string-fallback: emit the test fact with
                 // an unknown framework and record why oracles are absent.
+                let content_len = content.len();
+                let line_index = LineIndex::new(content);
+                let full_range = full_file_range(&line_index, content_len);
                 tests.push(test_fact(
                     "unknown",
                     &test_id,
@@ -149,8 +146,26 @@ pub(crate) fn emit_tests_and_oracles(
             }
         };
 
-        // Framework from parsed `use` statements + the import statement range.
+        // Detect the framework and collect each oracle's span + source-text
+        // `expression` while `content` is still borrowed — then `content` can
+        // move into `LineIndex` (no clone) for the range conversions.
         let (framework, use_span) = framework_from_ast(&ast);
+        let oracle_hits: Vec<(String, &'static str, &'static str, usize, usize, String)> =
+            extract_symbol_refs(&ast)
+                .into_iter()
+                .filter(|reference| reference.kind == SymbolRefKind::SubroutineCall)
+                .filter_map(|reference| {
+                    oracle_for(&reference.name).map(|(kind, strength)| {
+                        let (start_byte, end_byte) = reference.full_span;
+                        let expression = call_expression(&content, start_byte, end_byte);
+                        (reference.name, kind, strength, start_byte, end_byte, expression)
+                    })
+                })
+                .collect();
+
+        let content_len = content.len();
+        let line_index = LineIndex::new(content);
+        let full_range = full_file_range(&line_index, content_len);
         let import_range = use_span.map(|(s, e)| range_string(&line_index, s, e));
 
         tests.push(test_fact(
@@ -168,25 +183,18 @@ pub(crate) fn emit_tests_and_oracles(
             if framework == "unknown" { "medium" } else { "high" },
         ));
 
-        // Oracles from parsed call sites.
+        // Oracles from the parsed call sites (byte spans → real ranges).
         let oracle_prov_id = format!("prov:oracle_extraction:{file_id}");
         let mut file_oracles = 0usize;
-        for reference in extract_symbol_refs(&ast) {
-            if reference.kind != SymbolRefKind::SubroutineCall {
-                continue;
-            }
-            let Some((kind, strength)) = oracle_for(&reference.name) else {
-                continue;
-            };
-            let (start_byte, end_byte) = reference.full_span;
+        for (name, kind, strength, start_byte, end_byte, expression) in oracle_hits {
             let ((sl, sc), (el, ec)) = line_index.range(start_byte, end_byte);
             oracles.push(json!({
-                "oracle_id": format!("oracle:{relative_path}:{}:{start_byte}-{end_byte}", reference.name),
+                "oracle_id": format!("oracle:{relative_path}:{name}:{start_byte}-{end_byte}"),
                 "test_id": test_id,
                 "kind": kind,
                 "strength": strength,
                 "target_owner_id": null,
-                "expression": call_expression(&content, start_byte, end_byte),
+                "expression": expression,
                 "observed_sink": null,
                 "expected_expression": null,
                 "range": {"start_line": sl, "start_column": sc, "end_line": el, "end_column": ec},
@@ -231,6 +239,12 @@ pub(crate) fn emit_tests_and_oracles(
     }
 
     (tests, oracles, provenance, limitations)
+}
+
+/// The whole-file range `(0,0)..(end)` as a schema range value.
+fn full_file_range(line_index: &LineIndex, content_len: usize) -> Value {
+    let ((sl, sc), (el, ec)) = line_index.range(0, content_len);
+    json!({"start_line": sl, "start_column": sc, "end_line": el, "end_column": ec})
 }
 
 /// Build a schema-valid `test` fact. The `test` schema has no `owner_id`
@@ -304,24 +318,29 @@ fn range_string(line_index: &LineIndex, start: usize, end: usize) -> String {
 
 /// Detect the test framework from parsed `use` statements. Returns the ripr
 /// wire name (`"unknown"` if none matched) and the byte span of the matched
-/// `use` node (for provenance).
+/// `use` node (for provenance). When several frameworks are imported, the most
+/// specific one wins (the earliest entry in [`TEST_FRAMEWORKS`]). Single-pass —
+/// no intermediate allocation or module-name cloning.
 fn framework_from_ast(ast: &Node) -> (&'static str, Option<(usize, usize)>) {
-    let mut uses: Vec<(String, (usize, usize))> = Vec::new();
-    collect_use_modules(ast, &mut uses);
-    for (module, wire) in TEST_FRAMEWORKS {
-        if let Some((_, span)) = uses.iter().find(|(m, _)| m == module) {
-            return (wire, Some(*span));
-        }
+    // (framework index, wire name, span) of the best (lowest-index) match so far.
+    let mut best: Option<(usize, &'static str, (usize, usize))> = None;
+    find_framework_use(ast, &mut best);
+    match best {
+        Some((_, wire, span)) => (wire, Some(span)),
+        None => ("unknown", None),
     }
-    ("unknown", None)
 }
 
-/// Recursively collect `(module, span)` for every `use` node in the tree.
-fn collect_use_modules(node: &Node, out: &mut Vec<(String, (usize, usize))>) {
-    if let NodeKind::Use { module, .. } = &node.kind {
-        out.push((module.clone(), (node.location.start, node.location.end)));
+/// Recursively update `best` with the most specific test-framework `use` node.
+fn find_framework_use(node: &Node, best: &mut Option<(usize, &'static str, (usize, usize))>) {
+    if let NodeKind::Use { module, .. } = &node.kind
+        && let Some(index) = TEST_FRAMEWORKS.iter().position(|(m, _)| m == module)
+        && best.is_none_or(|(best_index, _, _)| index < best_index)
+    {
+        let (_, wire) = TEST_FRAMEWORKS[index];
+        *best = Some((index, wire, (node.location.start, node.location.end)));
     }
-    node.for_each_child(|child| collect_use_modules(child, out));
+    node.for_each_child(|child| find_framework_use(child, best));
 }
 
 /// Collect all `.t` files under a directory. Returns (full_path, relative_path, content).
@@ -331,15 +350,15 @@ fn collect_t_files(t_dir: &std::path::Path) -> Vec<(String, String, String)> {
         return result;
     };
     for entry in entries.flatten() {
-        // Skip symlinks: a directory-symlink loop would otherwise recurse
-        // infinitely (`is_dir()` follows the link). Same hazard as the
-        // files/owners walker.
-        if entry.file_type().is_ok_and(|file_type| file_type.is_symlink()) {
-            continue;
-        }
         let path = entry.path();
+        let is_symlink = entry.file_type().is_ok_and(|file_type| file_type.is_symlink());
         if path.is_dir() {
-            // Recurse one level (t/subdir/*.t).
+            // Do not descend into symlinked directories — a directory-symlink
+            // loop would otherwise recurse infinitely (`is_dir()` follows the
+            // link). A symlinked `.t` *file* (below) is still read.
+            if is_symlink {
+                continue;
+            }
             result.extend(collect_t_files(&path));
         } else if path.extension().is_some_and(|ext| ext == "t") {
             let Ok(content) = std::fs::read_to_string(&path) else {
@@ -1050,18 +1069,16 @@ fn collect_perl_files_recursive(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        // Skip symlinks entirely: a directory-symlink loop would otherwise cause
-        // infinite recursion (`is_dir()` follows the link), and a file symlink
-        // could escape the root. `entry.file_type()` reports the link's own type
-        // without following it.
-        if entry.file_type().is_ok_and(|file_type| file_type.is_symlink()) {
-            continue;
-        }
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
+        let is_symlink = entry.file_type().is_ok_and(|file_type| file_type.is_symlink());
         if path.is_dir() {
-            // Skip hidden dirs (.git, .build) and non-source build trees.
-            if name.starts_with('.')
+            // Do not descend into symlinked directories — a directory-symlink
+            // loop would otherwise recurse infinitely (`is_dir()` follows the
+            // link). Also skip hidden dirs and non-source build trees. A
+            // symlinked source *file* (below) is still read.
+            if is_symlink
+                || name.starts_with('.')
                 || matches!(name.as_ref(), "target" | "blib" | "node_modules" | "_build")
             {
                 continue;
@@ -1174,6 +1191,30 @@ mod tests {
         assert!(
             provenance.is_empty() && limitations.is_empty(),
             "no .t files → no prov/limitations"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_t_files_reads_symlinked_t_file() {
+        use std::os::unix::fs::symlink;
+        // A symlinked `.t` file under `t/` must still be discovered + read — only
+        // symlinked *directories* are skipped (loop safety).
+        let root = std::env::temp_dir().join("perl-p4-symlink-t");
+        let _ = std::fs::remove_dir_all(&root);
+        let shared = root.join("shared");
+        let t_dir = root.join("t");
+        std::fs::create_dir_all(&shared).expect("mkdir shared");
+        std::fs::create_dir_all(&t_dir).expect("mkdir t");
+        std::fs::write(shared.join("real.t"), "use Test::More;\nok(1);\n").expect("write real");
+        symlink(shared.join("real.t"), t_dir.join("linked.t")).expect("symlink .t");
+
+        let (tests, _oracles, _provenance, _limitations) =
+            emit_tests_and_oracles(root.to_str().expect("utf8 root"));
+        assert!(
+            tests.iter().any(|t| t["name"] == "t/linked.t"),
+            "symlinked .t file must be read, not silently dropped"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
