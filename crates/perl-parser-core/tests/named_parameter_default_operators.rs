@@ -35,3 +35,23 @@ class C {
 "#,
     );
 }
+
+// --- Negative / boundary coverage: the `//=` / `||=` operators are named-only.
+
+#[test]
+fn positional_defined_or_default_is_rejected() {
+    // `//=` is valid only for named params (PPC0024); on a positional parameter
+    // the parser must report an error rather than consume it as a default.
+    assert_has_error("sub f ($x //= 1) { }", "error");
+}
+
+#[test]
+fn positional_logical_or_default_is_rejected() {
+    assert_has_error("sub f ($x ||= 1) { }", "error");
+}
+
+#[test]
+fn named_slurpy_hash_defined_or_default_parses() {
+    // The named-slurpy branch also carries the new default-operator handling.
+    assert_clean_parse("sub f (:%rest //= {}) { }");
+}

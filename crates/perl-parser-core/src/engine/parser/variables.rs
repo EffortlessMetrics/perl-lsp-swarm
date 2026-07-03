@@ -1418,6 +1418,23 @@ mod prototype_heuristic_tests {
         Ok(())
     }
 
+    /// The `//=` / `||=` default operators are named-only (PPC0024). A
+    /// *positional* parameter must not consume them as a default — the parser
+    /// reports an error instead of silently accepting the named-only syntax.
+    /// Guards the `named` gate in `parse_signature_param` against regression.
+    #[test]
+    fn positional_parameter_rejects_slash_slash_and_pipe_pipe_defaults() -> Result<(), String> {
+        for src in ["sub f ($x //= 1) {}", "sub f ($x ||= 1) {}"] {
+            let mut parser = Parser::new(src);
+            parser.parse().map_err(|e| format!("parse `{src}`: {e:?}"))?;
+            assert!(
+                !parser.get_errors().is_empty(),
+                "expected a parse error for positional default operator in `{src}`",
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn signature_with_multiple_params() {
         let node = parse_sub("sub foo($x, $y) {}");
