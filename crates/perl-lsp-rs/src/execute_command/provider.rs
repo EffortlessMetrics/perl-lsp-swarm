@@ -383,8 +383,68 @@ impl ExecuteCommandProvider {
         }
 
         crate::util::run_command_with_timeout(cmd, 30)
-            .map(|result| self.format_command_result(result, Some(("command", command.into()))))
+            .map(|result| self.format_test_command_result(result, command))
             .map_err(|error| error.to_string())
+    }
+
+    /// Format a test-runner process result, enriching the raw command output
+    /// with structured TAP facts: which runner produced it, plan/pass/fail
+    /// counts, and per-failure source locations. TODO/SKIP are reported but do
+    /// not count as hard failures. The raw `output`/`error`/`command`/`success`
+    /// fields are preserved so existing clients keep working.
+    pub(crate) fn format_test_command_result(
+        &self,
+        result: std::process::Output,
+        command: &str,
+    ) -> Value {
+        use perl_lsp_rs_core::providers::testing::tap::parse_tap;
+
+        let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+        let success = result.status.success();
+        let exit_code = result.status.code();
+        let report = parse_tap(&stdout);
+
+        let failures: Vec<Value> = report
+            .failures()
+            .into_iter()
+            .map(|test| {
+                json!({
+                    "number": test.number,
+                    "description": test.description,
+                    "file": test.file,
+                    "line": test.line,
+                    "got": test.got,
+                    "expected": test.expected,
+                    "depth": test.depth,
+                })
+            })
+            .collect();
+
+        let plan_mismatch = report
+            .plan_mismatch()
+            .map(|(actual, planned)| json!({ "actual": actual, "planned": planned }));
+
+        json!({
+            "success": success,
+            "output": stdout,
+            "error": if success { Value::Null } else { Value::String(stderr) },
+            "command": command,
+            "runner": command,
+            "exitCode": exit_code,
+            "tap": {
+                "planned": report.plan.as_ref().map(|plan| plan.count),
+                "skipAll": report.plan.as_ref().and_then(|plan| plan.skip_all.clone()),
+                "total": report.summary.total,
+                "passed": report.summary.passed,
+                "failed": report.summary.failed,
+                "skipped": report.summary.skipped,
+                "todo": report.summary.todo,
+                "bailedOut": report.bailed_out,
+                "planMismatch": plan_mismatch,
+            },
+            "failures": failures,
+        })
     }
 
     pub(crate) fn run_test_sub(&self, file_path: &Path, sub_name: &str) -> Result<Value, String> {

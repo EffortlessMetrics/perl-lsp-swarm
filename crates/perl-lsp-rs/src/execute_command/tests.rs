@@ -994,6 +994,55 @@ fn test_format_command_result_structure() {
 }
 
 #[test]
+fn test_format_test_command_result_parses_tap() {
+    let provider = ExecuteCommandProvider::new();
+
+    let tap = b"1..2\n\
+ok 1 - addition works\n\
+not ok 2 - email matches\n\
+#   at t/user.t line 12.\n\
+#          got: 'x'\n\
+#     expected: 'y'\n"
+        .to_vec();
+    let output = std::process::Output { status: mock_status(1), stdout: tap, stderr: b"".to_vec() };
+
+    let result = provider.format_test_command_result(output, "prove");
+
+    // Raw output and runner are preserved.
+    assert_eq!(result["runner"], "prove");
+    assert_eq!(result["command"], "prove");
+    assert_eq!(result["exitCode"], 1);
+    assert!(result["output"].as_str().unwrap_or("").contains("not ok 2"));
+
+    // Structured TAP facts are additive.
+    assert_eq!(result["tap"]["planned"], 2);
+    assert_eq!(result["tap"]["passed"], 1);
+    assert_eq!(result["tap"]["failed"], 1);
+
+    let failures = result["failures"].as_array().expect("failures array");
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0]["number"], 2);
+    assert_eq!(failures[0]["description"], "email matches");
+    assert_eq!(failures[0]["file"], "t/user.t");
+    assert_eq!(failures[0]["line"], 12);
+    assert_eq!(failures[0]["got"], "'x'");
+    assert_eq!(failures[0]["expected"], "'y'");
+}
+
+#[test]
+fn test_format_test_command_result_todo_skip_not_hard_failures() {
+    let provider = ExecuteCommandProvider::new();
+    let tap = b"1..2\nnot ok 1 - later # TODO wip\nok 2 - win # SKIP no db\n".to_vec();
+    let output = std::process::Output { status: mock_status(0), stdout: tap, stderr: b"".to_vec() };
+
+    let result = provider.format_test_command_result(output, "yath");
+    assert_eq!(result["tap"]["failed"], 0, "TODO/SKIP are not hard failures");
+    assert_eq!(result["tap"]["todo"], 1);
+    assert_eq!(result["tap"]["skipped"], 1);
+    assert_eq!(result["failures"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
 fn test_format_command_result_failure() {
     let provider = ExecuteCommandProvider::new();
 
