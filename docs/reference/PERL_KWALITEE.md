@@ -41,11 +41,13 @@ cargo xtask perl-kwalitee explain release.no_external_tooling
 |-----------|-------|------------------|-----|
 | `pr`      | fast  | not applicable   | per-PR gate |
 | `release` | strict, requires `--dist` | mandatory | release gate |
-| `nightly` | broad | not applicable   | receipt-heavy nightly report |
+| `nightly` | broad | not applicable   | pr floor + receipt-heavy advisory rows |
 
 Under `pr`/`nightly` the release-archive indicators are reported
 `not_applicable`. Under `release`, a missing `--dist` fails the release
-indicators.
+indicators. The nightly profile adds a set of **advisory** (non-mandatory)
+receipt-backed indicators that only run under `nightly`; on `pr`/`release` they
+are reported `not_applicable`.
 
 ## Indicator catalog
 
@@ -69,6 +71,24 @@ table**.
 | `critic.run_critic_registry_parity` | critic | **advisory** | external (parity test) | all |
 | `quality.no_new_severe_gaps` | quality | yes | receipt (quality-gate) | all |
 | `docs.status_current` | docs | yes | external (`update-status --check`) | all |
+| `formatter.corpus_idempotent` | formatter | **advisory** | receipt (native-format corpus) | nightly |
+| `critic.no_false_positives` | critic | **advisory** | receipt (native-critic false-positive fixtures) | nightly |
+| `formatter.perltidy_compat_no_external_only` | formatter | **advisory** | receipt (native-format perltidy-compat) | nightly |
+| `critic.perlcritic_compat_no_external_only` | critic | **advisory** | receipt (native-tooling perlcritic-compat) | nightly |
+
+### Nightly advisory indicators
+
+These are non-mandatory and evaluated only under the `nightly` profile. Each
+reads a JSON receipt another xtask task produces; an unhealthy result is a
+`warn` (never a mandatory `fail`), a missing receipt is `unverified`:
+
+- `formatter.corpus_idempotent` ← `native-format-corpus.json` (`passed == true`)
+- `critic.no_false_positives` ← `native-critic-false-positive.json`
+  (`findings_count == 0` and no suppressed findings / parse errors)
+- `formatter.perltidy_compat_no_external_only` ←
+  `native-format-perltidy-compat.json` (`external_only_count == 0`)
+- `critic.perlcritic_compat_no_external_only` ← `perlcritic-compat.json`
+  (`external_only_count == 0`)
 
 ### Evidence sources
 

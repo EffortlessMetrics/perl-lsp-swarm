@@ -16,9 +16,12 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::evidence::{Outcome, cargo_manifest, dap, product_surface, quality_gate, readiness};
+use crate::evidence::{
+    Outcome, cargo_manifest, dap, nightly, product_surface, quality_gate, readiness,
+};
 use crate::indicator::{
-    CATALOG, EvalSource, EvidenceRef, IndicatorSpec, IndicatorStatus, KwaliteeIndicator, spec_for,
+    CATALOG, EvalSource, EvidenceRef, IndicatorScope, IndicatorSpec, IndicatorStatus,
+    KwaliteeIndicator, spec_for,
 };
 use crate::profile::KwaliteeProfile;
 use crate::receipt::{KwaliteeReceipt, RECEIPT_KIND, SCHEMA_VERSION};
@@ -38,6 +41,18 @@ pub struct EvidencePaths {
     /// `quality_gate` receipt
     /// (default `target/receipts/quality/quality-gate.json`).
     pub quality_gate_receipt: Option<PathBuf>,
+    /// `native_format_corpus` receipt (nightly)
+    /// (default `target/receipts/format/native-format-corpus.json`).
+    pub native_format_corpus: Option<PathBuf>,
+    /// `native_critic_check` false-positive receipt (nightly)
+    /// (default `target/receipts/native-tooling/native-critic-false-positive.json`).
+    pub native_critic_false_positive: Option<PathBuf>,
+    /// `native_format_perltidy_compat` receipt (nightly)
+    /// (default `target/receipts/format/native-format-perltidy-compat.json`).
+    pub native_format_perltidy_compat: Option<PathBuf>,
+    /// `native_tooling_perlcritic_compat` receipt (nightly)
+    /// (default `target/receipts/native-tooling/perlcritic-compat.json`).
+    pub native_tooling_perlcritic_compat: Option<PathBuf>,
 }
 
 /// A result the caller obtained by running a heavier gate, keyed into
@@ -153,20 +168,34 @@ pub fn evaluate(options: &KwaliteeOptions) -> KwaliteeReceipt {
     }
 }
 
+/// Whether `scope` applies under `profile`.
+fn scope_applies(scope: IndicatorScope, profile: KwaliteeProfile) -> bool {
+    match scope {
+        IndicatorScope::All => true,
+        IndicatorScope::ReleaseOnly => profile.requires_release_artifacts(),
+        IndicatorScope::NightlyOnly => matches!(profile, KwaliteeProfile::Nightly),
+    }
+}
+
 /// Evaluate one catalog spec into a full indicator.
 fn evaluate_spec(spec: &IndicatorSpec, options: &KwaliteeOptions) -> KwaliteeIndicator {
-    let outcome = if spec.release_only && !options.profile.requires_release_artifacts() {
-        // Release archives are not present outside the release profile.
+    let outcome = if scope_applies(spec.scope, options.profile) {
+        obtain_outcome(spec, options)
+    } else {
+        let note = match spec.scope {
+            IndicatorScope::ReleaseOnly => {
+                "release archives are only evaluated under the release profile"
+            }
+            IndicatorScope::NightlyOnly => {
+                "receipt-heavy advisory indicators are only evaluated under the nightly profile"
+            }
+            IndicatorScope::All => "not applicable",
+        };
         Outcome {
             status: IndicatorStatus::NotApplicable,
-            evidence: vec![EvidenceRef::new(
-                "note",
-                "release archives are only evaluated under the release profile",
-            )],
+            evidence: vec![EvidenceRef::new("note", note)],
             remediation: None,
         }
-    } else {
-        obtain_outcome(spec, options)
     };
 
     KwaliteeIndicator {
@@ -223,6 +252,27 @@ fn obtain_outcome(spec: &IndicatorSpec, options: &KwaliteeOptions) -> Outcome {
             options.evidence.quality_gate_receipt.as_deref(),
             &options.commit,
         ),
+        EvalSource::NightlyReceipt => {
+            let ev = &options.evidence;
+            match spec.id {
+                "formatter.corpus_idempotent" => {
+                    nightly::formatter_corpus_idempotent(ev.native_format_corpus.as_deref())
+                }
+                "critic.no_false_positives" => {
+                    nightly::critic_no_false_positives(ev.native_critic_false_positive.as_deref())
+                }
+                "formatter.perltidy_compat_no_external_only" => {
+                    nightly::formatter_perltidy_compat(ev.native_format_perltidy_compat.as_deref())
+                }
+                "critic.perlcritic_compat_no_external_only" => nightly::critic_perlcritic_compat(
+                    ev.native_tooling_perlcritic_compat.as_deref(),
+                ),
+                other => Outcome::unverified(
+                    vec![EvidenceRef::new("note", format!("no nightly mapping for {other}"))],
+                    "This nightly indicator has no mapping; wire one in evaluator.rs.",
+                ),
+            }
+        }
         EvalSource::External => external_outcome(spec, options),
     }
 }
@@ -236,7 +286,7 @@ fn external_outcome(spec: &IndicatorSpec, options: &KwaliteeOptions) -> Outcome 
 
     // Release indicators under the release profile require a dist directory; if
     // one was not provided the gate cannot even run, which is a hard fail.
-    if spec.release_only
+    if spec.is_release_only()
         && options.profile.requires_release_artifacts()
         && options.dist_dir.is_none()
     {
@@ -288,6 +338,27 @@ mod tests {
         let release: Vec<_> = receipt.indicators.iter().filter(|i| i.area == "release").collect();
         assert!(!release.is_empty());
         assert!(release.iter().all(|i| i.status == IndicatorStatus::NotApplicable));
+    }
+
+    #[test]
+    fn nightly_indicators_scoped_to_nightly_profile() {
+        let dir = fixture_repo();
+        // Under pr, nightly-only indicators are NotApplicable.
+        let pr = evaluate(&KwaliteeOptions::new(dir.path(), KwaliteeProfile::Pr));
+        let nightly_ids = ["formatter.corpus_idempotent", "critic.no_false_positives"];
+        for id in nightly_ids {
+            let ind = pr.indicators.iter().find(|i| i.id == id).expect(id);
+            assert_eq!(ind.status, IndicatorStatus::NotApplicable, "pr: {id}");
+        }
+        // Under nightly, they are evaluated (Unverified here — no receipts).
+        let nightly = evaluate(&KwaliteeOptions::new(dir.path(), KwaliteeProfile::Nightly));
+        for id in nightly_ids {
+            let ind = nightly.indicators.iter().find(|i| i.id == id).expect(id);
+            assert_eq!(ind.status, IndicatorStatus::Unverified, "nightly: {id}");
+        }
+        // Nightly indicators are advisory, so their Unverified must not force a
+        // Fail verdict (non-strict).
+        assert_ne!(nightly.verdict, crate::KwaliteeVerdict::Pass); // docs.status drift etc.
     }
 
     #[test]

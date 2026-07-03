@@ -110,8 +110,22 @@ pub(crate) enum EvalSource {
     ReadinessReceipt,
     /// The crate reads the quality-gate receipt.
     QualityGateReceipt,
+    /// The crate reads one of the nightly receipt-backed advisory indicators.
+    NightlyReceipt,
     /// The caller (e.g. xtask) supplies the result by running a heavier gate.
     External,
+}
+
+/// Which profiles an indicator applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndicatorScope {
+    /// Evaluated on every profile.
+    All,
+    /// Only under the release profile (release archives are not present for
+    /// `pr`/`nightly`).
+    ReleaseOnly,
+    /// Only under the nightly profile (broad, receipt-heavy advisory rows).
+    NightlyOnly,
 }
 
 /// A static catalog entry describing one indicator independent of any repo.
@@ -123,12 +137,18 @@ pub(crate) struct IndicatorSpec {
     pub mandatory: bool,
     pub weight: u8,
     pub source: EvalSource,
-    /// Whether this indicator only applies under the release profile (release
-    /// archives are not present for `pr`/`nightly`).
-    pub release_only: bool,
+    /// Which profiles this indicator applies to.
+    pub scope: IndicatorScope,
     pub remediation: &'static str,
     /// Long-form explanation surfaced by `explain <id>`.
     pub rationale: &'static str,
+}
+
+impl IndicatorSpec {
+    /// Whether this indicator is release-scoped (kept for the area invariant test).
+    pub fn is_release_only(&self) -> bool {
+        matches!(self.scope, IndicatorScope::ReleaseOnly)
+    }
 }
 
 /// The full indicator catalog, in report order.
@@ -144,7 +164,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 3,
         source: EvalSource::Native,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Add \"crates/perl-kwalitee\" to [workspace].members in the root Cargo.toml.",
         rationale: "The evaluator crate must itself be part of the workspace so it \
                     builds, tests, and lints under the normal gates rather than \
@@ -157,7 +177,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 4,
         source: EvalSource::Native,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Set `publish = false` in crates/perl-kwalitee/Cargo.toml while the \
                       schema stabilizes, or add the crate to \
                       [workspace.metadata.publish].allow once it is publishable.",
@@ -173,7 +193,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 3,
         source: EvalSource::Native,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Add `license.workspace = true` (or an explicit SPDX license) to \
                       crates/perl-kwalitee/Cargo.toml.",
         rationale: "Every shippable crate needs license metadata; publish-manifest-check \
@@ -187,7 +207,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 15,
         source: EvalSource::Native,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Move any external-tool/legacy-bridge product framing off the \
                       first-mile surfaces into docs/reference/ (e.g. \
                       DAP_LEGACY_BRIDGE_COMPAT.md).",
@@ -203,7 +223,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 7,
         source: EvalSource::Native,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Remove the `--bridge` flag from the shipped perl-dap CLI; bridge mode is a \
                       library-only path, not a product surface.",
         rationale: "The legacy `--bridge` proxy to Perl::LanguageServer was removed from the \
@@ -217,7 +237,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 7,
         source: EvalSource::External,
-        release_only: true,
+        scope: IndicatorScope::ReleaseOnly,
         remediation: "Run `cargo xtask release artifact-check --dist <dir>` and add the \
                       missing native binaries to the release archives.",
         rationale: "The shipped product is the native stack; a release that omits the \
@@ -230,7 +250,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 8,
         source: EvalSource::External,
-        release_only: true,
+        scope: IndicatorScope::ReleaseOnly,
         remediation: "Remove perltidy/perlcritic/Perl::LanguageServer/TSPerlDAP payloads \
                       from the release archives; external tools are conformance-only.",
         rationale: "If it is not native, we do not ship it. Bundling external tooling \
@@ -244,7 +264,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 5,
         source: EvalSource::External,
-        release_only: true,
+        scope: IndicatorScope::ReleaseOnly,
         remediation: "Ensure every archive is listed in the consolidated SHA256SUMS and \
                       each digest matches the file on disk.",
         rationale: "Checksums are the integrity contract for released artifacts; a \
@@ -257,7 +277,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 10,
         source: EvalSource::ReadinessReceipt,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Run `cargo xtask native-tooling readiness` and confirm the \
                       formatter native-default criterion is ready.",
         rationale: "Formatting must work out of the box without external perltidy; the \
@@ -270,7 +290,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 8,
         source: EvalSource::ReadinessReceipt,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Run `cargo xtask native-tooling readiness` and confirm the critic \
                       native-default criterion is ready.",
         rationale: "Linting must work out of the box without external perlcritic; the \
@@ -283,7 +303,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: false,
         weight: 7,
         source: EvalSource::External,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Land the runCritic native-registry routing (#3303) and supply the \
                       parity test result.",
         rationale: "The `perl.runCritic` command and on-type native pull diagnostics must \
@@ -297,7 +317,7 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 15,
         source: EvalSource::QualityGateReceipt,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Run `cargo xtask quality-gate` and resolve any blocking coverage or \
                       ripr next-actions before merge.",
         rationale: "The quality gate aggregates patch coverage and ripr proof receipts; a \
@@ -310,11 +330,65 @@ pub(crate) const CATALOG: &[IndicatorSpec] = &[
         mandatory: true,
         weight: 5,
         source: EvalSource::External,
-        release_only: false,
+        scope: IndicatorScope::All,
         remediation: "Run `cargo xtask update-status --check`; regenerate with \
                       `--write` if drift is reported.",
         rationale: "The status docs are computed truth sources; stale generated docs \
                     misreport the project state to users and downstream tooling.",
+    },
+    // ----- Nightly-only advisory indicators (broad, receipt-heavy) -----
+    IndicatorSpec {
+        id: "formatter.corpus_idempotent",
+        area: "formatter",
+        title: "native formatter is idempotent + parse-preserving over the corpus",
+        mandatory: false,
+        weight: 3,
+        source: EvalSource::NightlyReceipt,
+        scope: IndicatorScope::NightlyOnly,
+        remediation: "Run `cargo xtask native-format corpus` and fix the files where the \
+                      native formatter is not idempotent or changes the parse.",
+        rationale: "A formatter that is not idempotent or alters the AST is not safe to \
+                    ship as the default; the nightly corpus sweep proves it over a broad \
+                    body of real Perl.",
+    },
+    IndicatorSpec {
+        id: "critic.no_false_positives",
+        area: "critic",
+        title: "native critic raises no findings on the clean fixtures",
+        mandatory: false,
+        weight: 3,
+        source: EvalSource::NightlyReceipt,
+        scope: IndicatorScope::NightlyOnly,
+        remediation: "Run the native-critic false-positive fixtures and eliminate any \
+                      findings/parse errors on known-clean code.",
+        rationale: "A critic that flags known-clean code erodes trust in the native \
+                    default; the false-positive fixtures must stay clean.",
+    },
+    IndicatorSpec {
+        id: "formatter.perltidy_compat_no_external_only",
+        area: "formatter",
+        title: "perltidy compatibility has no external-only gaps",
+        mandatory: false,
+        weight: 2,
+        source: EvalSource::NightlyReceipt,
+        scope: IndicatorScope::NightlyOnly,
+        remediation: "Run `cargo xtask native-format perltidy-compat` and close or \
+                      re-classify the external-only options.",
+        rationale: "External-only perltidy options are ones the native formatter cannot \
+                    honor; tracking them at zero keeps the native path a full replacement.",
+    },
+    IndicatorSpec {
+        id: "critic.perlcritic_compat_no_external_only",
+        area: "critic",
+        title: "perlcritic compatibility has no external-only gaps",
+        mandatory: false,
+        weight: 2,
+        source: EvalSource::NightlyReceipt,
+        scope: IndicatorScope::NightlyOnly,
+        remediation: "Run `cargo xtask native-tooling perlcritic-compat` and close or \
+                      re-classify the external-only rules.",
+        rationale: "External-only perlcritic rules are ones the native critic cannot \
+                    cover; tracking them at zero keeps the native path a full replacement.",
     },
 ];
 
@@ -387,7 +461,7 @@ mod tests {
     #[test]
     fn release_only_indicators_are_in_release_area() {
         for spec in CATALOG {
-            if spec.release_only {
+            if spec.is_release_only() {
                 assert_eq!(
                     spec.area, "release",
                     "{} is release_only but not release area",

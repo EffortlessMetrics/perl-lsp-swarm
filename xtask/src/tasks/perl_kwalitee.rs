@@ -33,6 +33,12 @@ use crate::utils::project_root;
 /// Default receipt locations, relative to the workspace root.
 const READINESS_RECEIPT_REL: &str = "target/receipts/native-tooling/readiness.json";
 const QUALITY_GATE_RECEIPT_REL: &str = "target/receipts/quality/quality-gate.json";
+const FORMAT_CORPUS_RECEIPT_REL: &str = "target/receipts/format/native-format-corpus.json";
+const CRITIC_FALSE_POSITIVE_RECEIPT_REL: &str =
+    "target/receipts/native-tooling/native-critic-false-positive.json";
+const PERLTIDY_COMPAT_RECEIPT_REL: &str =
+    "target/receipts/format/native-format-perltidy-compat.json";
+const PERLCRITIC_COMPAT_RECEIPT_REL: &str = "target/receipts/native-tooling/perlcritic-compat.json";
 const DEFAULT_JSON_REL: &str = "target/receipts/kwalitee/perl-kwalitee.json";
 const DEFAULT_MARKDOWN_REL: &str = "target/receipts/kwalitee/perl-kwalitee.md";
 
@@ -145,6 +151,10 @@ fn build_and_evaluate(
     let evidence = EvidencePaths {
         native_tooling_readiness: existing(root.join(READINESS_RECEIPT_REL)),
         quality_gate_receipt: existing(root.join(QUALITY_GATE_RECEIPT_REL)),
+        native_format_corpus: existing(root.join(FORMAT_CORPUS_RECEIPT_REL)),
+        native_critic_false_positive: existing(root.join(CRITIC_FALSE_POSITIVE_RECEIPT_REL)),
+        native_format_perltidy_compat: existing(root.join(PERLTIDY_COMPAT_RECEIPT_REL)),
+        native_tooling_perlcritic_compat: existing(root.join(PERLCRITIC_COMPAT_RECEIPT_REL)),
     };
 
     let mut external_results = BTreeMap::new();

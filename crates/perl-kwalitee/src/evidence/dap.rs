@@ -24,44 +24,77 @@ use crate::indicator::EvidenceRef;
 /// CLI source files scanned for a reintroduced bridge flag.
 const CLI_SOURCES: &[&str] = &["crates/perl-dap/src/main.rs"];
 
-/// How many preceding lines to look back for a clap arg attribute above a
-/// `bridge` field declaration (the attribute usually sits on its own line).
-const ATTR_LOOKBACK: usize = 3;
+/// Strip a trailing `// ...` line comment so tokens inside comments do not
+/// affect matching. (Does not attempt to parse block comments or strings — a
+/// heuristic scan, not a Rust parser.)
+fn strip_line_comment(line: &str) -> &str {
+    match line.find("//") {
+        Some(i) => &line[..i],
+        None => line,
+    }
+}
 
-/// Whether `line` is a clap arg attribute that opts a field into a long flag
-/// (`#[arg(long ...)]` / `#[clap(long ...)]`), covering both the shorthand
-/// `long` and the explicit `long = "..."` forms.
-fn is_clap_long_attr(line: &str) -> bool {
-    let l = line.to_ascii_lowercase();
+/// Whether the code portion of `line` is a clap arg attribute opting a field
+/// into a long flag (`#[arg(long ...)]` / `#[clap(long ...)]`), covering both
+/// the shorthand `long` and the explicit `long = "..."` forms.
+fn is_clap_long_attr(code: &str) -> bool {
+    let l = code.to_ascii_lowercase();
     (l.contains("#[arg(") || l.contains("#[clap(")) && l.contains("long")
 }
 
-/// Whether `line` declares a struct field literally named `bridge`
-/// (e.g. `bridge: bool` / `pub bridge : Bar`). Anchored at the start of the
-/// trimmed line so comments and paths like `bridge_adapter::new` do not match.
-fn is_bridge_field_decl(line: &str) -> bool {
-    let t = line.trim().trim_start_matches("pub ").trim_start();
+/// Whether the code portion of `line` is *any* attribute line (`#[...]`), used
+/// to let a run of stacked attributes carry the pending clap-long context down
+/// to the field they decorate.
+fn is_attr_line(code: &str) -> bool {
+    code.trim_start().starts_with("#[")
+}
+
+/// Whether `code` declares a struct field literally named `bridge`
+/// (e.g. `bridge: bool`). Anchored at the start of the trimmed code so comments
+/// and paths like `bridge_adapter::new` do not match.
+fn is_bridge_field_decl(code: &str) -> bool {
+    let t = code.trim().trim_start_matches("pub ").trim_start();
     t.starts_with("bridge:") || t.starts_with("bridge :")
 }
 
 /// Scan CLI source text; return 1-based line numbers that expose a bridge flag.
+///
+/// Uses a small state machine so a `bridge` field is caught however far its
+/// `#[arg(long)]` attribute sits above it (stacked attributes / interposed doc
+/// comments), while non-attribute code lines reset the pending context.
 fn scan(text: &str) -> Vec<usize> {
-    let lines: Vec<&str> = text.lines().collect();
     let mut hits = Vec::new();
-    for (idx, line) in lines.iter().enumerate() {
+    let mut pending_long_attr = false;
+    for (idx, raw) in text.lines().enumerate() {
+        let code = strip_line_comment(raw);
+
         // Explicit long name, or a same-line `#[arg(long)] bridge: ...`.
-        if line.to_ascii_lowercase().contains("long = \"bridge\"")
-            || (is_clap_long_attr(line) && line.replace(' ', "").contains("bridge:"))
+        if code.to_ascii_lowercase().contains("long = \"bridge\"")
+            || (is_clap_long_attr(code) && code.replace(' ', "").contains("bridge:"))
         {
             hits.push(idx + 1);
+            pending_long_attr = false;
             continue;
         }
-        // Shorthand: a `bridge` field under a nearby clap long attribute.
-        if is_bridge_field_decl(line) {
-            let start = idx.saturating_sub(ATTR_LOOKBACK);
-            if lines[start..idx].iter().any(|l| is_clap_long_attr(l)) {
+
+        if is_clap_long_attr(code) {
+            pending_long_attr = true;
+            continue;
+        }
+
+        if is_bridge_field_decl(code) {
+            if pending_long_attr {
                 hits.push(idx + 1);
             }
+            pending_long_attr = false;
+            continue;
+        }
+
+        // Doc comments and other attribute lines are transparent — they may sit
+        // between the clap attribute and its field. Any other code line (or a
+        // blank line) ends the current attribute run.
+        if !is_attr_line(code) && !code.trim().is_empty() {
+            pending_long_attr = false;
         }
     }
     hits
@@ -158,6 +191,30 @@ mod tests {
         // A `bridge` field with no clap long attribute is not a CLI flag.
         let dir = tempfile::tempdir().expect("tmp");
         write_main(dir.path(), "struct Internal {\n  bridge: bool,\n}\n");
+        assert_eq!(cli_native_only(dir.path()).status, IndicatorStatus::Pass);
+    }
+
+    #[test]
+    fn stacked_attributes_still_catch_field() {
+        // The `#[arg(long)]` is separated from the field by other attributes and
+        // a doc comment — must still be caught.
+        let dir = tempfile::tempdir().expect("tmp");
+        write_main(
+            dir.path(),
+            "struct Args {\n  #[arg(long)]\n  #[arg(short)]\n  /// legacy\n  #[arg(hide = true)]\n  bridge: bool,\n}\n",
+        );
+        assert_eq!(cli_native_only(dir.path()).status, IndicatorStatus::Fail);
+    }
+
+    #[test]
+    fn bridge_token_in_trailing_comment_passes() {
+        // A `bridge:` token inside a trailing comment on a clap-long line is not
+        // a flag definition and must not be flagged.
+        let dir = tempfile::tempdir().expect("tmp");
+        write_main(
+            dir.path(),
+            "struct Args {\n  #[arg(long)] // TODO rename to bridge: mode\n  verbose: bool,\n}\n",
+        );
         assert_eq!(cli_native_only(dir.path()).status, IndicatorStatus::Pass);
     }
 

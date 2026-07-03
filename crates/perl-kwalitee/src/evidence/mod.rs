@@ -9,6 +9,7 @@
 
 pub(crate) mod cargo_manifest;
 pub(crate) mod dap;
+pub(crate) mod nightly;
 pub(crate) mod product_surface;
 pub(crate) mod quality_gate;
 pub(crate) mod readiness;

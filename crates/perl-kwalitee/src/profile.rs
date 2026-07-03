@@ -7,8 +7,10 @@
 //!   indicators are reported [`NotApplicable`](crate::IndicatorStatus::NotApplicable).
 //! - [`KwaliteeProfile::Release`] — strict, requires a `--dist` directory. Every
 //!   PR indicator plus the release-archive contract must pass.
-//! - [`KwaliteeProfile::Nightly`] — broad and receipt-heavy; the same mandatory
-//!   floor as `Pr` plus advisory indicators.
+//! - [`KwaliteeProfile::Nightly`] — the same mandatory floor as `Pr` plus a set
+//!   of broad, receipt-heavy **advisory** indicators (formatter corpus
+//!   idempotence, native-critic false positives, perltidy/perlcritic
+//!   external-only gaps) that only run under this profile.
 
 use std::fmt;
 use std::str::FromStr;
@@ -23,7 +25,8 @@ pub enum KwaliteeProfile {
     Pr,
     /// Strict release profile. Requires a populated `dist` directory.
     Release,
-    /// Broad nightly profile. Same mandatory floor as `Pr`, plus advisory rows.
+    /// Broad nightly profile. Same mandatory floor as `Pr`, plus nightly-only
+    /// receipt-heavy advisory indicators.
     Nightly,
 }
 
