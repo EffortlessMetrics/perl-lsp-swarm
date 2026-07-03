@@ -703,11 +703,16 @@ fn translate_event(ev: &PeerEvent) -> Option<DebugEvent> {
         event::INITIALIZED => Some(DebugEvent::Initialized),
         event::STOPPED => {
             let body: payloads::StoppedEventBody = serde_json::from_value(ev.body.clone()?).ok()?;
-            let position = body.source.map(|s| DebugPosition {
-                source: model_source(&s),
-                line: body.line.unwrap_or(0),
-                column: body.column,
-            });
+            // A position needs BOTH a source and a line. If the peer reports a
+            // stop with no determinable line (e.g. inside an `eval` string),
+            // surface `None` rather than fabricating line 0 — `DebugPosition.line`
+            // is documented 1-based, so 0 would be an out-of-range sentinel.
+            let position = match (body.source, body.line) {
+                (Some(s), Some(line)) => {
+                    Some(DebugPosition { source: model_source(&s), line, column: body.column })
+                }
+                _ => None,
+            };
             Some(DebugEvent::Stopped {
                 reason: stop_reason(&body.reason),
                 thread_id: ThreadId(body.thread_id),
