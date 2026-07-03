@@ -769,6 +769,13 @@ fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunkRun> {
             head_line = parse_hunk_new_start(header_rest).unwrap_or(0);
             continue;
         }
+        if line.starts_with('\\') {
+            // `\ No newline at end of file` — metadata about the preceding line,
+            // present in neither file version. Do not flush the open run or
+            // advance the head cursor (advancing it would shift every following
+            // added line down by one).
+            continue;
+        }
         if let Some(added) = line.strip_prefix('+') {
             let file = current_file.clone().unwrap_or_default();
             match run {
@@ -1823,6 +1830,36 @@ mod tests {
             changes.iter().all(|c| c["missing_discriminator"].is_null()),
             "missing_discriminator is always null in this slice"
         );
+    }
+
+    #[test]
+    fn parse_diff_hunks_ignores_no_newline_marker() {
+        // The `\ No newline at end of file` marker is metadata about the
+        // preceding line; it must not advance the head-file cursor.
+        let with_marker =
+            "+++ b/f.pm\n@@ -5,1 +5,2 @@\n-old\n\\ No newline at end of file\n+new1\n+new2\n";
+        let hunks = parse_diff_hunks(with_marker);
+        assert_eq!(hunks.len(), 1, "one added-line run");
+        // `+5` → 0-based 4; new1/new2 land at head lines 4 and 5, unshifted.
+        assert_eq!(hunks[0].start_line, 4, "marker must not shift the head cursor");
+        assert_eq!(hunks[0].end_line, 5);
+    }
+
+    #[test]
+    fn emit_changes_from_diff_no_newline_marker_does_not_misattribute() {
+        // A tight owner (lines 4..5). Without the marker fix, the added line would
+        // shift to 6 and fall outside the owner → wrong result.
+        let files = vec![json!({ "file_id": "file:lib/My/App.pm" })];
+        let owners = vec![json!({
+            "owner_id": "owner:lib/My/App.pm:sub:main::tiny:40-70",
+            "file_id": "file:lib/My/App.pm",
+            "kind": "sub",
+            "range": {"start_line": 4, "start_column": 0, "end_line": 5, "end_column": 1},
+        })];
+        let diff = "+++ b/lib/My/App.pm\n@@ -5,1 +5,2 @@\n-old\n\\ No newline at end of file\n+    return 1;\n";
+        let (changes, _limitations) = emit_changes_from_diff(diff, &files, &owners);
+        assert_eq!(changes.len(), 1, "the added line stays inside the owner");
+        assert_eq!(changes[0]["owner_id"], "owner:lib/My/App.pm:sub:main::tiny:40-70");
     }
 
     #[test]

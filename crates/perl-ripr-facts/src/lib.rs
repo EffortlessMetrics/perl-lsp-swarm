@@ -212,18 +212,33 @@ pub fn build_ripr_facts_packet(
     };
     let has_change_facts = !changes.is_empty();
 
-    // Referential integrity: a change's `file_id`/`owner_id` must resolve to a
-    // `files[]`/`owners[]` fact present in the SAME packet. Force files+owners
-    // into the packet output whenever a change was emitted, exactly as PR 4 kept
-    // `tests[]` whenever a relation referenced a `test_id`. Otherwise gate them
-    // on the explicit request.
-    let (files, owners) = if wants_file_facts_explicit || has_change_facts {
+    // Referential integrity: a change's `file_id`/`owner_id` — and an
+    // `unattributable-change` limitation's file `evidence_refs` — point at a
+    // parsed file, so the `files[]`/`owners[]` they reference must be present.
+    // Force files+owners into the packet whenever a change was emitted OR an
+    // `unattributable-change` limitation was recorded (both reference a
+    // known/parsed file), exactly as PR 4 kept `tests[]` whenever a relation
+    // referenced a `test_id`. `diff-file-not-found` references an UNparsed path
+    // (genuinely absent), so it needs no force-include.
+    let changes_reference_known_file = has_change_facts
+        || change_limitations.iter().any(|l| {
+            l["limitation_id"].as_str().is_some_and(|id| id.starts_with("unattributable-change:"))
+        });
+    let (files, owners) = if wants_file_facts_explicit || changes_reference_known_file {
         (files, owners)
     } else {
         (Vec::new(), Vec::new())
     };
     let has_file_facts = !files.is_empty();
     let has_owner_facts = !owners.is_empty();
+
+    // File-walk limitations (the `digest-algorithm` schema note, parse/read
+    // failures) describe or reference `files[]` facts, so only surface them when
+    // `files[]` are actually in the packet. A `changes`-only request that cleared
+    // `files[]` would otherwise ship a note about digests that aren't present —
+    // the same orphaned-limitation class as `oracle-representation`.
+    let file_limitations =
+        if wants_file_facts_explicit || has_file_facts { file_limitations } else { Vec::new() };
 
     let mut packet = build_unavailable_packet(schema, root, base, head, &normalized_classes);
 
@@ -1645,9 +1660,129 @@ mod tests {
     }
 
     #[test]
+    fn scratch_adversarial_verification_unattributable_change_dangling_evidence_ref() {
+        // Reproduction attempt for the reviewer finding: a file that IS parsed
+        // (script-level code, no sub/package) so it lands in `known_files`, but
+        // a diff hunk touching it has no enclosing owner -> unattributable-change
+        // limitation with evidence_refs pointing at a file_id that (per the
+        // force-include gate at lib.rs:220) may not appear in packet["files"].
+        let root = "target/ripr-p5-fixtures/scratch-adversarial".to_string();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::write(format!("{root}/lib/Script.pm"), "my $x = 1;\nmy $y = 2;\nprint $x + $y;\n")
+            .expect("write pm");
+        let diff = "+++ b/lib/Script.pm\n@@ -1,2 +1,3 @@\n my $x = 1;\n+my $z = 3;\n my $y = 2;\n";
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root: &root,
+            base: Some("origin/main"),
+            head: Some("HEAD"),
+            fact_classes: "changes",
+            diff: Some(diff),
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(&root);
+
+        eprintln!("PACKET = {}", serde_json::to_string_pretty(&p).expect("json"));
+
+        let changes = changes_of(&p);
+        assert!(changes.is_empty(), "no owner -> no change fact");
+        assert!(
+            has_limitation(&p, "unattributable-change:"),
+            "expected unattributable-change limitation"
+        );
+
+        let files_empty = p["files"].as_array().expect("files[]").is_empty();
+        eprintln!("files[] empty = {files_empty}");
+
+        // Find the unattributable-change limitation's evidence_refs and check
+        // whether they resolve into packet["files"].
+        let file_ids: std::collections::HashSet<&str> = p["files"]
+            .as_array()
+            .expect("files[]")
+            .iter()
+            .filter_map(|f| f["file_id"].as_str())
+            .collect();
+        for l in p["limitations"].as_array().expect("limitations[]") {
+            if l["limitation_id"].as_str().is_some_and(|s| s.starts_with("unattributable-change:"))
+            {
+                for r in l["evidence_refs"].as_array().expect("evidence_refs") {
+                    let r = r.as_str().expect("evidence_ref str");
+                    eprintln!("evidence_ref = {r}, resolves = {}", file_ids.contains(r));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn build_packet_changes_are_deterministically_ordered() {
         let a = packet_for_diff("det-a", "changes", Some(APP_DIFF));
         let b = packet_for_diff("det-b", "changes", Some(APP_DIFF));
         assert_eq!(changes_of(&a), changes_of(&b), "same request → identical changes[]");
+    }
+
+    #[test]
+    fn build_packet_changes_only_no_diff_has_no_orphan_file_limitation() {
+        // `changes` with no diff clears files[] (nothing references them); the
+        // file-walk's `digest-algorithm` note must not linger describing files
+        // that aren't in the packet (orphaned-limitation class).
+        let p = packet_for_diff("orphan-digest", "changes", None);
+        assert!(p["files"].as_array().expect("files[]").is_empty(), "files[] cleared");
+        assert!(
+            !has_limitation(&p, "digest-algorithm"),
+            "no digest-algorithm note when files[] is absent"
+        );
+        // The intended limitation is still surfaced.
+        assert!(has_limitation(&p, "no-diff-supplied"), "no-diff-supplied still present");
+    }
+
+    #[test]
+    fn build_packet_unattributable_change_evidence_ref_resolves() {
+        // A `.pm` with only top-level code parses with a file fact but zero
+        // owners. A diff hunk in it is unattributable — the limitation's
+        // evidence_ref (a real parsed file) must resolve, so files[] is
+        // force-included even though no change fact was emitted.
+        let root = "target/ripr-p5-fixtures/unattributable";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::write(format!("{root}/lib/Script.pm"), "my $x = 1;\n$x++;\n1;\n")
+            .expect("write ownerless pm");
+        let diff = "+++ b/lib/Script.pm\n@@ -1,0 +1,1 @@\n+$x = 2;\n";
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "changes",
+            diff: Some(diff),
+        })
+        .expect("valid request");
+        let _ = std::fs::remove_dir_all(root);
+
+        assert!(changes_of(&p).is_empty(), "ownerless hunk → no change fact");
+        assert!(has_limitation(&p, "unattributable-change:"), "unattributable-change surfaced");
+        // Every limitation evidence_ref that names a file_id must resolve to a
+        // files[] fact present in the packet.
+        let file_ids: std::collections::HashSet<&str> = p["files"]
+            .as_array()
+            .expect("files[]")
+            .iter()
+            .filter_map(|f| f["file_id"].as_str())
+            .collect();
+        assert!(!file_ids.is_empty(), "files[] force-included for the unattributable ref");
+        for lim in p["limitations"].as_array().expect("limitations[]") {
+            if let Some(refs) = lim["evidence_refs"].as_array() {
+                for r in refs {
+                    if let Some(fid) = r.as_str() {
+                        if fid.starts_with("file:") {
+                            assert!(
+                                file_ids.contains(fid),
+                                "limitation evidence_ref {fid} must resolve to a files[] fact"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
