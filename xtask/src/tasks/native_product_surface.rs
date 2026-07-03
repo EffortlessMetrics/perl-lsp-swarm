@@ -26,10 +26,14 @@
 //!
 //! Strict mode deliberately scans `.md` prose only. `package.json` legitimately
 //! contains the tool names inside setting keys (`perl-lsp.perlcritic.enabled`)
-//! and command ids, so a bare-name rule there would be all false positives; its
-//! product-surface risk is covered by the default [`DISALLOWED`] pass instead.
-//! Reference/compatibility/conformance/archive material and tests are exempt via
-//! [`STRICT_PATH_ALLOWLIST`] — that is where legacy detail is meant to live.
+//! and command ids, so a naive bare-name rule there would be all false
+//! positives; its product-surface risk is covered by the default [`DISALLOWED`]
+//! pass. (A prose-value-only JSON scan — checking `description` /
+//! `markdownDescription` / walkthrough / `title` values while skipping keys — is
+//! a planned follow-up once the native command retitle lands, so the live
+//! manifest is prose-clean.) Reference/compatibility/conformance/archive
+//! material and tests are exempt via [`STRICT_PATH_ALLOWLIST`] — that is where
+//! legacy detail is meant to live.
 
 use color_eyre::eyre::{Result, bail};
 use std::fs;
@@ -238,31 +242,39 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
     false
 }
 
+/// Return the bare external-tool markers present in `text` that lack a
+/// native-first qualifier. Shared by the `.md` line scan and the package.json
+/// prose scan.
+///
+/// The text is normalized first — Markdown code/emphasis markers stripped and
+/// lowercased — so a qualifier is still detected when bolded or wrapped (e.g.
+/// "does **not** require" reads as "does not require"). Both the qualifier and
+/// the marker are matched with [`contains_word`] (whole-word, non-alphanumeric
+/// boundaries): substring matching would let an unrelated word that merely
+/// *embeds* a qualifier wrongly exempt a real leak — "incompatibility" embeds
+/// "compatibility", "immigration" embeds "migration".
+fn unqualified_markers(text: &str) -> Vec<&'static str> {
+    let normalized = text.replace(['`', '*'], "").to_ascii_lowercase();
+    if NATIVE_FIRST_QUALIFIERS.iter().any(|q| contains_word(&normalized, q)) {
+        return Vec::new();
+    }
+    STRICT_BARE_MARKERS
+        .iter()
+        .copied()
+        .filter(|marker| contains_word(&normalized, marker))
+        .collect()
+}
+
 /// Pure per-surface strict scan. A line naming a bare external tool passes when
 /// it carries any native-first qualifier; otherwise every bare marker on it is a
 /// violation.
 fn collect_strict_violations(surface: &str, text: &str, violations: &mut Vec<String>) {
     for (idx, line) in text.lines().enumerate() {
-        // Strip Markdown code/emphasis markers so a qualifier is still detected
-        // when it is bolded or wrapped — e.g. "does **not** require" must read as
-        // "does not require", not defeat the "does not" / "not require" match.
-        let normalized = line.replace(['`', '*'], "").to_ascii_lowercase();
-        // Word-boundary match, not raw substring: a plain `.contains(q)` lets an
-        // unrelated word that merely *embeds* a qualifier wrongly exempt a real
-        // leak — "incompatibility" embeds "compatibility", "immigration" embeds
-        // "migration". `contains_word` (already used for the bare-marker side
-        // below) requires non-alphanumeric boundaries on both sides of the whole
-        // qualifier phrase, so those embeddings no longer count.
-        if NATIVE_FIRST_QUALIFIERS.iter().any(|q| contains_word(&normalized, q)) {
-            continue;
-        }
-        for marker in STRICT_BARE_MARKERS {
-            if contains_word(&normalized, marker) {
-                violations.push(format!(
-                    "{surface}:{}: unqualified external-tool name `{marker}` on a first-mile surface (strict) — add a native-first qualifier (optional/legacy/compatibility/not required) or move the detail to reference/compatibility",
-                    idx + 1
-                ));
-            }
+        for marker in unqualified_markers(line) {
+            violations.push(format!(
+                "{surface}:{}: unqualified external-tool name `{marker}` on a first-mile surface (strict) — add a native-first qualifier (optional/legacy/compatibility/not required) or move the detail to reference/compatibility",
+                idx + 1
+            ));
         }
     }
 }
