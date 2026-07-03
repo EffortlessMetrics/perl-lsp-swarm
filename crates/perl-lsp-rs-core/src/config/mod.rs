@@ -1916,6 +1916,72 @@ profile = "recommended"
     }
 
     #[test]
+    #[allow(unsafe_code)] // transient PATH mutation, serialized + restored (see below)
+    fn perltidy_discoverable_on_path_still_yields_native_default()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Stronger form of the guard above. The previous test only proves the
+        // default holds when `perltidy` is ABSENT from PATH (the usual CI
+        // condition), so it would not catch a regression that auto-selects the
+        // external engine only when a PATH probe (`which perltidy`) succeeds.
+        // Here we make a real `perltidy` executable discoverable on PATH and
+        // assert the default engine is STILL native — locking the "installed
+        // external tools must not change default behavior merely by existing on
+        // PATH" contract behaviorally, not just structurally.
+        //
+        // PATH is process-global, so serialize against any other PATH-touching
+        // test and restore it before asserting (a leaked mutation would poison
+        // sibling tests).
+        use std::io::Write as _;
+        static PATH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = PATH_ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let dir = tempfile::tempdir()?;
+        let bin_name = if cfg!(windows) { "perltidy.exe" } else { "perltidy" };
+        let bin_path = dir.path().join(bin_name);
+        std::fs::File::create(&bin_path)?.write_all(b"#!/bin/sh\nexit 0\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut perms = std::fs::metadata(&bin_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin_path, perms)?;
+        }
+
+        let original_path = std::env::var_os("PATH");
+        let probe_path = {
+            let mut parts = vec![dir.path().to_path_buf()];
+            if let Some(existing) = &original_path {
+                parts.extend(std::env::split_paths(existing));
+            }
+            std::env::join_paths(parts)?
+        };
+        // SAFETY: serialized by PATH_ENV_LOCK; PATH is restored below before any
+        // assertion can unwind the thread. Mirrors the crate's existing
+        // `EnvVarGuard` pattern (runtime/launcher/mod.rs).
+        unsafe { std::env::set_var("PATH", &probe_path) };
+
+        let mut config = ServerConfig::default();
+        config.update_from_value(&serde_json::json!({
+            "formatting": { "enabled": true }
+        }));
+        let engine_with_perltidy_on_path = config.formatting_engine;
+
+        // Restore PATH before asserting so a failing assert cannot leak the
+        // mutated PATH into sibling tests. SAFETY: still under PATH_ENV_LOCK.
+        match original_path {
+            Some(prev) => unsafe { std::env::set_var("PATH", prev) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+
+        assert_eq!(
+            engine_with_perltidy_on_path,
+            FormatterMode::Native,
+            "a `perltidy` discoverable on PATH must not flip the default formatter engine"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn perltidyrc_profile_does_not_force_external_formatting() {
         // A `.perltidyrc` profile is usable for compatibility reporting or an
         // explicit external mode, but setting it must NOT switch the engine
