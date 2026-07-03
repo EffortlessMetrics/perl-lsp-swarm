@@ -90,11 +90,16 @@ impl DapPeerBridge {
 
     fn push_dap_events(&mut self, ev: DebugEvent, out: &mut Vec<DapMessage>) {
         match ev {
-            // The bridge already emits exactly one DAP `initialized` event after
-            // the initialize RESPONSE (DAP requires exactly one). The peer's own
-            // `debugger/initialized` is an internal readiness signal; forwarding
-            // it would be a second `initialized` and make a conformant client
-            // re-send its configuration. Intentionally dropped.
+            // The DAP `initialized` event (editor: "you may send configuration
+            // now") is a DIFFERENT signal from the peer's `debugger/initialized`
+            // (host: "the engine is ready"). The bridge emits the DAP one exactly
+            // once, right after the initialize RESPONSE, and treats the peer
+            // handshake (`peer/hello`) as the mirror-MVP readiness gate. The peer
+            // readiness event is therefore NOT forwarded — emitting a second DAP
+            // `initialized` would wrongly re-trigger the client's configuration
+            // sequence. (Gating configuration on a peer's `debugger/initialized`
+            // is future work for cooperative mode; the v1 integration target does
+            // not require peers to send it — see PTKDB_PEER_INTEGRATION_TARGET.md.)
             DebugEvent::Initialized => {}
             DebugEvent::Stopped { reason, thread_id, .. } => {
                 let body = json!({
@@ -482,8 +487,15 @@ pub fn run_external_peer_session(
 
     let write_msgs = |writer: &mut TcpStream, msgs: &[DapMessage]| -> std::io::Result<()> {
         for m in msgs {
-            let body = serde_json::to_vec(m).unwrap_or_default();
-            writer.write_all(&frame(&body))?;
+            // On the (practically impossible) serialize failure, skip the message
+            // rather than writing a `Content-Length: 0` frame that would corrupt
+            // the stream and desync the client.
+            match serde_json::to_vec(m) {
+                Ok(body) => writer.write_all(&frame(&body))?,
+                Err(e) => {
+                    tracing::error!(error = %e, "peer bridge: dropping unserializable DAP message")
+                }
+            }
         }
         writer.flush()
     };
@@ -502,14 +514,24 @@ pub fn run_external_peer_session(
                 loop {
                     match framer.try_next() {
                         Ok(Some(body)) => {
-                            if let Ok(req) =
-                                serde_json::from_slice::<crate::protocol::Request>(&body)
-                            {
-                                let out = bridge.dispatch(req.seq, &req.command, req.arguments);
-                                write_msgs(&mut writer, &out)?;
-                                if req.command == "disconnect" {
-                                    return Ok(());
-                                }
+                            // DAP requires a response to every request. Parse the
+                            // frame leniently (extracting command + seq even if the
+                            // typed `Request` shape doesn't match exactly, e.g. seq
+                            // sent as a JSON float) so a client is never left hanging.
+                            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                            let command = v.get("command").and_then(Value::as_str);
+                            let Some(command) = command else {
+                                tracing::warn!("peer bridge: dropping DAP frame with no `command`");
+                                continue;
+                            };
+                            let seq = v
+                                .get("seq")
+                                .and_then(|s| s.as_i64().or_else(|| s.as_f64().map(|f| f as i64)))
+                                .unwrap_or(0);
+                            let out = bridge.dispatch(seq, command, v.get("arguments").cloned());
+                            write_msgs(&mut writer, &out)?;
+                            if command == "disconnect" {
+                                return Ok(());
                             }
                         }
                         Ok(None) => break,
@@ -876,5 +898,16 @@ mod tests {
         } else {
             panic!("terminated body");
         }
+    }
+
+    #[test]
+    fn peer_initialized_readiness_is_not_forwarded_as_a_second_dap_initialized() {
+        // The DAP `initialized` event is emitted once on the initialize response;
+        // a peer's `debugger/initialized` readiness signal must NOT become a
+        // second DAP `initialized` (which would re-trigger client configuration).
+        let mut b = bridge();
+        let mut out = Vec::new();
+        b.push_dap_events(DebugEvent::Initialized, &mut out);
+        assert!(out.is_empty(), "peer readiness must not emit a DAP event");
     }
 }

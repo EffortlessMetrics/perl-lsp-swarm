@@ -68,7 +68,7 @@ fn spawn_fake_peer(addr: std::net::SocketAddr) -> JoinHandle<()> {
         });
         let _ = write.write_all(&encode_message(&hello).expect("enc"));
 
-        let mut send = |w: &mut TcpStream, m: &PeerMessage| {
+        let send = |w: &mut TcpStream, m: &PeerMessage| {
             let _ = w.write_all(&encode_message(m).expect("enc"));
             let _ = w.flush();
         };

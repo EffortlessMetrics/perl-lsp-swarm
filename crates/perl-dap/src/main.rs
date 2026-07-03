@@ -29,11 +29,15 @@ fn run_external_peer_bridge(editor_port: u16, peer_addr: &str) -> anyhow::Result
     use std::net::TcpListener;
 
     tracing::info!(port = editor_port, peer = peer_addr, "Starting external-peer DAP bridge");
+    // Bind the editor-facing listener FIRST so the port is open (and the editor's
+    // connect can queue in the listen backlog) while we connect to the peer, which
+    // may take up to EXTERNAL_PEER_TIMEOUT. Otherwise an editor that spawns us and
+    // immediately connects could fail before the port ever opened.
+    let listener = TcpListener::bind(("127.0.0.1", editor_port))?;
     let backend = ExternalDebuggerPeerBackend::connect(peer_addr, EXTERNAL_PEER_TIMEOUT)
         .map_err(|e| anyhow::anyhow!("failed to connect to debugger peer {peer_addr}: {e}"))?;
     let bridge = DapPeerBridge::new(Box::new(backend));
 
-    let listener = TcpListener::bind(("127.0.0.1", editor_port))?;
     let (editor, _) = listener.accept()?;
     run_external_peer_session(editor, bridge, EXTERNAL_PEER_POLL)?;
     Ok(())
