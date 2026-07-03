@@ -36,6 +36,21 @@ agent-nextest:
 agent-pr-fast:
     {{cargo_safe}} xtask gates --tier pr-fast --receipt
 
+# Per-crate agent-safe recipes (#3230): single-crate ergonomics for the routed,
+# incremental-off, bounded-sccache, build-locked path. The `agent-*` recipes above
+# are `--workspace --all-targets` (too heavy for a one-crate fix); these scope to CRATE
+# so a builder verifying a single crate stays on the cache-warm agent path instead of
+# falling back to raw `cargo test -p X` / `cargo clippy -p X` (default dev profile,
+# incremental on → sccache misses). fmt is profile-independent.
+agent-test-crate CRATE:
+    {{cargo_safe}} test -p {{CRATE}} --profile agent --locked
+
+agent-clippy-crate CRATE:
+    {{cargo_safe}} clippy -p {{CRATE}} --profile agent --locked -- -D warnings -A missing_docs
+
+agent-fmt-crate CRATE:
+    {{cargo_safe}} fmt -p {{CRATE}} -- --check
+
 # ============================================================================
 # Tiered CI Execution (works locally via Nix and in GitHub Actions)
 # ============================================================================

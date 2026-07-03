@@ -16,7 +16,7 @@ isolated worktree.
 - **~30 focused crates with strong boundaries** (post-v0.13.0 collapse from ~135). Each owns one concern. Your change should usually touch 1-2 crates. Old issue refs may point to crates that no longer exist as separate publishable units — look in the parent crate first.
 - **Key paths:** Parser `crates/perl-parser/`, LSP `crates/perl-lsp/` + `crates/perl-lsp-*/`, DAP `crates/perl-dap/` + `crates/perl-dap-*/`, module resolution `crates/perl-module-*/`, tooling `xtask/`, features `features.toml`.
 - **Test patterns:** `Result<()>` returns, `perl_tdd_support::must`/`must_some` helpers, `insta` snapshot tests. Never bare `unwrap()` in tests.
-- **Verify:** `cargo test -p <crate>`, `cargo xtask fmt`, `cargo clippy -p <crate>`. Full gate: `just pr-fast`.
+- **Verify (agent-safe path, #3230):** `just agent-test-crate <crate>`, `just agent-fmt-crate <crate>`, `just agent-clippy-crate <crate>` — routed/incremental-off/cache-warm. Avoid raw `cargo test -p <crate>` / `cargo clippy -p <crate>` (default `dev` profile → sccache misses). Full gate: `just agent-pr-fast` (or `just pr-fast`).
 - **PR titles** must end with `(#NNN)` linking the issue. validate-title CI enforces this.
 
 ## Principles

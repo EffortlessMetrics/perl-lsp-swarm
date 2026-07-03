@@ -255,7 +255,13 @@ The GitHub issue thread is not a report destination — it is the database, the 
 
 (`CI Gate (Merge-Blocking)` and `PR Smoke` are **not** required — their failure does not block merge.)
 
-**Local preflight before merge** — run per-crate, separately (the combined `-p X -p Y` form glitches with a spurious failure):
+**Local preflight before merge** — run per-crate, separately (the combined `-p X -p Y` form glitches with a spurious failure). Prefer the agent-safe per-crate recipes (#3230) so builds stay on the routed, incremental-off, cache-warm path instead of raw `cargo` (default `dev` profile → sccache misses):
+```bash
+just agent-fmt-crate <crate>       # cargo_safe fmt -p <crate> -- --check
+just agent-clippy-crate <crate>    # cargo_safe clippy -p <crate> --profile agent --locked -- -D warnings -A missing_docs
+just agent-test-crate <crate>      # cargo_safe test -p <crate> --profile agent --locked
+```
+Raw equivalents (only if `cargo_safe`'s disk/lock guard is unavailable — e.g. a cloud runner where the ≥40 GB-free preflight is too strict):
 ```bash
 cargo fmt --check -p <crate>                             # per-crate, one at a time
 cargo clippy -p <crate> --locked -- -D warnings -A missing_docs  # per-crate
