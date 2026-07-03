@@ -50,8 +50,8 @@ use crate::peer_protocol::payloads::{
     WireSourceBreakpoint,
 };
 use crate::peer_protocol::{
-    HostReportedCapabilities, PROTOCOL_VERSION, PeerFrameDecoder, PeerReportedCapabilities,
-    encode_message,
+    HostReportedCapabilities, PROTOCOL_VERSION, PeerFrameDecoder, PeerFrameError,
+    PeerReportedCapabilities, encode_message,
 };
 
 /// Default time to wait for the peer handshake / a request response.
@@ -224,12 +224,21 @@ impl ExternalDebuggerPeerBackend {
     /// # Errors
     /// Fails if the TCP connection cannot be established.
     pub fn connect<A: ToSocketAddrs>(addr: A, timeout: Duration) -> BackendResult<Self> {
-        // Use connect_timeout so the connection phase honours `timeout` (plain
-        // TcpStream::connect ignores it and can block far longer).
+        // Bound the *entire* connect phase by a single deadline across the whole
+        // resolved address list — not `timeout` per address. A hostname with N
+        // A-records (or a dual-stack IPv4+IPv6 entry) would otherwise stall for
+        // up to `timeout * N`, blowing past the documented within-`timeout`
+        // contract and most editors' adapter-startup watchdog. (Plain
+        // TcpStream::connect ignores the timeout entirely and can block longer.)
         let addrs = addr.to_socket_addrs().map_err(|e| BackendError::Transport(e.to_string()))?;
         let mut last_err = None;
+        let deadline = Instant::now() + timeout;
         for address in addrs {
-            match TcpStream::connect_timeout(&address, timeout) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match TcpStream::connect_timeout(&address, remaining) {
                 Ok(stream) => return Self::from_stream(stream, timeout),
                 Err(e) => last_err = Some(e),
             }
@@ -578,10 +587,23 @@ fn reader_loop(mut stream: TcpStream, shared: Arc<Shared>) {
                     match decoder.try_next() {
                         Ok(Some(msg)) => handle_incoming(&shared, msg),
                         Ok(None) => break,
-                        Err(_e) => {
-                            // Malformed frame: drop the connection defensively.
+                        Err(PeerFrameError::Framing(_)) => {
+                            // Genuinely broken wire format (unparseable header, bad
+                            // Content-Length, missing CRLF): the peer is
+                            // misbehaving at the framing layer — defensive shutdown.
                             shared.mark_closed();
                             return;
+                        }
+                        Err(PeerFrameError::Json(e)) => {
+                            // The framer succeeded but the body did not deserialize
+                            // as a PeerMessage (e.g. an unknown `type` from a future
+                            // peer-protocol extension). Log and keep parsing rather
+                            // than tearing the session down — same recoverable
+                            // posture as the DAP-side drivers in this crate.
+                            tracing::warn!(
+                                error = %e,
+                                "peer reader: dropping unrecognized peer message body"
+                            );
                         }
                     }
                 }
@@ -591,6 +613,14 @@ fn reader_loop(mut stream: TcpStream, shared: Arc<Shared>) {
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 // Periodic timeout so we can re-check `closed`.
+                continue;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                // Signal-interrupted read: retry, matching the stdio driver in
+                // `run_peer_session_threaded`. Without this, a stray SIGCHLD/
+                // SIGPIPE from elsewhere in the process (any handler installed
+                // without SA_RESTART) could take the peer session down even though
+                // the wire itself is fine.
                 continue;
             }
             Err(_e) => {

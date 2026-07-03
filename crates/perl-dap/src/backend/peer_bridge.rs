@@ -41,13 +41,17 @@ use crate::model::{
 pub struct DapPeerBridge {
     backend: Box<dyn DebugBackend>,
     seq: i64,
+    /// Whether a `terminated` DAP event has already been emitted this session,
+    /// so a peer's own `debugger/terminated` (which may have been queued before
+    /// our `peer/goodbye` on a `terminate`) does not produce a duplicate.
+    terminated_emitted: bool,
 }
 
 impl DapPeerBridge {
     /// Create a bridge over `backend`.
     #[must_use]
     pub fn new(backend: Box<dyn DebugBackend>) -> Self {
-        Self { backend, seq: 0 }
+        Self { backend, seq: 0, terminated_emitted: false }
     }
 
     fn next_seq(&mut self) -> i64 {
@@ -119,8 +123,15 @@ impl DapPeerBridge {
                 out.push(self.event("output", Some(body)));
             }
             DebugEvent::Terminated { exit_code } => {
-                let body = exit_code.map(|c| json!({ "exitCode": c }));
-                out.push(self.event("terminated", body));
+                // Emit at most one `terminated` per session. If a DAP `terminate`
+                // already emitted one, the peer's own `debugger/terminated`
+                // (possibly queued before our `peer/goodbye`) is swallowed rather
+                // than delivered as a duplicate.
+                if !self.terminated_emitted {
+                    self.terminated_emitted = true;
+                    let body = exit_code.map(|c| json!({ "exitCode": c }));
+                    out.push(self.event("terminated", body));
+                }
             }
             DebugEvent::BreakpointsChanged { breakpoints } => {
                 for bp in breakpoints {
@@ -251,6 +262,9 @@ impl DapPeerBridge {
                 // of leaving it running.
                 let _ = self.backend.disconnect(true);
                 out.push(self.response(request_seq, command, true, None, None));
+                // Mark before draining backend events below so a peer-queued
+                // `debugger/terminated` does not double up (see push_dap_events).
+                self.terminated_emitted = true;
                 out.push(self.event("terminated", None));
             }
             "disconnect" => {
@@ -1168,6 +1182,15 @@ mod tests {
             out.iter()
                 .any(|m| matches!(m, DapMessage::Event { event, .. } if event == "terminated")),
             "terminate must emit a `terminated` event: {out:?}"
+        );
+
+        // A peer's own `debugger/terminated`, queued before our `peer/goodbye`
+        // and drained afterwards, must NOT produce a second DAP `terminated`.
+        let mut more = Vec::new();
+        b.push_dap_events(DebugEvent::Terminated { exit_code: Some(0) }, &mut more);
+        assert!(
+            more.is_empty(),
+            "a second terminated must be suppressed after terminate: {more:?}"
         );
     }
 

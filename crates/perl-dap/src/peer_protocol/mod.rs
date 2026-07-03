@@ -29,7 +29,7 @@ pub mod message;
 pub mod payloads;
 
 pub use capabilities::{HostReportedCapabilities, PeerReportedCapabilities};
-pub use framing::{PeerFrameDecoder, encode_message};
+pub use framing::{PeerFrameDecoder, PeerFrameError, encode_message};
 pub use message::{PeerEvent, PeerMessage, PeerRequest, PeerResponse, command, event};
 
 /// The protocol version string exchanged in the handshake. Consumers must reject
