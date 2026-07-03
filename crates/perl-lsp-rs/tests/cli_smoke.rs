@@ -292,3 +292,105 @@ fn trailing_files_without_check_flag_errors() {
     let mut cmd = cargo_bin_cmd!("perl-lsp");
     cmd.arg("somefile.pl").assert().failure();
 }
+
+/// End-to-end CLI check for the `--ripr-facts` subcommand: the `perl-lsp`
+/// binary parses a workspace, writes a `ripr-perl-facts-v1` packet to the
+/// requested path, and the packet is schema-shaped and deterministic. The
+/// emitter's fact extraction is covered by `perl-ripr-facts`'s own lib tests;
+/// this proves the binary → `run_ripr_facts` → written-file production chain,
+/// which no `--lib` test exercises (#3293 final slice).
+#[test]
+fn ripr_facts_emits_schema_valid_deterministic_packet() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::create_dir_all(dir.path().join("lib"))?;
+    std::fs::create_dir_all(dir.path().join("t"))?;
+    std::fs::write(
+        dir.path().join("lib/Calc.pm"),
+        "package Calc;\nuse strict;\nuse warnings;\n\nsub add {\n    my ($x, $y) = @_;\n    return $x + $y;\n}\n\n1;\n",
+    )?;
+    std::fs::write(
+        dir.path().join("t/calc.t"),
+        "use strict;\nuse warnings;\nuse Test::More;\nuse Calc;\n\nis(Calc::add(2, 3), 5, 'add works');\n\ndone_testing();\n",
+    )?;
+
+    // `--ripr-root` and `--ripr-out` must both be repo-relative; the tool
+    // resolves them against the working directory, so run from the fixture root.
+    let run = |out: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let mut cmd = cargo_bin_cmd!("perl-lsp");
+        cmd.current_dir(dir.path())
+            .args(["--ripr-facts", "--ripr-root", ".", "--ripr-out", out])
+            .assert()
+            .success();
+        Ok(())
+    };
+    run("out1.json")?;
+    run("out2.json")?;
+
+    let packet_bytes = std::fs::read(dir.path().join("out1.json"))?;
+    let second_bytes = std::fs::read(dir.path().join("out2.json"))?;
+    assert_eq!(
+        packet_bytes, second_bytes,
+        "two runs over identical inputs must produce byte-identical packets"
+    );
+
+    let packet: serde_json::Value = serde_json::from_slice(&packet_bytes)?;
+    let obj = packet.as_object().ok_or("packet is not a JSON object")?;
+
+    // All 17 required top-level keys are present (schema `additionalProperties:false`).
+    for key in [
+        "schema_version",
+        "packet_id",
+        "packet_status",
+        "packet_fingerprint",
+        "producer",
+        "root",
+        "input",
+        "files",
+        "owners",
+        "changes",
+        "tests",
+        "oracles",
+        "relations",
+        "dynamic_boundaries",
+        "verify_commands",
+        "limitations",
+        "provenance",
+    ] {
+        assert!(obj.contains_key(key), "packet is missing required key `{key}`");
+    }
+
+    assert_eq!(packet["schema_version"], "ripr-perl-facts-v1");
+
+    // The fingerprint is a non-null `fnv64:` content hash, not the old `null` placeholder.
+    let fingerprint =
+        packet["packet_fingerprint"].as_str().ok_or("packet_fingerprint is not a string")?;
+    assert!(
+        fingerprint.starts_with("fnv64:"),
+        "packet_fingerprint should be an fnv64 digest, got `{fingerprint}`"
+    );
+
+    // The fixture was actually parsed: the `.pm` and `.t` files became facts.
+    let files = packet["files"].as_array().ok_or("files is not an array")?;
+    assert!(!files.is_empty(), "files[] should not be empty for a parsed workspace");
+
+    Ok(())
+}
+
+/// The `--ripr-out` path is validated as repo-relative; an absolute path is
+/// rejected with a clear error and a non-zero exit, and no file is written.
+#[test]
+fn ripr_facts_rejects_absolute_out_path() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let abs_out = dir.path().join("packet.json");
+    let abs_out_str = abs_out.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let mut cmd = cargo_bin_cmd!("perl-lsp");
+    cmd.current_dir(dir.path())
+        .args(["--ripr-facts", "--ripr-root", ".", "--ripr-out", abs_out_str])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("must be repo-relative"));
+
+    assert!(!abs_out.exists(), "no packet should be written when the out path is rejected");
+    Ok(())
+}
