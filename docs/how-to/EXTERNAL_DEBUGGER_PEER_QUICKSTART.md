@@ -29,7 +29,8 @@ The bridge is proven end-to-end against an in-repo fake ptkdb peer. Pointing it
 at a **stock** `Devel::ptkdb` needs a thin ptkdb-side patch that teaches ptkdb to
 speak the peer protocol — tracked in
 [PTKDB_PEER_INTEGRATION_TARGET.md](../reference/PTKDB_PEER_INTEGRATION_TARGET.md).
-Until that lands, the two emit surfaces below are the useful, standalone tools.
+Until that lands, `--debug-session-plan` (§2) is the genuinely useful standalone
+tool; the `.ptkdbrc` bootstrap (§1) is a minimal, extend-it-yourself starting point.
 
 ## 1. Generate a `.ptkdbrc` bootstrap (no bridge needed)
 
@@ -42,20 +43,13 @@ perl -d:ptkdb path/to/script.pl
 ```
 
 `ptkdb` reads `.ptkdbrc` from the current directory before the first stop. The
-generated file is plain Perl (safely escaped). It applies any breakpoints and
-watch expressions carried in the session plan, and — so a plain run isn't empty
-— lists every subroutine `perl-lsp` discovered as a **ready-to-uncomment
-`brkonsub` menu**:
-
-```perl
-# Subroutines discovered by perl-lsp — uncomment to break on entry:
-# eval { brkonsub('greet'); };  # lines 5..8
-```
-
-Uncomment the subs you care about (they are commented by default — breaking on
-every sub is rarely what you want) and re-run. This is a convenience seed, not a
-full session; richer breakpoint/watch seeding comes from a session plan built via
-the programmatic API.
+generated file is plain Perl (safely escaped). It registers any line/subroutine
+breakpoints and watch expressions carried in the session plan, each wrapped in
+`eval { ... }` so an unsupported ptkdb call degrades gracefully. Built from the
+bare `--ptkdb-bootstrap-rc PROGRAM` (which takes no breakpoint flags yet), it is
+a **minimal valid** `.ptkdbrc` — extend it with your own ptkdb breakpoints, or
+use `--debug-session-plan` (below) to see the breakable lines and subroutines
+`perl-lsp` found and pick where to break.
 
 ## 2. Inspect the session plan (JSON)
 
