@@ -3561,6 +3561,87 @@ mod tests {
         );
     }
 
+    /// Focused discriminator coverage for the three visibility boundaries in
+    /// `SymbolTable::find_symbol`: the direct-scope match filters on both
+    /// `symbol.scope_id == scope_id` and `symbol.kind == kind`, and the
+    /// `our`-variable fallback only fires for `scope.kind != ScopeKind::Package`.
+    /// Built by hand (not via extraction) so each boundary is exercised in
+    /// isolation without a brittle total-result count.
+    #[test]
+    fn find_symbol_boundary_discriminator() {
+        let mut table = SymbolTable::new(); // seeds Global scope 0
+
+        // package scope 1 under global; block scope 2 under the package
+        table.scopes.insert(
+            1,
+            Scope {
+                id: 1,
+                parent: Some(0),
+                kind: ScopeKind::Package,
+                location: SourceLocation { start: 0, end: 0 },
+                symbols: HashSet::new(),
+            },
+        );
+        table.scopes.insert(
+            2,
+            Scope {
+                id: 2,
+                parent: Some(1),
+                kind: ScopeKind::Block,
+                location: SourceLocation { start: 0, end: 0 },
+                symbols: HashSet::new(),
+            },
+        );
+
+        // `sub foo` defined in package scope 1
+        if let Some(s) = table.scopes.get_mut(&1) {
+            s.symbols.insert("foo".to_string());
+        }
+        table.symbols.entry("foo".to_string()).or_default().push(Symbol {
+            name: "foo".to_string(),
+            qualified_name: "main::foo".to_string(),
+            kind: SymbolKind::Subroutine,
+            location: SourceLocation { start: 0, end: 0 },
+            scope_id: 1,
+            declaration: None,
+            documentation: None,
+            attributes: Vec::new(),
+        });
+
+        // `our $g` declared in package scope 1
+        if let Some(s) = table.scopes.get_mut(&1) {
+            s.symbols.insert("g".to_string());
+        }
+        table.symbols.entry("g".to_string()).or_default().push(Symbol {
+            name: "g".to_string(),
+            qualified_name: "main::g".to_string(),
+            kind: SymbolKind::scalar(),
+            location: SourceLocation { start: 0, end: 0 },
+            scope_id: 1,
+            declaration: Some("our".to_string()),
+            documentation: None,
+            attributes: Vec::new(),
+        });
+
+        // Boundary: symbol.scope_id == scope_id — queried from the defining
+        // scope with the matching kind, the direct-scope branch returns it.
+        let sub_hit = table.find_symbol("foo", 1, SymbolKind::Subroutine);
+        assert_eq!(sub_hit.len(), 1, "input that hits the boundary: symbol.scope_id == scope_id");
+
+        // Boundary: symbol.kind == kind — same name and scope but the wrong
+        // kind is filtered out (a sub is not returned for a scalar query).
+        let wrong_kind = table.find_symbol("foo", 1, SymbolKind::scalar());
+        assert!(wrong_kind.is_empty(), "input that hits the boundary: symbol.kind == kind");
+
+        // Boundary: scope.kind != ScopeKind::Package — from a non-package
+        // (Block) scope, the `our`-variable fallback fires and surfaces $g.
+        let our_from_block = table.find_symbol("g", 2, SymbolKind::scalar());
+        assert!(
+            our_from_block.iter().any(|s| s.name == "g"),
+            "input that hits the boundary: scope.kind != ScopeKind::Package"
+        );
+    }
+
     #[test]
     fn test_symbol_extraction() {
         let code = r#"
