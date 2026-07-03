@@ -524,5 +524,71 @@
             "my %${1:hash} = %{\\$${2:hash_ref}};"
         ],
         "description": "Dereference a hash reference"
+    },
+    "Test2::V0 test header": {
+        "prefix": "usetest2",
+        "body": [
+            "use Test2::V0;",
+            "",
+            "$0",
+            "",
+            "done_testing;"
+        ],
+        "description": "Test2::V0 test file skeleton (imports strict/warnings and Test2 tools)"
+    },
+    "Test2 subtest": {
+        "prefix": "subtest",
+        "body": [
+            "subtest '${1:name}' => sub {",
+            "\t$0",
+            "};"
+        ],
+        "description": "Test2/Test::More subtest block"
+    },
+    "Test2 done_testing": {
+        "prefix": "done_testing",
+        "body": [
+            "done_testing;"
+        ],
+        "description": "Signal the end of a test with no fixed plan"
+    },
+    "Test2 is": {
+        "prefix": "is",
+        "body": [
+            "is(${1:\\$got}, ${2:\\$want}, '${3:description}');"
+        ],
+        "description": "Test2 deep/structural equality assertion"
+    },
+    "Test2 like": {
+        "prefix": "like",
+        "body": [
+            "like(${1:\\$got}, qr/${2:pattern}/, '${3:description}');"
+        ],
+        "description": "Test2 regex-match assertion"
+    },
+    "Test2 ok": {
+        "prefix": "ok",
+        "body": [
+            "ok(${1:\\$condition}, '${2:description}');"
+        ],
+        "description": "Test2 boolean assertion"
+    },
+    "Test2 dies": {
+        "prefix": "dies",
+        "body": [
+            "like(",
+            "\tdies { ${1:code} },",
+            "\tqr/${2:expected error}/,",
+            "\t'${3:description}'",
+            ");"
+        ],
+        "description": "Test2::Tools::Exception — assert code dies with a matching error"
+    },
+    "Test2 lives": {
+        "prefix": "lives",
+        "body": [
+            "ok(lives { ${1:code} }, '${2:description}') or note(\\$@);"
+        ],
+        "description": "Test2::Tools::Exception — assert code runs without dying"
     }
 }
