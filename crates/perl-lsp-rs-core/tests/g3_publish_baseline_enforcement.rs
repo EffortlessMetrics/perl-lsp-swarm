@@ -36,7 +36,7 @@ fn g3_baseline_file_matches_allowlist() -> Result<(), Box<dyn std::error::Error>
 
     let content = fs::read_to_string(&baseline_path)?;
     let baseline: usize =
-        content.trim().parse().map_err(|_| "baseline count should be parseable as u32")?;
+        content.trim().parse().map_err(|_| "baseline count should be parseable as an integer")?;
     let allowlist = published_allowlist_count(&root)?;
 
     assert_eq!(
