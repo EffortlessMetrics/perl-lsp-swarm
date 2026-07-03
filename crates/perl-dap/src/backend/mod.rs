@@ -13,11 +13,13 @@
 pub mod capabilities;
 pub mod external_peer;
 pub mod native_perldb;
+pub mod peer_bridge;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub use capabilities::{DebugBackendCapabilities, intersect_dap_capabilities};
+pub use peer_bridge::{DapPeerBridge, run_external_peer_session};
 
 use crate::model::{
     DebugBreakpoint, DebugEvent, DebugFunctionBreakpoint, DebugScope, DebugSource, DebugStackFrame,

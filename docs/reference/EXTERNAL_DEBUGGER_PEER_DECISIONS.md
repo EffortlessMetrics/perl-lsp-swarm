@@ -84,11 +84,20 @@ These are called out so the "done" claim is scoped honestly (closure discipline)
   (spec "PR 2"). The seam is instead *proven by tests* (mock backend + fake
   ptkdb peer conformance harness). The existing native DAP path is untouched, so
   no current behavior regresses. Migration is its own follow-up.
-- **DF2 — End-to-end editor↔ptkdb live session.** Wiring `ExternalDebuggerPeerBackend`
-  into `DapServer::run` behind a launch flag and shipping the VS Code launch mode
-  as a working round-trip is deferred; this PR delivers the backend + protocol +
-  conformance harness + CLI/session-packet/bootstrap surfaces and the VS Code
-  *schema*, so the remaining work is wiring, not design.
+- **DF2 — End-to-end editor↔peer live session — NOW CLOSED (socket path).**
+  A DAP frontend over the backend (`crate::backend::peer_bridge::DapPeerBridge`)
+  translates DAP requests → model calls → DAP responses and pumps
+  `drain_events()` → DAP events, driven by `run_external_peer_session` over a
+  socket editor connection and reachable from the binary via
+  `perl-dap --socket --port N --external-peer HOST:PORT`. Proven end-to-end by
+  `tests/peer_bridge_e2e.rs`: a real `ExternalDebuggerPeerBackend` connected to a
+  fake ptkdb peer is driven through a full DAP session (initialize → setBreakpoints
+  → continue → the peer's `debugger/stopped` surfaces as a DAP `stopped` event →
+  stackTrace → disconnect), plus a socket-transport driver test. This is a
+  **parallel** path — the native `DapServer`/`DebugAdapter` dispatch funnel is
+  untouched (DF1 stays deferred). *Residual:* the VS Code extension must pass the
+  `--external-peer` flag through, stdio async-event delivery, and validation
+  against a live `Devel::ptkdb` build (vs. the faithful fake peer) remain follow-ups.
 - **DF3 — `NativePerlDbBackend` full delegation.** The native backend implements
   the model-typed contract for the surface that does not require a live `perl -d`
   process (capabilities from the catalog, AST-backed `set_breakpoints`), and

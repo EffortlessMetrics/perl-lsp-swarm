@@ -207,6 +207,18 @@ impl ExternalDebuggerPeerBackend {
         Ok(Self { shared, reader: Some(reader), timeout, control_mode: ControlMode::Mirror })
     }
 
+    /// Build a backend over an already-connected peer stream.
+    ///
+    /// Use this when the caller manages the socket rendezvous itself (e.g. it
+    /// accepted the peer on its own listener). The peer is still expected to send
+    /// `peer/hello` once the stream is up.
+    ///
+    /// # Errors
+    /// Fails if the socket cannot be cloned or configured.
+    pub fn from_connected_stream(stream: TcpStream, timeout: Duration) -> BackendResult<Self> {
+        Self::from_stream(stream, timeout)
+    }
+
     /// Connect to a running peer (`Connect` mode).
     ///
     /// # Errors
