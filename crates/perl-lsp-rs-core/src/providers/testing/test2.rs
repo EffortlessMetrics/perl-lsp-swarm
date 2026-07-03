@@ -19,8 +19,9 @@
 //! - `strict`/`warnings` default and the `-no_strict` / `-no_warnings` /
 //!   `-no_pragmas` opt-outs — the `Test2::V0` POD.
 //! - `Test2::V1` default export (`T2()` only), its pragma model (none by
-//!   default; `-strict`/`-warnings`/`-p`/`-pragmas` opt-in) and `-import`/`-i`
-//!   (bring in the full bare set) — the `Test2::V1` POD.
+//!   default; `-strict`/`-warnings`/`-p`/`-pragmas` opt-in), `-import`/`-i`
+//!   (bring in the full bare set), and grouped short flags (`-ipP`) — the
+//!   `Test2::V1` POD.
 //!
 //! # Scope model (documented simplification)
 //!
@@ -317,26 +318,24 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
     let bundle = is_test2_bundle(module);
 
     // `Test2::V1` reaches V0 parity (the full bare tool set) only under an
-    // explicit `-import`/`-i` option; a plain `use Test2::V1;` brings in only
-    // the `T2()` handle. Oracle: metacpan `Test2::V1` ("-import: Bring in ALL
-    // imports"). (Compact bundled flags like `-ipP` are handled conservatively:
-    // an unrecognized `-i` inside a compact flag leaves the default set, which
-    // under-claims rather than over-claims.)
+    // explicit `-import` long option or an `i` short flag (standalone `-i` or
+    // grouped, e.g. `-ipP` — the "work like V0" form). A plain `use Test2::V1;`
+    // brings in only the `T2()` handle. Oracle: metacpan `Test2::V1`.
     let v1_import_all = module == "Test2::V1"
-        && (args_contains_option(raw_args, "import") || args_contains_option(raw_args, "i"));
+        && (args_contains_option(raw_args, "import") || v1_short_flag(raw_args, 'i'));
     let default_set =
         if v1_import_all { Some(V0_DEFAULT.as_slice()) } else { module_default_exports(module) };
 
     // Pragma resolution (bundles only). Most bundles (`Test2::V0`, `Test2::Suite`,
     // `Test2::Bundle::*`) enable strict/warnings by default and opt OUT via
     // `-no_strict`/`-no_warnings`/`-no_pragmas`. `Test2::V1` is the exception: it
-    // enables NO pragmas by default and opts IN via `-strict`/`-warnings`/`-p`/
-    // `-pragmas`. Oracle: metacpan `Test2::V1` ("NO PRAGMAS ARE ENABLED BY
-    // DEFAULT").
+    // enables NO pragmas by default and opts IN via `-pragmas`/`-p` (grouped or
+    // standalone), `-strict`, or `-warnings`. Oracle: metacpan `Test2::V1` ("NO
+    // PRAGMAS ARE ENABLED BY DEFAULT").
     let pragmas = if bundle {
         if module == "Test2::V1" {
             let all =
-                args_contains_option(raw_args, "pragmas") || args_contains_option(raw_args, "p");
+                args_contains_option(raw_args, "pragmas") || v1_short_flag(raw_args, 'p');
             Some(Test2Pragmas {
                 strict: all || args_contains_option(raw_args, "strict"),
                 warnings: all || args_contains_option(raw_args, "warnings"),
@@ -533,6 +532,22 @@ fn args_contains_option(raw_args: &str, flag: &str) -> bool {
         // Match the exact flag token, not a prefix (`-no_strict` must not match
         // a hypothetical `-no_strictness`).
         tok == needle
+    })
+}
+
+/// Whether the Test2::V1 short flag `flag_char` is set — either as a standalone
+/// `-c` option or inside a grouped short-flag token such as `-ipP`. A grouped
+/// token is `-` followed only by known V1 short-flag letters (`i`=import,
+/// `p`=pragmas, `P`=plugins, `x`), which distinguishes it from long options like
+/// `-import` or `-strict` (whose other letters are not short flags). Oracle:
+/// metacpan `Test2::V1` SYNOPSIS (`use Test2::V1 -ipP;`).
+fn v1_short_flag(raw_args: &str, flag_char: char) -> bool {
+    raw_args.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).any(|tok| {
+        tok.strip_prefix('-').is_some_and(|rest| {
+            !rest.is_empty()
+                && rest.chars().all(|c| matches!(c, 'i' | 'p' | 'P' | 'x'))
+                && rest.contains(flag_char)
+        })
     })
 }
 
