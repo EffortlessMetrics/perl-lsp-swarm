@@ -630,4 +630,35 @@ mod tests {
         );
         Ok(())
     }
+
+    // --- #1756 ReDoS line-boundary guard: direct production-path activation test ---
+    //
+    // EXPORT_QW_RE was widened to `[^\n)\]}/|!>]+` so matching stops at end-of-line
+    // instead of scanning unboundedly across the rest of the document. Call the real
+    // `is_symbol_exported` entry point (not a re-constructed pattern literal) with a
+    // qw() list whose closing delimiter is on a different line than the opening one,
+    // proving the bounded regex no longer matches across the newline.
+    #[test]
+    fn is_symbol_exported_not_matched_across_newline() {
+        let server =
+            LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(Vec::<u8>::new()));
+        let text = "@EXPORT = qw(\nfoo bar\n);\n";
+
+        assert!(
+            !server.is_symbol_exported(text, "foo"),
+            "EXPORT_QW_RE must not match an @EXPORT qw() list spanning a newline"
+        );
+    }
+
+    #[test]
+    fn is_symbol_exported_matches_same_line_qw_list() {
+        let server =
+            LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(Vec::<u8>::new()));
+        let text = "@EXPORT = qw(foo bar);\n";
+
+        assert!(
+            server.is_symbol_exported(text, "foo"),
+            "EXPORT_QW_RE should still match a same-line @EXPORT qw() list"
+        );
+    }
 }

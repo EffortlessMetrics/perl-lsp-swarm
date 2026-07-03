@@ -113,14 +113,13 @@ EOF
 
 #[test]
 fn test_regex_heredoc_detection() {
+    // NOTE (#1756): REGEX_HEREDOC_PATTERN was bounded to `[^}\n]*` to prevent ReDoS,
+    // so the `(?{ ... })` code block and its `<<` marker must now appear on a single
+    // line for the detector to fire — matching the accepted tradeoff documented in
+    // #1756 (multiline code blocks spanning a newline are no longer detected).
     let detector = AntiPatternDetector::new();
-    let code = r###"
-m/pattern(?{
-    print <<'MATCH';
-    Match text
-MATCH
-})/
-"###;
+    let code = "m/pattern(?{print <<'MATCH';MATCH})/\n";
+
     let diagnostics = detector.detect_all(code);
     assert_eq!(diagnostics.len(), 1);
     assert!(matches!(diagnostics[0].pattern, AntiPattern::RegexCodeBlockHeredoc { .. }));
@@ -128,12 +127,13 @@ MATCH
 
 #[test]
 fn test_eval_heredoc_detection() {
+    // NOTE (#1756): EVAL_HEREDOC_PATTERN was bounded to `[^\n']*`/`[^\n"]*` to prevent
+    // ReDoS, so the eval string and its `<<` marker must now appear on a single line
+    // for the detector to fire — matching the accepted tradeoff documented in #1756
+    // (multiline eval strings spanning a newline are no longer detected).
     let detector = AntiPatternDetector::new();
-    let code = r###"
-eval 'print <<"EVAL";
-Eval content
-EVAL';
-"###;
+    let code = "eval 'print <<\"EVAL\";EVAL';\n";
+
     let diagnostics = detector.detect_all(code);
     assert_eq!(diagnostics.len(), 1);
     assert!(matches!(diagnostics[0].pattern, AntiPattern::EvalStringHeredoc { .. }));
@@ -347,4 +347,67 @@ fn test_find_matching_brace_returns_none_for_unclosed_block() {
     let closing = super::find_matching_brace(code, opening);
 
     assert!(closing.is_none());
+}
+
+// --- #1756 ReDoS line-boundary guard: direct production-path activation tests ---
+//
+// The integration tests in `tests/heredoc_antip_redos_guardrail.rs` re-construct the
+// fixed pattern strings locally via `Regex::new(...)` rather than calling through
+// `AntiPatternDetector::detect_all`, so they never actually exercise the production
+// `LazyLock<Regex>` statics in this module. These tests call `detect_all` directly so
+// the `\n`-bounded guard on DYNAMIC_DELIMITER_PATTERN, REGEX_HEREDOC_PATTERN, and
+// EVAL_HEREDOC_PATTERN is proven reachable and correct through the real entry point.
+
+#[test]
+fn test_dynamic_delimiter_pattern_not_matched_across_newline() {
+    // Before the #1756 fix this unbounded `[^}]+` would happily match across the
+    // newline; the bounded `[^}\n]+` must stop the DynamicDelimiterDetector from
+    // firing when the closing `}` is on a different line.
+    let detector = AntiPatternDetector::new();
+    let code = "my $x = <<${\nVARNAME};\n";
+
+    let diagnostics = detector.detect_all(code);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diag| matches!(diag.pattern, AntiPattern::DynamicHeredocDelimiter { .. })),
+        "DYNAMIC_DELIMITER_PATTERN must not match a dynamic delimiter expression spanning a newline"
+    );
+}
+
+#[test]
+fn test_regex_heredoc_pattern_not_matched_across_newline() {
+    // The (?{ ... <<... }) code-block pattern must not match when the closing `}`
+    // appears on a line after the opening `(?{`.
+    let detector = AntiPatternDetector::new();
+    let code = "m/pattern(?{\nprint <<'MATCH';\n})/\n";
+
+    let diagnostics = detector.detect_all(code);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diag| matches!(diag.pattern, AntiPattern::RegexCodeBlockHeredoc { .. })),
+        "REGEX_HEREDOC_PATTERN must not match a regex code block spanning a newline"
+    );
+}
+
+#[test]
+fn test_eval_heredoc_pattern_not_matched_across_newline() {
+    // The eval '...<<...' / eval "...<<..." pattern must not match when the closing
+    // quote appears on a line after the opening quote — this is the realistic shape
+    // of a heredoc-in-eval-string anti-pattern (the heredoc body spans multiple
+    // lines before the closing quote of the eval string).
+    let detector = AntiPatternDetector::new();
+    let code = "eval 'print <<EOF;\nEOF\n';\n";
+
+    let diagnostics = detector.detect_all(code);
+
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diag| matches!(diag.pattern, AntiPattern::EvalStringHeredoc { .. })),
+        "EVAL_HEREDOC_PATTERN must not match an eval string spanning a newline"
+    );
 }
