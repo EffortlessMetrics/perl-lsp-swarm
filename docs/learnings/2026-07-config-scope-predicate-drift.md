@@ -33,11 +33,11 @@ Both were verified fixes in the integration once Codex inspected the VS Code run
 
 In PR #3308:
 
-1. **Scope fix**: Updated `handle_did_change_configuration` to call `getConfiguration` with the explicit language scope `{uri: undefined, languageId: 'perl'}` so that `globalLanguageValue` and `workspaceLanguageValue` are populated by VS Code.
+1. **Scope fix** (`vscode-extension/src/extension.ts`, the `getPerlCriticConfiguration` helper): call `getConfiguration('perl-lsp', {uri, languageId: 'perl'})` (or `{languageId: 'perl'}` when there is no document) so that `globalLanguageValue` / `workspaceLanguageValue` are populated for `"[perl]"`-block overrides. This is the TypeScript extension read path — not the Rust server handler.
 
-2. **Predicate-drift fix**: Replaced the re-parse predicate with a snapshot-diff pattern: capture the relevant config fields (e.g., `critic.severity`, `perlcritic.*`) before calling `update_from_value`, then compare the config object after the update. The single writer path is now the only parser, so no divergence.
+2. **Predicate-drift fix** (`crates/perl-lsp-rs/src/runtime/workspace.rs`, `handle_did_change_configuration`): replaced the re-parse predicate with a snapshot-diff — capture the relevant config fields (e.g. `perlcritic_severity`, native critic profile/include/exclude) before calling `update_from_value`, then compare after. The single writer path is now the only parser, so no divergence.
 
-Both fixes were made to `crates/perl-lsp-rs/src/config/` handler logic.
+The two fixes live in **different** layers: the scope fix in the TS extension (`vscode-extension/src/extension.ts`), the snapshot-diff in the Rust runtime (`crates/perl-lsp-rs/src/runtime/workspace.rs`). Neither is in `crates/perl-lsp-rs/src/config/` — that path does not exist.
 
 ## Spec impact
 

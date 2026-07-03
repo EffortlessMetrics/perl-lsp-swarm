@@ -25,11 +25,13 @@ Two distinct findings in the native-stack campaign (#3276):
    Codex secondary review caught all three on first read. Each was re-verified against the source code and LSP spec before fixing. The lesson: a user-visible fact doc must be verified against the code, not a recon summary — the external-truth gate applies to docs.
 
 2. **CI noise triage (meta-pattern)**: Throughout the campaign, nearly every "CI failure" webhook was one of three types:
-   - Non-required checks (not in the `ripr+ New Gap Gate` / `Codecov / Patch 95` / `Perl LSP Rust Small Result` set)
+   - Non-required checks — the **two** merge-blocking required checks are `Perl LSP Rust Small Result` and `ripr+ New Gap Gate` (per `.ci/policies/required-checks.toml`); everything else (`CI Gate (Merge-Blocking)`, `PR Smoke`, `droid-review`, and — despite CLAUDE.md's stale "three required checks" line — **`Codecov / Patch 95`, which is `required = false` / advisory**) does not block merge.
    - The known 66%-flaky `unit_routed_full` gate (now tracked in #3324)
-   - A cancelled/superseded run (prior push superseded by a new one)
+   - A cancelled/superseded run (prior push superseded by a new one), or a CX43 self-hosted-runner Docker-image-missing failover to the GitHub-hosted fallback
 
    Distinguishing real required-check failures from noise required careful read of the CI log. The incident: noise was treated as signal, causing unnecessary retries and branch churn.
+
+   > **Meta-instance of this very lesson:** an earlier draft of this doc listed `Codecov / Patch 95` among the required checks because it followed CLAUDE.md's summary. The authoritative source (`.ci/policies/required-checks.toml`) marks Codecov `required = false`, and `CI_GATE_PLAYBOOK.md` calls it advisory. Verify the required-check set against the policy inventory, not a doc summary — CLAUDE.md's list is stale (a follow-up should reconcile it).
 
 ## Why
 
