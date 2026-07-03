@@ -64,9 +64,16 @@ impl PerlKwaliteeProfile {
 }
 
 /// `cargo xtask perl-kwalitee check` — evaluate and fail on a non-clean verdict.
-pub fn check(profile: PerlKwaliteeProfile, dist: Option<PathBuf>, strict: bool) -> Result<()> {
-    let root = project_root()?;
-    let receipt = build_and_evaluate(&root, profile, dist, strict)?;
+///
+/// `repo_root` overrides the tree being evaluated (see [`resolve_root`]).
+pub fn check(
+    profile: PerlKwaliteeProfile,
+    dist: Option<PathBuf>,
+    strict: bool,
+    repo_root: Option<PathBuf>,
+) -> Result<()> {
+    let (root, live) = resolve_root(repo_root)?;
+    let receipt = build_and_evaluate(&root, live, profile, dist, strict)?;
 
     println!("{}", receipt.to_markdown());
     println!(
@@ -96,10 +103,11 @@ pub fn report(
     dist: Option<PathBuf>,
     json: PathBuf,
     markdown: PathBuf,
+    repo_root: Option<PathBuf>,
 ) -> Result<()> {
-    let root = project_root()?;
+    let (root, live) = resolve_root(repo_root)?;
     // Report is not strict — it records the state, it does not gate.
-    let receipt = build_and_evaluate(&root, profile, dist, false)?;
+    let receipt = build_and_evaluate(&root, live, profile, dist, false)?;
 
     write_file(&json, &receipt.to_json_pretty()?)?;
     write_file(&markdown, &receipt.to_markdown())?;
@@ -138,15 +146,30 @@ pub fn explain(id: &str) -> Result<()> {
     }
 }
 
+/// Resolve the tree to evaluate.
+///
+/// Returns `(root, live)`. With no override we evaluate the live workspace
+/// (`live = true`) and run the shell-out gates. With an explicit `--repo-root`
+/// we evaluate that tree using only native + receipt-backed indicators
+/// (`live = false`) — the live-repo gates (`update-status`) assume the current
+/// workspace and are skipped.
+fn resolve_root(repo_root: Option<PathBuf>) -> Result<(PathBuf, bool)> {
+    match repo_root {
+        Some(root) => Ok((root, false)),
+        None => Ok((project_root()?, true)),
+    }
+}
+
 /// Assemble [`KwaliteeOptions`], run the external gates, and evaluate.
 fn build_and_evaluate(
     root: &Path,
+    live: bool,
     profile: PerlKwaliteeProfile,
     dist: Option<PathBuf>,
     strict: bool,
 ) -> Result<KwaliteeReceipt> {
     let lib_profile = profile.to_lib();
-    let commit = current_commit();
+    let commit = current_commit(root);
 
     let evidence = EvidencePaths {
         native_tooling_readiness: existing(root.join(READINESS_RECEIPT_REL)),
@@ -158,7 +181,12 @@ fn build_and_evaluate(
     };
 
     let mut external_results = BTreeMap::new();
-    add_docs_status_result(&mut external_results);
+    // `update-status --check` targets the live workspace, so only run it when
+    // evaluating the live repo; under a `--repo-root` override docs.status_current
+    // is left unverified rather than measured against the wrong tree.
+    if live {
+        add_docs_status_result(&mut external_results);
+    }
     if lib_profile.requires_release_artifacts() {
         add_release_results(&mut external_results, dist.clone());
     }
@@ -258,9 +286,12 @@ fn write_file(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// Current git HEAD short-circuit; `"unknown"` when git is unavailable.
-fn current_commit() -> String {
+/// Git HEAD of the evaluated tree; `"unknown"` when `root` is not a git repo or
+/// git is unavailable. Scoped to `root` so a `--repo-root` receipt records the
+/// commit of the tree it describes, not the live workspace.
+fn current_commit(root: &Path) -> String {
     Command::new("git")
+        .current_dir(root)
         .args(["rev-parse", "HEAD"])
         .output()
         .ok()
