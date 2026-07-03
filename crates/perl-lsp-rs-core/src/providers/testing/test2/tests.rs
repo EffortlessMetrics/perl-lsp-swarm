@@ -226,6 +226,38 @@ fn expand_qw_only_fires_on_word_boundary_and_real_delimiter() {
 }
 
 #[test]
+fn expand_qw_does_not_panic_on_non_ascii() {
+    // `raw[i..]` must never split a multi-byte codepoint (critic-path panic).
+    assert_eq!(expand_qw("qw(ok café)"), " ok café ");
+    // Non-ASCII outside a qw list is copied through unchanged.
+    assert_eq!(expand_qw("-target => 'Café::Módulo'"), "-target => 'Café::Módulo'");
+    // A multi-byte char immediately before `qw` still parses safely.
+    assert_eq!(expand_qw("café qw(ok)"), "café  ok ");
+}
+
+#[test]
+fn test2_non_ascii_target_does_not_panic() {
+    // Reaches expand_qw via the critic path; must not crash on valid UTF-8.
+    let facts = Test2Facts::from_source("use Test2::V0 -target => 'Café::Módulo';\n");
+    assert!(facts.is_imported("ok"));
+    assert_eq!((facts.strict, facts.warnings), (true, true));
+}
+
+#[test]
+fn test2_empty_import_list_imports_nothing_and_no_pragmas() {
+    // `use Test2::V0 ();` loads the module but does not call import(): no
+    // symbols, and no strict/warnings are provided.
+    let resolved = resolve_import("Test2::V0", "()").expect("module still recognized");
+    assert!(resolved.symbols.is_empty(), "empty () import must import no symbols");
+    assert_eq!(resolved.pragmas, None, "empty () import provides no pragmas");
+
+    let facts = Test2Facts::from_source("use Test2::V0 ();\n");
+    assert!(facts.modules.iter().any(|m| m == "Test2::V0"), "module is still loaded");
+    assert!(!facts.is_imported("ok"), "no default exports for ()");
+    assert_eq!((facts.strict, facts.warnings), (false, false), "() provides no pragmas");
+}
+
+#[test]
 fn use_statements_survive_escaped_quotes() {
     // An escaped quote inside a double-quoted string must not close the string
     // early; otherwise the `;` terminator is missed and the following `use`

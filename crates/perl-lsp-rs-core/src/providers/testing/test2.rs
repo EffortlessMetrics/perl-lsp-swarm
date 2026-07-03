@@ -287,6 +287,18 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         return None;
     }
 
+    // `use Test2::V0 ();` — an explicit empty import list. Perl does not call
+    // `import`, so no symbols are imported and (for bundles) no strict/warnings
+    // pragmas are applied. The module is still loaded, so return an empty import
+    // rather than `None`.
+    let trimmed_args = raw_args.trim();
+    if trimmed_args.starts_with('(')
+        && trimmed_args.ends_with(')')
+        && trimmed_args[1..trimmed_args.len() - 1].trim().is_empty()
+    {
+        return Some(ResolvedImport { symbols: BTreeSet::new(), pragmas: None });
+    }
+
     let bundle = is_test2_bundle(module);
     let default_set = module_default_exports(module);
 
@@ -510,30 +522,36 @@ fn expand_qw(raw: &str) -> String {
     let mut out = String::new();
     let bytes = raw.as_bytes();
     let mut i = 0;
+    // Invariant: `i` is always on a UTF-8 char boundary at the top of the loop
+    // (we only ever advance past a whole char or past an ASCII delimiter byte),
+    // so `raw[i..]` and the delimiter slices below never split a codepoint.
+    // `qw`, its delimiters, and its closers are all ASCII, so the structural
+    // scan uses byte predicates while non-ASCII content is copied char-wise.
     while i < bytes.len() {
         // Only treat `qw` as the quote-word operator on a word boundary, so
         // barewords like `qwerty` or `my_qw` are not misread as `qw`.
         let on_word_boundary =
             i == 0 || !matches!(bytes[i - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
-        if on_word_boundary && raw[i..].starts_with("qw") {
-            // Find the delimiter after optional whitespace.
+        if on_word_boundary && bytes[i] == b'q' && bytes.get(i + 1) == Some(&b'w') {
+            // Find the delimiter after optional whitespace (all ASCII).
             let mut j = i + 2;
-            while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
                 j += 1;
             }
-            if j < bytes.len() {
-                let open = bytes[j] as char;
-                // A real delimiter is non-word, non-whitespace (`qwords` would
-                // otherwise treat `o` as the delimiter).
-                if !open.is_alphanumeric() && open != '_' && !open.is_whitespace() {
+            if let Some(&open) = bytes.get(j) {
+                // A real delimiter is non-word, non-whitespace, ASCII (`qwords`
+                // would otherwise treat `o` as the delimiter).
+                if !open.is_ascii_alphanumeric() && open != b'_' && !open.is_ascii_whitespace() {
                     let close = match open {
-                        '(' => ')',
-                        '{' => '}',
-                        '[' => ']',
-                        '<' => '>',
+                        b'(' => b')',
+                        b'{' => b'}',
+                        b'[' => b']',
+                        b'<' => b'>',
                         other => other,
                     };
-                    if let Some(end_rel) = raw[j + 1..].find(close) {
+                    if let Some(end_rel) = bytes[j + 1..].iter().position(|&b| b == close) {
+                        // `j + 1` and `j + 1 + end_rel` sit on ASCII delimiter
+                        // bytes, i.e. char boundaries, so slicing `raw` is safe.
                         let inner = &raw[j + 1..j + 1 + end_rel];
                         out.push(' ');
                         out.push_str(inner);
@@ -544,8 +562,10 @@ fn expand_qw(raw: &str) -> String {
                 }
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // Copy the whole current char (handles multi-byte UTF-8 safely).
+        let Some(ch) = raw[i..].chars().next() else { break };
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
