@@ -597,7 +597,19 @@ where
                                 }
                             }
                             Ok(None) => break,
-                            Err(_) => return, // malformed stream: end session
+                            // `ContentLengthFramer::try_next` already discards the
+                            // malformed header block before returning an error, so
+                            // the buffer can still hold a valid subsequent frame.
+                            // Skip and keep parsing rather than tearing down the
+                            // whole session on one bad frame — mirrors the
+                            // recoverable-error handling in
+                            // `ContentLengthMessageReader::read_next`.
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "peer bridge (stdio): dropping malformed DAP frame"
+                                );
+                            }
                         }
                     }
                 }
@@ -1043,6 +1055,82 @@ mod tests {
     }
 
     #[test]
+    fn breakpoint_locations_missing_line_returns_empty_not_all_lines() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().expect("tmp");
+        writeln!(f, "my $x = 1;").expect("w");
+        let path = f.path().to_string_lossy().to_string();
+
+        let mut b = bridge();
+        // No "line" field at all. DAP marks `line` required, but a client that
+        // omits it must not be answered with every breakable line in the file
+        // (or crash) — the handler must still return the empty-set contract.
+        let out =
+            b.dispatch(20, "breakpointLocations", Some(json!({ "source": { "path": path } })));
+        let (_, ok, body) = as_response(&out[0]);
+        assert!(ok, "the request itself still succeeds");
+        let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+        assert!(bps.is_empty(), "missing line yields empty set, not every line: {bps:?}");
+    }
+
+    #[test]
+    fn breakpoint_locations_end_line_before_start_line_returns_empty() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().expect("tmp");
+        writeln!(f, "my $x = 1;").expect("w"); // line 1
+        writeln!(f, "my $y = 2;").expect("w"); // line 2
+        writeln!(f, "print $x + $y;").expect("w"); // line 3
+        let path = f.path().to_string_lossy().to_string();
+
+        let mut b = bridge();
+        let out = b.dispatch(
+            21,
+            "breakpointLocations",
+            Some(json!({ "source": { "path": path }, "line": 3, "endLine": 1 })),
+        );
+        let bps =
+            as_response(&out[0]).2.expect("body")["breakpoints"].as_array().expect("array").clone();
+        assert!(bps.is_empty(), "endLine < line is an empty (not inverted) range: {bps:?}");
+    }
+
+    #[test]
+    fn breakpoint_locations_unreadable_path_returns_empty_not_an_error_response() {
+        let mut b = bridge();
+        let out = b.dispatch(
+            22,
+            "breakpointLocations",
+            Some(json!({
+                "source": { "path": "/nonexistent/definitely-not-a-real-path.pl" },
+                "line": 1,
+                "endLine": 10,
+            })),
+        );
+        let (_, ok, body) = as_response(&out[0]);
+        assert!(ok, "an unreadable source must not fail the DAP request");
+        let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+        assert!(bps.is_empty(), "unreadable path yields empty set: {bps:?}");
+    }
+
+    #[test]
+    fn breakpoint_locations_missing_source_path_returns_empty() {
+        let mut b = bridge();
+        let out = b.dispatch(23, "breakpointLocations", Some(json!({ "line": 1, "endLine": 3 })));
+        let bps =
+            as_response(&out[0]).2.expect("body")["breakpoints"].as_array().expect("array").clone();
+        assert!(bps.is_empty(), "missing source.path yields empty set: {bps:?}");
+    }
+
+    #[test]
+    fn breakpoint_locations_missing_arguments_returns_empty() {
+        let mut b = bridge();
+        let out = b.dispatch(24, "breakpointLocations", None);
+        let (_, ok, body) = as_response(&out[0]);
+        assert!(ok, "even a bodyless breakpointLocations request must get a success response");
+        let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+        assert!(bps.is_empty(), "missing arguments yields empty set: {bps:?}");
+    }
+
+    #[test]
     fn threads_reports_single_main_thread() {
         let mut b = bridge();
         let out = b.dispatch(8, "threads", None);
@@ -1141,5 +1229,71 @@ mod tests {
         assert!(commands.contains(&"initialize".to_string()), "commands: {commands:?}");
         assert!(commands.contains(&"disconnect".to_string()), "commands: {commands:?}");
         assert!(events.contains(&"initialized".to_string()), "events: {events:?}");
+    }
+
+    #[test]
+    fn threaded_driver_recovers_from_a_leading_malformed_frame() {
+        use perl_lsp_rs_core::transport::{ContentLengthFramer, frame};
+        use std::io::Cursor;
+        use std::sync::{Arc, Mutex};
+
+        // `ContentLengthFramer::try_next` discards a malformed header block
+        // before returning its error, so a single garbled frame must not end
+        // the whole session — the reader thread should skip it and keep
+        // parsing whatever follows. Regression coverage for a bug where the
+        // reader thread unconditionally `return`ed on the first framing
+        // error, silently killing the session (surfaced to the main loop only
+        // as an untraceable `RecvTimeoutError::Disconnected`) even though
+        // well-formed frames followed in the same stream.
+        #[derive(Clone)]
+        struct SharedSink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedSink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let frame_of = |v: Value| frame(&serde_json::to_vec(&v).expect("ser"));
+
+        // A header block with an unparseable Content-Length value, followed by
+        // a valid initialize + disconnect pair.
+        let mut input = b"Content-Length: notanumber\r\n\r\n".to_vec();
+        input.extend_from_slice(&frame_of(
+            json!({ "seq": 1, "type": "request", "command": "initialize", "arguments": {} }),
+        ));
+        input.extend_from_slice(&frame_of(
+            json!({ "seq": 2, "type": "request", "command": "disconnect" }),
+        ));
+
+        let out_buf = Arc::new(Mutex::new(Vec::new()));
+        run_peer_session_threaded(
+            Cursor::new(input),
+            SharedSink(out_buf.clone()),
+            bridge(),
+            Duration::from_millis(5),
+        )
+        .expect("session ok despite the leading malformed frame");
+
+        let raw = out_buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let mut framer = ContentLengthFramer::new();
+        framer.push(&raw);
+        let mut commands = Vec::new();
+        while let Ok(Some(body)) = framer.try_next() {
+            let v: Value = serde_json::from_slice(&body).expect("json");
+            if v.get("type").and_then(Value::as_str) == Some("response")
+                && let Some(c) = v.get("command").and_then(Value::as_str)
+            {
+                commands.push(c.to_string());
+            }
+        }
+        assert!(
+            commands.contains(&"initialize".to_string()),
+            "the valid frames after the malformed one must still be processed: {commands:?}"
+        );
+        assert!(commands.contains(&"disconnect".to_string()), "commands: {commands:?}");
     }
 }

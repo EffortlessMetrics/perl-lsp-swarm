@@ -430,6 +430,24 @@ describe('buildDapExecutableArgs', () => {
     expect(buildDapExecutableArgs({ externalPeer: 'host:' } as any)).toEqual([]);
     expect(buildDapExecutableArgs({ externalPeer: 42 } as any)).toEqual([]);
   });
+
+  test('falls back to the native adapter for a bracketed IPv6 peer address', () => {
+    // The validator requires the host segment to contain no ':' (so a plain
+    // "host:port" split is unambiguous), so a bracketed IPv6 literal like
+    // "[::1]:9000" does not match and the adapter falls back to native mode
+    // rather than passing an unvalidated value through. This documents a
+    // known scope limit, not a crash or injection risk.
+    expect(buildDapExecutableArgs({ externalPeer: '[::1]:9000' } as any)).toEqual([]);
+    expect(buildDapExecutableArgs({ externalPeer: '::1:9000' } as any)).toEqual([]);
+  });
+
+  test('rejects a peer address with embedded whitespace instead of splitting on it', () => {
+    // Guards against argv smuggling: a value like "host --some-flag:9000"
+    // must not turn into a second, attacker-controlled CLI argument for the
+    // spawned perl-dap process.
+    expect(buildDapExecutableArgs({ externalPeer: 'host --flag:9000' } as any)).toEqual([]);
+    expect(buildDapExecutableArgs({ externalPeer: 'host:9000 --flag' } as any)).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
