@@ -138,7 +138,7 @@ impl DebugBackend for NativePerlDbBackend {
         let source_path = params.source.path.clone();
         let bps: Vec<Value> = params
             .breakpoints
-            .iter()
+            .into_iter()
             .map(|b| {
                 json!({
                     "line": b.line,
@@ -181,9 +181,13 @@ impl DebugBackend for NativePerlDbBackend {
         &mut self,
         params: SetFunctionBreakpointsParams,
     ) -> BackendResult<Vec<ResolvedBreakpoint>> {
+        // Capture the placeholder source before moving `params.breakpoints`, so
+        // the resolved-breakpoint mapping below does not borrow a partially-moved
+        // `params`.
+        let stub = params.source_stub();
         let names: Vec<Value> = params
             .breakpoints
-            .iter()
+            .into_iter()
             .map(|b| json!({ "name": b.name, "condition": b.condition }))
             .collect();
         let args = json!({ "breakpoints": names });
@@ -201,7 +205,7 @@ impl DebugBackend for NativePerlDbBackend {
                 id: bp.id,
                 verified: bp.verified,
                 actual_position: DebugPosition {
-                    source: params.source_stub(),
+                    source: stub.clone(),
                     line: u32::try_from(bp.line.max(0)).unwrap_or(0),
                     column: None,
                 },

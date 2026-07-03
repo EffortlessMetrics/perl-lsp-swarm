@@ -144,6 +144,10 @@ impl Shared {
         self.closed.store(true, Ordering::SeqCst);
         // Fail any in-flight requests by dropping their senders.
         lock(&self.pending).clear();
+        // Instantly interrupt the reader thread's blocking read (otherwise it
+        // waits up to the read-timeout poll) so `Drop::join` returns promptly.
+        // Safe here: callers release the write guard before calling mark_closed.
+        let _ = lock(&self.write).shutdown(std::net::Shutdown::Both);
         // Wake anyone waiting on the handshake. Take the lock briefly (so a
         // concurrent waiter cannot miss the wakeup between its `closed` check and
         // its wait) but do NOT re-lock inside the same statement — the std Mutex
@@ -208,9 +212,21 @@ impl ExternalDebuggerPeerBackend {
     /// # Errors
     /// Fails if the TCP connection cannot be established.
     pub fn connect<A: ToSocketAddrs>(addr: A, timeout: Duration) -> BackendResult<Self> {
-        let stream =
-            TcpStream::connect(addr).map_err(|e| BackendError::Transport(e.to_string()))?;
-        Self::from_stream(stream, timeout)
+        // Use connect_timeout so the connection phase honours `timeout` (plain
+        // TcpStream::connect ignores it and can block far longer).
+        let addrs = addr.to_socket_addrs().map_err(|e| BackendError::Transport(e.to_string()))?;
+        let mut last_err = None;
+        for address in addrs {
+            match TcpStream::connect_timeout(&address, timeout) {
+                Ok(stream) => return Self::from_stream(stream, timeout),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(BackendError::Transport(
+            last_err
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "address resolved to no socket addresses".to_string()),
+        ))
     }
 
     /// Listen for a peer to connect (`Listen` mode), accepting one client.
@@ -312,7 +328,10 @@ impl ExternalDebuggerPeerBackend {
     }
 
     fn negotiated_caps(&self) -> DebugBackendCapabilities {
+        // `.as_ref()` borrows the inner Option so we do not depend on the
+        // `Copy` derive to read it out of the guard.
         lock(&self.shared.peer_caps)
+            .as_ref()
             .map(|c| c.to_backend_capabilities())
             .unwrap_or_else(DebugBackendCapabilities::none)
     }
@@ -371,13 +390,13 @@ impl DebugBackend for ExternalDebuggerPeerBackend {
         let source = wire_source(&params.source);
         let breakpoints = params
             .breakpoints
-            .iter()
+            .into_iter()
             .map(|b| WireSourceBreakpoint {
                 line: b.line,
                 column: b.column,
-                condition: b.condition.clone(),
-                hit_condition: b.hit_condition.clone(),
-                log_message: b.log_message.clone(),
+                condition: b.condition,
+                hit_condition: b.hit_condition,
+                log_message: b.log_message,
             })
             .collect();
         let args = SetBreakpointsArgs { source: source.clone(), breakpoints };
@@ -393,7 +412,7 @@ impl DebugBackend for ExternalDebuggerPeerBackend {
         let caps = self.negotiated_caps();
         self.require(caps.function_breakpoints, "peer does not accept function breakpoints")?;
         let args = SetFunctionBreakpointsArgs {
-            names: params.breakpoints.iter().map(|b| b.name.clone()).collect(),
+            names: params.breakpoints.into_iter().map(|b| b.name).collect(),
         };
         let resp = self.request(command::SET_FUNCTION_BREAKPOINTS, Some(to_value(&args)?))?;
         let body: payloads::SetBreakpointsResponseBody = from_body(resp.body)?;
