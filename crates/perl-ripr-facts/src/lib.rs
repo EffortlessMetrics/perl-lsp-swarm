@@ -324,7 +324,7 @@ pub fn build_ripr_facts_packet(
         all_limitations.push(serde_json::json!({
             "limitation_id": "emitter-partial",
             "kind": "partial_emitter",
-            "message": "Parser-backed tests/oracles, relations/discriminators, boundaries/commands, files/owners, and (when a diff is supplied) diff-owned changes are emitted. Semantic relations, the packet fingerprint, and the managed-producer diff source land in later slices.",
+            "message": "Parser-backed tests/oracles, relations/discriminators (incl. a parser-backed direct_owner_call), boundaries/commands, files/owners, (when a diff is supplied) diff-owned changes, and a deterministic packet_fingerprint are emitted. Export-aware relation reachability and the managed-producer diff source land in later slices.",
             "evidence_refs": []
         }));
         all_limitations.extend(test_limitations);
@@ -350,8 +350,13 @@ pub fn build_ripr_facts_packet(
     // fingerprint is a hash of the whole packet-with-null-fingerprint and is
     // reproducible: recomputing `content_fingerprint` over the packet with
     // `packet_fingerprint` reset to `null` yields the same value. serde_json
-    // serializes object keys in sorted order (no `preserve_order`), so the
-    // string is canonical; the same request always produces the same fingerprint.
+    // serializes object keys in sorted (BTreeMap) order, so the string is
+    // canonical; the same request always produces the same fingerprint. This
+    // relies on `serde_json`'s `preserve_order` feature being OFF for this crate
+    // (it's pulled only by a `tree-sitter` *build*-dependency elsewhere, which
+    // resolver-v2 keeps out of this crate's normal build — verified via
+    // `cargo build -p perl-ripr-facts -v`); a future *normal* dep enabling it
+    // would switch to insertion order and must re-verify this.
     let fingerprint = content_fingerprint(&packet.to_string());
     packet["packet_fingerprint"] = serde_json::Value::String(fingerprint);
 
@@ -1765,13 +1770,13 @@ mod tests {
 
     #[test]
     fn build_packet_fingerprint_changes_with_content() {
-        // A packet carrying test facts must not fingerprint-collide with an
-        // empty/unavailable packet.
-        let with_facts = packet_for_t("fp-facts", "use Test::More;\nok(1);\n", "tests");
-        let empty = build_ripr_facts_packet(&valid_request("tests")).expect("empty");
+        // Same dir (→ same root/packet_id), different `.t` content: isolates
+        // "fact content differs → fingerprint differs" from any root/id change.
+        let a = packet_for_t("fp-content", "use Test::More;\nok(1);\n", "tests,oracles");
+        let b = packet_for_t("fp-content", "use Test::More;\nis(1, 1);\nok(2);\n", "tests,oracles");
         assert_ne!(
-            with_facts["packet_fingerprint"], empty["packet_fingerprint"],
-            "different packet content must yield different fingerprints"
+            a["packet_fingerprint"], b["packet_fingerprint"],
+            "different fact content must yield different fingerprints"
         );
     }
 
