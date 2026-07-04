@@ -626,14 +626,70 @@ mod tests {
     }
 
     #[test]
-    fn named_function_call_candidate_excludes_method_calls()
+    fn named_function_call_candidate_excludes_method_calls() {
+        // `->name(` is a method dispatch handled by the method-call class. The
+        // ONLY call here is the method call, so a detected candidate would prove
+        // the `>` prefix blocker failed; the detector must fall back instead.
+        let source = "my $c = shift;\n$c->stash(1);\n";
+        assert!(semantic_token_named_function_call_candidate(source).is_none());
+    }
+
+    #[test]
+    fn named_function_call_candidate_excludes_sigil_and_ampersand_calls() {
+        // `&name(` (ampersand call) and `$ref->(` (coderef dispatch) are not
+        // plain bareword `FunctionCall` function tokens; both must fall back.
+        assert!(semantic_token_named_function_call_candidate("&helper(1);\n").is_none());
+        assert!(semantic_token_named_function_call_candidate("$ref->(1);\n").is_none());
+    }
+
+    #[test]
+    fn named_function_call_candidate_scans_past_commented_call()
     -> Result<(), Box<dyn std::error::Error>> {
-        // `->name(` is a method dispatch handled by the method-call class, not a
-        // bareword function call.
-        let source = "my $c = ctx();\n$c->stash(1);\n";
+        // A `name(` inside a `#` line comment must not shadow the real call that
+        // follows; the detector skips the comment and reports `dispatch`.
+        let source = "# run_pipeline()\ndispatch();\n";
         let candidate = semantic_token_named_function_call_candidate(source)
-            .ok_or("the bareword ctx() call should be detected, not the method call")?;
-        assert_eq!(candidate.identity, "token:named_function_call:ctx:compiler");
+            .ok_or("the real dispatch() call should be detected past the comment")?;
+        assert_eq!(candidate.identity, "token:named_function_call:dispatch:compiler");
+        Ok(())
+    }
+
+    #[test]
+    fn named_function_call_candidate_scans_past_stringized_call()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A `name(` inside a quoted string literal must not shadow a later real
+        // call.
+        let source = "my $x = 'foo(';\nbar();\n";
+        let candidate = semantic_token_named_function_call_candidate(source)
+            .ok_or("the real bar() call should be detected past the string literal")?;
+        assert_eq!(candidate.identity, "token:named_function_call:bar:compiler");
+        Ok(())
+    }
+
+    #[test]
+    fn named_function_call_candidate_balances_parens_inside_string_arguments()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Parentheses inside a quoted string argument must not be counted while
+        // balancing, so the whole-call span still covers `emit(")")` (9 units)
+        // to match the live FunctionCall token.
+        let source = "emit(\")\");\n";
+        let candidate = semantic_token_named_function_call_candidate(source)
+            .ok_or("a call with a paren inside a string arg should still be detected")?;
+        assert_eq!(candidate.identity, "token:named_function_call:emit:compiler");
+        let span = candidate.source_span.ok_or("call candidate must be source-backed")?;
+        assert_eq!(span.single_line_lsp_length(), Some(9));
+        Ok(())
+    }
+
+    #[test]
+    fn named_function_call_candidate_scans_past_multiline_call_to_single_line_call()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A leading call whose parens span multiple lines cannot yield a
+        // single-line span, so the scan continues to the later single-line call.
+        let source = "outer(\n    1,\n);\ninner();\n";
+        let candidate = semantic_token_named_function_call_candidate(source)
+            .ok_or("the single-line inner() call should be detected")?;
+        assert_eq!(candidate.identity, "token:named_function_call:inner:compiler");
         Ok(())
     }
 
@@ -1121,14 +1177,16 @@ fn line_start_variable_declaration_candidate(
 /// Method calls (`->name(`), ampersand calls (`&name(`), sigiled/coderef calls
 /// (`$name(`), and control-flow / declaration keywords that the collector does
 /// NOT classify as `FunctionCall` function tokens are excluded so we never
-/// record a candidate that cannot match a live token. A call whose parentheses
-/// do not balance on a single line is skipped, keeping the fail-closed boundary
-/// intact.
+/// record a candidate that cannot match a live token. The scan skips Perl line
+/// comments and single/double-quoted strings, so a `name(` inside a comment or
+/// string cannot shadow a later real call and parentheses inside string
+/// arguments are not miscounted. A call whose parentheses do not balance on a
+/// single line is skipped (the scan continues to a later call), keeping the
+/// fail-closed boundary intact.
 fn semantic_token_named_function_call_candidate(
     source: &str,
 ) -> Option<crate::semantic_tokens::SemanticTokenShadowCandidate> {
-    let (name_start, paren_open) = first_named_function_call_site(source)?;
-    let call_end = single_line_call_span_end(source, paren_open)?;
+    let (name_start, paren_open, call_end) = first_named_function_call_span(source)?;
     let name = &source[name_start..paren_open];
     let span = crate::semantic_tokens::SemanticTokenShadowSpan::from_byte_offsets(
         source, name_start, call_end,
@@ -1144,49 +1202,151 @@ fn semantic_token_named_function_call_candidate(
     ))
 }
 
-/// Find the first bareword identifier immediately followed by `(` that
-/// qualifies as a plain named function call. Returns `(name_start, paren_open)`
-/// byte offsets. Identifier runs are maximal over [`is_subroutine_name_char`],
-/// so a run always begins right after a non-name character; we only need to
-/// reject sigil/arrow/ampersand prefixes and non-call keywords. See
-/// [`semantic_token_named_function_call_candidate`] for the rationale.
+/// Lightweight lexical state for scanning Perl source while skipping the two
+/// constructs that would otherwise be mistaken for call syntax: line comments
+/// and single/double-quoted string literals. Quote-like forms (`q//`, `qq//`),
+/// heredocs, and regex literals are deliberately NOT modeled — they fall
+/// through as code, and in the worst case a candidate simply fails to match a
+/// live token and the class falls back (output-neutral), never emitting a
+/// wrong token.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PerlScanState {
+    Code,
+    LineComment,
+    SingleQuote,
+    DoubleQuote,
+}
+
+/// Find the first bareword `name(...)` call whose parentheses balance on a
+/// single line, returning `(name_start, paren_open, call_end)` byte offsets
+/// (`call_end` is just past the matching close paren).
 ///
-/// Scans `char_indices()` directly via a peekable iterator (no heap
-/// allocation) because semantic-token analysis runs on nearly every document
-/// change. `prev_char` tracks the character immediately preceding the current
-/// run start: every non-run character passes through the `else` arm and updates
-/// it, and maximal runs are always separated by at least one such character, so
-/// the prefix check sees the correct preceding character.
-fn first_named_function_call_site(source: &str) -> Option<(usize, usize)> {
+/// The scan is comment- and string-aware: a `name(` embedded in a `#` line
+/// comment or a quoted string is skipped rather than shadowing a later real
+/// call, and parentheses inside string arguments (`emit(")")`) are not counted
+/// while balancing. If a candidate call does not close on its line, the scan
+/// continues to the next call site rather than giving up — so a leading
+/// multi-line or malformed call cannot suppress a later single-line one.
+///
+/// Runs on nearly every document change, so it walks `char_indices()` once with
+/// no heap allocation.
+fn first_named_function_call_span(source: &str) -> Option<(usize, usize, usize)> {
     let mut chars = source.char_indices().peekable();
-    let mut prev_char: Option<char> = None;
+    let mut state = PerlScanState::Code;
+    // The character immediately before the current position, used only to
+    // distinguish `$#array` (last-index sigil) from a `#` comment and to apply
+    // the call-prefix blocker to an identifier run.
+    let mut prev = '\0';
 
-    while let Some(&(run_start, ch)) = chars.peek() {
-        if !(ch.is_ascii_alphabetic() || ch == '_') {
-            prev_char = Some(ch);
-            chars.next();
-            continue;
-        }
+    while let Some((idx, ch)) = chars.next() {
+        match state {
+            PerlScanState::LineComment => {
+                if ch == '\n' {
+                    state = PerlScanState::Code;
+                }
+            }
+            PerlScanState::SingleQuote => {
+                if ch == '\\' {
+                    chars.next();
+                } else if ch == '\'' {
+                    state = PerlScanState::Code;
+                }
+            }
+            PerlScanState::DoubleQuote => {
+                if ch == '\\' {
+                    chars.next();
+                } else if ch == '"' {
+                    state = PerlScanState::Code;
+                }
+            }
+            PerlScanState::Code => {
+                if ch == '#' && prev != '$' {
+                    state = PerlScanState::LineComment;
+                } else if ch == '\'' {
+                    state = PerlScanState::SingleQuote;
+                } else if ch == '"' {
+                    state = PerlScanState::DoubleQuote;
+                } else if ch.is_ascii_alphabetic() || ch == '_' {
+                    let run_start = idx;
+                    let mut run_end = idx + ch.len_utf8();
+                    while let Some(&(nidx, nch)) = chars.peek() {
+                        if is_subroutine_name_char(nch) {
+                            run_end = nidx + nch.len_utf8();
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
 
-        chars.next();
-        while let Some(&(_, next_ch)) = chars.peek() {
-            if is_subroutine_name_char(next_ch) {
-                chars.next();
-            } else {
-                break;
+                    if let Some(&(paren_open, '(')) = chars.peek() {
+                        let name = &source[run_start..run_end];
+                        if !is_call_prefix_blocker(prev) && !is_non_call_keyword(name) {
+                            if let Some(call_end) = string_aware_call_end(source, paren_open) {
+                                return Some((run_start, paren_open, call_end));
+                            }
+                        }
+                    }
+
+                    // `run_end` is one past the last name character; the next
+                    // loop iteration re-reads whatever follows the run.
+                    prev = source[..run_end].chars().next_back().unwrap_or('\0');
+                    continue;
+                }
             }
         }
+        prev = ch;
+    }
 
-        if let Some(&(paren_open, '(')) = chars.peek() {
-            let prefix_ok = prev_char.is_none_or(|prev| !is_call_prefix_blocker(prev));
-            let name = &source[run_start..paren_open];
-            if prefix_ok && !is_non_call_keyword(name) {
-                return Some((run_start, paren_open));
+    None
+}
+
+/// Scan from a call's opening `(` to its matching `)` on the same line, skipping
+/// parentheses that appear inside Perl line comments or single/double-quoted
+/// strings. Returns the byte offset just past the close paren, or `None` if the
+/// parentheses do not balance before end-of-line (fail-closed).
+fn string_aware_call_end(source: &str, paren_open: usize) -> Option<usize> {
+    let mut chars = source[paren_open..].char_indices();
+    let mut state = PerlScanState::Code;
+    let mut depth = 0usize;
+    let mut prev = '\0';
+
+    while let Some((offset, ch)) = chars.next() {
+        match state {
+            PerlScanState::LineComment => {
+                if ch == '\n' {
+                    return None;
+                }
             }
+            PerlScanState::SingleQuote => {
+                if ch == '\\' {
+                    chars.next();
+                } else if ch == '\'' {
+                    state = PerlScanState::Code;
+                }
+            }
+            PerlScanState::DoubleQuote => {
+                if ch == '\\' {
+                    chars.next();
+                } else if ch == '"' {
+                    state = PerlScanState::Code;
+                }
+            }
+            PerlScanState::Code => match ch {
+                '\n' => return None,
+                '#' if prev != '$' => state = PerlScanState::LineComment,
+                '\'' => state = PerlScanState::SingleQuote,
+                '"' => state = PerlScanState::DoubleQuote,
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(paren_open + offset + ch.len_utf8());
+                    }
+                }
+                _ => {}
+            },
         }
-        // The identifier run did not yield a call; leave `prev_char` for the
-        // following non-run character (the loop will update it) so the next
-        // run's prefix check stays accurate.
+        prev = ch;
     }
 
     None
@@ -1232,29 +1392,6 @@ fn is_non_call_keyword(name: &str) -> bool {
             | "redo"
             | "goto"
     )
-}
-
-/// Scan from a call's opening `(` to its matching `)` on the same line,
-/// returning the byte offset just past the close paren. Multi-line calls and
-/// unbalanced parentheses return `None` so the candidate falls back rather than
-/// recording a span that cannot match the live whole-call function token.
-fn single_line_call_span_end(source: &str, paren_open: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (offset, ch) in source[paren_open..].char_indices() {
-        match ch {
-            '\n' => return None,
-            '(' => depth += 1,
-            ')' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(paren_open + offset + ch.len_utf8());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
 }
 
 fn lexical_variable_name_after_my_marker(

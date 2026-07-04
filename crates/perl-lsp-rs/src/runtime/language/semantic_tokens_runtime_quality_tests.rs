@@ -1410,6 +1410,62 @@ fn semantic_tokens_runtime_quality_receipt_proves_source_backed_named_function_c
 }
 
 #[test]
+fn semantic_tokens_runtime_quality_named_function_call_span_covers_arguments_among_multiple_calls()
+-> Result<(), Box<dyn Error>> {
+    // ExternalTruth coverage: a file with MORE THAN ONE live `function` token,
+    // where the callee has arguments. Proves (1) the live parser/HIR collector
+    // emits the `function` token spanning the entire `configure(1, 2)` call
+    // INCLUDING its arguments, and (2) exactly one of the several live function
+    // tokens matches the detector's whole-call span — the "live-token count > 1"
+    // case the single-call fixtures do not exercise.
+    let server = create_server();
+    let uri = "file:///workspace/lib/TokenMultiCall.pm";
+    let src = "use strict;\nuse warnings;\n\nconfigure(1, 2);\nfinalize();\n\n1;\n";
+    open_document(&server, uri, src);
+
+    let params = json!({ "textDocument": {"uri": uri} });
+    let live_result =
+        must(server.test_handle_semantic_tokens(Some(params.clone()))).ok_or("expected tokens")?;
+    let receipt =
+        must_some(must(server.test_semantic_tokens_runtime_quality_receipt(Some(params))));
+
+    // The detector reports the FIRST call, whole-call span including arguments.
+    let (_call_start, _call_end, line, col, len) = named_function_call_span(src, "configure")?;
+    assert_eq!(len, 15, "`configure(1, 2)` is 15 UTF-16 units including its arguments");
+
+    let function_token_type =
+        *crate::semantic_tokens::legend().map.get("function").ok_or("missing function token")?;
+    let function_tokens: Vec<_> = decode_semantic_tokens(&live_result)?
+        .into_iter()
+        .filter(|token| token.token_type == function_token_type)
+        .collect();
+    assert!(
+        function_tokens.len() >= 2,
+        "fixture must emit multiple live function tokens (configure + finalize); got {}",
+        function_tokens.len()
+    );
+    let whole_call_matches = function_tokens
+        .iter()
+        .filter(|token| token.line == line && token.start == col && token.length == len)
+        .count();
+    assert_eq!(
+        whole_call_matches, 1,
+        "exactly one live function token must span the whole `configure(1, 2)` call including its arguments"
+    );
+
+    // The scoped class reaches live-pilot parity on that whole-call span.
+    let call_receipt = class_specific_receipt(&receipt, "named_function_call")?;
+    assert_eq!(call_receipt.get("live_pilot").and_then(Value::as_bool), Some(true));
+    assert_eq!(call_receipt.get("live_token_match_count").and_then(Value::as_u64), Some(1));
+    assert_eq!(
+        first_shadow_identity(call_receipt)?,
+        "token:named_function_call:configure:compiler"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn semantic_tokens_runtime_quality_receipt_proves_source_backed_phase_block_declaration_compiler_token_parity()
 -> Result<(), Box<dyn Error>> {
     let server = create_server();
