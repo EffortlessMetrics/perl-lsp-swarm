@@ -975,7 +975,7 @@ fn write_ripr_pr_receipt(path: &Path, head: &str, severe_gaps: u64) -> TestResul
     // Represents `severe_gaps` genuinely-actionable new gaps: the merge gate
     // blocks on `reachable_unrevealed + no_static_path`, so the count lives in
     // `reachable_unrevealed` (a class a focused test can close). `weakly_exposed`
-    // is exercised separately by `write_ripr_pr_receipt_weakly_exposed`.
+    // is exercised separately by `write_ripr_pr_receipt_classes`.
     write_json(
         path,
         json!({
