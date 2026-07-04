@@ -8120,3 +8120,38 @@ fn test_indirect_underscore_method_word_offers_methods() -> Result<(), Box<dyn s
     );
     Ok(())
 }
+
+#[test]
+fn test_indirect_midword_cursor_offers_methods_with_insert_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Cursor in the MIDDLE of the method word (`pro|cess Child`): `indirect_word_end`
+    // must scan forward from the cursor to the full word boundary to locate the
+    // `Child` receiver, so indirect routing still fires. The edit range uses the
+    // same insert semantics as every other completion provider — `(prefix_start,
+    // position)` — replacing the text before the cursor, identical to the arrow
+    // form (`$obj->pro|cess`). This is uniform server behavior, not indirect-specific.
+    let index = indirect_child_parent_index()?;
+
+    let code = "process Child";
+    let pos = "pro".len(); // cursor after `pro`, inside the `process` token
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+
+    let run = must_some(completions.iter().find(|c| c.label == "run"));
+    assert!(
+        completions.iter().any(|c| c.label == "speak"),
+        "mid-word indirect cursor should still route through to methods; got {labels:?}"
+    );
+    // Edit range replaces only the pre-cursor prefix (`pro`), consistent with the
+    // arrow path and all providers — the trailing `cess` is left by design, not
+    // a defect introduced by indirect routing.
+    assert_eq!(
+        run.text_edit_range,
+        Some((0, pos)),
+        "indirect method edit range must match the uniform (prefix_start, position) insert semantics"
+    );
+    Ok(())
+}
