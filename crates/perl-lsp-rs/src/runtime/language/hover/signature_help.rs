@@ -1,6 +1,8 @@
 //! Signature help handlers and signature extraction helpers.
 
 use super::*;
+#[cfg(feature = "workspace")]
+use crate::runtime::readiness::IndexReadinessPolicy;
 
 /// Build an actionable INVALID_PARAMS error for malformed signatureHelp requests.
 ///
@@ -91,6 +93,14 @@ impl LspServer {
                     // infrastructure as get_user_function_signature.
                     // Designed as a clean reusable helper — a later slice will call this
                     // same entry point for inlay hints without rebuilding the lookup logic.
+                    //
+                    // Wait for the workspace index to finish building before querying it.
+                    // Without this, a signatureHelp request arriving while the index is in
+                    // IndexState::Building returns Partial from route_index_access and
+                    // resolve_method_in_workspace returns None — empty signatures on fresh open.
+                    // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                    #[cfg(feature = "workspace")]
+                    let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
                     #[cfg(feature = "workspace")]
                     if Self::is_method_call_context(&doc.text, offset) {
                         if let Some(signature) = self.resolve_method_in_workspace(&function_name) {
@@ -469,25 +479,73 @@ impl LspServer {
         }
     }
 
-    /// Extract parameter names from a params node (for signature help).
+    /// Extract parameter labels from a params node (for signature help).
     ///
-    /// Handles both bare `NodeKind::Variable` and the wrapper kinds produced by
-    /// `parse_signature`: `MandatoryParameter`, `OptionalParameter`, `NamedParameter`,
-    /// and `SlurpyParameter`, all of which contain an inner `variable` node.
+    /// Renders each parameter by its `NodeKind` variant so the signature-help
+    /// label distinguishes the Perl signature parameter kinds instead of
+    /// flattening them all to a bare `sigil+name`:
+    ///
+    /// - `MandatoryParameter` → `$name`
+    /// - `OptionalParameter`  → `$name = <default>` (default rendered when it is a
+    ///   simple literal, else `$name = ...`)
+    /// - `SlurpyParameter`    → `@rest` / `%opts`
+    /// - `NamedParameter`     → `:$name` (leading colon — named params are supplied
+    ///   by name, not by position)
+    ///
+    /// A bare `NodeKind::Variable` (not wrapped in a parameter kind) renders as
+    /// `sigil+name`.
     pub(super) fn extract_signature_params(&self, params_node: &Node, params: &mut Vec<String>) {
         match &params_node.kind {
             NodeKind::Variable { sigil, name } => {
                 params.push(format!("{}{}", sigil, name));
             }
-            NodeKind::MandatoryParameter { variable }
-            | NodeKind::SlurpyParameter { variable }
-            | NodeKind::NamedParameter { variable } => {
-                self.extract_signature_params(variable, params);
+            NodeKind::MandatoryParameter { variable } | NodeKind::SlurpyParameter { variable } => {
+                if let Some(name) = Self::format_param_variable(variable) {
+                    params.push(name);
+                }
             }
-            NodeKind::OptionalParameter { variable, .. } => {
-                self.extract_signature_params(variable, params);
+            NodeKind::NamedParameter { variable, .. } => {
+                if let Some(name) = Self::format_param_variable(variable) {
+                    params.push(format!(":{}", name));
+                }
+            }
+            NodeKind::OptionalParameter { variable, default_value } => {
+                if let Some(name) = Self::format_param_variable(variable) {
+                    params.push(format!(
+                        "{} = {}",
+                        name,
+                        Self::render_default_value(default_value)
+                    ));
+                }
             }
             _ => {}
+        }
+    }
+
+    /// Render a signature parameter's bound variable as `sigil+name`
+    /// (e.g. `$x`, `@rest`, `%opts`). Returns `None` when the node is not a
+    /// `Variable`.
+    fn format_param_variable(variable: &Node) -> Option<String> {
+        match &variable.kind {
+            NodeKind::Variable { sigil, name } => Some(format!("{}{}", sigil, name)),
+            _ => None,
+        }
+    }
+
+    /// Render an optional-parameter default expression for display.
+    ///
+    /// Simple literals (numbers and non-interpolated strings) are shown
+    /// verbatim; anything more complex renders as `...` to keep the label
+    /// truthful without re-serializing arbitrary expressions.
+    ///
+    /// `NodeKind::String { value }` already retains its source quote
+    /// delimiters (e.g. `'world'`, `q(hi)`), so it is emitted as-is — wrapping
+    /// it in extra double quotes would produce an untruthful `"'world'"`.
+    fn render_default_value(default_value: &Node) -> String {
+        match &default_value.kind {
+            NodeKind::Number { value } => value.clone(),
+            NodeKind::String { value, interpolated: false } => value.clone(),
+            _ => "...".to_string(),
         }
     }
 
@@ -887,7 +945,7 @@ impl LspServer {
         // Search the workspace index for callables matching the bare method name.
         // `search_source_symbols` performs a case-insensitive substring match; we
         // post-filter to exact bare-name matches of callable kinds only.
-        let candidates = workspace_index.search_source_symbols(method_name);
+        let candidates = workspace_index.search_source_symbols(method_name, None);
         let symbol =
             candidates.into_iter().find(|sym| sym.name == method_name && sym.kind.is_callable())?;
 
@@ -1342,6 +1400,44 @@ sub format_output {
             "error must name the missing field; got: {:?}",
             err.message
         );
+        Ok(())
+    }
+
+    /// Verifies that `handle_signature_help` executes the workspace
+    /// index-readiness wait when the cursor is inside a method call and
+    /// indexing is in progress (#3095).
+    ///
+    /// The document contains a `->method(` call that is neither a user-defined
+    /// sub (not in the AST) nor a Perl builtin, so execution falls through to
+    /// the workspace wait path.  The wait short-circuits immediately because
+    /// the coordinator is Ready by default.
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn test_wait_guard_fires_for_method_call_signature_help_when_indexing_in_progress()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///test-sig-race.pl";
+        // Cursor is inside the `(` of an unknown ->method( call.
+        // `unknown_xyz_method` is not a builtin and not defined as a sub
+        // in this document, so execution falls through to the workspace wait path.
+        // The trailing space puts the cursor (character 34) inside the parens.
+        let text = "my $x = $obj->unknown_xyz_method( ";
+        server.test_handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": text,
+            }
+        })))?;
+        // Simulate the race window: flag is set but coordinator is already Ready.
+        server.test_simulate_indexing_start();
+        // Position at character 34 — inside the parens after `unknown_xyz_method(`.
+        let result = server.handle_signature_help(Some(serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 34 }
+        })));
+        assert!(result.is_ok(), "handle_signature_help must not error: {result:?}");
         Ok(())
     }
 }

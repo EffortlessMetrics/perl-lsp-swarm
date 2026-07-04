@@ -10,6 +10,8 @@
 
 use super::*;
 #[cfg(feature = "workspace")]
+use crate::runtime::readiness::{IndexReadinessOutcome, IndexReadinessPolicy, check_readiness};
+#[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use crate::runtime::workspace_progress::{
     send_index_ready_notification, send_progress_begin, send_progress_create, send_progress_end,
@@ -45,30 +47,6 @@ mod configuration_response;
 mod text_decode;
 
 const WORKSPACE_CONFIGURATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
-static INDEX_READY_WAIT_ENTERED_OBSERVER: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> =
-    std::sync::Mutex::new(None);
-
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
-pub(crate) fn set_index_ready_wait_entered_observer(sender: std::sync::mpsc::Sender<()>) {
-    if let Ok(mut observer) = INDEX_READY_WAIT_ENTERED_OBSERVER.lock() {
-        *observer = Some(sender);
-    }
-}
-
-#[cfg(feature = "workspace")]
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
-fn notify_index_ready_wait_entered() {
-    let sender =
-        INDEX_READY_WAIT_ENTERED_OBSERVER.lock().ok().and_then(|mut observer| observer.take());
-    if let Some(sender) = sender {
-        let _ = sender.send(());
-    }
-}
-
-#[cfg(feature = "workspace")]
-#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
-fn notify_index_ready_wait_entered() {}
 
 // Note: WalkDir logic has been extracted to super::file_discovery.
 // These helper functions are retained for potential future use by
@@ -106,6 +84,8 @@ fn is_permission_denied_error(e: &std::io::Error) -> bool {
     false
 }
 
+#[cfg(feature = "workspace")]
+use perl_workspace::monitoring::WorkspaceIndexingReceipt;
 #[cfg(feature = "workspace")]
 use text_decode::read_text_with_encoding_fallback;
 
@@ -280,20 +260,24 @@ impl LspServer {
             // briefly for readiness before serving, bounded by INDEX_READY_WAIT_MS.
             // This eliminates the ~60% intermittent-empty race
             // that occurs when workspace/symbol arrives right after `initialized`.
-            self.wait_for_index_ready_if_building();
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
 
             let access_mode = route_index_access(self.coordinator());
 
             match access_mode {
                 IndexAccessMode::Full(coordinator) => {
-                    // Full query path: use workspace index
-                    let mut symbols = coordinator.index().search_source_symbols(query);
-                    symbols.extend(coordinator.index().search_generated_workspace_symbols(query));
+                    // Full query path: use workspace index.
+                    // Pass the cap into the search so results are bounded before
+                    // allocation — early exit at the search boundary, not after collecting.
+                    let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                    symbols.extend(
+                        coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
+                    );
 
-                    // Convert to LSP format with yielding and result cap
+                    // Convert to LSP format with cooperative yielding.
+                    // No .take(cap) needed — the search functions already apply the cap.
                     let lsp_symbols: Vec<LspWorkspaceSymbol> = symbols
                         .iter()
-                        .take(cap)
                         .enumerate()
                         .map(|(i, sym)| {
                             // Cooperative yield every 64 symbols
@@ -334,10 +318,9 @@ impl LspServer {
                     // open-doc path only when the partial index is also empty.
                     tracing::debug!(reason, "Workspace symbol: querying partial index");
                     if let Some(coordinator) = self.coordinator() {
-                        let symbols = coordinator.index().search_source_symbols(query);
+                        let symbols = coordinator.index().search_source_symbols(query, Some(cap));
                         let lsp_symbols: Vec<LspWorkspaceSymbol> = symbols
                             .iter()
-                            .take(cap)
                             .enumerate()
                             .map(|(i, sym)| {
                                 if i & 0x3f == 0 {
@@ -377,57 +360,25 @@ impl LspServer {
         self.search_open_documents_for_symbols(query, cap)
     }
 
-    /// Wait briefly until the workspace index transitions out of Building state
-    /// or the deadline expires.
-    ///
-    /// Called by `handle_workspace_symbols_v2` before routing so that a
-    /// `workspace/symbol` request issued immediately after `initialized` always
-    /// sees a Ready index rather than an empty partial index.
-    ///
-    /// The wait is bounded and only polls while `indexing_in_progress` is set.
-    /// Bounded by `INDEX_READY_WAIT_MS` milliseconds (default 2 s).
+    /// Apply the shared provider-readiness policy before consulting the index.
     #[cfg(feature = "workspace")]
-    fn wait_for_index_ready_if_building(&self) {
-        use perl_parser::workspace_index::IndexState;
-        use std::time::Instant;
-
-        // Only wait when indexing is actively in progress.
-        if !self.indexing_in_progress.load(Ordering::Acquire) {
-            return;
-        }
-
-        const INDEX_READY_WAIT_MS: u128 = 2_000;
-        let deadline = Instant::now() + Duration::from_millis(INDEX_READY_WAIT_MS as u64);
-
-        let Some(coordinator) = self.coordinator() else {
-            return;
-        };
-
-        loop {
-            match coordinator.state() {
-                IndexState::Ready { .. } => {
-                    tracing::debug!("wait_for_index_ready: index is now Ready");
-                    break;
-                }
-                // Degraded means indexing ended early — serve what we have.
-                IndexState::Degraded { .. } => {
-                    tracing::debug!("wait_for_index_ready: index degraded, proceeding");
-                    break;
-                }
-                IndexState::Building { .. } => {
-                    notify_index_ready_wait_entered();
-                    if Instant::now() >= deadline {
-                        tracing::debug!(
-                            "wait_for_index_ready: deadline reached, serving partial index"
-                        );
-                        break;
-                    }
-                    // Keep the wait cheap under slow indexing while still
-                    // releasing quickly once the coordinator reaches Ready.
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            }
-        }
+    pub(in crate::runtime) fn check_index_readiness(
+        &self,
+        policy: IndexReadinessPolicy,
+    ) -> IndexReadinessOutcome {
+        let outcome = check_readiness(self.coordinator(), &self.indexing_in_progress, policy);
+        let index_readiness = outcome.reason();
+        let index_ready = outcome.is_ready();
+        let fallback_safe = outcome.is_fallback_safe();
+        let unsafe_rejected = outcome.is_unsafe_rejected();
+        tracing::trace!(
+            index_readiness,
+            index_ready,
+            fallback_safe,
+            unsafe_rejected,
+            "index readiness evaluated"
+        );
+        outcome
     }
 
     /// Resolve the best-matching workspace folder URI for a given file URI.
@@ -1125,72 +1076,26 @@ impl LspServer {
                 //   - Wrapped:   {"perl": { "workspace": { "includePaths": [...] } }}
                 //   - Unwrapped: { "workspace": { "includePaths": [...] } }
                 if let Some(perl) = extract_perl_settings(settings) {
-                    // Check whether any perlcritic-related setting is changing before
-                    // updating config so we can decide whether to reset the shared
-                    // CriticAnalyzer.  The analyzer is config-bound (severity, profile)
-                    // so any change to those fields requires a fresh instance.
+                    // Snapshot the critic-relevant config fields before applying the
+                    // update so we can decide whether to reset the shared
+                    // CriticAnalyzer (config-bound on severity/profile/enabled). We
+                    // compare before/after `update_from_value` rather than re-parsing
+                    // the payload here so this stays in lockstep with the parser — in
+                    // particular it detects severity/enabled changes that arrive via
+                    // either the legacy `perlcritic.*` keys or the native `critic.*`
+                    // keys, which the parser folds into the same fields.
                     #[cfg(not(target_arch = "wasm32"))]
-                    let critic_config_changed = {
+                    let critic_snapshot_before = {
                         let cfg = self.config.lock();
-                        let new_enabled = perl
-                            .get("perlcritic")
-                            .and_then(|v| v.get("enabled"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(cfg.perlcritic_enabled);
-                        let new_severity = perl
-                            .get("perlcritic")
-                            .and_then(|v| v.get("severity"))
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as u8)
-                            .unwrap_or(cfg.perlcritic_severity);
-                        let new_profile = perl
-                            .get("perlcritic")
-                            .and_then(|v| v.get("profile"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let new_theme = perl
-                            .get("perlcritic")
-                            .and_then(|v| v.get("theme"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let new_native_profile = perl
-                            .get("critic")
-                            .and_then(|v| v.get("profile"))
-                            .and_then(|v| v.as_str())
-                            .and_then(
-                                perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile::parse,
-                            )
-                            .map(|profile| profile.as_str().to_string())
-                            .unwrap_or_else(|| cfg.native_critic_profile.clone());
-                        let new_native_include = perl
-                            .get("critic")
-                            .and_then(|v| v.get("include"))
-                            .and_then(|v| v.as_array())
-                            .map(|values| {
-                                values
-                                    .iter()
-                                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_else(|| cfg.native_critic_include.clone());
-                        let new_native_exclude = perl
-                            .get("critic")
-                            .and_then(|v| v.get("exclude"))
-                            .and_then(|v| v.as_array())
-                            .map(|values| {
-                                values
-                                    .iter()
-                                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_else(|| cfg.native_critic_exclude.clone());
-                        new_enabled != cfg.perlcritic_enabled
-                            || new_severity != cfg.perlcritic_severity
-                            || new_profile != cfg.perlcritic_profile
-                            || new_theme != cfg.perlcritic_theme
-                            || new_native_profile != cfg.native_critic_profile
-                            || new_native_include != cfg.native_critic_include
-                            || new_native_exclude != cfg.native_critic_exclude
+                        (
+                            cfg.perlcritic_enabled,
+                            cfg.perlcritic_severity,
+                            cfg.perlcritic_profile.clone(),
+                            cfg.perlcritic_theme.clone(),
+                            cfg.native_critic_profile.clone(),
+                            cfg.native_critic_include.clone(),
+                            cfg.native_critic_exclude.clone(),
+                        )
                     };
 
                     // Update server config (inlay hints, test runner)
@@ -1199,6 +1104,21 @@ impl LspServer {
                         config.update_from_value(perl);
                         tracing::debug!("Updated server config from perl settings");
                     }
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let critic_config_changed = {
+                        let cfg = self.config.lock();
+                        critic_snapshot_before
+                            != (
+                                cfg.perlcritic_enabled,
+                                cfg.perlcritic_severity,
+                                cfg.perlcritic_profile.clone(),
+                                cfg.perlcritic_theme.clone(),
+                                cfg.native_critic_profile.clone(),
+                                cfg.native_critic_include.clone(),
+                                cfg.native_critic_exclude.clone(),
+                            )
+                    };
 
                     // Reset the shared CriticAnalyzer when any critic-related setting
                     // changed so the next diagnostic cycle rebuilds it with the new config.
@@ -1231,6 +1151,7 @@ impl LspServer {
                             }
                             effective_config.update_from_value(perl);
                             folder.effective_workspace_config = effective_config;
+                            folder.refresh_workspace_metadata();
                         }
                     }
 
@@ -1995,6 +1916,7 @@ impl LspServer {
 
             let mut files: Vec<std::path::PathBuf> = Vec::new();
             let mut early_exit: Option<(EarlyExitReason, u64, usize, usize)> = None;
+            let mut indexing_receipt = WorkspaceIndexingReceipt::default();
 
             'scan: for folder_state in workspace_folders {
                 let Some(root) =
@@ -2007,7 +1929,10 @@ impl LspServer {
                     continue;
                 };
 
-                let discovery = super::file_discovery::discover_perl_files(&root);
+                let discovery = super::file_discovery::discover_perl_files_with_include_paths(
+                    &root,
+                    &folder_state.effective_workspace_config.include_paths,
+                );
 
                 for path in discovery.files {
                     files.push(path);
@@ -2032,6 +1957,7 @@ impl LspServer {
             }
 
             coordinator.update_scan_progress(files.len());
+            indexing_receipt.record_discovery(files.len(), budget_start.elapsed());
             coordinator.transition_to_indexing(files.len());
 
             let mut indexed_files = 0usize;
@@ -2052,9 +1978,11 @@ impl LspServer {
                     break;
                 }
 
+                let read_started = Instant::now();
                 let content = match read_text_with_encoding_fallback(&path) {
                     Ok(c) => c,
                     Err(e) => {
+                        indexing_receipt.record_read_error();
                         if is_permission_denied_error(&e) {
                             // ONE-TIME window/showMessage (AtomicBool guard)
                             if permission_denied_shown
@@ -2112,9 +2040,17 @@ impl LspServer {
                     }
                 };
                 let Ok(url) = Url::from_file_path(&path) else {
+                    indexing_receipt.record_index_error();
                     continue;
                 };
+                let read_elapsed = read_started.elapsed();
+                let index_started = Instant::now();
                 if coordinator.index().index_file(url, content).is_ok() {
+                    indexing_receipt.record_indexed_file(
+                        &path,
+                        read_elapsed,
+                        index_started.elapsed(),
+                    );
                     indexed_files += 1;
                     coordinator.update_building_progress(indexed_files);
 
@@ -2123,10 +2059,13 @@ impl LspServer {
                         send_progress_report(&outbound, indexed_files, total_files);
                         last_reported = indexed_files;
                     }
+                } else {
+                    indexing_receipt.record_index_error();
                 }
             }
 
             if let Some((reason, elapsed_ms, indexed_files, total_files)) = early_exit {
+                indexing_receipt.log(budget_start.elapsed(), Some(reason));
                 coordinator.record_early_exit(reason, elapsed_ms, indexed_files, total_files);
                 match reason {
                     EarlyExitReason::FileLimit => {
@@ -2144,6 +2083,7 @@ impl LspServer {
                 }
                 send_index_ready_notification(&outbound, false);
             } else {
+                indexing_receipt.log(budget_start.elapsed(), None);
                 let file_count = coordinator.index().file_count();
                 let symbol_count = coordinator.index().symbol_count();
                 coordinator.transition_to_ready(file_count, symbol_count);
@@ -2287,7 +2227,7 @@ impl LspServer {
         let IndexAccessMode::Full(coordinator) = route_index_access(self.coordinator()) else {
             return 0;
         };
-        coordinator.index().search_source_symbols(query).iter().take(workspace_symbol_cap()).count()
+        coordinator.index().search_source_symbols(query, Some(workspace_symbol_cap())).len()
     }
 
     fn record_workspace_symbols_provider_decision_trace(

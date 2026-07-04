@@ -1047,6 +1047,15 @@ pub struct WorkspaceSymbol {
     pub has_body: bool,
     /// Workspace folder URI this symbol belongs to (for multi-root workspace support)
     pub workspace_folder_uri: Option<String>,
+    /// Whether this symbol is a lexically-scoped variable (`my` or `state`).
+    ///
+    /// Lexical variables cannot be correctly analysed by the bare-name unused-symbol
+    /// check in [`WorkspaceIndex::find_unused_symbols`], which lacks scope-range
+    /// information.  Setting this flag during indexing lets the function skip them
+    /// entirely, avoiding both false positives and false negatives.  Proper
+    /// lexical-unused detection is deferred to the scope-aware `ScopeAnalyzer`.
+    #[serde(default)]
+    pub is_lexical: bool,
 }
 
 fn default_has_body() -> bool {
@@ -1131,6 +1140,8 @@ pub struct FileIndex {
     dependencies: HashSet<String>,
     /// Content hash for early-exit optimization
     content_hash: u64,
+    /// Document generation represented by this indexed snapshot.
+    generation: u32,
     /// Workspace folder URI this file belongs to (for multi-root workspace support)
     folder_uri: Option<String>,
 }
@@ -1178,6 +1189,15 @@ pub struct WorkspaceIndex {
     files: Arc<RwLock<HashMap<String, FileIndex>>>,
     /// Global symbol multimap (qualified/bare name -> ordered definition candidates)
     symbols: Arc<RwLock<HashMap<String, Vec<DefinitionCandidate>>>>,
+    /// Workspace-symbol search index for fast query lookup.
+    ///
+    /// Maps lowercase symbol name (bare or qualified) to all `WorkspaceSymbol`
+    /// instances that carry that name.  `search_source_symbols` iterates the
+    /// unique name keys in this map instead of scanning every file's symbol list,
+    /// turning the outer loop from O(total_symbols) to O(unique_lowercase_names).
+    ///
+    /// Lock order: always acquire `symbols` before `search_index`.
+    search_index: Arc<RwLock<HashMap<String, Vec<WorkspaceSymbol>>>>,
     /// Global reference index (symbol name -> locations across all files)
     ///
     /// Aggregated from per-file `FileIndex::references` during `index_file()`.
@@ -1350,6 +1370,71 @@ impl WorkspaceIndex {
                     .cmp(&Self::definition_candidate_sort_key(right))
             });
             entries.dedup();
+        }
+    }
+
+    /// Build the search index from scratch from all file indexes.
+    ///
+    /// Keyed by lowercase bare name and lowercase qualified name so that
+    /// `search_source_symbols` can iterate unique name keys (O(unique_lowercase_names))
+    /// rather than all (file, symbol) pairs (O(total_symbols)).
+    ///
+    /// Lock order: hold `symbols` write before calling; acquire `search_index` write
+    /// immediately after `symbols` write.
+    fn rebuild_search_index(
+        files: &HashMap<String, FileIndex>,
+        search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
+    ) {
+        search_index.clear();
+        for file_index in files.values() {
+            for symbol in &file_index.symbols {
+                let key = symbol.name.to_lowercase();
+                search_index.entry(key).or_default().push(symbol.clone());
+                if let Some(ref qname) = symbol.qualified_name {
+                    let qkey = qname.to_lowercase();
+                    search_index.entry(qkey).or_default().push(symbol.clone());
+                }
+            }
+        }
+    }
+
+    /// Incrementally add one file's symbols to the search index.
+    fn incremental_add_search(
+        search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
+        file_index: &FileIndex,
+    ) {
+        for symbol in &file_index.symbols {
+            let key = symbol.name.to_lowercase();
+            search_index.entry(key).or_default().push(symbol.clone());
+            if let Some(ref qname) = symbol.qualified_name {
+                let qkey = qname.to_lowercase();
+                search_index.entry(qkey).or_default().push(symbol.clone());
+            }
+        }
+    }
+
+    /// Incrementally remove one file's symbols from the search index by URI.
+    fn incremental_remove_search(
+        search_index: &mut HashMap<String, Vec<WorkspaceSymbol>>,
+        file_index: &FileIndex,
+    ) {
+        for symbol in &file_index.symbols {
+            let key = symbol.name.to_lowercase();
+            if let Some(entries) = search_index.get_mut(&key) {
+                entries.retain(|s| s.uri != symbol.uri);
+                if entries.is_empty() {
+                    search_index.remove(&key);
+                }
+            }
+            if let Some(ref qname) = symbol.qualified_name {
+                let qkey = qname.to_lowercase();
+                if let Some(entries) = search_index.get_mut(&qkey) {
+                    entries.retain(|s| s.uri != symbol.uri);
+                    if entries.is_empty() {
+                        search_index.remove(&qkey);
+                    }
+                }
+            }
         }
     }
 
@@ -1529,6 +1614,7 @@ impl WorkspaceIndex {
         Self {
             files: Arc::new(RwLock::new(HashMap::new())),
             symbols: Arc::new(RwLock::new(HashMap::new())),
+            search_index: Arc::new(RwLock::new(HashMap::new())),
             global_references: Arc::new(RwLock::new(HashMap::new())),
             fact_shards: Arc::new(RwLock::new(HashMap::new())),
             semantic_reference_index: Arc::new(RwLock::new(ReferenceIndex::new())),
@@ -1570,6 +1656,7 @@ impl WorkspaceIndex {
         Self {
             files: Arc::new(RwLock::new(HashMap::with_capacity(estimated_files))),
             symbols: Arc::new(RwLock::new(HashMap::with_capacity(sym_cap))),
+            search_index: Arc::new(RwLock::new(HashMap::with_capacity(sym_cap))),
             global_references: Arc::new(RwLock::new(HashMap::with_capacity(ref_cap))),
             fact_shards: Arc::new(RwLock::new(HashMap::with_capacity(estimated_files))),
             semantic_reference_index: Arc::new(RwLock::new(ReferenceIndex::new())),
@@ -1612,6 +1699,21 @@ impl WorkspaceIndex {
     #[must_use]
     pub fn workspace_folders(&self) -> Vec<String> {
         self.workspace_folders.read().clone()
+    }
+
+    /// Return the document generation represented by the indexed file snapshot.
+    #[must_use]
+    pub fn indexed_generation(&self, uri: &str) -> Option<u32> {
+        let uri_str = Self::normalize_uri(uri);
+        let key = DocumentStore::uri_key(&uri_str);
+        self.files.read().get(&key).map(|file_index| file_index.generation)
+    }
+
+    /// Whether the indexed snapshot for `uri` is older than `expected_generation`.
+    #[must_use]
+    pub fn is_index_generation_stale(&self, uri: &str, expected_generation: u32) -> bool {
+        self.indexed_generation(uri)
+            .is_some_and(|indexed_generation| indexed_generation < expected_generation)
     }
 
     /// Normalize a URI to a consistent form using proper URI handling
@@ -1669,6 +1771,16 @@ impl WorkspaceIndex {
     ///
     /// Returns: `Ok(())` when indexing succeeds, otherwise an error string.
     pub fn index_file(&self, uri: Url, text: String) -> Result<(), String> {
+        self.index_file_with_generation(uri, text, 0)
+    }
+
+    /// Index a file from its URI, text content, and document generation.
+    pub fn index_file_with_generation(
+        &self,
+        uri: Url,
+        text: String,
+        generation: u32,
+    ) -> Result<(), String> {
         let uri_str = uri.to_string();
 
         // Compute content hash for early-exit optimization
@@ -1679,9 +1791,10 @@ impl WorkspaceIndex {
         // Check if content is unchanged (early-exit optimization)
         let key = DocumentStore::uri_key(&uri_str);
         {
-            let files = self.files.read();
-            if let Some(existing_index) = files.get(&key) {
+            let mut files = self.files.write();
+            if let Some(existing_index) = files.get_mut(&key) {
                 if existing_index.content_hash == content_hash {
+                    existing_index.generation = existing_index.generation.max(generation);
                     // Content unchanged, skip re-indexing
                     return Ok(());
                 }
@@ -1712,6 +1825,7 @@ impl WorkspaceIndex {
         let mut file_index = FileIndex {
             source_uri: uri_str.clone(),
             content_hash,
+            generation,
             folder_uri: folder_uri.clone(),
             ..Default::default()
         };
@@ -1758,13 +1872,18 @@ impl WorkspaceIndex {
             // Incrementally remove old symbols before inserting new file
             if let Some(old_index) = files.get(&key) {
                 let mut symbols = self.symbols.write();
+                let mut search_idx = self.search_index.write();
                 Self::incremental_remove_symbols(&files, &mut symbols, old_index);
+                Self::incremental_remove_search(&mut search_idx, old_index);
+                drop(search_idx);
                 drop(symbols);
             }
             files.insert(key.clone(), file_index);
             let mut symbols = self.symbols.write();
+            let mut search_idx = self.search_index.write();
             if let Some(new_index) = files.get(&key) {
                 Self::incremental_add_symbols(&mut symbols, new_index);
+                Self::incremental_add_search(&mut search_idx, new_index);
             }
 
             if let Some(file_index) = files.get(&key) {
@@ -1836,7 +1955,9 @@ impl WorkspaceIndex {
 
             // Incrementally remove symbols and re-insert any shadowed names.
             let mut symbols = self.symbols.write();
+            let mut search_idx = self.search_index.write();
             Self::incremental_remove_symbols(&files, &mut symbols, &file_index);
+            Self::incremental_remove_search(&mut search_idx, &file_index);
 
             // Defensive sweep: purge any remaining cache entries whose value
             // points to this file's URI.  incremental_remove_symbols already
@@ -1862,6 +1983,12 @@ impl WorkspaceIndex {
                     !removed_uris.contains(&cand_uri)
                 });
                 !candidates.is_empty()
+            });
+            // Defensive sweep for search_index: remove any remaining entries
+            // pointing to the removed URI (mirrors the symbols sweep above).
+            search_idx.retain(|_, syms| {
+                syms.retain(|sym| !removed_uris.contains(&sym.uri.as_str()));
+                !syms.is_empty()
             });
 
             // Remove from global reference index. Two-phase cleanup: first
@@ -2116,6 +2243,7 @@ impl WorkspaceIndex {
         {
             let mut files = self.files.write();
             let mut symbols = self.symbols.write();
+            let mut search_idx = self.search_index.write();
             let mut global_refs = self.global_references.write();
 
             // Pre-allocate capacity for the incoming batch to avoid rehashing.
@@ -2147,6 +2275,7 @@ impl WorkspaceIndex {
 
             // Single rebuild at the end
             Self::rebuild_symbol_cache(&files, &mut symbols);
+            Self::rebuild_search_index(&files, &mut search_idx);
         }
 
         errors
@@ -2414,6 +2543,7 @@ impl WorkspaceIndex {
     pub fn clear(&self) {
         self.files.write().clear();
         self.symbols.write().clear();
+        self.search_index.write().clear();
         self.global_references.write().clear();
         self.fact_shards.write().clear();
         *self.semantic_reference_index.write() = ReferenceIndex::new();
@@ -2922,7 +3052,7 @@ impl WorkspaceIndex {
     /// let _results = index.search_symbols("example");
     /// ```
     pub fn search_symbols(&self, query: &str) -> Vec<WorkspaceSymbol> {
-        self.search_source_symbols(query)
+        self.search_source_symbols(query, None)
     }
 
     /// Search only source-backed syntax symbols from the workspace index.
@@ -2930,21 +3060,31 @@ impl WorkspaceIndex {
     /// Generated/framework members are excluded. Use this when a caller needs
     /// to preserve the historical source-backed live slice for trust receipts
     /// or fallback paths.
-    pub fn search_source_symbols(&self, query: &str) -> Vec<WorkspaceSymbol> {
+    ///
+    /// Uses the `search_index` (keyed by lowercase bare/qualified names) to
+    /// iterate unique name keys rather than all (file, symbol) pairs, turning
+    /// the outer loop from O(total_symbols) to O(unique_lowercase_names).
+    /// A symbol that is stored under both its bare name key and its qualified
+    /// name key is deduplicated by `(uri, start_byte)` so each `WorkspaceSymbol`
+    /// appears at most once in the result.
+    pub fn search_source_symbols(&self, query: &str, cap: Option<usize>) -> Vec<WorkspaceSymbol> {
         let query = query.trim();
         let query_lower = query.to_lowercase();
-        let files = self.files.read();
+        let search_idx = self.search_index.read();
+        let mut seen: HashSet<(String, usize)> = HashSet::new();
         let mut results = Vec::new();
-        for file_index in files.values() {
-            for symbol in &file_index.symbols {
-                if symbol.name.to_lowercase().contains(&query_lower)
-                    || symbol
-                        .qualified_name
-                        .as_ref()
-                        .map(|qn| qn.to_lowercase().contains(&query_lower))
-                        .unwrap_or(false)
-                {
-                    results.push(symbol.clone());
+        'outer: for (name_key, symbols) in search_idx.iter() {
+            if name_key.contains(&query_lower) {
+                for sym in symbols {
+                    // Dedup: a symbol may appear under both its bare-name key
+                    // and its qualified-name key; keep only the first occurrence.
+                    let dedup_key = (sym.uri.clone(), sym.range.start.byte);
+                    if seen.insert(dedup_key) {
+                        results.push(sym.clone());
+                        if cap.is_some_and(|c| results.len() >= c) {
+                            break 'outer;
+                        }
+                    }
                 }
             }
         }
@@ -2956,7 +3096,11 @@ impl WorkspaceIndex {
     /// This is a narrow workspace-symbol pilot: returned symbols are explicitly
     /// labeled as generated/framework members and point at the source declaration
     /// that produced the member, not at an exact generated method body.
-    pub fn search_generated_workspace_symbols(&self, query: &str) -> Vec<WorkspaceSymbol> {
+    pub fn search_generated_workspace_symbols(
+        &self,
+        query: &str,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol> {
         let query = query.trim();
         if query.is_empty() {
             return Vec::new();
@@ -2967,7 +3111,7 @@ impl WorkspaceIndex {
         let shards = self.fact_shards.read();
         let mut results = Vec::new();
 
-        for shard in shards.values() {
+        'outer: for shard in shards.values() {
             for entity in &shard.entities {
                 if entity.kind != EntityKind::GeneratedMember {
                     continue;
@@ -3008,7 +3152,11 @@ impl WorkspaceIndex {
                     container_name: Some(format!("{container_name} [generated/framework]")),
                     has_body: false,
                     workspace_folder_uri: self.determine_folder_uri(&shard.source_uri),
+                    is_lexical: false,
                 });
+                if cap.is_some_and(|c| results.len() >= c) {
+                    break 'outer;
+                }
             }
         }
 
@@ -3335,6 +3483,16 @@ impl WorkspaceIndex {
         // Collect all defined symbols
         for (_uri_key, file_index) in files.iter() {
             for symbol in &file_index.symbols {
+                // Lexically-scoped variables (my/state) require scope-range analysis to
+                // determine whether a reference in the same file refers to *this* declaration
+                // or a same-named variable in a different block.  The bare-name lookup below
+                // cannot make that distinction, so lexical variables are excluded from this
+                // check entirely.  Proper unused-lexical detection is handled by the
+                // scope-aware ScopeAnalyzer.  See issue #1805.
+                if symbol.is_lexical {
+                    continue;
+                }
+
                 // Check if this symbol has any references beyond its definition
                 let has_usage = files.values().any(|fi| {
                     if let Some(refs) = fi.references.get(&symbol.name) {
@@ -3678,6 +3836,11 @@ impl IndexVisitor {
                 _ => decl.container,
             };
 
+            // Lexical declarators (my/state) produce scope-local variables that cannot be
+            // correctly analysed by a bare-name unused-symbol check.  Flag them so that
+            // `find_unused_symbols` can skip the whole class.
+            let is_lexical = matches!(decl.declarator.as_deref(), Some("my") | Some("state"));
+
             file_index.symbols.push(WorkspaceSymbol {
                 name: symbol_name.clone(),
                 kind: decl.kind,
@@ -3688,6 +3851,7 @@ impl IndexVisitor {
                 container_name,
                 has_body: true,
                 workspace_folder_uri: self.workspace_folder_uri.clone(),
+                is_lexical,
             });
 
             file_index.references.entry(symbol_name).or_default().push(SymbolReference {
@@ -4723,24 +4887,24 @@ has display_name => (is => 'rw');
 "#;
         must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
 
-        let source_symbols = index.search_source_symbols("display_name");
+        let source_symbols = index.search_source_symbols("display_name", None);
         assert!(
             source_symbols.is_empty(),
             "generated framework members must not enter the exact source-symbol slice"
         );
-        let trimmed_source_symbols = index.search_source_symbols("  display_name  ");
+        let trimmed_source_symbols = index.search_source_symbols("  display_name  ", None);
         assert!(
             trimmed_source_symbols.is_empty(),
             "trimmed generated framework member queries must not enter the exact source-symbol slice"
         );
 
-        let generated_symbols = index.search_generated_workspace_symbols("display_name");
+        let generated_symbols = index.search_generated_workspace_symbols("display_name", None);
         assert_eq!(generated_symbols.len(), 1);
         let trimmed_generated_symbols =
-            index.search_generated_workspace_symbols("  display_name  ");
+            index.search_generated_workspace_symbols("  display_name  ", None);
         assert_eq!(trimmed_generated_symbols.len(), 1);
         assert_eq!(trimmed_generated_symbols[0].name, "display_name [generated/framework]");
-        assert!(index.search_generated_workspace_symbols("   ").is_empty());
+        assert!(index.search_generated_workspace_symbols("   ", None).is_empty());
         let symbol = &generated_symbols[0];
         assert_eq!(symbol.name, "display_name [generated/framework]");
         assert_eq!(symbol.kind, SymbolKind::Method);
@@ -4772,7 +4936,7 @@ has display_name => (is => 'rw');
                 .ok_or("missing generated member entity")?;
             entity.provenance = Provenance::ExactAst;
         }
-        let non_framework_symbols = index.search_generated_workspace_symbols("display_name");
+        let non_framework_symbols = index.search_generated_workspace_symbols("display_name", None);
         assert!(
             non_framework_symbols.is_empty(),
             "generated workspace-symbol pilot must require framework-synthesis provenance"
@@ -4792,13 +4956,13 @@ has status => (is => 'rw', predicate => 1);
 "#;
         must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
 
-        let source_symbols = index.search_source_symbols("has_status");
+        let source_symbols = index.search_source_symbols("has_status", None);
         assert!(
             source_symbols.is_empty(),
             "predicate generated members must not enter the exact source-symbol slice"
         );
 
-        let generated_symbols = index.search_generated_workspace_symbols("has_status");
+        let generated_symbols = index.search_generated_workspace_symbols("has_status", None);
         assert_eq!(generated_symbols.len(), 1);
         let symbol = &generated_symbols[0];
         assert_eq!(symbol.name, "has_status [generated/framework]");
@@ -5899,6 +6063,50 @@ sub hello {
         assert_eq!(symbols1.len(), symbols2.len());
         assert!(symbols2.iter().any(|s| s.name == "MyPackage" && s.kind == SymbolKind::Package));
         assert!(symbols2.iter().any(|s| s.name == "hello" && s.kind == SymbolKind::Subroutine));
+    }
+
+    #[test]
+    fn test_index_file_generation_updates_on_same_content_reindex() {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///generation.pl"));
+        let code = "package Generation;\nsub stable { 1 }\n1;\n";
+
+        must(index.index_file_with_generation(uri.clone(), code.to_string(), 1));
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(1));
+        assert!(!index.is_index_generation_stale(uri.as_str(), 1));
+        assert!(index.is_index_generation_stale(uri.as_str(), 2));
+
+        must(index.index_file_with_generation(uri.clone(), code.to_string(), 2));
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(2));
+        assert!(!index.is_index_generation_stale(uri.as_str(), 2));
+    }
+
+    #[test]
+    fn is_index_generation_stale_boundary_discriminator_indexed_generation_less_than_expected_generation()
+     {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///generation-boundary.pl"));
+        let code = "package GenerationBoundary;\nsub stable { 1 }\n1;\n";
+
+        must(index.index_file_with_generation(uri.clone(), code.to_string(), 2));
+
+        assert_eq!(
+            index.indexed_generation(uri.as_str()),
+            Some(2),
+            "test setup must index the boundary generation"
+        );
+        assert!(
+            !index.is_index_generation_stale(uri.as_str(), 1),
+            "indexed_generation > expected_generation must not be stale"
+        );
+        assert!(
+            !index.is_index_generation_stale(uri.as_str(), 2),
+            "indexed_generation == expected_generation must not be stale"
+        );
+        assert!(
+            index.is_index_generation_stale(uri.as_str(), 3),
+            "indexed_generation < expected_generation must be stale"
+        );
     }
 
     #[test]
@@ -7921,6 +8129,221 @@ mod entity_id_file_scoped_tests {
         )
         .into())
     }
+
+    // ── search_index correctness: issue #2994 ──
+
+    /// Verify that `search_source_symbols` via the indexed path returns the same
+    /// symbol set as iterating all files would, across multiple files, for both
+    /// bare-name and qualified-name queries.
+    ///
+    /// This is the primary correctness guard for the O(n) → O(unique_names) fix:
+    /// if the search_index gets out of sync (stale entry, missing add, duplicate),
+    /// these assertions catch it.
+    #[test]
+    fn search_source_symbols_indexed_matches_full_scan_result_set() {
+        let index = WorkspaceIndex::new();
+
+        let uri_a = "file:///lib/Utils.pm";
+        let uri_b = "file:///lib/App.pm";
+
+        must(index.index_file(
+            must(url::Url::parse(uri_a)),
+            "package Utils;\nsub process { 1 }\nsub helper { 2 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            must(url::Url::parse(uri_b)),
+            "package App;\nuse Utils;\nsub run { 3 }\n1;\n".to_string(),
+        ));
+
+        // Bare-name substring match: "proc" matches Utils::process
+        let results = index.search_source_symbols("proc", None);
+        let names: Vec<&str> = results.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"process"),
+            "bare-name substring 'proc' must match 'process'; got: {:?}",
+            names
+        );
+        assert!(!names.contains(&"helper"), "'helper' must not match 'proc'; got: {:?}", names);
+
+        // Qualified-name substring match: "Utils::proc" must match via qualified name
+        let qresults = index.search_source_symbols("Utils::proc", None);
+        assert!(
+            qresults.iter().any(|s| s.name == "process"),
+            "'Utils::proc' must match process via qualified name; got: {:?}",
+            qresults.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        // Cross-file: "run" lives only in App.pm
+        let run_results = index.search_source_symbols("run", None);
+        assert!(
+            run_results.iter().any(|s| s.name == "run" && s.uri == uri_b),
+            "'run' must be found in App.pm; got: {:?}",
+            run_results.iter().map(|s| (&s.name, &s.uri)).collect::<Vec<_>>()
+        );
+
+        // No duplicates: a symbol appearing under both bare and qualified name keys
+        // must appear exactly once in results.
+        let all = index.search_source_symbols("process", None);
+        let process_count = all.iter().filter(|s| s.name == "process").count();
+        assert_eq!(
+            process_count, 1,
+            "'process' must appear exactly once (no dup from dual-key indexing); got: {process_count}"
+        );
+    }
+
+    #[test]
+    fn search_source_symbols_keeps_same_name_from_multiple_workspace_folders() {
+        let index = WorkspaceIndex::new();
+        index.set_workspace_folders(vec![
+            "file:///repo/svc-a".to_string(),
+            "file:///repo/svc-b".to_string(),
+        ]);
+
+        must(index.index_file(
+            must(url::Url::parse("file:///repo/svc-a/lib/ServiceA.pm")),
+            "package ServiceA;\nsub shared_action_4481 { 1 }\n1;\n".to_string(),
+        ));
+        must(index.index_file(
+            must(url::Url::parse("file:///repo/svc-b/lib/ServiceB.pm")),
+            "package ServiceB;\nsub shared_action_4481 { 2 }\n1;\n".to_string(),
+        ));
+
+        let mut results = index.search_source_symbols("shared_action_4481", None);
+        results.sort_by(|left, right| left.uri.cmp(&right.uri));
+
+        let folders: Vec<Option<&str>> =
+            results.iter().map(|symbol| symbol.workspace_folder_uri.as_deref()).collect();
+        assert_eq!(
+            folders,
+            vec![Some("file:///repo/svc-a"), Some("file:///repo/svc-b")],
+            "same-name workspace symbols must preserve both workspace folder owners"
+        );
+    }
+
+    /// Verify that `search_source_symbols` via the indexed path is correct after
+    /// a file is updated (incremental remove + add) and after `remove_file`.
+    #[test]
+    fn search_source_symbols_indexed_correct_after_update_and_remove() {
+        let index = WorkspaceIndex::new();
+
+        let uri = "file:///lib/Foo.pm";
+
+        // Index v1: has `old_func`
+        must(index.index_file(
+            must(url::Url::parse(uri)),
+            "package Foo;\nsub old_func { 1 }\n1;\n".to_string(),
+        ));
+        assert!(
+            index.search_source_symbols("old_func", None).iter().any(|s| s.name == "old_func"),
+            "old_func must be found after initial index"
+        );
+
+        // Re-index (update) v2: `old_func` gone, `new_func` added
+        must(index.index_file(
+            must(url::Url::parse(uri)),
+            "package Foo;\nsub new_func { 2 }\n1;\n".to_string(),
+        ));
+        assert!(
+            index.search_source_symbols("new_func", None).iter().any(|s| s.name == "new_func"),
+            "new_func must appear after update"
+        );
+        assert!(
+            index.search_source_symbols("old_func", None).iter().all(|s| s.name != "old_func"),
+            "old_func must be gone after update; stale entry in search_index"
+        );
+
+        // Remove the file entirely
+        index.remove_file(uri);
+        assert!(
+            index.search_source_symbols("new_func", None).is_empty(),
+            "new_func must be gone after remove_file"
+        );
+    }
+
+    /// Verify that `search_source_symbols` returns the same set (sorted by name+uri)
+    /// whether a batch index or incremental index is used.  This exercises
+    /// `rebuild_search_index` (batch path) vs `incremental_add_search` (single path).
+    #[test]
+    fn search_source_symbols_batch_vs_incremental_same_result_set() {
+        let uri_a = "file:///lib/Alpha.pm";
+        let uri_b = "file:///lib/Beta.pm";
+        let code_a = "package Alpha;\nsub alpha_fn { 1 }\n1;\n";
+        let code_b = "package Beta;\nsub beta_fn { 2 }\n1;\n";
+
+        // Incremental path
+        let idx_inc = WorkspaceIndex::new();
+        must(idx_inc.index_file(must(url::Url::parse(uri_a)), code_a.to_string()));
+        must(idx_inc.index_file(must(url::Url::parse(uri_b)), code_b.to_string()));
+
+        // Batch path
+        let idx_batch = WorkspaceIndex::new();
+        let errors = idx_batch.index_files_batch(vec![
+            (must(url::Url::parse(uri_a)), code_a.to_string()),
+            (must(url::Url::parse(uri_b)), code_b.to_string()),
+        ]);
+        assert!(errors.is_empty(), "batch index must have no errors: {:?}", errors);
+
+        // Both should find "alpha_fn" and "beta_fn"
+        for query in &["alpha_fn", "beta_fn", "fn"] {
+            let mut inc = idx_inc.search_source_symbols(query, None);
+            let mut bat = idx_batch.search_source_symbols(query, None);
+            inc.sort_by(|a, b| a.name.cmp(&b.name).then(a.uri.cmp(&b.uri)));
+            bat.sort_by(|a, b| a.name.cmp(&b.name).then(a.uri.cmp(&b.uri)));
+            let inc_names: Vec<&str> = inc.iter().map(|s| s.name.as_str()).collect();
+            let bat_names: Vec<&str> = bat.iter().map(|s| s.name.as_str()).collect();
+            assert_eq!(
+                inc_names, bat_names,
+                "query '{query}': incremental and batch must return same symbol names"
+            );
+        }
+    }
+}
+
+// ── search_source_symbols / search_generated_workspace_symbols cap (#1668) ──
+
+#[cfg(test)]
+mod search_cap_tests {
+    use super::*;
+    use perl_tdd_support::must;
+
+    fn make_index_with_subs(uri: &str, subs: &[&str]) -> WorkspaceIndex {
+        let index = WorkspaceIndex::new();
+        let source = subs.iter().map(|s| format!("sub {s} {{}}")).collect::<Vec<_>>().join(" ");
+        must(index.index_file(must(url::Url::parse(uri)), source));
+        index
+    }
+
+    #[test]
+    fn search_source_symbols_cap_limits_results() {
+        let index = make_index_with_subs(
+            "file:///lib/Cap.pm",
+            &["alpha", "beta", "gamma", "delta", "epsilon"],
+        );
+
+        let uncapped = index.search_source_symbols("", None);
+        assert!(uncapped.len() >= 5, "uncapped must return all 5 symbols");
+
+        let capped = index.search_source_symbols("", Some(2));
+        assert!(capped.len() <= 2, "cap=2 must return at most 2 symbols; got {}", capped.len());
+    }
+
+    #[test]
+    fn search_source_symbols_cap_none_returns_all() {
+        let index = make_index_with_subs("file:///lib/All.pm", &["foo", "bar"]);
+
+        let uncapped = index.search_source_symbols("", None);
+        let capped_large = index.search_source_symbols("", Some(usize::MAX));
+        // Cap large enough to never trigger early exit — both paths return the same count.
+        assert_eq!(uncapped.len(), capped_large.len());
+    }
+
+    #[test]
+    fn search_source_symbols_cap_one_returns_exactly_one() {
+        let index = make_index_with_subs("file:///lib/One.pm", &["qux", "quux", "quuz", "corge"]);
+
+        let capped = index.search_source_symbols("", Some(1));
+        assert_eq!(capped.len(), 1, "cap=1 must return exactly 1 symbol; got {:?}", capped);
+    }
 }
 
 // ── FileFactShard serde round-trip (Campaign 31 PR 5, perl-lsp-swarm#2592) ──
@@ -7928,6 +8351,7 @@ mod entity_id_file_scoped_tests {
 #[cfg(test)]
 mod file_fact_shard_serde_tests {
     use super::*;
+    use perl_tdd_support::must;
 
     #[test]
     fn file_fact_shard_serializes_and_deserializes_round_trip() {
@@ -7977,5 +8401,124 @@ mod file_fact_shard_serde_tests {
         let json = serde_json::to_string(&shard).expect("must serialize with facts");
         assert!(json.contains("\"source_uri\":\"file:///t/app.t\""));
         assert!(json.contains("\"content_hash\":999"));
+    }
+
+    // ── find_unused_symbols: lexical exclusion tests (#1805) ──────────────────
+
+    /// A genuinely-unused `my` variable must NOT appear in `find_unused_symbols`
+    /// after the fix, because scope-local lexicals are excluded from the bare-name
+    /// unused check entirely (bare-name lookup cannot determine scope correctly).
+    /// Pre-fix: the variable IS reported (no usage refs → `has_usage = false`).
+    /// Post-fix: excluded from check → not reported.
+    #[test]
+    fn test_find_unused_symbols_excludes_genuinely_unused_my_variable() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///unused-lexical.pl";
+        let code = "sub foo {\n    my $isolated = 42;\n    return 1;\n}\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !unused_names.contains(&"$isolated"),
+            "my variable must be excluded from bare-name unused check; got: {:?}",
+            unused_names
+        );
+    }
+
+    /// A used `my $x` (referenced within same scope) must also NOT appear in
+    /// find_unused_symbols — the exclusion is class-wide, not use-sensitive.
+    #[test]
+    fn test_find_unused_symbols_excludes_used_my_variable() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///used-lexical.pl";
+        let code = "sub foo {\n    my $x = 1;\n    return $x;\n}\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !unused_names.contains(&"$x"),
+            "used my $x must not appear in find_unused_symbols; got: {:?}",
+            unused_names
+        );
+    }
+
+    /// `state` variables are lexically scoped just like `my` — excluded from
+    /// the bare-name unused check.
+    #[test]
+    fn test_find_unused_symbols_excludes_state_variable() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///state-var.pl";
+        let code =
+            "use feature 'state';\nsub counter {\n    state $count = 0;\n    return $count;\n}\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !unused_names.contains(&"$count"),
+            "state variable must be excluded from bare-name unused check; got: {:?}",
+            unused_names
+        );
+    }
+
+    /// Positive control: an unused package-level subroutine IS still reported
+    /// by find_unused_symbols — only lexical my/state vars are excluded.
+    #[test]
+    fn test_find_unused_symbols_still_reports_unused_subroutine() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///unused-sub.pl";
+        let code = "package Foo;\nsub bar { return 1; }\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            unused_names.contains(&"bar"),
+            "unused package-level sub must still be reported by find_unused_symbols; got: {:?}",
+            unused_names
+        );
+    }
+
+    /// Positive control: an unused `our` (package-level) variable IS still
+    /// reported — only lexical my/state vars are excluded, not our/local.
+    #[test]
+    fn test_find_unused_symbols_still_reports_unused_our_variable() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///our-var.pl";
+        let code = "package Foo;\nour $VERSION = '1.0';\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            unused_names.contains(&"$VERSION"),
+            "unused our variable must still be reported by find_unused_symbols; got: {:?}",
+            unused_names
+        );
+    }
+
+    /// Cross-scope collision: two subs each declare `my $shared_name`. The one
+    /// without a usage should NOT appear in find_unused_symbols (the whole
+    /// class is excluded). Pre-fix it would appear due to bare-name false-negative
+    /// hiding — but post-fix both are excluded from the check entirely.
+    #[test]
+    fn test_find_unused_symbols_cross_scope_name_collision_excluded() {
+        let index = WorkspaceIndex::new();
+        let uri = "file:///cross-scope.pl";
+        // foo declares $shared but doesn't use it; bar declares and uses $shared.
+        // Pre-fix: bar's usage ref makes foo's $shared appear "used" (false neg).
+        // Post-fix: both are excluded because they're my vars.
+        let code = "sub foo {\n    my $shared = 1;\n    return 1;\n}\nsub bar {\n    my $shared = 2;\n    return $shared;\n}\n";
+        must(index.index_file(must(url::Url::parse(uri)), code.to_string()));
+
+        let unused = index.find_unused_symbols();
+        let unused_names: Vec<&str> = unused.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            !unused_names.contains(&"$shared"),
+            "cross-scope my variable must not appear in find_unused_symbols; got: {:?}",
+            unused_names
+        );
     }
 }

@@ -22,9 +22,12 @@ pub mod file_discovery;
 /// File watcher change debouncer for bulk operation handling
 pub mod file_watcher_debounce;
 mod language;
+mod latency;
 mod lifecycle;
 mod notebook;
 pub(crate) mod outbound;
+#[cfg(feature = "workspace")]
+pub(crate) mod readiness;
 mod refresh;
 /// Routing module for lifecycle-aware index access
 pub mod routing;
@@ -35,6 +38,8 @@ mod symbol_extraction;
 mod test_api;
 mod test_runners;
 mod text_sync;
+/// `PERL_LSP_TIMING` phase-1 instrumentation sink (opt-in span timings).
+pub(crate) mod timing;
 mod types;
 mod window;
 mod workspace;
@@ -80,7 +85,6 @@ use crate::features::{
     document_highlight::DocumentHighlightProvider,
     formatting::{CodeFormatter, FormattingOptions},
     implementation_provider::ImplementationProvider,
-    semantic_tokens_provider::{SemanticTokensProvider, encode_semantic_tokens},
     type_hierarchy::TypeHierarchyProvider,
 };
 
@@ -231,6 +235,12 @@ pub struct LspServer {
     /// invalidation when source text changes — no TTL needed.
     pub(crate) semantic_analyzer_cache:
         Arc<Mutex<HashMap<(String, u64), Arc<crate::semantic::SemanticAnalyzer>>>>,
+    /// Cache of inferred type environments keyed by (normalized_uri, content_hash).
+    ///
+    /// Mirrors `semantic_analyzer_cache` so repeated hover/completion requests
+    /// on an unchanged document do not rebuild `TypeInferenceEngine`.
+    pub(crate) type_inference_engine_cache:
+        Arc<Mutex<HashMap<(String, u64), Arc<crate::type_inference::TypeInferenceEngine>>>>,
     /// Last provider-local decision receipt by provider name.
     ///
     /// `perl.explainProviderDecision` can attach these transient per-server
@@ -324,6 +334,12 @@ pub struct LspServer {
     /// users with identical `window/showMessage` warnings.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) critic_workspace_warnings_sent: Mutex<std::collections::HashSet<String>>,
+    /// Test-only hook invoked after push diagnostics capture their document
+    /// snapshot and before the stale-generation guard decides whether to
+    /// publish. This keeps concurrency boundary tests deterministic without
+    /// adding production synchronization.
+    #[cfg(test)]
+    pub(crate) diagnostic_after_snapshot_hook: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Optional AI inline-completion backend.
     ///
     /// When `Some`, the `handle_inline_completion` handler will attempt
@@ -350,6 +366,8 @@ pub struct MemoryStateSnapshot {
     pub open_text_bytes: usize,
     /// Number of cached semantic analyzer entries.
     pub semantic_analyzer_cache: usize,
+    /// Number of cached type inference engine entries.
+    pub type_inference_engine_cache: usize,
     /// Number of per-document parse cancellation flags still retained.
     pub parse_cancel_flags: usize,
     /// Number of active inline-completion stream sessions.
@@ -637,6 +655,11 @@ impl LspServer {
         }
 
         {
+            let mut cache = self.type_inference_engine_cache.lock();
+            cache.retain(|(cached_uri, _), _| !uri_keys.iter().any(|key| key == cached_uri));
+        }
+
+        {
             let mut documents = self.documents.lock();
             for key in &uri_keys {
                 if let Some(doc) = documents.remove(key) {
@@ -716,6 +739,7 @@ impl LspServer {
             documents: document_count,
             open_text_bytes,
             semantic_analyzer_cache: self.semantic_analyzer_cache.lock().len(),
+            type_inference_engine_cache: self.type_inference_engine_cache.lock().len(),
             parse_cancel_flags: self.parse_cancel_flags.lock().len(),
             stream_sessions: self.stream_sessions().len(),
             pending_index_tasks: self.pending_index_task_count.load(Ordering::SeqCst),
@@ -779,6 +803,32 @@ impl LspServer {
         let folders = self.workspace_folders.lock();
         best_workspace_folder_for_doc(&folders, doc_uri)
             .map(|folder| folder.effective_workspace_config.clone())
+    }
+
+    pub(crate) fn declared_dependency_for_doc(
+        &self,
+        doc_uri: &str,
+        module_name: &str,
+    ) -> Option<perl_lsp_rs_core::config::DeclaredDependency> {
+        let config =
+            self.config_for_doc(doc_uri).unwrap_or_else(|| self.workspace_config.lock().clone());
+        config.declared_dependencies.into_iter().find(|dependency| dependency.module == module_name)
+    }
+
+    pub(crate) fn declared_dependency_summary(
+        dependency: &perl_lsp_rs_core::config::DeclaredDependency,
+    ) -> String {
+        let mut summary = format!("declared in {}", dependency.source.display_name());
+        if !dependency.kind.is_empty() {
+            if let Some(version) =
+                dependency.version.as_deref().filter(|version| !version.is_empty())
+            {
+                summary.push_str(&format!(" ({} {})", dependency.kind, version));
+            } else {
+                summary.push_str(&format!(" ({})", dependency.kind));
+            }
+        }
+        summary
     }
 
     /// Get all include paths for a document (from its folder and others).

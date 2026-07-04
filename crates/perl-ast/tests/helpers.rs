@@ -17,7 +17,7 @@
 //! 2. Add a representative instance here.
 //! 3. All tests that use `all_nodekind_instances()` automatically cover the new variant.
 
-use perl_ast::{Node, NodeKind, SourceLocation};
+use perl_ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 
 fn loc() -> SourceLocation {
     SourceLocation { start: 0, end: 1 }
@@ -217,7 +217,12 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc()),
         Node::new(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }, loc()),
         Node::new(
-            NodeKind::Class { name: "Foo".to_string(), parents: vec![], body: Box::new(block()) },
+            NodeKind::Class {
+                name: "Foo".to_string(),
+                name_span: None,
+                parents: vec![],
+                body: Box::new(block()),
+            },
             loc(),
         ),
         Node::new(NodeKind::ExpressionStatement { expression: Box::new(num("1")) }, loc()),
@@ -319,7 +324,10 @@ pub fn all_nodekind_instances() -> Vec<Node> {
             loc(),
         ),
         Node::new(NodeKind::Untie { variable: Box::new(var("%", "h")) }, loc()),
-        Node::new(NodeKind::Format { name: "STDOUT".to_string(), body: "".to_string() }, loc()),
+        Node::new(
+            NodeKind::Format { name: "STDOUT".to_string(), name_span: None, body: "".to_string() },
+            loc(),
+        ),
         Node::new(NodeKind::NestedVariableList { items: vec![] }, loc()),
         Node::new(
             NodeKind::VariableWithAttributes {
@@ -330,16 +338,29 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         ),
         Node::new(NodeKind::Defer { block: Box::new(block()) }, loc()),
         Node::new(NodeKind::Prototype { content: "$@".to_string() }, loc()),
-        Node::new(NodeKind::NamedParameter { variable: Box::new(var("$", "x")) }, loc()),
+        Node::new(
+            NodeKind::NamedParameter {
+                variable: Box::new(var("$", "x")),
+                external_name: String::new(),
+                default_operator: None,
+                default_value: None,
+                required: true,
+            },
+            loc(),
+        ),
         Node::new(
             NodeKind::Method {
                 name: "foo".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(block()),
             },
             loc(),
         ),
-        Node::new(NodeKind::Goto { target: Box::new(var("$", "sub_ref")) }, loc()),
+        Node::new(
+            NodeKind::Goto { target: Box::new(var("$", "sub_ref")), form: GotoTargetForm::Label },
+            loc(),
+        ),
     ]
 }

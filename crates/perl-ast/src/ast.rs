@@ -105,8 +105,71 @@
 pub use perl_position_tracking::SourceLocation;
 // Re-export Token and TokenKind from perl-token for AST error nodes
 pub use perl_token::{Token, TokenKind};
+use std::cell::Cell;
 use std::fmt;
 use strum::VariantNames as _;
+
+/// Maximum AST traversal depth for recursive operations.
+///
+/// Guards [`Node::to_sexp`], [`Node::count_nodes`], and
+/// [`Node::find_deepest_containing_offset`] against stack-overflow panics on
+/// pathologically deep ASTs (e.g., thousands of nested blocks or expressions
+/// produced by malformed or adversarial input).
+///
+/// Chosen at 512: typical Perl code nests fewer than 100 levels deep;
+/// 512 provides a comfortable safety margin while staying well within
+/// Rust's default 8 MB stack.
+pub const MAX_AST_DEPTH: usize = 512;
+
+thread_local! {
+    /// Per-thread recursion depth counter used by [`Node::to_sexp`].
+    ///
+    /// Incremented on entry and decremented on exit, so interleaved calls on
+    /// separate trees (e.g. in the same thread between tests) always start from 0.
+    static TO_SEXP_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+struct ToSexpDepthGuard;
+
+impl Drop for ToSexpDepthGuard {
+    fn drop(&mut self) {
+        TO_SEXP_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// Discriminant for the three semantically distinct forms of Perl's `goto` statement.
+///
+/// Perl's `goto` is overloaded across three fundamentally different operations:
+///
+/// | Form | Example | Semantics |
+/// |------|---------|-----------|
+/// | `Label` | `goto LABEL` | Jump to a named label in the current program |
+/// | `Sub` | `goto &sub` | **Frame replacement** — tail-call with same `@_`; even `caller()` cannot distinguish |
+/// | `Expr` | `goto $expr` | Dynamic target — computed at run time |
+///
+/// The `Sub` form (`goto &NAME`) is semantically different from a normal call: it replaces
+/// the current stack frame with the called subroutine, so the called sub sees the same `@_`
+/// and `caller` context. Semantic analysis and DAP must treat it as a tail-call, not a jump.
+///
+/// This enum is always populated at parse time (never `None`); the parser detects the form
+/// by examining the first token of the target expression before consuming the full target.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GotoTargetForm {
+    /// `goto LABEL` — transfer control to a named label (plain identifier).
+    Label,
+    /// `goto &sub`, `goto &Pkg::sub`, `goto &$coderef` — frame replacement (tail call).
+    ///
+    /// The `&` sigil is the distinguishing marker. The target may be:
+    /// - A bare name: `goto &helper`
+    /// - A package-qualified name: `goto &Pkg::helper`
+    /// - A variable coderef: `goto &$dispatch_table{$key}`
+    Sub,
+    /// `goto $expr` or `goto EXPR` where the target is a computed scalar expression.
+    ///
+    /// This includes `goto $label_var` (dynamic label) and other computed forms
+    /// that are not a plain identifier (Label) or an ampersand-prefixed coderef (Sub).
+    Expr,
+}
 
 /// Core AST node representing any Perl language construct within parsing workflows.
 ///
@@ -210,6 +273,24 @@ impl Node {
     /// assert!(sexp.starts_with("(source_file"));
     /// ```
     pub fn to_sexp(&self) -> String {
+        let depth = TO_SEXP_DEPTH.with(|d| {
+            let v = d.get();
+            d.set(v + 1);
+            v
+        });
+        let _depth_guard = ToSexpDepthGuard;
+        if depth >= MAX_AST_DEPTH {
+            "(depth_limit_exceeded)".to_string()
+        } else {
+            self.to_sexp_impl()
+        }
+    }
+
+    /// Inner implementation of S-expression serialisation, called by [`to_sexp`].
+    ///
+    /// Separated so that the public entry-point can enforce the depth guard
+    /// without touching the 600-line match.
+    fn to_sexp_impl(&self) -> String {
         match &self.kind {
             NodeKind::Program { statements } => {
                 let stmts =
@@ -591,11 +672,11 @@ impl Node {
                 format!("(slurpy_parameter {})", variable.to_sexp())
             }
 
-            NodeKind::NamedParameter { variable } => {
+            NodeKind::NamedParameter { variable, .. } => {
                 format!("(named_parameter {})", variable.to_sexp())
             }
 
-            NodeKind::Method { name: _, signature, attributes, body } => {
+            NodeKind::Method { name: _, name_span: _, signature, attributes, body } => {
                 let block_contents = match &body.kind {
                     NodeKind::Block { statements } => {
                         statements.iter().map(|s| s.to_sexp()).collect::<Vec<_>>().join(" ")
@@ -639,8 +720,13 @@ impl Node {
                 }
             }
 
-            NodeKind::Goto { target } => {
-                format!("(goto {})", target.to_sexp())
+            NodeKind::Goto { target, form } => {
+                let form_str = match form {
+                    GotoTargetForm::Label => "label",
+                    GotoTargetForm::Sub => "sub",
+                    GotoTargetForm::Expr => "expr",
+                };
+                format!("(goto :{} {})", form_str, target.to_sexp())
             }
 
             NodeKind::MethodCall { object, method, args } => {
@@ -786,7 +872,7 @@ impl Node {
                 }
             }
 
-            NodeKind::Class { name, parents, body } => {
+            NodeKind::Class { name, name_span: _, parents, body } => {
                 if parents.is_empty() {
                     format!("(class {} {})", name, body.to_sexp())
                 } else {
@@ -794,7 +880,7 @@ impl Node {
                 }
             }
 
-            NodeKind::Format { name, body } => {
+            NodeKind::Format { name, name_span: _, body } => {
                 format!("(format {} {:?})", name, body)
             }
 
@@ -1021,7 +1107,7 @@ impl Node {
                     f(v);
                 }
             }
-            NodeKind::Goto { target } => f(target),
+            NodeKind::Goto { target, .. } => f(target),
             NodeKind::Signature { parameters } => {
                 for param in parameters {
                     f(param);
@@ -1033,7 +1119,12 @@ impl Node {
                 f(default_value);
             }
             NodeKind::SlurpyParameter { variable } => f(variable),
-            NodeKind::NamedParameter { variable } => f(variable),
+            NodeKind::NamedParameter { variable, default_value, .. } => {
+                f(variable);
+                if let Some(default) = default_value {
+                    f(default);
+                }
+            }
 
             // Pattern matching
             NodeKind::Match { expr, .. } => f(expr),
@@ -1276,7 +1367,7 @@ impl Node {
                     f(v);
                 }
             }
-            NodeKind::Goto { target } => f(target),
+            NodeKind::Goto { target, .. } => f(target),
             NodeKind::Signature { parameters } => {
                 for param in parameters {
                     f(param);
@@ -1288,7 +1379,12 @@ impl Node {
                 f(default_value);
             }
             NodeKind::SlurpyParameter { variable } => f(variable),
-            NodeKind::NamedParameter { variable } => f(variable),
+            NodeKind::NamedParameter { variable, default_value, .. } => {
+                f(variable);
+                if let Some(default) = default_value {
+                    f(default);
+                }
+            }
 
             // Pattern matching
             NodeKind::Match { expr, .. } => f(expr),
@@ -1369,9 +1465,21 @@ impl Node {
     /// assert_eq!(program.count_nodes(), 2);
     /// ```
     pub fn count_nodes(&self) -> usize {
+        self.count_nodes_impl(0)
+    }
+
+    /// Depth-bounded recursive helper for [`count_nodes`].
+    ///
+    /// Stops recursing at [`MAX_AST_DEPTH`] and counts the current node as 1,
+    /// skipping any further descendants.  This prevents stack overflow on
+    /// pathologically deep ASTs while preserving exact counts for normal inputs.
+    fn count_nodes_impl(&self, depth: usize) -> usize {
+        if depth >= MAX_AST_DEPTH {
+            return 1;
+        }
         let mut count = 1;
         self.for_each_child(|child| {
-            count += child.count_nodes();
+            count += child.count_nodes_impl(depth + 1);
         });
         count
     }
@@ -1471,13 +1579,25 @@ impl Node {
     /// ```
     #[inline]
     pub fn find_deepest_containing_offset(&self, offset: usize) -> Option<&Node> {
+        self.find_deepest_containing_offset_impl(offset, 0)
+    }
+
+    /// Depth-bounded recursive helper for [`find_deepest_containing_offset`].
+    ///
+    /// When [`MAX_AST_DEPTH`] is reached, returns `Some(self)` rather than
+    /// recursing into children.  The caller already knows `self` contains
+    /// `offset` (the outer `contains_offset` check passed), so the result
+    /// is still a valid, containing node — just not necessarily the deepest one.
+    fn find_deepest_containing_offset_impl(&self, offset: usize, depth: usize) -> Option<&Node> {
         if !self.contains_offset(offset) {
             return None;
         }
-
+        if depth >= MAX_AST_DEPTH {
+            return Some(self);
+        }
         let mut result = self;
         self.for_each_child(|child| {
-            if let Some(descendant) = child.find_deepest_containing_offset(offset) {
+            if let Some(descendant) = child.find_deepest_containing_offset_impl(offset, depth + 1) {
                 result = descendant;
             }
         });
@@ -1994,16 +2114,31 @@ pub enum NodeKind {
         variable: Box<Node>,
     },
 
-    /// Named parameter placeholder in signature (future Perl feature)
+    /// Named parameter in a signature: `:$alpha` or `:$beta = 1`
+    /// (Perl 5.44 named arguments, PPC0024). The caller supplies these by
+    /// name (`f(alpha => 1)`); the external key is derived from the lexical
+    /// variable name without its sigil.
     NamedParameter {
-        /// Variable for named parameter binding
+        /// Variable for named parameter binding (e.g. `$alpha`)
         variable: Box<Node>,
+        /// External argument name, derived from the variable name without its
+        /// sigil (e.g. `alpha` for `:$alpha`). This is the key callers use.
+        external_name: String,
+        /// Default-assignment operator when a default is present: `=`, `//=`,
+        /// or `||=`. `None` when the parameter has no default.
+        default_operator: Option<String>,
+        /// Default value expression, when the parameter is defaulted.
+        default_value: Option<Box<Node>>,
+        /// True when the parameter has no default (the caller must supply it).
+        required: bool,
     },
 
     /// Method declaration (Perl 5.38+ with `use feature 'class'`)
     Method {
         /// Method name
         name: String,
+        /// Source location span of the method name
+        name_span: Option<SourceLocation>,
         /// Optional signature
         signature: Option<Box<Node>>,
         /// Method attributes (e.g., `:lvalue`)
@@ -2030,6 +2165,11 @@ pub enum NodeKind {
     Goto {
         /// The target of the goto (label identifier, sub reference, or expression)
         target: Box<Node>,
+        /// Which of the three goto forms this is.
+        ///
+        /// Always populated at parse time. Consumers should use this rather than
+        /// inspecting the target's node kind, to avoid coupling to target representation.
+        form: GotoTargetForm,
     },
 
     /// Method call: `$obj->method(@args)` or `$obj->method`
@@ -2188,6 +2328,8 @@ pub enum NodeKind {
     Class {
         /// Class name
         name: String,
+        /// Source location span of the class name
+        name_span: Option<SourceLocation>,
         /// Parent class names from `:isa(Parent)` attributes
         parents: Vec<String>,
         /// Class body containing methods and attributes
@@ -2198,6 +2340,8 @@ pub enum NodeKind {
     Format {
         /// Format name (defaults to filehandle name)
         name: String,
+        /// Source location span of the format name
+        name_span: Option<SourceLocation>,
         /// Format specification body
         body: String,
     },
@@ -2687,16 +2831,23 @@ mod tests {
                 default_value: Box::new(dummy_node()),
             },
             NodeKind::SlurpyParameter { variable: Box::new(dummy_node()) },
-            NodeKind::NamedParameter { variable: Box::new(dummy_node()) },
+            NodeKind::NamedParameter {
+                variable: Box::new(dummy_node()),
+                external_name: String::new(),
+                default_operator: None,
+                default_value: None,
+                required: true,
+            },
             NodeKind::Method {
                 name: String::new(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(dummy_node()),
             },
             NodeKind::Return { value: None },
             NodeKind::LoopControl { op: String::new(), label: None },
-            NodeKind::Goto { target: Box::new(dummy_node()) },
+            NodeKind::Goto { target: Box::new(dummy_node()), form: GotoTargetForm::Label },
             NodeKind::MethodCall {
                 object: Box::new(dummy_node()),
                 method: String::new(),
@@ -2745,8 +2896,13 @@ mod tests {
                 block: Box::new(dummy_node()),
             },
             NodeKind::DataSection { marker: String::new(), body: None },
-            NodeKind::Class { name: String::new(), parents: vec![], body: Box::new(dummy_node()) },
-            NodeKind::Format { name: String::new(), body: String::new() },
+            NodeKind::Class {
+                name: String::new(),
+                name_span: None,
+                parents: vec![],
+                body: Box::new(dummy_node()),
+            },
+            NodeKind::Format { name: String::new(), name_span: None, body: String::new() },
             NodeKind::Identifier { name: String::new() },
             NodeKind::Error {
                 message: String::new(),
@@ -2970,5 +3126,183 @@ mod tests {
              is not being applied correctly.",
             NodeKind::ALL_KIND_NAMES.len()
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Depth-guard regression tests (--lib coverage for Codecov/Patch 95)
+// ---------------------------------------------------------------------------
+//
+// These tests verify that the three recursive AST operations — `to_sexp`,
+// `count_nodes`, and `find_deepest_containing_offset` — do NOT overflow the
+// stack on a pathologically deep input (50 000 levels), and that the depth
+// guard is transparent for shallow inputs that are well within MAX_AST_DEPTH.
+//
+// The tree is built iteratively (no recursion in the fixture builder itself),
+// so the fixture construction cannot itself overflow the stack.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod depth_guard_tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn loc() -> SourceLocation {
+        SourceLocation { start: 0, end: 1 }
+    }
+
+    /// Build a linearly-nested AST of depth `n` using `ExpressionStatement`
+    /// wrappers around a leaf `Number` node.  The resulting chain has `n + 1`
+    /// nodes in total.
+    ///
+    /// Construction is iterative, so this function itself does not recurse.
+    fn deep_chain(n: usize) -> Node {
+        let mut node = Node::new(NodeKind::Number { value: "1".to_string() }, loc());
+        for _ in 0..n {
+            node = Node::new(NodeKind::ExpressionStatement { expression: Box::new(node) }, loc());
+        }
+        node
+    }
+
+    // ------------------------------------------------------------------
+    // count_nodes
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn count_nodes_does_not_overflow_on_deep_input() -> TestResult {
+        // 50 000 levels deep: without the depth guard this stack-overflows.
+        let deep = deep_chain(50_000);
+        let count = deep.count_nodes();
+        // Prevent the recursive Box<Node> drop-glue from overflowing the stack
+        // (50 000 drop frames would also exceed the default 2 MB test stack).
+        // Memory leaks in tests are intentional and accepted.
+        std::mem::forget(deep);
+        // The guard fires at MAX_AST_DEPTH, so we count at most MAX_AST_DEPTH + 1
+        // nodes (root + one per guarded level).
+        assert!(count >= 1, "must count at least the root node");
+        assert!(
+            count <= MAX_AST_DEPTH + 2,
+            "count ({count}) must be bounded by the depth guard (MAX_AST_DEPTH={MAX_AST_DEPTH})"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn count_nodes_exact_on_shallow_input() -> TestResult {
+        // Depth-2 chain: ExpressionStatement(Number) — both visible.
+        let inner = Node::new(NodeKind::Number { value: "42".to_string() }, loc());
+        let outer = Node::new(NodeKind::ExpressionStatement { expression: Box::new(inner) }, loc());
+        // Depth guard must not fire: count must be exact.
+        assert_eq!(outer.count_nodes(), 2, "shallow chain: ExpressionStatement + Number = 2");
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // to_sexp
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn to_sexp_does_not_overflow_on_deep_input() -> TestResult {
+        // 50 000 levels deep: without the depth guard this stack-overflows.
+        let deep = deep_chain(50_000);
+        // Must return without panicking.
+        let sexp = deep.to_sexp();
+        // Prevent the recursive Box<Node> drop-glue from overflowing the stack.
+        std::mem::forget(deep);
+        assert!(!sexp.is_empty(), "must produce non-empty output");
+        // The truncation marker must appear somewhere in the output.
+        assert!(
+            sexp.contains("depth_limit_exceeded"),
+            "expected depth-limit truncation marker in sexp output, got: {sexp:.120}..."
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn to_sexp_depth_counter_resets_between_calls() -> TestResult {
+        // Calling to_sexp on a deep tree must not permanently raise the thread-local
+        // counter, so a second independent call returns a fresh result.
+        let deep = deep_chain(50_000);
+        let _ = deep.to_sexp();
+        // Prevent the recursive drop from overflowing the stack.
+        std::mem::forget(deep);
+
+        // Second call: shallow tree, must NOT see the depth_limit_exceeded marker.
+        let shallow = Node::new(NodeKind::Number { value: "7".to_string() }, loc());
+        let sexp2 = shallow.to_sexp();
+        assert!(
+            !sexp2.contains("depth_limit_exceeded"),
+            "depth counter must reset after the first call; got: {sexp2}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn to_sexp_normal_output_on_shallow_input() -> TestResult {
+        let inner = Node::new(NodeKind::Number { value: "42".to_string() }, loc());
+        let stmt = Node::new(NodeKind::ExpressionStatement { expression: Box::new(inner) }, loc());
+        let program = Node::new(NodeKind::Program { statements: vec![stmt] }, loc());
+        let sexp = program.to_sexp();
+        // Normal output: no truncation marker.
+        assert!(!sexp.contains("depth_limit_exceeded"), "shallow tree must not be truncated");
+        assert!(sexp.starts_with("(source_file"), "expected source_file wrapper");
+        assert!(sexp.contains("number"), "expected number node in output");
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // find_deepest_containing_offset
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn find_deepest_containing_offset_does_not_overflow_on_deep_input() -> TestResult {
+        // 50 000 levels deep: without the depth guard this stack-overflows.
+        let deep = deep_chain(50_000);
+        // Must return without panicking; result must be Some (offset 0 is inside the root).
+        // Assert before mem::forget because the result borrows from `deep`.
+        assert!(
+            deep.find_deepest_containing_offset(0).is_some(),
+            "must return Some(&Node) for an in-range offset"
+        );
+        // Prevent the recursive Box<Node> drop-glue from overflowing the stack.
+        std::mem::forget(deep);
+        Ok(())
+    }
+
+    #[test]
+    fn find_deepest_containing_offset_returns_none_for_out_of_range() -> TestResult {
+        // Offset 100 is outside the span (start: 0, end: 1) of every node in the chain.
+        let deep = deep_chain(50_000);
+        // Assert before mem::forget because the result borrows from `deep`.
+        assert!(
+            deep.find_deepest_containing_offset(100).is_none(),
+            "offset outside root span must return None"
+        );
+        // Prevent the recursive drop from overflowing the stack.
+        std::mem::forget(deep);
+        Ok(())
+    }
+
+    #[test]
+    fn find_deepest_containing_offset_finds_deepest_on_shallow_input() -> TestResult {
+        // Build: Program(loc 0..10) → ExpressionStatement(0..10)
+        //          → Number "42"(3..5)
+        let number_loc = SourceLocation { start: 3, end: 5 };
+        let stmt_loc = SourceLocation { start: 0, end: 10 };
+
+        let number = Node::new(NodeKind::Number { value: "42".to_string() }, number_loc);
+        let stmt =
+            Node::new(NodeKind::ExpressionStatement { expression: Box::new(number) }, stmt_loc);
+        let program = Node::new(NodeKind::Program { statements: vec![stmt] }, stmt_loc);
+
+        // Offset 4 is inside the Number node — deepest match.
+        let found = program.find_deepest_containing_offset(4);
+        assert!(found.is_some(), "offset 4 is inside Number(3..5)");
+        assert_eq!(
+            found.map(|n| n.kind.kind_name()),
+            Some("Number"),
+            "deepest node at offset 4 must be Number"
+        );
+        Ok(())
     }
 }

@@ -87,6 +87,20 @@ impl LspServer {
                         );
                     let mut document_symbols = document_symbols_to_json(live_result.symbols);
 
+                    // Append Test2/Test::More subtest symbols so the outline shows
+                    // the subtest tree. Subtest calls only exist in test files, so
+                    // this is empty for ordinary source.
+                    let subtests = perl_lsp_rs_core::providers::testing::subtest::discover_subtests(
+                        ast, &doc.text,
+                    );
+                    if !subtests.is_empty() {
+                        let subtest_symbols =
+                            perl_lsp_rs_core::providers::testing::subtest::subtest_document_symbols(
+                                &subtests,
+                            );
+                        document_symbols.extend(document_symbols_to_json(subtest_symbols));
+                    }
+
                     // Append POD section symbols from a direct line scan
                     document_symbols.extend(pod_section_symbols(&doc.text));
 
@@ -160,6 +174,15 @@ impl LspServer {
                     push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
                 }
 
+                // Add #region/#endregion folding ranges
+                let region_ranges =
+                    crate::folding::FoldingRangeExtractor::extract_region_markers(&doc.text);
+                for range in region_ranges {
+                    let start_line = offset_to_line(&doc.text, range.start_offset);
+                    let end_line = offset_to_line(&doc.text, range.end_offset);
+                    push_multiline_folding_range(&mut lsp_ranges, start_line, end_line, "region");
+                }
+
                 if let Some(ref ast) = doc.ast {
                     // Extract folding ranges from AST
                     let mut extractor = crate::folding::FoldingRangeExtractor::new();
@@ -189,6 +212,23 @@ impl LspServer {
                             lsp_ranges.push(lsp_range);
                         }
                     }
+
+                    // Dedup identical ranges (start+end+kind) that arise when both a
+                    // Subroutine node and its inner Block node map to the same line span.
+                    lsp_ranges.sort_by_key(|r| {
+                        (
+                            r["startLine"].as_u64().unwrap_or(0),
+                            r["endLine"].as_u64().unwrap_or(0),
+                            r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        )
+                    });
+                    lsp_ranges.dedup_by_key(|r| {
+                        (
+                            r["startLine"].as_u64().unwrap_or(0),
+                            r["endLine"].as_u64().unwrap_or(0),
+                            r.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        )
+                    });
 
                     // If no ranges from AST, try fallback
                     if lsp_ranges.is_empty() {

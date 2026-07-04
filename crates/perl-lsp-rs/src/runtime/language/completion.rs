@@ -13,6 +13,8 @@ use crate::cancellation::{
 use crate::completion::{
     CompletionItemKind, CompletionProvider, add_xs_api_completions_for_prefix,
 };
+#[cfg(feature = "workspace")]
+use crate::runtime::readiness::IndexReadinessPolicy;
 use crate::runtime::types::workspace_folder_matches_doc_uri;
 use crate::{
     protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri},
@@ -22,7 +24,6 @@ use crate::{
 };
 use perl_lexer::LSP_RUNTIME_COMPLETION_KEYWORDS;
 use perl_module::resolution::{IncRoot, IncRootKind};
-use perl_parser::type_inference::TypeInferenceEngine;
 use regex::Regex;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -419,6 +420,78 @@ impl LspServer {
         }
 
         false
+    }
+
+    fn module_completion_prefix(doc_text: &str, offset: usize) -> Option<String> {
+        if !Self::is_module_import_completion_context(doc_text, offset) {
+            return None;
+        }
+
+        let text_before = &doc_text[..offset.min(doc_text.len())];
+        Some(
+            text_before
+                .chars()
+                .rev()
+                .take_while(|&c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect(),
+        )
+    }
+
+    fn add_declared_dependency_completions(
+        &self,
+        completions: &mut Vec<crate::completion::CompletionItem>,
+        doc_text: &str,
+        doc_uri: &str,
+        offset: usize,
+        cap: usize,
+    ) {
+        let Some(prefix) = Self::module_completion_prefix(doc_text, offset) else {
+            return;
+        };
+        if completions.len() >= cap {
+            return;
+        }
+
+        let config =
+            self.config_for_doc(doc_uri).unwrap_or_else(|| self.workspace_config.lock().clone());
+        let mut seen: HashSet<String> =
+            completions.iter().map(|completion| completion.label.clone()).collect();
+
+        for dependency in config.declared_dependencies {
+            if completions.len() >= cap {
+                break;
+            }
+            if !prefix.is_empty() && !dependency.module.starts_with(&prefix) {
+                continue;
+            }
+            if !seen.insert(dependency.module.clone()) {
+                continue;
+            }
+
+            let summary = Self::declared_dependency_summary(&dependency);
+            let module = dependency.module;
+            let detail = format!("{summary}; not currently indexed");
+            let documentation = format!(
+                "`{module}` is {summary}, but it is not currently indexed. Install it or add its directory to `.perl-lsp.toml` `include_paths`.",
+            );
+
+            completions.push(crate::completion::CompletionItem {
+                label: module.clone(),
+                kind: CompletionItemKind::Module,
+                detail: Some(detail),
+                documentation: Some(documentation),
+                insert_text: Some(module.clone()),
+                sort_text: Some(format!("080_declared_dependency_{module}")),
+                filter_text: None,
+                additional_edits: Vec::new(),
+                text_edit_range: None,
+                commit_characters: None,
+                label_details: None,
+            });
+        }
     }
 
     fn add_runtime_workspace_completions(
@@ -834,8 +907,17 @@ impl LspServer {
                 params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
             self.ensure_latest(uri, req_version)?;
 
+            // Wait for workspace index to be Ready before routing, matching the
+            // workspace/symbol handler (issue #1514 race, extended to completion).
+            // The wait is bounded (2 s) and a no-op when the index is already ready.
+            #[cfg(feature = "workspace")]
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+
             // Use routing to determine workspace index access mode
-            let workspace_mode = route_index_access(self.coordinator());
+            let mut workspace_mode = route_index_access(self.coordinator());
+            if self.workspace_index_stale_for_document(uri) {
+                workspace_mode = IndexAccessMode::None;
+            }
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
@@ -880,9 +962,8 @@ impl LspServer {
                     let mut base_completions =
                         provider.get_completions_with_path(&doc.text, offset, Some(uri));
 
-                    // Enhance completions with type information
-                    let mut type_engine = TypeInferenceEngine::new();
-                    let _ = type_engine.infer(ast); // Build type environment
+                    // Enhance completions with cached type information.
+                    let type_engine = self.get_or_build_type_engine(uri, &doc.text, ast);
 
                     // Add type information to completion items where possible
                     for completion in &mut base_completions {
@@ -916,6 +997,14 @@ impl LspServer {
                     // Fallback: provide basic keyword completions when AST is unavailable
                     self.lexical_complete(&doc.text, offset, Some(uri))
                 };
+
+                self.add_declared_dependency_completions(
+                    &mut completions,
+                    &doc.text,
+                    uri,
+                    offset,
+                    cap,
+                );
 
                 // Add workspace-wide completions using routing policy
                 #[cfg(feature = "workspace")]
@@ -1047,8 +1136,17 @@ impl LspServer {
                 params["textDocument"]["version"].as_i64().and_then(|n| i32::try_from(n).ok());
             self.ensure_latest(uri, req_version)?;
 
+            // Wait for workspace index to be Ready before routing, matching the
+            // workspace/symbol handler (issue #1514 race, extended to completion).
+            // The wait is bounded (2 s) and a no-op when the index is already ready.
+            #[cfg(feature = "workspace")]
+            let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+
             // Use routing to determine workspace index access mode
-            let workspace_mode = route_index_access(self.coordinator());
+            let mut workspace_mode = route_index_access(self.coordinator());
+            if self.workspace_index_stale_for_document(uri) {
+                workspace_mode = IndexAccessMode::None;
+            }
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
@@ -1121,6 +1219,14 @@ impl LspServer {
                         data: None,
                     });
                 }
+
+                self.add_declared_dependency_completions(
+                    &mut completions,
+                    &doc.text,
+                    uri,
+                    offset,
+                    completion_cap(),
+                );
 
                 #[cfg(feature = "workspace")]
                 self.add_runtime_workspace_completions(
@@ -1537,6 +1643,25 @@ mod tests {
         Ok(response)
     }
 
+    #[cfg(feature = "workspace")]
+    fn make_document_index_stale(
+        server: &LspServer,
+        uri: &str,
+        text: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        server.test_apply_did_open(uri, text, 1)?;
+        server.test_index_file_in_building_state(uri, text).map_err(std::io::Error::other)?;
+        server.test_simulate_indexing_complete();
+        server.test_replace_document_without_index(uri, text, 2).map_err(std::io::Error::other)?;
+
+        assert!(
+            server.workspace_index_stale_for_document(uri),
+            "test setup must leave the open document newer than the workspace index"
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn completion_item_serializer_serializes_filter_text() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1894,6 +2019,83 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn regular_completion_records_none_index_state_when_open_document_index_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/completion_stale_regular.pl";
+        let text = "my $ready = 1;\n$re\n";
+
+        make_document_index_stale(&server, uri, text)?;
+
+        let response = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "position": { "line": 1, "character": 3 }
+            })))?
+            .ok_or("expected completion response")?;
+        let items =
+            response.get("items").and_then(Value::as_array).ok_or("expected completion items")?;
+        assert!(
+            items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some("$ready")),
+            "stale-index regular completion must still use current-document fallback: {items:?}"
+        );
+
+        let explanation = explain_provider_decision(&server, "completion")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing persisted completion request receipt")?;
+        assert_eq!(
+            receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("none"),
+            "stale current-document index must downgrade regular completion index access"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn cancellable_completion_records_none_index_state_when_open_document_index_is_stale()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+        let uri = "file:///workspace/completion_stale_cancellable.pl";
+        let text = "my $count = 1;\n$co\n";
+
+        make_document_index_stale(&server, uri, text)?;
+
+        let response = server
+            .handle_completion_cancellable(
+                Some(json!({
+                    "textDocument": { "uri": uri, "version": 2 },
+                    "position": { "line": 1, "character": 3 }
+                })),
+                Some(&json!("completion-stale-cancellable")),
+            )?
+            .ok_or("expected completion response")?;
+        let items =
+            response.get("items").and_then(Value::as_array).ok_or("expected completion items")?;
+        assert!(
+            items.iter().any(|item| item.get("label").and_then(Value::as_str) == Some("$count")),
+            "stale-index cancellable completion must still use current-document fallback: {items:?}"
+        );
+
+        let explanation = explain_provider_decision(&server, "completion")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing persisted completion request receipt")?;
+        assert_eq!(
+            receipt.get("workspace_index_state").and_then(Value::as_str),
+            Some("none"),
+            "stale current-document index must downgrade cancellable completion index access"
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn regular_completion_serializes_snippet_filter_text() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -2005,6 +2207,69 @@ mod tests {
         assert!(
             include_paths.contains(&lib_dir),
             "use lib path should be in include_paths; got: {include_paths:?}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn module_completion_offers_declared_but_unindexed_dependencies()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use perl_lsp_rs_core::config::{
+            DeclaredDependency, DeclaredDependencySource, WorkspaceConfig,
+        };
+
+        let server = LspServer::with_io(Box::new(std::io::empty()), Box::new(Vec::<u8>::new()));
+        let mut config = WorkspaceConfig::default();
+        config.use_system_inc = false;
+        config.use_perl5lib = false;
+        config.declared_dependencies = vec![DeclaredDependency::new(
+            "JSON::PP",
+            Some("4.16"),
+            "requires",
+            DeclaredDependencySource::Cpanfile,
+        )];
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(
+                "file:///workspace".to_string(),
+            )
+            .with_effective_workspace_config(config),
+        );
+
+        let uri = "file:///workspace/app.pl";
+        let text = "use JS";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": text
+            }
+        })))?;
+
+        let response = server
+            .handle_completion(Some(json!({
+                "textDocument": { "uri": uri, "version": 1 },
+                "position": { "line": 0, "character": text.len() }
+            })))?
+            .ok_or("expected completion response")?;
+        let items = response["items"].as_array().ok_or("expected completion items")?;
+        let item = items
+            .iter()
+            .find(|item| item["label"].as_str() == Some("JSON::PP"))
+            .ok_or_else(|| format!("expected declared dependency completion, got: {items:?}"))?;
+
+        assert_eq!(item["kind"].as_i64(), Some(9));
+        assert_eq!(item["insertText"].as_str(), Some("JSON::PP"));
+        assert!(
+            item["detail"].as_str().is_some_and(|detail| detail.contains("declared in cpanfile")),
+            "completion detail should explain declaration source: {item:?}"
+        );
+        assert!(
+            item.pointer("/documentation/value")
+                .and_then(Value::as_str)
+                .is_some_and(|doc| doc.contains("not currently indexed")),
+            "completion docs should explain the dependency is not indexed: {item:?}"
         );
         Ok(())
     }

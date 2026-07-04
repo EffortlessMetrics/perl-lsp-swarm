@@ -405,32 +405,42 @@ fn two_consecutive_coderef_calls_each_link_to_their_own_boundary() {
 }
 
 #[test]
-fn control_flow_branch_shell_is_counted_not_dropped() {
-    // PIR v0 reserves but does not yet lower BranchShell (if/unless block form).
-    // When lowering code with branches, they must be counted in
-    // unsupported_construct_counts so the gap is visible in the receipt, not
-    // silently dropped (per PR #1900's stated scope: "Branch/Loop/Return
-    // reserved but not yet populated").
+fn control_flow_branch_shell_is_now_lowered_to_branch() {
+    // Since #8196, BranchShell lowers to PirOperation::Branch instead of being
+    // counted as an unsupported construct. The gap is no longer visible in
+    // unsupported_construct_counts — it now appears in operation_counts.
     let graph = lower("if (1) { 1 }");
-    assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), Some(&1));
-    // No PIR nodes produced — branches don't lower in v0.
-    assert!(graph.is_empty());
+    // BranchShell is now lowered — it must NOT appear in unsupported counts.
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), None);
+    // The Branch operation must be counted in operation_counts.
+    assert_eq!(graph.receipt.operation_counts.get("Branch"), Some(&1));
+    // The graph is no longer empty — a Branch node was produced.
+    assert!(!graph.is_empty());
 }
 
 #[test]
-fn control_flow_loop_shell_is_counted_not_dropped() {
-    // PIR v0 reserves but does not yet lower LoopShell (while/for/foreach).
+fn control_flow_loop_shell_lowers_to_loop_operation() {
+    // Since #8196, LoopShell lowers to PirOperation::Loop instead of being
+    // counted as an unsupported construct.
     let graph = lower("while (1) { last; }");
-    assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), Some(&1));
-    assert!(graph.is_empty());
+    // LoopShell is now lowered — not in unsupported counts.
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), None);
+    // The Loop operation must be counted.
+    assert_eq!(graph.receipt.operation_counts.get("Loop"), Some(&1));
+    // The graph is no longer empty — a Loop node was produced.
+    assert!(!graph.is_empty());
 }
 
 #[test]
-fn control_flow_control_transfer_is_counted_not_dropped() {
-    // PIR v0 reserves but does not yet lower ControlTransfer (return/next/last/goto).
+fn control_flow_control_transfer_return_lowers_to_return_operation() {
+    // Since #8196, ControlTransferKind::Return lowers to PirOperation::Return.
+    // Other transfer verbs (next/last/redo/goto) remain unsupported in v0.
     let graph = lower("sub f { return 1; }");
-    assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&1));
-    assert!(graph.is_empty());
+    // The return is now a Return operation, not an unsupported construct.
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), None);
+    assert_eq!(graph.receipt.operation_counts.get("Return"), Some(&1));
+    // The graph is no longer empty — a Return node was produced.
+    assert!(!graph.is_empty());
 }
 
 #[test]
@@ -443,35 +453,56 @@ fn control_flow_statement_modifier_is_counted_not_dropped() {
 }
 
 #[test]
-fn all_four_control_flow_kinds_counted_in_same_fixture() {
+fn all_four_control_flow_kinds_in_same_fixture() {
     // Verify that a fixture exercising all four control-flow HIR variants
     // (BranchShell, LoopShell, ControlTransfer, StatementModifierShell)
-    // correctly counts each distinct occurrence.
+    // correctly reflects the current lowering state:
+    // - BranchShell now lowers to PirOperation::Branch (#8196)
+    // - LoopShell now lowers to PirOperation::Loop (#8196)
+    // - ControlTransferKind::Return now lowers to PirOperation::Return (#8196);
+    //   non-Return transfers (last/next/redo/goto) and StatementModifierShell
+    //   remain unsupported in v0
     let graph = lower(
         r#"
-if (1) { 1 }                    # BranchShell
-while (1) { last; }             # LoopShell + ControlTransfer (in last)
-sub f { return 1; }             # ControlTransfer (in return)
+if (1) { 1 }                    # BranchShell — now lowers to Branch
+while (1) { last; }             # LoopShell (now lowers to Loop) + ControlTransfer (last — unsupported)
+sub f { return 1; }             # ControlTransfer (return — now lowers to Return)
 $x = 1 if $y;                   # StatementModifierShell
 "#,
     );
 
-    // All four kinds must be present and counted.
+    // BranchShell now lowers to a Branch operation — NOT in unsupported counts.
     assert_eq!(
         graph.receipt.unsupported_construct_counts.get("BranchShell"),
-        Some(&1),
-        "BranchShell count mismatch"
+        None,
+        "BranchShell must not be unsupported — it now lowers to Branch"
     );
+    assert_eq!(
+        graph.receipt.operation_counts.get("Branch"),
+        Some(&1),
+        "Branch operation count mismatch"
+    );
+
+    // LoopShell now lowers to a Loop operation — NOT in unsupported counts.
     assert_eq!(
         graph.receipt.unsupported_construct_counts.get("LoopShell"),
-        Some(&1),
-        "LoopShell count mismatch"
+        None,
+        "LoopShell must not be unsupported — it now lowers to Loop"
     );
-    // Two ControlTransfers: one from `return 1;` in sub f, one from `last;` in while.
+    assert_eq!(
+        graph.receipt.operation_counts.get("Loop"),
+        Some(&1),
+        "Loop operation count mismatch"
+    );
+
+    // Two ControlTransfers in the fixture: `return 1;` in sub f (now a Return
+    // operation) and `last;` in the while loop (still unsupported). So Return
+    // op count is 1 and the unsupported ControlTransfer count drops to 1.
+    assert_eq!(graph.receipt.operation_counts.get("Return"), Some(&1), "Return op count mismatch");
     assert_eq!(
         graph.receipt.unsupported_construct_counts.get("ControlTransfer"),
-        Some(&2),
-        "ControlTransfer count mismatch"
+        Some(&1),
+        "ControlTransfer (non-Return) count mismatch"
     );
     assert_eq!(
         graph.receipt.unsupported_construct_counts.get("StatementModifierShell"),
@@ -479,25 +510,33 @@ $x = 1 if $y;                   # StatementModifierShell
         "StatementModifierShell count mismatch"
     );
 
-    // Graph should be empty because none of these lower to PIR operations in v0.
-    assert!(graph.is_empty(), "graph should have no lowered nodes");
+    // Graph is no longer empty — Branch and Loop nodes were produced.
+    assert!(!graph.is_empty(), "graph must have at least the Branch and Loop nodes");
 }
 
 #[test]
-fn unless_block_is_branch_shell() {
-    // `unless` block form (not postfix) lowers to BranchShell, not
-    // StatementModifierShell.
+fn unless_block_lowers_to_branch_not_statement_modifier() {
+    // `unless` block form (not postfix) lowers to BranchShell, which since #8196
+    // further lowers to PirOperation::Branch. It must not appear as a
+    // StatementModifierShell (postfix form).
     let graph = lower("unless (0) { 1 }");
-    assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), Some(&1));
+    // BranchShell is now lowered — not in unsupported.
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), None);
+    // Branch operation must be present.
+    assert_eq!(graph.receipt.operation_counts.get("Branch"), Some(&1));
     assert!(!graph.receipt.unsupported_construct_counts.contains_key("StatementModifierShell"));
 }
 
 #[test]
-fn foreach_loop_is_loop_shell() {
-    // `for my $x (LIST)` and `foreach` forms lower to LoopShell.
+fn foreach_loop_lowers_to_loop_operation() {
+    // `for my $x (LIST)` and `foreach` forms lower to LoopShell, which since
+    // #8196 further lowers to PirOperation::Loop.
     let graph = lower("for my $x (1..10) { next; }");
-    assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), Some(&1));
-    // `next` is a ControlTransfer.
+    // LoopShell is now lowered — not in unsupported counts.
+    assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), None);
+    // The Loop operation must be present.
+    assert_eq!(graph.receipt.operation_counts.get("Loop"), Some(&1));
+    // `next` is a ControlTransfer — still unsupported.
     assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&1));
 }
 

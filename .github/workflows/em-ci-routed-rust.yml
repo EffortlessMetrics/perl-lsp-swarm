@@ -159,15 +159,32 @@ jobs:
           echo "idle_cx53=${idle_cx53:-0}"
           echo "idle_cx43=${idle_cx43:-0}"
 
-          # Prefer CX53 (301 GB volume, ~140 GB free) over CX43 (150 GB volume,
-          # fills faster from orphaned run artifacts).
+          # TEMPORARY: CX43 is demoted from routing. The CX43 host has lost its
+          # preloaded em-ci-rust:1.95 Docker image (a local-only image, not in any
+          # registry), so every CX43 job fails preflight in ~11-14s with
+          # "Unable to find image 'em-ci-rust:1.95' locally / pull access denied".
+          # The GitHub-hosted disk-full fallback then rescues the required aggregate,
+          # but this (a) shows a misleading red "Perl LSP Rust Small on CX43" check on
+          # every PR and (b) wastes a doomed CX43 start plus a full GH-hosted re-run.
+          # Evidence: PR #3321 job 85060598571 — "repository does not exist or may
+          # require 'docker login'". Routing straight to CX53 (or GH-hosted when CX53
+          # is busy) is both cleaner and cheaper until ops restores the CX43 image.
+          # Revert: delete this block's CX43 skip and restore the `elif ... emit cx43`
+          # branch (preserved below) once `docker image inspect em-ci-rust:1.95`
+          # passes on the CX43 host.
+          #
+          # Prefer CX53 (301 GB volume, ~140 GB free); fall back to GitHub-hosted
+          # when CX53 is busy. CX43 intentionally skipped (see above).
           if [ "${idle_cx53:-0}" -gt 0 ]; then
             emit "cx53" "cx53_idle" "false" "false"
-          elif [ "${idle_cx43:-0}" -gt 0 ]; then
-            emit "cx43" "cx43_idle" "false" "false"
           else
             emit "github" "no_idle_runner" "false" "true"
           fi
+
+          # --- BEGIN temporarily dead code (restore to re-enable CX43) ---
+          # elif [ "${idle_cx43:-0}" -gt 0 ]; then
+          #   emit "cx43" "cx43_idle" "false" "false"
+          # --- END temporarily dead code ---
 
   rust-small-cx53:
     name: Perl LSP Rust Small on CX53
@@ -195,7 +212,7 @@ jobs:
         shell: bash
         run: |
           # ripr.yml (and any other Docker-on-CX job) may leave root-owned files
-          # in the workspace target/ dir. actions/checkout@v6 cannot clean them
+          # in the workspace target/ dir. actions/checkout@v7 cannot clean them
           # (EACCES). Use Docker (running as root) to chown back and then delete
           # the stale workspace target/ so it cannot cause `mkdir target` failures
           # on the next run. Fall back to a host-side rm -rf in case the Docker
@@ -211,7 +228,7 @@ jobs:
           # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
           rm -rf "$GITHUB_WORKSPACE/target" || true
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 1
@@ -352,7 +369,7 @@ jobs:
         shell: bash
         run: |
           # ripr.yml (and any other Docker-on-CX job) may leave root-owned files
-          # in the workspace target/ dir. actions/checkout@v6 cannot clean them
+          # in the workspace target/ dir. actions/checkout@v7 cannot clean them
           # (EACCES). Use Docker (running as root) to chown back and then delete
           # the stale workspace target/ so it cannot cause `mkdir target` failures
           # on the next run. Fall back to a host-side rm -rf in case the Docker
@@ -368,7 +385,7 @@ jobs:
           # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
           rm -rf "$GITHUB_WORKSPACE/target" || true
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 1
@@ -493,12 +510,12 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUST_TEST_THREADS: "2"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 1
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
@@ -561,12 +578,12 @@ jobs:
             echo "\`em-ci-rust:1.95\` image on the failing runner."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 1
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy

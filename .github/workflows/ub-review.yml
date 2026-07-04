@@ -22,7 +22,7 @@
 # can be warmed by Swatinem/rust-cache if needed (PR 2 scope).
 #
 # Action pin:
-#   EffortlessMetrics/ub-review@1cea262a1329a2daf03611b0b905678afa3cab79
+#   EffortlessMetrics/ub-review@f0620c358f4a9032d3f832fda92488fd198ab6e9
 #   README-documented known-good SHA; verified by EffortlessSteven/bun#49
 #   (successful evidence packet, terminal state `sufficient`, verifier pass).
 #   Update only after ub-review's own verifier passes on a downstream consumer.
@@ -220,7 +220,7 @@ jobs:
         run: |
           # Other CX jobs (ripr, rust-small) run Docker containers that write
           # workspace files as root. If a previous run left root-owned files
-          # behind, actions/checkout@v6 fails with "Unable to clean or reset
+          # behind, actions/checkout@v7 fails with "Unable to clean or reset
           # the repository" (exit 128). Use Docker (running as root) to chown
           # back and then delete the stale workspace target/ so it cannot cause
           # `mkdir target` failures on the next run. Fall back to a host-side
@@ -236,7 +236,7 @@ jobs:
             bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
           # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
           rm -rf "$GITHUB_WORKSPACE/target" || true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -265,7 +265,7 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@1cea262a1329a2daf03611b0b905678afa3cab79
+        uses: EffortlessMetrics/ub-review@f0620c358f4a9032d3f832fda92488fd198ab6e9
         with:
           config: policy/ub-review.toml
           profile: gh-runner
@@ -276,8 +276,8 @@ jobs:
           install-tools: 'true'
           tool-bundle: core
           posting: review
-          mode: review-byok
-          fail-on-gate: 'false'
+          mode: intelligent-ci
+          fail-on-gate: 'true'
           fail-on-post-error: 'false'
           allow-heavy: 'false'
           github-token: ${{ github.token }}
@@ -338,7 +338,7 @@ jobs:
             bash -c "chown -R $(id -u):$(id -g) /workspace/target 2>/dev/null || true; rm -rf /workspace/target 2>/dev/null || true" || true
           # Belt-and-suspenders: host-side rm in case Docker was unavailable above.
           rm -rf "$GITHUB_WORKSPACE/target" || true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -367,7 +367,7 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@1cea262a1329a2daf03611b0b905678afa3cab79
+        uses: EffortlessMetrics/ub-review@f0620c358f4a9032d3f832fda92488fd198ab6e9
         with:
           config: policy/ub-review.toml
           profile: gh-runner
@@ -378,8 +378,8 @@ jobs:
           install-tools: 'true'
           tool-bundle: core
           posting: review
-          mode: review-byok
-          fail-on-gate: 'false'
+          mode: intelligent-ci
+          fail-on-gate: 'true'
           fail-on-post-error: 'false'
           allow-heavy: 'false'
           github-token: ${{ github.token }}
@@ -425,7 +425,7 @@ jobs:
       UB_REVIEW_RUNNER_CLASS: github-hosted
       UB_REVIEW_RUNNER_SIZE: standard
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -454,7 +454,7 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@1cea262a1329a2daf03611b0b905678afa3cab79
+        uses: EffortlessMetrics/ub-review@f0620c358f4a9032d3f832fda92488fd198ab6e9
         with:
           config: policy/ub-review.toml
           profile: gh-runner
@@ -465,8 +465,8 @@ jobs:
           install-tools: 'true'
           tool-bundle: core
           posting: review
-          mode: review-byok
-          fail-on-gate: 'false'
+          mode: intelligent-ci
+          fail-on-gate: 'true'
           fail-on-post-error: 'false'
           allow-heavy: 'false'
           github-token: ${{ github.token }}

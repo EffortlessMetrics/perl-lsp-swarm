@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 
 use crate::hir::{
-    AccessMode, AssignMode, CallForm, DeclStorageClass, DynamicBoundaryKind,
-    HIR_BODY_MODEL_VERSION, HirBody, HirBodyId, HirExpr, HirExprId, HirFile, HirItem, HirKind,
-    HirScopeId, HirStmt, Sigil, UnaryMode, VariableKind,
+    AccessMode, AssignMode, BranchShell, CallForm, ControlTransferKind, DeclStorageClass,
+    DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId, HirExpr, HirExprId, HirFile,
+    HirItem, HirKind, HirScopeId, HirStmt, LoopShell, Sigil, UnaryMode, VariableKind,
 };
 
 use super::model::{
@@ -92,6 +92,18 @@ impl Lowerer {
                     map_boundary_kind(boundary.kind),
                     boundary.reason.clone(),
                 );
+            }
+            HirKind::BranchShell(branch) => self.lower_branch(item, branch),
+            HirKind::LoopShell(loop_shell) => self.lower_loop(item, loop_shell),
+            // Only the `return` verb lowers to PirOperation::Return. The other
+            // ControlTransferKind verbs (next/last/redo/goto) are loop-control /
+            // goto transfers, not subroutine returns; they fall through to the
+            // `other` arm below and stay visible in unsupported_construct_counts
+            // under the canonical `hir_kind_name` key — never mislabeled as a
+            // return or dropped. Future #[non_exhaustive] verbs default to the
+            // same safe, receipt-visible fallback.
+            HirKind::ControlTransfer(transfer) if transfer.kind == ControlTransferKind::Return => {
+                self.lower_return(item);
             }
             // Construct families PIR v0 does not yet lower. They remain visible
             // in the receipt instead of being silently dropped.
@@ -192,6 +204,83 @@ impl Lowerer {
             self.pending_dynamic_callee = Some(id);
         }
         id
+    }
+
+    fn lower_branch(&mut self, item: &HirItem, _branch: &BranchShell) {
+        // Source anchor: explicit, backed by the BranchShell HIR item's range.
+        let anchor = PirSourceAnchor::explicit(item.range, item.id);
+
+        // `condition` is None: PIR v0 does not yet lower the condition
+        // expression to a separate PIR node. Condition-expression lowering is a
+        // named follow-up (see PLSP-SPEC-0025 §Control-Flow Model).
+        let operation = PirOperation::Branch { condition: None };
+
+        // Void context: an `if`/`unless` statement is a control-flow fork that
+        // yields no value at statement level. Using Unknown here would over-
+        // approximate; Scalar/List would misrepresent the node's role. The
+        // condition sub-expression evaluates in scalar context, but that is the
+        // condition's context — not the BranchShell node's context, which is the
+        // whole statement.
+        //
+        // Arm-edge modeling (PirEdgeKind::Branch for then/else arms) is deferred
+        // to a follow-up pass; this slice records the branch node and its
+        // fallthrough without silently dropping it.
+        self.push_node(item, anchor, operation, PirContext::Void, None);
+    }
+
+    fn lower_loop(&mut self, item: &HirItem, _loop_shell: &LoopShell) {
+        // Source anchor: explicit, backed by the LoopShell HIR item's range.
+        let anchor = PirSourceAnchor::explicit(item.range, item.id);
+
+        // `condition` is None: PIR v0 does not yet lower the condition
+        // expression to a separate PIR node. Condition-expression lowering is a
+        // named follow-up (see PLSP-SPEC-0025 §Control-Flow Model), mirroring
+        // the same deferral in lower_branch.
+        let operation = PirOperation::Loop { condition: None };
+
+        // Void context: a while/until/for/foreach statement is a control-flow
+        // construct that yields no value at statement level. All LoopShell
+        // surface forms (While, Until, CStyleFor, Foreach) are statements —
+        // unlike BranchShell (which can cover value-producing ternaries), loops
+        // are never expressions in Perl, so Void is correct for all of them.
+        //
+        // Loop back-edges (PirEdgeKind::Loop) are deferred to a follow-up pass;
+        // this slice records the loop node and its conservative fallthrough
+        // without silently dropping it.
+        self.push_node(item, anchor, operation, PirContext::Void, None);
+    }
+
+    fn lower_return(&mut self, item: &HirItem) {
+        // Source anchor: explicit, backed by the ControlTransfer HIR item's
+        // range.
+        let anchor = PirSourceAnchor::explicit(item.range, item.id);
+
+        // `PirOperation::Return` is fieldless in PIR v0: the returned expression
+        // (`return $x`) is not lowered to a separate PIR node, mirroring the
+        // deferred condition lowering in lower_branch/lower_loop. The HIR
+        // `has_value`/`label` fields are intentionally not consumed yet;
+        // returned-value lowering is a named follow-up (see PLSP-SPEC-0025
+        // §Control-Flow Model).
+        let operation = PirOperation::Return;
+
+        // Void context: a `return` statement yields no value at the statement
+        // level — it transfers control out of the enclosing subroutine. The
+        // returned expression carries its own context, not the Return node's.
+        let id = self.push_node(item, anchor, operation, PirContext::Void, None);
+
+        // A `return` is terminal: control leaves the enclosing subroutine and
+        // does NOT fall through to the next statement. Record the Return exit
+        // edge (mirroring the DynamicExit shape — `to: None` leaves the modeled
+        // graph) and clear this scope's fallthrough source so later items in the
+        // same scope are not linked by a spurious `Fallthrough` edge *from* the
+        // return. This matters in two cases the conservative push_node linking
+        // would otherwise get wrong: (1) `return foo();`, where HIR emits the
+        // ControlTransfer item *before* the returned `CallExpr` sibling, and
+        // (2) any statement following a `return` in the same scope. Modeling the
+        // returned expression as a reachable operand (rather than an unlinked
+        // sibling) is part of the deferred returned-expression lowering.
+        self.edges.push(PirEdge { from: id, to: None, kind: PirEdgeKind::Return });
+        self.last_in_scope.remove(&item.scope_context);
     }
 
     fn push_node(
@@ -329,10 +418,15 @@ fn hir_kind_name(kind: &HirKind) -> &'static str {
         HirKind::BarewordExpr(_) => "BarewordExpr",
         HirKind::LiteralExpr(_) => "LiteralExpr",
         HirKind::BlockShell(_) => "BlockShell",
-        // Control-flow variants added by #1902. PIR v0 does not yet lower
-        // branch/loop/return — they fall through to unsupported_construct_counts
-        // where the gap is visible in every receipt, consistent with the PR's
-        // stated scope ("Branch/Loop/Return reserved but not yet populated").
+        // Control-flow variants: BranchShell lowered by #8196 (Branch op),
+        // LoopShell lowered by #8196 (Loop op), ControlTransfer::Return lowered
+        // by #8196 (Return op). Non-Return ControlTransfer verbs
+        // (next/last/redo/goto) and StatementModifierShell are not lowered and
+        // reach the `other =>` fallback above, which keys unsupported counts on
+        // hir_kind_name — so this "ControlTransfer" arm is the single source of
+        // that key (no duplicated literal). BranchShell/LoopShell/return do not
+        // reach this fallback; their arms are retained for completeness
+        // (hir_kind_name is also used by the BodyLowerer unsupported path).
         HirKind::BranchShell(_) => "BranchShell",
         HirKind::LoopShell(_) => "LoopShell",
         HirKind::ControlTransfer(_) => "ControlTransfer",
@@ -503,13 +597,17 @@ impl BodyLowerer {
                 if let Some(range) = range {
                     let anchor = self.make_body_anchor(range);
                     let op = match storage {
-                        DeclStorageClass::Our => PirOperation::StashWrite {
-                            symbol: SymbolName {
-                                sigil: sigil_str(sigil),
-                                name: name.clone(),
-                                package: None, // package context not yet threaded into body arena
-                            },
-                        },
+                        // `our` binds a package/stash symbol; `local` dynamically
+                        // scopes a package/global slot. Both are stash writes.
+                        DeclStorageClass::Our | DeclStorageClass::Local => {
+                            PirOperation::StashWrite {
+                                symbol: SymbolName {
+                                    sigil: sigil_str(sigil),
+                                    name: name.clone(),
+                                    package: None, // package context not yet threaded into body arena
+                                },
+                            }
+                        }
                         // my / state / any other declarator → lexical write
                         _ => PirOperation::LexicalWrite {
                             name: LexicalName { sigil: sigil_str(sigil), name: name.clone() },
@@ -1061,21 +1159,42 @@ mod tests {
     }
 
     #[test]
-    fn branch_shell_counted_in_receipt() {
+    fn branch_shell_lowers_to_branch_operation() {
+        // Since #8196, BranchShell lowers to PirOperation::Branch.
         let graph = lower("if (1) { 1 }");
-        assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), Some(&1));
+        // BranchShell is now lowered — not in unsupported_construct_counts.
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), None);
+        // The Branch operation must appear in operation_counts.
+        assert_eq!(graph.receipt.operation_counts.get("Branch"), Some(&1));
     }
 
     #[test]
-    fn loop_shell_counted_in_receipt() {
+    fn loop_shell_lowers_to_loop_operation() {
+        // Since #8196, LoopShell lowers to PirOperation::Loop.
         let graph = lower("while (1) { last; }");
-        assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), Some(&1));
+        // LoopShell is now lowered — not in unsupported_construct_counts.
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), None);
+        // The Loop operation must appear in operation_counts.
+        assert_eq!(graph.receipt.operation_counts.get("Loop"), Some(&1));
     }
 
     #[test]
-    fn control_transfer_counted_in_receipt() {
+    fn control_transfer_return_lowers_to_return_operation() {
+        // Since #8196, ControlTransferKind::Return lowers to PirOperation::Return.
         let graph = lower("sub f { return 1; }");
+        // The return is no longer an unsupported construct.
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), None);
+        // The Return operation must appear in operation_counts.
+        assert_eq!(graph.receipt.operation_counts.get("Return"), Some(&1));
+    }
+
+    #[test]
+    fn non_return_control_transfer_stays_unsupported() {
+        // `last`/`next`/`redo`/`goto` are not subroutine returns; they remain
+        // visible in unsupported_construct_counts rather than lowering to Return.
+        let graph = lower("while (1) { last; }");
         assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&1));
+        assert_eq!(graph.receipt.operation_counts.get("Return"), None);
     }
 
     #[test]
@@ -1097,9 +1216,18 @@ sub f { return 1; }
 $x = 1 if $y;
 "#,
         );
-        assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), Some(&1));
-        assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), Some(&1));
-        assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&2));
+        // BranchShell now lowers to Branch (#8196) — not in unsupported.
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("BranchShell"), None);
+        assert_eq!(graph.receipt.operation_counts.get("Branch"), Some(&1));
+        // LoopShell now lowers to Loop (#8196) — not in unsupported.
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("LoopShell"), None);
+        assert_eq!(graph.receipt.operation_counts.get("Loop"), Some(&1));
+        // ControlTransferKind::Return now lowers to Return (#8196). The fixture
+        // has one `return` (in sub f) and one `last` (in the while loop): the
+        // return becomes a Return op, the last stays an unsupported transfer.
+        assert_eq!(graph.receipt.operation_counts.get("Return"), Some(&1));
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("ControlTransfer"), Some(&1));
+        // StatementModifierShell is still unsupported.
         assert_eq!(
             graph.receipt.unsupported_construct_counts.get("StatementModifierShell"),
             Some(&1)

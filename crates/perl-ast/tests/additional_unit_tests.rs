@@ -443,6 +443,7 @@ fn for_each_child_mut_visits_class() {
     let mut node = Node::new(
         NodeKind::Class {
             name: "Point".to_string(),
+            name_span: None,
             parents: vec![],
             body: Box::new(block_node(vec![])),
         },
@@ -459,6 +460,7 @@ fn for_each_child_mut_visits_method_with_signature() {
     let mut node = Node::new(
         NodeKind::Method {
             name: "greet".to_string(),
+            name_span: None,
             signature: Some(Box::new(sig)),
             attributes: vec![],
             body: Box::new(block_node(vec![])),
@@ -506,8 +508,16 @@ fn for_each_child_mut_visits_slurpy_and_named_parameter() {
     slurpy.for_each_child_mut(|_| count += 1);
     assert_eq!(count, 1);
 
-    let mut named =
-        Node::new(NodeKind::NamedParameter { variable: Box::new(var_node("$", "k")) }, loc(0, 2));
+    let mut named = Node::new(
+        NodeKind::NamedParameter {
+            variable: Box::new(var_node("$", "k")),
+            external_name: String::new(),
+            default_operator: None,
+            default_value: None,
+            required: true,
+        },
+        loc(0, 2),
+    );
     count = 0;
     named.for_each_child_mut(|_| count += 1);
     assert_eq!(count, 1);
@@ -949,6 +959,7 @@ fn sexp_method_declaration_with_attributes() {
     let node = Node::new(
         NodeKind::Method {
             name: "greet".to_string(),
+            name_span: None,
             signature: None,
             attributes: vec!["lvalue".to_string()],
             body: Box::new(block_node(vec![])),

@@ -6,6 +6,8 @@ use super::super::*;
 use crate::cancellation::RequestCleanupGuard;
 use crate::documentation_targets::PerlDocumentationTarget;
 use crate::protocol::{req_position, req_uri};
+#[cfg(feature = "workspace")]
+use crate::runtime::readiness::IndexReadinessPolicy;
 use crate::util::escape_markdown_text;
 mod hover_cards;
 mod hover_extracted;
@@ -136,10 +138,17 @@ impl LspServer {
                 }
                 #[cfg(feature = "workspace")]
                 HoverExtracted::InheritedMethod(receiver_pkg, method_name, doc_uri) => {
-                    if let Some(hover_value) =
-                        self.build_inherited_method_hover(&receiver_pkg, &method_name, &doc_uri)
-                    {
-                        return Ok(Some(hover_value));
+                    if !self.workspace_index_stale_for_document(&doc_uri) {
+                        // Wait for the workspace index to finish building before querying it.
+                        // build_inherited_method_hover calls coordinator().index() directly; if the
+                        // index is in IndexState::Building the lookup returns partial/empty results.
+                        // Mirrors the pattern used by completion (#3069) and workspace/symbol (#1514).
+                        let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+                        if let Some(hover_value) =
+                            self.build_inherited_method_hover(&receiver_pkg, &method_name, &doc_uri)
+                        {
+                            return Ok(Some(hover_value));
+                        }
                     }
                 }
                 #[cfg(not(feature = "workspace"))]
@@ -198,7 +207,34 @@ impl LspServer {
             ));
         }
 
-        if let Some(symbol_info) = analyzer.find_definition(offset) {
+        // Detect early when the cursor is on a `->method` call: if find_definition
+        // returns the ENCLOSING subroutine (not the callee) because the semantic
+        // analyzer registers subs with their full body span, skip the in-file hover
+        // and let the inherited-method path below handle it.  The guard is conservative:
+        // it only fires when the token at the cursor does NOT match the returned
+        // symbol name AND an arrow receiver exists at the cursor position.
+        let symbol_at_cursor = analyzer.find_definition(offset).filter(|sym| {
+            let token = Self::get_token_at_position_static(text, offset);
+            // If the token matches the symbol name this IS a direct hover on that
+            // symbol (e.g. hovering on `sub run` where cursor is on `run`).
+            // If the token differs AND an arrow receiver exists, the cursor is on a
+            // method call inside the sub body — defer to the inherited-method path.
+            if token == sym.name || token.is_empty() {
+                return true; // keep — cursor is directly on the symbol
+            }
+            #[cfg(feature = "workspace")]
+            {
+                if matches!(
+                    sym.kind,
+                    crate::symbol::SymbolKind::Subroutine | crate::symbol::SymbolKind::Method
+                ) && Self::extract_arrow_receiver(text, offset).is_some()
+                {
+                    return false; // discard — cursor is on a method call inside a sub body
+                }
+            }
+            true
+        });
+        if let Some(symbol_info) = symbol_at_cursor {
             // Detect Moo/Moose attribute accessors (declaration == "has") early and
             // render a dedicated card that shows the attribute metadata clearly,
             // instead of the generic "Subroutine" label which is misleading for accessors.
@@ -312,8 +348,7 @@ impl LspServer {
             // Infer type for variables using TypeInferenceEngine
             let type_info = if symbol_info.kind.is_variable() {
                 let var_name = &symbol_info.name; // already without sigil
-                let mut type_engine = crate::type_inference::TypeInferenceEngine::new();
-                let _ = type_engine.infer(ast); // ignore errors, just build env
+                let type_engine = self.get_or_build_type_engine(uri, text, ast);
                 type_engine
                     .hover_label_for(var_name)
                     .filter(|label| label != "Any")
@@ -1154,7 +1189,7 @@ impl LspServer {
         &self,
         receiver_pkg: &str,
         method_name: &str,
-        _doc_uri: &str,
+        doc_uri: &str,
     ) -> Option<Value> {
         use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -1211,50 +1246,62 @@ impl LspServer {
         // Inner closure: enqueue parent and role packages not yet visited.
         // Mirrors the logic in `inherited_method_definition_location` (navigation.rs)
         // but also includes model.roles so that composed roles are traversed.
-        let mut enqueue_related =
-            |package_name: &str, queue: &mut VecDeque<String>, visited: &HashSet<String>| {
-                let related = related_package_cache
-                    .entry(package_name.to_string())
-                    .or_insert_with(|| {
-                        use crate::semantic::SemanticAnalyzer;
-                        let Some(package_location) = workspace_index.find_definition(package_name)
-                        else {
-                            return Vec::new();
-                        };
-                        let Some(text) = super::navigation::workspace_document_text(
-                            workspace_index,
-                            &package_location.uri,
-                        ) else {
-                            return Vec::new();
-                        };
+        let mut enqueue_related = |package_name: &str,
+                                   queue: &mut VecDeque<String>,
+                                   visited: &HashSet<String>| {
+            let related = related_package_cache
+                .entry(package_name.to_string())
+                .or_insert_with(|| {
+                    use crate::semantic::SemanticAnalyzer;
+                    // Resolve the document text for this package. When the workspace
+                    // index hasn't settled yet (async background indexer), `find_definition`
+                    // returns None for the receiver package — but the file is already open
+                    // in the document store because the user is hovering on it right now.
+                    // Fall back to `doc_uri` so hover is deterministic even before the
+                    // index is fully populated.
+                    let text = if let Some(loc) = workspace_index.find_definition(package_name) {
+                        match super::navigation::workspace_document_text(workspace_index, &loc.uri)
+                        {
+                            Some(t) => t,
+                            None => return Vec::new(),
+                        }
+                    } else if package_name == receiver_pkg {
+                        // Index hasn't settled; read the open document directly.
+                        match super::navigation::workspace_document_text(workspace_index, doc_uri) {
+                            Some(t) => t,
+                            None => return Vec::new(),
+                        }
+                    } else {
+                        return Vec::new();
+                    };
 
-                        let mut parser = crate::Parser::new(&text);
-                        let Ok(ast) = parser.parse() else {
-                            return Vec::new();
-                        };
+                    let mut parser = crate::Parser::new(&text);
+                    let Ok(ast) = parser.parse() else {
+                        return Vec::new();
+                    };
 
-                        SemanticAnalyzer::analyze_with_source(&ast, &text)
-                            .class_models
-                            .into_iter()
-                            .find(|model| model.name == package_name)
-                            .map(|model| {
-                                model
-                                    .parents
-                                    .iter()
-                                    .chain(model.roles.iter())
-                                    .cloned()
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default()
-                    })
-                    .clone();
+                    SemanticAnalyzer::analyze_with_source(&ast, &text)
+                        .class_models
+                        .into_iter()
+                        .find(|model| model.name == package_name)
+                        .map(|model| {
+                            model
+                                .parents
+                                .iter()
+                                .chain(model.roles.iter())
+                                .cloned()
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
+                .clone();
 
-                for pkg in related {
-                    if !visited.contains(&pkg) {
-                        queue.push_back(pkg);
-                    }
+            for pkg in related {
+                if !visited.contains(&pkg) {
+                    queue.push_back(pkg);
                 }
-            };
+            }
+        };
 
         enqueue_related(receiver_pkg, &mut queue, &visited);
 
@@ -1356,6 +1403,15 @@ impl LspServer {
         let include_paths = config.effective_include_paths(&perl5lib_paths);
         let searched_paths = Self::format_missing_module_search_paths(&include_paths);
         let system_inc_status = if config.use_system_inc { "enabled" } else { "disabled" };
+        let declared_dependency_note = self
+            .declared_dependency_for_doc(doc_uri, module_name)
+            .map(|dependency| {
+                let summary = Self::declared_dependency_summary(&dependency);
+                format!(
+                    "\n\n**Declared dependency**: `{module_name}` is {summary}, but it is not currently indexed."
+                )
+            })
+            .unwrap_or_default();
 
         json!({
             "contents": {
@@ -1369,6 +1425,8 @@ Not found in workspace or configured include paths.
 {searched_paths}
 
 **System `@INC`**: {system_inc_status}
+
+{declared_dependency_note}
 
 **Next steps**: install `{module_name}` (for example, `cpanm {module_name}`) or add the directory that contains it to `.perl-lsp.toml` `include_paths`.
 
@@ -1782,6 +1840,34 @@ Not found in workspace or configured include paths.
                  unknown which branch matched.\n\n\
                  ```perl\n\"1999-12-31\" =~ /(\\d{4})-(\\d{2})-(\\d{2})/;\nprint $+;  # \"31\" (last group)\n```"
             }
+            "@+" => {
+                "**`@+` \u{2014} Regex Match End Positions**\n\n\
+                 Array containing the end positions of captures in the last \
+                 successful regex match. `$+[0]` is the end of the overall match, \
+                 `$+[1]` is the end of the first capture group, etc. Indexed from 0.\n\n\
+                 ```perl\n\"foo123bar\" =~ /(\\d+)/; print $+[0];  # 6 (end of match)\n```"
+            }
+            "@-" => {
+                "**`@-` \u{2014} Regex Match Start Positions**\n\n\
+                 Array containing the start positions of captures in the last \
+                 successful regex match. `$-[0]` is the start of the overall match, \
+                 `$-[1]` is the start of the first capture group, etc. Indexed from 0.\n\n\
+                 ```perl\n\"foo123bar\" =~ /(\\d+)/; print $-[0];  # 3 (start of match)\n```"
+            }
+            "@EXPORT" => {
+                "**`@EXPORT` \u{2014} Default Export List**\n\n\
+                 Array of symbol names exported by default when a module is \
+                 imported without specific `qw(...)` arguments. Used with the \
+                 `Exporter` pragma. Symbols are typically subroutine or variable names.\n\n\
+                 ```perl\nour @EXPORT = qw(process_file clean_data);\n```"
+            }
+            "@EXPORT_OK" => {
+                "**`@EXPORT_OK` \u{2014} Optional Exports**\n\n\
+                 Array of symbol names that can be optionally imported from a module. \
+                 These are not exported by default, but users can explicitly request \
+                 them. Used with the `Exporter` pragma in conjunction with `use Module qw(:tag foo)`.\n\n\
+                 ```perl\nour @EXPORT_OK = qw(advanced_function internal_util);\n```"
+            }
             "@ISA" => {
                 "**`@ISA` \u{2014} Inheritance List**\n\n\
                  Defines the parent classes for method resolution. Perl \
@@ -1848,6 +1934,21 @@ Not found in workspace or configured include paths.
                  Hash mapping signal names to handler code refs (or `'IGNORE'` / \
                  `'DEFAULT'`). Use `local %SIG` to temporarily override handlers.\n\n\
                  ```perl\n$SIG{INT}  = sub { print \"Interrupted\\n\"; exit 1 };\n$SIG{TERM} = 'IGNORE';\n```"
+            }
+            "%!" => {
+                "**`%!` \u{2014} OS Error Details Hash**\n\n\
+                 Hash providing access to individual errno values on systems that \
+                 support it (primarily Unix-like systems). Each key is an error name \
+                 (like `ENOENT`, `EACCES`), and the value is the corresponding \
+                 numeric errno. Similar to `$!` but organized as a hash for per-errno queries.\n\n\
+                 ```perl\nif ($!{ENOENT}) { warn \"File not found\"; }\n```"
+            }
+            "%EXPORT_TAGS" => {
+                "**`%EXPORT_TAGS` \u{2014} Export Tag Definitions**\n\n\
+                 Hash mapping export tag names to array references of symbol lists. \
+                 Used with the `Exporter` pragma to group related symbols for \
+                 convenient bulk imports (e.g., `use Module qw(:all)`).\n\n\
+                 ```perl\nour %EXPORT_TAGS = (\n    core   => [qw(foo bar)],\n    extra  => [qw(baz qux)],\n    all    => [@EXPORT, @EXPORT_OK],\n);\n```"
             }
             "$^A" => {
                 "**`$^A` \u{2014} Accumulator for `format()`**\n\n\

@@ -1,4 +1,4 @@
-use perl_ast::{Node, NodeKind, SourceLocation};
+use perl_ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 
 fn loc() -> SourceLocation {
     SourceLocation::new(0, 0)
@@ -332,14 +332,28 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             1,
         ),
         (
-            Node::new(NodeKind::NamedParameter { variable: Box::new(leaf("var")) }, loc()),
+            // Defaulted named parameter: traversal must descend into the
+            // default expression, so the child count is 2 (variable + default).
+            // (This file keeps exactly one case per NodeKind, so the defaulted
+            // shape is used here to exercise default-value traversal.)
+            Node::new(
+                NodeKind::NamedParameter {
+                    variable: Box::new(leaf("var")),
+                    external_name: "var".to_string(),
+                    default_operator: Some("=".to_string()),
+                    default_value: Some(Box::new(leaf("default"))),
+                    required: false,
+                },
+                loc(),
+            ),
             "NamedParameter",
-            1,
+            2,
         ),
         (
             Node::new(
                 NodeKind::Method {
                     name: "run".to_string(),
+                    name_span: None,
                     signature: Some(Box::new(Node::new(
                         NodeKind::Signature { parameters: vec![] },
                         loc(),
@@ -361,7 +375,14 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             "LoopControl",
             0,
         ),
-        (Node::new(NodeKind::Goto { target: Box::new(leaf("target")) }, loc()), "Goto", 1),
+        (
+            Node::new(
+                NodeKind::Goto { target: Box::new(leaf("target")), form: GotoTargetForm::Label },
+                loc(),
+            ),
+            "Goto",
+            1,
+        ),
         (
             Node::new(
                 NodeKind::MethodCall {
@@ -513,6 +534,7 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             Node::new(
                 NodeKind::Class {
                     name: "Example".to_string(),
+                    name_span: None,
                     parents: vec![],
                     body: Box::new(leaf("body")),
                 },
@@ -523,7 +545,11 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
         ),
         (
             Node::new(
-                NodeKind::Format { name: "STDOUT".to_string(), body: "body".to_string() },
+                NodeKind::Format {
+                    name: "STDOUT".to_string(),
+                    name_span: None,
+                    body: "body".to_string(),
+                },
                 loc(),
             ),
             "Format",

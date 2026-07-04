@@ -84,6 +84,57 @@ impl LspServer {
         self.handle_did_change(Some(params))
     }
 
+    /// Test-only helper that updates an open document snapshot without touching
+    /// the workspace index.
+    ///
+    /// This models the post-edit window where `didChange` has made the document
+    /// current but the asynchronous workspace index update has not completed.
+    /// Production text sync must continue to use the real didChange handler.
+    pub fn test_replace_document_without_index(
+        &self,
+        uri: &str,
+        text: &str,
+        version: i32,
+    ) -> Result<(), String> {
+        let normalized_uri = self.normalize_uri_key(uri);
+        let mut parser = perl_parser::Parser::new(text);
+        let ast = match parser.parse() {
+            Ok(ast) => Some(std::sync::Arc::new(ast)),
+            Err(err) => return Err(format!("Parse error: {err}")),
+        };
+        let errors = parser.errors().to_vec();
+
+        let mut parent_map = perl_parser::declaration::ParentMap::default();
+        if let Some(ref ast) = ast {
+            crate::declaration::DeclarationProvider::build_parent_map(ast, &mut parent_map, None);
+        }
+
+        let rope = ropey::Rope::from_str(text);
+        let line_starts = perl_parser::position::LineStartsCache::new_rope(&rope);
+        let degradation_tier = crate::state::DegradationTier::from_parse_result(&ast, &errors);
+
+        let mut documents = self.documents.lock();
+        let doc = documents
+            .get_mut(&normalized_uri)
+            .ok_or_else(|| format!("document not open: {uri}"))?;
+        doc.rope = rope;
+        doc.text = text.to_string();
+        doc.version = version;
+        doc.ast = ast;
+        doc.parse_errors = errors;
+        doc.parent_map = parent_map;
+        doc.line_starts = line_starts;
+        doc.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        doc.degradation_tier = degradation_tier;
+        #[cfg(feature = "incremental")]
+        {
+            doc.incremental_doc = None;
+            doc.incremental_state = None;
+        }
+
+        Ok(())
+    }
+
     /// Test-only entrypoint for LSP `initialize`.
     pub fn test_handle_initialize_dispatch(
         &self,
@@ -243,6 +294,27 @@ impl LspServer {
     /// Returns [`JsonRpcError`] if params are invalid or document not found.
     pub fn test_handle_hover(&self, params: Option<Value>) -> Result<Option<Value>, JsonRpcError> {
         self.handle_hover(params)
+    }
+
+    /// Test-only entrypoint for LSP `textDocument/codeAction`.
+    ///
+    /// Exercises quick-fix and refactor code-action generation in tests,
+    /// including the critic-engine-gated quick fixes.
+    ///
+    /// # Parameters
+    /// - `params`: JSON-RPC params with `textDocument.uri`, `range`, `context`.
+    ///
+    /// # Returns
+    /// - `Ok(Some(actions))`: The code actions array.
+    /// - `Ok(None)`: No actions applicable.
+    ///
+    /// # Errors
+    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    pub fn test_handle_code_action(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_code_action(params)
     }
 
     /// Test-only entrypoint for LSP `textDocument/documentSymbol`.
@@ -665,6 +737,73 @@ impl LspServer {
     #[cfg(feature = "workspace")]
     pub fn test_notify_index_ready_wait_entered(&self, sender: std::sync::mpsc::Sender<()>) {
         let _ = self;
-        super::workspace::set_index_ready_wait_entered_observer(sender);
+        super::readiness::set_index_ready_wait_entered_observer(sender);
+    }
+
+    /// Enable `callHierarchy` in the server's advertised features.
+    ///
+    /// Test-only helper used by coverage tests that need to reach the
+    /// `handle_prepare_call_hierarchy` workspace wait path.  The feature gate
+    /// in that handler returns early (method-not-advertised) unless this flag
+    /// is set, so the wait line is unreachable without enabling it.
+    pub fn test_enable_call_hierarchy(&self) {
+        self.advertised_features.lock().call_hierarchy = true;
+    }
+
+    /// Test-only: begin capturing `PERL_LSP_TIMING` spans into an in-process
+    /// buffer.
+    ///
+    /// This is independent of the `PERL_LSP_TIMING` environment sink, so it does
+    /// not race on process-global env state. Any previously buffered spans are
+    /// cleared. Pair with [`Self::test_timing_capture_drain`].
+    pub fn test_timing_capture_start(&self) {
+        let _ = self;
+        crate::runtime::timing::capture::start();
+    }
+
+    /// Test-only: stop capturing and return the buffered timing spans as
+    /// `(span_name, milliseconds, detail)` tuples in emission order.
+    pub fn test_timing_capture_drain(&self) -> Vec<(String, f64, Option<String>)> {
+        let _ = self;
+        crate::runtime::timing::capture::drain()
+            .into_iter()
+            .map(|span| (span.span.to_string(), span.ms, span.detail))
+            .collect()
+    }
+}
+
+#[cfg(all(test, feature = "workspace"))]
+mod tests {
+    use super::LspServer;
+    use crate::runtime::readiness::{IndexReadinessOutcome, IndexReadinessPolicy};
+    use anyhow::Result;
+    use std::time::Duration;
+
+    #[test]
+    fn test_notify_index_ready_wait_entered_forwards_to_readiness_observer() -> Result<()> {
+        let server = LspServer::new();
+        let coordinator = server
+            .index_coordinator
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("workspace coordinator missing"))?;
+        coordinator.transition_to_building(1);
+        server.test_simulate_indexing_start();
+
+        let (wait_entered_tx, wait_entered_rx) = std::sync::mpsc::channel();
+        server.test_notify_index_ready_wait_entered(wait_entered_tx);
+        let worker_coordinator = coordinator;
+        let worker = std::thread::spawn(move || -> Result<()> {
+            wait_entered_rx.recv_timeout(Duration::from_secs(1))?;
+            worker_coordinator.transition_to_ready(0, 0);
+            Ok(())
+        });
+
+        let outcome = server.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
+
+        worker.join().map_err(|_| anyhow::anyhow!("readiness observer thread panicked"))??;
+        assert!(matches!(outcome, IndexReadinessOutcome::Ready));
+        assert!(outcome.is_ready());
+        Ok(())
     }
 }

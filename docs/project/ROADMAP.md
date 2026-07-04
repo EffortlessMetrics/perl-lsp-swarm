@@ -6,6 +6,70 @@
 > published release state must be verified against GitHub Releases;
 > current capability truth is taken from [`../../features.toml`](../../features.toml).
 
+## Current Focus (2026-06-26): UX/Usability + Reliability
+
+### Cross-file correctness lane: COMPLETE
+
+The cross-file CORRECTNESS lane is done. ~19 providers now serve index-backed
+answers; ux_scenario_20/21/22 all pass. The compiler bet (#2674 / PIR-A) is
+consciously **paused, not dropped** — it resumes after the reliability foundation
+is solid.
+
+### Active lane: reliability/UX
+
+The next user-visible risk is the first 30 seconds of workspace open. A real
+workspace spends time in `IndexState::Building`, and during that window providers
+must not return misleading empty/success.
+
+Priority sequence this weekend:
+
+| # | Issue | Description |
+|---|-------|-------------|
+| 1 | #3097 | Point-query index-readiness wait (7 providers) — **merge first** |
+| 2 | #3099 | Readiness CONTRACT as a shared substrate (policy enum + shared API) |
+| 3 | #3096 | `$/progress` indexing UX (turns the wait from "is it frozen?" to "it's working") |
+| 4 | #3080 | Diagnostics quick-fixes / `source.organizeImports` code action |
+| 5 | latency receipt | Measure hot-path latency AFTER readiness + crash-safety land |
+
+Strategic second priority: gate-tax relief / ripr convergence (#3067 — stop
+compiling the full xtask on every ripr+ gate run; CX43 disk pressure is the
+dominant CI wall-clock bottleneck).
+
+Scoreboard work (#3056) and the compiler bet (#2674) are **next** after the
+reliability lane closes.
+
+See [docs/reference/PROVIDER_READINESS_CONTRACT.md](../reference/PROVIDER_READINESS_CONTRACT.md)
+for the reliability doctrine and [docs/reference/CI_GATE_PLAYBOOK.md](../reference/CI_GATE_PLAYBOOK.md)
+for the contributor gate playbook.
+
+
+## Active Cleanup: Native Stack Product Surface
+
+The native Rust stack is the product surface. External Perl tools such as
+`perltidy`, `perlcritic`, and `Perl::LanguageServer` may remain as explicit
+compatibility, migration, or conformance surfaces, but they must not appear as
+normal first-mile runtime dependencies. The canonical policy is
+[Native Stack Product Policy](../reference/NATIVE_STACK_POLICY.md), and the
+implementation packet breakdown is
+[PLSP-SPEC-0015](../specs/PLSP-SPEC-0015-native-stack-product-surface.md).
+
+Priority packets for agents:
+
+| # | Packet | Scope | Done when |
+|---|--------|-------|-----------|
+| 1 | Native-only DAP docs | `docs/tutorials/DAP_USER_GUIDE.md`, `book/src/dap/user-guide.md`, `crates/perl-dap/README.md`, legacy bridge reference | Public DAP guide and book surface no longer mention PLS/BridgeAdapter; legacy setup is quarantined |
+| 2 | DAP dependency tests | `crates/perl-dap/tests/dap_dependency_tests.rs` | Tests enforce native guide absence and legacy reference presence |
+| 3 | DAP CLI/API stance | `crates/perl-dap/src/*` | Bridge mode is hidden/de-emphasized or removed according to the chosen compatibility stance |
+| 4 | VS Code native-first copy | `vscode-extension/package.json`, extension docs, config reference | Formatter/critic settings no longer say external tools are required by default |
+| 5 | Native-first critic command | `crates/perl-lsp-rs/src/execute_command/provider.rs` | `perl.runCritic` defaults to native and uses external `perlcritic` only by explicit configuration |
+| 6 | Formatter default guard | formatter selection/config tests | `perltidy` on `PATH` does not change default native formatting |
+| 7 | Status/downstream cleanup | `docs/project/status/dap.md`, `docs/reference/DOWNSTREAM_DAP_INTEGRATIONS.md` | Distribution readiness is native-DAP focused; bridge is legacy-only if mentioned |
+| 8 | Negative packaging guard | release artifact checks and docs | Release archives fail checks if they bundle external Perl tooling payloads |
+
+This cleanup is documentation/control-plane work until a packet explicitly
+changes runtime behavior. Keep PRs packet-sized and cite the policy/spec in PR
+bodies so parallel agents do not reintroduce legacy wording into native surfaces.
+
 ## Current Framing
 
 ## Active Swarm Roadmap: Multi-Lane Trust Hardening

@@ -105,6 +105,7 @@ The current architecture collapsed the old microcrate graph into a smaller publi
 | Editor setup | [docs/how-to/EDITOR_SETUP.md](docs/how-to/EDITOR_SETUP.md) |
 | Getting started | [docs/tutorials/GETTING_STARTED.md](docs/tutorials/GETTING_STARTED.md) |
 | Configuration | [docs/reference/CONFIG.md](docs/reference/CONFIG.md) |
+| Test2 integration | [docs/reference/TEST2_INTEGRATION.md](docs/reference/TEST2_INTEGRATION.md) |
 | Troubleshooting | [docs/how-to/TROUBLESHOOTING.md](docs/how-to/TROUBLESHOOTING.md) |
 | Perl setup troubleshooting | [docs/how-to/PERL_SETUP_TROUBLESHOOTING.md](docs/how-to/PERL_SETUP_TROUBLESHOOTING.md) |
 | Editor trust and receipts | [docs/how-to/EDITOR_TRUST.md](docs/how-to/EDITOR_TRUST.md) |
@@ -112,6 +113,8 @@ The current architecture collapsed the old microcrate graph into a smaller publi
 | Measured editor trust | [docs/explanation/MEASURED_PERL_EDITOR_TRUST.md](docs/explanation/MEASURED_PERL_EDITOR_TRUST.md) |
 | Roadmap | [docs/project/ROADMAP.md](docs/project/ROADMAP.md) |
 | Compiler-backed LSP roadmap | [docs/project/COMPILER_BACKED_LSP_ROADMAP.md](docs/project/COMPILER_BACKED_LSP_ROADMAP.md) |
+| Provider readiness contract | [docs/reference/PROVIDER_READINESS_CONTRACT.md](docs/reference/PROVIDER_READINESS_CONTRACT.md) |
+| CI gate playbook | [docs/reference/CI_GATE_PLAYBOOK.md](docs/reference/CI_GATE_PLAYBOOK.md) |
 | Release history | [RELEASE_HISTORY.md](RELEASE_HISTORY.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Agent workflow | [AGENTS.md](AGENTS.md) |

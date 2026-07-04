@@ -14,7 +14,7 @@
 //!   DataSection, Identifier, missing-node variants)
 //! - Clone independence for nested Box nodes
 
-use perl_ast::ast::{Node, NodeKind, SourceLocation};
+use perl_ast::ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 
 #[path = "helpers.rs"]
 mod helpers;
@@ -246,7 +246,10 @@ fn for_each_child_tie_with_args() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn for_each_child_goto() -> Result<(), Box<dyn std::error::Error>> {
-    let node = Node::new(NodeKind::Goto { target: Box::new(ident("DONE")) }, loc(0, 10));
+    let node = Node::new(
+        NodeKind::Goto { target: Box::new(ident("DONE")), form: GotoTargetForm::Label },
+        loc(0, 10),
+    );
     let mut count = 0usize;
     node.for_each_child(|_| count += 1);
     assert_eq!(count, 1);
@@ -327,7 +330,11 @@ fn for_each_child_leaf_nodes_visit_nothing() -> Result<(), Box<dyn std::error::E
         Node::new(NodeKind::Prototype { content: "$@".to_string() }, loc(0, 4)),
         Node::new(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }, loc(0, 8)),
         Node::new(
-            NodeKind::Format { name: "STDOUT".to_string(), body: "fmt".to_string() },
+            NodeKind::Format {
+                name: "STDOUT".to_string(),
+                name_span: None,
+                body: "fmt".to_string(),
+            },
             loc(0, 10),
         ),
         Node::new(NodeKind::LoopControl { op: "next".to_string(), label: None }, loc(0, 4)),
@@ -494,7 +501,10 @@ fn children_of_return_without_value() -> Result<(), Box<dyn std::error::Error>> 
 
 #[test]
 fn children_of_goto() -> Result<(), Box<dyn std::error::Error>> {
-    let node = Node::new(NodeKind::Goto { target: Box::new(ident("DONE")) }, loc(0, 10));
+    let node = Node::new(
+        NodeKind::Goto { target: Box::new(ident("DONE")), form: GotoTargetForm::Label },
+        loc(0, 10),
+    );
     assert_eq!(node.children().len(), 1);
     assert_eq!(node.first_child().map(|n| n.kind.kind_name()), Some("Identifier"));
     Ok(())
@@ -691,7 +701,10 @@ fn source_location_copy_semantics() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn sexp_goto() -> Result<(), Box<dyn std::error::Error>> {
-    let node = Node::new(NodeKind::Goto { target: Box::new(ident("DONE")) }, loc(0, 10));
+    let node = Node::new(
+        NodeKind::Goto { target: Box::new(ident("DONE")), form: GotoTargetForm::Label },
+        loc(0, 10),
+    );
     let sexp = node.to_sexp();
     assert!(sexp.starts_with("(goto"), "got: {sexp}");
     assert!(sexp.contains("identifier"), "got: {sexp}");
@@ -1018,8 +1031,16 @@ fn sexp_signature_with_params() -> Result<(), Box<dyn std::error::Error>> {
     );
     let slurpy =
         Node::new(NodeKind::SlurpyParameter { variable: Box::new(var("@", "rest")) }, loc(9, 14));
-    let named =
-        Node::new(NodeKind::NamedParameter { variable: Box::new(var("$", "k")) }, loc(15, 17));
+    let named = Node::new(
+        NodeKind::NamedParameter {
+            variable: Box::new(var("$", "k")),
+            external_name: String::new(),
+            default_operator: None,
+            default_value: None,
+            required: true,
+        },
+        loc(15, 17),
+    );
     let sig =
         Node::new(NodeKind::Signature { parameters: vec![mand, opt, slurpy, named] }, loc(0, 17));
     let sexp = sig.to_sexp();
@@ -1081,7 +1102,11 @@ fn sexp_labeled_statement() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn sexp_format() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
-        NodeKind::Format { name: "STDOUT".to_string(), body: "@<<<< @>>>>".to_string() },
+        NodeKind::Format {
+            name: "STDOUT".to_string(),
+            name_span: None,
+            body: "@<<<< @>>>>".to_string(),
+        },
         loc(0, 30),
     );
     let sexp = node.to_sexp();
@@ -1094,6 +1119,7 @@ fn sexp_class() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
         NodeKind::Class {
             name: "Point".to_string(),
+            name_span: None,
             parents: vec![],
             body: Box::new(block(vec![])),
         },

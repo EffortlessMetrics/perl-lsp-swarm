@@ -1015,7 +1015,7 @@ impl NodeKind {
 mod tests {
     use super::NodeKindCategory;
     use super::NodeKindFlags;
-    use crate::ast::{Node, NodeKind};
+    use crate::ast::{GotoTargetForm, Node, NodeKind};
     use perl_position_tracking::SourceLocation;
 
     fn loc() -> SourceLocation {
@@ -1154,16 +1154,23 @@ mod tests {
                 default_value: Box::new(leaf()),
             },
             NodeKind::SlurpyParameter { variable: Box::new(leaf()) },
-            NodeKind::NamedParameter { variable: Box::new(leaf()) },
+            NodeKind::NamedParameter {
+                variable: Box::new(leaf()),
+                external_name: String::new(),
+                default_operator: None,
+                default_value: None,
+                required: true,
+            },
             NodeKind::Method {
                 name: "bar".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(block_node()),
             },
             NodeKind::Return { value: None },
             NodeKind::LoopControl { op: "next".to_string(), label: None },
-            NodeKind::Goto { target: Box::new(leaf()) },
+            NodeKind::Goto { target: Box::new(leaf()), form: GotoTargetForm::Label },
             NodeKind::MethodCall {
                 object: Box::new(leaf()),
                 method: "foo".to_string(),
@@ -1214,10 +1221,11 @@ mod tests {
             NodeKind::DataSection { marker: "__DATA__".to_string(), body: None },
             NodeKind::Class {
                 name: "Foo".to_string(),
+                name_span: None,
                 parents: vec![],
                 body: Box::new(block_node()),
             },
-            NodeKind::Format { name: "STDOUT".to_string(), body: "".to_string() },
+            NodeKind::Format { name: "STDOUT".to_string(), name_span: None, body: "".to_string() },
             NodeKind::Identifier { name: "foo".to_string() },
             NodeKind::Error {
                 message: "oops".to_string(),
@@ -1664,9 +1672,16 @@ mod tests {
                 default_value: Box::new(leaf()),
             }),
             n(NodeKind::SlurpyParameter { variable: Box::new(leaf()) }),
-            n(NodeKind::NamedParameter { variable: Box::new(leaf()) }),
+            n(NodeKind::NamedParameter {
+                variable: Box::new(leaf()),
+                external_name: String::new(),
+                default_operator: None,
+                default_value: None,
+                required: true,
+            }),
             n(NodeKind::Method {
                 name: "bar".to_string(),
+                name_span: None,
                 signature: Some(Box::new(Node::new(
                     NodeKind::Signature { parameters: vec![] },
                     loc(),
@@ -1676,7 +1691,7 @@ mod tests {
             }),
             n(NodeKind::Return { value: Some(Box::new(leaf())) }),
             n(NodeKind::LoopControl { op: "next".to_string(), label: None }),
-            n(NodeKind::Goto { target: Box::new(leaf()) }),
+            n(NodeKind::Goto { target: Box::new(leaf()), form: GotoTargetForm::Label }),
             n(NodeKind::MethodCall {
                 object: Box::new(leaf()),
                 method: "foo".to_string(),
@@ -1739,10 +1754,15 @@ mod tests {
             n(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }),
             n(NodeKind::Class {
                 name: "Foo".to_string(),
+                name_span: None,
                 parents: vec![],
                 body: Box::new(block_node()),
             }),
-            n(NodeKind::Format { name: "STDOUT".to_string(), body: "".to_string() }),
+            n(NodeKind::Format {
+                name: "STDOUT".to_string(),
+                name_span: None,
+                body: "".to_string(),
+            }),
             n(NodeKind::Identifier { name: "foo".to_string() }),
             n(NodeKind::Error {
                 message: "oops".to_string(),

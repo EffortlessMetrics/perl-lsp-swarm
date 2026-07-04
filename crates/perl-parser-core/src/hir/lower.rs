@@ -272,7 +272,7 @@ impl Lowerer {
                 }
                 self.exit_scope();
             }
-            NodeKind::Method { name, signature, attributes, body } => {
+            NodeKind::Method { name, name_span: _, signature, attributes, body } => {
                 let method_scope = self.enter_scope(
                     ScopeKind::Method,
                     node.location,
@@ -857,7 +857,7 @@ impl Lowerer {
                     Some(self.current_scope()),
                 );
             }
-            NodeKind::Goto { target } => {
+            NodeKind::Goto { target, .. } => {
                 self.push_item(
                     node,
                     None,
@@ -972,7 +972,7 @@ impl Lowerer {
         range: SourceLocation,
         package_context: Option<String>,
     ) -> HirScopeId {
-        let id = HirScopeId::from_index(self.scope_graph.scopes.len() as u32);
+        let id = HirScopeId::from_index(to_u32_saturating(self.scope_graph.scopes.len()));
         let parent = Some(self.current_scope());
         self.scope_graph.scopes.push(ScopeFrame { id, parent, kind, range, package_context });
         self.scope_stack.push(id);
@@ -1041,9 +1041,8 @@ impl Lowerer {
 
     fn record_signature_parameter(&mut self, parameter: &Node, scope_id: HirScopeId) {
         match &parameter.kind {
-            NodeKind::MandatoryParameter { variable }
-            | NodeKind::SlurpyParameter { variable }
-            | NodeKind::NamedParameter { variable } => {
+            NodeKind::MandatoryParameter { variable, .. }
+            | NodeKind::SlurpyParameter { variable, .. } => {
                 if let Some(binding) = variable_binding(variable) {
                     self.record_binding(
                         binding.sigil,
@@ -1053,6 +1052,21 @@ impl Lowerer {
                         scope_id,
                         None,
                     );
+                }
+            }
+            NodeKind::NamedParameter { variable, default_value, .. } => {
+                if let Some(binding) = variable_binding(variable) {
+                    self.record_binding(
+                        binding.sigil,
+                        binding.name,
+                        binding.range,
+                        StorageClass::Parameter,
+                        scope_id,
+                        None,
+                    );
+                }
+                if let Some(default_value) = default_value {
+                    self.visit(default_value, RecoveryConfidence::Parsed);
                 }
             }
             NodeKind::OptionalParameter { variable, default_value } => {
@@ -1082,7 +1096,7 @@ impl Lowerer {
         declaration_item: Option<HirId>,
     ) -> HirBindingId {
         let shadows = self.resolve_visible_binding(scope_id, &sigil, &name);
-        let id = HirBindingId::from_index(self.scope_graph.bindings.len() as u32);
+        let id = HirBindingId::from_index(to_u32_saturating(self.scope_graph.bindings.len()));
         self.scope_graph.bindings.push(Binding {
             id,
             scope_id,
@@ -2841,6 +2855,20 @@ fn binary_op_from_str(s: &str) -> BinaryOp {
     }
 }
 
+/// Convert a `usize` length/index into a `u32`, saturating at [`u32::MAX`]
+/// instead of silently truncating (wrapping) on overflow.
+///
+/// HIR scope and binding identifiers are `u32`-backed. A naive `len() as u32`
+/// cast wraps modulo `2^32` once the count exceeds [`u32::MAX`], producing a
+/// low identifier that collides with an existing scope/binding and corrupts the
+/// scope graph. Saturating keeps the value monotonic and non-colliding at the
+/// boundary; downstream code already treats `u32::MAX` as an unreachable upper
+/// bound for a single lowered file.
+#[inline]
+fn to_u32_saturating(value: usize) -> u32 {
+    value.min(u32::MAX as usize) as u32
+}
+
 fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
     match declarator {
         "my" => DeclStorageClass::My,
@@ -2848,5 +2876,70 @@ fn storage_class_for_decl(declarator: &str) -> DeclStorageClass {
         "local" => DeclStorageClass::Local,
         "state" => DeclStorageClass::State,
         _ => DeclStorageClass::My,
+    }
+}
+
+#[cfg(test)]
+mod saturating_id_tests {
+    use super::to_u32_saturating;
+
+    /// Counts well within `u32` range convert losslessly.
+    #[test]
+    fn small_counts_are_lossless() {
+        assert_eq!(to_u32_saturating(0), 0);
+        assert_eq!(to_u32_saturating(1), 1);
+        assert_eq!(to_u32_saturating(42), 42);
+        assert_eq!(to_u32_saturating(u32::MAX as usize - 1), u32::MAX - 1);
+    }
+
+    /// A count exactly at `u32::MAX` maps to `u32::MAX`.
+    #[test]
+    fn count_at_u32_max_clamps() {
+        assert_eq!(to_u32_saturating(u32::MAX as usize), u32::MAX);
+    }
+
+    /// Regression: a count *above* `u32::MAX` must clamp to `u32::MAX`, not wrap
+    /// to a low id that would collide with an existing scope/binding. On 32-bit
+    /// targets `usize` cannot exceed `u32::MAX`, so this case is skipped there.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn count_above_u32_max_does_not_wrap() {
+        let above = u32::MAX as usize + 1;
+        // A naive `above as u32` cast would wrap to 0 (a colliding low id).
+        assert_eq!(above as u32, 0, "precondition: naive cast wraps to a colliding id");
+        // The saturating conversion clamps to the maximum instead.
+        assert_eq!(to_u32_saturating(above), u32::MAX);
+        assert_ne!(to_u32_saturating(above), 0);
+
+        // A far-overflowing count also clamps rather than wrapping.
+        let far = u32::MAX as usize + 12_345;
+        assert_eq!(to_u32_saturating(far), u32::MAX);
+        assert_ne!(to_u32_saturating(far), far as u32);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod goto_lowering_tests {
+    //! `--lib` coverage for the `NodeKind::Goto` HIR-lowering arm (#1923).
+    //! goto lowering is otherwise exercised only by integration tests under
+    //! `tests/`, which do not count toward Codecov / Patch 95 (`--lib` only).
+    use super::*;
+    use crate::parser::Parser;
+    use perl_tdd_support::must;
+
+    #[test]
+    fn goto_lowers_to_control_transfer_item() {
+        let mut parser = Parser::new("goto &handler;");
+        let ast = must(parser.parse());
+        let file = lower_ast(&ast);
+        assert!(
+            file.items.iter().any(|item| matches!(
+                &item.kind,
+                HirKind::ControlTransfer(transfer)
+                    if matches!(transfer.kind, ControlTransferKind::Goto)
+            )),
+            "goto must lower to a ControlTransfer HIR item of kind Goto"
+        );
     }
 }

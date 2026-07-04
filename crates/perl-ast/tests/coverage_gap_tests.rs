@@ -39,7 +39,7 @@
 //! immutable `for_each_child` path; they share the same structural code and
 //! produce identical hit counts once the mutable variant is exercised.
 
-use perl_ast::ast::{Node, NodeKind, SourceLocation};
+use perl_ast::ast::{GotoTargetForm, Node, NodeKind, SourceLocation};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -330,7 +330,10 @@ mod for_each_child_mut {
 
     #[test]
     fn goto_visits_target() -> Result<(), Box<dyn std::error::Error>> {
-        let mut node = Node::new(NodeKind::Goto { target: Box::new(leaf("LABEL")) }, loc());
+        let mut node = Node::new(
+            NodeKind::Goto { target: Box::new(leaf("LABEL")), form: GotoTargetForm::Label },
+            loc(),
+        );
         assert_eq!(count_visits_mut(&mut node), 1);
         Ok(())
     }
@@ -528,6 +531,7 @@ mod to_sexp_edges {
         let node = Node::new(
             NodeKind::Method {
                 name: "do_thing".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(body),
@@ -546,6 +550,7 @@ mod to_sexp_edges {
         let node = Node::new(
             NodeKind::Method {
                 name: "foo".to_string(),
+                name_span: None,
                 signature: Some(Box::new(sig)),
                 attributes: vec![],
                 body: Box::new(block_of(vec![])),
@@ -565,6 +570,7 @@ mod to_sexp_edges {
         let node = Node::new(
             NodeKind::Method {
                 name: "bare".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(block_of(vec![])),
@@ -583,6 +589,7 @@ mod to_sexp_edges {
         let node = Node::new(
             NodeKind::Class {
                 name: "Dog".to_string(),
+                name_span: None,
                 parents: vec!["Animal".to_string(), "Speakable".to_string()],
                 body: Box::new(block_of(vec![])),
             },
@@ -854,7 +861,10 @@ mod for_each_child_immutable {
 
     #[test]
     fn goto_visits_target() -> Result<(), Box<dyn std::error::Error>> {
-        let node = Node::new(NodeKind::Goto { target: Box::new(leaf("LABEL")) }, loc());
+        let node = Node::new(
+            NodeKind::Goto { target: Box::new(leaf("LABEL")), form: GotoTargetForm::Label },
+            loc(),
+        );
         assert_eq!(count_visits(&node), 1);
         Ok(())
     }
@@ -1024,6 +1034,7 @@ mod false_branch_coverage {
         let node = Node::new(
             NodeKind::Method {
                 name: "run".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(block_of(vec![])),
@@ -1110,6 +1121,7 @@ mod false_branch_coverage {
         let mut node = Node::new(
             NodeKind::Method {
                 name: "run".to_string(),
+                name_span: None,
                 signature: None,
                 attributes: vec![],
                 body: Box::new(block_of(vec![])),

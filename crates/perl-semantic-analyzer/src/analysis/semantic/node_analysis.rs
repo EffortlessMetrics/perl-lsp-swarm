@@ -203,7 +203,7 @@ impl SemanticAnalyzer {
                 }
             }
 
-            NodeKind::Method { name, signature, attributes, body } => {
+            NodeKind::Method { name, name_span: _, signature, attributes, body } => {
                 self.semantic_tokens.push(SemanticToken {
                     location: node.location, // Approximate, ideally name span
                     token_type: SemanticTokenType::FunctionDeclaration,
@@ -792,7 +792,7 @@ impl SemanticAnalyzer {
             NodeKind::MandatoryParameter { variable }
             | NodeKind::OptionalParameter { variable, .. }
             | NodeKind::SlurpyParameter { variable }
-            | NodeKind::NamedParameter { variable } => {
+            | NodeKind::NamedParameter { variable, .. } => {
                 self.analyze_node(variable, scope_id);
             }
 
@@ -869,7 +869,7 @@ impl SemanticAnalyzer {
                 });
             }
 
-            NodeKind::Goto { target } => {
+            NodeKind::Goto { target, .. } => {
                 self.semantic_tokens.push(SemanticToken {
                     location: node.location,
                     token_type: SemanticTokenType::KeywordControl,
@@ -1310,7 +1310,7 @@ fn format_signature_params(sig_node: &Node) -> String {
                 NodeKind::MandatoryParameter { variable }
                 | NodeKind::OptionalParameter { variable, .. }
                 | NodeKind::SlurpyParameter { variable }
-                | NodeKind::NamedParameter { variable } => variable.as_ref(),
+                | NodeKind::NamedParameter { variable, .. } => variable.as_ref(),
                 NodeKind::Variable { .. } => param,
                 _ => return None,
             };
