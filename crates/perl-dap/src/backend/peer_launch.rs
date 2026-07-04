@@ -327,6 +327,10 @@ pub struct MirrorPeerBridge {
     control: ControlMode,
     seq: i64,
     pending: Vec<QueuedBreakpoints>,
+    /// Function breakpoints queued while no peer is connected yet (REPLACE
+    /// semantics per DAP `setFunctionBreakpoints` — the most recent request
+    /// before handshake is what gets flushed in [`Self::go_live`]).
+    pending_function_breakpoints: Option<Vec<DebugFunctionBreakpoint>>,
     terminated_emitted: bool,
 }
 
@@ -334,7 +338,14 @@ impl MirrorPeerBridge {
     /// Create a bridge in the **pending** phase (no peer connected yet).
     #[must_use]
     pub fn new_pending(control: ControlMode) -> Self {
-        Self { backend: None, control, seq: 0, pending: Vec::new(), terminated_emitted: false }
+        Self {
+            backend: None,
+            control,
+            seq: 0,
+            pending: Vec::new(),
+            pending_function_breakpoints: None,
+            terminated_emitted: false,
+        }
     }
 
     /// Whether a peer backend has been installed (the session is live).
@@ -347,6 +358,13 @@ impl MirrorPeerBridge {
     #[must_use]
     pub fn pending_source_count(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Whether function breakpoints are queued (not-yet-flushed) awaiting the
+    /// peer handshake.
+    #[must_use]
+    pub fn has_pending_function_breakpoints(&self) -> bool {
+        self.pending_function_breakpoints.is_some()
     }
 
     fn next_seq(&mut self) -> i64 {
@@ -392,10 +410,10 @@ impl MirrorPeerBridge {
         let mut out = Vec::new();
         let queued = std::mem::take(&mut self.pending);
         for q in queued {
-            match backend.set_breakpoints(SetBackendBreakpointsParams {
-                source: q.source.clone(),
-                breakpoints: q.breakpoints,
-            }) {
+            let breakpoints = q.breakpoints.clone();
+            match backend
+                .set_breakpoints(SetBackendBreakpointsParams { source: q.source, breakpoints })
+            {
                 Ok(resolved) => {
                     for r in resolved {
                         let body = json!({
@@ -413,6 +431,56 @@ impl MirrorPeerBridge {
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "mirror bridge: flushing queued breakpoints failed");
+                    // Tell the editor the queued breakpoints did not bind — it
+                    // otherwise keeps showing the earlier `pending` placeholder
+                    // forever, with no signal that the flush ever failed.
+                    let message = format!("failed to set breakpoint after peer handshake: {e}");
+                    for bp in q.breakpoints {
+                        let body = json!({
+                            "reason": "changed",
+                            "breakpoint": {
+                                "verified": false,
+                                "line": bp.line,
+                                "column": bp.column,
+                                "message": message,
+                            },
+                        });
+                        out.push(self.event("breakpoint", Some(body)));
+                    }
+                }
+            }
+        }
+        if let Some(function_breakpoints) = self.pending_function_breakpoints.take() {
+            let names: Vec<String> = function_breakpoints.iter().map(|b| b.name.clone()).collect();
+            match backend.set_function_breakpoints(SetFunctionBreakpointsParams {
+                breakpoints: function_breakpoints,
+            }) {
+                Ok(resolved) => {
+                    for r in resolved {
+                        let body = json!({
+                            "reason": "changed",
+                            "breakpoint": { "id": r.id, "verified": r.verified },
+                        });
+                        out.push(self.event("breakpoint", Some(body)));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "mirror bridge: flushing queued function breakpoints failed"
+                    );
+                    let message =
+                        format!("failed to set function breakpoint after peer handshake: {e}");
+                    for name in names {
+                        let body = json!({
+                            "reason": "changed",
+                            "breakpoint": {
+                                "verified": false,
+                                "message": format!("{name}: {message}"),
+                            },
+                        });
+                        out.push(self.event("breakpoint", Some(body)));
+                    }
                 }
             }
         }
@@ -541,8 +609,13 @@ impl MirrorPeerBridge {
                     let _ = b.disconnect(true);
                 }
                 out.push(self.response(request_seq, command, true, None, None));
-                self.terminated_emitted = true;
-                out.push(self.event("terminated", None));
+                // The peer may already have emitted `terminated` (e.g. its
+                // connection closed just before the editor's `terminate`
+                // arrived); guard against sending a second one.
+                if !self.terminated_emitted {
+                    self.terminated_emitted = true;
+                    out.push(self.event("terminated", None));
+                }
             }
             "disconnect" => {
                 let terminate = arguments
@@ -706,9 +779,12 @@ impl MirrorPeerBridge {
                 None => slots.push(None),
             }
         }
-        // Function breakpoints have no source key, so they cannot be positionally
-        // queued/flushed like line breakpoints; require a live peer.
+        // Pending: queue (REPLACE semantics, mirroring setBreakpoints) and
+        // answer with an unverified `pending` response. The verified result
+        // arrives later as a `breakpoint` changed event once the peer
+        // handshakes (go_live flushes `pending_function_breakpoints`).
         let Some(backend) = self.backend.as_mut() else {
+            self.pending_function_breakpoints = Some(breakpoints);
             let bps = slots
                 .iter()
                 .map(|_| {
@@ -1043,10 +1119,26 @@ where
         // Transition to live as soon as the peer backend is ready, flushing any
         // breakpoints the editor already sent.
         if !bridge.is_live() {
-            if let Ok(backend) = peer_rx.try_recv() {
-                let flush = bridge.go_live(backend);
-                if !flush.is_empty() {
-                    write_dap_msgs(&mut writer, &flush)?;
+            match peer_rx.try_recv() {
+                Ok(backend) => {
+                    let flush = bridge.go_live(backend);
+                    if !flush.is_empty() {
+                        write_dap_msgs(&mut writer, &flush)?;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // spawn_peer_acceptor's sender was dropped without ever
+                    // delivering a live backend — the handshake deadline
+                    // elapsed (or failed) with no peer. Without this, the
+                    // editor session stays pending forever: tell the editor
+                    // the session ended instead of silently hanging.
+                    if !bridge.terminated_emitted {
+                        bridge.terminated_emitted = true;
+                        let msg = bridge.event("terminated", None);
+                        write_dap_msgs(&mut writer, &[msg])?;
+                    }
+                    break;
                 }
             }
         }

@@ -16,15 +16,15 @@ use std::time::{Duration, Instant};
 
 use perl_dap::backend::capabilities::ControlMode;
 use perl_dap::backend::external_peer::ExternalDebuggerPeerBackend;
-use perl_dap::backend::peer_launch::MirrorPeerBridge;
+use perl_dap::backend::peer_launch::{MirrorPeerBridge, run_mirror_listen_session_socket};
 use perl_dap::backend::{DebugBackend, InitializeBackendParams};
 use perl_dap::debug_adapter::DapMessage;
 use perl_dap::peer_protocol::message::{
     PeerEvent, PeerMessage, PeerRequest, PeerResponse, command, event,
 };
 use perl_dap::peer_protocol::payloads::{
-    HelloArgs, OutputEventBody, SetBreakpointsArgs, SetBreakpointsResponseBody, StoppedEventBody,
-    WireResolvedBreakpoint, WireSource,
+    HelloArgs, OutputEventBody, SetBreakpointsArgs, SetBreakpointsResponseBody,
+    SetFunctionBreakpointsArgs, StoppedEventBody, WireResolvedBreakpoint, WireSource,
 };
 use perl_dap::peer_protocol::{
     PROTOCOL_VERSION, PeerFrameDecoder, PeerReportedCapabilities, encode_message,
@@ -38,6 +38,8 @@ struct FakePeer {
     addr: std::net::SocketAddr,
     /// Lines of every `debugger/setBreakpoints` the peer received.
     breakpoint_lines: Arc<Mutex<Vec<u32>>>,
+    /// Names of every `debugger/setFunctionBreakpoints` the peer received.
+    function_breakpoint_names: Arc<Mutex<Vec<String>>>,
 }
 
 struct FakePeerScript {
@@ -53,13 +55,20 @@ impl FakePeer {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
         let addr = listener.local_addr().expect("addr");
         let breakpoint_lines = Arc::new(Mutex::new(Vec::new()));
+        let function_breakpoint_names = Arc::new(Mutex::new(Vec::new()));
         let lines = Arc::clone(&breakpoint_lines);
-        let handle = std::thread::spawn(move || run_peer(listener, script, lines));
-        FakePeer { handle, addr, breakpoint_lines }
+        let names = Arc::clone(&function_breakpoint_names);
+        let handle = std::thread::spawn(move || run_peer(listener, script, lines, names));
+        FakePeer { handle, addr, breakpoint_lines, function_breakpoint_names }
     }
 }
 
-fn run_peer(listener: TcpListener, script: FakePeerScript, breakpoint_lines: Arc<Mutex<Vec<u32>>>) {
+fn run_peer(
+    listener: TcpListener,
+    script: FakePeerScript,
+    breakpoint_lines: Arc<Mutex<Vec<u32>>>,
+    function_breakpoint_names: Arc<Mutex<Vec<String>>>,
+) {
     let (stream, _) = listener.accept().expect("accept");
     let mut write = stream.try_clone().expect("clone");
     let mut read = stream;
@@ -139,6 +148,29 @@ fn run_peer(listener: TcpListener, script: FakePeerScript, breakpoint_lines: Arc
                             })
                             .ok()
                         }
+                        command::SET_FUNCTION_BREAKPOINTS => {
+                            let args: SetFunctionBreakpointsArgs = req
+                                .arguments
+                                .clone()
+                                .and_then(|a| serde_json::from_value(a).ok())
+                                .expect("set function bp args");
+                            let mut resolved = Vec::new();
+                            let mut names = function_breakpoint_names.lock().expect("lock");
+                            for (i, name) in args.names.iter().enumerate() {
+                                names.push(name.clone());
+                                resolved.push(WireResolvedBreakpoint {
+                                    id: i as i64 + 1,
+                                    verified: true,
+                                    line: 0,
+                                    column: None,
+                                    message: None,
+                                });
+                            }
+                            serde_json::to_value(SetBreakpointsResponseBody {
+                                breakpoints: resolved,
+                            })
+                            .ok()
+                        }
                         _ => None,
                     };
                     send(
@@ -172,6 +204,7 @@ fn full_caps() -> PeerReportedCapabilities {
         can_pause: true,
         can_evaluate: true,
         can_set_breakpoints: true,
+        can_set_function_breakpoints: true,
         can_condition_breakpoints: true,
         can_list_stack: true,
         can_list_variables: true,
@@ -432,4 +465,225 @@ fn dap_external_peer_rejects_control_in_mirror_mode() {
 
     drop(bridge);
     let _ = peer.handle.join();
+}
+
+#[test]
+fn dap_external_peer_launch_queues_function_breakpoints_before_handshake() {
+    // No peer connected yet: setFunctionBreakpoints must be queued (mirroring
+    // the setBreakpoints queue) and answered with an unverified `pending`
+    // response, not silently dropped (CodeRabbit finding: peer_launch.rs:~330).
+    let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+    bridge.dispatch(1, "initialize", Some(serde_json::json!({ "adapterID": "perl" })));
+
+    let out = bridge.dispatch(
+        2,
+        "setFunctionBreakpoints",
+        Some(serde_json::json!({
+            "breakpoints": [{ "name": "My::App::dispatch" }],
+        })),
+    );
+    assert!(
+        bridge.has_pending_function_breakpoints(),
+        "function breakpoints set before handshake must be queued, not dropped"
+    );
+    let (_, ok, body) = as_response(&out[0]);
+    assert!(ok, "a queued setFunctionBreakpoints still returns success");
+    let bps = body.expect("body")["breakpoints"].as_array().expect("array").clone();
+    assert_eq!(bps.len(), 1);
+    assert_eq!(bps[0]["verified"], false, "queued function breakpoints are unverified until flush");
+}
+
+#[test]
+fn dap_external_peer_launch_flushes_function_breakpoints_after_hello() {
+    // The queued function breakpoints must actually reach the peer once it
+    // handshakes, proving go_live flushes pending_function_breakpoints.
+    let peer = FakePeer::start(FakePeerScript {
+        caps: full_caps(),
+        emit_after_hello: vec![],
+        drop_after_hello: false,
+    });
+
+    let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+    bridge.dispatch(1, "initialize", Some(serde_json::json!({ "adapterID": "perl" })));
+    bridge.dispatch(
+        2,
+        "setFunctionBreakpoints",
+        Some(serde_json::json!({
+            "breakpoints": [{ "name": "My::App::dispatch" }],
+        })),
+    );
+    assert!(bridge.has_pending_function_breakpoints());
+    assert!(peer.function_breakpoint_names.lock().expect("lock").is_empty());
+
+    let backend = live_backend(&peer);
+    let flush = bridge.go_live(backend);
+    assert!(bridge.is_live());
+    assert!(
+        !bridge.has_pending_function_breakpoints(),
+        "the function-breakpoint queue is drained after flush"
+    );
+
+    assert_eq!(
+        *peer.function_breakpoint_names.lock().expect("lock"),
+        vec!["My::App::dispatch".to_string()],
+        "the queued function breakpoint reached the peer on flush"
+    );
+
+    let changed = find_event(&flush, "breakpoint").expect("breakpoint changed event");
+    if let DapMessage::Event { body: Some(b), .. } = changed {
+        assert_eq!(b["reason"], "changed");
+        assert_eq!(b["breakpoint"]["verified"], true);
+    } else {
+        panic!("breakpoint event had no body");
+    }
+
+    drop(bridge);
+    let _ = peer.handle.join();
+}
+
+#[test]
+fn dap_external_peer_launch_reports_flush_failure_to_editor() {
+    // The peer negotiates *without* source-breakpoint support, so the queued
+    // flush in go_live fails; the editor must be told (a `breakpoint` changed
+    // event with verified:false and a failure message), not left holding the
+    // stale "pending" placeholder forever (CodeRabbit finding: ~416).
+    let mut caps_without_breakpoints = full_caps();
+    caps_without_breakpoints.can_set_breakpoints = false;
+    let peer = FakePeer::start(FakePeerScript {
+        caps: caps_without_breakpoints,
+        emit_after_hello: vec![],
+        drop_after_hello: false,
+    });
+
+    let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+    bridge.dispatch(1, "initialize", Some(serde_json::json!({ "adapterID": "perl" })));
+    bridge.dispatch(
+        2,
+        "setBreakpoints",
+        Some(serde_json::json!({
+            "source": { "path": "/work/script.pl" },
+            "breakpoints": [{ "line": 42 }],
+        })),
+    );
+    assert_eq!(bridge.pending_source_count(), 1);
+
+    let backend = live_backend(&peer);
+    let flush = bridge.go_live(backend);
+    assert!(bridge.is_live());
+    assert_eq!(bridge.pending_source_count(), 0, "the queue is drained even when the flush fails");
+
+    let changed = find_event(&flush, "breakpoint")
+        .expect("a failed flush must still surface a breakpoint event to the editor");
+    if let DapMessage::Event { body: Some(b), .. } = changed {
+        assert_eq!(b["reason"], "changed");
+        assert_eq!(b["breakpoint"]["verified"], false, "a failed flush is never reported verified");
+        let message = b["breakpoint"]["message"].as_str().expect("failure message");
+        assert!(
+            message.contains("failed to set breakpoint"),
+            "message must explain the flush failure, got: {message}"
+        );
+    } else {
+        panic!("breakpoint event had no body");
+    }
+
+    drop(bridge);
+    let _ = peer.handle.join();
+}
+
+#[test]
+fn dap_external_peer_launch_terminate_does_not_duplicate_terminated_after_peer_close() {
+    // If the peer already emitted `terminated` (connection closed), a later
+    // editor-driven `terminate` must not push a second one (CodeRabbit
+    // finding: ~545).
+    let peer = FakePeer::start(FakePeerScript {
+        caps: full_caps(),
+        emit_after_hello: vec![],
+        drop_after_hello: true,
+    });
+
+    let mut bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+    let backend = live_backend(&peer);
+    bridge.go_live(backend);
+    let _ = peer.handle.join();
+
+    // Drive poll_events until the synthesized terminated (from peer close)
+    // shows up.
+    let mut acc: Vec<DapMessage> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while find_event(&acc, "terminated").is_none() && Instant::now() < deadline {
+        acc.extend(bridge.poll_events());
+        if find_event(&acc, "terminated").is_none() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert!(find_event(&acc, "terminated").is_some(), "peer close must synthesize terminated");
+
+    // The editor now sends its own `terminate` — this must not emit a second
+    // `terminated` event.
+    let out = bridge.dispatch(20, "terminate", None);
+    assert!(
+        find_event(&out, "terminated").is_none(),
+        "terminate after an already-emitted terminated must not duplicate it: {out:?}"
+    );
+    let (cmd, ok, _) = as_response(&out[0]);
+    assert_eq!(cmd, "terminate");
+    assert!(ok, "terminate itself must still succeed");
+}
+
+#[test]
+fn dap_external_peer_launch_acceptor_timeout_surfaces_terminated_not_a_hang() {
+    // No peer ever connects: the peer-acceptor's handshake deadline elapses
+    // with no live backend. The editor session must be told the session
+    // ended (a `terminated` event) instead of hanging forever waiting on a
+    // peer that will never arrive (CodeRabbit finding: ~1051).
+    let peer_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind peer listener");
+
+    let editor_listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind editor listener");
+    let editor_addr = editor_listener.local_addr().expect("editor addr");
+    let mut editor_client = TcpStream::connect(editor_addr).expect("connect editor client");
+    let (editor_server, _) = editor_listener.accept().expect("accept editor");
+
+    let bridge = MirrorPeerBridge::new_pending(ControlMode::Mirror);
+    let session = std::thread::spawn(move || {
+        run_mirror_listen_session_socket(
+            editor_server,
+            peer_listener,
+            bridge,
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+            None,
+        )
+    });
+
+    use perl_lsp_rs_core::transport::ContentLengthFramer;
+    let mut framer = ContentLengthFramer::new();
+    let mut buf = [0u8; 4096];
+    editor_client.set_read_timeout(Some(Duration::from_millis(200))).ok();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_terminated = false;
+    while Instant::now() < deadline && !saw_terminated {
+        match editor_client.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                framer.push(&buf[..n]);
+                while let Ok(Some(body)) = framer.try_next() {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) {
+                        if v.get("event").and_then(|e| e.as_str()) == Some("terminated") {
+                            saw_terminated = true;
+                        }
+                    }
+                }
+            }
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => break,
+        }
+    }
+    assert!(
+        saw_terminated,
+        "an acceptor timeout with no peer must surface a terminated event, not hang forever"
+    );
+
+    let _ = session.join();
 }
