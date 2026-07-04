@@ -845,8 +845,12 @@ jobs:
           path: |
             target/receipts/kwalitee/perl-kwalitee.json
             target/receipts/kwalitee/perl-kwalitee.md
+            target/receipts/format/native-format-fixtures.json
+            target/receipts/format/native-format-config.json
+            target/receipts/format/native-format-config.md
             target/receipts/format/native-format-corpus.json
             target/receipts/format/native-format-perltidy-compat.json
+            target/receipts/native-tooling/native-critic-check.json
             target/receipts/native-tooling/native-critic-false-positive.json
             target/receipts/native-tooling/perlcritic-compat.json
             target/receipts/native-tooling/status.json

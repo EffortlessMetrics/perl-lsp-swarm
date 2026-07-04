@@ -13,7 +13,7 @@
 severity = 3
 include = TestingAndDebugging::RequireUseStrict
 exclude = Documentation::RequirePodSections
-profile-strictness = quiet
+profile-strictness = fatal
 [TestingAndDebugging::RequireUseStrict]
 [-InputOutput::ProhibitTwoArgOpen]
 [InputOutput::RequireCheckedOpen]
