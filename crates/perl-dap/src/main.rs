@@ -11,7 +11,7 @@ use clap::Parser;
 use perl_dap::backend::capabilities::ControlMode;
 use perl_dap::backend::external_peer::ExternalDebuggerPeerBackend;
 use perl_dap::backend::peer_launch::{
-    DEFAULT_LISTEN_HANDSHAKE_TIMEOUT, ExternalPeerLaunchConfig, PeerRendezvousMode,
+    DEFAULT_LISTEN_HANDSHAKE_TIMEOUT, ENV_PEER_TOKEN, ExternalPeerLaunchConfig, PeerRendezvousMode,
     prepare_mirror_listen_session, run_mirror_listen_session_socket,
     run_mirror_listen_session_stdio,
 };
@@ -123,9 +123,13 @@ fn run_external_peer_listen(spec: &str, editor_port: Option<u16>) -> anyhow::Res
         .map_err(|e| anyhow::anyhow!("failed to bind peer listener: {e}"))?;
 
     // Surface the env-var contract the (future) peer process reads to find and
-    // authenticate to this host session.
+    // authenticate to this host session. The token is a per-session bearer
+    // secret, so it is masked in the log — logging it in cleartext would hand
+    // any log reader the credential the handshake now enforces. Non-sensitive
+    // keys (address, mode) are logged verbatim.
     for (key, value) in endpoint.env_vars() {
-        tracing::info!(%key, %value, "external-peer listen: peer env contract");
+        let logged = if key == ENV_PEER_TOKEN { "<redacted>" } else { value.as_str() };
+        tracing::info!(%key, value = %logged, "external-peer listen: peer env contract");
     }
     tracing::info!(
         peer_addr = %endpoint.addr,
