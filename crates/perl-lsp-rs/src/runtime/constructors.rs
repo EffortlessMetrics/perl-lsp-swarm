@@ -81,6 +81,7 @@ impl LspServer {
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             pull_diagnostics_orchestrator: super::diagnostics::PullDiagnosticsOrchestrator::new(),
             semantic_analyzer_cache: Arc::new(Mutex::new(HashMap::new())),
+            type_inference_engine_cache: Arc::new(Mutex::new(HashMap::new())),
             provider_decision_traces: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
@@ -98,6 +99,8 @@ impl LspServer {
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
+            #[cfg(test)]
+            diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
         }
     }
@@ -219,6 +222,7 @@ impl LspServer {
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             pull_diagnostics_orchestrator: super::diagnostics::PullDiagnosticsOrchestrator::new(),
             semantic_analyzer_cache: Arc::new(Mutex::new(HashMap::new())),
+            type_inference_engine_cache: Arc::new(Mutex::new(HashMap::new())),
             provider_decision_traces: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
@@ -236,6 +240,8 @@ impl LspServer {
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
+            #[cfg(test)]
+            diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
         }
     }
@@ -313,6 +319,7 @@ impl LspServer {
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             pull_diagnostics_orchestrator: super::diagnostics::PullDiagnosticsOrchestrator::new(),
             semantic_analyzer_cache: Arc::new(Mutex::new(HashMap::new())),
+            type_inference_engine_cache: Arc::new(Mutex::new(HashMap::new())),
             provider_decision_traces: Arc::new(Mutex::new(HashMap::new())),
             module_scan_cache: Arc::new(
                 perl_lsp_rs_core::providers::completion::module_scan_cache::ModuleCompletionScanCache::new(),
@@ -330,6 +337,8 @@ impl LspServer {
             skip_perlcritic_command_check: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             critic_workspace_warnings_sent: Mutex::new(HashSet::new()),
+            #[cfg(test)]
+            diagnostic_after_snapshot_hook: Mutex::new(None),
             ai_inline_backend: Mutex::new(None),
         }
     }

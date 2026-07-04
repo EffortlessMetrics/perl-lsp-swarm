@@ -1,4 +1,4 @@
-# CI-enforced coverage proof-pack manifest used by Codecov / Patch 95 and
+# Advisory coverage proof-pack manifest used by manual coverage diagnostics and
 # `cargo xtask ci route`.
 #
 # This keeps coverage routing tied to changed surfaces instead of test-name

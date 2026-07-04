@@ -296,6 +296,27 @@ impl LspServer {
         self.handle_hover(params)
     }
 
+    /// Test-only entrypoint for LSP `textDocument/codeAction`.
+    ///
+    /// Exercises quick-fix and refactor code-action generation in tests,
+    /// including the critic-engine-gated quick fixes.
+    ///
+    /// # Parameters
+    /// - `params`: JSON-RPC params with `textDocument.uri`, `range`, `context`.
+    ///
+    /// # Returns
+    /// - `Ok(Some(actions))`: The code actions array.
+    /// - `Ok(None)`: No actions applicable.
+    ///
+    /// # Errors
+    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    pub fn test_handle_code_action(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_code_action(params)
+    }
+
     /// Test-only entrypoint for LSP `textDocument/documentSymbol`.
     ///
     /// Exercises document symbol functionality in tests. Returns the
@@ -727,6 +748,27 @@ impl LspServer {
     /// is set, so the wait line is unreachable without enabling it.
     pub fn test_enable_call_hierarchy(&self) {
         self.advertised_features.lock().call_hierarchy = true;
+    }
+
+    /// Test-only: begin capturing `PERL_LSP_TIMING` spans into an in-process
+    /// buffer.
+    ///
+    /// This is independent of the `PERL_LSP_TIMING` environment sink, so it does
+    /// not race on process-global env state. Any previously buffered spans are
+    /// cleared. Pair with [`Self::test_timing_capture_drain`].
+    pub fn test_timing_capture_start(&self) {
+        let _ = self;
+        crate::runtime::timing::capture::start();
+    }
+
+    /// Test-only: stop capturing and return the buffered timing spans as
+    /// `(span_name, milliseconds, detail)` tuples in emission order.
+    pub fn test_timing_capture_drain(&self) -> Vec<(String, f64, Option<String>)> {
+        let _ = self;
+        crate::runtime::timing::capture::drain()
+            .into_iter()
+            .map(|span| (span.span.to_string(), span.ms, span.detail))
+            .collect()
     }
 }
 

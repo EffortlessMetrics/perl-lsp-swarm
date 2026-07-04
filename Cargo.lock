@@ -1535,6 +1535,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-core-harness-types"
+version = "0.17.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "perl-core-test-runner"
+version = "0.17.0"
+dependencies = [
+ "anyhow",
+ "perl-core-harness-types",
+ "perl-parser-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "perl-corpus"
 version = "0.17.0"
 dependencies = [
@@ -1616,6 +1636,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-kwalitee"
+version = "0.17.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "perl-lexer"
 version = "0.17.0"
 dependencies = [
@@ -1677,6 +1708,7 @@ dependencies = [
  "perl-parser-core",
  "perl-pod",
  "perl-position-tracking",
+ "perl-ripr-facts",
  "perl-semantic-facts",
  "perl-subprocess-runtime",
  "perl-symbol",
@@ -1906,6 +1938,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-ripr-facts"
+version = "0.17.0"
+dependencies = [
+ "perl-parser-core",
+ "perl-symbol",
+ "serde_json",
+]
+
+[[package]]
 name = "perl-semantic-analyzer"
 version = "0.17.0"
 dependencies = [
@@ -1988,6 +2029,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "perl-tree-sitter-compat"
+version = "0.17.0"
+dependencies = [
+ "perl-parser-core",
+ "perl-workspace-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "perl-uri"
 version = "0.17.0"
 dependencies = [
@@ -2019,6 +2070,18 @@ dependencies = [
  "tracing",
  "url",
  "walkdir",
+]
+
+[[package]]
+name = "perl-workspace-core"
+version = "0.17.0"
+dependencies = [
+ "perl-parser-core",
+ "perl-pod",
+ "perl-pragma",
+ "perl-symbol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3941,7 +4004,9 @@ dependencies = [
  "indicatif",
  "notify",
  "perl-ci-hygiene",
+ "perl-core-harness-types",
  "perl-corpus",
+ "perl-kwalitee",
  "perl-lsp-rs-core",
  "perl-lsp-ux-tests",
  "perl-parser",

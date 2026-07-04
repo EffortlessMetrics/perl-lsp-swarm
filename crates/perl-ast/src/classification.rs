@@ -1164,7 +1164,13 @@ mod tests {
                 default_value: Box::new(leaf()),
             },
             NodeKind::SlurpyParameter { variable: Box::new(leaf()) },
-            NodeKind::NamedParameter { variable: Box::new(leaf()) },
+            NodeKind::NamedParameter {
+                variable: Box::new(leaf()),
+                external_name: String::new(),
+                default_operator: None,
+                default_value: None,
+                required: true,
+            },
             NodeKind::Method {
                 name: "bar".to_string(),
                 name_span: None,
@@ -1677,7 +1683,13 @@ mod tests {
                 default_value: Box::new(leaf()),
             }),
             n(NodeKind::SlurpyParameter { variable: Box::new(leaf()) }),
-            n(NodeKind::NamedParameter { variable: Box::new(leaf()) }),
+            n(NodeKind::NamedParameter {
+                variable: Box::new(leaf()),
+                external_name: String::new(),
+                default_operator: None,
+                default_value: None,
+                required: true,
+            }),
             n(NodeKind::Method {
                 name: "bar".to_string(),
                 name_span: None,
