@@ -57,7 +57,7 @@ impl LspServer {
                     });
                 let flat_data: Vec<u32> = data.into_iter().flatten().collect();
                 let live_token_count = flat_data.len() / 5;
-                let result_id = self.next_semantic_tokens_result_id();
+                let result_id = semantic_tokens_result_id(&flat_data);
                 self.store_semantic_tokens_result(uri, &result_id, flat_data.clone());
                 let live_result = json!({ "resultId": result_id, "data": flat_data });
                 let provider_trace = semantic_tokens_live_slice_provider_trace(
@@ -90,16 +90,6 @@ impl LspServer {
             ),
         );
         Ok(Some(json!({ "data": [] })))
-    }
-
-    /// Mint a unique `resultId` for a semantic-tokens result.
-    ///
-    /// Monotonic per server process; used to correlate a full result with the
-    /// later `textDocument/semanticTokens/full/delta` request that references it.
-    fn next_semantic_tokens_result_id(&self) -> String {
-        let seq =
-            self.semantic_tokens_result_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        seq.to_string()
     }
 
     /// Record the latest semantic-tokens result for `uri` so a subsequent delta
@@ -163,7 +153,7 @@ impl LspServer {
         });
 
         // Record the current result so the next delta request can diff against it.
-        let result_id = self.next_semantic_tokens_result_id();
+        let result_id = semantic_tokens_result_id(&current);
         self.store_semantic_tokens_result(uri, &result_id, current.clone());
 
         match previous {
@@ -566,6 +556,19 @@ impl LspServer {
             "data": []
         })))
     }
+}
+
+/// Compute a deterministic `resultId` for a semantic-tokens result.
+///
+/// Derived from the encoded token data so an identical token stream yields the
+/// same id (idempotent full requests, unchanged documents) while any change
+/// produces a new id. Determinism also keeps the runtime quality-receipt
+/// equality checks stable across repeated handler calls.
+fn semantic_tokens_result_id(data: &[u32]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish().to_string()
 }
 
 /// Compute the minimal LSP semantic-tokens delta edits that transform `old`

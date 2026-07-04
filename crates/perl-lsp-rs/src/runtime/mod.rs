@@ -252,8 +252,6 @@ pub struct LspServer {
     /// `textDocument/semanticTokens/full/delta`, which computes minimal edits
     /// against the previously returned result.
     pub(crate) semantic_tokens_cache: Arc<Mutex<HashMap<String, SemanticTokensCacheEntry>>>,
-    /// Monotonic sequence for minting unique semantic-tokens `resultId`s.
-    pub(crate) semantic_tokens_result_seq: Arc<std::sync::atomic::AtomicU64>,
     /// Short-TTL cache for module prefix directory scans (issue #8514).
     ///
     /// Typing a multi-segment `use` prefix (e.g. `use Mojo::Cont|`) triggers a
