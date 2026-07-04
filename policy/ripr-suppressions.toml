@@ -1881,3 +1881,22 @@ reason = "PR #3109 (closes #1401) makes rename keyword-validation context-aware:
 created = "2026-07-03"
 review_after = "2026-08-03"
 expires = "2026-10-03"
+
+# -----------------------------------------------------------------------------
+# Test2::V1 import-option scanner split-closure predicates (PR #3355, closes
+# #2384): focused boundary discriminator tests cover every flagged char-class
+# and exact-match boundary, but ripr 0.9.x cannot trace closure predicates
+# inside `str::split` to those oracles and reports the seams weakly_exposed
+# with activation_unknown.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-test2-v1-import-scanner-predicates"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-lsp-rs-core/src/providers/testing/test2.rs"]
+classification = ["weakly_exposed", "activation_unknown"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #3355 (closes #2384) makes Test2::V1 default-export only the T2() handle and adds -ipP grouped short-flag parsing. ripr 0.9.x reports 2 weakly_exposed severe seams (activation_unknown) for the split-closure character-class predicate at v1_short_flag/args_contains_option (crates/perl-lsp-rs-core/src/providers/testing/test2.rs:544): the tracer names missing discriminators `c == '-'`, `c == '_'`, and `c.is_ascii_alphanumeric() || c == '_'` even though direct --lib discriminator tests exist for each exact boundary — v1_short_flag_predicate_boundary_discriminators (dash retained: -i matches; underscore glue: -i_p matches neither i nor p; alphanumeric glue: -i2p matches neither), v1_import_all_predicate_exact_module_match_boundary and v1_pragma_default_predicate_exact_module_match_boundary (module == \"Test2::V1\" exact matches in resolve_import), and test2_v1_grouped_short_flags (end-to-end -ipP/-P per metacpan Test2::V1 SYNOPSIS). RIPR cannot statically connect test-supplied strings through the `str::split(|c: char| ...)` closure boundary to the seam — the same EffortlessMetrics/ripr#1429 predicate-infection-untraceable class as ripr-suppress-completion-lexical-string-scanner-boundaries and ripr-suppress-rename-keyword-guard-predicate. Suppression is narrow (one production file, one PR). Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289."
+created = "2026-07-04"
+review_after = "2026-08-04"
+expires = "2026-10-04"
