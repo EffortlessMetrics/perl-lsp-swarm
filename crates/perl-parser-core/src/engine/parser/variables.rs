@@ -1394,37 +1394,37 @@ mod prototype_heuristic_tests {
     /// addition to `=` (PPC0024). Positional parameters accept only `=`.
     #[test]
     fn named_parameter_records_slash_slash_and_pipe_pipe_default_operators() -> Result<(), String> {
-        fn find_op(node: &Node, name: &str) -> Option<Option<String>> {
+        // Collect every named parameter's (external_name, default_operator) pair
+        // in one straight-line walk, then assert by literal name — mirroring the
+        // sibling `find_named` collector. Deliberately avoids a per-node
+        // `external_name == name` comparison so this coverage test asserts
+        // behaviour without introducing a branch seam of its own.
+        fn collect_named_ops(node: &Node, out: &mut Vec<(String, Option<String>)>) {
             if let NodeKind::NamedParameter { external_name, default_operator, .. } = &node.kind {
-                if external_name == name {
-                    return Some(default_operator.clone());
-                }
+                out.push((external_name.clone(), default_operator.clone()));
             }
-            let mut found = None;
-            node.for_each_child(|c| {
-                if found.is_none() {
-                    found = find_op(c, name);
-                }
-            });
-            found
+            node.for_each_child(|c| collect_named_ops(c, out));
         }
 
         let node = parse_sub("sub f (:$a = 1, :$b //= 2, :$c ||= 3) {}")
             .ok_or("parse named params with //= and ||= defaults")?;
+        let mut ops = Vec::new();
+        collect_named_ops(&node, &mut ops);
 
-        assert_eq!(find_op(&node, "a"), Some(Some("=".to_string())), ":$a uses `=`");
-        assert_eq!(find_op(&node, "b"), Some(Some("//=".to_string())), ":$b uses `//=`");
-        assert_eq!(find_op(&node, "c"), Some(Some("||=".to_string())), ":$c uses `||=`");
-
-        // Discriminator for the `external_name == name` boundary: no parameter
-        // in this signature is literally called `name`, so every recursive
-        // comparison in `find_op` evaluates false and the lookup must return
-        // `None` rather than silently matching the wrong parameter.
         assert_eq!(
-            find_op(&node, "name"),
-            None,
-            "looking up a parameter that doesn't exist exercises the false side \
-             of the `external_name == name` boundary"
+            ops.iter().find(|(n, _)| n == "a").map(|(_, op)| op.clone()),
+            Some(Some("=".to_string())),
+            ":$a uses `=`"
+        );
+        assert_eq!(
+            ops.iter().find(|(n, _)| n == "b").map(|(_, op)| op.clone()),
+            Some(Some("//=".to_string())),
+            ":$b uses `//=`"
+        );
+        assert_eq!(
+            ops.iter().find(|(n, _)| n == "c").map(|(_, op)| op.clone()),
+            Some(Some("||=".to_string())),
+            ":$c uses `||=`"
         );
         Ok(())
     }
@@ -1507,7 +1507,35 @@ mod prototype_heuristic_tests {
              falling through to `_ => None` (no default consumed)"
         );
 
+        // Discriminator for the type-constraint `peek_kind() == Some(Identifier)`
+        // boundary at the head of `parse_signature_param`: a leading *bareword*
+        // identifier (`Type`) is consumed as a type constraint before the
+        // variable, exercising the true side of the inner
+        // `!token.text.starts_with('$')` check — whereas every `$`/`:$`-sigiled
+        // case above takes the false side (the identifier text starts with a
+        // sigil, so it is the variable, not a type).
+        let node = parse_param("Type $x")?;
+        assert!(
+            matches!(&node.kind, NodeKind::MandatoryParameter { .. }),
+            "`Type $x`: the bareword `Type` is a type constraint, `$x` the parameter"
+        );
+
         Ok(())
+    }
+
+    /// Exact error-variant coverage for the named-parameter seam in
+    /// `parse_signature_param`: a named parameter whose default operator is
+    /// present but followed by no default expression (`:$x =`) must surface the
+    /// underlying `parse_ternary` error rather than fabricating a defaulted
+    /// parameter. Grips the weakly-covered error edge of the named seam.
+    #[test]
+    fn parse_signature_param_named_default_without_expression_is_an_error() {
+        let mut parser = Parser::new(":$x =");
+        assert!(
+            parser.parse_signature_param().is_err(),
+            "`:$x =` has a default operator with no following expression, so \
+             parse_signature_param must propagate the parse_ternary error"
+        );
     }
 
     /// The `//=` / `||=` default operators are named-only (PPC0024). A
