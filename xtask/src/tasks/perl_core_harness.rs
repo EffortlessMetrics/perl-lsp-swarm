@@ -6,129 +6,70 @@
 
 use crate::utils::project_root;
 use chrono::Utc;
-use clap::ValueEnum;
 use color_eyre::eyre::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use perl_core_harness_types::{
+    BaselineComparison, BaselineViolation, BaselineViolationKind, COMPILE_BASELINE_SCHEMA_VERSION,
+    CompileBaseline, DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
+    GAP_MAP_SCHEMA_VERSION, GapMap, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
+    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
+    RunnerStatus, SMOKE_SCHEMA_VERSION, SmokeFailureKind, SmokeReport, SmokeStatus,
+    SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+};
+pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const DISCOVERY_SCHEMA_VERSION: &str = "perl_core_harness.discovery.v1";
-const RUN_REPORT_SCHEMA_VERSION: &str = "perl_core_harness.report.v1";
-const COMPILE_BASELINE_SCHEMA_VERSION: &str = "perl_core_harness.compile_baseline.v1";
-const SMOKE_SCHEMA_VERSION: &str = "perl_core_harness.smoke.v1";
-const PREPARE_SCHEMA_VERSION: &str = "perl_core_harness.prepare.v1";
-const GAP_MAP_SCHEMA_VERSION: &str = "perl_core_harness.gap_map.v1";
 const PERL_SOURCE_URL: &str = "https://github.com/Perl/perl5";
 
-/// Upstream Perl test scheduler to query.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum HarnessRunner {
-    /// Bootstrap runner in upstream `t/TEST`.
-    Test,
-    /// TAP::Harness-backed runner in upstream `t/harness`.
-    Harness,
-}
-
-impl HarnessRunner {
-    fn script_name(self) -> &'static str {
-        match self {
-            Self::Test => "TEST",
-            Self::Harness => "harness",
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Test => "test",
-            Self::Harness => "harness",
+fn profile_runner_args(
+    profile: HarnessProfile,
+    t_dir: &Path,
+    runner: HarnessRunner,
+) -> Result<Vec<String>> {
+    match runner {
+        HarnessRunner::Test => explicit_test_runner_args(t_dir, profile.roots()),
+        HarnessRunner::Harness => {
+            Ok(profile.roots().iter().map(|root| format!("{root}/*.t")).collect())
         }
     }
 }
 
-impl fmt::Display for HarnessRunner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+fn explicit_test_runner_args(t_dir: &Path, roots: &[&str]) -> Result<Vec<String>> {
+    let mut args = Vec::new();
+    for root in roots {
+        collect_test_files(t_dir, &t_dir.join(root), &mut args)?;
     }
+    args.sort();
+    args.dedup();
+    Ok(args)
 }
 
-/// Compiler/test mode for later run slices.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum HarnessMode {
-    Parse,
-    Compile,
-    Execute,
-}
-
-impl HarnessMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Parse => "parse",
-            Self::Compile => "compile",
-            Self::Execute => "execute",
+fn collect_test_files(t_dir: &Path, dir: &Path, args: &mut Vec<String>) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading entry in {}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading file type for {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_test_files(t_dir, &path, args)?;
+            continue;
         }
-    }
-}
-
-impl fmt::Display for HarnessMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Staged upstream Perl core profile.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum HarnessProfile {
-    Base,
-    Comp,
-    Run,
-    Core,
-    Lib,
-    Full,
-}
-
-impl HarnessProfile {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Base => "base",
-            Self::Comp => "comp",
-            Self::Run => "run",
-            Self::Core => "core",
-            Self::Lib => "lib",
-            Self::Full => "full",
+        if !file_type.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("t") {
+            continue;
         }
+        let relative = path
+            .strip_prefix(t_dir)
+            .with_context(|| format!("normalizing test path {}", path.display()))?;
+        args.push(relative.display().to_string().replace('\\', "/"));
     }
-
-    fn roots(self) -> &'static [&'static str] {
-        match self {
-            Self::Base => &["base"],
-            Self::Comp => &["comp"],
-            Self::Run => &["run"],
-            Self::Core => &["base", "comp", "run", "cmd", "io", "re", "opbasic", "op"],
-            Self::Lib => &["lib"],
-            Self::Full => &["base", "comp", "run", "cmd", "io", "re", "opbasic", "op", "uni"],
-        }
-    }
-
-    fn runner_args(self, runner: HarnessRunner) -> Vec<String> {
-        match runner {
-            HarnessRunner::Test => self.roots().iter().map(|root| (*root).to_string()).collect(),
-            HarnessRunner::Harness => {
-                self.roots().iter().map(|root| format!("{root}/*.t")).collect()
-            }
-        }
-    }
-}
-
-impl fmt::Display for HarnessProfile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
+    Ok(())
 }
 
 /// Configuration for `perl-core-harness discover`.
@@ -183,241 +124,6 @@ pub struct SmokeConfig {
     pub perl_ref: Option<String>,
 }
 
-/// Machine-readable discovery manifest.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DiscoveryReport {
-    pub schema_version: String,
-    pub commit: String,
-    pub timestamp: String,
-    pub perl_ref: String,
-    pub prepared_tree: String,
-    pub host_perl: String,
-    pub runner: HarnessRunner,
-    pub profile: HarnessProfile,
-    pub tests: Vec<DiscoveredTest>,
-}
-
-/// One upstream test discovered by `--dumptests`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DiscoveredTest {
-    pub path: String,
-    pub root: String,
-}
-
-/// Machine-readable parse/compile/execute report.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RunReport {
-    pub schema_version: String,
-    pub commit: String,
-    pub timestamp: String,
-    pub perl_ref: String,
-    pub prepared_tree: String,
-    pub run_tree: String,
-    pub host_perl: String,
-    pub runner: HarnessRunner,
-    pub mode: HarnessMode,
-    pub profile: HarnessProfile,
-    pub harness_status: Option<i32>,
-    pub summary: RunSummary,
-    pub buckets: BTreeMap<String, usize>,
-    pub file_results: Vec<RunFileResult>,
-    pub failures: Vec<RunFailure>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RunSummary {
-    pub files_total: usize,
-    pub files_passed: usize,
-    pub files_failed: usize,
-    pub tap_assertions_total: usize,
-    pub tap_assertions_passed: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RunFileResult {
-    pub path: String,
-    pub status: RunnerStatus,
-    pub assertions_passed: usize,
-    pub assertions_total: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RunFailure {
-    pub path: String,
-    pub phase: String,
-    pub bucket: String,
-    pub first_diagnostic: String,
-    pub workstream: String,
-    pub lsp_impact: Vec<String>,
-}
-
-/// Checked-in baseline for a Perl core harness run report.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CompileBaseline {
-    pub schema_version: String,
-    pub report_schema_version: String,
-    pub mode: HarnessMode,
-    pub profile: HarnessProfile,
-    pub files_total: usize,
-    pub files_passed: usize,
-    pub files_failed: usize,
-    pub tap_assertions_total: usize,
-    pub tap_assertions_passed: usize,
-    pub buckets: BTreeMap<String, usize>,
-    pub expected_failures: Vec<RunFailure>,
-    pub file_results: Vec<RunFileResult>,
-}
-
-/// Preparation receipt for an upstream Perl source tree.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PrepareReceipt {
-    pub schema_version: String,
-    pub requested_ref: String,
-    pub resolved_ref: Option<String>,
-    pub source_url: String,
-    pub source_dir: String,
-    pub prepared_tree: String,
-    pub host_os: String,
-    pub host_arch: String,
-    pub configure_command: String,
-    pub test_prep_command: String,
-    pub status: PrepareStatus,
-    pub first_error: Option<String>,
-    pub started_at: String,
-    pub finished_at: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PrepareStatus {
-    Pass,
-    Fail,
-}
-
-/// Manual/advisory smoke summary for a real prepared Perl tree.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SmokeReport {
-    pub schema_version: String,
-    pub timestamp: String,
-    pub repo_commit: String,
-    pub perl_requested_ref: String,
-    pub perl_resolved_ref: String,
-    pub prepared_tree: String,
-    pub host_perl: String,
-    pub runner: HarnessRunner,
-    pub profile: HarnessProfile,
-    pub modes_requested: Vec<HarnessMode>,
-    pub discovery_report: String,
-    pub parse_report: Option<String>,
-    pub compile_report: Option<String>,
-    pub gap_map: String,
-    pub discovery_total: usize,
-    pub parse_files_total: Option<usize>,
-    pub parse_files_passed: Option<usize>,
-    pub parse_files_failed: Option<usize>,
-    pub compile_files_total: Option<usize>,
-    pub compile_files_passed: Option<usize>,
-    pub compile_files_failed: Option<usize>,
-    pub parse_buckets: Option<BTreeMap<String, usize>>,
-    pub compile_buckets: Option<BTreeMap<String, usize>>,
-    pub status: SmokeStatus,
-    pub structural_failures: Vec<SmokeStructuralFailure>,
-}
-
-/// Bucketed gap map generated by real-tree smoke receipts.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct GapMap {
-    pub schema_version: String,
-    pub profile: HarnessProfile,
-    pub mode: String,
-    pub total_files: usize,
-    pub passed_files: usize,
-    pub failed_files: usize,
-    pub buckets: BTreeMap<String, usize>,
-    pub files_by_bucket: BTreeMap<String, Vec<String>>,
-    pub first_failure_by_bucket: BTreeMap<String, RunFailure>,
-    pub workstreams: BTreeMap<String, usize>,
-    pub lsp_impact: BTreeMap<String, usize>,
-    pub top_parse_failures: Vec<RunFailure>,
-    pub top_compile_failures: Vec<RunFailure>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SmokeStatus {
-    Pass,
-    Fail,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SmokeStructuralFailure {
-    pub mode: Option<HarnessMode>,
-    pub path: Option<String>,
-    pub kind: SmokeFailureKind,
-    pub message: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SmokeFailureKind {
-    MissingReport,
-    ProfileMismatch,
-    UnbucketedFailure,
-    UnknownBucket,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BaselineComparison {
-    pub violations: Vec<BaselineViolation>,
-}
-
-impl BaselineComparison {
-    fn is_clean(&self) -> bool {
-        self.violations.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BaselineViolation {
-    pub kind: BaselineViolationKind,
-    pub path: Option<String>,
-    pub message: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BaselineViolationKind {
-    SchemaMismatch,
-    ModeMismatch,
-    ProfileMismatch,
-    PreviouslyPassingFileFailed,
-    UnexpectedNewFailure,
-    UnknownBucket,
-    UnbucketedFailure,
-    BucketCountIncreased,
-    MissingExpectedFile,
-    AssertionRegression,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunnerStatus {
-    Pass,
-    Fail,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct RunnerRecord {
-    schema_version: String,
-    mode: String,
-    path: String,
-    status: RunnerStatus,
-    assertions_passed: usize,
-    assertions_total: usize,
-    bucket: Option<String>,
-    first_diagnostic: Option<String>,
-}
-
 /// Discover test files from a prepared Perl tree and write a JSON manifest.
 pub fn discover(config: DiscoverConfig) -> Result<()> {
     let perl_tree = canonicalize_existing_dir(&config.perl_tree, "prepared Perl tree")?;
@@ -429,7 +135,7 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
         &config.host_perl,
         &t_dir,
         &script,
-        &config.profile.runner_args(config.runner),
+        &profile_runner_args(config.profile, &t_dir, config.runner)?,
     )
     .with_context(|| {
         format!("discovering Perl core tests via {} {}", config.runner, config.profile)
@@ -524,7 +230,8 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     let run_tree = prepare_run_copy(&perl_tree, config.runner, config.mode, config.profile)?;
     let t_dir = run_tree.join("t");
     let script = validate_runner_script(&t_dir, config.runner)?;
-    let dumptests_args = config.profile.runner_args(config.runner);
+    install_t_perl_wrapper(&run_tree)?;
+    let dumptests_args = profile_runner_args(config.profile, &t_dir, config.runner)?;
     let dumptests_output = invoke_dumptests(&config.host_perl, &t_dir, &script, &dumptests_args)?;
     let discovered = parse_dumptests_output(&dumptests_output.stdout)?;
 
@@ -534,20 +241,30 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
         let context = format!("removing stale context {}", context_path.display());
         fs::remove_file(&context_path).context(context)?;
     }
-    install_t_perl_wrapper(&run_tree)?;
 
     let output = invoke_harness_run(
         &config.host_perl,
         &t_dir,
         &script,
-        &config.profile.runner_args(config.runner),
+        &dumptests_args,
         &runner_binary,
         &context_path,
         config.mode,
     )
     .with_context(|| format!("running Perl core tests via {} {}", config.runner, config.profile))?;
 
-    let records = read_runner_records(&context_path)?;
+    let mut records = read_runner_records_or_empty(&context_path)?;
+    let used_direct_runner = invoke_runner_for_missing_records(
+        &t_dir,
+        &discovered,
+        &records,
+        &runner_binary,
+        &context_path,
+        config.mode,
+    )?;
+    if used_direct_runner {
+        records = read_runner_records_or_empty(&context_path)?;
+    }
     let report = build_run_report(BuildRunReportInput {
         config: &config,
         perl_tree: &perl_tree,
@@ -576,7 +293,7 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
             output_path.display()
         );
     }
-    if !output.status.success() {
+    if !output.status.success() && !used_direct_runner {
         bail!(
             "upstream harness exited with status {} despite no recorded file failures\nstdout:\n{}\nstderr:\n{}",
             output.status,
@@ -633,15 +350,9 @@ pub fn baseline(config: BaselineConfig) -> Result<()> {
 
 /// Run a manual real-tree discovery + parse/compile smoke and write receipts.
 pub fn smoke(config: SmokeConfig) -> Result<()> {
-    if config.profile != HarnessProfile::Base {
-        bail!(
-            "perl-core-harness smoke is currently scoped to --profile base; got {}",
-            config.profile
-        );
-    }
     let modes = normalized_smoke_modes(&config.modes)?;
 
-    let output_dir = config.output_dir.clone().unwrap_or_else(default_smoke_dir);
+    let output_dir = config.output_dir.clone().unwrap_or_else(|| default_smoke_dir(config.profile));
     fs::create_dir_all(&output_dir)
         .with_context(|| format!("creating smoke output directory {}", output_dir.display()))?;
     let discovery_path = output_dir.join("discovery.json");
@@ -983,6 +694,74 @@ fn invoke_harness_run(
     command.output().with_context(|| format!("spawning host Perl: {}", host_perl.display()))
 }
 
+fn invoke_runner_for_missing_records(
+    t_dir: &Path,
+    discovered: &[DiscoveredTest],
+    records: &[RunnerRecord],
+    runner_binary: &Path,
+    context_path: &Path,
+    mode: HarnessMode,
+) -> Result<bool> {
+    let recorded = records
+        .iter()
+        .filter_map(|record| normalize_test_path(&record.path))
+        .collect::<BTreeSet<_>>();
+    let missing =
+        discovered.iter().filter(|test| !recorded.contains(&test.path)).collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(false);
+    }
+
+    if let Some(parent) = context_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating runner context directory {}", parent.display()))?;
+    }
+
+    for test in &missing {
+        let output = invoke_direct_runner(t_dir, runner_binary, context_path, mode, &test.path)?;
+        if !context_path.is_file() {
+            bail!(
+                "direct runner did not write context for {}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+                test.path,
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    let refreshed = read_runner_records_or_empty(context_path)?;
+    let recorded_after = refreshed
+        .iter()
+        .filter_map(|record| normalize_test_path(&record.path))
+        .collect::<BTreeSet<_>>();
+    if let Some(test) = missing.iter().find(|test| !recorded_after.contains(&test.path)) {
+        bail!("direct runner did not write a record for {}", test.path);
+    }
+
+    Ok(true)
+}
+
+fn invoke_direct_runner(
+    t_dir: &Path,
+    runner_binary: &Path,
+    context_path: &Path,
+    mode: HarnessMode,
+    test_path: &str,
+) -> Result<Output> {
+    let mut command = Command::new(runner_binary);
+    command.current_dir(t_dir);
+    command.arg(test_path);
+    command.env("LC_ALL", "C");
+    command.env("PERL_LSP_HARNESS_MODE", mode.as_str());
+    command.env("PERL_LSP_HARNESS_CONTEXT", context_path);
+    sanitize_perl_env(&mut command);
+
+    command
+        .output()
+        .with_context(|| format!("spawning perl-core-test-runner: {}", runner_binary.display()))
+}
+
 fn sanitize_perl_env(command: &mut Command) {
     command.env_remove("PERL5LIB");
     command.env_remove("PERLLIB");
@@ -1055,9 +834,9 @@ fn default_prepare_receipt_path(perl_ref: &str) -> PathBuf {
         .join("prepare.json")
 }
 
-fn default_smoke_dir() -> PathBuf {
+fn default_smoke_dir(profile: HarnessProfile) -> PathBuf {
     let root = project_root().unwrap_or_else(|_| PathBuf::from("."));
-    root.join("target").join("perl-core").join("smoke").join("base")
+    root.join("target").join("perl-core").join("smoke").join(profile.as_str())
 }
 
 fn safe_path_component(value: &str) -> String {
@@ -1755,6 +1534,18 @@ fn read_runner_records(path: &Path) -> Result<Vec<RunnerRecord>> {
     Ok(records)
 }
 
+fn read_runner_records_or_empty(path: &Path) -> Result<Vec<RunnerRecord>> {
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading runner context {}", path.display()))?;
+    if raw.lines().all(|line| line.trim().is_empty()) {
+        return Ok(Vec::new());
+    }
+    read_runner_records(path)
+}
+
 struct BuildRunReportInput<'a> {
     config: &'a RunConfig,
     perl_tree: &'a Path,
@@ -1857,38 +1648,6 @@ fn failure_for_record(path: &str, bucket: &str, record: &RunnerRecord) -> RunFai
             .unwrap_or_else(|| "runner reported failure without diagnostic".to_string()),
         workstream: workstream_for_bucket(bucket).to_string(),
         lsp_impact: lsp_impact_for_bucket(bucket).into_iter().map(ToString::to_string).collect(),
-    }
-}
-
-fn workstream_for_bucket(bucket: &str) -> &'static str {
-    match bucket {
-        "parse_recovery" => "parser_recovery",
-        "source_decode" => "source_loading",
-        "hir_lowering" => "hir",
-        "compile_effect" => "compile_time_effects",
-        "scope_pad" => "scope_and_pad",
-        "package_stash" => "package_stash",
-        "pragma_feature" => "pragma_model",
-        "module_resolution" => "module_resolution",
-        "cli_switch" => "harness_cli_compat",
-        "harness_prepare" => "harness_integration",
-        "unknown" => "compiler_conformance",
-        _ => "compiler_conformance",
-    }
-}
-
-fn lsp_impact_for_bucket(bucket: &str) -> Vec<&'static str> {
-    match bucket {
-        "parse_recovery" => vec!["diagnostics", "syntax_tree", "semantic_tokens"],
-        "source_decode" => vec!["workspace_index", "diagnostics"],
-        "hir_lowering" => vec!["definition", "rename", "diagnostics"],
-        "compile_effect" => vec!["definition", "references", "diagnostics"],
-        "scope_pad" => vec!["rename", "definition", "diagnostics"],
-        "package_stash" => vec!["workspace_symbols", "completion", "definition"],
-        "pragma_feature" => vec!["diagnostics", "semantic_tokens"],
-        "module_resolution" => vec!["definition", "hover", "completion"],
-        "cli_switch" | "harness_prepare" => vec!["compiler_conformance"],
-        _ => vec!["compiler_conformance"],
     }
 }
 
@@ -2037,13 +1796,31 @@ mod tests {
     }
 
     #[test]
-    fn profile_base_uses_bootstrap_root_for_test_runner() {
-        assert_eq!(HarnessProfile::Base.runner_args(HarnessRunner::Test), vec!["base"]);
+    fn profile_base_expands_test_runner_args_to_explicit_files() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let t_dir = temp.path().join("t");
+        fs::create_dir_all(t_dir.join("base").join("nested"))?;
+        fs::write(t_dir.join("base").join("ok.t"), "1;\n")?;
+        fs::write(t_dir.join("base").join("nested").join("deep.t"), "1;\n")?;
+        fs::write(t_dir.join("base").join("README"), "not a test\n")?;
+
+        let args = profile_runner_args(HarnessProfile::Base, &t_dir, HarnessRunner::Test)?;
+
+        assert_eq!(args, vec!["base/nested/deep.t", "base/ok.t"]);
+        Ok(())
     }
 
     #[test]
-    fn profile_base_uses_glob_for_tap_harness_runner() {
-        assert_eq!(HarnessProfile::Base.runner_args(HarnessRunner::Harness), vec!["base/*.t"]);
+    fn profile_base_uses_glob_for_tap_harness_runner() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let args = profile_runner_args(
+            HarnessProfile::Base,
+            &temp.path().join("t"),
+            HarnessRunner::Harness,
+        )?;
+
+        assert_eq!(args, vec!["base/*.t"]);
+        Ok(())
     }
 
     #[test]
@@ -2594,6 +2371,7 @@ mod tests {
             default_run_report_path(HarnessMode::Parse, HarnessProfile::Base)
                 .ends_with("target/perl-core/reports/base-parse.json")
         );
+        assert!(default_smoke_dir(HarnessProfile::Comp).ends_with("target/perl-core/smoke/comp"));
     }
 
     #[test]
@@ -2971,6 +2749,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn run_mode_installs_wrapper_before_run_copy_dumptests() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_requiring_t_perl_for_dumptests(temp.path())?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        run_mode(RunConfig {
+            perl_tree: perl_tree.clone(),
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+        })?;
+
+        let raw = fs::read_to_string(output)?;
+        let report: RunReport = serde_json::from_str(&raw)?;
+        assert_eq!(report.summary.files_total, 1);
+        assert_eq!(report.summary.files_passed, 1);
+        assert!(!perl_tree.join("t").join("perl").exists(), "source Perl tree must not be mutated");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn run_mode_generated_fixture_smoke_runs_two_compile_tests() -> TestResult {
         let temp = tempfile::tempdir()?;
         let perl_tree = write_fake_perl_tree_with_two_base_tests(temp.path())?;
@@ -3034,6 +2838,49 @@ mod tests {
         assert_eq!(report.compile_files_total, Some(2));
         assert_eq!(report.compile_files_passed, Some(2));
         assert!(report.structural_failures.is_empty());
+        assert!(!perl_tree.join("t").join("perl").exists(), "source Perl tree must not be mutated");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn smoke_writes_comp_profile_receipts() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_two_comp_tests(temp.path())?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output_dir = temp.path().join("smoke-comp");
+
+        smoke(SmokeConfig {
+            perl_tree: perl_tree.clone(),
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            profile: HarnessProfile::Comp,
+            modes: vec![HarnessMode::Parse, HarnessMode::Compile],
+            output_dir: Some(output_dir.clone()),
+            runner_binary: Some(runner),
+            perl_ref: Some("fake-ref".into()),
+        })?;
+
+        for file in ["discovery.json", "parse.json", "compile.json", "gap-map.json", "smoke.json"] {
+            assert!(output_dir.join(file).is_file(), "{file} should be written");
+        }
+
+        let discovery: DiscoveryReport =
+            serde_json::from_str(&fs::read_to_string(output_dir.join("discovery.json"))?)?;
+        assert_eq!(discovery.profile, HarnessProfile::Comp);
+        let mut discovered =
+            discovery.tests.iter().map(|test| test.path.as_str()).collect::<Vec<_>>();
+        discovered.sort_unstable();
+        assert_eq!(discovered, vec!["comp/require.t", "comp/use.t"]);
+
+        let smoke_report: SmokeReport =
+            serde_json::from_str(&fs::read_to_string(output_dir.join("smoke.json"))?)?;
+        assert_eq!(smoke_report.profile, HarnessProfile::Comp);
+        assert_eq!(smoke_report.status, SmokeStatus::Pass);
+        assert_eq!(smoke_report.discovery_total, 2);
+        assert_eq!(smoke_report.parse_files_passed, Some(2));
+        assert_eq!(smoke_report.compile_files_passed, Some(2));
+        assert!(smoke_report.structural_failures.is_empty());
         assert!(!perl_tree.join("t").join("perl").exists(), "source Perl tree must not be mutated");
         Ok(())
     }
@@ -3284,6 +3131,63 @@ exit 7
     }
 
     #[cfg(unix)]
+    #[test]
+    fn run_mode_invokes_runner_directly_when_harness_writes_no_records() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_run_body(
+            temp.path(),
+            r#"# Deliberately do not invoke ./perl; real harness integration bugs should fall
+# back to direct runner invocation for harness-selected files.
+exit 7
+"#,
+        )?;
+        let runner = write_fake_runner(temp.path(), RunnerStatus::Pass)?;
+        let output = temp.path().join("parse-report.json");
+
+        run_mode(RunConfig {
+            perl_tree,
+            host_perl: PathBuf::from("/bin/sh"),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Parse,
+            profile: HarnessProfile::Base,
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+        })?;
+
+        let raw = fs::read_to_string(output)?;
+        let report: RunReport = serde_json::from_str(&raw)?;
+        assert_eq!(report.summary.files_total, 1);
+        assert_eq!(report.summary.files_passed, 1);
+        assert_eq!(report.summary.files_failed, 0);
+        assert!(report.buckets.is_empty());
+        assert!(report.failures.is_empty());
+        assert_eq!(report.harness_status, Some(7));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_requiring_t_perl_for_dumptests(root: &Path) -> TestResult<PathBuf> {
+        let perl_tree = root.join("prepared-perl-requires-t-perl");
+        let t_dir = perl_tree.join("t");
+        fs::create_dir_all(t_dir.join("base"))?;
+        fs::write(t_dir.join("base").join("ok.t"), "1;\n")?;
+        let script = r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = "--dumptests" ]; then
+  if [ ! -f ./perl ]; then
+    echo 'You need to run "make test_prep" first to set things up.' >&2
+    exit 2
+  fi
+  echo "base/ok.t"
+  exit 0
+fi
+./perl base/ok.t
+"#;
+        fs::write(t_dir.join("TEST"), script)?;
+        Ok(perl_tree)
+    }
+
+    #[cfg(unix)]
     fn write_fake_perl_tree(root: &Path) -> TestResult<PathBuf> {
         write_fake_perl_tree_with_run_body(
             root,
@@ -3308,6 +3212,27 @@ if [ "${1:-}" = "--dumptests" ]; then
 fi
 ./perl base/ok.t
 ./perl base/lex.t
+"#;
+        fs::write(t_dir.join("TEST"), script)?;
+        Ok(perl_tree)
+    }
+
+    #[cfg(unix)]
+    fn write_fake_perl_tree_with_two_comp_tests(root: &Path) -> TestResult<PathBuf> {
+        let perl_tree = root.join("prepared-perl-two-comp-tests");
+        let t_dir = perl_tree.join("t");
+        fs::create_dir_all(t_dir.join("comp"))?;
+        fs::write(t_dir.join("comp").join("require.t"), "1;\n")?;
+        fs::write(t_dir.join("comp").join("use.t"), "1;\n")?;
+        let script = r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = "--dumptests" ]; then
+  echo "comp/require.t"
+  echo "comp/use.t"
+  exit 0
+fi
+./perl comp/require.t
+./perl comp/use.t
 "#;
         fs::write(t_dir.join("TEST"), script)?;
         Ok(perl_tree)

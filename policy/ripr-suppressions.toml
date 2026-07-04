@@ -1115,7 +1115,8 @@ created = "2026-06-15"
 review_after = "2026-07-15"
 expires = "2026-09-30"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # Coverage measure/route decoupling (PR #1482 / #1470): ripr#1429-class
 # predicate-infection-untraceable seams in two xtask coverage decision points.
 #
@@ -1154,7 +1155,8 @@ expires = "2026-09-30"
 #
 # Suppression is narrow (two specific predicates in one xtask file, one PR #1482).
 # Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-coverage-measure-route-decoupling"
 kind = "predicate_infection_untraceable"
@@ -1167,7 +1169,8 @@ created = "2026-06-15"
 review_after = "2026-07-15"
 expires = "2026-09-30"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # Multi-root workspace symbol tests (PR #1522): ripr#1428-class false-positives
 # in newly added test code.
 #
@@ -1190,7 +1193,8 @@ expires = "2026-09-30"
 #
 # Suppression is minimal (single test file, test-only additions). Path scope
 # expires 2026-09-30. Remove when ripr#1428 is fixed upstream.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-multi-root-workspace-symbol-test-surface"
 kind = "test_receipt_surface"
@@ -1203,7 +1207,8 @@ created = "2026-06-16"
 review_after = "2026-07-16"
 expires = "2026-09-30"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # DAP transport framing + lifecycle test surfaces (#991): ripr#1428-class
 # false-positives in newly added test code.
 #
@@ -1231,7 +1236,8 @@ expires = "2026-09-30"
 #
 # Suppression is minimal (one production file scoped to its #[cfg(test)] mod and
 # one test file). Remove when ripr#1428 is fixed upstream.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-dap-transport-framing-and-lifecycle-test-surface"
 kind = "test_receipt_surface"
@@ -1247,7 +1253,8 @@ created = "2026-06-20"
 review_after = "2026-07-20"
 expires = "2026-09-30"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # Windows CWD-planting RCE fix (#2764): windows.rs platform-gated code.
 #
 # PR #2967 (fix/windows-bare-tool-cwd-rce) tightens the Windows subprocess
@@ -1278,7 +1285,8 @@ expires = "2026-09-30"
 # Suppression is narrow (single production file). Remove when ripr adds
 # cross-platform cfg-guard simulation or when targeted mutation covers
 # the Windows-only orchestration path on a non-Linux runner.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-windows-subprocess-platform-guard-2764"
 kind = "predicate_infection_untraceable"
@@ -1291,7 +1299,8 @@ created = "2026-06-25"
 review_after = "2026-09-25"
 expires = "2026-12-31"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # Windows CWD-planting RCE fix (#2764): path_selection.rs match arm guards.
 #
 # path_selection.rs is the cross-platform extraction of select_path_candidate
@@ -1312,7 +1321,8 @@ expires = "2026-12-31"
 # where match arm dispatch on string literals is not statically traced by
 # RIPR 0.9.x.  Remove when ripr gains match-guard discrimination or targeted
 # mutation is scheduled post-review.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-path-selection-match-arm-guards-2764"
 kind = "predicate_infection_untraceable"
@@ -1325,7 +1335,8 @@ created = "2026-06-25"
 review_after = "2026-09-25"
 expires = "2026-12-31"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # Windows CWD-planting RCE second front (#3028): windows.rs platform guard.
 #
 # PR #3032 (fix/3028-perl-lsp-rs-command-rce) closes the second RCE front:
@@ -1343,7 +1354,8 @@ expires = "2026-12-31"
 #
 # Suppression is narrow (single production file). Remove when ripr adds
 # cross-platform cfg-guard simulation.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-windows-subprocess-platform-guard-3028"
 kind = "predicate_infection_untraceable"
@@ -1356,7 +1368,8 @@ created = "2026-06-25"
 review_after = "2026-09-25"
 expires = "2026-12-31"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # Windows CWD-planting RCE second front (#3028): platform.rs test setup and
 # lib.rs Windows branch.
 #
@@ -1380,7 +1393,8 @@ expires = "2026-12-31"
 #
 # Suppressions are minimal (two production files, test-only and cfg-gated code
 # only). Remove when ripr#1428 and ripr#1429 are fixed upstream.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-platform-test-setup-and-lib-windows-branch-3028"
 kind = "predicate_infection_untraceable"
@@ -1396,7 +1410,8 @@ created = "2026-06-25"
 review_after = "2026-09-25"
 expires = "2026-12-31"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # Completion auto-import additionalTextEdits (PR #1919, issue #1694):
 # ripr#1429-class weakly_exposed false-positives in production completion code.
 #
@@ -1410,7 +1425,8 @@ expires = "2026-12-31"
 # unrelated files). All seams are covered by dedicated #[cfg(test)] lib tests
 # with exact (strong-oracle) assertions. Same ripr#1429 class as the
 # hover_cards.rs and workspace_rename.rs production-file suppressions.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-completion-auto-import-edits"
 kind = "predicate_infection_untraceable"
@@ -1427,7 +1443,8 @@ created = "2026-06-25"
 review_after = "2026-07-25"
 expires = "2026-09-30"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # PL304 use-constant NodeKind blind-spot fix (PR #3078, issue #3071):
 # ripr#1429-class: RIPR 0.9.x cannot mutation-trace let-chain match-condition
 # seams in collect_constant_names() in pod_coverage.rs.
@@ -1469,7 +1486,8 @@ expires = "2026-09-30"
 #
 # Suppression is narrow: single production file, 3 seams. Remove when
 # ripr#1429 is fixed upstream or when ripr can trace let-chain predicates.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-pod-coverage-use-constant-let-chain"
 kind = "activation_unknown"
@@ -1583,7 +1601,8 @@ reason = "PR #3283 (epic #3276, PR7) adds the native product-surface guard xtask
 #
 # Suppression is minimal (single test file, one PR). Remove when ripr#1428
 # is fixed upstream.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-mid-surrogate-call-observation-test"
 kind = "test_receipt_surface"
@@ -1640,7 +1659,8 @@ created = "2026-06-28"
 review_after = "2026-09-28"
 expires = "2026-12-31"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # References includeDeclaration=true quality tests (PR #3050 / #2673):
 # ripr#1428-class false-positives in newly added test functions.
 #
@@ -1666,7 +1686,8 @@ expires = "2026-12-31"
 # (multi_root_workspace_tests.rs: error_path seams in test setup code) and
 # ripr-suppress-seam-proof-tests (newly added test files). Remove when
 # ripr#1428 is fixed upstream.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-references-include-declaration-quality-tests"
 kind = "test_receipt_surface"
@@ -1679,7 +1700,8 @@ created = "2026-06-25"
 review_after = "2026-09-25"
 expires = "2026-12-31"
 
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 # LineStartsCache::position_to_offset for-loop surrogate clamp (fix #2478):
 # ripr#1429-class predicate-infection-untraceable seams in the changed loop
 # condition `uc + ch.len_utf16() > character` in line_index.rs.
@@ -1723,7 +1745,8 @@ expires = "2026-12-31"
 #
 # Suppression is narrow (single production file, one PR #3040). Remove when
 # ripr#1429 is fixed upstream or targeted mutation is scheduled.
-# =============================================================================
+# ======================================================================
+# -----------------------------------------------------------------------------
 [[suppress]]
 id = "ripr-suppress-position-tracking-surrogate-loop-seam"
 kind = "predicate_infection_untraceable"
@@ -1900,3 +1923,53 @@ reason = "PR #3355 (closes #2384) makes Test2::V1 default-export only the T2() h
 created = "2026-07-04"
 review_after = "2026-08-04"
 expires = "2026-10-04"
+
+# -----------------------------------------------------------------------------
+# positionEncoding negotiation capability predicates (PR #1856, closes #1690):
+# the phase-1 clamp adds a negotiation block inside handle_initialize, changing
+# the function body and causing RIPR 0.9.x diff-scoped analysis to re-attribute
+# PRE-EXISTING client-capability predicate seams in the same function as new
+# weakly_gripped findings.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-position-encoding-negotiation-capability-predicates"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs"]
+classification = ["weakly_gripped", "reachable_unrevealed"]
+owner = "editor-trust"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #1856 (closes #1690) adds the LSP 3.17 positionEncoding negotiation block to handle_initialize (parse capabilities.general.positionEncodings, pick the first server-supported encoding via an enc.as_str() match, store it on ClientCapabilities.position_encoding; the advertised capabilities.positionEncoding stays clamped to \"utf-16\" pending phase 2). Because handle_initialize's body changed, RIPR 0.9.x diff-scoped analysis re-flags THREE seams in the function as new weakly_gripped (reachable_unrevealed): (1) completion_list_item_defaults_data_support = ...completionList/itemDefaults.any(|item| item.as_str() == Some(\"data\")) and (2) code_action_llm_generated_tag_support = ...codeAction/tagSupport/valueSet.any(|tag| tag.as_i64() == Some(1)) are PRE-EXISTING production predicates unchanged by this PR, plus (3) the new positionEncoding enc.as_str() unknown-encoding->default branch. All three are JSON-pointer predicates over parsed params that RIPR cannot statically trace from a test input through the handle_initialize entry point — the same ripr#1429 predicate-infection-untraceable class as the neighboring hover/rename predicate suppressions. Coverage: direct --lib unit tests in capabilities.rs's #[cfg(test)] mod — handle_initialize_boundary_discriminator drives itemDefaults=[..,\"data\"] and tagSupport.valueSet=[2,1] and asserts both flags flip true (naming both boundaries), and the negotiation scenario tests (initialize_prefers_first_supported_position_encoding, initialize_accepts_utf16_when_it_is_first_supported_position_encoding, initialize_falls_back_to_utf16_when_position_encodings_have_no_supported_values) exercise the enc.as_str() match including the unknown-encoding [\"utf-32\",\"utf-7\"]->utf16 default branch. Suppression is narrow (single production file, one PR) and does not touch the pre-existing coverage. Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289."
+# find_symbol scope-walk predicates (PR #1836, closes #1699): the DESTROY/
+# AUTOLOAD UNIVERSAL-method correction adds a doc comment on UNIVERSAL_METHODS
+# and two #[cfg(test)] discriminator tests to symbol.rs. Touching the file
+# causes RIPR 0.9.x diff-scoped analysis to re-attribute the PRE-EXISTING
+# SymbolTable::find_symbol scope-chain-walk predicate seams as new
+# weakly_gripped findings.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-find-symbol-scope-walk-predicates"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-semantic-analyzer/src/analysis/symbol.rs"]
+classification = ["weakly_gripped", "reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #1836 (closes #1699) corrects the DESTROY/AUTOLOAD categorization: it adds a doc comment on the UNIVERSAL_METHODS const and two #[cfg(test)] tests to crates/perl-semantic-analyzer/src/analysis/symbol.rs. It makes NO change to SymbolTable::find_symbol (unchanged vs origin/main). Because the file was touched, RIPR 0.9.x diff-scoped analysis re-flags THREE pre-existing scope-chain-walk predicate seams inside find_symbol as new weakly_gripped (reachable_unrevealed): (1) symbol.scope_id == scope_id and (2) symbol.kind == kind (the direct-scope match filter), and (3) scope.kind != ScopeKind::Package (the `our`-variable package-scope fallback guard). All three are predicates evaluated while walking the parent scope chain that RIPR cannot statically trace from a test input to a specific branch — the same ripr#1429 predicate-infection-untraceable class as the neighboring rename/hover predicate suppressions. Coverage: a direct call-observation --lib unit test, find_symbol_boundary_discriminator (symbol.rs #[cfg(test)] mod), builds a SymbolTable by hand with a package scope and a nested block scope, then asserts each boundary in isolation — a Subroutine queried from its defining scope with matching kind returns exactly one hit (scope_id + kind match), the same name queried with a scalar kind returns empty (kind mismatch), and an `our` scalar is surfaced from the non-package block scope via the fallback (scope.kind != Package). RIPR still cannot connect the test to the scope-walk branches. Suppression is narrow (single production file, one PR). Remove when ripr#1429 is fixed upstream or targeted mutation is scheduled per #1289."
+created = "2026-07-03"
+review_after = "2026-08-03"
+expires = "2026-10-03"
+
+# perl-workspace-core + perl-tree-sitter-compat: additive facts-substrate crates
+# that are NOT yet wired into any production binary. See PLSP-ADR-0006 (#3312).
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-workspace-core-substrate-not-yet-wired"
+kind = "generated_or_non_production_surface"
+paths = ["crates/perl-workspace-core/**", "crates/perl-tree-sitter-compat/**"]
+classification = ["exposed", "weakly_exposed", "weakly_gripped", "static_unknown", "propagation_unknown", "infection_unknown", "no_static_path", "reachable_unrevealed"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/perl-lsp-swarm#3312"
+reason = "PR #3313 lands perl-workspace-core (the LSP-free project-facts substrate) and perl-tree-sitter-compat (its first adapter) as ADDITIVE crates that no shipped binary consumes yet: the substrate is deliberately wired into ripr-facts / critic / tidy / DAP only in the later staged-rollout PRs 5 and 8 (PLSP-ADR-0006). Because nothing calls into these crates from a production entrypoint, ripr's static production-reachability analysis has no caller to trace and classifies the crates' own public surface as exposed/weakly_exposed/no_static_path/static_unknown (670 diff-scoped severe gaps -> after adding the direct --lib observe tests below, 536). Those are not un-revealed production seams; they are a facts substrate whose correctness is proven by its own 187 unit + integration tests (perl-workspace-core lib tests, import_facts/dist_facts/pod_relation_facts integration suites, tree-sitter-compat adapter tests) plus the enforced dependency contract (tests/dependency_contract.rs). The genuinely reachable_unrevealed seams ripr DID find (13, all the DynamicBoundary/export/inheritance side-effect pushes in crates/perl-workspace-core/src/import_walk.rs) are NOT suppressed on their merits: they are directly covered by 8 new call-observation --lib unit tests in import_walk.rs's #[cfg(test)] mod tests (string_eval/typeglob/runtime-require/source-filter boundary observation, use-parent inheritance, @EXPORT symbols), which drop reachable_unrevealed to 0. This suppression is a time-boxed bridge for the not-yet-wired remainder only; when PRs 5/8 wire the substrate into a production entrypoint, ripr can trace it for real and this entry must be removed."
+created = "2026-07-03"
+review_after = "2026-08-15"
+expires = "2026-10-15"
+removal_criteria = "perl-workspace-core / perl-tree-sitter-compat are consumed by a production entrypoint (PLSP-ADR-0006 PR 5 or PR 8); then ripr traces them for real and this suppression is deleted."

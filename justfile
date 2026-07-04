@@ -1143,6 +1143,17 @@ ci-v2-parity:
     cargo run --locked -p xtask --features legacy -- corpus --scanner v2-parity
     @echo "✅ V2 parity corpus check passed"
 
+# Generate a Devel::ptkdb `.ptkdbrc` bootstrap for PROGRAM (prints to stdout).
+# Redirect into `.ptkdbrc` next to your script, then run `perl -d:ptkdb PROGRAM`.
+# See docs/how-to/EXTERNAL_DEBUGGER_PEER_QUICKSTART.md
+ptkdb-rc program:
+    @cargo run -q -p perl-dap -- --ptkdb-bootstrap-rc {{program}}
+
+# Print the `perl-lsp-debug-session-v1` JSON session plan for PROGRAM
+# (breakable lines, subroutines, include paths). Useful for scripting/inspection.
+dap-session-plan program:
+    @cargo run -q -p perl-dap -- --debug-session-plan {{program}}
+
 # Targeted parser/DAP verification (low-memory, for heredoc/breakpoint changes)
 # Key fixes: unset RUSTC_WRAPPER (not empty), --no-deps on clippy, targeted tests
 ci-test-parser-dap:
@@ -2893,6 +2904,13 @@ perl-core-real-base-smoke PERL_TREE HOST_PERL="perl":
           --profile base \
           --modes parse,compile
 
+perl-core-real-comp-smoke PERL_TREE HOST_PERL="perl":
+    cargo run -p xtask -- perl-core-harness smoke \
+          --perl-tree {{PERL_TREE}} \
+          --host-perl {{HOST_PERL}} \
+          --profile comp \
+          --modes parse,compile
+
 perl-core-integrated-base REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
     cargo run -p xtask -- perl-core-harness prepare \
           --ref {{REF}} \
@@ -2904,6 +2922,18 @@ perl-core-integrated-base REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
           --modes parse,compile \
           --perl-ref {{REF}} \
           --output-dir target/perl-core/smoke/base
+
+perl-core-integrated-comp REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
+    cargo run -p xtask -- perl-core-harness prepare \
+          --ref {{REF}} \
+          --output-dir target/perl-core/upstream/{{REF}}
+    cargo run -p xtask -- perl-core-harness smoke \
+          --perl-tree target/perl-core/upstream/{{REF}}/perl5 \
+          --host-perl perl \
+          --profile comp \
+          --modes parse,compile \
+          --perl-ref {{REF}} \
+          --output-dir target/perl-core/smoke/comp
 
 # Bootstrap/update the committed CPAN corpus baseline
 cpan-corpus-baseline-update:

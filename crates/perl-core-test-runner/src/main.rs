@@ -1,13 +1,14 @@
 //! Compatibility runner invoked as `t/perl` by an upstream Perl core harness.
+//! TAP ordering: emit_tap writes complete before context-record appends begin.
 //! Context-record emission is append-only; a write failure does not corrupt TAP state.
 
 // TAP is the process protocol for this binary.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use anyhow::{Context, Result, bail};
+use perl_core_harness_types::{RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus};
 use perl_parser_core::hir::{CompileEffectKind, lower_ast};
 use perl_parser_core::{Parser, RecoverySalvageClass, RecoverySalvageProfile};
-use serde::Serialize;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -16,25 +17,6 @@ use std::path::{Path, PathBuf};
 
 const MODE_ENV: &str = "PERL_LSP_HARNESS_MODE";
 const CONTEXT_ENV: &str = "PERL_LSP_HARNESS_CONTEXT";
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum RunnerStatus {
-    Pass,
-    Fail,
-}
-
-#[derive(Debug, Serialize)]
-struct RunnerRecord {
-    schema_version: &'static str,
-    mode: String,
-    path: String,
-    status: RunnerStatus,
-    assertions_passed: usize,
-    assertions_total: usize,
-    bucket: Option<String>,
-    first_diagnostic: Option<String>,
-}
 
 #[derive(Debug)]
 struct Invocation {
@@ -55,7 +37,13 @@ fn main() {
             RunnerStatus::Fail => 1,
         },
         Err(err) => {
+            let mode = env::var(MODE_ENV).unwrap_or_else(|_| "parse".to_string());
+            let args = env::args_os().skip(1).collect::<Vec<_>>();
+            let display_path =
+                infer_display_path(&args).unwrap_or_else(|| "perl-core-test-runner".to_string());
+            let result = ModeRunResult::fail("cli_switch", err.to_string());
             emit_internal_failure(&err);
+            let _ = append_context_record(&mode, &display_path, &result);
             1
         }
     };
@@ -154,6 +142,17 @@ fn file_invocation(path: OsString) -> Result<Invocation> {
     let path = PathBuf::from(path);
     let display_path = path.display().to_string().replace('\\', "/");
     Ok(Invocation { source: SourceInput::File(path), display_path })
+}
+
+fn infer_display_path(args: &[OsString]) -> Option<String> {
+    args.iter()
+        .rev()
+        .map(|arg| arg.to_string_lossy())
+        .find(|arg| {
+            let value = arg.as_ref();
+            !value.starts_with('-') && (value.ends_with(".t") || value.contains(".t "))
+        })
+        .map(|arg| arg.as_ref().replace('\\', "/"))
 }
 
 #[derive(Debug)]
@@ -283,7 +282,7 @@ fn write_context_record(
     }
 
     let record = RunnerRecord {
-        schema_version: "perl_core_harness.runner_record.v1",
+        schema_version: RUNNER_RECORD_SCHEMA_VERSION.to_string(),
         mode: mode.to_string(),
         path: display_path.to_string(),
         status: result.status,
@@ -461,6 +460,22 @@ mod tests {
         };
 
         assert!(err.to_string().contains("unsupported Perl core harness switch"));
+        Ok(())
+    }
+
+    #[test]
+    fn infers_test_path_for_internal_failure_records() -> TestResult {
+        let args = vec![
+            OsString::from("--unsupported"),
+            OsString::from("-I../lib"),
+            OsString::from("base/if.t"),
+        ];
+
+        let Some(display_path) = infer_display_path(&args) else {
+            bail!("expected test path inference");
+        };
+
+        assert_eq!(display_path, "base/if.t");
         Ok(())
     }
 
