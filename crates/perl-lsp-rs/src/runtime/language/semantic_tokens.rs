@@ -58,8 +58,10 @@ impl LspServer {
                 let flat_data: Vec<u32> = data.into_iter().flatten().collect();
                 let live_token_count = flat_data.len() / 5;
                 let result_id = semantic_tokens_result_id(&flat_data);
-                self.store_semantic_tokens_result(uri, &result_id, flat_data.clone());
-                let live_result = json!({ "resultId": result_id, "data": flat_data });
+                // Serialize the response by reference, then move the vector into the
+                // cache — avoids cloning the full token buffer on every request.
+                let live_result = json!({ "resultId": &result_id, "data": &flat_data });
+                self.store_semantic_tokens_result(uri, &result_id, flat_data);
                 let provider_trace = semantic_tokens_live_slice_provider_trace(
                     &doc.text,
                     &live_result,
@@ -152,17 +154,18 @@ impl LspServer {
                 .map(|entry| entry.data.clone())
         });
 
-        // Record the current result so the next delta request can diff against it.
+        // Build the response by reference, then move `current` into the cache so
+        // the full token buffer is not cloned on every delta request.
         let result_id = semantic_tokens_result_id(&current);
-        self.store_semantic_tokens_result(uri, &result_id, current.clone());
-
-        match previous {
+        let response = match previous {
             Some(prev_data) => {
                 let edits = compute_semantic_tokens_delta_edits(&prev_data, &current);
-                Ok(Some(json!({ "resultId": result_id, "edits": edits })))
+                json!({ "resultId": &result_id, "edits": edits })
             }
-            None => Ok(Some(json!({ "resultId": result_id, "data": current }))),
-        }
+            None => json!({ "resultId": &result_id, "data": &current }),
+        };
+        self.store_semantic_tokens_result(uri, &result_id, current);
+        Ok(Some(response))
     }
 
     /// Semantic tokens runtime quality receipt.
