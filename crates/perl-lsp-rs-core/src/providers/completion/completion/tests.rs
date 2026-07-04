@@ -8064,3 +8064,59 @@ fn test_indirect_after_arrow_segment_is_rejected() -> Result<(), Box<dyn std::er
     let _ = provider.get_completions(code, pos);
     Ok(())
 }
+
+#[test]
+fn test_indirect_uppercase_method_word_offers_no_methods() -> Result<(), Box<dyn std::error::Error>>
+{
+    // Grips the lowercase/underscore gate in `is_indirect_method_word`
+    // (dispatch.rs:176) through the production `get_completions` call chain: an
+    // uppercase-initial word in the method slot (`Frobnicate Child`) is a
+    // receiver bareword, not a method name, so it must be rejected before any
+    // synthesized method completion. A mutation that accepted uppercase method
+    // words here would wrongly offer `Child`'s methods — this observes that it
+    // does not.
+    let index = indirect_child_parent_index()?;
+
+    let code = "Frobnicate Child";
+    let pos = "Frobnicate".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+
+    assert!(
+        !completions.iter().any(|c| c.label == "run" || c.label == "speak"),
+        "uppercase-initial method word must not route as an indirect call; got {:?}",
+        completions.iter().map(|c| &c.label).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_indirect_underscore_method_word_offers_methods() -> Result<(), Box<dyn std::error::Error>> {
+    // Grips the `|| first == '_'` accept branch of the lowercase/underscore gate
+    // (dispatch.rs:176) through the production `get_completions` call chain: a
+    // leading-underscore bareword (`_process Child`) is a valid indirect-method
+    // name, so it must route through to `Child`'s method completions. A mutation
+    // that dropped the underscore branch would reject `_process` and offer
+    // nothing — this observes that the methods are offered.
+    let index = indirect_child_parent_index()?;
+
+    let code = "_process Child";
+    let pos = "_process".len();
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index(&ast, Some(index));
+    let completions = provider.get_completions(code, pos);
+    let labels: Vec<&String> = completions.iter().map(|c| &c.label).collect();
+
+    assert!(
+        completions.iter().any(|c| c.label == "run"),
+        "underscore-initial indirect `_process Child` should offer `run`; got {labels:?}"
+    );
+    assert!(
+        completions.iter().any(|c| c.label == "speak"),
+        "underscore-initial indirect `_process Child` should offer inherited `speak`; got {labels:?}"
+    );
+    Ok(())
+}
