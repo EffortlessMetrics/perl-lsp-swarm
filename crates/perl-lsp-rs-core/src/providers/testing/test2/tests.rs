@@ -130,6 +130,84 @@ fn test2_v1_grouped_short_flags() {
 }
 
 #[test]
+fn v1_short_flag_predicate_boundary_discriminators() {
+    // Direct unit tests for the three char-class terms in v1_short_flag's split
+    // predicate (`c.is_ascii_alphanumeric() || c == '_' || c == '-'`), each
+    // constructed so flipping that term's truth value would flip the result.
+
+    // `c == '-'`: a leading `-` must be kept (not treated as a delimiter) so the
+    // flag token survives intact. Without this term, `-i` would split into an
+    // empty token and `i` (no leading `-` to strip), and `i` alone would never
+    // match because `strip_prefix('-')` requires the leading dash.
+    assert!(v1_short_flag("-i", 'i'), "leading '-' must stay attached to the flag letters");
+
+    // `c == '_'`: an embedded underscore must also be kept, so `-i_p` stays one
+    // token ("i_p" after stripping the dash) and fails the all-known-letters
+    // check (the '_' is not in {i,p,P,x}). If underscore were instead treated as
+    // a delimiter, `-i_p` would split into `-i` and `p`, and `-i` alone would
+    // match the import flag — a different (wrong) result.
+    assert!(!v1_short_flag("-i_p", 'i'), "embedded '_' must not act as a delimiter");
+    assert!(!v1_short_flag("-i_p", 'p'), "embedded '_' must not act as a delimiter");
+
+    // `c.is_ascii_alphanumeric()`: an embedded digit must also be kept (kept
+    // together via alphanumeric, not just alphabetic), so `-i2p` stays one token
+    // ("i2p") and fails the all-known-letters check (the '2' is not in
+    // {i,p,P,x}). If digits were treated as delimiters instead, `-i2p` would
+    // split into `-i` and `p`, and `-i` alone would match — a different (wrong)
+    // result.
+    assert!(!v1_short_flag("-i2p", 'i'), "embedded digit must not act as a delimiter");
+    assert!(!v1_short_flag("-i2p", 'p'), "embedded digit must not act as a delimiter");
+
+    // Sanity: the true-match path still works once the token is exactly the
+    // known short-flag letters (no interfering '_'/digit).
+    assert!(v1_short_flag("-ip", 'p'), "clean grouped short flags still match");
+}
+
+#[test]
+fn v1_import_all_predicate_exact_module_match_boundary() {
+    // `resolve_import`'s `v1_import_all` boundary (test2.rs:324) is
+    // `module == "Test2::V1" && (...)`. Hold the raw args fixed at `-import`
+    // and flip only the module name: for Test2::V1 this pulls in the full bare
+    // tool set (V0_DEFAULT); for any other Test2 module, `-import` is not a
+    // recognized option and has no effect on that module's own default set.
+    // This proves the predicate needs an *exact* "Test2::V1" match, not "any
+    // bundle" or "any Test2 module reachable via is_test2_module".
+    let v1 = resolve_import("Test2::V1", "-import").expect("Test2::V1 recognized");
+    assert!(v1.symbols.contains("subtest"), "-import brings the full bare set into Test2::V1");
+    assert!(v1.symbols.contains("ok"));
+
+    let basic =
+        resolve_import("Test2::Tools::Basic", "-import").expect("Test2::Tools::Basic recognized");
+    assert!(
+        !basic.symbols.contains("subtest"),
+        "-import has no special meaning outside Test2::V1; Test2::Tools::Basic keeps its own          fixed default set"
+    );
+}
+
+#[test]
+fn v1_pragma_default_predicate_exact_module_match_boundary() {
+    // `resolve_import`'s bundle-pragma boundary (test2.rs:336) is
+    // `module == "Test2::V1"`. Hold the raw args fixed (empty import list) and
+    // flip only the module name between two bundles: Test2::V1 (no pragmas by
+    // default) and Test2::Suite (pragmas on by default, like Test2::V0). This
+    // proves the predicate needs an *exact* "Test2::V1" match, not "any
+    // bundle".
+    let v1 = resolve_import("Test2::V1", "").expect("Test2::V1 recognized");
+    assert_eq!(
+        v1.pragmas,
+        Some(Test2Pragmas { strict: false, warnings: false }),
+        "Test2::V1 enables no pragmas by default"
+    );
+
+    let suite = resolve_import("Test2::Suite", "").expect("Test2::Suite recognized");
+    assert_eq!(
+        suite.pragmas,
+        Some(Test2Pragmas { strict: true, warnings: true }),
+        "Test2::Suite (a bundle that is not Test2::V1) enables both pragmas by default"
+    );
+}
+
+#[test]
 fn test2_imports_plain_use_v0_scope_and_pragmas() {
     let facts = Test2Facts::from_source("use Test2::V0;\nok(1);\ndone_testing;\n");
     assert!(facts.uses_test2());
