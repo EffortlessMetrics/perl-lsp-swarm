@@ -828,4 +828,25 @@ mod tests {
         let escaped = escape_markdown_text(text);
         assert_eq!(escaped, r"Résumé: \*important\*");
     }
+
+    #[test]
+    fn read_text_file_with_encoding_handles_latin1_corpus_fixture() {
+        // test_corpus/legacy_encoding.pl is a Latin-1 encoded file (non-UTF8).
+        // The LSP must be able to open and parse such files without crashing.
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test_corpus/legacy_encoding.pl");
+        if !fixture.exists() {
+            return; // fixture may not be present in all build environments
+        }
+        let content = super::read_text_file_with_encoding(&fixture)
+            .expect("Latin-1 file must be readable without error");
+        assert!(
+            content.contains("package Encoding::Legacy"),
+            "Latin-1 file must parse the ASCII portions correctly"
+        );
+        assert!(
+            content.contains("caf\u{E9}"),
+            "Latin-1 byte 0xE9 must round-trip as Unicode U+00E9 (é)"
+        );
+    }
 }
