@@ -551,6 +551,10 @@ impl DebugBackend for ExternalDebuggerPeerBackend {
         std::mem::take(&mut *lock(&self.shared.events))
     }
 
+    fn is_closed(&self) -> bool {
+        self.shared.closed.load(Ordering::SeqCst)
+    }
+
     fn disconnect(&mut self, terminate_debuggee: bool) -> BackendResult<()> {
         // Best-effort goodbye; ignore errors since we are tearing down. Thread
         // the editor's terminate intent to the peer in the goodbye arguments so
