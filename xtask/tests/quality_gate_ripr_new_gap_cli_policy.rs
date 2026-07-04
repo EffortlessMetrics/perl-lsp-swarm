@@ -93,6 +93,42 @@ fn quality_gate_cli_still_blocks_genuine_gap_alongside_weakly_exposed() -> TestR
     Ok(())
 }
 
+/// #2015 / Codex P2: the actionable count must not exceed the producer's
+/// post-suppression `severe_gaps`. When `suppressed_unclassified` findings are
+/// subtracted from `severe_gaps` only (leaving the `reachable_unrevealed` bucket
+/// raw), a receipt can read `reachable_unrevealed: 2, severe_gaps: 0` — the gate
+/// must honor the cap and pass, not re-open the suppressed path.
+#[test]
+fn quality_gate_cli_honors_producer_suppression_cap() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    // Raw bucket reads 2, but the producer suppressed them: severe_gaps == 0.
+    write_ripr_pr_receipt_post_suppression(&ripr_pr, &head, 2, 0)?;
+    write_review_guidance_receipt(&review, &head)?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(
+        output.status.success(),
+        "actionable count capped at post-suppression severe_gaps must pass (stderr: {})",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("pass"));
+    assert_eq!(payload.pointer("/ripr_pr/new_unresolved").and_then(Value::as_u64), Some(0));
+    Ok(())
+}
+
 #[test]
 fn quality_gate_cli_blocks_new_ripr_gaps_with_actionable_receipt() -> TestResult {
     let root = repo_root()?;
@@ -992,6 +1028,39 @@ fn write_ripr_pr_receipt_classes(
                 "weakly_exposed": weakly_exposed,
                 "reachable_unrevealed": reachable_unrevealed,
                 "no_static_path": no_static_path,
+                "severe_gaps": severe_gaps
+            }
+        }),
+    )
+}
+
+/// Write a ripr-pr receipt where the producer's post-suppression `severe_gaps`
+/// is lower than the raw `reachable_unrevealed` bucket — the shape produced when
+/// `suppressed_unclassified` findings are subtracted from `severe_gaps` only
+/// (the buckets are left unchanged). The gate must honor the `severe_gaps` cap
+/// and not re-open the producer's suppression.
+fn write_ripr_pr_receipt_post_suppression(
+    path: &Path,
+    head: &str,
+    reachable_unrevealed: u64,
+    severe_gaps: u64,
+) -> TestResult {
+    write_json(
+        path,
+        json!({
+            "schema_version": "0.1",
+            "tool": "ripr",
+            "kind": "pr_evidence",
+            "scope": "diff",
+            "base": "quality-gate-cli-test-base",
+            "base_sha": "quality-gate-cli-test-base-sha",
+            "head": "HEAD",
+            "head_sha": head,
+            "summary": {
+                "changed_files": 1,
+                "weakly_exposed": 0,
+                "reachable_unrevealed": reachable_unrevealed,
+                "no_static_path": 0,
                 "severe_gaps": severe_gaps
             }
         }),

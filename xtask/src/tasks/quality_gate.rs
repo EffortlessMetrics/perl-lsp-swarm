@@ -869,11 +869,22 @@ fn read_ripr_plus_receipt(path: &Path, expected_head: &str) -> RiprPlusReceipt {
 /// dedicated bucket; until then this recalibration excludes the 0.5.x-style
 /// `weakly_exposed` count only.
 fn genuine_new_ripr_gap_count(payload: &Value) -> Option<u64> {
+    let severe_gaps = payload.pointer("/summary/severe_gaps").and_then(Value::as_u64);
     let reachable = payload.pointer("/summary/reachable_unrevealed").and_then(Value::as_u64);
     let no_static_path = payload.pointer("/summary/no_static_path").and_then(Value::as_u64);
     match (reachable, no_static_path) {
-        (Some(reachable), Some(no_static_path)) => Some(reachable.saturating_add(no_static_path)),
-        _ => payload.pointer("/summary/severe_gaps").and_then(Value::as_u64),
+        (Some(reachable), Some(no_static_path)) => {
+            let actionable = reachable.saturating_add(no_static_path);
+            // Cap at the producer's post-suppression `severe_gaps`. The bucket
+            // totals do not reflect `suppressed_unclassified`, which the producer
+            // subtracts only from `severe_gaps` (see `ripr_evidence::pr_evidence_packet`);
+            // capping preserves the path/classification suppressions the producer
+            // already applied instead of re-opening them. In the normal
+            // (unsuppressed) case `severe_gaps >= reachable + no_static_path`, so
+            // the cap is a no-op and `weakly_exposed` stays excluded.
+            Some(severe_gaps.map_or(actionable, |cap| actionable.min(cap)))
+        }
+        _ => severe_gaps,
     }
 }
 
