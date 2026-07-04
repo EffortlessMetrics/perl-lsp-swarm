@@ -25,7 +25,7 @@
 //! a fake peer.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -190,14 +190,35 @@ impl PeerListenEndpoint {
     /// session token. A `port` of `0` yields an OS-assigned ephemeral port; the
     /// resolved address is recorded on the returned endpoint.
     ///
+    /// The host **must** resolve to loopback only. A mirror session relays the
+    /// debuggee's output/stack/variables and (today) accepts an unauthenticated
+    /// peer, and the `PERL_DAP_PEER` env contract is loopback-only, so binding a
+    /// routable interface would expose the debug session to the network. Any host
+    /// that resolves to a non-loopback address is refused rather than silently
+    /// exposed.
+    ///
     /// # Errors
-    /// Fails if the listener cannot be bound.
+    /// Fails if the host resolves to a non-loopback address, or the listener
+    /// cannot be bound.
     pub fn bind(
         host: &str,
         port: u16,
         control: ControlMode,
     ) -> std::io::Result<(TcpListener, Self)> {
-        let listener = TcpListener::bind((host, port))?;
+        // Resolve first and refuse any non-loopback target *before* opening a
+        // socket, so a routable host never even briefly binds an exposed port.
+        let resolved: Vec<SocketAddr> = (host, port).to_socket_addrs()?.collect();
+        if resolved.is_empty() || resolved.iter().any(|a| !a.ip().is_loopback()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "external-peer listen host {host:?} must be loopback \
+                     (127.0.0.1 / ::1 / localhost); refusing to bind a non-loopback \
+                     interface that would expose the mirror debug session"
+                ),
+            ));
+        }
+        let listener = TcpListener::bind(resolved.as_slice())?;
         let addr = listener.local_addr()?;
         let endpoint = Self { addr, token: mint_session_token(), control };
         Ok((listener, endpoint))
@@ -1209,6 +1230,30 @@ mod tests {
         assert_eq!(env[ENV_PEER_TOKEN], endpoint.token);
         assert_eq!(env[ENV_PEER_MODE], "mirror");
         drop(listener);
+    }
+
+    #[test]
+    fn bind_refuses_non_loopback_host() {
+        // A mirror session must never be exposed beyond loopback: binding a
+        // routable interface (e.g. 0.0.0.0, all-interfaces) would expose the
+        // debuggee's output/stack/variables to the network — and the peer
+        // handshake is unauthenticated. `bind` must refuse rather than expose.
+        for host in ["0.0.0.0", "::"] {
+            let err = PeerListenEndpoint::bind(host, 0, ControlMode::Mirror)
+                .expect_err("non-loopback host must be refused");
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::InvalidInput,
+                "{host} must be refused as InvalidInput, got {err:?}"
+            );
+        }
+        // Loopback forms remain accepted.
+        for host in ["127.0.0.1", "localhost"] {
+            let (listener, endpoint) = PeerListenEndpoint::bind(host, 0, ControlMode::Mirror)
+                .expect("loopback host must bind");
+            assert!(endpoint.addr.ip().is_loopback());
+            drop(listener);
+        }
     }
 
     #[test]
