@@ -81,6 +81,7 @@ fn run_peer(listener: TcpListener, script: FakePeerScript, breakpoint_lines: Arc
                 peer: "FakePtkdb".to_string(),
                 peer_version: Some("0.1".to_string()),
                 protocol_version: PROTOCOL_VERSION.to_string(),
+                token: None,
                 capabilities: script.caps,
             })
             .ok(),

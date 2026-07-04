@@ -191,11 +191,12 @@ impl PeerListenEndpoint {
     /// resolved address is recorded on the returned endpoint.
     ///
     /// The host **must** resolve to loopback only. A mirror session relays the
-    /// debuggee's output/stack/variables and (today) accepts an unauthenticated
-    /// peer, and the `PERL_DAP_PEER` env contract is loopback-only, so binding a
-    /// routable interface would expose the debug session to the network. Any host
-    /// that resolves to a non-loopback address is refused rather than silently
-    /// exposed.
+    /// debuggee's output/stack/variables, and the `PERL_DAP_PEER` env contract is
+    /// loopback-only, so binding a routable interface would expose the debug
+    /// session to the network. Loopback bind and the per-session token are
+    /// layered controls: the token authenticates the peer's handshake, and the
+    /// loopback bind keeps the port off the network. Any host that resolves to a
+    /// non-loopback address is refused rather than silently exposed.
     ///
     /// # Errors
     /// Fails if the host resolves to a non-loopback address, or the listener
@@ -228,7 +229,9 @@ impl PeerListenEndpoint {
     /// authenticate to this host session.
     ///
     /// - `PERL_DAP_PEER` = `HOST:PORT` (the bound loopback address)
-    /// - `PERL_DAP_PEER_TOKEN` = the session token
+    /// - `PERL_DAP_PEER_TOKEN` = the session token the peer must echo back in its
+    ///   `peer/hello` (`HelloArgs::token`); the host rejects any handshake whose
+    ///   token is missing or does not match
     /// - `PERL_DAP_PEER_MODE` = the control mode (`mirror` for this PR)
     #[must_use]
     pub fn env_vars(&self) -> Vec<(String, String)> {
@@ -889,13 +892,17 @@ impl MirrorPeerBridge {
 // Session drivers
 // ---------------------------------------------------------------------------
 
-/// Accept a peer on `peer_listener`, complete its handshake, and deliver the
-/// ready backend over a channel — used by the listen-mode session drivers so
-/// the editor loop can serve DAP (static caps, queued breakpoints) before the
-/// peer has connected.
+/// Accept a peer on `peer_listener`, complete its (token-authenticated)
+/// handshake, and deliver the ready backend over a channel — used by the
+/// listen-mode session drivers so the editor loop can serve DAP (static caps,
+/// queued breakpoints) before the peer has connected. When `expected_token` is
+/// `Some`, only a peer that presents the matching token in its `peer/hello` is
+/// delivered as a live backend; a mismatched or tokenless handshake is rejected
+/// and no backend is produced.
 fn spawn_peer_acceptor(
     peer_listener: TcpListener,
     handshake_timeout: Duration,
+    expected_token: Option<String>,
 ) -> mpsc::Receiver<Box<dyn DebugBackend>> {
     let (tx, rx) = mpsc::channel::<Box<dyn DebugBackend>>();
     std::thread::spawn(move || {
@@ -917,14 +924,21 @@ fn spawn_peer_acceptor(
         if stream.set_nonblocking(false).is_err() {
             return;
         }
-        let mut backend =
-            match ExternalDebuggerPeerBackend::from_connected_stream(stream, handshake_timeout) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(error = %e, "mirror listen: building peer backend failed");
-                    return;
-                }
-            };
+        // Enforce the session token minted at bind (listen mode always mints
+        // one). A peer that connected to the loopback port but cannot present
+        // the matching secret is rejected inside the handshake and never
+        // delivered here as a live backend.
+        let mut backend = match ExternalDebuggerPeerBackend::from_connected_stream_with_token(
+            stream,
+            handshake_timeout,
+            expected_token,
+        ) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "mirror listen: building peer backend failed");
+                return;
+            }
+        };
         if let Err(e) = backend.initialize(InitializeBackendParams::default()) {
             tracing::warn!(error = %e, "mirror listen: peer handshake failed");
             return;
@@ -936,7 +950,9 @@ fn spawn_peer_acceptor(
 
 /// Drive a [`MirrorPeerBridge`] listen-launch session over **stdio** (the editor
 /// spawns `perl-dap` and speaks DAP over stdin/stdout) while the peer connects
-/// back on `peer_listener`.
+/// back on `peer_listener`. `expected_token` is the session token the peer must
+/// present in its `peer/hello` (pass `Some(endpoint.token)`); a peer that
+/// cannot present it is rejected during the handshake.
 ///
 /// # Errors
 /// Returns a transport error if writing framed DAP messages to stdout fails.
@@ -945,13 +961,17 @@ pub fn run_mirror_listen_session_stdio(
     bridge: MirrorPeerBridge,
     handshake_timeout: Duration,
     poll_interval: Duration,
+    expected_token: Option<String>,
 ) -> std::io::Result<()> {
-    let peer_rx = spawn_peer_acceptor(peer_listener, handshake_timeout);
+    let peer_rx = spawn_peer_acceptor(peer_listener, handshake_timeout, expected_token);
     run_mirror_editor_loop(std::io::stdin(), std::io::stdout(), bridge, peer_rx, poll_interval)
 }
 
 /// Drive a [`MirrorPeerBridge`] listen-launch session over a **socket** editor
-/// connection while the peer connects back on `peer_listener`.
+/// connection while the peer connects back on `peer_listener`. `expected_token`
+/// is the session token the peer must present in its `peer/hello` (pass
+/// `Some(endpoint.token)`); a peer that cannot present it is rejected during the
+/// handshake.
 ///
 /// # Errors
 /// Returns a transport error if the socket read/write fails irrecoverably.
@@ -961,8 +981,9 @@ pub fn run_mirror_listen_session_socket(
     bridge: MirrorPeerBridge,
     handshake_timeout: Duration,
     poll_interval: Duration,
+    expected_token: Option<String>,
 ) -> std::io::Result<()> {
-    let peer_rx = spawn_peer_acceptor(peer_listener, handshake_timeout);
+    let peer_rx = spawn_peer_acceptor(peer_listener, handshake_timeout, expected_token);
     let reader = editor.try_clone()?;
     let writer = editor;
     run_mirror_editor_loop(reader, writer, bridge, peer_rx, poll_interval)
@@ -1236,8 +1257,10 @@ mod tests {
     fn bind_refuses_non_loopback_host() {
         // A mirror session must never be exposed beyond loopback: binding a
         // routable interface (e.g. 0.0.0.0, all-interfaces) would expose the
-        // debuggee's output/stack/variables to the network — and the peer
-        // handshake is unauthenticated. `bind` must refuse rather than expose.
+        // debuggee's output/stack/variables to the network. The token
+        // authenticates the handshake, but loopback bind is the layered control
+        // that keeps the port off the network; `bind` must refuse rather than
+        // expose.
         for host in ["0.0.0.0", "::"] {
             let err = PeerListenEndpoint::bind(host, 0, ControlMode::Mirror)
                 .expect_err("non-loopback host must be refused");

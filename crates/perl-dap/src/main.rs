@@ -132,6 +132,11 @@ fn run_external_peer_listen(spec: &str, editor_port: Option<u16>) -> anyhow::Res
         "external-peer listen: waiting for a debugger peer to connect back"
     );
 
+    // The peer must present this token in its `peer/hello` to be accepted; the
+    // acceptor rejects any handshake without a match, so the loopback bind is
+    // not the sole access control.
+    let expected_token = Some(endpoint.token.clone());
+
     match editor_port {
         Some(port) => {
             use std::net::TcpListener;
@@ -143,6 +148,7 @@ fn run_external_peer_listen(spec: &str, editor_port: Option<u16>) -> anyhow::Res
                 bridge,
                 DEFAULT_LISTEN_HANDSHAKE_TIMEOUT,
                 EXTERNAL_PEER_POLL,
+                expected_token,
             )?;
         }
         None => {
@@ -151,6 +157,7 @@ fn run_external_peer_listen(spec: &str, editor_port: Option<u16>) -> anyhow::Res
                 bridge,
                 DEFAULT_LISTEN_HANDSHAKE_TIMEOUT,
                 EXTERNAL_PEER_POLL,
+                expected_token,
             )?;
         }
     }
