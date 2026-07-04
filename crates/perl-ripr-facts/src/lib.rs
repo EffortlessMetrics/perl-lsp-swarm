@@ -25,8 +25,8 @@
 mod emitter;
 
 use emitter::{
-    emit_boundaries_and_commands, emit_changes_from_diff, emit_files_and_owners,
-    emit_relations_and_discriminators, emit_tests_and_oracles,
+    content_fingerprint, emit_boundaries_and_commands, emit_changes_from_diff,
+    emit_files_and_owners, emit_relations_and_discriminators, emit_tests_and_oracles,
 };
 
 /// Expected schema version for `ripr-perl-facts-v1` packets.
@@ -144,7 +144,7 @@ pub fn build_ripr_facts_packet(
             (Vec::new(), Vec::new(), Vec::new(), Vec::new())
         };
 
-    let (relations, _changed_observables, _observed_sinks) =
+    let (relations, _changed_observables, _observed_sinks, relation_limitations) =
         emit_relations_and_discriminators(root, &tests, &oracles);
     let has_relation_facts = !relations.is_empty();
 
@@ -180,8 +180,13 @@ pub fn build_ripr_facts_packet(
     let wants_file_facts_explicit = normalized_classes
         .iter()
         .any(|class| class == "files" || class == "owners" || class == "provenance");
+    // `changes` needs the parsed owners to attribute diff hunks, and a
+    // `relation` now carries a resolvable `owner_id` (#3342) — so its referenced
+    // `owners[]`/`files[]` facts must be present in the packet. Run the walk
+    // whenever files/owners/provenance or changes are requested, or a relation
+    // was emitted, mirroring how PR 4 kept `tests[]` for a relation's `test_id`.
     let (files, owners, file_provenance, file_limitations) =
-        if wants_file_facts_explicit || wants_changes {
+        if wants_file_facts_explicit || wants_changes || has_relation_facts {
             emit_files_and_owners(root)
         } else {
             (Vec::new(), Vec::new(), Vec::new(), Vec::new())
@@ -219,16 +224,19 @@ pub fn build_ripr_facts_packet(
     // `unattributable-change` limitation was recorded (both reference a
     // known/parsed file), exactly as PR 4 kept `tests[]` whenever a relation
     // referenced a `test_id`. `diff-file-not-found` references an UNparsed path
-    // (genuinely absent), so it needs no force-include.
+    // (genuinely absent), so it needs no force-include. A `relation`'s resolved
+    // `owner_id` (#3342) likewise references an `owners[]` fact, so force
+    // files+owners in whenever a relation was emitted.
     let changes_reference_known_file = has_change_facts
         || change_limitations.iter().any(|l| {
             l["limitation_id"].as_str().is_some_and(|id| id.starts_with("unattributable-change:"))
         });
-    let (files, owners) = if wants_file_facts_explicit || changes_reference_known_file {
-        (files, owners)
-    } else {
-        (Vec::new(), Vec::new())
-    };
+    let (files, owners) =
+        if wants_file_facts_explicit || changes_reference_known_file || has_relation_facts {
+            (files, owners)
+        } else {
+            (Vec::new(), Vec::new())
+        };
     let has_file_facts = !files.is_empty();
     let has_owner_facts = !owners.is_empty();
 
@@ -324,26 +332,48 @@ pub fn build_ripr_facts_packet(
         all_limitations.push(serde_json::json!({
             "limitation_id": "emitter-partial",
             "kind": "partial_emitter",
-            "message": "Parser-backed tests/oracles, relations/discriminators, boundaries/commands, files/owners, and (when a diff is supplied) diff-owned changes are emitted. Semantic relations, the packet fingerprint, and the managed-producer diff source land in later slices.",
+            "message": "Parser-backed tests/oracles, relations/discriminators (incl. a parser-backed direct_owner_call), boundaries/commands, files/owners, (when a diff is supplied) diff-owned changes, and a deterministic packet_fingerprint are emitted. Export-aware relation reachability and the managed-producer diff source land in later slices.",
             "evidence_refs": []
         }));
         all_limitations.extend(test_limitations);
         all_limitations.extend(change_limitations);
         all_limitations.extend(file_limitations);
+        // `relation-owner-unresolved` notes (#3342): a relation was omitted
+        // because its package exposed no `owners[]` fact. Empty `evidence_refs`,
+        // so no referential dependency — always safe to surface.
+        all_limitations.extend(relation_limitations);
         packet["limitations"] = serde_json::Value::Array(all_limitations);
     } else if !test_limitations.is_empty()
         || !change_limitations.is_empty()
         || !file_limitations.is_empty()
+        || !relation_limitations.is_empty()
     {
-        // No facts, but a pass produced limitations (test/file parse failures, or
-        // a `changes` request with no diff) — surface them next to the base
+        // No facts, but a pass produced limitations (test/file parse failures, a
+        // `changes` request with no diff, or a relation omitted for an
+        // unresolvable owner) — surface them next to the base
         // `emitter-not-yet-implemented` limitation so they are never dropped.
         if let Some(limitations) = packet["limitations"].as_array_mut() {
             limitations.extend(test_limitations);
             limitations.extend(change_limitations);
             limitations.extend(file_limitations);
+            limitations.extend(relation_limitations);
         }
     }
+
+    // #3293 PR 7: deterministic content fingerprint over the fully-assembled
+    // packet. Computed while `packet_fingerprint` is still `null`, so the
+    // fingerprint is a hash of the whole packet-with-null-fingerprint and is
+    // reproducible: recomputing `content_fingerprint` over the packet with
+    // `packet_fingerprint` reset to `null` yields the same value. serde_json
+    // serializes object keys in sorted (BTreeMap) order, so the string is
+    // canonical; the same request always produces the same fingerprint. This
+    // relies on `serde_json`'s `preserve_order` feature being OFF for this crate
+    // (it's pulled only by a `tree-sitter` *build*-dependency elsewhere, which
+    // resolver-v2 keeps out of this crate's normal build — verified via
+    // `cargo build -p perl-ripr-facts -v`); a future *normal* dep enabling it
+    // would switch to insertion order and must re-verify this.
+    let fingerprint = content_fingerprint(&packet.to_string());
+    packet["packet_fingerprint"] = serde_json::Value::String(fingerprint);
 
     Ok(packet)
 }
@@ -539,7 +569,8 @@ fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
 mod tests {
     use super::{
         RiprFactsError, RiprFactsRequest, build_ripr_facts_packet, build_unavailable_packet,
-        normalize_fact_classes, run_ripr_facts, validate_ripr_facts_path, write_packet,
+        content_fingerprint, normalize_fact_classes, run_ripr_facts, validate_ripr_facts_path,
+        write_packet,
     };
 
     /// A valid request against the crate root (`"."`, no `t/` dir → unavailable).
@@ -1118,6 +1149,134 @@ mod tests {
             assert!(
                 tests.iter().any(|t| t["test_id"] == tid),
                 "relation.test_id {tid} must resolve to a test fact in the packet"
+            );
+        }
+    }
+
+    #[test]
+    fn build_packet_relation_owner_id_resolves_to_owner_fact() {
+        // #3342: a relation's `owner_id` must resolve to a present `owners[]`
+        // fact — the same referential-closure guard as relation→test_id, but for
+        // the owner cross-reference that previously dangled (`owner:{path}:{pkg}`
+        // never matched the `owner:{path}:{kind}:{name}:{span}` owner id). Even a
+        // `relations`-only request must force `owners[]` into the packet.
+        let root = "target/ripr-3342-fixtures/relation-owner-refint";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(format!("{root}/lib/Foo.pm"), "package Foo;\nsub run { }\n1;\n")
+            .expect("write pm");
+        std::fs::write(format!("{root}/t/Foo.t"), "use Test::More;\nuse Foo;\nok(Foo::run());\n")
+            .expect("write t");
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "relations",
+            diff: None,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+
+        let relations = p["relations"].as_array().expect("relations[]");
+        assert!(!relations.is_empty(), "fixture must produce at least one relation");
+        let owners = p["owners"].as_array().expect("owners[]");
+        assert!(!owners.is_empty(), "relations-only request must force owners[] into the packet");
+        let owner_ids: std::collections::HashSet<&str> =
+            owners.iter().filter_map(|o| o["owner_id"].as_str()).collect();
+        for rel in relations {
+            let oid = rel["owner_id"].as_str().expect("relation.owner_id is a string");
+            assert!(
+                owner_ids.contains(oid),
+                "relation.owner_id {oid} must resolve to an owners[] fact; owners={owner_ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_packet_relation_owner_id_resolves_when_root_has_ancestor_lib() {
+        // #3342 regression: the relation emitter's `.pm` path derivation must
+        // match `emit_files_and_owners` even when `root` has an ANCESTOR path
+        // segment named `lib` (e.g. `.../lib/proj`, `t/lib/...`). The old
+        // `split_once("/lib/")` heuristic matched the first `/lib/` — the
+        // ancestor one — and corrupted the relation's `owner_id` path, re-
+        // dangling the reference. Both derivations now `strip_prefix(root)`.
+        let root = "target/ripr-3342-fixtures/lib/proj/relation-owner-ancestor-lib";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(format!("{root}/lib/Foo.pm"), "package Foo;\nsub run { }\n1;\n")
+            .expect("write pm");
+        std::fs::write(format!("{root}/t/Foo.t"), "use Test::More;\nuse Foo;\nok(Foo::run());\n")
+            .expect("write t");
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "relations",
+            diff: None,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+
+        let relations = p["relations"].as_array().expect("relations[]");
+        assert!(!relations.is_empty(), "fixture must produce at least one relation");
+        let owner_ids: std::collections::HashSet<&str> = p["owners"]
+            .as_array()
+            .expect("owners[]")
+            .iter()
+            .filter_map(|o| o["owner_id"].as_str())
+            .collect();
+        for rel in relations {
+            let oid = rel["owner_id"].as_str().expect("relation.owner_id is a string");
+            assert!(
+                owner_ids.contains(oid),
+                "relation.owner_id {oid} must resolve even under an ancestor-lib root; owners={owner_ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_packet_test_file_id_resolves_when_root_has_ancestor_t() {
+        // #3361: the `.t` path derivation must match `emit_files_and_owners`
+        // even when `root` has an ANCESTOR path segment named `t` (e.g.
+        // `.../t/proj`). The old `split_once("/t/")` heuristic matched the first
+        // `/t/` — the ancestor one — corrupting `test.file_id` so it dangled
+        // against `files[]`. Both derivations now `strip_prefix(root)`.
+        let root = "target/ripr-3361-fixtures/t/proj/test-file-id-ancestor-t";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(format!("{root}/lib/Foo.pm"), "package Foo;\nsub run { }\n1;\n")
+            .expect("write pm");
+        std::fs::write(format!("{root}/t/Foo.t"), "use Test::More;\nuse Foo;\nok(Foo::run());\n")
+            .expect("write t");
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "files,tests",
+            diff: None,
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+
+        let tests = tests_of(&p);
+        assert!(!tests.is_empty(), "fixture must produce at least one test fact");
+        let file_ids: std::collections::HashSet<&str> = p["files"]
+            .as_array()
+            .expect("files[]")
+            .iter()
+            .filter_map(|f| f["file_id"].as_str())
+            .collect();
+        for t in &tests {
+            let fid = t["file_id"].as_str().expect("test.file_id is a string");
+            assert!(
+                file_ids.contains(fid),
+                "test.file_id {fid} must resolve to a files[] fact under an ancestor-t root; files={file_ids:?}"
             );
         }
     }
@@ -1729,5 +1888,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── #3293 PR 7: deterministic packet fingerprint ──
+
+    #[test]
+    fn build_packet_fingerprint_is_non_null_fnv64() {
+        let p = build_ripr_facts_packet(&valid_request("files,owners,tests,oracles"))
+            .expect("valid request builds a packet");
+        let fp = p["packet_fingerprint"].as_str().expect("fingerprint is a string, not null");
+        assert!(fp.starts_with("fnv64:"), "fingerprint uses the fnv64: prefix, got {fp}");
+    }
+
+    #[test]
+    fn build_packet_fingerprint_is_deterministic() {
+        // Same request → byte-identical packet → identical fingerprint.
+        let a = build_ripr_facts_packet(&valid_request("files,owners")).expect("a");
+        let b = build_ripr_facts_packet(&valid_request("files,owners")).expect("b");
+        assert_eq!(
+            a["packet_fingerprint"], b["packet_fingerprint"],
+            "same request must yield the same fingerprint"
+        );
+    }
+
+    #[test]
+    fn build_packet_fingerprint_changes_with_content() {
+        // Same dir (→ same root/packet_id), different `.t` content: isolates
+        // "fact content differs → fingerprint differs" from any root/id change.
+        let a = packet_for_t("fp-content", "use Test::More;\nok(1);\n", "tests,oracles");
+        let b = packet_for_t("fp-content", "use Test::More;\nis(1, 1);\nok(2);\n", "tests,oracles");
+        assert_ne!(
+            a["packet_fingerprint"], b["packet_fingerprint"],
+            "different fact content must yield different fingerprints"
+        );
+    }
+
+    #[test]
+    fn build_packet_fingerprint_is_reproducible_over_null_placeholder() {
+        // Documents the exact definition: the fingerprint is the content hash of
+        // the packet with `packet_fingerprint` set to null. Recomputing it must
+        // reproduce the emitted value.
+        let p = build_ripr_facts_packet(&valid_request("files,owners,tests,oracles"))
+            .expect("valid request");
+        let mut without = p.clone();
+        without["packet_fingerprint"] = serde_json::Value::Null;
+        let recomputed = content_fingerprint(&without.to_string());
+        assert_eq!(
+            p["packet_fingerprint"].as_str(),
+            Some(recomputed.as_str()),
+            "fingerprint must be reproducible as the hash of the null-placeholder packet"
+        );
     }
 }
