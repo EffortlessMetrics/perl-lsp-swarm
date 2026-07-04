@@ -771,6 +771,37 @@ mod tests {
     }
 
     #[test]
+    fn semantic_tokens_cache_evicted_on_document_close() -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///cache_evict.pl";
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "my $x = 1;\n",
+            }
+        })))?;
+
+        // A full request populates the per-URI token cache.
+        server.handle_semantic_tokens(Some(json!({ "textDocument": { "uri": uri } })))?;
+        assert!(
+            server.semantic_tokens_cache.lock().contains_key(uri),
+            "cache should be populated after a full request"
+        );
+
+        // Closing the document (didClose path) must sweep the cache entry so
+        // long-lived sessions do not accumulate token arrays for closed files.
+        server.evict_open_document_session_state(uri);
+        assert!(
+            !server.semantic_tokens_cache.lock().contains_key(uri),
+            "semantic-token cache entry must be removed when the document is evicted"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn handle_semantic_tokens_range_uses_core_label_tokens()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();

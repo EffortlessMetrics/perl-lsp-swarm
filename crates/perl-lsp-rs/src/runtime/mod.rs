@@ -691,6 +691,13 @@ impl LspServer {
         }
 
         {
+            let mut cache = self.semantic_tokens_cache.lock();
+            for key in &uri_keys {
+                cache.remove(key);
+            }
+        }
+
+        {
             let mut documents = self.documents.lock();
             for key in &uri_keys {
                 if let Some(doc) = documents.remove(key) {
