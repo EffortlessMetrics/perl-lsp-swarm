@@ -605,7 +605,8 @@ mod tests {
         arg_starts_in_call_body, arg_starts_top_level, byte_to_utf16_col, decode_text_bytes,
         escape_markdown_text, extract_module_reference, find_matching_paren,
         get_text_around_offset, get_text_window_around_offset, offset_to_position,
-        position_to_offset, slice_in_range, slice_until_stmt_end, smart_arg_anchor,
+        position_to_offset, read_text_file_with_encoding, slice_in_range, slice_until_stmt_end,
+        smart_arg_anchor,
     };
     use lsp_types::Position;
 
@@ -827,5 +828,20 @@ mod tests {
         let text = "Résumé: *important*";
         let escaped = escape_markdown_text(text);
         assert_eq!(escaped, r"Résumé: \*important\*");
+    }
+
+    #[test]
+    fn read_text_file_with_encoding_reads_latin1_without_panic() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("latin1.pl");
+        // Latin-1 bytes for "café" (0xE9 = é, not valid UTF-8).
+        let latin1_bytes: &[u8] = &[
+            b'#', b' ', 0x63, 0x61, 0x66, 0xE9, b'\n', // # café
+            b'm', b'y', b' ', b'$', b'x', b' ', b'=', b' ', b'1', b';', b'\n',
+        ];
+        std::fs::write(&path, latin1_bytes).expect("write");
+        let text = read_text_file_with_encoding(&path).expect("read");
+        assert!(text.contains("caf\u{E9}"), "Latin-1 0xE9 must round-trip as U+00E9 é");
+        assert!(text.contains("my $x = 1;"), "ASCII content must be preserved");
     }
 }
