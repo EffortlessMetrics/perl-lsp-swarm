@@ -1487,12 +1487,22 @@ impl CompletionProvider {
         package_name: &str,
     ) {
         let prefix = context.prefix.trim();
-        let Some(model) =
-            self.class_models.iter().rev().find(|model| {
-                model.name == package_name && model.framework == Framework::ObjectPad
-            })
-        else {
+        let Some(model) = self.class_models.iter().rev().find(|model| {
+            model.name == package_name
+                && matches!(model.framework, Framework::ObjectPad | Framework::NativeClass)
+        }) else {
             return;
+        };
+
+        let (detail, documentation) = match model.framework {
+            Framework::NativeClass => (
+                "native class constructor parameter".to_string(),
+                format!("`:param` field for `{package_name}->new(...)`. (Perl 5.38+ native class)"),
+            ),
+            _ => (
+                "Object::Pad constructor parameter".to_string(),
+                format!("`:param` field for `{package_name}->new(...)`."),
+            ),
         };
 
         for field_name in model.object_pad_param_field_names() {
@@ -1503,8 +1513,8 @@ impl CompletionProvider {
             completions.push(CompletionItem {
                 label: field_name.to_string(),
                 kind: CompletionItemKind::Property,
-                detail: Some("Object::Pad constructor parameter".to_string()),
-                documentation: Some(format!("`:param` field for `{package_name}->new(...)`.")),
+                detail: Some(detail.clone()),
+                documentation: Some(documentation.clone()),
                 insert_text: Some(format!("{field_name} => ")),
                 sort_text: Some(format!("0f_{field_name}")),
                 filter_text: Some(field_name.to_string()),

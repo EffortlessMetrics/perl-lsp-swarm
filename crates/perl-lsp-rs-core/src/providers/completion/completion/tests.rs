@@ -766,6 +766,83 @@ point->new(na"#;
 }
 
 #[test]
+fn test_native_class_constructor_param_completion() {
+    let code = r#"
+use feature 'class';
+
+class Point {
+field $x :param = 0;
+field $y :param = 0;
+field $cache = 1;
+}
+
+Point->new(
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        completions.iter().any(|item| item.label == "x"),
+        "expected `x` constructor completion for native class Point->new(...)"
+    );
+    assert!(
+        completions.iter().any(|item| item.label == "y"),
+        "expected `y` constructor completion for native class Point->new(...)"
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "cache"),
+        "non-:param fields should not appear in native class constructor completion"
+    );
+
+    let x_item = must_some(completions.iter().find(|item| item.label == "x"));
+    assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
+    assert_eq!(
+        x_item.detail.as_deref(),
+        Some("native class constructor parameter"),
+        "detail should identify this as a native class parameter"
+    );
+}
+
+#[test]
+fn test_native_class_constructor_param_completion_honors_prefix() {
+    let code = r#"
+use feature 'class';
+
+class Person {
+field $name :param;
+field $native_id :param;
+field $age :param;
+}
+
+Person->new(na"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+    let constructor_labels: Vec<&str> = completions
+        .iter()
+        .filter(|item| item.detail.as_deref() == Some("native class constructor parameter"))
+        .map(|item| item.label.as_str())
+        .collect();
+
+    assert!(constructor_labels.contains(&"name"), "expected `name` to match prefix `na`");
+    assert!(
+        constructor_labels.contains(&"native_id"),
+        "expected `native_id` to remain available when matching prefix"
+    );
+    assert!(
+        !constructor_labels.contains(&"age"),
+        "non-matching constructor params should be filtered by prefix"
+    );
+}
+
+#[test]
 fn test_moo_isa_type_completion_includes_builtins_and_imports() {
     let code = concat!(
         "\n",
