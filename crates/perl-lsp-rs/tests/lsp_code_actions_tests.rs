@@ -4,7 +4,8 @@ use serde_json::json;
 
 mod common;
 use common::{
-    initialize_lsp, send_notification, send_request, shutdown_and_exit, start_lsp_server,
+    initialize_lsp, initialize_lsp_with_capabilities, send_notification, send_request,
+    shutdown_and_exit, start_lsp_server,
 };
 
 /// Test extract variable refactoring
@@ -762,6 +763,139 @@ fn test_code_actions_have_no_exact_duplicates() -> Result<(), Box<dyn std::error
     assert_eq!(
         strict_count, 1,
         "expected exactly one \"Add 'use strict'\" action, got {strict_count}: {actions:#?}"
+    );
+
+    shutdown_and_exit(&server);
+    Ok(())
+}
+
+/// A disabled refactor.extract action is emitted when the client declares
+/// `codeAction.disabledSupport` and the request carries an empty (cursor-only)
+/// selection at a position where no extractable expression sits under the cursor.
+/// LSP 3.16 §3.16.2: servers may return disabled actions so editors can show
+/// them grayed out with a reason tooltip.
+#[test]
+fn test_extract_variable_disabled_on_empty_selection() -> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp_with_capabilities(
+        &server,
+        json!({
+            "textDocument": {
+                "codeAction": {
+                    "disabledSupport": true
+                }
+            }
+        }),
+    );
+
+    let uri = "file:///test_disabled.pl";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $x = 42;\nprint $x;\n"
+                }
+            }
+        }),
+    );
+
+    // Cursor-only position (start == end) on the variable declaration line.
+    // `my $x = 42;` is a VariableDeclaration — not an extractable expression —
+    // so the enhanced provider produces no enabled extract action, triggering the
+    // disabled fallback.
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 8001,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 0 }
+                },
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let actions = response["result"].as_array().ok_or("expected array result")?;
+    let disabled_extract = actions.iter().find(|a| {
+        a.get("kind").and_then(Value::as_str) == Some("refactor.extract")
+            && a.get("disabled").is_some()
+    });
+    assert!(
+        disabled_extract.is_some(),
+        "expected a disabled refactor.extract action when selection is empty; got: {actions:#?}"
+    );
+    let reason = disabled_extract.unwrap()["disabled"]["reason"]
+        .as_str()
+        .ok_or("disabled.reason must be a string")?;
+    assert_eq!(
+        reason, "requires code selection",
+        "disabled.reason must carry the user-facing explanation"
+    );
+
+    shutdown_and_exit(&server);
+    Ok(())
+}
+
+/// When the client does NOT declare `codeAction.disabledSupport`, the server
+/// must not emit any code action with a `disabled` field, even on an empty
+/// selection.  Emitting disabled actions to non-capable clients would violate
+/// the LSP capability negotiation contract.
+#[test]
+fn test_no_disabled_actions_without_capability() -> Result<(), Box<dyn std::error::Error>> {
+    let server = start_lsp_server();
+    initialize_lsp(&server); // default caps — no disabledSupport
+
+    let uri = "file:///test_no_disabled.pl";
+    send_notification(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $x = 42;\nprint $x;\n"
+                }
+            }
+        }),
+    );
+
+    let response = send_request(
+        &server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 8002,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 0 }
+                },
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let actions = response["result"].as_array().ok_or("expected array result")?;
+    let any_disabled = actions.iter().any(|a| a.get("disabled").is_some());
+    assert!(
+        !any_disabled,
+        "server must not emit disabled actions when client has not declared disabledSupport; \
+         got: {actions:#?}"
     );
 
     shutdown_and_exit(&server);

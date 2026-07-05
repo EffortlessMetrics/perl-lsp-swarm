@@ -471,6 +471,10 @@ impl LspServer {
         enforce_code_action_tag_capability(code_actions, supports_llm_generated_tag);
     }
 
+    fn supports_code_action_disabled(&self) -> bool {
+        self.client_capabilities.lock().code_action_disabled_support
+    }
+
     /// Handle textDocument/codeAction request
     pub(crate) fn handle_code_action(
         &self,
@@ -494,6 +498,7 @@ impl LspServer {
         if let Some(ast) = &doc.ast {
             let start_offset = self.pos16_to_offset(doc, start_line, start_char);
             let end_offset = self.pos16_to_offset(doc, end_line, end_char);
+            let selection_is_empty = start_offset == end_offset;
 
             // Get diagnostics from the document
             let diag_provider = DiagnosticsProvider::new(ast, doc.text.clone());
@@ -854,6 +859,28 @@ impl LspServer {
                         "changes": changes,
                     },
                 }));
+            }
+
+            // When the client advertises codeAction.disabledSupport and the
+            // request carries an empty selection (cursor position only), emit a
+            // disabled refactor.extract action so editors can show it grayed out
+            // with a reason tooltip — but only when no enabled extract action was
+            // already produced (e.g. cursor sitting on an extractable expression
+            // still yields an enabled action from the enhanced provider above).
+            if selection_is_empty && self.supports_code_action_disabled() {
+                let has_enabled_extract = code_actions.iter().any(|a| {
+                    a.get("kind").and_then(Value::as_str) == Some("refactor.extract")
+                        && a.get("disabled").is_none()
+                });
+                if !has_enabled_extract {
+                    code_actions.push(json!({
+                        "title": "Extract to variable",
+                        "kind": "refactor.extract",
+                        "disabled": {
+                            "reason": "requires code selection"
+                        }
+                    }));
+                }
             }
 
             // Add test generation actions for subroutines in range
@@ -2197,5 +2224,69 @@ print $result;
                 "filter must retain only source.fixAll: {action:#?}"
             );
         }
+    }
+
+    #[test]
+    fn disabled_extract_action_emitted_on_empty_selection_with_capability() {
+        let server = LspServer::new();
+        server.client_capabilities.lock().code_action_disabled_support = true;
+        let uri = "file:///disabled_extract.pl";
+        // `my $x = 42;` is a VariableDeclaration — not an extractable expression
+        // (FunctionCall / Binary / Unary / MethodCall / Ternary), so no enabled
+        // extract action is generated at position (0, 0).
+        open_test_document(&server, uri, "my $x = 42;\nprint $x;\n");
+
+        // Cursor-only request at the start of the variable declaration line.
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })));
+
+        let actions =
+            response.ok().flatten().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+
+        let disabled = actions.iter().find(|a| {
+            a.get("kind").and_then(Value::as_str) == Some("refactor.extract")
+                && a.get("disabled").is_some()
+        });
+        assert!(
+            disabled.is_some(),
+            "expected a disabled refactor.extract action; got: {actions:#?}"
+        );
+        assert_eq!(
+            disabled.unwrap().pointer("/disabled/reason").and_then(Value::as_str),
+            Some("requires code selection"),
+            "disabled.reason must be 'requires code selection'"
+        );
+    }
+
+    #[test]
+    fn disabled_extract_action_not_emitted_without_capability() {
+        let server = LspServer::new();
+        // code_action_disabled_support defaults to false
+        let uri = "file:///no_disabled_cap.pl";
+        open_test_document(&server, uri, "my $x = 42;\nprint $x;\n");
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })));
+
+        let actions =
+            response.ok().flatten().and_then(|v| v.as_array().cloned()).unwrap_or_default();
+
+        let any_disabled = actions.iter().any(|a| a.get("disabled").is_some());
+        assert!(
+            !any_disabled,
+            "must not emit disabled actions when client lacks disabledSupport; got: {actions:#?}"
+        );
     }
 }

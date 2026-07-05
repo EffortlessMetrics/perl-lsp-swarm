@@ -339,6 +339,12 @@ pub struct ClientCapabilities {
     /// Deterministic actions must remain untagged; generated actions may only
     /// emit `tags: [1]` when this is true.
     pub code_action_llm_generated_tag_support: bool,
+    /// Supports disabled code actions (LSP 3.16+).
+    ///
+    /// Parsed from `capabilities.textDocument.codeAction.disabledSupport`.
+    /// When true, the server may emit code actions with a `disabled` field
+    /// to signal contextually unavailable actions with a user-facing reason.
+    pub code_action_disabled_support: bool,
     /// Supports workspace/codeLens/refresh request
     pub code_lens_refresh_support: bool,
     /// Supports workspace/semanticTokens/refresh request
