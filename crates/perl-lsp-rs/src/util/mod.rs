@@ -830,16 +830,26 @@ mod tests {
     }
 
     #[test]
-    fn read_text_file_with_encoding_handles_latin1_corpus_fixture() {
-        // test_corpus/legacy_encoding.pl is a Latin-1 encoded file (non-UTF8).
-        // The LSP must be able to open and parse such files without crashing.
+    fn read_text_file_with_encoding_handles_latin1_corpus_fixture()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // test_corpus/legacy_encoding.pl is a genuinely non-UTF8 Latin-1
+        // encoded file (single-byte 0xE9/0xE0, NOT the 2-byte UTF-8 sequences
+        // for é/à) — it must fail `str::from_utf8` and exercise the per-byte
+        // Latin-1 fallback branch in `decode_text_bytes`, not the UTF-8 fast
+        // path. The LSP must be able to open and parse such files without
+        // crashing.
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../test_corpus/legacy_encoding.pl");
         if !fixture.exists() {
-            return; // fixture may not be present in all build environments
+            return Ok(()); // fixture may not be present in all build environments
         }
-        let content = super::read_text_file_with_encoding(&fixture)
-            .expect("Latin-1 file must be readable without error");
+        let raw = std::fs::read(&fixture)?;
+        assert!(
+            std::str::from_utf8(&raw).is_err(),
+            "fixture must be genuinely invalid UTF-8 so this test exercises the \
+             Latin-1 fallback path, not the UTF-8 fast path"
+        );
+        let content = super::read_text_file_with_encoding(&fixture)?;
         assert!(
             content.contains("package Encoding::Legacy"),
             "Latin-1 file must parse the ASCII portions correctly"
@@ -848,5 +858,6 @@ mod tests {
             content.contains("caf\u{E9}"),
             "Latin-1 byte 0xE9 must round-trip as Unicode U+00E9 (é)"
         );
+        Ok(())
     }
 }

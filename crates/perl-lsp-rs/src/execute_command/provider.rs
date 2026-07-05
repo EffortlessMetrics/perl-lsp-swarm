@@ -769,7 +769,7 @@ impl ExecuteCommandProvider {
     pub(crate) fn run_native_critic(&self, file_path: &Path) -> Result<Value, String> {
         use crate::Parser;
 
-        let content = std::fs::read_to_string(file_path)
+        let content = crate::util::read_text_file_with_encoding(file_path)
             .map_err(|e| format!("Failed to read file: {}", e))?;
 
         let code_text = perl_parser::util::code_slice(&content);

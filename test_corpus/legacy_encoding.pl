@@ -2,14 +2,14 @@
 use strict;
 use warnings;
 
-# Latin-1 encoded file: cafÃ© is a common word in French Perl comments
+# Latin-1 encoded file: café is a common word in French Perl comments
 # This file uses ISO-8859-1 / Latin-1 encoding (not UTF-8)
 
 package Encoding::Legacy;
 
 sub greet {
     my ($name) = @_;
-    # RenÃ© says: Bonjour Ã  tous!
+    # René says: Bonjour à tous!
     return "Salut, $name!";
 }
 
