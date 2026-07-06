@@ -1640,10 +1640,7 @@ fn test_type_hierarchy_prepare_cancellation() -> Result<(), Box<dyn std::error::
                 Some(-32800),
                 "Cancellation error code should be -32800 (RequestCancelled)"
             );
-            assert!(
-                error.get("message").is_some(),
-                "Cancellation error should have message"
-            );
+            assert!(error.get("message").is_some(), "Cancellation error should have message");
         }
     }
 
@@ -1732,7 +1729,8 @@ fn test_type_hierarchy_supertypes_cancellation() -> Result<(), Box<dyn std::erro
     );
 
     // Should receive -32800 RequestCancelled error
-    let response = read_response_matching_i64(&fixture.server, supertypes_id, Duration::from_secs(1));
+    let response =
+        read_response_matching_i64(&fixture.server, supertypes_id, Duration::from_secs(1));
 
     assert!(response.is_some(), "Should receive response for cancelled request");
 
@@ -1745,10 +1743,7 @@ fn test_type_hierarchy_supertypes_cancellation() -> Result<(), Box<dyn std::erro
                 Some(-32800),
                 "Cancellation error code should be -32800 (RequestCancelled)"
             );
-            assert!(
-                error.get("message").is_some(),
-                "Cancellation error should have message"
-            );
+            assert!(error.get("message").is_some(), "Cancellation error should have message");
         }
     }
 
@@ -1850,10 +1845,7 @@ fn test_type_hierarchy_subtypes_cancellation() -> Result<(), Box<dyn std::error:
                 Some(-32800),
                 "Cancellation error code should be -32800 (RequestCancelled)"
             );
-            assert!(
-                error.get("message").is_some(),
-                "Cancellation error should have message"
-            );
+            assert!(error.get("message").is_some(), "Cancellation error should have message");
         }
     }
 
@@ -1863,7 +1855,8 @@ fn test_type_hierarchy_subtypes_cancellation() -> Result<(), Box<dyn std::error:
 /// Test: Concurrent type hierarchy cancellation isolation
 /// Expected: Cancelling one type hierarchy request doesn't affect others
 #[test]
-fn test_type_hierarchy_concurrent_cancellation_isolation() -> Result<(), Box<dyn std::error::Error>> {
+fn test_type_hierarchy_concurrent_cancellation_isolation() -> Result<(), Box<dyn std::error::Error>>
+{
     let fixture = CancellationTestFixture::new();
 
     let prepare_id = 5010;
@@ -1918,11 +1911,9 @@ fn test_type_hierarchy_concurrent_cancellation_isolation() -> Result<(), Box<dyn
     );
 
     // The prepare request should be cancelled
-    let prepare_response = read_response_matching_i64(&fixture.server, prepare_id, Duration::from_millis(500));
-    assert!(
-        prepare_response.is_some(),
-        "Prepare request should be cancelled"
-    );
+    let prepare_response =
+        read_response_matching_i64(&fixture.server, prepare_id, Duration::from_millis(500));
+    assert!(prepare_response.is_some(), "Prepare request should be cancelled");
 
     if let Some(resp) = prepare_response {
         if let Some(error) = resp.get("error") {
