@@ -1531,6 +1531,350 @@ fn test_concurrent_resource_cleanup_ac5() -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+// ============================================================================
+// Type Hierarchy Cancellation Tests (Issue #1774)
+// AC:3 extension — type hierarchy operations honour $/cancelRequest
+// ============================================================================
+
+/// AC:3 — prepareTypeHierarchy pre-cancel: cancel sent before dispatch.
+///
+/// Sends $/cancelRequest for a request ID, *then* sends the
+/// `textDocument/prepareTypeHierarchy` request.  The server must recognise
+/// the pre-set cancellation marker and return error -32800 without executing
+/// the provider.
+#[test]
+fn test_prepare_type_hierarchy_precancelled() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let request_id = 7100_i64;
+
+    // Pre-cancel: mark the ID as cancelled before the request arrives.
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": request_id }
+        }),
+    );
+
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "textDocument/prepareTypeHierarchy",
+            "params": {
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 4, "character": 10 }
+            }
+        }),
+    );
+
+    let response =
+        read_response_matching_i64(&fixture.server, request_id, Duration::from_millis(500));
+
+    if let Some(resp) = response {
+        let error = resp
+            .get("error")
+            .ok_or("prepareTypeHierarchy must be cancelled: expected error field")?;
+        assert_eq!(
+            error["code"].as_i64(),
+            Some(-32800),
+            "prepareTypeHierarchy pre-cancel must return RequestCancelled (-32800)"
+        );
+    }
+    // No response is also acceptable — cancelled before any I/O.
+
+    assert!(
+        fixture.server.is_alive(),
+        "server must remain alive after cancelled prepareTypeHierarchy"
+    );
+    Ok(())
+}
+
+/// AC:3 — typeHierarchy/supertypes pre-cancel: cancel before dispatch.
+#[test]
+fn test_type_hierarchy_supertypes_precancelled() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let request_id = 7101_i64;
+
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": request_id }
+        }),
+    );
+
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "typeHierarchy/supertypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 20 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 8 },
+                        "end": { "line": 0, "character": 18 }
+                    }
+                }
+            }
+        }),
+    );
+
+    let response =
+        read_response_matching_i64(&fixture.server, request_id, Duration::from_millis(500));
+
+    if let Some(resp) = response {
+        let error = resp
+            .get("error")
+            .ok_or("typeHierarchy/supertypes must be cancelled: expected error field")?;
+        assert_eq!(
+            error["code"].as_i64(),
+            Some(-32800),
+            "typeHierarchy/supertypes pre-cancel must return RequestCancelled (-32800)"
+        );
+    }
+
+    assert!(fixture.server.is_alive(), "server must remain alive after cancelled supertypes");
+    Ok(())
+}
+
+/// AC:3 — typeHierarchy/subtypes pre-cancel: cancel before dispatch.
+#[test]
+fn test_type_hierarchy_subtypes_precancelled() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let request_id = 7102_i64;
+
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": request_id }
+        }),
+    );
+
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "typeHierarchy/subtypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 20 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 8 },
+                        "end": { "line": 0, "character": 18 }
+                    }
+                }
+            }
+        }),
+    );
+
+    let response =
+        read_response_matching_i64(&fixture.server, request_id, Duration::from_millis(500));
+
+    if let Some(resp) = response {
+        let error = resp
+            .get("error")
+            .ok_or("typeHierarchy/subtypes must be cancelled: expected error field")?;
+        assert_eq!(
+            error["code"].as_i64(),
+            Some(-32800),
+            "typeHierarchy/subtypes pre-cancel must return RequestCancelled (-32800)"
+        );
+    }
+
+    assert!(fixture.server.is_alive(), "server must remain alive after cancelled subtypes");
+    Ok(())
+}
+
+/// AC:3 — typeHierarchy/prepare alias: the legacy alias must also honour cancellation.
+///
+/// Some clients send `typeHierarchy/prepare` instead of
+/// `textDocument/prepareTypeHierarchy`.  Both code paths now go through
+/// `route_cancellable`, so the alias must respond to $/cancelRequest as well.
+#[test]
+fn test_type_hierarchy_prepare_alias_precancelled() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let request_id = 7103_i64;
+
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": request_id }
+        }),
+    );
+
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "typeHierarchy/prepare",
+            "params": {
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 4, "character": 10 }
+            }
+        }),
+    );
+
+    let response =
+        read_response_matching_i64(&fixture.server, request_id, Duration::from_millis(500));
+
+    if let Some(resp) = response {
+        let error = resp
+            .get("error")
+            .ok_or("typeHierarchy/prepare alias must be cancelled: expected error field")?;
+        assert_eq!(
+            error["code"].as_i64(),
+            Some(-32800),
+            "typeHierarchy/prepare alias pre-cancel must return RequestCancelled (-32800)"
+        );
+    }
+
+    assert!(
+        fixture.server.is_alive(),
+        "server must remain alive after cancelled typeHierarchy/prepare alias"
+    );
+    Ok(())
+}
+
+/// AC:3 — server stays healthy after type hierarchy cancellation burst.
+///
+/// Sends and immediately cancels all four type hierarchy methods in sequence.
+/// Verifies the server remains responsive for a normal hover request afterward.
+#[test]
+fn test_type_hierarchy_cancellation_server_health() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let methods: &[(&str, Value)] = &[
+        (
+            "textDocument/prepareTypeHierarchy",
+            json!({
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 4, "character": 10 }
+            }),
+        ),
+        (
+            "typeHierarchy/prepare",
+            json!({
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 4, "character": 10 }
+            }),
+        ),
+        (
+            "typeHierarchy/supertypes",
+            json!({
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 20 } },
+                    "selectionRange": { "start": { "line": 0, "character": 8 }, "end": { "line": 0, "character": 18 } }
+                }
+            }),
+        ),
+        (
+            "typeHierarchy/subtypes",
+            json!({
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 20 } },
+                    "selectionRange": { "start": { "line": 0, "character": 8 }, "end": { "line": 0, "character": 18 } }
+                }
+            }),
+        ),
+    ];
+
+    for (base_id, (method, params)) in (7200_i64..).zip(methods.iter()) {
+        // Pre-cancel.
+        send_notification(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancelRequest",
+                "params": { "id": base_id }
+            }),
+        );
+
+        send_request_no_wait(
+            &fixture.server,
+            json!({
+                "jsonrpc": "2.0",
+                "id": base_id,
+                "method": method,
+                "params": params
+            }),
+        );
+
+        let response =
+            read_response_matching_i64(&fixture.server, base_id, Duration::from_millis(500));
+
+        if let Some(resp) = response {
+            if let Some(error) = resp.get("error") {
+                assert_eq!(
+                    error["code"].as_i64(),
+                    Some(-32800),
+                    "{} burst cancel must return -32800",
+                    method
+                );
+            }
+            // Normal completion before cancellation races — also acceptable.
+        }
+    }
+
+    // Verify server health with a known-good request.
+    let health_response = send_request(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 0, "character": 5 }
+            }
+        }),
+    );
+
+    assert!(
+        health_response.get("result").is_some() || health_response.get("error").is_some(),
+        "server must remain responsive after type hierarchy cancellation burst"
+    );
+
+    assert!(
+        fixture.server.is_alive(),
+        "server must be alive after type hierarchy cancellation burst"
+    );
+
+    Ok(())
+}
+
 /// Estimate memory usage (simplified for testing - real implementation would use system calls)
 fn estimate_memory_usage() -> usize {
     // Placeholder for memory measurement
