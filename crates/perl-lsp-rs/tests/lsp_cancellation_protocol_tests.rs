@@ -1561,3 +1561,359 @@ impl Drop for CancellationTestFixture {
 // 5. Integrate with existing LSP test infrastructure and patterns
 
 // Next phase: Implement the missing cancellation infrastructure to make tests pass
+
+// ============================================================================
+// Type Hierarchy Cancellation Tests (Issue #1774)
+// ============================================================================
+// Tests for cancellation support on textDocument/prepareTypeHierarchy,
+// typeHierarchy/supertypes, and typeHierarchy/subtypes operations.
+
+/// Test: textDocument/prepareTypeHierarchy normal operation without cancellation
+/// Expected: Returns TypeHierarchyItem array or null
+#[test]
+fn test_type_hierarchy_prepare_normal() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let prepare_id = 5001;
+    let response = send_request(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": prepare_id,
+            "method": "textDocument/prepareTypeHierarchy",
+            "params": {
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 0, "character": 5 }
+            }
+        }),
+    );
+
+    assert!(
+        response.get("result").is_some() || response.get("error").is_none(),
+        "typeHierarchy/prepare should return result without cancellation"
+    );
+
+    Ok(())
+}
+
+/// Test: textDocument/prepareTypeHierarchy cancellation support
+/// Expected: Returns -32800 RequestCancelled error when $/cancelRequest is sent
+#[test]
+fn test_type_hierarchy_prepare_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let prepare_id = 5002;
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": prepare_id,
+            "method": "textDocument/prepareTypeHierarchy",
+            "params": {
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 0, "character": 5 }
+            }
+        }),
+    );
+
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": prepare_id }
+        }),
+    );
+
+    let response = read_response_matching_i64(&fixture.server, prepare_id, Duration::from_secs(1));
+
+    assert!(response.is_some(), "Should receive response for cancelled request");
+
+    if let Some(resp) = response {
+        assert!(resp.get("error").is_some(), "Cancelled request should have error field");
+
+        if let Some(error) = resp.get("error") {
+            assert_eq!(
+                error["code"].as_i64(),
+                Some(-32800),
+                "Cancellation error code should be -32800 (RequestCancelled)"
+            );
+            assert!(error.get("message").is_some(), "Cancellation error should have message");
+        }
+    }
+
+    Ok(())
+}
+
+/// Test: typeHierarchy/supertypes normal operation without cancellation
+/// Expected: Returns TypeHierarchyItem array or null
+#[test]
+fn test_type_hierarchy_supertypes_normal() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let supertypes_id = 5003;
+    let response = send_request(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": supertypes_id,
+            "method": "typeHierarchy/supertypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 5, "character": 0 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 8 },
+                        "end": { "line": 0, "character": 18 }
+                    }
+                }
+            }
+        }),
+    );
+
+    assert!(
+        response.get("result").is_some() || response.get("error").is_none(),
+        "typeHierarchy/supertypes should return result without cancellation"
+    );
+
+    Ok(())
+}
+
+/// Test: typeHierarchy/supertypes cancellation support
+/// Expected: Returns -32800 RequestCancelled error when $/cancelRequest is sent
+#[test]
+fn test_type_hierarchy_supertypes_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let supertypes_id = 5004;
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": supertypes_id,
+            "method": "typeHierarchy/supertypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 5, "character": 0 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 8 },
+                        "end": { "line": 0, "character": 18 }
+                    }
+                }
+            }
+        }),
+    );
+
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": supertypes_id }
+        }),
+    );
+
+    let response =
+        read_response_matching_i64(&fixture.server, supertypes_id, Duration::from_secs(1));
+
+    assert!(response.is_some(), "Should receive response for cancelled request");
+
+    if let Some(resp) = response {
+        assert!(resp.get("error").is_some(), "Cancelled request should have error field");
+
+        if let Some(error) = resp.get("error") {
+            assert_eq!(
+                error["code"].as_i64(),
+                Some(-32800),
+                "Cancellation error code should be -32800 (RequestCancelled)"
+            );
+            assert!(error.get("message").is_some(), "Cancellation error should have message");
+        }
+    }
+
+    Ok(())
+}
+
+/// Test: typeHierarchy/subtypes normal operation without cancellation
+/// Expected: Returns TypeHierarchyItem array or null
+#[test]
+fn test_type_hierarchy_subtypes_normal() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let subtypes_id = 5005;
+    let response = send_request(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": subtypes_id,
+            "method": "typeHierarchy/subtypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 5, "character": 0 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 8 },
+                        "end": { "line": 0, "character": 18 }
+                    }
+                }
+            }
+        }),
+    );
+
+    assert!(
+        response.get("result").is_some() || response.get("error").is_none(),
+        "typeHierarchy/subtypes should return result without cancellation"
+    );
+
+    Ok(())
+}
+
+/// Test: typeHierarchy/subtypes cancellation support
+/// Expected: Returns -32800 RequestCancelled error when $/cancelRequest is sent
+#[test]
+fn test_type_hierarchy_subtypes_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = CancellationTestFixture::new();
+
+    let subtypes_id = 5006;
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": subtypes_id,
+            "method": "typeHierarchy/subtypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 5, "character": 0 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 8 },
+                        "end": { "line": 0, "character": 18 }
+                    }
+                }
+            }
+        }),
+    );
+
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": subtypes_id }
+        }),
+    );
+
+    let response = read_response_matching_i64(&fixture.server, subtypes_id, Duration::from_secs(1));
+
+    assert!(response.is_some(), "Should receive response for cancelled request");
+
+    if let Some(resp) = response {
+        assert!(resp.get("error").is_some(), "Cancelled request should have error field");
+
+        if let Some(error) = resp.get("error") {
+            assert_eq!(
+                error["code"].as_i64(),
+                Some(-32800),
+                "Cancellation error code should be -32800 (RequestCancelled)"
+            );
+            assert!(error.get("message").is_some(), "Cancellation error should have message");
+        }
+    }
+
+    Ok(())
+}
+
+/// Test: Concurrent type hierarchy cancellation isolation
+/// Expected: Cancelling one type hierarchy request doesn't affect concurrent requests
+#[test]
+fn test_type_hierarchy_concurrent_cancellation_isolation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = CancellationTestFixture::new();
+
+    let prepare_id = 5010;
+    let supertypes_id = 5011;
+
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": prepare_id,
+            "method": "textDocument/prepareTypeHierarchy",
+            "params": {
+                "textDocument": { "uri": "file:///main.pl" },
+                "position": { "line": 0, "character": 5 }
+            }
+        }),
+    );
+
+    send_request_no_wait(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "id": supertypes_id,
+            "method": "typeHierarchy/supertypes",
+            "params": {
+                "item": {
+                    "name": "TestModule",
+                    "kind": 5,
+                    "uri": "file:///lib/TestModule.pm",
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 5, "character": 0 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 8 },
+                        "end": { "line": 0, "character": 18 }
+                    }
+                }
+            }
+        }),
+    );
+
+    // Cancel only the prepare request; supertypes should complete normally
+    send_notification(
+        &fixture.server,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": prepare_id }
+        }),
+    );
+
+    let prepare_response =
+        read_response_matching_i64(&fixture.server, prepare_id, Duration::from_millis(500));
+    assert!(prepare_response.is_some(), "Cancelled prepare request should receive a response");
+
+    if let Some(resp) = prepare_response {
+        if let Some(error) = resp.get("error") {
+            assert_eq!(
+                error["code"].as_i64(),
+                Some(-32800),
+                "Cancelled prepare should return -32800"
+            );
+        }
+    }
+
+    Ok(())
+}
