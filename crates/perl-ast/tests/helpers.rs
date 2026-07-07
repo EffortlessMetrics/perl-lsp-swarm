@@ -47,6 +47,7 @@ pub fn all_nodekind_instances() -> Vec<Node> {
     vec![
         Node::new(NodeKind::Number { value: "42".to_string() }, loc()),
         Node::new(NodeKind::String { value: "hello".to_string(), interpolated: false }, loc()),
+        Node::new(NodeKind::VString { value: "1.2.3".to_string() }, loc()),
         Node::new(NodeKind::Variable { sigil: "$".to_string(), name: "x".to_string() }, loc()),
         Node::new(NodeKind::Identifier { name: "foo".to_string() }, loc()),
         Node::new(NodeKind::Block { statements: vec![] }, loc()),
@@ -338,7 +339,16 @@ pub fn all_nodekind_instances() -> Vec<Node> {
         ),
         Node::new(NodeKind::Defer { block: Box::new(block()) }, loc()),
         Node::new(NodeKind::Prototype { content: "$@".to_string() }, loc()),
-        Node::new(NodeKind::NamedParameter { variable: Box::new(var("$", "x")) }, loc()),
+        Node::new(
+            NodeKind::NamedParameter {
+                variable: Box::new(var("$", "x")),
+                external_name: String::new(),
+                default_operator: None,
+                default_value: None,
+                required: true,
+            },
+            loc(),
+        ),
         Node::new(
             NodeKind::Method {
                 name: "foo".to_string(),

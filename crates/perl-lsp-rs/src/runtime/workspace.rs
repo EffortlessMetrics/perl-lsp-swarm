@@ -43,8 +43,6 @@ use url::Url;
 
 #[cfg(feature = "workspace")]
 mod configuration_response;
-#[cfg(feature = "workspace")]
-mod text_decode;
 
 const WORKSPACE_CONFIGURATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -85,13 +83,13 @@ fn is_permission_denied_error(e: &std::io::Error) -> bool {
 }
 
 #[cfg(feature = "workspace")]
-use perl_workspace::monitoring::WorkspaceIndexingReceipt;
+use crate::util::read_text_file_with_encoding;
 #[cfg(feature = "workspace")]
-use text_decode::read_text_with_encoding_fallback;
+use perl_workspace::monitoring::WorkspaceIndexingReceipt;
 
 #[cfg(feature = "workspace")]
 fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
-    uri_to_fs_path(uri).and_then(|path| match read_text_with_encoding_fallback(&path) {
+    uri_to_fs_path(uri).and_then(|path| match read_text_file_with_encoding(&path) {
         Ok(content) => Some(content),
         Err(e) => {
             tracing::debug!("Failed to read file for {} ({}): {}", purpose, path.display(), e);
@@ -266,14 +264,18 @@ impl LspServer {
 
             match access_mode {
                 IndexAccessMode::Full(coordinator) => {
-                    // Full query path: use workspace index
-                    let mut symbols = coordinator.index().search_source_symbols(query);
-                    symbols.extend(coordinator.index().search_generated_workspace_symbols(query));
+                    // Full query path: use workspace index.
+                    // Pass the cap into the search so results are bounded before
+                    // allocation — early exit at the search boundary, not after collecting.
+                    let mut symbols = coordinator.index().search_source_symbols(query, Some(cap));
+                    symbols.extend(
+                        coordinator.index().search_generated_workspace_symbols(query, Some(cap)),
+                    );
 
-                    // Convert to LSP format with yielding and result cap
+                    // Convert to LSP format with cooperative yielding.
+                    // No .take(cap) needed — the search functions already apply the cap.
                     let lsp_symbols: Vec<LspWorkspaceSymbol> = symbols
                         .iter()
-                        .take(cap)
                         .enumerate()
                         .map(|(i, sym)| {
                             // Cooperative yield every 64 symbols
@@ -314,10 +316,9 @@ impl LspServer {
                     // open-doc path only when the partial index is also empty.
                     tracing::debug!(reason, "Workspace symbol: querying partial index");
                     if let Some(coordinator) = self.coordinator() {
-                        let symbols = coordinator.index().search_source_symbols(query);
+                        let symbols = coordinator.index().search_source_symbols(query, Some(cap));
                         let lsp_symbols: Vec<LspWorkspaceSymbol> = symbols
                             .iter()
-                            .take(cap)
                             .enumerate()
                             .map(|(i, sym)| {
                                 if i & 0x3f == 0 {
@@ -1073,72 +1074,26 @@ impl LspServer {
                 //   - Wrapped:   {"perl": { "workspace": { "includePaths": [...] } }}
                 //   - Unwrapped: { "workspace": { "includePaths": [...] } }
                 if let Some(perl) = extract_perl_settings(settings) {
-                    // Check whether any perlcritic-related setting is changing before
-                    // updating config so we can decide whether to reset the shared
-                    // CriticAnalyzer.  The analyzer is config-bound (severity, profile)
-                    // so any change to those fields requires a fresh instance.
+                    // Snapshot the critic-relevant config fields before applying the
+                    // update so we can decide whether to reset the shared
+                    // CriticAnalyzer (config-bound on severity/profile/enabled). We
+                    // compare before/after `update_from_value` rather than re-parsing
+                    // the payload here so this stays in lockstep with the parser — in
+                    // particular it detects severity/enabled changes that arrive via
+                    // either the legacy `perlcritic.*` keys or the native `critic.*`
+                    // keys, which the parser folds into the same fields.
                     #[cfg(not(target_arch = "wasm32"))]
-                    let critic_config_changed = {
+                    let critic_snapshot_before = {
                         let cfg = self.config.lock();
-                        let new_enabled = perl
-                            .get("perlcritic")
-                            .and_then(|v| v.get("enabled"))
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(cfg.perlcritic_enabled);
-                        let new_severity = perl
-                            .get("perlcritic")
-                            .and_then(|v| v.get("severity"))
-                            .and_then(|v| v.as_u64())
-                            .map(|v| v as u8)
-                            .unwrap_or(cfg.perlcritic_severity);
-                        let new_profile = perl
-                            .get("perlcritic")
-                            .and_then(|v| v.get("profile"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let new_theme = perl
-                            .get("perlcritic")
-                            .and_then(|v| v.get("theme"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let new_native_profile = perl
-                            .get("critic")
-                            .and_then(|v| v.get("profile"))
-                            .and_then(|v| v.as_str())
-                            .and_then(
-                                perl_lsp_rs_core::tooling::perl_critic::NativeCriticProfile::parse,
-                            )
-                            .map(|profile| profile.as_str().to_string())
-                            .unwrap_or_else(|| cfg.native_critic_profile.clone());
-                        let new_native_include = perl
-                            .get("critic")
-                            .and_then(|v| v.get("include"))
-                            .and_then(|v| v.as_array())
-                            .map(|values| {
-                                values
-                                    .iter()
-                                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_else(|| cfg.native_critic_include.clone());
-                        let new_native_exclude = perl
-                            .get("critic")
-                            .and_then(|v| v.get("exclude"))
-                            .and_then(|v| v.as_array())
-                            .map(|values| {
-                                values
-                                    .iter()
-                                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_else(|| cfg.native_critic_exclude.clone());
-                        new_enabled != cfg.perlcritic_enabled
-                            || new_severity != cfg.perlcritic_severity
-                            || new_profile != cfg.perlcritic_profile
-                            || new_theme != cfg.perlcritic_theme
-                            || new_native_profile != cfg.native_critic_profile
-                            || new_native_include != cfg.native_critic_include
-                            || new_native_exclude != cfg.native_critic_exclude
+                        (
+                            cfg.perlcritic_enabled,
+                            cfg.perlcritic_severity,
+                            cfg.perlcritic_profile.clone(),
+                            cfg.perlcritic_theme.clone(),
+                            cfg.native_critic_profile.clone(),
+                            cfg.native_critic_include.clone(),
+                            cfg.native_critic_exclude.clone(),
+                        )
                     };
 
                     // Update server config (inlay hints, test runner)
@@ -1147,6 +1102,21 @@ impl LspServer {
                         config.update_from_value(perl);
                         tracing::debug!("Updated server config from perl settings");
                     }
+
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let critic_config_changed = {
+                        let cfg = self.config.lock();
+                        critic_snapshot_before
+                            != (
+                                cfg.perlcritic_enabled,
+                                cfg.perlcritic_severity,
+                                cfg.perlcritic_profile.clone(),
+                                cfg.perlcritic_theme.clone(),
+                                cfg.native_critic_profile.clone(),
+                                cfg.native_critic_include.clone(),
+                                cfg.native_critic_exclude.clone(),
+                            )
+                    };
 
                     // Reset the shared CriticAnalyzer when any critic-related setting
                     // changed so the next diagnostic cycle rebuilds it with the new config.
@@ -1437,7 +1407,7 @@ impl LspServer {
                         let workspace_index = coordinator.index();
                         workspace_index.remove_file(old_uri);
                         if let Some(path) = uri_to_fs_path(new_uri) {
-                            if let Ok(content) = read_text_with_encoding_fallback(&path) {
+                            if let Ok(content) = read_text_file_with_encoding(&path) {
                                 if let Ok(url) = url::Url::parse(new_uri) {
                                     if let Err(e) = workspace_index.index_file(url, content.clone())
                                     {
@@ -1683,7 +1653,7 @@ impl LspServer {
                     if let Some(coordinator) = self.coordinator() {
                         if is_perl_source_uri(uri) {
                             if let Some(path) = uri_to_fs_path(uri) {
-                                match read_text_with_encoding_fallback(&path) {
+                                match read_text_file_with_encoding(&path) {
                                     Ok(content) => {
                                         coordinator.notify_change(uri);
                                         if let Ok(url) = url::Url::parse(uri) {
@@ -1756,7 +1726,7 @@ impl LspServer {
                         // Index new file if it's a Perl file
                         if is_perl_source_uri(new_uri) {
                             if let Some(path) = uri_to_fs_path(new_uri) {
-                                match read_text_with_encoding_fallback(&path) {
+                                match read_text_file_with_encoding(&path) {
                                     Ok(content) => {
                                         if let Ok(url) = url::Url::parse(new_uri) {
                                             match coordinator.index().index_file(url, content) {
@@ -2007,7 +1977,7 @@ impl LspServer {
                 }
 
                 let read_started = Instant::now();
-                let content = match read_text_with_encoding_fallback(&path) {
+                let content = match read_text_file_with_encoding(&path) {
                     Ok(c) => c,
                     Err(e) => {
                         indexing_receipt.record_read_error();
@@ -2255,7 +2225,7 @@ impl LspServer {
         let IndexAccessMode::Full(coordinator) = route_index_access(self.coordinator()) else {
             return 0;
         };
-        coordinator.index().search_source_symbols(query).iter().take(workspace_symbol_cap()).count()
+        coordinator.index().search_source_symbols(query, Some(workspace_symbol_cap())).len()
     }
 
     fn record_workspace_symbols_provider_decision_trace(
@@ -2399,7 +2369,7 @@ impl LspServer {
         // (the client requests cross-file edits and applies them).  This path
         // is restricted to workspace-root-relative paths by the caller and is
         // bounded to files that `find_dependents` already knows about.
-        uri_to_fs_path(uri).and_then(|path| read_text_with_encoding_fallback(&path).ok())
+        uri_to_fs_path(uri).and_then(|path| read_text_file_with_encoding(&path).ok())
     }
 }
 
@@ -2614,9 +2584,9 @@ pub(super) fn path_to_module_name(uri: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "workspace")]
-    use super::read_text_with_encoding_fallback;
     use super::{LspServer, module_name_appears_in_text};
+    #[cfg(feature = "workspace")]
+    use crate::util::read_text_file_with_encoding;
     use serde_json::json;
     #[cfg(feature = "workspace")]
     use std::io::Write;
@@ -3014,8 +2984,8 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_decodes_utf16le_bom()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_file_with_encoding_decodes_utf16le_bom() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("utf16le.pm");
         let text = "my $x = \"π\";";
@@ -3025,20 +2995,19 @@ mod tests {
         }
         std::fs::File::create(&path)?.write_all(&bytes)?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, text);
         Ok(())
     }
 
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_strips_utf8_bom() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn read_text_file_with_encoding_strips_utf8_bom() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("utf8_bom.pm");
         std::fs::write(&path, [0xEF, 0xBB, 0xBF, b'p', b'a', b'c', b'k', b'a', b'g', b'e'])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, "package");
         Ok(())
     }
@@ -3049,14 +3018,14 @@ mod tests {
     /// reasonable to index.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16le()
+    fn read_text_file_with_encoding_handles_odd_length_utf16le()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16le.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
         std::fs::write(&path, [0xFF, 0xFE, 0x6D, 0x00, 0x79])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         // Must return something (not panic) — the replacement string is
         // lossy but deterministic.
         assert!(!read.is_empty());
@@ -3067,14 +3036,14 @@ mod tests {
     /// bytes must not panic or silently truncate.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_odd_length_utf16be()
+    fn read_text_file_with_encoding_handles_odd_length_utf16be()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("odd_utf16be.pm");
         // BOM (2 bytes) + 3 payload bytes = odd-length UTF-16 payload.
         std::fs::write(&path, [0xFE, 0xFF, 0x00, 0x6D, 0x00])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert!(!read.is_empty());
         Ok(())
     }
@@ -3082,13 +3051,12 @@ mod tests {
     /// Edge case: empty file should decode to an empty string without panic.
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_empty_file()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_file_with_encoding_handles_empty_file() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("empty.pm");
         std::fs::write(&path, [])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, "", "Empty file should decode to empty string");
         Ok(())
     }
@@ -3097,13 +3065,13 @@ mod tests {
     /// to an empty string (BOM is stripped, nothing remains).
     #[cfg(feature = "workspace")]
     #[test]
-    fn read_text_with_encoding_fallback_handles_bom_only_file()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn read_text_file_with_encoding_handles_bom_only_file() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("bom_only.pm");
         std::fs::write(&path, [0xEF, 0xBB, 0xBF])?;
 
-        let read = read_text_with_encoding_fallback(&path)?;
+        let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, "", "BOM-only file should decode to empty string after BOM strip");
         Ok(())
     }

@@ -16,6 +16,7 @@ use crate::protocol::{REQUEST_FAILED, req_position, req_uri};
 use crate::runtime::readiness::{IndexReadinessOutcome, IndexReadinessPolicy};
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
+use perl_lexer::is_rename_keyword;
 #[cfg(feature = "workspace")]
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
@@ -403,7 +404,7 @@ impl LspServer {
                     {
                         continue;
                     }
-                    let Ok(text) = std::fs::read_to_string(&path) else {
+                    let Ok(text) = crate::util::read_text_file_with_encoding(&path) else {
                         continue;
                     };
                     let edit_uri = workspace_edit_uri_key(&uri);
@@ -977,6 +978,18 @@ impl LspServer {
                     return Err(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid identifier: {}", requested_name),
+                        data: None,
+                    });
+                }
+                // Non-sigiled targets are subroutine or package names.
+                // Renaming them to a reserved keyword would create a syntax error (`sub if {}`).
+                if is_rename_keyword(requested_name) {
+                    return Err(JsonRpcError {
+                        code: -32602,
+                        message: format!(
+                            "'{}' is a reserved Perl keyword; subroutine names cannot be keywords",
+                            requested_name
+                        ),
                         data: None,
                     });
                 }
@@ -2868,6 +2881,20 @@ mod tests {
         assert_eq!(server.normalize_rename_target(Some("$value"), "$renamed")?, "$renamed");
         assert_eq!(server.normalize_rename_target(Some("target"), "renamed")?, "renamed");
 
+        // Non-sigiled (subroutine/package) targets renamed to a reserved keyword are rejected
+        // by the handler guard — `sub if {}` / `package for` are Perl syntax errors.
+        assert!(
+            server.normalize_rename_target(Some("greet"), "if").is_err(),
+            "renaming a subroutine to a reserved keyword must be rejected"
+        );
+        assert!(
+            server.normalize_rename_target(Some("helper"), "while").is_err(),
+            "renaming a subroutine to a control-flow keyword must be rejected"
+        );
+        // Sigiled (variable) targets may take keyword names — the sigil disambiguates (`$if`).
+        assert_eq!(server.normalize_rename_target(Some("$flag"), "$if")?, "$if");
+        assert_eq!(server.normalize_rename_target(Some("$flag"), "if")?, "$if");
+
         assert!(
             server.normalize_rename_target(Some("$value"), "").is_err(),
             "empty requested names must be rejected"
@@ -2886,6 +2913,61 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// Perl's reserved-word check is case-sensitive: only the exact lowercase
+    /// spellings in `RENAME_KEYWORDS` are reserved. `If`, `WHILE`, and `For` are
+    /// ordinary, unreserved subroutine names.
+    #[test]
+    fn normalize_rename_target_keyword_check_is_case_sensitive()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::default();
+
+        assert_eq!(server.normalize_rename_target(Some("greet"), "If")?, "If");
+        assert_eq!(server.normalize_rename_target(Some("greet"), "WHILE")?, "WHILE");
+        assert_eq!(server.normalize_rename_target(Some("greet"), "For")?, "For");
+
+        // The lowercase spellings remain rejected.
+        assert!(server.normalize_rename_target(Some("greet"), "if").is_err());
+        assert!(server.normalize_rename_target(Some("greet"), "while").is_err());
+
+        Ok(())
+    }
+
+    /// A bare (non-sigiled) current symbol is a subroutine/package target — a
+    /// sigil-prefixed requested name for it is not a valid bareword identifier
+    /// and must be rejected as an invalid identifier, regardless of whether the
+    /// bare name underneath happens to be a keyword.
+    #[test]
+    fn normalize_rename_target_rejects_sigil_prefixed_name_for_bare_symbol() {
+        let server = LspServer::default();
+
+        assert!(
+            server.normalize_rename_target(Some("greet"), "$if").is_err(),
+            "a subroutine rename target must not carry a sigil"
+        );
+        assert!(
+            server.normalize_rename_target(Some("greet"), "$helper").is_err(),
+            "a subroutine rename target must not carry a sigil, even for a non-keyword name"
+        );
+    }
+
+    /// Fully qualified names (`Package::name`) are not valid bare identifiers
+    /// under the current `is_valid_identifier` character rules (`::` is not
+    /// alphanumeric or `_`), so they are rejected as invalid identifiers —
+    /// independent of whether the trailing segment is a reserved keyword.
+    #[test]
+    fn normalize_rename_target_rejects_fully_qualified_name() {
+        let server = LspServer::default();
+
+        assert!(
+            server.normalize_rename_target(Some("greet"), "Foo::if").is_err(),
+            "fully qualified names are rejected as invalid identifiers"
+        );
+        assert!(
+            server.normalize_rename_target(Some("greet"), "Foo::helper").is_err(),
+            "fully qualified names are rejected even when the tail is not a keyword"
+        );
     }
 
     #[test]

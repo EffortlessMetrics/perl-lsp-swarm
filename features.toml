@@ -3,7 +3,7 @@
 # Used to generate capabilities, documentation, and compliance reports
 
 [meta]
-version = "0.16.0"
+version = "0.17.0"
 lsp_version = "3.18"
 compliance_percent = 100  # 125 total features (101 LSP-area + 24 DAP, all GA), 124/125 advertised
 
@@ -163,7 +163,7 @@ tests = [
   "crates/perl-lsp-rs/tests/lsp_formatting_tests.rs",
   "crates/perl-lsp-rs/tests/lsp_bdd_workflows.rs",
 ]
-description = "Document formatting with Perl::Tidy"
+description = "Native document formatting (external perltidy is an explicit opt-in compatibility mode, not required)"
 
 [[feature]]
 id = "lsp.range_formatting"
@@ -448,7 +448,7 @@ area = "workspace"
 maturity = "ga"
 advertised = true
 tests = ["crates/perl-lsp-rs/tests/lsp_execute_command_tests.rs"]
-description = "Execute commands (Perl::Critic, etc)"
+description = "Execute commands (native critic, code actions, etc)"
 
 [[feature]]
 id = "lsp.workspace_folders"

@@ -171,19 +171,223 @@ fn cli_parse_failure_returns_nonzero_with_bucket() -> Result<()> {
 }
 
 #[test]
-fn cli_unsupported_mode_reports_internal_failure() -> Result<()> {
+fn cli_compile_inline_source_emits_tap_and_context() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let context = temp.path().join("records.jsonl");
+
     let output = Command::new(runner())
         .env("PERL_LSP_HARNESS_MODE", "compile")
+        .env("PERL_LSP_HARNESS_CONTEXT", &context)
+        .args(["-e", "my $x = 1;"])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("runner should pass compile mode for clean inline source");
+    }
+    assert_eq!(String::from_utf8(output.stdout)?, "1..1\nok 1 - compile -e\n");
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+
+    let record = read_record(&context)?;
+    assert_eq!(record["schema_version"], "perl_core_harness.runner_record.v1");
+    assert_eq!(record["mode"], "compile");
+    assert_eq!(record["path"], "-e");
+    assert_eq!(record["status"], "pass");
+    assert_eq!(record["assertions_passed"], 1);
+    assert_eq!(record["assertions_total"], 1);
+    assert!(record["bucket"].is_null());
+    assert!(record["first_diagnostic"].is_null());
+    Ok(())
+}
+
+#[test]
+fn cli_compile_failure_returns_nonzero_with_bucket() -> Result<()> {
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "compile")
+        .args(["-e", "require $module;"])
+        .output()?;
+
+    if output.status.success() {
+        bail!("runner should fail compile mode for unsupported dynamic boundary");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("1..1\nnot ok 1 - compile -e\n"));
+    assert!(stdout.contains("# bucket: compile_effect\n"));
+    assert!(stdout.contains("require target is not statically known"));
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+    Ok(())
+}
+
+#[test]
+fn cli_compile_parse_failure_returns_nonzero_with_parse_bucket() -> Result<()> {
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "compile")
+        .args(["-e", "my $x = ;"])
+        .output()?;
+
+    if output.status.success() {
+        bail!("runner should fail compile mode when parsing fails");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("1..1\nnot ok 1 - compile -e\n"));
+    assert!(stdout.contains("# bucket: parse_recovery\n"));
+    assert!(stdout.contains("# first diagnostic:"));
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+    Ok(())
+}
+
+#[test]
+fn cli_compile_unreadable_file_reports_source_decode_bucket() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let missing = temp.path().join("base").join("missing.t");
+
+    let output =
+        Command::new(runner()).env("PERL_LSP_HARNESS_MODE", "compile").arg(&missing).output()?;
+
+    if output.status.success() {
+        bail!("missing file should fail closed in compile mode");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("1..1\nnot ok 1 - compile "));
+    assert!(stdout.contains("# bucket: source_decode"));
+    assert!(stdout.contains("reading Perl test script"));
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+    Ok(())
+}
+
+#[test]
+fn cli_execute_base_if_emits_real_tap_and_context() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let script = temp.path().join("base").join("if.t");
+    std::fs::create_dir_all(script.parent().ok_or_else(|| anyhow::anyhow!("missing parent"))?)?;
+    std::fs::write(&script, base_if_source())?;
+    let context = temp.path().join("records.jsonl");
+
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "execute")
+        .env("PERL_LSP_HARNESS_CONTEXT", &context)
+        .arg(&script)
+        .output()?;
+
+    if !output.status.success() {
+        bail!("execute-one should pass for base/if.t");
+    }
+    assert_eq!(String::from_utf8(output.stdout)?, "1..2\nok 1 - if eq\nok 2 - if ne\n");
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+
+    let record = read_record(&context)?;
+    assert_eq!(record["mode"], "execute");
+    let path = record["path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("runner record path should be a string"))?
+        .replace('\\', "/");
+    assert!(path.ends_with("base/if.t"));
+    assert_eq!(record["status"], "pass");
+    assert_eq!(record["assertions_passed"], 2);
+    assert_eq!(record["assertions_total"], 2);
+    Ok(())
+}
+
+#[test]
+fn cli_execute_non_allowlisted_file_reports_runtime_bucket() -> Result<()> {
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "execute")
         .args(["-e", "my $x = 1;"])
         .output()?;
 
     if output.status.success() {
-        bail!("unsupported mode should fail closed");
+        bail!("execute mode should fail for non-allowlisted inputs");
+    }
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("1..1\nnot ok 1 - execute -e\n"));
+    assert!(stdout.contains("# bucket: runtime_test_harness"));
+    assert!(stdout.contains("execute-base scaffold supports only selected base tests"));
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+    Ok(())
+}
+
+#[test]
+fn cli_execute_base_cond_emits_real_tap_and_context() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let script = temp.path().join("base").join("cond.t");
+    std::fs::create_dir_all(script.parent().ok_or_else(|| anyhow::anyhow!("missing parent"))?)?;
+    std::fs::write(&script, base_cond_source())?;
+    let context = temp.path().join("records.jsonl");
+
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "execute")
+        .env("PERL_LSP_HARNESS_CONTEXT", &context)
+        .arg(&script)
+        .output()?;
+
+    if !output.status.success() {
+        bail!("execute-base scaffold should pass for base/cond.t");
+    }
+    assert_eq!(
+        String::from_utf8(output.stdout)?,
+        "1..4\nok 1 - operator eq\nok 2 - operator ne\nok 3 - operator ==\nok 4 - operator !=\n"
+    );
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+
+    let record = read_record(&context)?;
+    assert_eq!(record["mode"], "execute");
+    let path = record["path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("runner record path should be a string"))?
+        .replace('\\', "/");
+    assert!(path.ends_with("base/cond.t"));
+    assert_eq!(record["status"], "pass");
+    assert_eq!(record["assertions_passed"], 4);
+    assert_eq!(record["assertions_total"], 4);
+    Ok(())
+}
+
+#[test]
+fn cli_execute_base_while_emits_real_tap_and_context() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let script = temp.path().join("base").join("while.t");
+    std::fs::create_dir_all(script.parent().ok_or_else(|| anyhow::anyhow!("missing parent"))?)?;
+    std::fs::write(&script, base_while_source())?;
+    let context = temp.path().join("records.jsonl");
+
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "execute")
+        .env("PERL_LSP_HARNESS_CONTEXT", &context)
+        .arg(&script)
+        .output()?;
+
+    if !output.status.success() {
+        bail!("runtime control-flow burn-down should pass for base/while.t");
+    }
+    assert_eq!(String::from_utf8(output.stdout)?, "1..4\nok 1\nok 2\nok 3\nok 4\n");
+    assert_eq!(String::from_utf8(output.stderr)?, "");
+
+    let record = read_record(&context)?;
+    assert_eq!(record["mode"], "execute");
+    let path = record["path"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("runner record path should be a string"))?
+        .replace('\\', "/");
+    assert!(path.ends_with("base/while.t"));
+    assert_eq!(record["status"], "pass");
+    assert_eq!(record["assertions_passed"], 4);
+    assert_eq!(record["assertions_total"], 4);
+    Ok(())
+}
+
+#[test]
+fn cli_unknown_mode_reports_internal_failure() -> Result<()> {
+    let output = Command::new(runner())
+        .env("PERL_LSP_HARNESS_MODE", "typo-mode")
+        .args(["-e", "my $x = 1;"])
+        .output()?;
+
+    if output.status.success() {
+        bail!("unknown mode should fail closed");
     }
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("not ok 1 - perl-core-test-runner internal failure"));
     assert!(stdout.contains("# bucket: cli_switch"));
-    assert!(stdout.contains("only supports parse mode"));
+    assert!(stdout.contains("unsupported perl-core-test-runner mode: typo-mode"));
     assert_eq!(String::from_utf8(output.stderr)?, "");
     Ok(())
 }
@@ -201,4 +405,74 @@ fn cli_missing_script_reports_internal_failure() -> Result<()> {
     assert!(stdout.contains("no Perl test script was provided"));
     assert_eq!(String::from_utf8(output.stderr)?, "");
     Ok(())
+}
+
+fn base_if_source() -> &'static str {
+    r#"#!./perl
+
+print "1..2\n";
+
+# first test to see if we can run the tests.
+
+$x = 'test';
+if ($x eq $x) { print "ok 1 - if eq\n"; } else { print "not ok 1 - if eq\n";}
+if ($x ne $x) { print "not ok 2 - if ne\n"; } else { print "ok 2 - if ne\n";}
+"#
+}
+
+fn base_cond_source() -> &'static str {
+    r#"#!./perl
+
+# make sure conditional operators work
+
+print "1..4\n";
+
+$x = '0';
+
+$x eq $x && (print "ok 1 - operator eq\n");
+$x ne $x && (print "not ok 1 - operator ne\n");
+$x eq $x || (print "not ok 2 - operator eq\n");
+$x ne $x || (print "ok 2 - operator ne\n");
+
+$x == $x && (print "ok 3 - operator ==\n");
+$x != $x && (print "not ok 3 - operator !=\n");
+$x == $x || (print "not ok 4 - operator ==\n");
+$x != $x || (print "ok 4 - operator !=\n");
+"#
+}
+
+fn base_while_source() -> &'static str {
+    r#"#!./perl
+
+print "1..4\n";
+
+# very basic tests of while
+
+$x = 0;
+while ($x != 3) {
+    $x = $x + 1;
+}
+if ($x == 3) { print "ok 1\n"; } else { print "not ok 1\n";}
+
+$x = 0;
+while (1) {
+    $x = $x + 1;
+    last if $x == 3;
+}
+if ($x == 3) { print "ok 2\n"; } else { print "not ok 2\n";}
+
+$x = 0;
+while ($x != 3) {
+    $x = $x + 1;
+    next;
+    print "not ";
+}
+print "ok 3\n";
+
+$x = 0;
+while (0) {
+    $x = 1;
+}
+if ($x == 0) { print "ok 4\n"; } else { print "not ok 4\n";}
+"#
 }

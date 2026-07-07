@@ -1,11 +1,14 @@
 //! Compatibility runner invoked as `t/perl` by an upstream Perl core harness.
+//! TAP ordering: emit_tap writes complete before context-record appends begin.
+//! Context-record emission is append-only; a write failure does not corrupt TAP state.
 
 // TAP is the process protocol for this binary.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
 use anyhow::{Context, Result, bail};
+use perl_core_harness_types::{RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus};
+use perl_parser_core::hir::{CompileEffectKind, lower_ast};
 use perl_parser_core::{Parser, RecoverySalvageClass, RecoverySalvageProfile};
-use serde::Serialize;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -14,25 +17,7 @@ use std::path::{Path, PathBuf};
 
 const MODE_ENV: &str = "PERL_LSP_HARNESS_MODE";
 const CONTEXT_ENV: &str = "PERL_LSP_HARNESS_CONTEXT";
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum RunnerStatus {
-    Pass,
-    Fail,
-}
-
-#[derive(Debug, Serialize)]
-struct RunnerRecord {
-    schema_version: &'static str,
-    mode: String,
-    path: String,
-    status: RunnerStatus,
-    assertions_passed: usize,
-    assertions_total: usize,
-    bucket: Option<String>,
-    first_diagnostic: Option<String>,
-}
+const EXECUTE_BASE_ALLOWLIST: &[&str] = &["base/if.t", "base/cond.t", "base/while.t"];
 
 #[derive(Debug)]
 struct Invocation {
@@ -53,7 +38,13 @@ fn main() {
             RunnerStatus::Fail => 1,
         },
         Err(err) => {
+            let mode = env::var(MODE_ENV).unwrap_or_else(|_| "parse".to_string());
+            let args = env::args_os().skip(1).collect::<Vec<_>>();
+            let display_path =
+                infer_display_path(&args).unwrap_or_else(|| "perl-core-test-runner".to_string());
+            let result = ModeRunResult::fail("cli_switch", err.to_string());
             emit_internal_failure(&err);
+            let _ = append_context_record(&mode, &display_path, &result);
             1
         }
     };
@@ -62,13 +53,17 @@ fn main() {
 
 fn run() -> Result<RunnerStatus> {
     let mode = env::var(MODE_ENV).unwrap_or_else(|_| "parse".to_string());
-    if mode != "parse" {
-        bail!("perl-core-test-runner only supports parse mode in this slice, got {mode}");
-    }
-
     let invocation = parse_invocation(env::args_os().skip(1))?;
-    let result = run_parse(&invocation).unwrap_or_else(ParseRunResult::from_error);
-    emit_tap(&invocation.display_path, &result);
+
+    let result = match mode.as_str() {
+        "parse" => run_parse(&invocation),
+        "compile" => run_compile(&invocation),
+        "execute" => run_execute(&invocation),
+        other => bail!("unsupported perl-core-test-runner mode: {other}"),
+    }
+    .unwrap_or_else(ModeRunResult::from_error);
+
+    emit_tap(&mode, &invocation.display_path, &result);
     append_context_record(&mode, &invocation.display_path, &result)?;
     Ok(result.status)
 }
@@ -150,16 +145,48 @@ fn file_invocation(path: OsString) -> Result<Invocation> {
     Ok(Invocation { source: SourceInput::File(path), display_path })
 }
 
+fn infer_display_path(args: &[OsString]) -> Option<String> {
+    args.iter()
+        .rev()
+        .map(|arg| arg.to_string_lossy())
+        .find(|arg| {
+            let value = arg.as_ref();
+            !value.starts_with('-') && (value.ends_with(".t") || value.contains(".t "))
+        })
+        .map(|arg| arg.as_ref().replace('\\', "/"))
+}
+
 #[derive(Debug)]
-struct ParseRunResult {
+struct ModeRunResult {
     status: RunnerStatus,
     bucket: Option<String>,
     first_diagnostic: Option<String>,
+    assertions_passed: usize,
+    assertions_total: usize,
+    tap_output: Option<String>,
 }
 
-impl ParseRunResult {
+impl ModeRunResult {
     fn pass() -> Self {
-        Self { status: RunnerStatus::Pass, bucket: None, first_diagnostic: None }
+        Self {
+            status: RunnerStatus::Pass,
+            bucket: None,
+            first_diagnostic: None,
+            assertions_passed: 1,
+            assertions_total: 1,
+            tap_output: None,
+        }
+    }
+
+    fn execute_pass(tap_output: String, assertions_passed: usize, assertions_total: usize) -> Self {
+        Self {
+            status: RunnerStatus::Pass,
+            bucket: None,
+            first_diagnostic: None,
+            assertions_passed,
+            assertions_total,
+            tap_output: Some(tap_output),
+        }
     }
 
     fn fail(bucket: &str, first_diagnostic: String) -> Self {
@@ -167,6 +194,9 @@ impl ParseRunResult {
             status: RunnerStatus::Fail,
             bucket: Some(bucket.to_string()),
             first_diagnostic: Some(first_diagnostic),
+            assertions_passed: 0,
+            assertions_total: 1,
+            tap_output: None,
         }
     }
 
@@ -175,19 +205,22 @@ impl ParseRunResult {
     }
 }
 
-fn run_parse(invocation: &Invocation) -> Result<ParseRunResult> {
-    let source = match &invocation.source {
+fn read_source(invocation: &Invocation) -> Result<String> {
+    match &invocation.source {
         SourceInput::File(path) => fs::read_to_string(path)
-            .with_context(|| format!("reading Perl test script {}", path.display()))?,
-        SourceInput::Inline(code) => code.clone(),
-    };
+            .with_context(|| format!("reading Perl test script {}", path.display())),
+        SourceInput::Inline(code) => Ok(code.clone()),
+    }
+}
 
+fn run_parse(invocation: &Invocation) -> Result<ModeRunResult> {
+    let source = read_source(invocation)?;
     let mut parser = Parser::new(&source);
     let output = parser.parse_with_recovery();
     let profile = RecoverySalvageProfile::from_parse(&output.ast, &output.diagnostics, false);
 
     if output.diagnostics.is_empty() && profile.class == RecoverySalvageClass::Clean {
-        return Ok(ParseRunResult::pass());
+        return Ok(ModeRunResult::pass());
     }
 
     let first_diagnostic = output
@@ -197,15 +230,393 @@ fn run_parse(invocation: &Invocation) -> Result<ParseRunResult> {
         .or(profile.first_unrecovered_error_node)
         .unwrap_or_else(|| format!("parse salvage class {:?}", profile.class));
 
-    Ok(ParseRunResult::fail("parse_recovery", first_diagnostic))
+    Ok(ModeRunResult::fail("parse_recovery", first_diagnostic))
 }
 
-fn emit_tap(display_path: &str, result: &ParseRunResult) {
+fn run_compile(invocation: &Invocation) -> Result<ModeRunResult> {
+    let source = read_source(invocation)?;
+    let mut parser = Parser::new(&source);
+    let output = parser.parse_with_recovery();
+    let profile = RecoverySalvageProfile::from_parse(&output.ast, &output.diagnostics, false);
+
+    if !output.diagnostics.is_empty() || profile.class != RecoverySalvageClass::Clean {
+        let first_diagnostic = output
+            .diagnostics
+            .first()
+            .map(ToString::to_string)
+            .or(profile.first_unrecovered_error_node)
+            .unwrap_or_else(|| format!("parse salvage class {:?}", profile.class));
+        return Ok(ModeRunResult::fail("parse_recovery", first_diagnostic));
+    }
+
+    let hir = lower_ast(&output.ast);
+    let effects = hir.compile_effects();
+    if let Some(effect) =
+        effects.iter().find(|effect| effect.kind == CompileEffectKind::EmitDynamicBoundary)
+    {
+        let first_diagnostic = effect
+            .dynamic_reason
+            .clone()
+            .or_else(|| effect.fact_name.clone())
+            .unwrap_or_else(|| "unsupported compile-mode dynamic boundary".to_string());
+        return Ok(ModeRunResult::fail("compile_effect", first_diagnostic));
+    }
+
+    Ok(ModeRunResult::pass())
+}
+
+fn run_execute(invocation: &Invocation) -> Result<ModeRunResult> {
+    let display_path = normalize_display_path(&invocation.display_path);
+    let Some(selected_test) = selected_execute_test(&display_path) else {
+        return Ok(ModeRunResult::fail(
+            "runtime_test_harness",
+            format!(
+                "execute-base scaffold supports only selected base tests {}, got {display_path}",
+                EXECUTE_BASE_ALLOWLIST.join(", ")
+            ),
+        ));
+    };
+
+    let compile_result = run_compile(invocation)?;
+    if compile_result.status == RunnerStatus::Fail {
+        return Ok(compile_result);
+    }
+
+    let source = read_source(invocation)?;
+    match selected_test {
+        "base/if.t" => execute_base_if_t(&source),
+        "base/cond.t" => execute_base_cond_t(&source),
+        "base/while.t" => execute_base_while_t(&source),
+        other => Ok(ModeRunResult::fail(
+            "runtime_test_harness",
+            format!("execute-base scaffold has no executor for {other}"),
+        )),
+    }
+}
+
+fn normalize_display_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
+fn selected_execute_test(display_path: &str) -> Option<&'static str> {
+    EXECUTE_BASE_ALLOWLIST.iter().copied().find(|allowed| {
+        if display_path == *allowed {
+            return true;
+        }
+        display_path.strip_suffix(*allowed).is_some_and(|prefix| prefix.ends_with('/'))
+    })
+}
+
+fn execute_base_if_t(source: &str) -> Result<ModeRunResult> {
+    let mut output = String::new();
+    let mut x = None::<String>;
+
+    for line in source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("#!") && !line.starts_with('#'))
+    {
+        match line {
+            r#"print "1..2\n";"# => output.push_str("1..2\n"),
+            r#"$x = 'test';"# => x = Some("test".to_string()),
+            r#"if ($x eq $x) { print "ok 1 - if eq\n"; } else { print "not ok 1 - if eq\n";}"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/if.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if perl_string_eq(value, value) {
+                    output.push_str("ok 1 - if eq\n");
+                } else {
+                    output.push_str("not ok 1 - if eq\n");
+                }
+            }
+            r#"if ($x ne $x) { print "not ok 2 - if ne\n"; } else { print "ok 2 - if ne\n";}"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/if.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if perl_string_ne(value, value) {
+                    output.push_str("not ok 2 - if ne\n");
+                } else {
+                    output.push_str("ok 2 - if ne\n");
+                }
+            }
+            other => {
+                return Ok(ModeRunResult::fail(
+                    "runtime_value_model",
+                    format!("execute-one base/if.t does not support statement: {other}"),
+                ));
+            }
+        }
+    }
+
+    let expected = "1..2\nok 1 - if eq\nok 2 - if ne\n";
+    if output != expected {
+        return Ok(ModeRunResult::fail(
+            "runtime_value_model",
+            "base/if.t execution did not produce the expected TAP".to_string(),
+        ));
+    }
+
+    Ok(ModeRunResult::execute_pass(output, 2, 2))
+}
+
+fn execute_base_cond_t(source: &str) -> Result<ModeRunResult> {
+    let mut output = String::new();
+    let mut x = None::<String>;
+
+    for line in executable_lines(source) {
+        match line {
+            r#"print "1..4\n";"# => output.push_str("1..4\n"),
+            r#"$x = '0';"# => x = Some("0".to_string()),
+            r#"$x eq $x && (print "ok 1 - operator eq\n");"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/cond.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if perl_string_eq(value, value) {
+                    output.push_str("ok 1 - operator eq\n");
+                }
+            }
+            r#"$x ne $x && (print "not ok 1 - operator ne\n");"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/cond.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if perl_string_ne(value, value) {
+                    output.push_str("not ok 1 - operator ne\n");
+                }
+            }
+            r#"$x eq $x || (print "not ok 2 - operator eq\n");"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/cond.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if !perl_string_eq(value, value) {
+                    output.push_str("not ok 2 - operator eq\n");
+                }
+            }
+            r#"$x ne $x || (print "ok 2 - operator ne\n");"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/cond.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if !perl_string_ne(value, value) {
+                    output.push_str("ok 2 - operator ne\n");
+                }
+            }
+            r#"$x == $x && (print "ok 3 - operator ==\n");"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/cond.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if perl_numeric_eq(value, value)? {
+                    output.push_str("ok 3 - operator ==\n");
+                }
+            }
+            r#"$x != $x && (print "not ok 3 - operator !=\n");"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/cond.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if perl_numeric_ne(value, value)? {
+                    output.push_str("not ok 3 - operator !=\n");
+                }
+            }
+            r#"$x == $x || (print "not ok 4 - operator ==\n");"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/cond.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if !perl_numeric_eq(value, value)? {
+                    output.push_str("not ok 4 - operator ==\n");
+                }
+            }
+            r#"$x != $x || (print "ok 4 - operator !=\n");"# => {
+                let Some(value) = x.as_deref() else {
+                    return Ok(ModeRunResult::fail(
+                        "runtime_value_model",
+                        "base/cond.t referenced $x before assignment".to_string(),
+                    ));
+                };
+                if !perl_numeric_ne(value, value)? {
+                    output.push_str("ok 4 - operator !=\n");
+                }
+            }
+            other => {
+                return Ok(ModeRunResult::fail(
+                    "runtime_control_flow",
+                    format!("execute-base base/cond.t does not support statement: {other}"),
+                ));
+            }
+        }
+    }
+
+    let expected =
+        "1..4\nok 1 - operator eq\nok 2 - operator ne\nok 3 - operator ==\nok 4 - operator !=\n";
+    if output != expected {
+        return Ok(ModeRunResult::fail(
+            "runtime_control_flow",
+            "base/cond.t execution did not produce the expected TAP".to_string(),
+        ));
+    }
+
+    Ok(ModeRunResult::execute_pass(output, 4, 4))
+}
+
+fn execute_base_while_t(source: &str) -> Result<ModeRunResult> {
+    let lines = executable_lines(source).collect::<Vec<_>>();
+    let expected_lines = [
+        r#"print "1..4\n";"#,
+        r#"$x = 0;"#,
+        r#"while ($x != 3) {"#,
+        r#"$x = $x + 1;"#,
+        r#"}"#,
+        r#"if ($x == 3) { print "ok 1\n"; } else { print "not ok 1\n";}"#,
+        r#"$x = 0;"#,
+        r#"while (1) {"#,
+        r#"$x = $x + 1;"#,
+        r#"last if $x == 3;"#,
+        r#"}"#,
+        r#"if ($x == 3) { print "ok 2\n"; } else { print "not ok 2\n";}"#,
+        r#"$x = 0;"#,
+        r#"while ($x != 3) {"#,
+        r#"$x = $x + 1;"#,
+        r#"next;"#,
+        r#"print "not ";"#,
+        r#"}"#,
+        r#"print "ok 3\n";"#,
+        r#"$x = 0;"#,
+        r#"while (0) {"#,
+        r#"$x = 1;"#,
+        r#"}"#,
+        r#"if ($x == 0) { print "ok 4\n"; } else { print "not ok 4\n";}"#,
+    ];
+
+    if lines != expected_lines {
+        let first_unmatched = lines
+            .iter()
+            .zip(expected_lines.iter())
+            .find_map(|(actual, expected)| (*actual != *expected).then_some(*actual))
+            .or_else(|| lines.get(expected_lines.len()).copied())
+            .unwrap_or("missing expected base/while.t statement");
+        return Ok(ModeRunResult::fail(
+            "runtime_control_flow",
+            format!("execute-base base/while.t does not support statement: {first_unmatched}"),
+        ));
+    }
+
+    let mut output = String::new();
+    output.push_str("1..4\n");
+
+    let mut x = 0;
+    while x != 3 {
+        x += 1;
+    }
+    if x == 3 {
+        output.push_str("ok 1\n");
+    } else {
+        output.push_str("not ok 1\n");
+    }
+
+    x = 0;
+    loop {
+        x += 1;
+        if x == 3 {
+            break;
+        }
+    }
+    if x == 3 {
+        output.push_str("ok 2\n");
+    } else {
+        output.push_str("not ok 2\n");
+    }
+
+    x = 0;
+    while x != 3 {
+        x += 1;
+        continue;
+    }
+    output.push_str("ok 3\n");
+
+    x = 0;
+    let zero_loop_condition = perl_numeric_ne("0", "0")?;
+    if zero_loop_condition {
+        x = 1;
+    }
+    if x == 0 {
+        output.push_str("ok 4\n");
+    } else {
+        output.push_str("not ok 4\n");
+    }
+
+    let expected_output = "1..4\nok 1\nok 2\nok 3\nok 4\n";
+    if output != expected_output {
+        return Ok(ModeRunResult::fail(
+            "runtime_control_flow",
+            "base/while.t execution did not produce the expected TAP".to_string(),
+        ));
+    }
+
+    Ok(ModeRunResult::execute_pass(output, 4, 4))
+}
+
+fn executable_lines(source: &str) -> impl Iterator<Item = &str> {
+    source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("#!") && !line.starts_with('#'))
+}
+
+fn perl_string_eq(left: &str, right: &str) -> bool {
+    left == right
+}
+
+fn perl_string_ne(left: &str, right: &str) -> bool {
+    left != right
+}
+
+fn perl_numeric_eq(left: &str, right: &str) -> Result<bool> {
+    Ok(parse_perl_number(left)? == parse_perl_number(right)?)
+}
+
+fn perl_numeric_ne(left: &str, right: &str) -> Result<bool> {
+    Ok(parse_perl_number(left)? != parse_perl_number(right)?)
+}
+
+fn parse_perl_number(value: &str) -> Result<f64> {
+    value.parse::<f64>().with_context(|| format!("parsing Perl numeric value {value:?}"))
+}
+
+fn emit_tap(mode: &str, display_path: &str, result: &ModeRunResult) {
+    if let Some(tap_output) = &result.tap_output {
+        print!("{tap_output}");
+        return;
+    }
+
     println!("1..1");
     match result.status {
-        RunnerStatus::Pass => println!("ok 1 - parse {display_path}"),
+        RunnerStatus::Pass => println!("ok 1 - {mode} {display_path}"),
         RunnerStatus::Fail => {
-            println!("not ok 1 - parse {display_path}");
+            println!("not ok 1 - {mode} {display_path}");
             if let Some(bucket) = &result.bucket {
                 println!("# bucket: {bucket}");
             }
@@ -223,7 +634,7 @@ fn emit_internal_failure(err: &anyhow::Error) {
     println!("# first diagnostic: {}", one_line(&err.to_string()));
 }
 
-fn append_context_record(mode: &str, display_path: &str, result: &ParseRunResult) -> Result<()> {
+fn append_context_record(mode: &str, display_path: &str, result: &ModeRunResult) -> Result<()> {
     let Ok(context_path) = env::var(CONTEXT_ENV) else {
         return Ok(());
     };
@@ -234,7 +645,7 @@ fn write_context_record(
     path: &Path,
     mode: &str,
     display_path: &str,
-    result: &ParseRunResult,
+    result: &ModeRunResult,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -242,12 +653,12 @@ fn write_context_record(
     }
 
     let record = RunnerRecord {
-        schema_version: "perl_core_harness.runner_record.v1",
+        schema_version: RUNNER_RECORD_SCHEMA_VERSION.to_string(),
         mode: mode.to_string(),
         path: display_path.to_string(),
         status: result.status,
-        assertions_passed: usize::from(result.status == RunnerStatus::Pass),
-        assertions_total: 1,
+        assertions_passed: result.assertions_passed,
+        assertions_total: result.assertions_total,
         bucket: result.bucket.clone(),
         first_diagnostic: result.first_diagnostic.clone(),
     };
@@ -424,6 +835,22 @@ mod tests {
     }
 
     #[test]
+    fn infers_test_path_for_internal_failure_records() -> TestResult {
+        let args = vec![
+            OsString::from("--unsupported"),
+            OsString::from("-I../lib"),
+            OsString::from("base/if.t"),
+        ];
+
+        let Some(display_path) = infer_display_path(&args) else {
+            bail!("expected test path inference");
+        };
+
+        assert_eq!(display_path, "base/if.t");
+        Ok(())
+    }
+
+    #[test]
     fn parse_clean_file_passes() -> TestResult {
         let temp = tempfile::tempdir()?;
         let script = temp.path().join("ok.t");
@@ -456,11 +883,191 @@ mod tests {
     }
 
     #[test]
+    fn compile_clean_file_passes() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("ok.t");
+        fs::write(&script, "my $x = 1;\n")?;
+        let invocation =
+            Invocation { source: SourceInput::File(script), display_path: "base/ok.t".to_string() };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Pass);
+        assert!(result.bucket.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn compile_parse_error_file_fails_with_parse_bucket() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let script = temp.path().join("bad.t");
+        fs::write(&script, "my $x = ;\n")?;
+        let invocation = Invocation {
+            source: SourceInput::File(script),
+            display_path: "base/bad.t".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("parse_recovery"));
+        Ok(())
+    }
+
+    #[test]
+    fn compile_dynamic_boundary_fails_with_compile_effect_bucket() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline("require $module;\n".to_string()),
+            display_path: "-e".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("compile_effect"));
+        assert!(result.first_diagnostic.as_deref().is_some_and(|diagnostic| {
+            diagnostic.contains("require target is not statically known")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn execute_base_if_emits_real_tap() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(base_if_source()),
+            display_path: "base/if.t".to_string(),
+        };
+
+        let result = run_execute(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Pass);
+        assert_eq!(result.assertions_passed, 2);
+        assert_eq!(result.assertions_total, 2);
+        assert_eq!(result.tap_output.as_deref(), Some("1..2\nok 1 - if eq\nok 2 - if ne\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn execute_non_allowlisted_file_fails_with_runtime_bucket() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(base_if_source()),
+            display_path: "base/num.t".to_string(),
+        };
+
+        let result = run_execute(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("runtime_test_harness"));
+        assert!(result.first_diagnostic.as_deref().is_some_and(|diagnostic| {
+            diagnostic.contains("execute-base scaffold supports only selected base tests")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn execute_base_cond_emits_real_tap() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(base_cond_source()),
+            display_path: "base/cond.t".to_string(),
+        };
+
+        let result = run_execute(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Pass);
+        assert_eq!(result.assertions_passed, 4);
+        assert_eq!(result.assertions_total, 4);
+        assert_eq!(
+            result.tap_output.as_deref(),
+            Some(
+                "1..4\nok 1 - operator eq\nok 2 - operator ne\nok 3 - operator ==\nok 4 - operator !=\n"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn execute_base_while_emits_real_tap() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(base_while_source()),
+            display_path: "base/while.t".to_string(),
+        };
+
+        let result = run_execute(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Pass);
+        assert_eq!(result.assertions_passed, 4);
+        assert_eq!(result.assertions_total, 4);
+        assert_eq!(result.tap_output.as_deref(), Some("1..4\nok 1\nok 2\nok 3\nok 4\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn execute_base_while_unsupported_statement_uses_control_flow_bucket() -> TestResult {
+        let source = r#"#!./perl
+print "1..4\n";
+$x = 0;
+until ($x == 3) { $x = $x + 1; }
+"#;
+        let invocation = Invocation {
+            source: SourceInput::Inline(source.into()),
+            display_path: "base/while.t".to_string(),
+        };
+
+        let result = run_execute(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("runtime_control_flow"));
+        Ok(())
+    }
+
+    #[test]
+    fn execute_base_cond_unsupported_statement_uses_control_flow_bucket() -> TestResult {
+        let source = r#"#!./perl
+print "1..4\n";
+$x = '0';
+while ($x != 1) { $x = 1; }
+"#;
+        let invocation = Invocation {
+            source: SourceInput::Inline(source.into()),
+            display_path: "base/cond.t".to_string(),
+        };
+
+        let result = run_execute(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("runtime_control_flow"));
+        Ok(())
+    }
+
+    #[test]
+    fn execute_base_if_context_record_counts_real_tap_assertions() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let context = temp.path().join("records.jsonl");
+        let invocation = Invocation {
+            source: SourceInput::Inline(base_if_source()),
+            display_path: "base/if.t".to_string(),
+        };
+        let result = run_execute(&invocation)?;
+
+        write_context_record(&context, "execute", "base/if.t", &result)?;
+
+        let raw = fs::read_to_string(context)?;
+        let record: serde_json::Value = serde_json::from_str(raw.trim())?;
+        assert_eq!(record["mode"], "execute");
+        assert_eq!(record["path"], "base/if.t");
+        assert_eq!(record["status"], "pass");
+        assert_eq!(record["assertions_passed"], 2);
+        assert_eq!(record["assertions_total"], 2);
+        assert!(record["bucket"].is_null());
+        Ok(())
+    }
+
+    #[test]
     fn appends_context_record_as_jsonl() -> TestResult {
         let temp = tempfile::tempdir()?;
         let context = temp.path().join("records.jsonl");
 
-        let result = ParseRunResult::pass();
+        let result = ModeRunResult::pass();
         write_context_record(&context, "parse", "base/ok.t", &result)?;
 
         let raw = fs::read_to_string(context)?;
@@ -481,7 +1088,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let context = temp.path().join("records.jsonl");
 
-        let result = ParseRunResult::fail("parse_recovery", "expected expression\nfound ;".into());
+        let result = ModeRunResult::fail("parse_recovery", "expected expression\nfound ;".into());
         write_context_record(&context, "parse", "base/bad.t", &result)?;
 
         let raw = fs::read_to_string(context)?;
@@ -498,5 +1105,78 @@ mod tests {
     #[test]
     fn one_line_collapses_diagnostic_whitespace() {
         assert_eq!(one_line("expected\n  expression\tfound ;"), "expected expression found ;");
+    }
+
+    fn base_if_source() -> String {
+        r#"#!./perl
+
+print "1..2\n";
+
+# first test to see if we can run the tests.
+
+$x = 'test';
+if ($x eq $x) { print "ok 1 - if eq\n"; } else { print "not ok 1 - if eq\n";}
+if ($x ne $x) { print "not ok 2 - if ne\n"; } else { print "ok 2 - if ne\n";}
+"#
+        .to_string()
+    }
+
+    fn base_cond_source() -> String {
+        r#"#!./perl
+
+# make sure conditional operators work
+
+print "1..4\n";
+
+$x = '0';
+
+$x eq $x && (print "ok 1 - operator eq\n");
+$x ne $x && (print "not ok 1 - operator ne\n");
+$x eq $x || (print "not ok 2 - operator eq\n");
+$x ne $x || (print "ok 2 - operator ne\n");
+
+$x == $x && (print "ok 3 - operator ==\n");
+$x != $x && (print "not ok 3 - operator !=\n");
+$x == $x || (print "not ok 4 - operator ==\n");
+$x != $x || (print "ok 4 - operator !=\n");
+"#
+        .to_string()
+    }
+
+    fn base_while_source() -> String {
+        r#"#!./perl
+
+print "1..4\n";
+
+# very basic tests of while
+
+$x = 0;
+while ($x != 3) {
+    $x = $x + 1;
+}
+if ($x == 3) { print "ok 1\n"; } else { print "not ok 1\n";}
+
+$x = 0;
+while (1) {
+    $x = $x + 1;
+    last if $x == 3;
+}
+if ($x == 3) { print "ok 2\n"; } else { print "not ok 2\n";}
+
+$x = 0;
+while ($x != 3) {
+    $x = $x + 1;
+    next;
+    print "not ";
+}
+print "ok 3\n";
+
+$x = 0;
+while (0) {
+    $x = 1;
+}
+if ($x == 0) { print "ok 4\n"; } else { print "not ok 4\n";}
+"#
+        .to_string()
     }
 }

@@ -1507,8 +1507,29 @@ impl LspServer {
                 }
             }
 
+            // Snapshot the critic config under a short-lived lock (not held across
+            // the workspace_config lock below) so `perl.runCritic` (engine Native)
+            // reports the same rule set as the editor's on-type native pull
+            // diagnostics.
+            let (critic_engine, native_profile, native_include, native_exclude, native_severity) = {
+                let config = self.config.lock();
+                (
+                    config.critic_engine,
+                    config.native_critic_profile.clone(),
+                    config.native_critic_include.clone(),
+                    config.native_critic_exclude.clone(),
+                    config.perlcritic_severity,
+                )
+            };
             let provider = ExecuteCommandProvider::with_workspace_roots(workspace_roots)
-                .with_workspace_config(self.workspace_config.lock().clone());
+                .with_workspace_config(self.workspace_config.lock().clone())
+                .with_critic_engine(critic_engine)
+                .with_native_critic_config(
+                    native_profile,
+                    native_include,
+                    native_exclude,
+                    native_severity,
+                );
 
             match command {
                 // Keep existing test commands for backward compatibility
@@ -1523,6 +1544,33 @@ impl LspServer {
                     }
                 }
                 "perl.runSubtest" => {
+                    // Two argument forms:
+                    //   [file, subtest_name] -> run the whole file through the
+                    //       runner and focus TAP output on the named subtest
+                    //       (we never execute the anonymous block in isolation).
+                    //   [subtest_name]       -> legacy echo (no file to run).
+                    if arguments.len() >= 2 {
+                        match provider.execute_command(command, arguments) {
+                            Ok(result) => return Ok(Some(result)),
+                            Err(e) => {
+                                let error_code = if e.contains("Missing") || e.contains("argument")
+                                {
+                                    -32602
+                                } else {
+                                    -32603
+                                };
+                                return Err(JsonRpcError {
+                                    code: error_code,
+                                    message: format!("Execute command failed: {}", e),
+                                    data: Some(json!({
+                                        "command": command,
+                                        "errorType": "executeCommand",
+                                        "originalError": e
+                                    })),
+                                });
+                            }
+                        }
+                    }
                     let subtest_name = arguments
                         .first()
                         .and_then(|v| v.as_str())
@@ -1575,6 +1623,7 @@ impl LspServer {
                 | "perl.goToTest"
                 | "perl.goToImplementation"
                 | "perl.debugTests"
+                | "perl.debugTestFile"
                 | "perl.explainProviderDecision" => {
                     match provider.execute_command(command, arguments) {
                         Ok(result) => return Ok(Some(result)),

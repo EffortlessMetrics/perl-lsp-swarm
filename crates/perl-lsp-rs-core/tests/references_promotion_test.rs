@@ -27,6 +27,7 @@
 //! | F10 | scope_shadow_exact_range_set | outer `$x` + inner `my $x`: find-refs on outer returns only outer ranges, as exact set |
 //! | F11 | include_declaration_note | promotion returns all occurrences incl. declaration when opts.include_declaration=true |
 //! | F12 | cross_file_fallback | package-qualified target → LegacyFallback, not Exact |
+//! | F13 | dynamic_boundary_fallback | dynamic PIR boundary → LegacyFallback(DynamicBoundary), not Exact |
 //!
 //! Note: latency is tracked via benchmarks/receipts, not wall-clock unit tests.
 
@@ -40,7 +41,7 @@ use perl_lsp_rs_core::providers::navigation::{
 use perl_parser_core::{Parser, hir::lower_ast, pir::extract_lexical_facts};
 use perl_position_tracking::PositionMapper;
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 /// Identity URI mapper: converts byte offsets to a trivial single-line `lsp_types::Range`.
 ///
@@ -86,6 +87,216 @@ fn sorted_ranges(mut ranges: Vec<lsp_types::Range>) -> Vec<lsp_types::Range> {
 
 fn opts_all() -> ReferenceOptions {
     ReferenceOptions { include_declaration: true }
+}
+
+fn nth_byte_range(source: &str, needle: &str, occurrence: usize) -> TestResult<(usize, usize)> {
+    source
+        .match_indices(needle)
+        .nth(occurrence)
+        .map(|(start, matched)| (start, start + matched.len()))
+        .ok_or_else(|| {
+            format!(
+                "needle `{needle}` occurrence {occurrence} not found in source with len {}",
+                source.len()
+            )
+            .into()
+        })
+}
+
+fn nth_lsp_range(
+    source: &str,
+    mapper: &PositionMapper,
+    needle: &str,
+    occurrence: usize,
+) -> TestResult<lsp_types::Range> {
+    let (start, end) = nth_byte_range(source, needle, occurrence)?;
+    Ok(lsp_range_from_bytes(mapper, start, end))
+}
+
+fn body_idx_for_occurrence(
+    receipt: &perl_parser_core::pir::LexicalExtractorReceipt,
+    source: &str,
+    needle: &str,
+    occurrence: usize,
+) -> TestResult<usize> {
+    let (expected_start, expected_end) = nth_byte_range(source, needle, occurrence)?;
+    for body in &receipt.bodies {
+        for fact in &body.facts {
+            if let Some(range) = fact.source_anchor.range.as_ref() {
+                if range.start == expected_start && range.end == expected_end {
+                    return Ok(fact.body_idx);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "no PIR lexical fact anchored at byte range {expected_start}..{expected_end} \
+         for `{needle}` occurrence {occurrence}"
+    )
+    .into())
+}
+
+fn exact_ranges_for(
+    label: &str,
+    source: &str,
+    target_sigil: &str,
+    target_name: &str,
+    body_idx: usize,
+    include_declaration: bool,
+) -> TestResult<Vec<lsp_types::Range>> {
+    let receipt = receipt_for(source);
+    let mapper = PositionMapper::new(source);
+    let uri_mapper = |start: usize, end: usize| lsp_range_from_bytes(&mapper, start, end);
+
+    let outcome = references_pir_promote(
+        PromotionMode::PromoteExact,
+        target_sigil,
+        target_name,
+        &receipt,
+        &[],
+        body_idx,
+        &uri_mapper,
+        ReferenceOptions { include_declaration },
+    );
+
+    match outcome {
+        ReferencesPirPromoteOutcome::Exact(ranges) => Ok(sorted_ranges(ranges)),
+        other => Err(format!("{label}: expected Exact, got {other:?}").into()),
+    }
+}
+
+fn assert_curated_ranges(
+    label: &str,
+    actual: Vec<lsp_types::Range>,
+    expected: Vec<lsp_types::Range>,
+) -> TestResult {
+    let actual_ranges = sorted_ranges(actual);
+    let expected_ranges = sorted_ranges(expected);
+    let missing_ranges: Vec<_> =
+        expected_ranges.iter().filter(|range| !actual_ranges.contains(range)).copied().collect();
+    let extra_ranges: Vec<_> =
+        actual_ranges.iter().filter(|range| !expected_ranges.contains(range)).copied().collect();
+
+    if missing_ranges.is_empty() && extra_ranges.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{label}: curated PIR-A references range mismatch\
+         \nexpected_ranges: {expected_ranges:?}\
+         \nactual_ranges:   {actual_ranges:?}\
+         \nmissing_ranges:  {missing_ranges:?}\
+         \nextra_ranges:    {extra_ranges:?}"
+    )
+    .into())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P5: Curated expected LSP Range corpus for #2674
+//
+// This is the independent correctness corpus selected on the Phase 2 board. It
+// checks hand-computed LSP ranges for the narrow candidate only:
+// PIR-A initialized same-file lexical references. It is NOT a legacy-equality
+// check and it does not wire live provider behavior.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn p5_curated_expected_lsp_range_corpus_for_initialized_lexicals() -> TestResult {
+    // Single same-file scalar: declaration + read, with LSP line/character ranges.
+    let single = "my $a = 1;\nprint $a;\n";
+    let single_mapper = PositionMapper::new(single);
+    let single_expected = vec![
+        nth_lsp_range(single, &single_mapper, "$a", 0)?,
+        nth_lsp_range(single, &single_mapper, "$a", 1)?,
+    ];
+    let single_actual = exact_ranges_for("p5_single_scalar", single, "$", "a", 0, true)?;
+    assert_curated_ranges("p5_single_scalar", single_actual, single_expected)?;
+
+    // Declaration filtering: resolved binding with includeDeclaration=false keeps
+    // the read site only, distinct from NoExactFacts.
+    let no_decl_expected = vec![nth_lsp_range(single, &single_mapper, "$a", 1)?];
+    let no_decl_actual =
+        exact_ranges_for("p5_single_scalar_without_declaration", single, "$", "a", 0, false)?;
+    assert_curated_ranges(
+        "p5_single_scalar_without_declaration",
+        no_decl_actual,
+        no_decl_expected,
+    )?;
+
+    // Outer lexical shadowing: inner declaration/read are deliberately absent.
+    let shadow_mapper = PositionMapper::new(F1_SOURCE);
+    let shadow_expected = vec![
+        nth_lsp_range(F1_SOURCE, &shadow_mapper, "$x", 0)?,
+        nth_lsp_range(F1_SOURCE, &shadow_mapper, "$x", 3)?,
+    ];
+    let shadow_actual = exact_ranges_for("p5_outer_shadow", F1_SOURCE, "$", "x", 0, true)?;
+    assert_curated_ranges("p5_outer_shadow", shadow_actual, shadow_expected)?;
+
+    // Sigil identity: `$x` and `@x` share the same bare name but have disjoint
+    // expected ranges.
+    let sigils = "my $x = 1;\nmy @x = (1, 2);\nprint $x;\nprint @x;\n";
+    let sigil_mapper = PositionMapper::new(sigils);
+    let scalar_expected = vec![
+        nth_lsp_range(sigils, &sigil_mapper, "$x", 0)?,
+        nth_lsp_range(sigils, &sigil_mapper, "$x", 1)?,
+    ];
+    let array_expected = vec![
+        nth_lsp_range(sigils, &sigil_mapper, "@x", 0)?,
+        nth_lsp_range(sigils, &sigil_mapper, "@x", 1)?,
+    ];
+    let scalar_actual = exact_ranges_for("p5_sigil_scalar", sigils, "$", "x", 0, true)?;
+    let array_actual = exact_ranges_for("p5_sigil_array", sigils, "@", "x", 0, true)?;
+    assert_curated_ranges("p5_sigil_scalar", scalar_actual, scalar_expected.clone())?;
+    assert_curated_ranges("p5_sigil_array", array_actual, array_expected.clone())?;
+    for range in &scalar_expected {
+        assert!(
+            !array_expected.contains(range),
+            "$x expected range {range:?} must not appear in @x expected ranges"
+        );
+    }
+
+    // Same bare lexical name in separate sub bodies: query each body separately.
+    let separate_subs = "sub first { my $v = 1; print $v; }\nsub second { my $v = 2; print $v; }\n";
+    let separate_receipt = receipt_for(separate_subs);
+    let separate_mapper = PositionMapper::new(separate_subs);
+    let first_body = body_idx_for_occurrence(&separate_receipt, separate_subs, "$v", 0)?;
+    let second_body = body_idx_for_occurrence(&separate_receipt, separate_subs, "$v", 2)?;
+    let first_expected = vec![
+        nth_lsp_range(separate_subs, &separate_mapper, "$v", 0)?,
+        nth_lsp_range(separate_subs, &separate_mapper, "$v", 1)?,
+    ];
+    let second_expected = vec![
+        nth_lsp_range(separate_subs, &separate_mapper, "$v", 2)?,
+        nth_lsp_range(separate_subs, &separate_mapper, "$v", 3)?,
+    ];
+    let first_actual =
+        exact_ranges_for("p5_same_name_first_sub", separate_subs, "$", "v", first_body, true)?;
+    let second_actual =
+        exact_ranges_for("p5_same_name_second_sub", separate_subs, "$", "v", second_body, true)?;
+    assert_curated_ranges("p5_same_name_first_sub", first_actual, first_expected)?;
+    assert_curated_ranges("p5_same_name_second_sub", second_actual, second_expected)?;
+
+    // CRLF and Unicode/UTF-16 conversion are explicit corpus cases, not raw byte
+    // column checks.
+    let crlf_mapper = PositionMapper::new(F9_SOURCE_CRLF);
+    let crlf_expected = vec![
+        nth_lsp_range(F9_SOURCE_CRLF, &crlf_mapper, "$v", 0)?,
+        nth_lsp_range(F9_SOURCE_CRLF, &crlf_mapper, "$v", 1)?,
+    ];
+    let crlf_actual = exact_ranges_for("p5_crlf", F9_SOURCE_CRLF, "$", "v", 0, true)?;
+    assert_curated_ranges("p5_crlf", crlf_actual, crlf_expected)?;
+
+    let unicode_mapper = PositionMapper::new(F7_SOURCE);
+    let unicode_expected = vec![
+        nth_lsp_range(F7_SOURCE, &unicode_mapper, "$v", 0)?,
+        nth_lsp_range(F7_SOURCE, &unicode_mapper, "$v", 1)?,
+        nth_lsp_range(F7_SOURCE, &unicode_mapper, "$v", 2)?,
+    ];
+    let unicode_actual = exact_ranges_for("p5_utf16_astral", F7_SOURCE, "$", "v", 0, true)?;
+    assert_curated_ranges("p5_utf16_astral", unicode_actual, unicode_expected)?;
+
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -679,6 +890,57 @@ fn f12_cross_file_package_qualified_returns_legacy_fallback() -> TestResult {
             return Err(format!(
                 "F12: package-qualified name must NOT produce Exact result;\
                  \ngot Exact({r:?}) — the guard failed to refuse"
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F13: Dynamic PIR boundaries refuse exact promotion
+//
+// Dynamic constructs such as string eval mean the lexical-only PIR slice cannot
+// safely claim exactness. The receipt should preserve that source fact, and the
+// promotion contract should return the legacy result with a visible
+// DynamicBoundary reason instead of silently returning Exact.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn f13_dynamic_boundary_returns_explicit_fallback() -> TestResult {
+    let source = "my $x = 1;\nmy $code = 'print $x';\neval $code;\nprint $x;\n";
+    let receipt = receipt_for(source);
+
+    assert_eq!(
+        receipt.dynamic_boundary_count, 1,
+        "receipt must expose the compiler-observed eval boundary"
+    );
+
+    let legacy = vec![(3usize, 5usize), (26usize, 28usize), (51usize, 53usize)];
+    let outcome = references_pir_promote(
+        PromotionMode::PromoteExact,
+        "$",
+        "x",
+        &receipt,
+        &legacy,
+        0,
+        &byte_mapper,
+        opts_all(),
+    );
+
+    match outcome {
+        ReferencesPirPromoteOutcome::LegacyFallback { result, reason } => {
+            assert_eq!(result, legacy, "legacy result must be returned unmodified");
+            assert_eq!(
+                reason,
+                PirShadowRefusalReason::DynamicBoundary,
+                "dynamic source facts must refuse exact promotion"
+            );
+        }
+        ReferencesPirPromoteOutcome::Exact(ranges) => {
+            return Err(format!(
+                "F13: dynamic boundary must NOT produce Exact result; got Exact({ranges:?})"
             )
             .into());
         }

@@ -429,6 +429,12 @@ impl Node {
                 }
             }
 
+            NodeKind::VString { value } => {
+                // Escape quotes in version string to prevent S-expression parsing issues
+                let escaped_value = value.replace('\\', "\\\\").replace('"', "\\\"");
+                format!("(vstring \"{}\")", escaped_value)
+            }
+
             NodeKind::Heredoc { delimiter, content, interpolated, indented, command, .. } => {
                 let type_str = if *command {
                     "heredoc_command"
@@ -672,7 +678,7 @@ impl Node {
                 format!("(slurpy_parameter {})", variable.to_sexp())
             }
 
-            NodeKind::NamedParameter { variable } => {
+            NodeKind::NamedParameter { variable, .. } => {
                 format!("(named_parameter {})", variable.to_sexp())
             }
 
@@ -1119,7 +1125,12 @@ impl Node {
                 f(default_value);
             }
             NodeKind::SlurpyParameter { variable } => f(variable),
-            NodeKind::NamedParameter { variable } => f(variable),
+            NodeKind::NamedParameter { variable, default_value, .. } => {
+                f(variable);
+                if let Some(default) = default_value {
+                    f(default);
+                }
+            }
 
             // Pattern matching
             NodeKind::Match { expr, .. } => f(expr),
@@ -1160,6 +1171,7 @@ impl Node {
             | NodeKind::Identifier { .. }
             | NodeKind::Number { .. }
             | NodeKind::String { .. }
+            | NodeKind::VString { .. }
             | NodeKind::Heredoc { .. }
             | NodeKind::Regex { .. }
             | NodeKind::Readline { .. }
@@ -1374,7 +1386,12 @@ impl Node {
                 f(default_value);
             }
             NodeKind::SlurpyParameter { variable } => f(variable),
-            NodeKind::NamedParameter { variable } => f(variable),
+            NodeKind::NamedParameter { variable, default_value, .. } => {
+                f(variable);
+                if let Some(default) = default_value {
+                    f(default);
+                }
+            }
 
             // Pattern matching
             NodeKind::Match { expr, .. } => f(expr),
@@ -1415,6 +1432,7 @@ impl Node {
             | NodeKind::Identifier { .. }
             | NodeKind::Number { .. }
             | NodeKind::String { .. }
+            | NodeKind::VString { .. }
             | NodeKind::Heredoc { .. }
             | NodeKind::Regex { .. }
             | NodeKind::Readline { .. }
@@ -1850,6 +1868,15 @@ pub enum NodeKind {
         interpolated: bool,
     },
 
+    /// Version string literal (v-string) like `v1.2.3` or `v5.10.0`
+    ///
+    /// Semantically distinct from regular strings to support version checking
+    /// and special handling in contexts like `use v5.10` and `require v5.8.0`.
+    VString {
+        /// Version string content (e.g., "v1.2.3")
+        value: String,
+    },
+
     /// Heredoc string literal for multi-line content
     ///
     /// Supports all heredoc forms: `<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<~EOF` (indented).
@@ -2104,10 +2131,23 @@ pub enum NodeKind {
         variable: Box<Node>,
     },
 
-    /// Named parameter placeholder in signature (future Perl feature)
+    /// Named parameter in a signature: `:$alpha` or `:$beta = 1`
+    /// (Perl 5.44 named arguments, PPC0024). The caller supplies these by
+    /// name (`f(alpha => 1)`); the external key is derived from the lexical
+    /// variable name without its sigil.
     NamedParameter {
-        /// Variable for named parameter binding
+        /// Variable for named parameter binding (e.g. `$alpha`)
         variable: Box<Node>,
+        /// External argument name, derived from the variable name without its
+        /// sigil (e.g. `alpha` for `:$alpha`). This is the key callers use.
+        external_name: String,
+        /// Default-assignment operator when a default is present: `=`, `//=`,
+        /// or `||=`. `None` when the parameter has no default.
+        default_operator: Option<String>,
+        /// Default value expression, when the parameter is defaulted.
+        default_value: Option<Box<Node>>,
+        /// True when the parameter has no default (the caller must supply it).
+        required: bool,
     },
 
     /// Method declaration (Perl 5.38+ with `use feature 'class'`)
@@ -2415,6 +2455,7 @@ impl NodeKind {
             NodeKind::Typeglob { .. } => "Typeglob",
             NodeKind::Number { .. } => "Number",
             NodeKind::String { .. } => "String",
+            NodeKind::VString { .. } => "VString",
             NodeKind::Heredoc { .. } => "Heredoc",
             NodeKind::ArrayLiteral { .. } => "ArrayLiteral",
             NodeKind::HashLiteral { .. } => "HashLiteral",
@@ -2731,6 +2772,7 @@ mod tests {
             NodeKind::Typeglob { name: String::new() },
             NodeKind::Number { value: String::new() },
             NodeKind::String { value: String::new(), interpolated: false },
+            NodeKind::VString { value: String::new() },
             NodeKind::Heredoc {
                 delimiter: String::new(),
                 content: String::new(),
@@ -2808,7 +2850,13 @@ mod tests {
                 default_value: Box::new(dummy_node()),
             },
             NodeKind::SlurpyParameter { variable: Box::new(dummy_node()) },
-            NodeKind::NamedParameter { variable: Box::new(dummy_node()) },
+            NodeKind::NamedParameter {
+                variable: Box::new(dummy_node()),
+                external_name: String::new(),
+                default_operator: None,
+                default_value: None,
+                required: true,
+            },
             NodeKind::Method {
                 name: String::new(),
                 name_span: None,
