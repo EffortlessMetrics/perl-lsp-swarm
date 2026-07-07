@@ -695,7 +695,7 @@ fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
     validate_ripr_facts_path(root, "root")?;
     validate_ripr_facts_path(diff_path, "diff")?;
     let path = std::path::Path::new(diff_path);
-    std::fs::read_to_string(&path)
+    std::fs::read_to_string(path)
         .map_err(|error| format!("failed to read diff `{}`: {error}", path.display()))
 }
 
@@ -711,10 +711,6 @@ fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
 /// packet) is validated first: it is the cheapest check, so failing on it before
 /// building the packet avoids a needless workspace scan when the write
 /// destination is invalid.
-#[expect(
-    clippy::print_stderr,
-    reason = "ripr-facts is a batch CLI unit — user-facing diagnostics intentionally use stderr"
-)]
 pub fn run_ripr_facts(
     schema: &str,
     root: &str,

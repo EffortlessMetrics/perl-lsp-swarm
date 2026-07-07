@@ -684,11 +684,7 @@ fn test_references_package(
 fn file_references_package(test_path: &str, _all_pm_paths: &[&str], pm_path: &str) -> bool {
     // Simple heuristic: if the .pm basename appears in the test path.
     // E.g. t/app.t references lib/My/App.pm if "App" appears in both.
-    let pm_basename = pm_path
-        .rsplit(|separator| separator == '/' || separator == '\\')
-        .next()
-        .unwrap_or("")
-        .trim_end_matches(".pm");
+    let pm_basename = pm_path.rsplit(['/', '\\']).next().unwrap_or("").trim_end_matches(".pm");
     !pm_basename.is_empty()
         && test_path.to_ascii_lowercase().contains(&pm_basename.to_ascii_lowercase())
 }
