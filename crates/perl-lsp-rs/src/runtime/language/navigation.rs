@@ -363,7 +363,7 @@ fn get_quoted_framework_module_regex() -> Result<&'static regex::Regex, JsonRpcE
 fn quoted_framework_module_at_cursor(
     text: &str,
     cursor: usize,
-) -> Result<Option<String>, JsonRpcError> {
+) -> Result<Option<FrameworkModuleReference>, JsonRpcError> {
     for cap in get_quoted_framework_module_regex()?.captures_iter(text) {
         let Some(keyword) = cap.get(1) else {
             continue;
@@ -384,11 +384,50 @@ fn quoted_framework_module_at_cursor(
     Ok(None)
 }
 
-fn normalize_framework_module_reference(keyword: &str, module_name: &str) -> String {
-    if keyword == "enable" && !module_name.contains("::") {
+fn normalize_framework_module_reference(
+    keyword: &str,
+    module_name: &str,
+) -> FrameworkModuleReference {
+    let module_name = if keyword == "enable" && !module_name.contains("::") {
         format!("Plack::Middleware::{module_name}")
     } else {
         module_name.to_string()
+    };
+    let kind = if keyword == "enable" && module_name.starts_with("Plack::Middleware::") {
+        FrameworkModuleKind::PlackMiddleware
+    } else {
+        FrameworkModuleKind::Package
+    };
+
+    FrameworkModuleReference { module_name, kind }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FrameworkModuleKind {
+    Package,
+    PlackMiddleware,
+}
+
+#[derive(Debug, Clone)]
+struct FrameworkModuleReference {
+    module_name: String,
+    kind: FrameworkModuleKind,
+}
+
+#[cfg(feature = "workspace")]
+impl FrameworkModuleReference {
+    fn definition_location(
+        &self,
+        workspace_index: &crate::workspace_index::WorkspaceIndex,
+    ) -> Option<crate::workspace_index::Location> {
+        match self.kind {
+            FrameworkModuleKind::Package => {
+                find_package_definition_location(workspace_index, &self.module_name)
+            }
+            FrameworkModuleKind::PlackMiddleware => {
+                find_plack_middleware_definition_location(workspace_index, &self.module_name)
+            }
+        }
     }
 }
 
@@ -415,7 +454,7 @@ enum EarlyDefinitionTarget {
     Module(String),
     /// Cursor is on a quoted framework package reference, such as Moo/Moose
     /// `with`/`extends` or Plack Builder `enable`.
-    FrameworkModule(String),
+    FrameworkModule(FrameworkModuleReference),
     XsBootstrap(String),
 }
 
@@ -1116,11 +1155,12 @@ impl LspServer {
                             }])));
                         }
                     }
-                    EarlyDefinitionTarget::FrameworkModule(module_name) => {
+                    EarlyDefinitionTarget::FrameworkModule(module_ref) => {
                         #[cfg(feature = "workspace")]
-                        if let Some(coordinator) = self.coordinator()
+                        if !workspace_index_stale_for_document
+                            && let Some(coordinator) = self.coordinator()
                             && let Some(def_location) =
-                                find_package_definition_location(coordinator.index(), &module_name)
+                                module_ref.definition_location(coordinator.index())
                             && let Some(lsp_location) =
                                 crate::workspace_index::lsp_adapter::to_lsp_location(&def_location)
                         {
@@ -1128,7 +1168,7 @@ impl LspServer {
                         }
 
                         if let Some(module_path) = self.resolve_module_to_path_with_doc_at_offset(
-                            &module_name,
+                            &module_ref.module_name,
                             Some(&doc_text),
                             Some(uri),
                             Some(doc_offset),
