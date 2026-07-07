@@ -338,8 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn type_hierarchy_routes_call_live_handlers_when_not_cancelled()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn route_request_call_presence_observer() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         server.initialize_requested.store(true, Ordering::Release);
         let uri = "file:///routing-type-hierarchy.pl";
@@ -353,83 +352,107 @@ mod tests {
                 std::io::Error::other(format!("textDocument/didOpen failed: {error:?}"))
             })?;
 
-        let child_items = route_request_result(
-            &server,
-            "textDocument/prepareTypeHierarchy",
-            5100,
-            json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": 2, "character": 8 }
-            }),
-        )?;
+        let standard_prepare_id = JsonRpcId::Integer(5100);
+        let standard_prepare = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(standard_prepare_id.clone()),
+                method: "textDocument/prepareTypeHierarchy".to_string(),
+                params: Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 2, "character": 8 }
+                })),
+            },
+            Some(standard_prepare_id.to_value()),
+            true,
+        );
+        let child_items = handler_result(standard_prepare, "textDocument/prepareTypeHierarchy")?;
         let child_item = first_result_item(&child_items, "textDocument/prepareTypeHierarchy")?;
         ensure_item_name(child_item, "Child", "textDocument/prepareTypeHierarchy")?;
 
-        let alias_items = route_request_result(
-            &server,
-            "typeHierarchy/prepare",
-            5101,
-            json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": 2, "character": 8 }
-            }),
-        )?;
+        let alias_prepare_id = JsonRpcId::Integer(5101);
+        let alias_prepare = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(alias_prepare_id.clone()),
+                method: "typeHierarchy/prepare".to_string(),
+                params: Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 2, "character": 8 }
+                })),
+            },
+            Some(alias_prepare_id.to_value()),
+            true,
+        );
+        let alias_items = handler_result(alias_prepare, "typeHierarchy/prepare")?;
         let alias_item = first_result_item(&alias_items, "typeHierarchy/prepare")?;
         ensure_item_name(alias_item, "Child", "typeHierarchy/prepare")?;
 
-        let supertypes = route_request_result(
-            &server,
-            "typeHierarchy/supertypes",
-            5102,
-            json!({ "item": child_item }),
-        )?;
+        let supertypes_id = JsonRpcId::Integer(5102);
+        let supertypes_request = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(supertypes_id.clone()),
+                method: "typeHierarchy/supertypes".to_string(),
+                params: Some(json!({ "item": child_item })),
+            },
+            Some(supertypes_id.to_value()),
+            true,
+        );
+        let supertypes = handler_result(supertypes_request, "typeHierarchy/supertypes")?;
         ensure_array_contains_name(&supertypes, "Base", "typeHierarchy/supertypes")?;
 
-        let base_items = route_request_result(
-            &server,
-            "textDocument/prepareTypeHierarchy",
-            5103,
-            json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": 0, "character": 8 }
-            }),
-        )?;
+        let base_prepare_id = JsonRpcId::Integer(5103);
+        let base_prepare = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(base_prepare_id.clone()),
+                method: "textDocument/prepareTypeHierarchy".to_string(),
+                params: Some(json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 8 }
+                })),
+            },
+            Some(base_prepare_id.to_value()),
+            true,
+        );
+        let base_items = handler_result(base_prepare, "textDocument/prepareTypeHierarchy")?;
         let base_item = first_result_item(&base_items, "textDocument/prepareTypeHierarchy")?;
         ensure_item_name(base_item, "Base", "textDocument/prepareTypeHierarchy")?;
 
-        let subtypes = route_request_result(
-            &server,
-            "typeHierarchy/subtypes",
-            5104,
-            json!({ "item": base_item }),
-        )?;
+        let subtypes_id = JsonRpcId::Integer(5104);
+        let subtypes_request = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(subtypes_id.clone()),
+                method: "typeHierarchy/subtypes".to_string(),
+                params: Some(json!({ "item": base_item })),
+            },
+            Some(subtypes_id.to_value()),
+            true,
+        );
+        let subtypes = handler_result(subtypes_request, "typeHierarchy/subtypes")?;
         ensure_array_contains_name(&subtypes, "Child", "typeHierarchy/subtypes")?;
 
         Ok(())
     }
-    fn route_request_result(
-        server: &LspServer,
+
+    fn handler_result(
+        routed: RoutedResponse,
         method: &str,
-        id: i64,
-        params: Value,
     ) -> Result<Value, Box<dyn std::error::Error>> {
-        let request_id = JsonRpcId::Integer(id);
-        let routed = server.route_request(
-            JsonRpcRequest {
-                _jsonrpc: "2.0".to_string(),
-                id: Some(request_id.clone()),
-                method: method.to_string(),
-                params: Some(params),
-            },
-            Some(request_id.to_value()),
-            true,
-        );
-        let RoutedResponse::Handler { result, .. } = routed else {
+        let RoutedResponse::Handler { method: routed_method, result, .. } = routed else {
             return Err(std::io::Error::other(format!(
                 "{method} must route to the live handler when not cancelled"
             ))
             .into());
         };
+        if routed_method != method {
+            return Err(std::io::Error::other(format!(
+                "{method} routed as unexpected method {routed_method}"
+            ))
+            .into());
+        }
         result
             .map_err(|error| std::io::Error::other(format!("{method} returned error: {error:?}")))?
             .ok_or_else(|| {
