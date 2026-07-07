@@ -77,14 +77,19 @@ impl LspServer {
                 self.handle_prepare_type_hierarchy_dispatch(request.params)
             }
             "typeHierarchy/prepare" => {
-                // Alias for deprecated/alternate method string
-                self.handle_prepare_type_hierarchy_dispatch(request.params)
+                return self.route_cancellable(id, method, should_respond, |_| {
+                    self.handle_prepare_type_hierarchy_dispatch(request.params)
+                });
             }
             "typeHierarchy/supertypes" => {
-                self.handle_type_hierarchy_supertypes_dispatch(request.params)
+                return self.route_cancellable(id, method, should_respond, |_| {
+                    self.handle_type_hierarchy_supertypes_dispatch(request.params)
+                });
             }
             "typeHierarchy/subtypes" => {
-                self.handle_type_hierarchy_subtypes_dispatch(request.params)
+                return self.route_cancellable(id, method, should_respond, |_| {
+                    self.handle_type_hierarchy_subtypes_dispatch(request.params)
+                });
             }
             "textDocument/diagnostic" => self.handle_document_diagnostic_dispatch(request.params),
             "workspace/diagnostic" => {
