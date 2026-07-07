@@ -335,4 +335,58 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn uncancelled_type_hierarchy_routes_call_handlers() -> Result<(), Box<dyn std::error::Error>> {
+        for (offset, method) in [
+            "textDocument/prepareTypeHierarchy",
+            "typeHierarchy/prepare",
+            "typeHierarchy/supertypes",
+            "typeHierarchy/subtypes",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let server = LspServer::new();
+            server.initialize_requested.store(true, Ordering::Release);
+            let request_id = JsonRpcId::Integer(4200 + offset as i64);
+
+            let routed = server.route_request(
+                JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: Some(request_id.clone()),
+                    method: method.to_string(),
+                    params: None,
+                },
+                Some(request_id.to_value()),
+                true,
+            );
+
+            let RoutedResponse::Handler { method: routed_method, result, .. } = routed else {
+                return Err(std::io::Error::other(format!(
+                    "{method} must call the provider handler when not cancelled"
+                ))
+                .into());
+            };
+
+            if routed_method != method {
+                return Err(std::io::Error::other(format!(
+                    "{method} routed as unexpected method {routed_method}"
+                ))
+                .into());
+            }
+
+            if let Err(error) = result
+                && (error.code == METHOD_NOT_FOUND || error.code == REQUEST_CANCELLED)
+            {
+                return Err(std::io::Error::other(format!(
+                    "{method} must reach handler validation, got error code {}",
+                    error.code
+                ))
+                .into());
+            }
+        }
+
+        Ok(())
+    }
 }
