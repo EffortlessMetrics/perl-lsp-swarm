@@ -38,7 +38,7 @@ Coverage is advisory/manual/scheduled only and must not block normal PR work.
 | ID | Work item | State | Current evidence | Next action | Stop condition |
 |---|---|---:|---|---|---|
 | P0 | Phase 2 board | Green after #3459 | This file | None | Board exists and is linked from the harness and provider status pages |
-| P1 | First provider candidate selection | Green / selected | `textDocument/references` PIR-A initialized same-file lexical references selected below; #2635 is the execution issue; #3461 landed the dynamic-boundary refusal prerequisite | Refresh the selected candidate's P5/P6/P7 evidence before behavior promotion | One provider surface and fact class is selected with harness, scorecard/oracle, shadow, fallback, and rollback evidence named |
+| P1 | First provider candidate selection | Green / selected | `textDocument/references` PIR-A initialized same-file lexical references selected below; #2674 tracks the measurement-to-promotion roadmap; #2635/#3461 supply the guarded shadow/refusal prerequisites | Refresh the selected candidate's P5/P6/P7 evidence before behavior promotion | One provider surface and fact class is selected with harness, scorecard/oracle, shadow, fallback, and rollback evidence named |
 | P2 | Selected runtime expansion | Red | Selected execute-base covers `base/if.t`, `base/cond.t`, and `base/while.t` | Verify current parse/compile receipts, then add one clean `base/*.t` candidate such as `base/num.t` if still clean | Selected execute receipt expands beyond the current three files or records a deliberate deferral |
 | P3 | Compile bucket burn-down | Yellow / ongoing | Current real upstream receipts still show `parse_recovery` and `compile_effect` buckets in `base`, `comp`, and `run` | Reduce one named bucket or tight cluster | One compile bucket shrinks without new `unknown` or unbucketed failures |
 | P4 | Runtime bucket burn-down | Yellow / ongoing | `runtime_control_flow` has one selected-file burn-down through `base/while.t`; broader runtime remains selected only | Add runtime behavior only when a selected execute receipt demands it | One runtime bucket shrinks and the selected execute baseline is updated |
@@ -55,11 +55,12 @@ P1 selects one candidate only. This is not a live-behavior promotion.
 |---|---|
 | Provider surface | `textDocument/references` |
 | Fact class | PIR-A initialized same-file lexical references |
-| Execution issue | [#2635](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2635) |
-| Claim boundary | Promote only fresh, source-backed, high-confidence, same-file initialized lexical references when declaration inclusion is off and the request has no stale, ambiguous, generated/no-source, coderef, typeglob, declaration-including, or dynamic-boundary shape |
-| Why first | References already have a partial live/ranked-shadowed source-backed tier; the selected slice is same-file and lexical; #3461 closed the dynamic-boundary refusal prerequisite without changing live promotion behavior |
+| Roadmap issue | [#2674](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2674) |
+| Prerequisite context | [#2635](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/2635) guarded shadow/promotion history; [#3461](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/3461) dynamic-boundary refusal prerequisite |
+| Claim boundary | Prepare promotion evidence only for fresh, source-backed, high-confidence, same-file initialized lexical variable references when declaration inclusion is off and the request has no stale, ambiguous, generated/no-source, coderef, typeglob, declaration-including, or dynamic-boundary shape |
+| Why first | References already have a partial live/ranked-shadowed source-backed tier; the selected slice is same-file and lexical; #2674 preserves the corrected measurement-first roadmap without reviving the dark wrapper path |
 | Harness evidence | Real upstream `base`/`comp`/`run` parse/compile receipts and ratchets are green advisory substrate for source/compiler fact work; selected execute-base is not required for this static reference slice |
-| Provider evidence already present | [provider cutover](provider_cutover.md#cutover-matrix) and [provider confidence matrix](provider_confidence_matrix.md#matrix) record references as partial-live exact/imported with legacy fallback and dynamic/stale blockers |
+| Provider evidence already present | [provider cutover](provider_cutover.md#cutover-matrix) and [provider confidence matrix](provider_confidence_matrix.md#matrix) record references as partial-live exact/imported with legacy fallback and dynamic/stale blockers; this is support evidence, not PIR-A lexical promotion proof |
 | Still required before promotion | P5 semantic scorecard/curated/oracle evidence for this exact slice; P6 shadow receipt with candidate/fallback/blocker/freshness/dynamic-boundary behavior; P7 rollback or feature-gate proof |
 | Explicit non-goals | No generated/no-source, coderef, typeglob, declaration-including, stale, ambiguous, dynamic-boundary, module/import, workspace-wide, rename, or runtime-derived references |
 
