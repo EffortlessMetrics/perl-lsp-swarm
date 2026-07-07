@@ -6,8 +6,8 @@
 //! The extractor is used by PR2 (#2634) for shadow comparison and later by providers for
 //! navigation and reference detection. PR1 defines the core API only; no provider changes.
 
-use crate::hir::{BodyOwnerKind, HirBodyId, HirFile};
-use crate::pir::lower::{lower_hir, lower_single_body};
+use crate::hir::{BodyOwnerKind, HirBodyId, HirFile, HirKind};
+use crate::pir::lower::lower_single_body;
 use crate::pir::model::{LexicalName, PirOperation, PirSourceAnchor};
 
 /// Current schema version for lexical extractor receipts.
@@ -109,8 +109,8 @@ pub fn extract_lexical_facts(file: &HirFile) -> LexicalExtractorReceipt {
     let mut total_read_count = 0usize;
     let mut total_write_count = 0usize;
     let mut skipped_node_count = 0usize;
-    let dynamic_boundary_count: usize =
-        lower_hir(file).receipt.dynamic_boundary_counts.values().copied().sum();
+    let dynamic_boundary_count =
+        file.items.iter().filter(|item| matches!(&item.kind, HirKind::DynamicBoundary(_))).count();
 
     for (body_idx, body) in file.bodies.iter().enumerate() {
         let owner = body.owner.clone();
