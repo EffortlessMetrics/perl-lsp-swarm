@@ -34,11 +34,15 @@ CURRENT_SHA=$(gh pr view $NUMBER --json headRefOid --jq '.headRefOid')
 CURRENT_UPDATED=$(gh pr view $NUMBER --json updatedAt --jq '.updatedAt')
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` — extract `headRefOid` (the HEAD SHA) and `updatedAt` from the response.
+
 For issues, get the updated_at timestamp:
 ```bash
 CURRENT_UPDATED=$(gh issue view $NUMBER --json updatedAt --jq '.updatedAt')
 CURRENT_SHA="n/a"
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:N)` — extract `updatedAt` from the response.
 
 ### 3. Check for existing receipt comment
 
@@ -51,6 +55,8 @@ EXISTING_COMMENT=$(gh api "repos/{owner}/{repo}/issues/$NUMBER/comments" \
   --jq '.[] | select(.body | contains("<!-- LABEL_RECEIPT_v1 -->")) | {id: .id, body: .body}' \
   | head -1)
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get_comments", issue_number:N)` then filter the results for a comment whose body contains `<!-- LABEL_RECEIPT_v1 -->`.
 
 ### 4. Build the label binding
 
@@ -106,10 +112,14 @@ For PRs:
 gh pr comment $NUMBER --body "$BODY"
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:N, body:...)` — works for both PRs and issues on GitHub's API.
+
 For issues:
 ```bash
 gh issue comment $NUMBER --body "$BODY"
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:N, body:...)`
 
 **If existing receipt comment**, update it:
 1. Parse the existing JSON from the comment body
@@ -122,6 +132,8 @@ gh issue comment $NUMBER --body "$BODY"
 gh api --method PATCH "repos/{owner}/{repo}/issues/comments/$COMMENT_ID" \
   -f body="$UPDATED_BODY"
 ```
+
+> **MCP alternative (web/no-gh sessions):** No direct MCP equivalent for updating a comment body. Workaround: post a replacement comment with `mcp__github__add_issue_comment(issue_number:N, body:...)` instead of patching the existing one.
 
 Note: `issues/comments` endpoint works for both PR and issue comments on GitHub API.
 

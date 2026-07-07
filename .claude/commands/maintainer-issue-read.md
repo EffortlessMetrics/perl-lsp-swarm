@@ -13,6 +13,9 @@ Understand what's proposed and how it relates to the project's direction.
    ```bash
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` for body/labels; `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` for comments
+
    You run after the other verifiers. Their comments are inputs to your synthesis, not background noise.
 
 2. **Read the parent tracker if this issue is part of one.** Look in the title/body for `(#NNNN)` or "part of #NNNN" or a named tracker:
@@ -20,6 +23,9 @@ Understand what's proposed and how it relates to the project's direction.
    # if issue body references a tracker like #4410:
    gh issue view <tracker-number> --json title,body
    ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<tracker-number>)` for title/body
+
    The parent tracker's commitment IS the roadmap-alignment evidence for wave / collapse / milestone work. A work item that implements decided tracker direction starts at ALIGNED by default — your job becomes checking whether NEW information changes the commitment, not re-running the tracker's original decision.
 
 3. Read current priorities:
@@ -34,3 +40,5 @@ Understand what's proposed and how it relates to the project's direction.
    ```bash
    gh issue list --label "builder-ready" --state open --limit 10
    ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(labels:["builder-ready"], state:"OPEN")`

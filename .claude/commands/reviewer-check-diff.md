@@ -14,6 +14,8 @@ Read the actual diff and check for issues.
    gh pr diff <number>
    ```
 
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_diff", pullNumber:N)` — returns the full unified diff; use `method:"get_files"` for just the changed file list
+
 2. Check for **banned patterns** (instant blockers):
    - `unwrap()`, `expect()`, `panic!()` in non-test code
    - `todo!()`, `unimplemented!()`, `dbg!()`

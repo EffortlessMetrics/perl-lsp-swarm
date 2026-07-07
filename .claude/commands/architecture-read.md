@@ -14,6 +14,8 @@ Read the issue to understand what structural changes are proposed.
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` for body/labels; `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` for comments
+
 2. Identify structural changes:
    - New crates being created?
    - New dependencies being added? Between which crates?

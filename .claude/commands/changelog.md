@@ -32,6 +32,8 @@ Generate a changelog entry for recent commits following the project's Keep a Cha
    gh pr view <number> --json title,body
    ```
 
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` — read title and body from the response.
+
 5. **Update CHANGELOG.md**:
    - Add entries under `## [Unreleased]`
    - Group by category with `### Added`, `### Changed`, etc.

@@ -78,6 +78,8 @@ EOF
 )"
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__create_pull_request(head:"<branch-name>", base:"main", title:"...", body:"...", draft:true)` — branch must already be pushed to origin first.
+
 > **Note**: PRs open as draft. After review agent fixes issues, mark ready with `/pr-ready`.
 
 7. **Return the PR URL**.

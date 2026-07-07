@@ -19,6 +19,8 @@ PR, or is a duplicate of a known issue.
      grep -i "<keyword1>\|<keyword2>" | head -10
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm <keyword1> OR <keyword2> is:merged")` — returns number, title, mergedAt
+
    Use 2-3 keywords from the issue title. If a merged PR title mentions the
    same function, module, or behavior — issue may be fixed.
 
@@ -28,6 +30,8 @@ PR, or is a duplicate of a known issue.
    gh pr list --state open --limit 100 --json number,title,labels \
      --jq '.[] | "#\(.number) \(.title)"' | grep -i "<keyword>" | head -10
    ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm <keyword> is:open")`
 
 3. **Check git log for relevant commits:**
 
@@ -43,11 +47,15 @@ PR, or is a duplicate of a known issue.
    gh issue view <NNN> --json state --jq '.state'
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:<NNN>)` for PR state/mergedAt; `mcp__github__issue_read(method:"get", issue_number:<NNN>)` for issue state
+
 5. **Check if issue already has `accuracy-reviewed` label** (re-run guard):
 
    ```bash
    gh issue view <number> --json labels --jq '[.labels[].name]'
    ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` — check `.labels[].name` in response
 
    If already labeled `accuracy-reviewed`, this issue was already processed.
    Report and stop.

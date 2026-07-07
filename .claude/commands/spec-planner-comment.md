@@ -37,6 +37,8 @@ Post the implementation checklist to the issue and note the branch.
    )"
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:...)`
+
 2. Add label (verified apply — see `/label-apply-verified`):
    ```
    /label-apply-verified issue <number> "spec-reviewed"

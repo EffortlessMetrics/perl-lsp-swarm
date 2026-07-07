@@ -16,11 +16,15 @@ Extract the PR number from $ARGUMENTS. If not provided, list open draft PRs:
 gh pr list --state open --draft --json number,title,headRefName --template '{{range .}}#{{.number}} {{.title}} ({{.headRefName}}){{"\n"}}{{end}}'
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(state:"open", perPage:50)` then filter `isDraft == true` in agent code
+
 ### 2. Verify PR exists and is a draft
 
 ```bash
 gh pr view $NUMBER --json isDraft,title,state
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` — returns `isDraft`, `title`, `state`
 
 If the PR is not a draft, report: "PR #N is already marked ready" and stop.
 If the PR is not open, report the current state and stop.
@@ -30,6 +34,8 @@ If the PR is not open, report the current state and stop.
 ```bash
 gh pr view $NUMBER --json labels,files
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` for labels; `mcp__github__pull_request_read(method:"get_files", pullNumber:N)` for changed files
 
 Policy:
 - If the PR has the `deep-reviewed` label, proceed.
@@ -46,6 +52,8 @@ Optionally validate receipt freshness when `deep-reviewed` is present to ensure 
 ```bash
 gh pr ready $NUMBER
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__update_pull_request(pullNumber:N, draft:false)`
 
 Apply the `merge-ready` label with verification (see `/label-apply-verified`):
 ```
@@ -70,3 +78,5 @@ Include the PR URL for convenience:
 ```bash
 gh pr view $NUMBER --json url --template '{{.url}}'
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` — `html_url` field contains the URL

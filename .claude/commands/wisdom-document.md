@@ -28,6 +28,8 @@ gh issue comment <number> --body "## Wisdom Review
 <your process findings — what worked, what to change>"
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:N, body:"## Wisdom Review\n<findings>")`
+
 **Code patterns** → update the crate's CLAUDE.md if relevant:
 If you found something about how a crate works that future agents
 should know, add it to the crate's CLAUDE.md.
@@ -38,6 +40,8 @@ keeps being a bottleneck:
 ```bash
 gh issue create --title "swarm: <pattern observed>" --body "<analysis>" --label "infrastructure"
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"create", title:"swarm: <pattern>", body:"<analysis>", labels:["infrastructure"])`
 
 **Agent skill improvements** → suggest updates:
 If a step skill is missing guidance that would have helped, note the

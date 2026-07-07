@@ -38,6 +38,8 @@ against the current codebase. Specs go stale fast — PRs merge daily.
    gh issue list --label "in-build" --search "<crate-name>"
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm <filename> state:open")`; `mcp__github__search_issues(query:"repo:effortlessmetrics/perl-lsp-swarm label:in-build <crate-name>")`
+
 ## Output
 
 ```

@@ -42,6 +42,8 @@ will read this alongside the scout spec and research verification.
    )"
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:...)`
+
 3. Add the label (verified apply — see `/label-apply-verified`):
 
    ```

@@ -36,6 +36,8 @@ this to decide whether to invest sonnet-grade time.
    )"
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:...)`
+
 3. Add the label (verified apply — see `/label-apply-verified`):
 
    ```

@@ -51,6 +51,8 @@ Commit your edge case tests, push, and comment on the issue.
    )"
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:...)`
+
 5. **Set the sign-off label** (verified apply — see `/label-apply-verified`):
    ```
    /label-apply-verified issue <number> "green-tdd-reviewed"

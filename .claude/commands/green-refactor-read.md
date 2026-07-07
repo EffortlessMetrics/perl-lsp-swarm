@@ -14,6 +14,8 @@ Understand what was built and what can be simplified.
    gh pr checkout <number>
    ```
 
+> **MCP alternative (web/no-gh sessions):** No direct MCP equivalent for `gh pr checkout` — work in a worktree with the branch already checked out.
+
 2. Read the full diff:
    ```bash
    git diff origin/master..HEAD
@@ -29,6 +31,8 @@ Understand what was built and what can be simplified.
    ```bash
    gh pr view <number> --json comments --jq '.comments[].body'
    ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` for general PR comments; `mcp__github__pull_request_read(method:"get_review_comments", pullNumber:<number>)` for inline review comments.
 
 5. Run tests to confirm current green baseline:
    ```bash

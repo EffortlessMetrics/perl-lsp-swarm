@@ -32,6 +32,8 @@ Post your project-alignment verdict and set the sign-off label.
    )"
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:...)`
+
 2. Set sign-off label (verified apply — see `/label-apply-verified`):
    ```
    /label-apply-verified issue <number> "maintainer-issue-reviewed"

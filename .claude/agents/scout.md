@@ -51,6 +51,10 @@ gh issue list --search "<keywords>" --state open
 gh pr list --search "<keywords>" --state open
 ```
 
+> **MCP alternative (web/no-gh sessions):**
+> - `mcp__github__search_issues(query:"repo:effortlessmetrics/perl-lsp-swarm <keywords> state:open")`
+> - `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm <keywords> state:open")`
+
 If an open issue or PR already covers the same defect, **do NOT file a duplicate**. Instead, reference or comment on the existing one. Only file when neither search returns a relevant hit.
 
 ## Issue-scout protocol (default)

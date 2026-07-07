@@ -24,6 +24,8 @@ Spawn builders immediately.
 gh issue list --label "builder-ready" --state open --limit 30
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(labels:["builder-ready"], state:"OPEN", perPage:30)`
+
 For each issue:
 ```
 Agent(subagent_type: "builder", prompt: "Implement issue #NNN. Follow your todo list.", name: "builder-NNN")
@@ -41,6 +43,8 @@ Monitor builder outputs -- they create draft PRs:
 gh pr list --state open --json number,title,isDraft --limit 30
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(state:"open", perPage:30)` — response includes `number`, `title`, and `draft` fields
+
 ## Step 3: Hand off to review lead
 
 Message `lead-review` when new PRs are ready for review.
@@ -54,6 +58,11 @@ Message `lead-discovery` when the builder-ready queue is running low.
 - **Builder-ready issues**: `gh issue list --label "builder-ready" --state open`
 - **In-flight PRs**: `gh pr list --state open --json number,title,labels`
 - **Draft PRs needing continuation**: `gh pr list --draft --state open`
+
+> **MCP alternative (web/no-gh sessions):**
+> - Builder-ready issues: `mcp__github__list_issues(labels:["builder-ready"], state:"OPEN")`
+> - In-flight PRs: `mcp__github__list_pull_requests(state:"open", perPage:30)` — filter by `labels` field
+> - Draft PRs: `mcp__github__list_pull_requests(state:"open", perPage:30)` then filter where `draft == true`
 
 ## Workers you spawn
 
@@ -73,6 +82,9 @@ Before spawning a builder for issue #NNN, verify no open PR already exists:
 ```bash
 gh pr list --search "#NNN" --state open
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm #NNN state:open")`
+
 If one exists, spawn a builder to continue/improve that PR (using `/builder-read-pr`), not open a new one. Issue #964 accumulated four near-identical PRs from this gap.
 
 ## Active-builder guard (two agents, one branch prevention)
@@ -82,6 +94,9 @@ already active on it:
 ```bash
 gh pr list --head <branch-name> --state open
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(state:"open", perPage:30)` then filter where `headRefName == "<branch-name>"`
+
 If an open PR exists with an `in-build` label and a recent builder commit, do NOT
 spawn a second builder on the same branch. Two agents writing to the same branch
 produce incoherent interleaved commits that require re-creation to untangle. Route

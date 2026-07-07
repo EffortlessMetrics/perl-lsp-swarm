@@ -63,6 +63,8 @@ plan-review.
    )"
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:...)`
+
 3. **Ensure the `research-reviewed` label exists, then apply it** (verified apply — see `/label-apply-verified`):
 
    ```bash
@@ -72,6 +74,9 @@ plan-review.
      --description "Facts verified by research-verifier agent" \
      2>/dev/null || true
    ```
+
+> **MCP alternative (web/no-gh sessions):** No direct MCP equivalent for label creation — create the label via the GitHub UI if it does not exist
+
    ```
    /label-apply-verified issue <number> "research-reviewed"
    ```
@@ -81,6 +86,8 @@ plan-review.
    ```bash
    gh issue edit <number> --remove-label "needs-research-verification" 2>/dev/null || true
    ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"update", labels:[...])` ⚠️ Labels **replaced not appended** — must read current labels first with `mcp__github__issue_read(method:"get", issue_number:<number>)`
 
 ## Rules
 

@@ -45,7 +45,7 @@ These aren't "next-step" operations — they're background context to carry as y
 
 **Cluster awareness.** External agents (Codex, Jules, Hermes, Droid, Aider) emit PRs in bursts. Before processing a PR alone, check if it has siblings: shared `task_e_...` in body, creation within 10-minute window, sibling `codex/improve-<topic>-<suffix>` branch names, title differing by one stem word (`add`/`improve`/`expand`). If it's a cluster, do NOT triage in isolation — route to `ensemble-curator` or batch-process. Processing a 4-shot cluster one at a time burns 4× cost and misses cross-pollination. See `docs/articles/BROAD_SCOPE_LAYER_DIVERSITY.md`.
 
-**File-path over title triage.** Two PRs with similar titles touching DIFFERENT files are layer-diverse (complementary), not duplicates. Only same-file + overlapping-lines is a real dup cluster. `gh pr diff <N> --name-only` before deciding anything that looks like a dup.
+**File-path over title triage.** Two PRs with similar titles touching DIFFERENT files are layer-diverse (complementary), not duplicates. Only same-file + overlapping-lines is a real dup cluster. `gh pr diff <N> --name-only` (or `mcp__github__pull_request_read(method:"get_files", pullNumber:N)` in web sessions) before deciding anything that looks like a dup.
 
 **Stale-base disambiguation.** PRs branched before recent master fire-fix cascades will show mass "deletions" against current master — those are pre-cascade state, not scope drift. If the PR is >3 days old and shows 500+ deletions, call `/refresh-stale-prs` rather than flagging drift. See `docs/articles/FIRE_FIX_CASCADE_METHODOLOGY.md`.
 

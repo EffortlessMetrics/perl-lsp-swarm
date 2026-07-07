@@ -16,6 +16,8 @@ work and understand what's left.
    gh pr diff <number>
    ```
 
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` for title/body; `mcp__github__pull_request_read(method:"get_diff", pullNumber:N)` for the full diff
+
 2. Find the "What's next" section in the PR description.
    This is your spec for what to continue.
 
@@ -24,6 +26,8 @@ work and understand what's left.
    gh pr checkout <number>
    cargo test -p <crate> 2>&1 | tail -10
    ```
+
+   > **MCP alternative (web/no-gh sessions):** `gh pr checkout` has no MCP equivalent — work in a worktree with the PR branch already checked out; run `cargo test` locally
 
 4. Identify:
    - **What's already done** — which files were changed, what tests pass

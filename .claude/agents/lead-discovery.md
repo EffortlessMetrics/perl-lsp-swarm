@@ -64,6 +64,11 @@ gh issue list --label "research-reviewed" --state open --limit 30
 gh issue list --label "needs-plan-review" --state open --limit 30
 ```
 
+> **MCP alternative (web/no-gh sessions):**
+> - `mcp__github__list_issues(labels:["swarm-discovered"], state:"OPEN", perPage:30)`
+> - `mcp__github__list_issues(labels:["research-reviewed"], state:"OPEN", perPage:30)`
+> - `mcp__github__list_issues(labels:["needs-plan-review"], state:"OPEN", perPage:30)`
+
 ## Step 3: Promote to builder-ready
 
 For issues labeled `swarm-discovered` that contain external claims to verify, route through research-verifier first:
@@ -88,6 +93,12 @@ Message `lead-build` when builder-ready issues are available.
 - **Corpus metrics**: `cat .ci/parser-corpus-baseline.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Clean: {d[\"clean_count\"]}/{d[\"total_count\"]}')"`
 - **Feature catalog**: `gh issue list --label "feature-gap" --state open`
 - **Scout findings**: `gh issue list --label "swarm-discovered" --state open`
+
+> **MCP alternative (web/no-gh sessions):**
+> - Issue backlog: `mcp__github__list_issues(state:"OPEN", perPage:100)` — paginate for full count
+> - Feature catalog: `mcp__github__list_issues(labels:["feature-gap"], state:"OPEN")`
+> - Scout findings: `mcp__github__list_issues(labels:["swarm-discovered"], state:"OPEN")`
+> - Corpus metrics: no MCP equivalent — read `.ci/parser-corpus-baseline.json` via Read tool directly
 
 ## Workers you spawn
 
@@ -114,6 +125,11 @@ Before promoting any scout finding to the pipeline, verify no open issue or PR a
 gh issue list --search "<keywords>" --state open
 gh pr list --search "<keywords>" --state open
 ```
+
+> **MCP alternative (web/no-gh sessions):**
+> - `mcp__github__search_issues(query:"repo:effortlessmetrics/perl-lsp-swarm <keywords> state:open")`
+> - `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm <keywords> state:open")`
+
 Issue #964 accumulated four near-identical open PRs because this check was skipped. If an existing issue/PR covers the finding, route scouts to reference/improve it — not file a new one.
 
 ## In-build tracking

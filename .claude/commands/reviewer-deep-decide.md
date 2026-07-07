@@ -26,6 +26,11 @@ gh pr review <number> --approve --body "Deep review: <what you improved>. Logic 
 gh pr edit <number> --remove-label "needs-deep-review"
 ```
 
+> **MCP alternative (web/no-gh sessions):**
+> - `gh pr checkout` has no MCP equivalent — work in a worktree with the branch already checked out and push via `git push`
+> - `gh pr review --approve` → `mcp__github__pull_request_review_write(method:"submit_pending", pullNumber:N, event:"APPROVE", body:"Deep review: ...")`
+> - `gh pr edit --remove-label` → `mcp__github__issue_write(method:"update", labels:[...current labels minus "needs-deep-review"])` ⚠️ reads current labels first
+
 After approval, write a version-bound receipt:
 ```
 /label-receipt-write pr <number> deep-reviewed reviewer-deep
@@ -41,6 +46,8 @@ Only when the approach is wrong, wrong crate, or the codebase moved too far:
 ```bash
 gh pr review <number> --request-changes --body "<what's structurally wrong and why it can't be fixed locally>"
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_review_write(method:"submit_pending", pullNumber:N, event:"REQUEST_CHANGES", body:"<what's structurally wrong>")`
 
 ## Rules
 

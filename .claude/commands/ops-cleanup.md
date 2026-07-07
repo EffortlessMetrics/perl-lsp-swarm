@@ -33,6 +33,9 @@ across cycles.
    ```bash
    gh run list --branch master --limit 1 --json conclusion --jq '.[0].conclusion'
    ```
+
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"})` — check `conclusion` of the first result (note: default branch is `main`, not `master`)
+
    If not "success", flag for investigation.
 
 5. **Prune merged branches:**

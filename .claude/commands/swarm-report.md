@@ -30,6 +30,12 @@ cargo xtask swarm-summary .ops-perl-lsp --since "${SINCE}" --limit 20
 cargo xtask swarm-summary .ops-perl-lsp --since "${SINCE}" --limit 20 --format json
 ```
 
+> **MCP alternatives (web/no-gh sessions):**
+> - `gh pr list --state merged --limit 50` → `mcp__github__list_pull_requests(state:"closed", perPage:50)` then filter `merged_at != null` in agent code
+> - `gh pr list --state open` → `mcp__github__list_pull_requests(state:"open", perPage:50)` — title and labels included in response
+> - `gh issue list --label "swarm-discovered" --state open` → `mcp__github__list_issues(labels:["swarm-discovered"], state:"OPEN")`
+> - `gh issue list --label "swarm-architectural" --state open` → `mcp__github__list_issues(labels:["swarm-architectural"], state:"OPEN")`
+
 ## Report Format
 
 Summarize as:

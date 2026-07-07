@@ -96,6 +96,8 @@ gh pr view <NNNN> --json state,mergedAt,closingIssuesReferences
 git log --oneline master | grep -i <keyword>
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:<NNNN>)` for state/mergedAt/closingIssues metadata.
+
 **If claim checks out:** note `Attribution: VERIFIED` in your output.
 **If claim is wrong:** remove or correct the attribution in the plan and issue. Add `needs-git-history-check` label to the issue for ops sweep.
 **If uncertain:** add `needs-git-history-check` label, note it in the plan-review comment, and continue. Do not block on uncertainty — just flag it.

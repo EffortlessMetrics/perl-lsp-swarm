@@ -14,6 +14,8 @@ Read the issue and all pipeline comments to understand what needs to be built.
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` for body/title/labels; `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` for comments.
+
 2. Identify from the trail:
    - **Plan-reviewer spec** — the builder-ready specification (look for "builder-ready" label)
    - **Research verification** — any corrected claims or confirmed facts

@@ -33,11 +33,15 @@ CURRENT_SHA=$(gh pr view $NUMBER --json headRefOid --jq '.headRefOid')
 CURRENT_UPDATED=$(gh pr view $NUMBER --json updatedAt --jq '.updatedAt')
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` — extract `headRefOid` (the HEAD SHA) and `updatedAt` from the response.
+
 For issues:
 ```bash
 CURRENT_UPDATED=$(gh issue view $NUMBER --json updatedAt --jq '.updatedAt')
 CURRENT_SHA="n/a"
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:N)` — extract `updatedAt` from the response.
 
 ### 3. Find the receipt comment
 
@@ -49,6 +53,8 @@ line-level review comments.
 RECEIPT_BODY=$(gh api "repos/{owner}/{repo}/issues/$NUMBER/comments" \
   --jq '[.[] | select(.body | contains("<!-- LABEL_RECEIPT_v1 -->"))] | last | .body')
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get_comments", issue_number:N)` then filter results for the last comment containing `<!-- LABEL_RECEIPT_v1 -->`.
 
 ### 4. Check for receipt existence
 

@@ -16,15 +16,21 @@ Run all of the following and report results in a summary table:
 gh run list --limit 3 --json status,conclusion,name,headBranch,createdAt
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs")` — returns `status`, `conclusion`, `name`, `head_branch`, `created_at` per run; check top 3
+
 ### 2. Open PRs
 ```bash
 gh pr list --state open --json number,title,labels --limit 30 | jq length
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(state:"open", perPage:30)` — use `totalCount` from response or count returned items
+
 ### 3. Open Issues
 ```bash
 gh issue list --state open --limit 100 --json number | jq length
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(state:"OPEN", perPage:100)` — paginate to count all open issues
 
 ### 4. Failing Tests
 ```bash
@@ -94,6 +100,10 @@ else
   echo "${#STALE_CONFIRMED[@]}: issues ${STALE_CONFIRMED[*]}"
 fi
 ```
+
+> **MCP alternative (web/no-gh sessions):**
+> - Step 1: `mcp__github__list_issues(labels:["in-build"], state:"OPEN", perPage:100)` — filter client-side for `updated_at` older than 7 days and absence of `structural-blocker` in the `labels` list
+> - Step 2: for each candidate number N, `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm #N state:open")` — if `totalCount == 0`, the issue is stale
 
 Note: If `gh` is offline or rate-limited, the `|| echo` fallbacks ensure this check returns `0` rather than erroring.
 

@@ -16,11 +16,15 @@ A PR is likely part of a cluster when ANY of these hold:
 gh pr view <N> --json body -q .body | grep -oE 'task_e_[a-z0-9]{8,}' | head -1
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` then extract `.body` from the response and search it for the `task_e_` pattern.
+
 If a task ID appears, search for other PRs with the same ID:
 
 ```bash
 gh pr list --state open --limit 100 --search "task_e_<id>" --json number,title
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm task_e_<id> state:open")`
 
 ### 2. Creation-time burst
 
@@ -32,6 +36,8 @@ gh pr list --state open --limit 100 --json number,createdAt,author \
   --author <this-author> --jq '.[] | select(.createdAt > "'"$(date -u -d "$MY_TIME - 15 minutes" -Iseconds)"'" and .createdAt < "'"$(date -u -d "$MY_TIME + 15 minutes" -Iseconds)"'") | .number'
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` for `createdAt`; then `mcp__github__list_pull_requests(state:"open", perPage:100)` and filter the response by author and creation time window.
+
 ### 3. Title stem match
 
 Titles differing only by stem word (`add`/`improve`/`expand`/`support`):
@@ -40,6 +46,8 @@ Titles differing only by stem word (`add`/`improve`/`expand`/`support`):
 TITLE=$(gh pr view <N> --json title -q .title | sed 's/add/X/; s/improve/X/; s/expand/X/; s/support/X/')
 gh pr list --state open --search "$TITLE in:title" --limit 20 --json number,title
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` for the title; then `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm <TITLE> in:title state:open")`.
 
 ### 4. Branch name pattern
 

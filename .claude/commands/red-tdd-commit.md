@@ -57,3 +57,5 @@ Commit failing tests, push, set the pipeline label, and comment on the issue.
    EOF
    )"
    ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:...)`

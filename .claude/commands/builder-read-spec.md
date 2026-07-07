@@ -15,11 +15,15 @@ Read the issue and figure out what to build. Be proactive and fix forward.
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comment_count: (.comments | length)}'
    ```
 
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:N)` for body/labels; `mcp__github__issue_read(method:"get_comments", issue_number:N)` for comment count
+
 2. If there are comments (scout reports, plan-review feedback), read them too:
 
    ```bash
    gh issue view <number> --json comments --jq '.comments[-3:][].body'
    ```
+
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get_comments", issue_number:N)` — read last 3 comments
 
 3. Check for plan-review signal:
    - Has a `builder-ready` label? → **Proceed to build.**
@@ -38,6 +42,8 @@ Read the issue and figure out what to build. Be proactive and fix forward.
    ```bash
    gh issue edit <number> --remove-label "builder-ready"
    ```
+
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"update", labels:[...current labels minus "builder-ready" plus "in-build"])` ⚠️ reads current labels first before writing (labels are replaced, not appended)
    The `in-build` label tells the orchestrator this issue is taken. The `--remove-label "builder-ready"` removes it from the builder queue. (`--remove-label` is a no-op if the label is absent, so this is always safe.)
 
    Note: this label is informational, not a mutex. If two builders race before either sets `in-build`, both may proceed. The orchestrator should check `in-build` issues before spawning new builders to detect this condition.
@@ -59,6 +65,8 @@ Read the issue and figure out what to build. Be proactive and fix forward.
      ```bash
      gh issue edit <number> --remove-label "in-build"
      ```
+
+     > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"update", labels:[...current labels minus "in-build" plus "needs-plan-review"])` ⚠️ reads current labels first
      ```
      /label-apply-verified issue <number> "needs-plan-review"
      ```

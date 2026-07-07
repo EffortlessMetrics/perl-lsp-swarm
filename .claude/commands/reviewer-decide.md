@@ -32,6 +32,8 @@ git push
 gh pr comment <number> --body "Standards review complete. Docs-only fast-track used; no reviewer-deep pass required."
 ```
 
+> **MCP alternative (web/no-gh sessions):** `gh pr checkout` has no MCP equivalent — work in a worktree with the branch already checked out and push directly via `git push`; then `mcp__github__add_issue_comment(issue_number:<number>, body:"Standards review complete. Docs-only fast-track used; no reviewer-deep pass required.")` to post the comment
+
 Then call:
 ```
 /pr-ready <number>
@@ -49,6 +51,8 @@ gh pr checkout <number>
 git push
 ```
 
+> **MCP alternative (web/no-gh sessions):** `gh pr checkout` has no MCP equivalent — work in a worktree with the branch already checked out and push directly via `git push`
+
 After pushing improvements, set sign-off and route to deep review (verified apply for each label — see `/label-apply-verified`):
 ```
 /label-apply-verified pr <number> "review-reviewed"
@@ -57,6 +61,8 @@ After pushing improvements, set sign-off and route to deep review (verified appl
 ```bash
 gh pr comment <number> --body "Standards review complete. Improved: <list of changes>. Deep reviewer: focus on <areas of concern>."
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"Standards review complete. Improved: <list of changes>. Deep reviewer: focus on <areas of concern>.")`
 
 Then write a version-bound receipt:
 ```
@@ -87,6 +93,8 @@ Blockers:
 
 Not signing off (\`review-reviewed\` not applied) per the 2026-04-26 sign-off-as-routing rule. Will re-run after fix."
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"Standards review: NEEDS BUILDER — <specific blockers>.\n\nBlockers:\n1. ...")`
 
 **DO NOT also apply `review-reviewed`.** Sign-off and bounce are mutually exclusive — they are the same routing decision with different outcomes. Applying both is the #6780 failure mode (let unfixed bugs ride to merge).
 

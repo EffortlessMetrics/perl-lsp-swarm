@@ -23,6 +23,8 @@ for pr in <PR-LIST>; do
 done
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", pullNumber:N)` for each PR to get the list of changed file names.
+
 ### 2. Bucket by file-set
 
 - **Same-file cluster**: 2+ PRs touching identical file sets → real duplicate. Pick winner. Close losers.
@@ -64,6 +66,8 @@ gh pr close <LOSER> -c "Closing as REDUNDANT — #<WINNER> implements the same s
 
 Thank you for the contribution — the ensemble perspective helped surface the right approach."
 ```
+
+> **MCP alternative (web/no-gh sessions):** First `mcp__github__add_issue_comment(issue_number:LOSER, body:...)` to post the cross-ref comment, then `mcp__github__update_pull_request(pullNumber:LOSER, state:"closed")` to close the PR.
 
 ### 6. Emit verdict
 

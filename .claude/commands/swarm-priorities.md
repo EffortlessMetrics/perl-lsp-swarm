@@ -26,7 +26,14 @@ gh api repos/:owner/:repo/milestones --jq '.[] | "\(.title): \(.open_issues) ope
 # High-priority issues
 gh issue list --state open --label "priority:high" --limit 20 2>/dev/null
 gh issue list --state open --label "bug" --limit 20 2>/dev/null
+```
 
+> **MCP alternative (web/no-gh sessions):**
+> - Open milestones: no direct MCP equivalent for milestone listing — use `mcp__github__search_issues(query:"repo:effortlessmetrics/perl-lsp-swarm is:open milestone:*")` to find milestoned issues, or read roadmap docs directly
+> - Priority issues: `mcp__github__list_issues(labels:["priority:high"], state:"OPEN", perPage:20)`
+> - Bug issues: `mcp__github__list_issues(labels:["bug"], state:"OPEN", perPage:20)`
+
+```bash
 # Features catalog
 cat features.toml 2>/dev/null | head -50
 ```

@@ -24,6 +24,8 @@ Spawn reviewers immediately.
 gh pr list --state open --json number,title,labels --limit 30
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(state:"open", perPage:30)` — response includes `number`, `title`, and `labels` per PR
+
 For each PR not yet reviewed (no review labels):
 ```
 # Tier 1: Fast standards check (haiku)
@@ -50,6 +52,8 @@ After merges, verify master CI:
 gh run list --branch master --limit 3
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"})` — note: the default branch is `main`, not `master`; pass `"main"` here
+
 ## Step 4: Post-merge actions
 
 - After parser merges, spawn ops for corpus ratchet:
@@ -68,6 +72,12 @@ gh run list --branch master --limit 3
 - **Merge-ready PRs**: `gh pr list --label "merge-ready" --state open`
 - **In-review PRs**: `gh pr list --label "in-review" --state open`
 - **Master CI**: `gh run list --branch master --limit 3`
+
+> **MCP alternative (web/no-gh sessions):**
+> - Open PRs: `mcp__github__list_pull_requests(state:"open", perPage:30)` — includes `labels` per PR
+> - Merge-ready PRs: `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm label:merge-ready state:open")`
+> - In-review PRs: `mcp__github__search_pull_requests(query:"repo:effortlessmetrics/perl-lsp-swarm label:in-review state:open")`
+> - Master CI: `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"})` — note: default branch is `main`, not `master`
 
 ## Workers you spawn
 

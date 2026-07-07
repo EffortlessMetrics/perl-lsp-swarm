@@ -17,6 +17,8 @@ names, symbol names, corpus examples.
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` for body/labels; `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` for comments
+
 2. **Extract claims by category:**
 
    **File path claims** — any path like `crates/perl-parser/src/foo.rs` or

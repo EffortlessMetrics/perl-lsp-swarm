@@ -32,6 +32,12 @@ cargo xtask swarm-summary .ops-perl-lsp --since 24h --limit 10
 cargo xtask swarm-summary .ops-perl-lsp --since 24h --limit 10 --format json
 ```
 
+> **MCP alternatives (web/no-gh sessions):**
+> - `gh pr list --state open --limit 30` → `mcp__github__list_pull_requests(state:"open", perPage:30)` — labels array included in response
+> - `gh issue list --label "X" --state open --limit 20` → `mcp__github__list_issues(labels:["X"], state:"OPEN", perPage:20)`
+> - `gh pr list --state merged --limit 20` → `mcp__github__list_pull_requests(state:"closed", perPage:20)` then filter for `merged_at != null` in agent code
+> - Queue depth counts: call each `mcp__github__list_issues`/`mcp__github__list_pull_requests` and use `totalCount` from the response or count returned items
+
 ## Full View (`--full`)
 
 Also includes:
@@ -46,3 +52,6 @@ gh issue list --label "swarm-discovered" --state open --limit 20 --json number,t
 echo "=== Worktrees ==="
 git worktree list
 ```
+
+> **MCP alternatives (web/no-gh sessions):**
+> - `gh issue list --label "swarm-discovered" --state open --limit 20` → `mcp__github__list_issues(labels:["swarm-discovered"], state:"OPEN", perPage:20)`

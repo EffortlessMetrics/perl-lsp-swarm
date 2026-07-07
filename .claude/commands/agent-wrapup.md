@@ -91,6 +91,8 @@ clean handoff to whoever picks up next.
      )"
      ```
 
+     > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<NUMBER>, body:...)`
+
    - **Builders:**
      ```bash
      gh pr comment <NUMBER> --body "$(cat <<'WRAPUP_EOF'
@@ -100,6 +102,8 @@ clean handoff to whoever picks up next.
      WRAPUP_EOF
      )"
      ```
+
+     > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<NUMBER>, body:...)`
 
    - **Plan-reviewers:**
      ```bash
@@ -111,6 +115,8 @@ clean handoff to whoever picks up next.
      )"
      ```
 
+     > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<NUMBER>, body:...)`
+
    - **Reviewers:**
      ```bash
      gh pr comment <NUMBER> --body "$(cat <<'WRAPUP_EOF'
@@ -120,6 +126,8 @@ clean handoff to whoever picks up next.
      WRAPUP_EOF
      )"
      ```
+
+     > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<NUMBER>, body:...)`
 
    - **Ops:**
      ```bash
@@ -131,6 +139,8 @@ clean handoff to whoever picks up next.
      )"
      ```
 
+     > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<NUMBER>, body:...)`
+
    - **Wisdom:**
      ```bash
      gh issue comment <NUMBER> --body "$(cat <<'WRAPUP_EOF'
@@ -140,6 +150,8 @@ clean handoff to whoever picks up next.
      WRAPUP_EOF
      )"
      ```
+
+     > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<NUMBER>, body:...)`
 
    > If you don't file the update on GitHub, the work is invisible.
 

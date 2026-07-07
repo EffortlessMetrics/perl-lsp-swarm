@@ -52,9 +52,14 @@ Before accepting any haiku agent's "REVIEW-READY" verdict on an external PR, ver
    refactor. The #682 incident: an agent reported "REVIEW-READY" on a PR that in reality
    contained 643 changed files (4350 lines of another agent's work merged in via `git add -A`
    after a merge conflict). Trust the diff, not the agent claim.
+
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", pullNumber:N)` — count items in the response array for file count; sum `additions + deletions` per file for line estimate
+
 2. **No `.merge_file_*` or `.claude/target/` junk.** Run `gh pr diff <N> --name-only` and grep
    for these patterns. Their presence means the PR was staged with `git add -A` after a merge
    and swept in git merge temp artifacts.
+
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", pullNumber:N)` — grep the `filename` field of each entry for `.merge_file_` or `.claude/target/`
 3. **Contaminated mega-PRs: prefer re-create over untangle.** If a PR has swept in another
    agent's changes, the correct fix is to close it, re-create a clean branch from `origin/main`,
    and cherry-pick only the intended commits. Attempting to surgically revert the contamination
@@ -82,6 +87,9 @@ Apply in order; stop at first resolution:
    ```
    gh pr diff <N> --name-only
    ```
+
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", pullNumber:N)` — returns `filename` per changed file
+
    Same files + overlapping lines = real dupe cluster. Different files = layer-diversity,
    keep all.
 
@@ -94,6 +102,9 @@ Apply in order; stop at first resolution:
    ```
    gh pr diff <N> --stat
    ```
+
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", pullNumber:N)` — sum the `deletions` field across files; a high total on an old branch = stale base
+
    "Deletions" in the thousands on a >1-week-old branch = **STALE-BASE**, not drift.
 
 5. **Claim check** — for any external fact claim:

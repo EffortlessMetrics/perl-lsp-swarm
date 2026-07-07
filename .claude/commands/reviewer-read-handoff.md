@@ -28,10 +28,14 @@ for whoever touches this code next.
    gh pr view <number> --json title,body,labels --jq '{title: .title, body: .body}'
    ```
 
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` — includes `title`, `body`, and `labels`
+
 3. If the PR links an issue, read the issue for the original spec:
    ```bash
    gh issue view <number> --json body --jq '.body'
    ```
+
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:N)` → `.body`
 
 4. Check for a verification receipt — did the builder run tests?
    Look for verification results in PR description or comments.

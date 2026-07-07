@@ -16,6 +16,8 @@ understand the *what* and *why* well enough to argue against *whether*.
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` for body/labels; `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` for comments
+
 2. Identify:
    - **What user problem does this solve?** (If no clear user problem, that's your first objection)
    - **How many users would benefit?** (All? Power users? Only the maintainer?)

@@ -49,6 +49,8 @@ run minimal checks to confirm or refute what the issue asserts.
    gh pr view <NNN> --json state,mergedAt,title --jq '{state, mergedAt, title}'
    ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:<NNN>)` — check `.state` and `.mergedAt` in response
+
    Also check recent merge log for related keywords:
    ```bash
    git log --oneline -30 | grep -i "<keyword>" | head -5
@@ -67,6 +69,8 @@ run minimal checks to confirm or refute what the issue asserts.
    gh issue list --state closed --search "<key_terms>" --limit 5 --json number,title \
      --jq '.[] | "#\(.number) \(.title)"'
    ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_issues(query:"repo:effortlessmetrics/perl-lsp-swarm <key_terms> is:open")` for open; `mcp__github__search_issues(query:"repo:effortlessmetrics/perl-lsp-swarm <key_terms> is:closed")` for closed
 
 ## Output
 

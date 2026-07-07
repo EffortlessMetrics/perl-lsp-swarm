@@ -23,6 +23,8 @@ See `memory/feedback_agent_audit_trail_directories.md` for the underlying patter
 gh pr diff <PR> --name-only | grep -E '^\.(hermes|jules|spec|run|codex)/' || echo "NONE"
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", pullNumber:N)` then filter the returned file paths for the agent dot-directory pattern.
+
 If output is `NONE`, there's nothing to triage under this skill.
 
 ### 2. Identify the PR's own issue/slug
@@ -32,6 +34,8 @@ If output is `NONE`, there's nothing to triage under this skill.
 # Branch name may be issue-ref-bearing, e.g. impl/5499-completion-scope-distance
 gh pr view <PR> --json title,headRefName,number
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:N)` — read title, headRefName (branch), and number from the response.
 
 Note the issue number or slug (e.g., `5499-completion-scope-distance`).
 

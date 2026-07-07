@@ -88,6 +88,9 @@ gh pr view <NNNN> --json state,mergedAt,closingIssuesReferences
 # Verify the fix is present in master
 git log --oneline master | grep -i <keyword>
 ```
+> **MCP alternative (web/no-gh sessions):**
+> - `mcp__github__pull_request_read(method:"get", pullNumber:N)` — returns `state`, `mergedAt`, and `closingIssuesReferences`
+> - `git log` has no MCP equivalent — check local git or `mcp__github__list_commits(owner:..., repo:..., sha:"master")`
 
 **If claim checks out:** note `Attribution: VERIFIED` in your output.
 **If claim is wrong:** remove or correct the attribution. Add `needs-git-history-check` label to the original issue for ops sweep.

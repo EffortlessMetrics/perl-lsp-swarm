@@ -16,6 +16,11 @@ gh api repos/:owner/:repo/pulls/$ARGUMENTS/reviews --jq '.[] | "\(.user.login) (
 gh api repos/:owner/:repo/pulls/$ARGUMENTS/comments --jq '.[] | "\(.path):\(.line) \(.body)"'
 ```
 
+> **MCP alternatives (web/no-gh sessions):**
+> - `gh pr view --comments` → `mcp__github__pull_request_read(method:"get_comments", pullNumber:N)` for PR-level comments
+> - `gh api .../reviews` → `mcp__github__pull_request_read(method:"get_reviews", pullNumber:N)` — returns reviewer login, state, and body
+> - `gh api .../comments` (inline review comments) → `mcp__github__pull_request_read(method:"get_review_comments", pullNumber:N)` — returns path, line, body per thread
+
 ### 2. Categorize each comment
 - **Blocking** (changes requested): must fix before merge
 - **Suggestion**: apply if it's an improvement, explain if you disagree
@@ -34,6 +39,8 @@ gh api repos/:owner/:repo/pulls/$ARGUMENTS/comments/<comment-id>/replies \
   -f body="Fixed in <commit-hash>. <brief explanation>"
 ```
 
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_reply_to_pull_request_comment(owner, repo, pullNumber:N, commentId:<id>, body:"Fixed in <hash>. <explanation>")`
+
 Or for general review comments:
 ```bash
 gh pr comment $ARGUMENTS --body "Addressed review feedback:
@@ -41,6 +48,8 @@ gh pr comment $ARGUMENTS --body "Addressed review feedback:
 - <comment 2>: <explanation>
 "
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:N, body:"Addressed review feedback: ...")`
 
 ### 5. Re-verify
 ```bash
@@ -62,3 +71,5 @@ Apply the `pr-responded` label with verification (see `/label-apply-verified`):
 ```bash
 gh pr edit $ARGUMENTS --add-reviewer <original-reviewer> 2>/dev/null || true
 ```
+
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_review_write` — use `create` method to request review from a specific reviewer

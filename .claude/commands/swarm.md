@@ -37,6 +37,11 @@ gh run list --branch master --limit 1
 just clean-worktrees 2>/dev/null || git worktree prune
 ```
 
+> **MCP alternatives (web/no-gh sessions):**
+> - `gh pr list --state open --limit 200` → `mcp__github__list_pull_requests(state:"open", perPage:100)` — paginate to count; note: use `main` not `master` for branch refs
+> - `gh issue list --state open --limit 200` → `mcp__github__list_issues(state:"OPEN", perPage:100)` — paginate to count
+> - `gh run list --branch master --limit 1` → `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"})` — check `status`/`conclusion` of first result; note default branch is `main`
+
 **Stop if master CI is red.** Fix it first.
 
 ## Phase 2: Assess
@@ -55,6 +60,11 @@ gh issue list --label "structural-blocker" --state open # blocked work
 gh pr list --label "merge-ready"                        # ready to merge
 gh pr list --label "in-review"                          # being reviewed (check for stalls)
 ```
+
+> **MCP alternatives (web/no-gh sessions):**
+> - `gh issue list --label "X" --state open` → `mcp__github__list_issues(labels:["X"], state:"OPEN")`
+> - `gh pr list --label "merge-ready"` → `mcp__github__search_pull_requests(query:"is:open is:pr label:merge-ready repo:effortlessmetrics/perl-lsp-swarm")`
+> - `gh pr list --label "in-review"` → `mcp__github__search_pull_requests(query:"is:open is:pr label:in-review repo:effortlessmetrics/perl-lsp-swarm")`
 
 **Routing rules (sequential — check in order, spawn the first missing):**
 
@@ -238,3 +248,9 @@ gh issue list --label "builder-ready" --state open --json number,title,labels \
 # Health check
 /health-check
 ```
+
+> **MCP alternatives (web/no-gh sessions):**
+> - `gh pr list --state open --limit 20` → `mcp__github__list_pull_requests(state:"open", perPage:20)`
+> - `gh issue list --label "X" --state open --limit 10` → `mcp__github__list_issues(labels:["X"], state:"OPEN", perPage:10)`
+> - `gh run list --branch master --limit 3` → `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"})` (default branch is `main`)
+> - Advanced label filter: after fetching with `list_issues`, apply jq-equivalent logic in agent code — `mcp__github__list_issues` returns label arrays for each issue
