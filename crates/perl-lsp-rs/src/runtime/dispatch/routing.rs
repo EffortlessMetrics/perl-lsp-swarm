@@ -247,6 +247,7 @@ impl LspServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::cell::Cell;
 
     #[test]
@@ -337,56 +338,149 @@ mod tests {
     }
 
     #[test]
-    fn uncancelled_type_hierarchy_routes_call_handlers() -> Result<(), Box<dyn std::error::Error>> {
-        for (offset, method) in [
+    fn type_hierarchy_routes_call_live_handlers_when_not_cancelled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.initialize_requested.store(true, Ordering::Release);
+        let uri = "file:///routing-type-hierarchy.pl";
+        server
+            .test_apply_did_open(
+                uri,
+                "package Base;\nsub base {}\npackage Child;\nuse parent 'Base';\nsub child {}\n",
+                1,
+            )
+            .map_err(|error| {
+                std::io::Error::other(format!("textDocument/didOpen failed: {error:?}"))
+            })?;
+
+        let child_items = route_request_result(
+            &server,
             "textDocument/prepareTypeHierarchy",
+            5100,
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 8 }
+            }),
+        )?;
+        let child_item = first_result_item(&child_items, "textDocument/prepareTypeHierarchy")?;
+        ensure_item_name(child_item, "Child", "textDocument/prepareTypeHierarchy")?;
+
+        let alias_items = route_request_result(
+            &server,
             "typeHierarchy/prepare",
+            5101,
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 8 }
+            }),
+        )?;
+        let alias_item = first_result_item(&alias_items, "typeHierarchy/prepare")?;
+        ensure_item_name(alias_item, "Child", "typeHierarchy/prepare")?;
+
+        let supertypes = route_request_result(
+            &server,
             "typeHierarchy/supertypes",
+            5102,
+            json!({ "item": child_item }),
+        )?;
+        ensure_array_contains_name(&supertypes, "Base", "typeHierarchy/supertypes")?;
+
+        let base_items = route_request_result(
+            &server,
+            "textDocument/prepareTypeHierarchy",
+            5103,
+            json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 0, "character": 8 }
+            }),
+        )?;
+        let base_item = first_result_item(&base_items, "textDocument/prepareTypeHierarchy")?;
+        ensure_item_name(base_item, "Base", "textDocument/prepareTypeHierarchy")?;
+
+        let subtypes = route_request_result(
+            &server,
             "typeHierarchy/subtypes",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let server = LspServer::new();
-            server.initialize_requested.store(true, Ordering::Release);
-            let request_id = JsonRpcId::Integer(4200 + offset as i64);
-
-            let routed = server.route_request(
-                JsonRpcRequest {
-                    _jsonrpc: "2.0".to_string(),
-                    id: Some(request_id.clone()),
-                    method: method.to_string(),
-                    params: None,
-                },
-                Some(request_id.to_value()),
-                true,
-            );
-
-            let RoutedResponse::Handler { method: routed_method, result, .. } = routed else {
-                return Err(std::io::Error::other(format!(
-                    "{method} must call the provider handler when not cancelled"
-                ))
-                .into());
-            };
-
-            if routed_method != method {
-                return Err(std::io::Error::other(format!(
-                    "{method} routed as unexpected method {routed_method}"
-                ))
-                .into());
-            }
-
-            if let Err(error) = result
-                && (error.code == METHOD_NOT_FOUND || error.code == REQUEST_CANCELLED)
-            {
-                return Err(std::io::Error::other(format!(
-                    "{method} must reach handler validation, got error code {}",
-                    error.code
-                ))
-                .into());
-            }
-        }
+            5104,
+            json!({ "item": base_item }),
+        )?;
+        ensure_array_contains_name(&subtypes, "Child", "typeHierarchy/subtypes")?;
 
         Ok(())
+    }
+    fn route_request_result(
+        server: &LspServer,
+        method: &str,
+        id: i64,
+        params: Value,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        let request_id = JsonRpcId::Integer(id);
+        let routed = server.route_request(
+            JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(request_id.clone()),
+                method: method.to_string(),
+                params: Some(params),
+            },
+            Some(request_id.to_value()),
+            true,
+        );
+        let RoutedResponse::Handler { result, .. } = routed else {
+            return Err(std::io::Error::other(format!(
+                "{method} must route to the live handler when not cancelled"
+            ))
+            .into());
+        };
+        result
+            .map_err(|error| std::io::Error::other(format!("{method} returned error: {error:?}")))?
+            .ok_or_else(|| {
+                std::io::Error::other(format!("{method} must return a response value")).into()
+            })
+    }
+
+    fn first_result_item<'a>(
+        value: &'a Value,
+        method: &str,
+    ) -> Result<&'a Value, Box<dyn std::error::Error>> {
+        value.as_array().and_then(|items| items.first()).ok_or_else(|| {
+            std::io::Error::other(format!("{method} must return a non-empty item array")).into()
+        })
+    }
+
+    fn ensure_item_name(
+        item: &Value,
+        expected: &str,
+        method: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let actual = item.get("name").and_then(Value::as_str);
+        if actual == Some(expected) {
+            return Ok(());
+        }
+
+        Err(std::io::Error::other(format!(
+            "{method} returned item name {actual:?}, expected {expected:?}"
+        ))
+        .into())
+    }
+
+    fn ensure_array_contains_name(
+        value: &Value,
+        expected: &str,
+        method: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let names = value
+            .as_array()
+            .ok_or_else(|| std::io::Error::other(format!("{method} must return an array")))?
+            .iter()
+            .filter_map(|item| item.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        if names.contains(&expected) {
+            return Ok(());
+        }
+
+        Err(std::io::Error::other(format!(
+            "{method} returned names {names:?}, expected {expected:?}"
+        ))
+        .into())
     }
 }
