@@ -74,7 +74,9 @@ impl LspServer {
                 self.handle_document_highlight_dispatch(request.params)
             }
             "textDocument/prepareTypeHierarchy" => {
-                self.handle_prepare_type_hierarchy_dispatch(request.params)
+                return self.route_cancellable(id, method, should_respond, |_| {
+                    self.handle_prepare_type_hierarchy_dispatch(request.params)
+                });
             }
             "typeHierarchy/prepare" => {
                 return self.route_cancellable(id, method, should_respond, |_| {
@@ -277,6 +279,60 @@ mod tests {
             );
         };
         assert_eq!(response.error.map(|error| error.code), Some(REQUEST_CANCELLED));
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_type_hierarchy_routes_return_immediate_responses()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (offset, method) in [
+            "textDocument/prepareTypeHierarchy",
+            "typeHierarchy/prepare",
+            "typeHierarchy/supertypes",
+            "typeHierarchy/subtypes",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let server = LspServer::new();
+            server.initialize_requested.store(true, Ordering::Release);
+            let request_id = JsonRpcId::Integer(4100 + offset as i64);
+            server.cancel_mark(&request_id);
+
+            let routed = server.route_request(
+                JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: Some(request_id.clone()),
+                    method: method.to_string(),
+                    params: None,
+                },
+                Some(request_id.to_value()),
+                true,
+            );
+
+            if server.is_cancelled(&request_id) {
+                return Err(std::io::Error::other(format!(
+                    "{method} must clear the local cancellation marker"
+                ))
+                .into());
+            }
+
+            let RoutedResponse::Immediate(response) = routed else {
+                return Err(std::io::Error::other(format!(
+                    "{method} must return an immediate cancellation response"
+                ))
+                .into());
+            };
+
+            let error_code = response.error.map(|error| error.code);
+            if error_code != Some(REQUEST_CANCELLED) {
+                return Err(std::io::Error::other(format!(
+                    "{method} must return RequestCancelled, got {error_code:?}"
+                ))
+                .into());
+            }
+        }
+
         Ok(())
     }
 }

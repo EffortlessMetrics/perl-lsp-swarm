@@ -1584,15 +1584,18 @@ fn test_type_hierarchy_prepare_cancellation() -> Result<(), Box<dyn std::error::
     );
 
     let response = read_response_matching_i64(&fixture.server, prepare_id, Duration::from_secs(1));
-    assert!(response.is_some(), "Should receive response for cancelled typeHierarchy/prepare");
-    if let Some(resp) = response {
-        if let Some(error) = resp.get("error") {
-            assert_eq!(
-                error["code"].as_i64(),
-                Some(-32800),
-                "Cancellation error code should be -32800 (RequestCancelled)"
-            );
-        }
+    if response.is_none() {
+        return Err(std::io::Error::other(
+            "textDocument/prepareTypeHierarchy must respond to a request with an id",
+        )
+        .into());
+    }
+    validate_cancellation_or_completion(response, "textDocument/prepareTypeHierarchy");
+    if !fixture.server.is_alive() {
+        return Err(std::io::Error::other(
+            "server must remain alive after type hierarchy cancellation",
+        )
+        .into());
     }
     Ok(())
 }
@@ -1637,15 +1640,18 @@ fn test_type_hierarchy_supertypes_cancellation() -> Result<(), Box<dyn std::erro
 
     let response =
         read_response_matching_i64(&fixture.server, supertypes_id, Duration::from_secs(1));
-    assert!(response.is_some(), "Should receive response for cancelled typeHierarchy/supertypes");
-    if let Some(resp) = response {
-        if let Some(error) = resp.get("error") {
-            assert_eq!(
-                error["code"].as_i64(),
-                Some(-32800),
-                "Cancellation error code should be -32800 (RequestCancelled)"
-            );
-        }
+    if response.is_none() {
+        return Err(std::io::Error::other(
+            "typeHierarchy/supertypes must respond to a request with an id",
+        )
+        .into());
+    }
+    validate_cancellation_or_completion(response, "typeHierarchy/supertypes");
+    if !fixture.server.is_alive() {
+        return Err(std::io::Error::other(
+            "server must remain alive after type hierarchy cancellation",
+        )
+        .into());
     }
     Ok(())
 }
@@ -1689,15 +1695,18 @@ fn test_type_hierarchy_subtypes_cancellation() -> Result<(), Box<dyn std::error:
     );
 
     let response = read_response_matching_i64(&fixture.server, subtypes_id, Duration::from_secs(1));
-    assert!(response.is_some(), "Should receive response for cancelled typeHierarchy/subtypes");
-    if let Some(resp) = response {
-        if let Some(error) = resp.get("error") {
-            assert_eq!(
-                error["code"].as_i64(),
-                Some(-32800),
-                "Cancellation error code should be -32800 (RequestCancelled)"
-            );
-        }
+    if response.is_none() {
+        return Err(std::io::Error::other(
+            "typeHierarchy/subtypes must respond to a request with an id",
+        )
+        .into());
+    }
+    validate_cancellation_or_completion(response, "typeHierarchy/subtypes");
+    if !fixture.server.is_alive() {
+        return Err(std::io::Error::other(
+            "server must remain alive after type hierarchy cancellation",
+        )
+        .into());
     }
     Ok(())
 }
