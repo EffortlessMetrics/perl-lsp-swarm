@@ -532,13 +532,13 @@ pub(crate) fn emit_relations_and_discriminators(
                 // `owners[]` fact. Prefer the called sub/method owner only for
                 // qualified call evidence; fall back to the package owner for
                 // coarse file-proximity evidence.
-                let (relation_owner_id, is_direct) = relation_owner_for_test(
+                let relation_owners = relation_owners_for_test(
                     t_call_facts.get(test_path),
                     package_name,
                     declared_sub_owner_ids,
                     package_owner_id.as_ref(),
                 );
-                let Some(resolved_owner_id) = relation_owner_id else {
+                if relation_owners.is_empty() {
                     limitations.push(json!({
                         "limitation_id": format!("relation-owner-unresolved:{pm_path}"),
                         "kind": "unresolved_owner",
@@ -548,23 +548,27 @@ pub(crate) fn emit_relations_and_discriminators(
                         "evidence_refs": []
                     }));
                     continue;
-                };
+                }
 
-                let relation_kind = if is_direct { "direct_owner_call" } else { "file_proximity" };
-                let reachability = if is_direct { "reachable" } else { "weakly_reachable" };
+                for (resolved_owner_id, is_direct) in relation_owners {
+                    let relation_kind =
+                        if is_direct { "direct_owner_call" } else { "file_proximity" };
+                    let reachability = if is_direct { "reachable" } else { "weakly_reachable" };
+                    let owner_suffix = relation_owner_suffix(&resolved_owner_id);
 
-                let relation_id = format!("relation:{test_file_id}:{pm_path}");
-                relations.push(json!({
-                    "relation_id": relation_id,
-                    "change_id": "change:unresolved",
-                    "owner_id": resolved_owner_id,
-                    "test_id": test["test_id"],
-                    "oracle_id": null,
-                    "relation_kind": relation_kind,
-                    "reachability_hint": reachability,
-                    "confidence": "medium",
-                    "provenance_refs": []
-                }));
+                    let relation_id = format!("relation:{test_file_id}:{pm_path}:{owner_suffix}");
+                    relations.push(json!({
+                        "relation_id": relation_id,
+                        "change_id": "change:unresolved",
+                        "owner_id": resolved_owner_id,
+                        "test_id": test["test_id"],
+                        "oracle_id": null,
+                        "relation_kind": relation_kind,
+                        "reachability_hint": reachability,
+                        "confidence": "medium",
+                        "provenance_refs": []
+                    }));
+                }
             }
         }
     }
@@ -680,7 +684,11 @@ fn test_references_package(
 fn file_references_package(test_path: &str, _all_pm_paths: &[&str], pm_path: &str) -> bool {
     // Simple heuristic: if the .pm basename appears in the test path.
     // E.g. t/app.t references lib/My/App.pm if "App" appears in both.
-    let pm_basename = pm_path.rsplit('/').next().unwrap_or("").trim_end_matches(".pm");
+    let pm_basename = pm_path
+        .rsplit(|separator| separator == '/' || separator == '\\')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(".pm");
     !pm_basename.is_empty()
         && test_path.to_ascii_lowercase().contains(&pm_basename.to_ascii_lowercase())
 }
@@ -762,33 +770,42 @@ fn declared_sub_owner_ids(
         .collect()
 }
 
-fn relation_owner_for_test(
+fn relation_owners_for_test(
     facts: Option<&TestCallFacts>,
     package_name: &str,
     declared_sub_owner_ids: &std::collections::BTreeMap<String, String>,
     package_owner_id: Option<&String>,
-) -> (Option<String>, bool) {
+) -> Vec<(String, bool)> {
     let Some(facts) = facts else {
-        return (package_owner_id.cloned(), false);
+        return package_owner_id.iter().map(|owner_id| ((*owner_id).clone(), false)).collect();
     };
 
-    if let Some(owner_id) = facts.calls.iter().find_map(|call| {
-        if call.kind == SymbolRefKind::SubroutineCall
-            && call.package_qualifier.as_deref() == Some(package_name)
+    let mut direct_owner_ids = Vec::new();
+    for call in &facts.calls {
+        if call.kind != SymbolRefKind::SubroutineCall
+            || call.package_qualifier.as_deref() != Some(package_name)
         {
-            declared_sub_owner_ids.get(&call.name)
-        } else {
-            None
+            continue;
         }
-    }) {
-        return (Some(owner_id.clone()), true);
+        if let Some(owner_id) = declared_sub_owner_ids.get(&call.name)
+            && !direct_owner_ids.iter().any(|existing| existing == owner_id)
+        {
+            direct_owner_ids.push(owner_id.clone());
+        }
+    }
+    if !direct_owner_ids.is_empty() {
+        return direct_owner_ids.into_iter().map(|owner_id| (owner_id, true)).collect();
     }
 
     // Bare calls after `use Package` are export-unproven. They can keep a
     // package-level file_proximity relation, but must not point at the sub
     // owner or downstream consumers can mistake weak evidence for sub-specific
     // reachability.
-    (package_owner_id.cloned(), false)
+    package_owner_id.iter().map(|owner_id| ((*owner_id).clone(), false)).collect()
+}
+
+fn relation_owner_suffix(owner_id: &str) -> String {
+    owner_id.replace('\\', "/").replace(':', "_")
 }
 
 /// Parser-backed replacement for the former string-heuristic
@@ -904,7 +921,7 @@ fn boundary_owner_index(relative_path: &str, content: &str) -> Vec<BoundaryOwner
 fn enclosing_boundary_owner(owners: &[BoundaryOwner], offset: usize) -> Option<&BoundaryOwner> {
     owners
         .iter()
-        .filter(|owner| owner.start_byte <= offset && offset <= owner.end_byte)
+        .filter(|owner| owner.start_byte <= offset && offset < owner.end_byte)
         .min_by_key(|owner| owner.end_byte.saturating_sub(owner.start_byte))
 }
 
@@ -1691,6 +1708,14 @@ mod tests {
     }
 
     #[test]
+    fn file_references_package_accepts_windows_path_separators() {
+        assert!(
+            file_references_package("t/App.t", &[], "lib\\My\\App.pm"),
+            "fallback basename matching must handle Windows-style .pm paths"
+        );
+    }
+
+    #[test]
     fn oracle_for_maps_known_assertions_only() {
         // Independent contract list — deliberately NOT derived from ASSERTION_ORACLES,
         // so a rename or kind/strength drift in the table (e.g. `is_deeply` →
@@ -1968,6 +1993,24 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn enclosing_boundary_owner_treats_end_byte_as_exclusive() {
+        let owners = vec![BoundaryOwner {
+            owner_id: "owner:lib/App.pm:sub:App::run:10-20".to_string(),
+            start_byte: 10,
+            end_byte: 20,
+        }];
+
+        assert!(
+            enclosing_boundary_owner(&owners, 19).is_some(),
+            "offset inside [start, end) belongs to the owner"
+        );
+        assert!(
+            enclosing_boundary_owner(&owners, 20).is_none(),
+            "offset at end_byte must not be attributed to the owner"
+        );
     }
 
     #[test]
@@ -2436,6 +2479,58 @@ mod tests {
     }
 
     // ── #3293 PR 6: parser-backed `test_calls_declared_sub` predicate ──
+
+    #[test]
+    fn emit_relations_emits_each_direct_owner_call() {
+        let root = std::env::temp_dir().join("perl-P6-multiple-direct-call-root");
+        let _ = std::fs::remove_dir_all(&root);
+        let lib_dir = root.join("lib/My");
+        let t_dir = root.join("t");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::create_dir_all(&t_dir).unwrap();
+        std::fs::write(
+            lib_dir.join("App.pm"),
+            "package My::App;\nsub setup { }\nsub target { }\n1;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            t_dir.join("App.t"),
+            "use My::App;\nMy::App::setup();\nMy::App::target();\n",
+        )
+        .unwrap();
+
+        let (tests, _oracles, _provenance, _limitations) =
+            emit_tests_and_oracles(root.to_str().unwrap());
+        let (relations, _observables, _sinks, _relation_limitations) =
+            emit_relations_and_discriminators(root.to_str().unwrap(), &tests, &[]);
+
+        let direct: Vec<_> = relations
+            .iter()
+            .filter(|relation| relation["relation_kind"] == "direct_owner_call")
+            .collect();
+        assert_eq!(direct.len(), 2, "each qualified called owner gets a relation: {relations:?}");
+        assert!(
+            direct.iter().any(|relation| {
+                relation["owner_id"]
+                    .as_str()
+                    .is_some_and(|owner_id| owner_id.contains(":sub:My::App::setup:"))
+            }),
+            "setup owner relation missing: {direct:?}"
+        );
+        assert!(
+            direct.iter().any(|relation| {
+                relation["owner_id"]
+                    .as_str()
+                    .is_some_and(|owner_id| owner_id.contains(":sub:My::App::target:"))
+            }),
+            "target owner relation missing: {direct:?}"
+        );
+        let relation_ids: std::collections::HashSet<_> =
+            direct.iter().filter_map(|relation| relation["relation_id"].as_str()).collect();
+        assert_eq!(relation_ids.len(), direct.len(), "direct relation IDs must be unique");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Build `TestCallFacts` directly from source, mirroring what
     /// `emit_relations_and_discriminators` does per `.t` file.

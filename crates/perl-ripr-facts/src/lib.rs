@@ -32,6 +32,7 @@ use emitter::{
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 /// Expected schema version for `ripr-perl-facts-v1` packets.
 const EXPECTED_RIPR_FACTS_SCHEMA: &str = "ripr-perl-facts-v1";
@@ -404,17 +405,25 @@ pub fn build_ripr_facts_packet(
 }
 
 fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Value> {
-    let mut bound = Vec::new();
-    for relation in relations {
+    let mut bound = relations.clone();
+    let mut changes_by_owner: HashMap<&str, Vec<&Value>> = HashMap::new();
+    for change in changes {
+        if let Some(owner_id) = change["owner_id"].as_str() {
+            changes_by_owner.entry(owner_id).or_default().push(change);
+        }
+    }
+
+    for relation in &relations {
         let Some(relation_owner_id) = relation["owner_id"].as_str() else {
             continue;
         };
         let Some(base_relation_id) = relation["relation_id"].as_str() else {
             continue;
         };
-        for change in
-            changes.iter().filter(|change| change["owner_id"].as_str() == Some(relation_owner_id))
-        {
+        let Some(matching_changes) = changes_by_owner.get(relation_owner_id) else {
+            continue;
+        };
+        for change in matching_changes {
             let Some(change_id) = change["change_id"].as_str() else {
                 continue;
             };
@@ -434,6 +443,11 @@ fn annotate_oracles_for_bound_relations(
     relations: &mut [Value],
     changes: &[Value],
 ) {
+    let changes_by_id: HashMap<&str, &Value> = changes
+        .iter()
+        .filter_map(|change| change["change_id"].as_str().map(|change_id| (change_id, change)))
+        .collect();
+
     for relation in relations {
         let Some(owner_id) = relation["owner_id"].as_str() else {
             continue;
@@ -444,9 +458,7 @@ fn annotate_oracles_for_bound_relations(
         let Some(change_id) = relation["change_id"].as_str() else {
             continue;
         };
-        let Some(change) =
-            changes.iter().find(|change| change["change_id"].as_str() == Some(change_id))
-        else {
+        let Some(change) = changes_by_id.get(change_id) else {
             continue;
         };
         let Some(callable_name) = callable_name_from_owner_id(owner_id) else {
@@ -1489,6 +1501,43 @@ mod tests {
                 "relation.test_id {tid} must resolve to a test fact in the packet"
             );
         }
+    }
+
+    #[test]
+    fn build_packet_preserves_unbound_relations_when_diff_targets_other_owner() {
+        let root = "target/ripr-p4-relations-unbound-preserved";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(
+            format!("{root}/lib/Foo.pm"),
+            "package Foo;\nsub run {\n    return 1;\n}\n1;\n",
+        )
+        .expect("write Foo.pm");
+        std::fs::write(
+            format!("{root}/lib/Bar.pm"),
+            "package Bar;\nsub other {\n    return 1;\n}\n1;\n",
+        )
+        .expect("write Bar.pm");
+        std::fs::write(format!("{root}/t/Foo.t"), "use Test::More;\nuse Foo;\nok(Foo::run());\n")
+            .expect("write t");
+        let diff = "--- a/lib/Bar.pm\n+++ b/lib/Bar.pm\n@@ -2,3 +2,4 @@\n sub other {\n+    return 2;\n     return 1;\n }\n";
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "relations,changes",
+            diff: Some(diff),
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+
+        let relations = p["relations"].as_array().expect("relations[]");
+        assert!(
+            relations.iter().any(|relation| relation["change_id"] == "change:unresolved"),
+            "relation-only facts must survive when no change owner matches: {relations:?}"
+        );
     }
 
     #[test]
