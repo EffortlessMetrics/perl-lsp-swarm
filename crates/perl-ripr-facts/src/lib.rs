@@ -405,7 +405,7 @@ pub fn build_ripr_facts_packet(
 }
 
 fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Value> {
-    let mut bound = relations.clone();
+    let mut bound = Vec::new();
     let mut changes_by_owner: HashMap<&str, Vec<&Value>> = HashMap::new();
     for change in changes {
         if let Some(owner_id) = change["owner_id"].as_str() {
@@ -415,14 +415,18 @@ fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Va
 
     for relation in &relations {
         let Some(relation_owner_id) = relation["owner_id"].as_str() else {
+            bound.push(relation.clone());
             continue;
         };
         let Some(base_relation_id) = relation["relation_id"].as_str() else {
+            bound.push(relation.clone());
             continue;
         };
         let Some(matching_changes) = changes_by_owner.get(relation_owner_id) else {
+            bound.push(relation.clone());
             continue;
         };
+        let mut emitted_bound_relation = false;
         for change in matching_changes {
             let Some(change_id) = change["change_id"].as_str() else {
                 continue;
@@ -432,6 +436,10 @@ fn bind_relations_to_changes(relations: Vec<Value>, changes: &[Value]) -> Vec<Va
             bound_relation["relation_id"] =
                 Value::String(format!("{base_relation_id}:{change_id}"));
             bound.push(bound_relation);
+            emitted_bound_relation = true;
+        }
+        if !emitted_bound_relation {
+            bound.push(relation.clone());
         }
     }
     bound.sort_by(|a, b| a["relation_id"].as_str().cmp(&b["relation_id"].as_str()));
@@ -498,9 +506,21 @@ fn oracle_expression_mentions_callable(oracle: &Value, callable_name: &str) -> b
 
 fn callable_name_from_owner_id(owner_id: &str) -> Option<&str> {
     let (without_span, _) = owner_id.rsplit_once(':')?;
-    let (_, qualified_name) = without_span.rsplit_once(':')?;
-    let callable = qualified_name.rsplit("::").next()?;
-    if callable.is_empty() { None } else { Some(callable) }
+    for (kind_marker, is_callable) in [
+        (":package:", false),
+        (":class:", false),
+        (":role:", false),
+        (":sub:", true),
+        (":method:", true),
+    ] {
+        let Some((_, qualified_name)) = without_span.split_once(kind_marker) else {
+            continue;
+        };
+        let callable =
+            if is_callable { qualified_name.rsplit("::").next()? } else { qualified_name };
+        return if callable.is_empty() { None } else { Some(callable) };
+    }
+    None
 }
 
 fn ripr_packet_fingerprint(packet: &Value) -> String {
@@ -688,7 +708,8 @@ fn parse_ripr_facts_cli(args: &[String]) -> Result<RiprFactsCli, String> {
 
 fn ripr_facts_usage() -> &'static str {
     "usage: perl-ripr-facts ripr-facts --schema ripr-perl-facts-v1 --root <root> \
-     [--base <base>] [--head <head>] [--fact-classes <classes>] [--diff <diff>] --out <out>"
+     [--base <base>] [--head <head>] [--fact-classes <classes>] \
+     [--diff <cwd-relative-diff>] --out <out>"
 }
 
 fn read_diff_text(root: &str, diff_path: &str) -> Result<String, String> {
@@ -911,8 +932,8 @@ fn write_packet(out: &str, packet: &serde_json::Value) -> std::io::Result<()> {
 mod tests {
     use super::{
         RiprFactsError, RiprFactsRequest, build_ripr_facts_packet, build_unavailable_packet,
-        normalize_fact_classes, ripr_packet_fingerprint, run_cli, run_ripr_facts,
-        validate_ripr_facts_path, write_packet,
+        callable_name_from_owner_id, normalize_fact_classes, ripr_packet_fingerprint, run_cli,
+        run_ripr_facts, validate_ripr_facts_path, write_packet,
     };
 
     /// A valid request against the crate root (`"."`, no `t/` dir → unavailable).
@@ -1533,6 +1554,56 @@ mod tests {
         assert!(
             relations.iter().any(|relation| relation["change_id"] == "change:unresolved"),
             "relation-only facts must survive when no change owner matches: {relations:?}"
+        );
+    }
+
+    #[test]
+    fn build_packet_replaces_unbound_relation_when_change_owner_matches() {
+        let root = "target/ripr-p4-relations-bound-replaces-unbound";
+        let _ = std::fs::remove_dir_all(root);
+        std::fs::create_dir_all(format!("{root}/lib")).expect("create lib/");
+        std::fs::create_dir_all(format!("{root}/t")).expect("create t/");
+        std::fs::write(
+            format!("{root}/lib/Foo.pm"),
+            "package Foo;\nsub run {\n    return 1;\n}\n1;\n",
+        )
+        .expect("write Foo.pm");
+        std::fs::write(format!("{root}/t/Foo.t"), "use Test::More;\nuse Foo;\nok(Foo::run());\n")
+            .expect("write t");
+        let diff = "--- a/lib/Foo.pm\n+++ b/lib/Foo.pm\n@@ -2,3 +2,4 @@\n sub run {\n+    return 2;\n     return 1;\n }\n";
+        let p = build_ripr_facts_packet(&RiprFactsRequest {
+            schema: "ripr-perl-facts-v1",
+            root,
+            base: None,
+            head: None,
+            fact_classes: "relations,changes",
+            diff: Some(diff),
+        })
+        .expect("valid request builds a packet");
+        let _ = std::fs::remove_dir_all(root);
+
+        let relations = p["relations"].as_array().expect("relations[]");
+        let changes = p["changes"].as_array().expect("changes[]");
+        let changed_owner_ids: std::collections::HashSet<&str> =
+            changes.iter().filter_map(|change| change["owner_id"].as_str()).collect();
+        let changed_relation_count = relations
+            .iter()
+            .filter(|relation| {
+                relation["owner_id"]
+                    .as_str()
+                    .is_some_and(|owner_id| changed_owner_ids.contains(owner_id))
+            })
+            .count();
+
+        assert!(changed_relation_count > 0, "fixture must bind at least one relation");
+        assert!(
+            relations.iter().all(|relation| {
+                let owner_matches = relation["owner_id"]
+                    .as_str()
+                    .is_some_and(|owner_id| changed_owner_ids.contains(owner_id));
+                !owner_matches || relation["change_id"] != "change:unresolved"
+            }),
+            "matched owner relations must not keep a conflicting unresolved duplicate: {relations:?}"
         );
     }
 
@@ -2443,6 +2514,20 @@ mod tests {
             ripr_packet_fingerprint(&empty_semantic_packet),
             "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "empty semantic tuples should hash to SHA-256(empty), not SHA-256(SHA-256(empty))"
+        );
+    }
+
+    #[test]
+    fn callable_name_from_owner_id_keeps_package_owner_qualified() {
+        assert_eq!(
+            callable_name_from_owner_id("owner:lib/My/App.pm:package:My::App:10-50"),
+            Some("My::App"),
+            "package owners need the full package name; the trailing `App` segment is too broad"
+        );
+        assert_eq!(
+            callable_name_from_owner_id("owner:lib/My/App.pm:sub:My::App::run:20-40"),
+            Some("run"),
+            "callable owners still match assertion expressions by callable name"
         );
     }
 }

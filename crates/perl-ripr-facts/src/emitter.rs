@@ -928,10 +928,17 @@ fn boundary_evidence_refs(owner_id: Option<&str>, file_id: &str) -> Vec<Value> {
     }
 }
 
-fn first_dynamic_boundary_in_lines(lines: &[String]) -> Option<(&'static str, &'static str)> {
-    lines.iter().find_map(|line| {
-        DYNAMIC_BOUNDARY_PATTERNS.iter().find(|(pattern, _kind)| line.contains(pattern)).copied()
-    })
+fn dynamic_boundaries_in_lines(lines: &[String]) -> Vec<(&'static str, &'static str)> {
+    let mut seen_kinds = std::collections::HashSet::new();
+    let mut boundaries = Vec::new();
+    for line in lines {
+        for &(pattern, boundary_kind) in DYNAMIC_BOUNDARY_PATTERNS {
+            if line.contains(pattern) && seen_kinds.insert(boundary_kind) {
+                boundaries.push((pattern, boundary_kind));
+            }
+        }
+    }
+    boundaries
 }
 
 /// Emit dynamic-boundary facts + limitations + typed verify-command candidates.
@@ -1311,7 +1318,7 @@ pub(crate) fn emit_changes_from_diff(
             "missing_discriminator": Value::Null,
             "provenance_refs": [],
         }));
-        if let Some((pattern, boundary_kind)) = first_dynamic_boundary_in_lines(&hunk.lines) {
+        for (pattern, boundary_kind) in dynamic_boundaries_in_lines(&hunk.lines) {
             limitations.push(json!({
                 "limitation_id": format!("diff-dynamic-boundary:{change_id}:{boundary_kind}"),
                 "kind": boundary_kind,
@@ -2209,6 +2216,29 @@ mod tests {
                 && refs.iter().any(|r| r.as_str() == Some(owner_id)),
             "dynamic limitation should be scoped to the emitted change and owner"
         );
+    }
+
+    #[test]
+    fn emit_changes_from_diff_records_each_dynamic_boundary_kind_in_hunk() {
+        let (files, owners) = app_files_and_owners();
+        let diff = "\
+--- a/lib/My/App.pm
++++ b/lib/My/App.pm
+@@ -5,3 +5,7 @@
+ sub discount {
+     my ($amount) = @_;
++    eval { $amount };
++    our @ISA = ('Base');
++    return shift->$method();
+ }
+";
+        let (_changes, limitations) = emit_changes_from_diff(diff, ".", &files, &owners);
+        let kinds: std::collections::HashSet<&str> =
+            limitations.iter().filter_map(|limitation| limitation["kind"].as_str()).collect();
+
+        assert!(kinds.contains("eval_or_string_code"), "eval boundary missing: {limitations:?}");
+        assert!(kinds.contains("role_composition"), "role boundary missing: {limitations:?}");
+        assert!(kinds.contains("dynamic_dispatch"), "dispatch boundary missing: {limitations:?}");
     }
 
     #[test]

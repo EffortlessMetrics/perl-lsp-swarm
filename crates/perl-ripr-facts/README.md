@@ -31,8 +31,10 @@ Three entry points:
   It performs **no I/O**: no disk write, no stderr, no process-exit mapping.
 - **`perl-ripr-facts ripr-facts --schema ripr-perl-facts-v1 --root <root>
   --diff <diff> --out <out>`** — the canonical batch CLI used by RIPR proof
-  harnesses. `root`, `diff`, and `out` are repo-relative; `diff` is read as
-  unified diff text and forwarded to `RiprFactsRequest.diff`.
+  harnesses. `root`, `diff`, and `out` are validated as repo-style relative
+  paths and resolved by the process current working directory; `diff` is not
+  rebased onto `--root`. The diff file is read as unified diff text and
+  forwarded to `RiprFactsRequest.diff`.
 - **`run_ripr_facts(schema, root, base, head, fact_classes, out) -> i32`** —
   the thin CLI wrapper the `perl-lsp` / `perllsp` `ripr-facts` subcommand
   calls. It forwards its args to `build_ripr_facts_packet`, then validates the
@@ -98,7 +100,7 @@ byte→line/column) and `perl-symbol` (`extract_symbol_decls` /
 `extract_symbol_refs`) — not `perl-workspace` (which pulls `lsp-types`).
 Relations (including a heuristic `direct_owner_call`) and dynamic boundaries
 remain from earlier conservative slices. The canonical `perl-ripr-facts
-ripr-facts` CLI accepts `--diff <repo-relative-file>` and supplies that unified
+ripr-facts` CLI accepts `--diff <cwd-relative-file>` and supplies that unified
 diff text to the packet builder. Compatibility wrappers that call
 `run_ripr_facts` without diff text still yield an empty `changes[]` plus a
 `no-diff-supplied` limitation when `changes` is requested. The managed-producer
