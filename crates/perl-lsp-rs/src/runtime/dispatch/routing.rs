@@ -73,25 +73,17 @@ impl LspServer {
             "textDocument/documentHighlight" => {
                 self.handle_document_highlight_dispatch(request.params)
             }
-            "textDocument/prepareTypeHierarchy" => {
-                return self.route_cancellable(id, method, should_respond, |_| {
-                    self.handle_prepare_type_hierarchy_dispatch(request.params)
-                });
-            }
-            "typeHierarchy/prepare" => {
-                return self.route_cancellable(id, method, should_respond, |_| {
-                    self.handle_prepare_type_hierarchy_dispatch(request.params)
-                });
-            }
-            "typeHierarchy/supertypes" => {
-                return self.route_cancellable(id, method, should_respond, |_| {
-                    self.handle_type_hierarchy_supertypes_dispatch(request.params)
-                });
-            }
-            "typeHierarchy/subtypes" => {
-                return self.route_cancellable(id, method, should_respond, |_| {
-                    self.handle_type_hierarchy_subtypes_dispatch(request.params)
-                });
+            "textDocument/prepareTypeHierarchy"
+            | "typeHierarchy/prepare"
+            | "typeHierarchy/supertypes"
+            | "typeHierarchy/subtypes" => {
+                return self.route_type_hierarchy_request(
+                    id,
+                    method.clone(),
+                    should_respond,
+                    request_start,
+                    request.params,
+                );
             }
             "textDocument/diagnostic" => self.handle_document_diagnostic_dispatch(request.params),
             "workspace/diagnostic" => {
@@ -210,6 +202,42 @@ impl LspServer {
                     Some(&method),
                 ))
             }
+        };
+
+        self.record_live_provider_decision_trace(&method, &result);
+        self.record_lsp_request_latency(&method, request_start);
+        RoutedResponse::Handler { id, method, should_respond, result }
+    }
+
+    fn route_type_hierarchy_request(
+        &self,
+        id: Option<Value>,
+        method: String,
+        should_respond: bool,
+        request_start: std::time::Instant,
+        params: Option<Value>,
+    ) -> RoutedResponse {
+        if let Some(request_id) = id.as_ref()
+            && let Some(typed_id) = JsonRpcId::from_value(request_id)
+            && self.is_cancelled(&typed_id)
+        {
+            self.cancel_clear(&typed_id);
+            self.record_lsp_request_latency(&method, request_start);
+            return RoutedResponse::Immediate(cancelled_response_with_method(request_id, &method));
+        }
+
+        let result = match method.as_str() {
+            "textDocument/prepareTypeHierarchy" | "typeHierarchy/prepare" => {
+                self.handle_prepare_type_hierarchy_dispatch(params)
+            }
+            "typeHierarchy/supertypes" => self.handle_type_hierarchy_supertypes_dispatch(params),
+            "typeHierarchy/subtypes" => self.handle_type_hierarchy_subtypes_dispatch(params),
+            _ => Err(enhanced_error(
+                METHOD_NOT_FOUND,
+                &format!("Method '{}' not found or not supported", method),
+                "method_not_found",
+                Some(&method),
+            )),
         };
 
         self.record_live_provider_decision_trace(&method, &result);
