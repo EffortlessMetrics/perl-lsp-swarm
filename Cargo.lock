@@ -1909,6 +1909,7 @@ dependencies = [
  "perl-parser-core",
  "perl-symbol",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
