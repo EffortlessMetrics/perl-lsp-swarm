@@ -226,9 +226,11 @@ impl PatternDetector for BeginTimeHeredocDetector {
 // Dynamic delimiter detector
 struct DynamicDelimiterDetector;
 
-/// Pattern for identifying dynamic heredoc delimiters
+/// Pattern for identifying dynamic heredoc delimiters.
+/// Bounded quantifiers (`{1,500}`) cap scan depth per attempt — defense-in-depth
+/// against pathological inputs — without sacrificing correct detection.
 static DYNAMIC_DELIMITER_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}]+\}|<<\s*\$\w+|<<\s*`[^`]+`") {
+    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}]{1,500}\}|<<\s*\$\w+|<<\s*`[^`]{1,500}`") {
         Ok(re) => re,
         Err(_) => unreachable!("DYNAMIC_DELIMITER_PATTERN regex failed to compile"),
     });
@@ -332,9 +334,11 @@ impl PatternDetector for SourceFilterDetector {
 // Regex heredoc detector
 struct RegexHeredocDetector;
 
-/// Pattern for identifying heredocs inside regex code blocks
+/// Pattern for identifying heredocs inside regex code blocks.
+/// Bounded quantifiers cap scan depth while preserving multiline detection — `[^}]`
+/// matches newlines by default, so heredoc content spanning multiple lines is still caught.
 static REGEX_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"\(\?\{[^}]*<<[^}]*\}") {
+    LazyLock::new(|| match Regex::new(r"\(\?\{[^}]{0,2000}<<[^}]{0,2000}\}") {
         Ok(re) => re,
         Err(_) => unreachable!("REGEX_HEREDOC_PATTERN regex failed to compile"),
     });
@@ -382,12 +386,15 @@ impl PatternDetector for RegexHeredocDetector {
 // Eval heredoc detector
 struct EvalHeredocDetector;
 
-/// Pattern for identifying heredocs inside eval strings
-static EVAL_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r#"eval\s+(?:'[^']*<<[^']*'|"[^"]*<<[^"]*")"#) {
+/// Pattern for identifying heredocs inside eval strings.
+/// Bounded quantifiers cap scan depth while preserving multiline detection — `[^']`/`[^"]`
+/// match newlines by default, so multiline eval-string heredocs are still correctly detected.
+static EVAL_HEREDOC_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    match Regex::new(r#"eval\s+(?:'[^']{0,2000}<<[^']{0,2000}'|"[^"]{0,2000}<<[^"]{0,2000}")"#) {
         Ok(re) => re,
         Err(_) => unreachable!("EVAL_HEREDOC_PATTERN regex failed to compile"),
-    });
+    }
+});
 
 impl PatternDetector for EvalHeredocDetector {
     fn detect(

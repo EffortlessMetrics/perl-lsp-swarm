@@ -274,7 +274,10 @@ impl LspServer {
         static EXPORT_ARRAY_RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
 
         let export_re = EXPORT_QW_RE.get_or_init(|| {
-            regex::Regex::new(r"@EXPORT(?:_OK)?\s*=\s*qw[(\[{/<|!]([^)\]}/|!>]+)[)\]}/|!>]").ok()
+            // Bounded quantifier caps scan depth per attempt (defense-in-depth).
+            // 4000 chars accommodates large export lists without unbounded scanning.
+            regex::Regex::new(r"@EXPORT(?:_OK)?\s*=\s*qw[(\[{/<|!]([^)\]}/|!>]{1,4000})[)\]}/|!>]")
+                .ok()
         });
 
         if let Some(re) = export_re {
@@ -288,7 +291,8 @@ impl LspServer {
         }
 
         let array_re = EXPORT_ARRAY_RE
-            .get_or_init(|| regex::Regex::new(r"@EXPORT(?:_OK)?\s*=\s*\(([^)]+)\)").ok());
+            // Bounded quantifier — same rationale as EXPORT_QW_RE above.
+            .get_or_init(|| regex::Regex::new(r"@EXPORT(?:_OK)?\s*=\s*\(([^)]{1,4000})\)").ok());
         if let Some(re) = array_re {
             for cap in re.captures_iter(text) {
                 if let Some(content) = cap.get(1) {
