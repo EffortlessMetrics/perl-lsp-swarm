@@ -319,6 +319,254 @@ mod moose_class_model_navigation_tests {
         Ok(())
     }
 
+    // ── hover: method modifier declarations show modifier card ───────────
+    //
+    // Issue #1728: hover tests for before/after/around/override/augment.
+    // The `method_modifier_hover` card is emitted when the cursor falls within a
+    // modifier declaration's AST span — the symbol extractor creates a synthetic
+    // subroutine symbol with `attributes = ["modifier=<kind>"]` for each modifier
+    // statement, so `symbol_at(offset)` finds it and triggers the dedicated card.
+
+    /// Hovering on the target name in `before 'save' => sub { }` must show the
+    /// "Method Modifier (`before`)" card, not a generic "Subroutine" label.
+    #[test]
+    fn test_moo_before_modifier_hover_shows_before_modifier_card() -> TestResult {
+        let code = include_str!("fixtures/frameworks/moo_method_modifiers.pl");
+        let uri = "file:///moo_modifier_hover_before.pl";
+
+        // Line 8 (0-indexed): `before 'save' => sub {`
+        let resp = hover_at(code, uri, "save", 8)?;
+        let content = semantic::hover_content(&resp).ok_or(
+            "Expected hover content when cursor is on 'save' in 'before 'save'' declaration",
+        )?;
+
+        assert!(
+            content.contains("before"),
+            "Hover on 'before' modifier declaration should mention 'before', got: {content}"
+        );
+        assert!(
+            content.contains("Method Modifier"),
+            "Hover on modifier declaration should show 'Method Modifier' card header, got: {content}"
+        );
+        Ok(())
+    }
+
+    /// Hovering on the target name in `after 'save' => sub { }` must show the
+    /// "Method Modifier (`after`)" card.
+    #[test]
+    fn test_moo_after_modifier_hover_shows_after_modifier_card() -> TestResult {
+        let code = include_str!("fixtures/frameworks/moo_method_modifiers.pl");
+        let uri = "file:///moo_modifier_hover_after.pl";
+
+        // Line 13 (0-indexed): `after 'save' => sub {`
+        let resp = hover_at(code, uri, "save", 13)?;
+        let content = semantic::hover_content(&resp).ok_or(
+            "Expected hover content when cursor is on 'save' in 'after 'save'' declaration",
+        )?;
+
+        assert!(
+            content.contains("after"),
+            "Hover on 'after' modifier declaration should mention 'after', got: {content}"
+        );
+        assert!(
+            content.contains("Method Modifier"),
+            "Hover on modifier declaration should show 'Method Modifier' card header, got: {content}"
+        );
+        Ok(())
+    }
+
+    /// Hovering on the target name in `around 'save' => sub { }` must show the
+    /// "Method Modifier (`around`)" card.
+    #[test]
+    fn test_moo_around_modifier_hover_shows_around_modifier_card() -> TestResult {
+        let code = include_str!("fixtures/frameworks/moo_method_modifiers.pl");
+        let uri = "file:///moo_modifier_hover_around.pl";
+
+        // Line 18 (0-indexed): `around 'save' => sub {`
+        let resp = hover_at(code, uri, "save", 18)?;
+        let content = semantic::hover_content(&resp).ok_or(
+            "Expected hover content when cursor is on 'save' in 'around 'save'' declaration",
+        )?;
+
+        assert!(
+            content.contains("around"),
+            "Hover on 'around' modifier declaration should mention 'around', got: {content}"
+        );
+        assert!(
+            content.contains("Method Modifier"),
+            "Hover on modifier declaration should show 'Method Modifier' card header, got: {content}"
+        );
+        Ok(())
+    }
+
+    /// Hovering on `override 'save'` in a Moose class must show the
+    /// "Method Modifier (`override`)" card with the override description.
+    #[test]
+    fn test_moose_override_modifier_hover_shows_override_modifier_card() -> TestResult {
+        // Line 0: package Demo::Override;
+        // Line 1: use Moose;
+        // Line 2: sub save { return 1; }
+        // Line 3: override 'save' => sub { };
+        let code = "package Demo::Override;\nuse Moose;\nsub save { return 1; }\noverride 'save' => sub { };\n";
+        let uri = "file:///moose_modifier_hover_override.pl";
+
+        let resp = hover_at(code, uri, "save", 3)?;
+        let content = semantic::hover_content(&resp)
+            .ok_or("Expected hover content for 'override' modifier declaration")?;
+
+        assert!(
+            content.contains("override"),
+            "Hover on 'override' modifier should mention 'override', got: {content}"
+        );
+        assert!(
+            content.contains("Method Modifier"),
+            "Hover on 'override' modifier should show 'Method Modifier' card, got: {content}"
+        );
+        Ok(())
+    }
+
+    /// Hovering on `augment 'save'` in a Moose class must show the
+    /// "Method Modifier (`augment`)" card with the augment description.
+    #[test]
+    fn test_moose_augment_modifier_hover_shows_augment_modifier_card() -> TestResult {
+        // Line 0: package Demo::Augment;
+        // Line 1: use Moose;
+        // Line 2: sub save { inner() }
+        // Line 3: augment 'save' => sub { return 1; };
+        let code = "package Demo::Augment;\nuse Moose;\nsub save { inner() }\naugment 'save' => sub { return 1; };\n";
+        let uri = "file:///moose_modifier_hover_augment.pl";
+
+        let resp = hover_at(code, uri, "save", 3)?;
+        let content = semantic::hover_content(&resp)
+            .ok_or("Expected hover content for 'augment' modifier declaration")?;
+
+        assert!(
+            content.contains("augment"),
+            "Hover on 'augment' modifier should mention 'augment', got: {content}"
+        );
+        assert!(
+            content.contains("Method Modifier"),
+            "Hover on 'augment' modifier should show 'Method Modifier' card, got: {content}"
+        );
+        Ok(())
+    }
+
+    /// When a method has multiple modifiers, hovering over each modifier declaration
+    /// must produce DISTINCT content identifying the specific modifier kind.
+    ///
+    /// This guards against the case where all modifiers produce the same generic card
+    /// that does not distinguish "before" from "after" from "around".
+    #[test]
+    fn test_moo_multiple_modifiers_hover_each_distinct() -> TestResult {
+        let code = include_str!("fixtures/frameworks/moo_method_modifiers.pl");
+        let uri = "file:///moo_modifier_hover_distinct.pl";
+        let server = TestServerBuilder::new().build();
+        server.open_document(uri, code);
+
+        let (bl, bc) = semantic::find_pos(code, "save", 8); // before
+        let before_resp = server.get_hover(uri, bl, bc);
+        let before_content = semantic::hover_content(&before_resp)
+            .ok_or("Expected hover content for 'before' modifier")?;
+
+        let (al, ac) = semantic::find_pos(code, "save", 13); // after
+        let after_resp = server.get_hover(uri, al, ac);
+        let after_content = semantic::hover_content(&after_resp)
+            .ok_or("Expected hover content for 'after' modifier")?;
+
+        let (rl, rc) = semantic::find_pos(code, "save", 18); // around
+        let around_resp = server.get_hover(uri, rl, rc);
+        let around_content = semantic::hover_content(&around_resp)
+            .ok_or("Expected hover content for 'around' modifier")?;
+
+        // Each card must name its own modifier kind
+        assert!(
+            before_content.to_lowercase().contains("before"),
+            "before modifier hover must mention 'before', got: {before_content}"
+        );
+        assert!(
+            after_content.to_lowercase().contains("after"),
+            "after modifier hover must mention 'after', got: {after_content}"
+        );
+        assert!(
+            around_content.to_lowercase().contains("around"),
+            "around modifier hover must mention 'around', got: {around_content}"
+        );
+
+        // The three cards must not be identical (before ≠ after, before ≠ around)
+        assert_ne!(
+            before_content, after_content,
+            "before and after modifier hover cards should produce distinct content"
+        );
+        assert_ne!(
+            before_content, around_content,
+            "before and around modifier hover cards should produce distinct content"
+        );
+        Ok(())
+    }
+
+    /// Hovering on a modifier declaration must NOT show "Subroutine" as the kind label —
+    /// the dedicated "Method Modifier" card must replace the generic subroutine card.
+    #[test]
+    fn test_moo_modifier_hover_does_not_show_subroutine_label() -> TestResult {
+        let code = include_str!("fixtures/frameworks/moo_method_modifiers.pl");
+        let uri = "file:///moo_modifier_hover_no_sub.pl";
+
+        // Check all three modifier declarations
+        for (needle, target_line) in [("save", 8), ("save", 13), ("save", 18)] {
+            let resp = hover_at(code, uri, needle, target_line)?;
+            if let Some(content) = semantic::hover_content(&resp) {
+                assert!(
+                    !content.contains("**Subroutine**"),
+                    "Modifier declaration hover on line {target_line} should not say '**Subroutine**', got: {content}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Hovering on a plain method (no modifiers) must NOT show "Method Modifier" —
+    /// modifier detection must be scoped to actual modifier declarations.
+    #[test]
+    fn test_moo_plain_method_hover_not_labelled_as_modifier() -> TestResult {
+        // The fixture has `plain_method` with no decorators.
+        let code = include_str!("fixtures/frameworks/moo_method_modifiers.pl");
+        let uri = "file:///moo_modifier_hover_plain.pl";
+
+        // Line 28 (0-indexed): `sub plain_method {`
+        let resp = hover_at(code, uri, "plain_method", 28)?;
+
+        if let Some(content) = semantic::hover_content(&resp) {
+            assert!(
+                !content.contains("Method Modifier"),
+                "Plain method hover should not say 'Method Modifier', got: {content}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Hovering on a call site `$self->save` must not crash or return an error
+    /// response, even when `save` is decorated with multiple method modifiers.
+    ///
+    /// NOTE: The current implementation does not surface modifier information at
+    /// call sites — that is a separate enhancement. This test guards robustness only.
+    #[test]
+    fn test_moo_modifier_decorated_method_call_site_hover_does_not_crash() -> TestResult {
+        let code = include_str!("fixtures/frameworks/moo_method_modifiers.pl");
+        let uri = "file:///moo_modifier_hover_callsite.pl";
+
+        // Line 25 (0-indexed): `    $self->save;  # call site`
+        let server = TestServerBuilder::new().build();
+        server.open_document(uri, code);
+        let (line, character) = semantic::find_pos(code, "save", 25);
+        let resp = server.get_hover(uri, line, character);
+
+        assert!(
+            resp.get("error").is_none(),
+            "Hover on $self->save call site should not return an error, got: {resp:#}"
+        );
+        Ok(())
+    }
+
     // ── hover on the has declaration itself ──────────────────────────────
 
     /// Hovering directly on the `has 'name'` declaration line must show
