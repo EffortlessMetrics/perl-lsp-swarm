@@ -228,7 +228,7 @@ struct DynamicDelimiterDetector;
 
 /// Pattern for identifying dynamic heredoc delimiters
 static DYNAMIC_DELIMITER_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}]+\}|<<\s*\$\w+|<<\s*`[^`]+`") {
+    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}]{1,1000}\}|<<\s*\$\w+|<<\s*`[^`]{1,1000}`") {
         Ok(re) => re,
         Err(_) => unreachable!("DYNAMIC_DELIMITER_PATTERN regex failed to compile"),
     });
@@ -334,7 +334,7 @@ struct RegexHeredocDetector;
 
 /// Pattern for identifying heredocs inside regex code blocks
 static REGEX_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"\(\?\{[^}]*<<[^}]*\}") {
+    LazyLock::new(|| match Regex::new(r"\(\?\{[^}]{0,2000}<<[^}]{0,2000}\}") {
         Ok(re) => re,
         Err(_) => unreachable!("REGEX_HEREDOC_PATTERN regex failed to compile"),
     });
@@ -383,11 +383,12 @@ impl PatternDetector for RegexHeredocDetector {
 struct EvalHeredocDetector;
 
 /// Pattern for identifying heredocs inside eval strings
-static EVAL_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r#"eval\s+(?:'[^']*<<[^']*'|"[^"]*<<[^"]*")"#) {
+static EVAL_HEREDOC_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    match Regex::new(r#"eval\s+(?:'[^']{0,2000}<<[^']{0,2000}'|"[^"]{0,2000}<<[^"]{0,2000}")"#) {
         Ok(re) => re,
         Err(_) => unreachable!("EVAL_HEREDOC_PATTERN regex failed to compile"),
-    });
+    }
+});
 
 impl PatternDetector for EvalHeredocDetector {
     fn detect(
