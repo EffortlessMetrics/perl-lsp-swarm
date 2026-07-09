@@ -23,6 +23,7 @@ Spawn reviewers immediately.
 # Find all open PRs
 gh pr list --state open --json number,title,labels --limit 30
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(state:"open", perPage:30)` → each PR has `.number`, `.title`, `.labels`.
 
 For each PR not yet reviewed (no review labels):
 ```
@@ -47,8 +48,9 @@ Agent(subagent_type: "ops", prompt: "Process the merge queue. Follow your todo l
 
 After merges, verify master CI:
 ```bash
-gh run list --branch master --limit 3
+gh run list --branch main --limit 3
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"}, per_page:3)` → check `conclusion` field on each run. (Note: this file previously used `master` — corrected to `main` per repo default branch name.)
 
 ## Step 4: Post-merge actions
 

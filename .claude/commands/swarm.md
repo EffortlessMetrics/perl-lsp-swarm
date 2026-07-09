@@ -37,6 +37,11 @@ gh run list --branch master --limit 1
 just clean-worktrees 2>/dev/null || git worktree prune
 ```
 
+> **MCP alternatives (web/no-gh sessions):**
+> - Open PR count: `mcp__github__list_pull_requests(state:"open", perPage:100)` → count results (repeat with pagination for >100)
+> - Open issue count: `mcp__github__list_issues(state:"OPEN", perPage:100)` → count results
+> - Master CI: `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"})` → check first run's `conclusion`
+
 **Stop if master CI is red.** Fix it first.
 
 ## Phase 2: Assess
@@ -55,6 +60,11 @@ gh issue list --label "structural-blocker" --state open # blocked work
 gh pr list --label "merge-ready"                        # ready to merge
 gh pr list --label "in-review"                          # being reviewed (check for stalls)
 ```
+
+> **MCP alternatives (web/no-gh sessions):** Replace each `gh issue list --label X` with
+> `mcp__github__list_issues(labels:["X"], state:"OPEN")`. Replace `gh pr list --label X`
+> with `mcp__github__search_pull_requests(query:"is:open label:X repo:effortlessmetrics/perl-lsp-swarm")`.
+> Full mapping in [docs/reference/GH_MCP_FALLBACK.md](../../../docs/reference/GH_MCP_FALLBACK.md).
 
 **Routing rules (sequential — check in order, spawn the first missing):**
 
@@ -238,3 +248,10 @@ gh issue list --label "builder-ready" --state open --json number,title,labels \
 # Health check
 /health-check
 ```
+
+> **MCP alternatives (web/no-gh sessions):**
+> - Open PRs: `mcp__github__list_pull_requests(state:"open", perPage:20)`
+> - builder-ready issues: `mcp__github__list_issues(labels:["builder-ready"], state:"OPEN", perPage:10)`
+> - in-build issues: `mcp__github__list_issues(labels:["in-build"], state:"OPEN", perPage:10)`
+> - Master CI: `mcp__github__actions_list(method:"list_workflow_runs", workflow_runs_filter:{branch:"main"})` → first 3 runs
+> - builder-ready without plan-reviewed: `mcp__github__list_issues(labels:["builder-ready"], state:"OPEN")` then filter in agent code for missing `plan-reviewed` label

@@ -141,6 +141,8 @@ clean handoff to whoever picks up next.
      )"
      ```
 
+   > **MCP alternative (web/no-gh sessions):** All `gh issue comment` and `gh pr comment` calls map to `mcp__github__add_issue_comment(issue_number:<NUMBER>, body:"## <Type> Wrapup\n\n<summary>")` — `issue_number` works for both issues and PRs.
+
    > If you don't file the update on GitHub, the work is invisible.
 
 ## Release the control-plane lock (if you acquired it)

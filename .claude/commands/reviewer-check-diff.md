@@ -13,6 +13,7 @@ Read the actual diff and check for issues.
    ```bash
    gh pr diff <number>
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_diff", pullNumber:<number>)` — full parity. For a file-by-file view: `mcp__github__pull_request_read(method:"get_files", pullNumber:<number>)`.
 
 2. Check for **banned patterns** (instant blockers):
    - `unwrap()`, `expect()`, `panic!()` in non-test code

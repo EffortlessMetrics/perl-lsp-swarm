@@ -35,6 +35,7 @@ this to decide whether to invest sonnet-grade time.
    EOF
    )"
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"## Advocatus Diaboli Review\n\n...")`.
 
 3. Add the label (verified apply — see `/label-apply-verified`):
 

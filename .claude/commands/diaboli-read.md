@@ -15,6 +15,7 @@ understand the *what* and *why* well enough to argue against *whether*.
    ```bash
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` → `.title`, `.body`, `.labels`; `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` → comment bodies.
 
 2. Identify:
    - **What user problem does this solve?** (If no clear user problem, that's your first objection)

@@ -13,11 +13,13 @@ Understand what the PR is SUPPOSED to do before judging if it does it.
    ```bash
    gh pr view <number> --json body --jq '.body' | grep -oE '#[0-9]+'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:<number>)` → `.body`; extract issue number with a regex match.
 
 2. Read the issue's root cause and recommended fix:
    ```bash
    gh issue view <number> --json body --jq '.body'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` → `.body`.
 
 3. Note the expected behavior change:
    - What was broken before?

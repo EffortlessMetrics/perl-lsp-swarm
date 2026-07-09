@@ -15,6 +15,9 @@ gh pr view $ARGUMENTS --comments
 gh api repos/:owner/:repo/pulls/$ARGUMENTS/reviews --jq '.[] | "\(.user.login) (\(.state)): \(.body)"'
 gh api repos/:owner/:repo/pulls/$ARGUMENTS/comments --jq '.[] | "\(.path):\(.line) \(.body)"'
 ```
+> **MCP alternatives (web/no-gh sessions):**
+> - PR review summaries: `mcp__github__pull_request_read(method:"get_reviews", pullNumber:<number>)`.
+> - PR review line comments: `mcp__github__pull_request_read(method:"get_review_comments", pullNumber:<number>)` → each comment has `.path`, `.line`, `.body`.
 
 ### 2. Categorize each comment
 - **Blocking** (changes requested): must fix before merge
@@ -41,6 +44,9 @@ gh pr comment $ARGUMENTS --body "Addressed review feedback:
 - <comment 2>: <explanation>
 "
 ```
+> **MCP alternatives (web/no-gh sessions):**
+> - Reply to a specific line comment: `mcp__github__add_reply_to_pull_request_comment(pullNumber:<number>, commentId:<comment-id>, body:"Fixed in <commit-hash>. <brief explanation>")`.
+> - General PR comment: `mcp__github__add_issue_comment(issue_number:<number>, body:"Addressed review feedback:\n- <comment 1>: ...")` — `issue_number` works for PRs.
 
 ### 5. Re-verify
 ```bash

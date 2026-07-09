@@ -27,6 +27,7 @@ Note: Edits to `crates/*/CLAUDE.md` do NOT need the lock — each crate is isola
 gh issue comment <number> --body "## Wisdom Review
 <your process findings — what worked, what to change>"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"## Wisdom Review\n\n...")` — works for both issues and PRs.
 
 **Code patterns** → update the crate's CLAUDE.md if relevant:
 If you found something about how a crate works that future agents
@@ -38,6 +39,7 @@ keeps being a bottleneck:
 ```bash
 gh issue create --title "swarm: <pattern observed>" --body "<analysis>" --label "infrastructure"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"create", title:"swarm: <pattern observed>", body:"<analysis>", labels:["infrastructure"])`.
 
 **Agent skill improvements** → suggest updates:
 If a step skill is missing guidance that would have helped, note the

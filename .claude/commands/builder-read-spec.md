@@ -14,12 +14,14 @@ Read the issue and figure out what to build. Be proactive and fix forward.
    ```bash
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comment_count: (.comments | length)}'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` → `.title`, `.body`, `.labels`; `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` → comment count and bodies.
 
 2. If there are comments (scout reports, plan-review feedback), read them too:
 
    ```bash
    gh issue view <number> --json comments --jq '.comments[-3:][].body'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` → read the last 3 comments in agent code.
 
 3. Check for plan-review signal:
    - Has a `builder-ready` label? → **Proceed to build.**
@@ -38,6 +40,8 @@ Read the issue and figure out what to build. Be proactive and fix forward.
    ```bash
    gh issue edit <number> --remove-label "builder-ready"
    ```
+   > **MCP alternative (web/no-gh sessions):** Read current labels with `mcp__github__issue_read(method:"get_labels", issue_number:<number>)`, remove `builder-ready` from the list, then write back with `mcp__github__issue_write(method:"update", issue_number:<number>, labels:[...filtered])`. ⚠️ `issue_write` replaces the full label list — read current labels first.
+
    The `in-build` label tells the orchestrator this issue is taken. The `--remove-label "builder-ready"` removes it from the builder queue. (`--remove-label` is a no-op if the label is absent, so this is always safe.)
 
    Note: this label is informational, not a mutex. If two builders race before either sets `in-build`, both may proceed. The orchestrator should check `in-build` issues before spawning new builders to detect this condition.
@@ -59,6 +63,7 @@ Read the issue and figure out what to build. Be proactive and fix forward.
      ```bash
      gh issue edit <number> --remove-label "in-build"
      ```
+     > **MCP alternative (web/no-gh sessions):** Read current labels with `mcp__github__issue_read(method:"get_labels", issue_number:<number>)`, remove `in-build`, write back with `mcp__github__issue_write(method:"update", issue_number:<number>, labels:[...])`.
      ```
      /label-apply-verified issue <number> "needs-plan-review"
      ```

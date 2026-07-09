@@ -13,6 +13,7 @@ Understand the builder's implementation and the crate's existing patterns.
    ```bash
    gh pr checkout <number>
    ```
+   > **MCP alternative (web/no-gh sessions):** No direct MCP equivalent for `gh pr checkout`. In a worktree: `git fetch origin pull/<number>/head:<branch> && git checkout <branch>`.
 
 2. Read the diff:
    ```bash
@@ -33,3 +34,4 @@ Understand the builder's implementation and the crate's existing patterns.
    ```bash
    gh pr view <number> --json comments --jq '.comments[].body'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_comments", pullNumber:<number>)` → all PR review comment bodies.

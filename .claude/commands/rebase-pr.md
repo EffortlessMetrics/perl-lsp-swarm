@@ -13,6 +13,7 @@ Rebase a single PR branch onto current master. Unlike `/rebase-open` which rebas
 ```bash
 gh pr view $ARGUMENTS --json number,title,headRefName,baseRefName,mergeable
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:<number>)` → read `.headRefName`, `.baseRefName`, `.mergeable`, `.title`.
 
 Extract the branch name from `headRefName`.
 

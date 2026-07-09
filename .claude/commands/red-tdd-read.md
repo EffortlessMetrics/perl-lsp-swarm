@@ -14,6 +14,7 @@ existing test patterns.
    ```bash
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` → `.title`, `.body`, `.labels`; `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` → all comment bodies including spec-planner, plan-review, and oppositional comments.
 
 2. Check out the implementation branch (created by spec-planner):
    ```bash

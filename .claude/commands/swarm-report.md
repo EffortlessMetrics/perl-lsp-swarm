@@ -29,6 +29,11 @@ echo "=== Metrics Dashboard ==="
 cargo xtask swarm-summary .ops-perl-lsp --since "${SINCE}" --limit 20
 cargo xtask swarm-summary .ops-perl-lsp --since "${SINCE}" --limit 20 --format json
 ```
+> **MCP alternatives (web/no-gh sessions):**
+> - Merged PRs: `mcp__github__list_pull_requests(state:"closed", perPage:50)` → filter by merged status.
+> - Open PRs: `mcp__github__list_pull_requests(state:"open", perPage:50)`.
+> - Swarm-discovered issues: `mcp__github__list_issues(labels:["swarm-discovered"], state:"OPEN")`.
+> - Architectural issues: `mcp__github__list_issues(labels:["swarm-architectural"], state:"OPEN")`.
 
 ## Report Format
 

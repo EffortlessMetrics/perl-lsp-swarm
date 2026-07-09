@@ -31,6 +31,7 @@ Post your project-fit verdict on the PR and set the sign-off label.
    EOF
    )"
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"## Maintainer Vision Review (PR)\n\n...")` — `issue_number` works for both issues and PRs.
 
 2. Set sign-off label on the PR (verified apply — see `/label-apply-verified`):
    ```

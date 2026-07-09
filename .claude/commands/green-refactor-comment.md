@@ -38,3 +38,4 @@ Commit refactoring, push, set sign-off label, comment on PR.
    EOF
    )"
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"## Green Refactor\n\n...")` — `issue_number` works for both issues and PRs.

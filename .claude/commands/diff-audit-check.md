@@ -24,6 +24,7 @@ Review the cumulative diff from all agents.
    git diff "$(git merge-base "origin/$BASE" HEAD)"..HEAD --stat
    git diff "$(git merge-base "origin/$BASE" HEAD)"..HEAD
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", pullNumber:<number>)` → authoritative PR file list with patches. For the base branch name: `mcp__github__pull_request_read(method:"get", pullNumber:<number>)` → `.baseRefName`. Use the Read tool plus local git diff for the authored diff when checked out locally.
    Before flagging any file as cross-PR contamination, confirm it appears in the
    `pulls/N/files` API response as PR-authored. If it only appears in a
    branch-vs-base diff, it is inherited base state, not scope drift. This
@@ -34,6 +35,7 @@ Review the cumulative diff from all agents.
    gh pr checkout <number>
    cat .spec/*/acceptance.md 2>/dev/null
    ```
+   > **MCP alternative (web/no-gh sessions):** No direct MCP equivalent for `gh pr checkout`. In a worktree: `git fetch origin pull/<number>/head:<branch> && git checkout <branch>`, then use the Read tool to read spec files.
 
 3. Check each acceptance criterion against the diff — is it implemented?
 
@@ -58,3 +60,4 @@ Review the cumulative diff from all agents.
    ```bash
    gh pr view <number> --json title,isDraft,labels
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", pullNumber:<number>)` → `.title`, `.isDraft`, `.labels`.

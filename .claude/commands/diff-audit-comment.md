@@ -50,6 +50,7 @@ Default posture: every PR is potentially problematic. "CLEAN, nothing to flag" o
    EOF
    )"
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"## Diff Audit\n\n...")` — `issue_number` works for both issues and PRs.
 
 2. If CLEAN (verified apply — see `/label-apply-verified`):
    ```

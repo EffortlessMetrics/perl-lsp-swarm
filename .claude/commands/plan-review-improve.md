@@ -38,6 +38,7 @@ Write your findings as an issue comment and label the issue as builder-ready.
    COMMENT_EOF
    )"
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"## Plan Review\n\n...")`.
 
 2. If ready for builder, apply each sign-off label with verification (see `/label-apply-verified`), then remove the routing label:
    ```
@@ -47,6 +48,8 @@ Write your findings as an issue comment and label the issue as builder-ready.
    ```bash
    gh issue edit <number> --remove-label "needs-plan-review"
    ```
+   > **MCP alternative (web/no-gh sessions):** Read current labels with `mcp__github__issue_read(method:"get", issue_number:<number>)`, then write back the filtered list (excluding `"needs-plan-review"`) with `mcp__github__issue_write(method:"update", issue_number:<number>, labels:[...current minus "needs-plan-review"])`. Note: `issue_write` labels field replaces the full list — always read current labels first before writing.
+
    `plan-reviewed` and `builder-ready` are each applied and read back independently,
    and `needs-plan-review` is removed so the orchestrator does not re-route this issue to another
    plan-reviewer on the next swarm pass. (`--remove-label` is a no-op if the label is absent.)

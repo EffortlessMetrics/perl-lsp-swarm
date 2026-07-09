@@ -31,6 +31,7 @@ Understand what the builder implemented and identify untested edge cases.
    ```bash
    gh issue view <number> --json comments --jq '.comments[].body'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get_comments", issue_number:<number>)` → all comment bodies; look for oppositional-planner objections and plan-reviewer edge cases.
    Look for:
    - Oppositional planner objections (especially "what if..." questions)
    - Plan-reviewer edge cases

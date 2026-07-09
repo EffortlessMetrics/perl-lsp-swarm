@@ -13,6 +13,7 @@ Read the issue that a scout filed and understand the proposed change.
    ```bash
    gh issue view <number> --json title,body,labels --jq '{title: .title, body: .body}'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", issue_number:<number>)` → read `.title`, `.body`, `.labels`. For comments: `mcp__github__issue_read(method:"get_comments", issue_number:<number>)`.
 
 2. Extract the key elements:
    - **Root cause**: What does the scout say is wrong?

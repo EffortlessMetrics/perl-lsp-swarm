@@ -32,6 +32,15 @@ cargo xtask swarm-summary .ops-perl-lsp --since 24h --limit 10
 cargo xtask swarm-summary .ops-perl-lsp --since 24h --limit 10 --format json
 ```
 
+> **MCP alternatives (web/no-gh sessions):**
+> - Open PRs: `mcp__github__list_pull_requests(state:"open", perPage:30)`
+> - Discovered issues: `mcp__github__list_issues(labels:["swarm-discovered"], state:"OPEN", perPage:20)`
+> - Architectural issues: `mcp__github__list_issues(labels:["swarm-architectural"], state:"OPEN")`
+> - Recent merges: `mcp__github__list_pull_requests(state:"closed", perPage:20)` then filter `merged_at != null`
+> - Queue depth (builder-ready): `mcp__github__list_issues(labels:["builder-ready"], state:"OPEN")` → count results
+> - Queue depth (needs-plan-review): `mcp__github__list_issues(labels:["needs-plan-review"], state:"OPEN")` → count results
+> - Queue depth (merge-ready PRs): `mcp__github__search_pull_requests(query:"is:open label:merge-ready repo:effortlessmetrics/perl-lsp-swarm")` → count results
+
 ## Full View (`--full`)
 
 Also includes:
@@ -46,3 +55,6 @@ gh issue list --label "swarm-discovered" --state open --limit 20 --json number,t
 echo "=== Worktrees ==="
 git worktree list
 ```
+
+> **MCP alternatives (web/no-gh sessions):**
+> - Recent issues: `mcp__github__list_issues(labels:["swarm-discovered"], state:"OPEN", perPage:20)` → title and number from each result

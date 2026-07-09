@@ -19,6 +19,10 @@ gh pr checkout <number>
 git push
 gh pr review <number> --approve --body "Deep review: <what you improved>. Logic verified, low regression risk."
 ```
+> **MCP alternatives (web/no-gh sessions):**
+> - `gh pr checkout`: no MCP equivalent — in worktree: `git fetch origin pull/<number>/head:<branch> && git checkout <branch>`.
+> - `gh pr review --approve`: `mcp__github__pull_request_review_write(method:"create", pullNumber:<number>, event:"APPROVE", body:"Deep review: ...")`.
+> - `gh pr edit --remove-label`: read current labels with `mcp__github__pull_request_read(method:"get", pullNumber:<number>)`, then write back filtered list with `mcp__github__issue_write(method:"update", issue_number:<number>, labels:[...current minus "needs-deep-review"])`.
 ```
 /label-apply-verified pr <number> "deep-reviewed"
 ```
@@ -41,6 +45,7 @@ Only when the approach is wrong, wrong crate, or the codebase moved too far:
 ```bash
 gh pr review <number> --request-changes --body "<what's structurally wrong and why it can't be fixed locally>"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_review_write(method:"create", pullNumber:<number>, event:"REQUEST_CHANGES", body:"<what's structurally wrong>")` — same semantics as `--request-changes`.
 
 ## Rules
 

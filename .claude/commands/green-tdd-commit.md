@@ -50,6 +50,7 @@ Commit your edge case tests, push, and comment on the issue.
    EOF
    )"
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"## Green TDD: Edge Case Tests Added\n\n...")`.
 
 5. **Set the sign-off label** (verified apply — see `/label-apply-verified`):
    ```

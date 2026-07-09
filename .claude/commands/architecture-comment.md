@@ -37,6 +37,7 @@ Post your architectural alignment findings and set the sign-off label.
    EOF
    )"
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(issue_number:<number>, body:"## Architecture Review\n\n...")`.
 
 2. Set sign-off label (verified apply — see `/label-apply-verified`):
    ```

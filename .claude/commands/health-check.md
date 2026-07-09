@@ -15,16 +15,19 @@ Run all of the following and report results in a summary table:
 ```bash
 gh run list --limit 3 --json status,conclusion,name,headBranch,createdAt
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", per_page:3)` → each run has `status`, `conclusion`, `name`, `head_branch`, `created_at`.
 
 ### 2. Open PRs
 ```bash
 gh pr list --state open --json number,title,labels --limit 30 | jq length
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(state:"open", perPage:30)` → count the results.
 
 ### 3. Open Issues
 ```bash
 gh issue list --state open --limit 100 --json number | jq length
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(state:"OPEN", perPage:100)` → count the results.
 
 ### 4. Failing Tests
 ```bash
@@ -94,6 +97,9 @@ else
   echo "${#STALE_CONFIRMED[@]}: issues ${STALE_CONFIRMED[*]}"
 fi
 ```
+> **MCP alternatives (web/no-gh sessions):**
+> - Step 1: `mcp__github__list_issues(labels:["in-build"], state:"OPEN", perPage:50)` → filter locally by `updatedAt` age and absence of `structural-blocker` label.
+> - Step 2: For each candidate number `N`, `mcp__github__search_pull_requests(query:"is:open repo:effortlessmetrics/perl-lsp-swarm #N in:body")` → check if result count is 0.
 
 Note: If `gh` is offline or rate-limited, the `|| echo` fallbacks ensure this check returns `0` rather than erroring.
 

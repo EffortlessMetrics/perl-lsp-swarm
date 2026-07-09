@@ -23,6 +23,7 @@ Spawn builders immediately.
 # Find all builder-ready issues
 gh issue list --label "builder-ready" --state open --limit 30
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(labels:["builder-ready"], state:"OPEN", perPage:30)`.
 
 For each issue:
 ```
@@ -40,6 +41,7 @@ Monitor builder outputs -- they create draft PRs:
 ```bash
 gh pr list --state open --json number,title,isDraft --limit 30
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(state:"open", perPage:30)` → each PR has `.number`, `.title`, `.draft`.
 
 ## Step 3: Hand off to review lead
 
@@ -51,9 +53,9 @@ Message `lead-discovery` when the builder-ready queue is running low.
 
 ## Your context (queues, not codebases)
 
-- **Builder-ready issues**: `gh issue list --label "builder-ready" --state open`
-- **In-flight PRs**: `gh pr list --state open --json number,title,labels`
-- **Draft PRs needing continuation**: `gh pr list --draft --state open`
+- **Builder-ready issues**: `gh issue list --label "builder-ready" --state open` (MCP: `mcp__github__list_issues(labels:["builder-ready"], state:"OPEN")`)
+- **In-flight PRs**: `gh pr list --state open --json number,title,labels` (MCP: `mcp__github__list_pull_requests(state:"open")`)
+- **Draft PRs needing continuation**: `gh pr list --draft --state open` (MCP: `mcp__github__list_pull_requests(state:"open")` → filter where `.draft == true`)
 
 ## Workers you spawn
 

@@ -63,6 +63,10 @@ gh issue list --label "swarm-discovered" --state open --limit 30
 gh issue list --label "research-reviewed" --state open --limit 30
 gh issue list --label "needs-plan-review" --state open --limit 30
 ```
+> **MCP alternatives (web/no-gh sessions):**
+> - `mcp__github__list_issues(labels:["swarm-discovered"], state:"OPEN", perPage:30)`
+> - `mcp__github__list_issues(labels:["research-reviewed"], state:"OPEN", perPage:30)`
+> - `mcp__github__list_issues(labels:["needs-plan-review"], state:"OPEN", perPage:30)`
 
 ## Step 3: Promote to builder-ready
 
@@ -84,10 +88,10 @@ Message `lead-build` when builder-ready issues are available.
 
 ## Your context (queues, not codebases)
 
-- **Issue backlog**: `gh issue list --state open --limit 200`
+- **Issue backlog**: `gh issue list --state open --limit 200` (MCP: `mcp__github__list_issues(state:"OPEN", perPage:100)`)
 - **Corpus metrics**: `cat .ci/parser-corpus-baseline.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Clean: {d[\"clean_count\"]}/{d[\"total_count\"]}')"`
-- **Feature catalog**: `gh issue list --label "feature-gap" --state open`
-- **Scout findings**: `gh issue list --label "swarm-discovered" --state open`
+- **Feature catalog**: `gh issue list --label "feature-gap" --state open` (MCP: `mcp__github__list_issues(labels:["feature-gap"], state:"OPEN")`)
+- **Scout findings**: `gh issue list --label "swarm-discovered" --state open` (MCP: `mcp__github__list_issues(labels:["swarm-discovered"], state:"OPEN")`)
 
 ## Workers you spawn
 
