@@ -313,6 +313,28 @@ close try or die "Could not close: $!";
 }
 
 #[test]
+fn parse_indirect_call_call_presence_observer() -> Result<(), String> {
+    let code = "print try \"ok\\n\";";
+    assert_clean_parse(code);
+    let ast = parse(code);
+    let mut indirect_calls = Vec::new();
+    collect_indirect_calls(&ast, &mut indirect_calls);
+    expect_try_indirect_call(&indirect_calls, 0, "print", 1)?;
+
+    let (_, object, _) =
+        indirect_calls.first().ok_or_else(|| "expected one indirect call".to_string())?;
+    let try_start = code.find("try").ok_or_else(|| "expected try token in source".to_string())?;
+    let try_end = try_start + "try".len();
+    if object.location.start != try_start || object.location.end != try_end {
+        return Err(format!(
+            "expected consumed object range {try_start}..{try_end}, got {}..{}",
+            object.location.start, object.location.end
+        ));
+    }
+    Ok(())
+}
+
+#[test]
 fn print_block_with_multiple_args() {
     // print { $fh } with comma-separated arguments
     let code = r#"print { $fh } "key=", $value, "\n";"#;
