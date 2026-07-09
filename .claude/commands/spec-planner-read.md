@@ -13,6 +13,7 @@ Read the issue and all pipeline comments to understand what needs to be built.
    ```bash
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", owner, repo, issue_number:<number>)` — full parity.
 
 2. Identify from the trail:
    - **Plan-reviewer spec** — the builder-ready specification (look for "builder-ready" label)

@@ -13,29 +13,34 @@ Read everything that happened in this change's lifecycle.
    ```bash
    gh issue view <number> --json body,comments --jq '{body: .body, comments: [.comments[].body]}'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", owner, repo, issue_number:<number>)` — full parity.
 
 2. Read the plan-reviewer's comment (if any):
    ```bash
    gh issue view <number> --json comments --jq '.comments[] | select(contains("Plan Review"))'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", owner, repo, issue_number:<number>)` — full parity.
 
 3. Read the PR description and diff:
    ```bash
    gh pr view <pr-number> --json body --jq '.body'
    gh pr diff <pr-number>
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields. | `mcp__github__pull_request_read(method:"get_diff", owner, repo, pullNumber:<number>)` — full unified diff.
 
 4. Read review comments:
    ```bash
    gh api repos/{owner}/{repo}/pulls/<pr-number>/comments --jq '.[].body'
    gh pr view <pr-number> --json reviews --jq '.reviews[].body'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_review_comments", owner, repo, pullNumber:<number>)` — full parity. | `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
 
 5. Read the merged code:
    ```bash
    gh pr view <pr-number> --json mergeCommit --jq '.mergeCommit.oid'
    git show <commit> --stat
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
 
 ## Output
 

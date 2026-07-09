@@ -16,6 +16,7 @@ enough to argue against it.
    ```bash
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", owner, repo, issue_number:<number>)` — full parity.
 
 2. Identify:
    - **The proposed approach** — what does the scout recommend building?
@@ -28,6 +29,7 @@ enough to argue against it.
    - Are there research-reviewed comments? Note what was confirmed vs. flagged.
    - Are there accuracy-scout comments? Note any corrections.
    - Are there other issues touching the same files? (`gh issue list --search "path/to/file"`)
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__search_issues(query:"... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with `repo:` prefix.
 
 ## Output
 

@@ -62,6 +62,7 @@ plan-review.
    VERIFY_EOF
    )"
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 3. **Ensure the `research-reviewed` label exists, then apply it** (verified apply — see `/label-apply-verified`):
 
@@ -81,6 +82,7 @@ plan-review.
    ```bash
    gh issue edit <number> --remove-label "needs-research-verification" 2>/dev/null || true
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"update", owner, repo, issue_number:<number>, labels:[...filtered])` — **labels field replaces full list**: read current labels first via `issue_read`, then write the filtered list.
 
 ## Rules
 

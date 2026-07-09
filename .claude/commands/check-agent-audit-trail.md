@@ -22,6 +22,7 @@ See `memory/feedback_agent_audit_trail_directories.md` for the underlying patter
 ```bash
 gh pr diff <PR> --name-only | grep -E '^\.(hermes|jules|spec|run|codex)/' || echo "NONE"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<number>)` — returns list of changed files with additions/deletions.
 
 If output is `NONE`, there's nothing to triage under this skill.
 
@@ -32,6 +33,7 @@ If output is `NONE`, there's nothing to triage under this skill.
 # Branch name may be issue-ref-bearing, e.g. impl/5499-completion-scope-distance
 gh pr view <PR> --json title,headRefName,number
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
 
 Note the issue number or slug (e.g., `5499-completion-scope-distance`).
 

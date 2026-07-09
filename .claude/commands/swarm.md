@@ -33,9 +33,10 @@ POST-MERGE: wisdom
 git fetch origin && git pull origin master
 gh pr list --state open --limit 200 --json number | jq length
 gh issue list --state open --limit 200 --json number | jq length
-gh run list --branch master --limit 1
+gh run list --branch main --limit 1
 just clean-worktrees 2>/dev/null || git worktree prune
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:200)` — labels, mergeStateStatus, isDraft, reviewDecision available on each object. | `mcp__github__list_issues(owner, repo, state:"OPEN", perPage:200)` — full parity. | `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"})` — full parity (status, conclusion, head_sha per run). For failed-run logs: `mcp__github__get_job_logs(run_id:<id>, failed_only:true, return_content:true, tail_lines:500)`.
 
 **Stop if master CI is red.** Fix it first.
 
@@ -55,6 +56,7 @@ gh issue list --label "structural-blocker" --state open # blocked work
 gh pr list --label "merge-ready"                        # ready to merge
 gh pr list --label "in-review"                          # being reviewed (check for stalls)
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN")` — full parity. | `mcp__github__list_issues(owner, repo, labels:["needs-plan-review"], state:"OPEN")` — full parity. | `mcp__github__list_issues(owner, repo, labels:["red-tdd-reviewed"], state:"OPEN")` — full parity. | `mcp__github__list_issues(owner, repo, labels:["in-build"], state:"OPEN")` — full parity. | `mcp__github__list_issues(owner, repo, labels:["needs-builder-fix"], state:"OPEN")` — full parity. | `mcp__github__list_issues(owner, repo, labels:["structural-blocker"], state:"OPEN")` — full parity. | `mcp__github__search_pull_requests(query:"is:open is:pr label:merge-ready repo:effortlessmetrics/perl-lsp-swarm")` — full parity. | `mcp__github__search_pull_requests(query:"is:open is:pr label:in-review repo:effortlessmetrics/perl-lsp-swarm")` — full parity.
 
 **Routing rules (sequential — check in order, spawn the first missing):**
 
@@ -228,7 +230,7 @@ Labels are the authoritative state of every issue and PR. Agents write labels; t
 gh pr list --state open --limit 20 --json number,title,labels
 gh issue list --label builder-ready --state open --limit 10
 gh issue list --label in-build --state open --limit 10
-gh run list --branch master --limit 3
+gh run list --branch main --limit 3
 
 # Advanced queries
 # Issues with builder-ready but missing plan-reviewed (skipped plan-review)
@@ -238,3 +240,4 @@ gh issue list --label "builder-ready" --state open --json number,title,labels \
 # Health check
 /health-check
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:20)` — labels, mergeStateStatus, isDraft, reviewDecision available on each object. | `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN", perPage:10)` — full parity. | `mcp__github__list_issues(owner, repo, labels:["in-build"], state:"OPEN", perPage:10)` — full parity. | `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"})` — full parity (status, conclusion, head_sha per run). For failed-run logs: `mcp__github__get_job_logs(run_id:<id>, failed_only:true, return_content:true, tail_lines:500)`. | `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN")` — full parity.

@@ -40,6 +40,7 @@ Each agent sees its own step. Nobody has checked that:
 
    cat .spec/*/acceptance.md 2>/dev/null
    ```
+> **MCP alternative (web/no-gh sessions):** Repo identity: hard-code `effortlessmetrics/perl-lsp-swarm` — no MCP call needed. File list: `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<number>)` — use this for the authoritative file list (same caveat as above: prefer `get_files` over `get_diff` to get PR-authored changes, not branch-vs-current-base). Base branch: `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → `.baseRefName`; then run `git diff` locally against `git merge-base "origin/$BASE" HEAD`.
    Every acceptance criterion should be addressable from the diff.
 
 2. **Scope cleanliness** — are there files in the diff that shouldn't be?
@@ -52,12 +53,14 @@ Each agent sees its own step. Nobody has checked that:
    BASE=$(gh pr view <number> --json baseRefName -q .baseRefName)
    git diff "$(git merge-base "origin/$BASE" HEAD)"..HEAD | grep -E "TODO|FIXME|HACK|XXX|dbg!|println!|eprintln!"
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
 
 4. **Commit coherence** — do the commits tell a story?
    ```bash
    BASE=$(gh pr view <number> --json baseRefName -q .baseRefName)
    git log "$(git merge-base "origin/$BASE" HEAD)"..HEAD --oneline
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
    Expected: plan commit, red tests, implementation, green tests, review fixes, refactoring.
    Red flag: random interleaved commits, "wip", "fix fix fix" chains.
 
@@ -101,6 +104,7 @@ Detection heuristic — for every file in the diff, ask: "does this file's path/
 - If the diff adds ADRs whose work-id doesn't match this PR's branch work-id: flag as CONTAMINATION
 - Tell-tale: PR title claims a small change but `--stat` shows >100 lines outside the named scope. Diff bulk shouldn't be unrelated to the title.
 - Mechanical check: use the GitHub API file list, not `gh pr diff`: `REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) && gh api repos/$REPO/pulls/<num>/files --jq '.[].filename'`. For each crate path, ask whether the PR title/body mentions it; orphan-crate paths are contamination candidates.
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_diff", owner, repo, pullNumber:<number>)` — full unified diff.
 - Self-check: before flagging any file as cross-PR contamination, confirm it appears in `pulls/N/files` as PR-authored. If it only appears in a branch-vs-base diff, it is inherited base state, not drift. This check is mandatory.
 
 When found, route to `needs-diff-fix` with a `git rm` list. Don't let a 22-of-2063-line legitimate change ride a 2043-line contaminated diff into master.

@@ -31,6 +31,7 @@ Generate a changelog entry for recent commits following the project's Keep a Cha
    ```bash
    gh pr view <number> --json title,body
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
 
 5. **Update CHANGELOG.md**:
    - Add entries under `## [Unreleased]`

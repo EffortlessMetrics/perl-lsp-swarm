@@ -95,6 +95,7 @@ gh pr view <NNNN> --json state,mergedAt,closingIssuesReferences
 # Verify the fix is present in master
 git log --oneline master | grep -i <keyword>
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
 
 **If claim checks out:** note `Attribution: VERIFIED` in your output.
 **If claim is wrong:** remove or correct the attribution in the plan and issue. Add `needs-git-history-check` label to the issue for ops sweep.

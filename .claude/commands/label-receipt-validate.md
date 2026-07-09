@@ -32,23 +32,26 @@ For PRs:
 CURRENT_SHA=$(gh pr view $NUMBER --json headRefOid --jq '.headRefOid')
 CURRENT_UPDATED=$(gh pr view $NUMBER --json updatedAt --jq '.updatedAt')
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → `.headRefOid` field; then use `mcp__github__pull_request_read(method:"get_check_runs")` for CI status. | `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
 
 For issues:
 ```bash
 CURRENT_UPDATED=$(gh issue view $NUMBER --json updatedAt --jq '.updatedAt')
 CURRENT_SHA="n/a"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", owner, repo, issue_number:<number>)` — full parity.
 
 ### 3. Find the receipt comment
 
 Use the `issues` endpoint for both PRs and issues -- on GitHub's API, receipt comments
-created via `gh pr comment` are issue-type comments, and `pulls/.../comments` only returns
-line-level review comments.
+created via `gh pr comment` are issue-type comments (MCP: `mcp__github__add_issue_comment`),
+and `pulls/.../comments` only returns line-level review comments.
 
 ```bash
 RECEIPT_BODY=$(gh api "repos/{owner}/{repo}/issues/$NUMBER/comments" \
   --jq '[.[] | select(.body | contains("<!-- LABEL_RECEIPT_v1 -->"))] | last | .body')
 ```
+> **MCP alternative (web/no-gh sessions):** no direct MCP equivalent for this `gh api` call — check docs/reference/GH_MCP_FALLBACK.md for alternatives or describe the limitation.
 
 ### 4. Check for receipt existence
 

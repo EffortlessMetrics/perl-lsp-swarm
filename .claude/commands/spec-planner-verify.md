@@ -37,6 +37,7 @@ against the current codebase. Specs go stale fast — PRs merge daily.
    gh pr list --search "<filename>" --state open
    gh issue list --label "in-build" --search "<crate-name>"
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr ... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with repo: prefix; apply mergeable/label filters in agent code. | `mcp__github__search_issues(query:"... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with `repo:` prefix.
 
 ## Output
 

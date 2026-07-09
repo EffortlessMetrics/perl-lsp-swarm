@@ -48,6 +48,7 @@ run minimal checks to confirm or refute what the issue asserts.
    ```bash
    gh pr view <NNN> --json state,mergedAt,title --jq '{state, mergedAt, title}'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
 
    Also check recent merge log for related keywords:
    ```bash
@@ -67,6 +68,7 @@ run minimal checks to confirm or refute what the issue asserts.
    gh issue list --state closed --search "<key_terms>" --limit 5 --json number,title \
      --jq '.[] | "#\(.number) \(.title)"'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_issues(query:"... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with `repo:` prefix.
 
 ## Output
 

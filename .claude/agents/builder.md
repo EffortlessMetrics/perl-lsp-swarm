@@ -56,9 +56,11 @@ export CARGO_TARGET_DIR="/tmp/agent-$(git branch --show-current | tr '/' '-')-ta
 ## Guardrails (learned from 2026-06 campaign)
 
 **Duplicate-PR check (REQUIRED before opening a PR).** Issue #964 accumulated four near-identical open PRs. Before `gh pr create`, run:
+> **MCP alternative (web/no-gh sessions):** `mcp__github__create_pull_request(owner, repo, head, base:"main", title, body)` — full parity.
 ```bash
 gh pr list --search "#<issue>" --state open
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr ... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with repo: prefix; apply mergeable/label filters in agent code.
 If a PR for this issue already exists, improve it — do NOT open a parallel one.
 
 **Label `in-build` immediately.** After opening your PR, apply the `in-build` label to the source issue. The issue stays open until the PR merges (close-on-merge or with merge proof). Open issues with no `in-build` label get re-scouted.

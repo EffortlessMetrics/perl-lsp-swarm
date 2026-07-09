@@ -28,6 +28,7 @@ upstream of plan review, never builder-ready. Doctrine:
   not "duplicate." Other agents' summaries are leads, not facts.
 - **Duplicate-packet preflight (REQUIRED before filing).** Before filing any candidate, run:
   `gh issue list --search "<keywords>" --state open` AND `gh pr list --search "<keywords>" --state open`.
+  > **MCP alternative (web/no-gh sessions):** `mcp__github__search_issues(query:"... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with `repo:` prefix.
   If an existing issue/PR covers the same defect, do NOT file — reference the existing one instead.
 - Never apply `builder-ready`. Never close issues, retitle PRs, remove
   labels, push code, open PRs, or rebase/merge anything.

@@ -17,6 +17,7 @@ scripts/control-plane-lock.sh acquire "$AGENT_ID"
 ```
 
 If acquire fails (another agent holds the lock), do NOT retry in a loop. File your `gh issue comment` and `crates/*/CLAUDE.md` updates without the lock — those are safe. Report the contention to the orchestrator for resolution.
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 Note: Edits to `crates/*/CLAUDE.md` do NOT need the lock — each crate is isolated. Only `.claude/agents/`, `.claude/commands/`, and the root `CLAUDE.md` require coordination.
 
@@ -27,6 +28,7 @@ Note: Edits to `crates/*/CLAUDE.md` do NOT need the lock — each crate is isola
 gh issue comment <number> --body "## Wisdom Review
 <your process findings — what worked, what to change>"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 **Code patterns** → update the crate's CLAUDE.md if relevant:
 If you found something about how a crate works that future agents
@@ -38,6 +40,7 @@ keeps being a bottleneck:
 ```bash
 gh issue create --title "swarm: <pattern observed>" --body "<analysis>" --label "infrastructure"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"create", owner, repo, title:"<title>", body:"<body>", labels:[...])` — full parity.
 
 **Agent skill improvements** → suggest updates:
 If a step skill is missing guidance that would have helped, note the

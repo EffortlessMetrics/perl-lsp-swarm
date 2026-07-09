@@ -50,6 +50,7 @@ Issue #964 accumulated four near-identical open PRs because scouts filed without
 gh issue list --search "<keywords>" --state open
 gh pr list --search "<keywords>" --state open
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_issues(query:"... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with `repo:` prefix. | `mcp__github__search_pull_requests(query:"is:open is:pr ... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with repo: prefix; apply mergeable/label filters in agent code.
 
 If an open issue or PR already covers the same defect, **do NOT file a duplicate**. Instead, reference or comment on the existing one. Only file when neither search returns a relevant hit.
 

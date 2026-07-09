@@ -63,6 +63,7 @@ gh issue list --label "swarm-discovered" --state open --limit 30
 gh issue list --label "research-reviewed" --state open --limit 30
 gh issue list --label "needs-plan-review" --state open --limit 30
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN", perPage:30)` — full parity. | `mcp__github__list_issues(owner, repo, labels:["research-reviewed"], state:"OPEN", perPage:30)` — full parity. | `mcp__github__list_issues(owner, repo, labels:["needs-plan-review"], state:"OPEN", perPage:30)` — full parity.
 
 ## Step 3: Promote to builder-ready
 
@@ -85,9 +86,12 @@ Message `lead-build` when builder-ready issues are available.
 ## Your context (queues, not codebases)
 
 - **Issue backlog**: `gh issue list --state open --limit 200`
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, state:"OPEN", perPage:200)` — full parity.
 - **Corpus metrics**: `cat .ci/parser-corpus-baseline.json | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'Clean: {d[\"clean_count\"]}/{d[\"total_count\"]}')"`
 - **Feature catalog**: `gh issue list --label "feature-gap" --state open`
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["feature-gap"], state:"OPEN")` — full parity.
 - **Scout findings**: `gh issue list --label "swarm-discovered" --state open`
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN")` — full parity.
 
 ## Workers you spawn
 
@@ -114,6 +118,7 @@ Before promoting any scout finding to the pipeline, verify no open issue or PR a
 gh issue list --search "<keywords>" --state open
 gh pr list --search "<keywords>" --state open
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_issues(query:"... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with `repo:` prefix. | `mcp__github__search_pull_requests(query:"is:open is:pr ... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with repo: prefix; apply mergeable/label filters in agent code.
 Issue #964 accumulated four near-identical open PRs because this check was skipped. If an existing issue/PR covers the finding, route scouts to reference/improve it — not file a new one.
 
 ## In-build tracking

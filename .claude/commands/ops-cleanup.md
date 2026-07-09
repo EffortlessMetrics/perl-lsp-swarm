@@ -31,8 +31,9 @@ across cycles.
 
 4. **Check for broken master:**
    ```bash
-   gh run list --branch master --limit 1 --json conclusion --jq '.[0].conclusion'
+   gh run list --branch main --limit 1 --json conclusion --jq '.[0].conclusion'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"})` — full parity (status, conclusion, head_sha per run). For failed-run logs: `mcp__github__get_job_logs(run_id:<id>, failed_only:true, return_content:true, tail_lines:500)`.
    If not "success", flag for investigation.
 
 5. **Prune merged branches:**

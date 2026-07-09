@@ -50,6 +50,7 @@ Default posture: every PR is potentially problematic. "CLEAN, nothing to flag" o
    EOF
    )"
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 2. If CLEAN (verified apply — see `/label-apply-verified`):
    ```

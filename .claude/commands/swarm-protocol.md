@@ -80,6 +80,7 @@ gh issue list --label "swarm-architectural"
 # Recent merges
 gh pr list --state merged --limit 20 --json number,title,mergedAt
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr label:swarm-core repo:effortlessmetrics/perl-lsp-swarm")` — full parity. | `mcp__github__search_pull_requests(query:"is:open is:pr label:swarm-side-fix repo:effortlessmetrics/perl-lsp-swarm")` — full parity. | `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN")` — full parity. | `mcp__github__list_issues(owner, repo, labels:["swarm-architectural"], state:"OPEN")` — full parity. | `mcp__github__list_pull_requests(owner, repo, state:"closed", base:"main")` then filter `merged_at != null` in agent code.
 
 ## 4. Metrics
 
@@ -101,8 +102,11 @@ When your agent definition is wrong or incomplete, file a GitHub issue with labe
 
 Before starting work:
 1. `gh issue list --label "swarm-discovered"` — already an issue?
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN")` — full parity.
 2. `gh pr list --state open` — already a PR?
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open")` — labels, mergeStateStatus, isDraft, reviewDecision available on each object.
 3. `gh issue list --label "swarm-architectural"` — architectural decision pending?
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["swarm-architectural"], state:"OPEN")` — full parity.
 
 After completing:
 1. `swarm-metrics.jsonl` — always
@@ -160,6 +164,7 @@ Before creating any PR, check the current open PR count:
 ```bash
 gh pr list --state open --json number --jq length
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open")` — labels, mergeStateStatus, isDraft, reviewDecision available on each object.
 
 **If > 5 open PRs**: do NOT create another PR. Instead, message the lead with the work that is ready, and wait for guidance. CI queues are finite — piling on more PRs when the queue is already congested slows everything down.
 
@@ -243,6 +248,7 @@ The system gets better with each cycle AND each session.
 ### Rules
 
 1. **Red CI blocks all merges.** The merger MUST run `gh pr checks <N>` before every merge and only proceed when CI Gate shows SUCCESS.
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_check_runs", owner, repo, pullNumber:<number>)` — filter by head_sha matching PR headRefOid for freshness.
 2. **No "pre-existing failure" exceptions.** If CI fails for any reason — including failures inherited from a previous broken merge — fix the failure FIRST, then merge.
 3. **Cascading failures must be fixed before merging more PRs.** When a large change (e.g., async migration, refactor) breaks CI, stop all merges and fix CI on master before queuing any new merges.
 4. **Each PR must pass CI independently.** A PR that only passes because it is layered on top of another unmerged PR is not ready to merge.
@@ -255,6 +261,7 @@ One broken merge → all subsequent PRs inherit the failure → agents merge any
 ### Timing: verify immediately before merge
 
 CI status changes between inventory time and merge time. A PR that was green 30 minutes ago may now be red due to a rebase or master change. Always verify CI **immediately** before running `gh pr merge`.
+> **MCP alternative (web/no-gh sessions):** `mcp__github__merge_pull_request(owner, repo, pullNumber:<number>, merge_method:"squash", commit_title:"<title> (#<number>)", commit_message:"<summary>")` — full parity including squash and custom commit message.
 
 ### After rapid merges
 
@@ -266,6 +273,7 @@ gh pr checks <N>           # Must show all checks passing — run IMMEDIATELY be
 gh run list --limit 5      # Confirm master CI is green
 gh pr merge <N> --squash --delete-branch   # Only if both above are green
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_check_runs", owner, repo, pullNumber:<number>)` — filter by head_sha matching PR headRefOid for freshness. | `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"})` — full parity (status, conclusion, head_sha per run). For failed-run logs: `mcp__github__get_job_logs(run_id:<id>, failed_only:true, return_content:true, tail_lines:500)`. | `mcp__github__merge_pull_request(owner, repo, pullNumber:<number>, merge_method:"squash", commit_title:"<title> (#<number>)", commit_message:"<summary>")` — full parity including squash and custom commit message.
 
 ## 11. Scout Deliverables
 
@@ -310,7 +318,7 @@ Skills are the single source of truth for multi-step procedures. When an agent i
 | Step | Skill | Never inline |
 |------|-------|-------------|
 | Format + clippy + test | `/verify` | Don't hand-roll `cargo fmt && cargo clippy && cargo test` |
-| Create PR | `/pr-create` | Don't hand-roll `gh pr create` with ad-hoc body |
+| Create PR | `/pr-create` | Don't hand-roll `gh pr create` with ad-hoc body (MCP: `mcp__github__create_pull_request`) |
 | Code review checklist | `/coding-standards` | Don't guess at project conventions |
 | Scout findings | `/scout-issue` (full or discovery variant) | Don't hand-roll `gh issue create` bodies |
 | Parser fix TDD | `/parser-fix` | Don't skip the red-green-refactor cycle |

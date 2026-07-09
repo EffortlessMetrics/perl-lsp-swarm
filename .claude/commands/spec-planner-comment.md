@@ -36,6 +36,7 @@ Post the implementation checklist to the issue and note the branch.
    EOF
    )"
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 2. Add label (verified apply — see `/label-apply-verified`):
    ```

@@ -67,6 +67,7 @@ gh pr checkout <number>
 git commit -m "refactor(<crate>): simplify implementation for #<issue>"
 git push
 ```
+> **MCP alternative (web/no-gh sessions):** `gh pr checkout` has no direct MCP equivalent. In worktrees: `git fetch origin pull/<N>/head:<branch> && git checkout <branch>` instead.
 
 ## Todo list
 

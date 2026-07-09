@@ -15,16 +15,19 @@ Run all of the following and report results in a summary table:
 ```bash
 gh run list --limit 3 --json status,conclusion,name,headBranch,createdAt
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"})` — full parity (status, conclusion, head_sha per run). For failed-run logs: `mcp__github__get_job_logs(run_id:<id>, failed_only:true, return_content:true, tail_lines:500)`.
 
 ### 2. Open PRs
 ```bash
 gh pr list --state open --json number,title,labels --limit 30 | jq length
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:30)` — labels, mergeStateStatus, isDraft, reviewDecision available on each object.
 
 ### 3. Open Issues
 ```bash
 gh issue list --state open --limit 100 --json number | jq length
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, state:"OPEN", perPage:100)` — full parity.
 
 ### 4. Failing Tests
 ```bash
@@ -94,6 +97,7 @@ else
   echo "${#STALE_CONFIRMED[@]}: issues ${STALE_CONFIRMED[*]}"
 fi
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["in-build"], state:"OPEN")` — full parity. | `mcp__github__search_pull_requests(query:"is:open is:pr ... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with repo: prefix; apply mergeable/label filters in agent code.
 
 Note: If `gh` is offline or rate-limited, the `|| echo` fallbacks ensure this check returns `0` rather than erroring.
 

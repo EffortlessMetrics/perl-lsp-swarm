@@ -62,6 +62,7 @@ body if needed, and attach the `accuracy-reviewed` label.
    ACCURACY_EOF
    )"
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 3. **Ensure the `accuracy-reviewed` label exists, then apply it** (verified apply — see `/label-apply-verified`):
 
@@ -80,6 +81,7 @@ body if needed, and attach the `accuracy-reviewed` label.
    ```bash
    gh issue edit <number> --remove-label "needs-accuracy-scout" 2>/dev/null || true
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"update", owner, repo, issue_number:<number>, labels:[...filtered])` — **labels field replaces full list**: read current labels first via `issue_read`, then write the filtered list.
 
 5. **If LIKELY FIXED or DUPLICATE, add a close recommendation** by adding
    label `needs-triage` so a human or ops agent can review and close:

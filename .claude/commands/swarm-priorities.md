@@ -30,6 +30,7 @@ gh issue list --state open --label "bug" --limit 20 2>/dev/null
 # Features catalog
 cat features.toml 2>/dev/null | head -50
 ```
+> **MCP alternative (web/no-gh sessions):** no direct MCP equivalent for this `gh api` call — check docs/reference/GH_MCP_FALLBACK.md for alternatives or describe the limitation. | `mcp__github__list_issues(owner, repo, labels:["priority"], state:"OPEN", perPage:20)` — full parity. | `mcp__github__list_issues(owner, repo, labels:["bug"], state:"OPEN", perPage:20)` — full parity.
 
 ## Priority Tiers
 

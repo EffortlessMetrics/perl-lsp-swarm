@@ -13,6 +13,7 @@ Read the issue to understand what structural changes are proposed.
    ```bash
    gh issue view <number> --json title,body,labels,comments --jq '{title: .title, body: .body, labels: [.labels[].name], comments: [.comments[].body]}'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", owner, repo, issue_number:<number>)` — full parity.
 
 2. Identify structural changes:
    - New crates being created?

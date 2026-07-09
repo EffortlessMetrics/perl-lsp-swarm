@@ -29,6 +29,7 @@ gh pr list \
   --json number,mergeable,headRefOid \
   --limit 50
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr ... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with repo: prefix; apply mergeable/label filters in agent code.
 
 ### 2. Refresh MERGEABLE branches
 
@@ -45,6 +46,7 @@ gh pr list \
     gh pr update-branch "$pr" 2>&1 | head -1
   done
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr ... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with repo: prefix; apply mergeable/label filters in agent code. | `mcp__github__update_pull_request_branch(owner, repo, pullNumber:<number>)` — direct substitution.
 
 ### 3. Strip stale label-receipts on refreshed PRs
 
@@ -54,6 +56,7 @@ Label receipts (`ci-green`, `diff-audited`) are bound to a specific HEAD SHA. Wh
 # For each refreshed PR, strip stale receipts
 gh pr edit <N> --remove-label ci-green --remove-label diff-audited
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"update", owner, repo, issue_number:<number>, labels:[...filtered])` — **labels field replaces full list**: read current labels first via `pull_request_read`, then write the filtered list.
 
 (Skip this step if label-receipt-validate is automated in CI.)
 
@@ -67,6 +70,7 @@ gh pr list \
   --search "label:deep-reviewed label:diff-audited is:open" \
   --json number,mergeable,mergeStateStatus --limit 40
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr ... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with repo: prefix; apply mergeable/label filters in agent code.
 
 MERGEABLE + CLEAN → merge.
 

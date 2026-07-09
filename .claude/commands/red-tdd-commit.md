@@ -57,3 +57,4 @@ Commit failing tests, push, set the pipeline label, and comment on the issue.
    EOF
    )"
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.

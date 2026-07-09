@@ -18,6 +18,7 @@ PR, or is a duplicate of a known issue.
      --jq '.[] | "#\(.number) \(.title) [merged: \(.mergedAt)]"' | \
      grep -i "<keyword1>\|<keyword2>" | head -10
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"closed", base:"main")` then filter `merged_at != null` in agent code.
 
    Use 2-3 keywords from the issue title. If a merged PR title mentions the
    same function, module, or behavior — issue may be fixed.
@@ -28,6 +29,7 @@ PR, or is a duplicate of a known issue.
    gh pr list --state open --limit 100 --json number,title,labels \
      --jq '.[] | "#\(.number) \(.title)"' | grep -i "<keyword>" | head -10
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:100)` — labels, mergeStateStatus, isDraft, reviewDecision available on each object.
 
 3. **Check git log for relevant commits:**
 
@@ -42,12 +44,14 @@ PR, or is a duplicate of a known issue.
    gh pr view <NNN> --json state,mergedAt --jq '{state, mergedAt}'
    gh issue view <NNN> --json state --jq '.state'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields. | `mcp__github__issue_read(method:"get", owner, repo, issue_number:<number>)` — full parity.
 
 5. **Check if issue already has `accuracy-reviewed` label** (re-run guard):
 
    ```bash
    gh issue view <number> --json labels --jq '[.labels[].name]'
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", owner, repo, issue_number:<number>)` — full parity.
 
    If already labeled `accuracy-reviewed`, this issue was already processed.
    Report and stop.

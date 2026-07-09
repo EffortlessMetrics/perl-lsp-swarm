@@ -39,7 +39,9 @@ Examples:
 ### 4. Interaction risks
 
 - What other open PRs touch the same files? (`gh pr list --search "filename"`)
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr ... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with repo: prefix; apply mergeable/label filters in agent code.
 - What issues are in-build for the same crate? (`gh issue list --label in-build`)
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["in-build"], state:"OPEN")` — full parity.
 - Will this create merge conflicts with parallel work?
 
 ### 5. Performance implications

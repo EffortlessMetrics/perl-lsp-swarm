@@ -19,12 +19,14 @@ gh pr checkout <number>
 git push
 gh pr review <number> --approve --body "Deep review: <what you improved>. Logic verified, low regression risk."
 ```
+> **MCP alternative (web/no-gh sessions):** `gh pr checkout` has no direct MCP equivalent. In worktrees: `git fetch origin pull/<N>/head:<branch> && git checkout <branch>` instead. | `mcp__github__pull_request_review_write(method:"submit_pending", owner, repo, pullNumber:<number>, event:"APPROVE", body:"<body>")` — full parity; create pending review first if adding comments.
 ```
 /label-apply-verified pr <number> "deep-reviewed"
 ```
 ```bash
 gh pr edit <number> --remove-label "needs-deep-review"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_write(method:"update", owner, repo, issue_number:<number>, labels:[...filtered])` — **labels field replaces full list**: read current labels first via `pull_request_read`, then write the filtered list.
 
 After approval, write a version-bound receipt:
 ```
@@ -41,6 +43,7 @@ Only when the approach is wrong, wrong crate, or the codebase moved too far:
 ```bash
 gh pr review <number> --request-changes --body "<what's structurally wrong and why it can't be fixed locally>"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_review_write(method:"submit_pending", owner, repo, pullNumber:<number>, event:"REQUEST_CHANGES", body:"<body>")` — full parity.
 
 ## Rules
 

@@ -31,6 +31,7 @@ echo "=== Metrics Dashboard (last 24h) ==="
 cargo xtask swarm-summary .ops-perl-lsp --since 24h --limit 10
 cargo xtask swarm-summary .ops-perl-lsp --since 24h --limit 10 --format json
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:30)` — labels, mergeStateStatus, isDraft, reviewDecision available on each object. | `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN", perPage:20)` — full parity. | `mcp__github__list_issues(owner, repo, labels:["swarm-architectural"], state:"OPEN")` — full parity. | `mcp__github__list_pull_requests(owner, repo, state:"closed", base:"main")` then filter `merged_at != null` in agent code. | `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN")` — full parity. | `mcp__github__list_issues(owner, repo, labels:["needs-plan-review"], state:"OPEN")` — full parity. | `mcp__github__search_pull_requests(query:"is:open is:pr label:merge-ready repo:effortlessmetrics/perl-lsp-swarm")` — full parity.
 
 ## Full View (`--full`)
 
@@ -46,3 +47,4 @@ gh issue list --label "swarm-discovered" --state open --limit 20 --json number,t
 echo "=== Worktrees ==="
 git worktree list
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN", perPage:20)` — full parity.

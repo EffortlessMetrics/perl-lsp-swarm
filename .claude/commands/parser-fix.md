@@ -44,6 +44,7 @@ cargo test -p perl-parser
 
 ### 5. Create PR
 - Branch, commit, push, `gh pr create`
+> **MCP alternative (web/no-gh sessions):** `mcp__github__create_pull_request(owner, repo, head, base:"main", title, body)` — full parity.
 - Title: `fix(parser): <description>`
 - Return PR URL
 

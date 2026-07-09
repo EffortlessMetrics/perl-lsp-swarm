@@ -31,6 +31,7 @@ Post your project-fit verdict on the PR and set the sign-off label.
    EOF
    )"
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 2. Set sign-off label on the PR (verified apply — see `/label-apply-verified`):
    ```

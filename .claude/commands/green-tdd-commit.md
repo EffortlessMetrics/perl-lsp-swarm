@@ -50,6 +50,7 @@ Commit your edge case tests, push, and comment on the issue.
    EOF
    )"
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 5. **Set the sign-off label** (verified apply — see `/label-apply-verified`):
    ```

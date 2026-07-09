@@ -29,6 +29,7 @@ echo "=== Metrics Dashboard ==="
 cargo xtask swarm-summary .ops-perl-lsp --since "${SINCE}" --limit 20
 cargo xtask swarm-summary .ops-perl-lsp --since "${SINCE}" --limit 20 --format json
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"closed", base:"main")` then filter `merged_at != null` in agent code. | `mcp__github__list_pull_requests(owner, repo, state:"open")` — labels, mergeStateStatus, isDraft, reviewDecision available on each object. | `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN")` — full parity. | `mcp__github__list_issues(owner, repo, labels:["swarm-architectural"], state:"OPEN")` — full parity.
 
 ## Report Format
 

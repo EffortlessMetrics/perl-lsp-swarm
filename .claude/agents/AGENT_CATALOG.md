@@ -207,6 +207,7 @@ three shapes (parser-fix, LSP-feature, test-only).
 These are cross-cutting rules encoded in individual agent defs. Listed here for visibility:
 
 - **Duplicate-issue/PR prevention:** Scouts and builders run `gh issue list --search` + `gh pr list --search` before filing or opening. Issue #964 accumulated four near-identical PRs from skipping this. See each agent def for the exact command.
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_issues(query:"... repo:effortlessmetrics/perl-lsp-swarm")` — scope query with `repo:` prefix.
 - **In-build tracking:** When a builder opens a PR, the source issue is labeled `in-build`. Issues without this label appear unstarted to discovery scouts.
 - **Base ref is `origin/main`:** All `git diff origin/...` calls, branch creation, and merge-base checks use `origin/main` (not `origin/master`). A stale master ref caused a ~2h CI stall (#1310).
 - **RIPR via CI receipt only:** CI pins `RIPR_VERSION=0.5.0` (`ripr.yml`). Local installs may differ. Always verify from the `ripr+ New Gap Gate` CI receipt.

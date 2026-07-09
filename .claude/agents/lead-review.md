@@ -23,6 +23,7 @@ Spawn reviewers immediately.
 # Find all open PRs
 gh pr list --state open --json number,title,labels --limit 30
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:30)` — labels, mergeStateStatus, isDraft, reviewDecision available on each object.
 
 For each PR not yet reviewed (no review labels):
 ```
@@ -47,8 +48,9 @@ Agent(subagent_type: "ops", prompt: "Process the merge queue. Follow your todo l
 
 After merges, verify master CI:
 ```bash
-gh run list --branch master --limit 3
+gh run list --branch main --limit 3
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"})` — full parity (status, conclusion, head_sha per run). For failed-run logs: `mcp__github__get_job_logs(run_id:<id>, failed_only:true, return_content:true, tail_lines:500)`.
 
 ## Step 4: Post-merge actions
 
@@ -65,9 +67,13 @@ gh run list --branch master --limit 3
 ## Your context (queues, not codebases)
 
 - **Open PRs**: `gh pr list --state open --json number,title,labels --limit 30`
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:30)` — labels, mergeStateStatus, isDraft, reviewDecision available on each object.
 - **Merge-ready PRs**: `gh pr list --label "merge-ready" --state open`
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr label:merge-ready repo:effortlessmetrics/perl-lsp-swarm")` — full parity.
 - **In-review PRs**: `gh pr list --label "in-review" --state open`
-- **Master CI**: `gh run list --branch master --limit 3`
+> **MCP alternative (web/no-gh sessions):** `mcp__github__search_pull_requests(query:"is:open is:pr label:in-review repo:effortlessmetrics/perl-lsp-swarm")` — full parity.
+- **Master CI**: `gh run list --branch main --limit 3`
+> **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"})` — full parity (status, conclusion, head_sha per run). For failed-run logs: `mcp__github__get_job_logs(run_id:<id>, failed_only:true, return_content:true, tail_lines:500)`.
 
 ## Workers you spawn
 

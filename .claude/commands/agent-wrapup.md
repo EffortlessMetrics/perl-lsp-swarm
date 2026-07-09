@@ -90,6 +90,7 @@ clean handoff to whoever picks up next.
      WRAPUP_EOF
      )"
      ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
    - **Builders:**
      ```bash
@@ -100,6 +101,7 @@ clean handoff to whoever picks up next.
      WRAPUP_EOF
      )"
      ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
    - **Plan-reviewers:**
      ```bash
@@ -110,6 +112,7 @@ clean handoff to whoever picks up next.
      WRAPUP_EOF
      )"
      ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
    - **Reviewers:**
      ```bash
@@ -120,6 +123,7 @@ clean handoff to whoever picks up next.
      WRAPUP_EOF
      )"
      ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
    - **Ops:**
      ```bash
@@ -130,6 +134,7 @@ clean handoff to whoever picks up next.
      WRAPUP_EOF
      )"
      ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
    - **Wisdom:**
      ```bash
@@ -140,6 +145,7 @@ clean handoff to whoever picks up next.
      WRAPUP_EOF
      )"
      ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
    > If you don't file the update on GitHub, the work is invisible.
 

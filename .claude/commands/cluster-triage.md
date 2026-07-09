@@ -22,6 +22,7 @@ for pr in <PR-LIST>; do
   gh pr diff $pr --name-only
 done
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<number>)` — returns list of changed files with additions/deletions.
 
 ### 2. Bucket by file-set
 
@@ -64,6 +65,7 @@ gh pr close <LOSER> -c "Closing as REDUNDANT — #<WINNER> implements the same s
 
 Thank you for the contribution — the ensemble perspective helped surface the right approach."
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__update_pull_request(owner, repo, pullNumber:<number>, state:"closed")` — closes the PR.
 
 ### 6. Emit verdict
 

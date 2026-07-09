@@ -47,14 +47,16 @@ downstream gates catch the rest.
 
 Before accepting any haiku agent's "REVIEW-READY" verdict on an external PR, verify:
 
-1. **File-count / size sanity.** Run `gh pr diff <N> --stat`. A PR targeting a single feature
-   should not touch 100+ files or show thousands of deletions unless it is a known large
-   refactor. The #682 incident: an agent reported "REVIEW-READY" on a PR that in reality
-   contained 643 changed files (4350 lines of another agent's work merged in via `git add -A`
-   after a merge conflict). Trust the diff, not the agent claim.
-2. **No `.merge_file_*` or `.claude/target/` junk.** Run `gh pr diff <N> --name-only` and grep
-   for these patterns. Their presence means the PR was staged with `git add -A` after a merge
-   and swept in git merge temp artifacts.
+1. **File-count / size sanity.** Run `gh pr diff <N> --stat`
+   (MCP: `mcp__github__pull_request_read(method:"get_files", pullNumber:<N>)` — returns file list with additions/deletions).
+   A PR targeting a single feature should not touch 100+ files or show thousands of deletions
+   unless it is a known large refactor. The #682 incident: an agent reported "REVIEW-READY"
+   on a PR that in reality contained 643 changed files (4350 lines of another agent's work
+   merged in via `git add -A` after a merge conflict). Trust the diff, not the agent claim.
+2. **No `.merge_file_*` or `.claude/target/` junk.** Run `gh pr diff <N> --name-only`
+   (MCP: `mcp__github__pull_request_read(method:"get_files", pullNumber:<N>)` — same file list)
+   and grep for these patterns. Their presence means the PR was staged with `git add -A` after
+   a merge and swept in git merge temp artifacts.
 3. **Contaminated mega-PRs: prefer re-create over untangle.** If a PR has swept in another
    agent's changes, the correct fix is to close it, re-create a clean branch from `origin/main`,
    and cherry-pick only the intended commits. Attempting to surgically revert the contamination
@@ -82,6 +84,7 @@ Apply in order; stop at first resolution:
    ```
    gh pr diff <N> --name-only
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<number>)` — returns list of changed files with additions/deletions.
    Same files + overlapping lines = real dupe cluster. Different files = layer-diversity,
    keep all.
 
@@ -94,6 +97,7 @@ Apply in order; stop at first resolution:
    ```
    gh pr diff <N> --stat
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<number>)` — returns list of changed files with additions/deletions.
    "Deletions" in the thousands on a >1-week-old branch = **STALE-BASE**, not drift.
 
 5. **Claim check** — for any external fact claim:

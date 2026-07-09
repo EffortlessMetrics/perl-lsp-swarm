@@ -15,6 +15,7 @@ gh pr view $ARGUMENTS --comments
 gh api repos/:owner/:repo/pulls/$ARGUMENTS/reviews --jq '.[] | "\(.user.login) (\(.state)): \(.body)"'
 gh api repos/:owner/:repo/pulls/$ARGUMENTS/comments --jq '.[] | "\(.path):\(.line) \(.body)"'
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields. | `mcp__github__pull_request_read(method:"get_reviews", owner, repo, pullNumber:<number>)` — full parity. | `mcp__github__pull_request_read(method:"get_review_comments", owner, repo, pullNumber:<number>)` — full parity.
 
 ### 2. Categorize each comment
 - **Blocking** (changes requested): must fix before merge
@@ -33,6 +34,7 @@ For each blocking comment:
 gh api repos/:owner/:repo/pulls/$ARGUMENTS/comments/<comment-id>/replies \
   -f body="Fixed in <commit-hash>. <brief explanation>"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_review_comments", owner, repo, pullNumber:<number>)` — full parity.
 
 Or for general review comments:
 ```bash
@@ -41,6 +43,7 @@ gh pr comment $ARGUMENTS --body "Addressed review feedback:
 - <comment 2>: <explanation>
 "
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 ### 5. Re-verify
 ```bash
@@ -62,3 +65,4 @@ Apply the `pr-responded` label with verification (see `/label-apply-verified`):
 ```bash
 gh pr edit $ARGUMENTS --add-reviewer <original-reviewer> 2>/dev/null || true
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__update_pull_request(owner, repo, pullNumber:<number>, ...)` — see GH_MCP_FALLBACK.md for field mappings.

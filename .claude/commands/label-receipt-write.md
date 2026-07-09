@@ -33,24 +33,28 @@ For PRs, get the HEAD SHA:
 CURRENT_SHA=$(gh pr view $NUMBER --json headRefOid --jq '.headRefOid')
 CURRENT_UPDATED=$(gh pr view $NUMBER --json updatedAt --jq '.updatedAt')
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → `.headRefOid` field; then use `mcp__github__pull_request_read(method:"get_check_runs")` for CI status. | `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields.
 
 For issues, get the updated_at timestamp:
 ```bash
 CURRENT_UPDATED=$(gh issue view $NUMBER --json updatedAt --jq '.updatedAt')
 CURRENT_SHA="n/a"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", owner, repo, issue_number:<number>)` — full parity.
 
 ### 3. Check for existing receipt comment
 
 Search for the receipt comment marker. Use the `issues` endpoint for both PRs and
-issues -- on GitHub's API, `gh pr comment` creates an issue-type comment, and the
-`pulls/.../comments` endpoint only returns line-level review comments, not general comments.
+issues -- on GitHub's API, `gh pr comment` creates an issue-type comment
+(MCP: `mcp__github__add_issue_comment`), and the `pulls/.../comments` endpoint only
+returns line-level review comments, not general comments.
 
 ```bash
 EXISTING_COMMENT=$(gh api "repos/{owner}/{repo}/issues/$NUMBER/comments" \
   --jq '.[] | select(.body | contains("<!-- LABEL_RECEIPT_v1 -->")) | {id: .id, body: .body}' \
   | head -1)
 ```
+> **MCP alternative (web/no-gh sessions):** no direct MCP equivalent for this `gh api` call — check docs/reference/GH_MCP_FALLBACK.md for alternatives or describe the limitation.
 
 ### 4. Build the label binding
 
@@ -105,11 +109,13 @@ For PRs:
 ```bash
 gh pr comment $NUMBER --body "$BODY"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 For issues:
 ```bash
 gh issue comment $NUMBER --body "$BODY"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<number>, body:<body>)` — full parity.
 
 **If existing receipt comment**, update it:
 1. Parse the existing JSON from the comment body
@@ -122,6 +128,7 @@ gh issue comment $NUMBER --body "$BODY"
 gh api --method PATCH "repos/{owner}/{repo}/issues/comments/$COMMENT_ID" \
   -f body="$UPDATED_BODY"
 ```
+> **MCP alternative (web/no-gh sessions):** no direct MCP equivalent for this `gh api` call — check docs/reference/GH_MCP_FALLBACK.md for alternatives or describe the limitation.
 
 Note: `issues/comments` endpoint works for both PR and issue comments on GitHub API.
 

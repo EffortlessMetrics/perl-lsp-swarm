@@ -15,6 +15,7 @@ work and understand what's left.
    gh pr view <number> --json title,body --jq '{title: .title, body: .body}'
    gh pr diff <number>
    ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → full PR object with isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewDecision fields. | `mcp__github__pull_request_read(method:"get_diff", owner, repo, pullNumber:<number>)` — full unified diff.
 
 2. Find the "What's next" section in the PR description.
    This is your spec for what to continue.
@@ -24,6 +25,7 @@ work and understand what's left.
    gh pr checkout <number>
    cargo test -p <crate> 2>&1 | tail -10
    ```
+> **MCP alternative (web/no-gh sessions):** `gh pr checkout` has no direct MCP equivalent. In worktrees: `git fetch origin pull/<N>/head:<branch> && git checkout <branch>` instead.
 
 4. Identify:
    - **What's already done** — which files were changed, what tests pass
