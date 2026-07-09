@@ -257,6 +257,16 @@ print $fh "data\n";
 }
 
 #[test]
+fn print_try_bareword_filehandle() {
+    let code = r#"
+print try 'print "ok\n";';
+print try "\n";
+close try or die "Could not close: $!";
+"#;
+    assert_clean_parse(code);
+}
+
+#[test]
 fn print_block_with_multiple_args() {
     // print { $fh } with comma-separated arguments
     let code = r#"print { $fh } "key=", $value, "\n";"#;
