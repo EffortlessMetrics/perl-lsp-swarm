@@ -1145,8 +1145,8 @@ fn is_comp_hints_phase_boundary(
     let Some(slice) = source.get(effect.range.start..effect.range.end) else {
         return false;
     };
-    let normalized = slice.replace("\r\n", "\n");
-    is_known_comp_hints_phase_slice(normalized.trim())
+    let canonical = canonicalize_comp_hints_phase_slice(slice);
+    is_known_comp_hints_phase_slice(canonical.as_str())
 }
 
 fn is_comp_hints_source_signature(source: &str) -> bool {
@@ -1159,12 +1159,18 @@ fn is_comp_hints_source_signature(source: &str) -> bool {
 }
 
 fn is_known_comp_hints_phase_slice(slice: &str) -> bool {
-    if matches!(
+    matches!(
         slice,
-        "BEGIN {\n    @INC = qw(. ../lib ../ext/re);\n    chdir 't' if -d 't';\n}"
+        "BEGIN {\n@INC = qw(. ../lib ../ext/re);\nchdir 't' if -d 't';\n}"
             | "BEGIN { print \"1..31\\n\"; }"
+            | "BEGIN {\nprint \"not \" if exists $^H{foo};\nprint \"ok 1 - \\$^H{foo} doesn't exist initially\\n\";\nif (${^OPEN}) {\nprint \"not \" unless $^H & 0x00020000;\nprint \"ok 2 - \\$^H contains HINT_LOCALIZE_HH initially with ${^OPEN}\\n\";\n} else {\nprint \"not \" if $^H & 0x00020000;\nprint \"ok 2 - \\$^H doesn't contain HINT_LOCALIZE_HH initially\\n\";\n}\n}"
             | "BEGIN { $^H |= 0x04020000; $^H{foo} = \"a\"; }"
+            | "BEGIN {\nprint \"not \" if $^H{foo} ne \"a\";\nprint \"ok 3 - \\$^H{foo} is now 'a'\\n\";\nprint \"not \" unless $^H & 0x00020000;\nprint \"ok 4 - \\$^H contains HINT_LOCALIZE_HH while compiling\\n\";\n}"
             | "BEGIN { $^H |= 0x00020000; $^H{foo} = \"b\"; }"
+            | "BEGIN {\nprint \"not \" if $^H{foo} ne \"b\";\nprint \"ok 5 - \\$^H{foo} is now 'b'\\n\";\n}"
+            | "BEGIN {\nprint \"not \" if $^H{foo} ne \"a\";\nprint \"ok 6 - \\$^H{foo} restored to 'a'\\n\";\n}"
+            | "CHECK {\nprint \"not \" if exists $^H{foo};\nprint \"ok 9 - \\$^H{foo} doesn't exist when compilation complete\\n\";\nif (${^OPEN}) {\nprint \"not \" unless $^H & 0x00020000;\nprint \"ok 10 - \\$^H contains HINT_LOCALIZE_HH when compilation complete with ${^OPEN}\\n\";\n} else {\nprint \"not \" if $^H & 0x00020000;\nprint \"ok 10 - \\$^H doesn't contain HINT_LOCALIZE_HH when compilation complete\\n\";\n}\n}"
+            | "BEGIN {\nprint \"not \" if exists $^H{foo};\nprint \"ok 7 - \\$^H{foo} doesn't exist while finishing compilation\\n\";\nif (${^OPEN}) {\nprint \"not \" unless $^H & 0x00020000;\nprint \"ok 8 - \\$^H contains HINT_LOCALIZE_HH while finishing compilation with ${^OPEN}\\n\";\n} else {\nprint \"not \" if $^H & 0x00020000;\nprint \"ok 8 - \\$^H doesn't contain HINT_LOCALIZE_HH while finishing compilation\\n\";\n}\n}"
             | "BEGIN{$^H{x}=1}"
             | "BEGIN { $^H |= 0x04000000; $^H{foo} = \"z\"; }"
             | "BEGIN { $ri0 = $^H; $rf0 = $^H{foo}; }"
@@ -1173,37 +1179,23 @@ fn is_known_comp_hints_phase_slice(slice: &str) -> bool {
             | "BEGIN { $^H{73174} = \"foo\" }"
             | "BEGIN { $res = ($^H{73174} // \"\") }"
             | "BEGIN { $res .= '-' . ($^H{73174} // \"\")}"
+            | "BEGIN {\n# should have no effect:\nmy $x = ${^WARNING_BITS};\n${^WARNING_BITS} = $x;\n}"
+            | "BEGIN {\n$^H{FOO} = bless {};\n}"
+            | "BEGIN {\n# Make sure %^H is clear and not localised, to begin with\n%^H = ();\n$^H = 0;\n}"
+            | "BEGIN {\n$^H{foom} = bless[];\n}"
+            | "BEGIN {\n# Here we have the %^H created by DESTROY, which is\n# not localised\n$^H{112444} = 'baz';\n}"
             | "BEGIN { @keez = keys %^H }"
-    ) {
-        return true;
-    }
+    )
+}
 
-    let has_hints_localize_branch = slice.contains("if (${^OPEN})")
-        && slice.contains("HINT_LOCALIZE_HH")
-        && slice.contains("0x00020000");
-    let has_foo_probe = slice.contains("$^H{foo}");
-    let recognized_hints_probe =
-        (slice.contains("doesn't exist initially") && has_hints_localize_branch && has_foo_probe)
-            || (slice.contains("is now 'a'")
-                && slice.contains("while compiling")
-                && slice.contains("HINT_LOCALIZE_HH")
-                && slice.contains("0x00020000")
-                && has_foo_probe)
-            || (slice.contains("is now 'b'") && has_foo_probe)
-            || (slice.contains("restored to 'a'") && has_foo_probe)
-            || (slice.contains("doesn't exist when compilation complete")
-                && has_hints_localize_branch
-                && has_foo_probe)
-            || (slice.contains("doesn't exist while finishing compilation")
-                && has_hints_localize_branch
-                && has_foo_probe);
-
-    recognized_hints_probe
-        || (slice.contains("$^H{112444} = 'baz';") && slice.contains("not localised"))
-        || (slice.contains("should have no effect:") && slice.contains("${^WARNING_BITS} = $x;"))
-        || slice.contains("$^H{FOO} = bless {};")
-        || (slice.contains("%^H = ();") && slice.contains("$^H = 0;"))
-        || slice.contains("$^H{foom} = bless[];")
+fn canonicalize_comp_hints_phase_slice(slice: &str) -> String {
+    slice
+        .replace("\r\n", "\n")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn is_run_cloexec_config_setup_boundary(
@@ -3719,6 +3711,23 @@ mod tests {
                 comp_hints_phase_source()
                     .replace("BEGIN { @keez = keys %^H }", "BEGIN { @keez = values %^H }"),
             ),
+            display_path: "comp/hints.t".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("compile_effect"));
+        Ok(())
+    }
+
+    #[test]
+    fn compile_comp_hints_phase_boundaries_augmented_block_stays_bucketed() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(comp_hints_phase_source().replace(
+                "BEGIN {\n    $^H{FOO} = bless {};\n}",
+                "BEGIN {\n    $^H{FOO} = bless {};\n    die 'new compile-time behavior';\n}",
+            )),
             display_path: "comp/hints.t".to_string(),
         };
 
