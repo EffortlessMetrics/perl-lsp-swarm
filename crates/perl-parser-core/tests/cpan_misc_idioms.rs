@@ -2,6 +2,41 @@
 
 mod cpan_test_helpers;
 use cpan_test_helpers::*;
+use perl_parser_core::{Node, NodeKind};
+
+fn collect_indirect_calls<'a>(node: &'a Node, calls: &mut Vec<(&'a str, &'a Node, usize)>) {
+    if let NodeKind::IndirectCall { method, object, args } = &node.kind {
+        calls.push((method.as_str(), object.as_ref(), args.len()));
+    }
+
+    for child in node.children() {
+        collect_indirect_calls(child, calls);
+    }
+}
+
+fn expect_try_indirect_call(
+    calls: &[(&str, &Node, usize)],
+    index: usize,
+    expected_method: &str,
+    expected_arg_count: usize,
+) -> Result<(), String> {
+    let (method, object, arg_count) = calls
+        .get(index)
+        .ok_or_else(|| format!("expected indirect call at index {index}, got {calls:?}"))?;
+    if *method != expected_method {
+        return Err(format!("expected method {expected_method}, got {method}"));
+    }
+    if *arg_count != expected_arg_count {
+        return Err(format!(
+            "expected {expected_arg_count} args for {expected_method}, got {arg_count}"
+        ));
+    }
+
+    match &object.kind {
+        NodeKind::Identifier { name } if name == "try" => Ok(()),
+        other => Err(format!("expected `try` identifier object, got {other:?}")),
+    }
+}
 
 #[test]
 fn bless_hashref() {
@@ -257,13 +292,24 @@ print $fh "data\n";
 }
 
 #[test]
-fn print_try_bareword_filehandle() {
+fn is_indirect_call_pattern_call_presence_observer_for_try_filehandles() -> Result<(), String> {
     let code = r#"
 print try 'print "ok\n";';
 print try "\n";
 close try or die "Could not close: $!";
 "#;
     assert_clean_parse(code);
+    let ast = parse(code);
+    let mut indirect_calls = Vec::new();
+    collect_indirect_calls(&ast, &mut indirect_calls);
+
+    if indirect_calls.len() != 3 {
+        return Err(format!("expected 3 try-filehandle indirect calls, got {indirect_calls:?}"));
+    }
+    expect_try_indirect_call(&indirect_calls, 0, "print", 1)?;
+    expect_try_indirect_call(&indirect_calls, 1, "print", 1)?;
+    expect_try_indirect_call(&indirect_calls, 2, "close", 0)?;
+    Ok(())
 }
 
 #[test]
