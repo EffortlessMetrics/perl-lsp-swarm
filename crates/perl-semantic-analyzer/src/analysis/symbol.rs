@@ -311,7 +311,7 @@ impl SymbolTable {
         self.scopes
             .values()
             .filter(|scope| scope.location.start <= offset && offset < scope.location.end)
-            .max_by_key(|scope| scope.location.start)
+            .max_by_key(|scope| (scope.location.start, scope.id))
             .map(|scope| scope.id)
             .unwrap_or(0)
     }
@@ -4277,6 +4277,116 @@ sub jump {
         assert!(
             !has_lowercase_foo_subroutine,
             "should NOT have Subroutine symbol for lowercase 'foo'"
+        );
+    }
+
+    /// Contract test for `scope_at_offset`: should return the innermost
+    /// scope that contains the offset, using half-open [start, end) convention.
+    /// Covers: (1) offset outside all scopes (fallback to global scope 0),
+    /// (2) offset inside nested sub/block (selects innermost), (3) sibling
+    /// scopes (selects the right one), (4) exact start boundary (offset ==
+    /// location.start is included), (5) exact end boundary (offset ==
+    /// location.end is EXCLUDED per `offset < end`), (6) tie-breaking on
+    /// scope.id when starts are equal (should pick highest id).
+    #[test]
+    fn scope_at_offset_selects_innermost_enclosing_scope() {
+        let mut table = SymbolTable::new(); // Global scope 0: [0, 100)
+
+        // Sub scope 1: [10, 90), nested under global
+        table.scopes.insert(
+            1,
+            Scope {
+                id: 1,
+                parent: Some(0),
+                kind: ScopeKind::Subroutine,
+                location: SourceLocation { start: 10, end: 90 },
+                symbols: HashSet::new(),
+            },
+        );
+
+        // Block scope 2: [20, 80), nested under sub
+        table.scopes.insert(
+            2,
+            Scope {
+                id: 2,
+                parent: Some(1),
+                kind: ScopeKind::Block,
+                location: SourceLocation { start: 20, end: 80 },
+                symbols: HashSet::new(),
+            },
+        );
+
+        // Sibling block scope 3: [20, 50), also nested under sub (same start as scope 2)
+        table.scopes.insert(
+            3,
+            Scope {
+                id: 3,
+                parent: Some(1),
+                kind: ScopeKind::Block,
+                location: SourceLocation { start: 20, end: 50 },
+                symbols: HashSet::new(),
+            },
+        );
+
+        // Test: offset outside all scopes → fallback to global (0)
+        assert_eq!(
+            table.scope_at_offset(0),
+            0,
+            "offset at boundary [0, 100) should be in global scope"
+        );
+        assert_eq!(
+            table.scope_at_offset(100),
+            0,
+            "offset at/past end [0, 100) should fall back to global scope (exclusive end)"
+        );
+
+        // Test: offset inside sub but outside nested blocks → selects sub (1)
+        assert_eq!(
+            table.scope_at_offset(15),
+            1,
+            "offset inside sub [10, 90) but outside blocks should select sub scope 1"
+        );
+
+        // Test: offset inside the deeper block → selects innermost (2)
+        assert_eq!(
+            table.scope_at_offset(70),
+            2,
+            "offset inside block [20, 80) should select inner block scope 2, not outer sub 1"
+        );
+
+        // Test: offset at block-end boundary (exclusive) → selects parent (1)
+        assert_eq!(
+            table.scope_at_offset(80),
+            1,
+            "offset at exclusive end of block [20, 80) should exclude scope 2 and select parent sub 1"
+        );
+
+        // Test: offset at block-start boundary (inclusive) → selects block
+        assert_eq!(
+            table.scope_at_offset(20),
+            3,
+            "offset at start [20, 50) of sibling scope 3 should be included; tie-break on id: scope 3 > scope 2"
+        );
+
+        // Test: offset inside scope 3 [20, 50) but outside scope 2 → selects 3
+        assert_eq!(
+            table.scope_at_offset(30),
+            3,
+            "offset at 30 is in scope 3 [20, 50) but scope 2 [20, 80) extends further; tie-break on id: scope 3 > scope 2"
+        );
+
+        // Test: offset at sub-start boundary (inclusive) → selects sub
+        assert_eq!(
+            table.scope_at_offset(10),
+            1,
+            "offset at start of sub [10, 90) should be included"
+        );
+
+        // Test: offset just inside nested block, past scope 3's end
+        assert_eq!(
+            table.scope_at_offset(60),
+            2,
+            "offset at 60 is past scope 3 [20, 50) but inside scope 2 [20, 80); should select scope 2"
         );
     }
 }

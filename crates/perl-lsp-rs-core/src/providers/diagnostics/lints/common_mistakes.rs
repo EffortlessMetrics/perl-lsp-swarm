@@ -307,6 +307,20 @@ mod tests {
     }
 
     #[test]
+    fn numeric_compare_with_nested_block_local_scalar_no_pl404() {
+        // Regression for deep nesting: `my $x` declared in a block nested
+        // inside a subroutine must be visible at comparison sites within that
+        // same block. Tests that scope_at_offset correctly selects the
+        // innermost scope (not just the first matching scope) when multiple
+        // nested scopes contain an offset.
+        let diags = common_mistakes_diags("sub f { { my $x = 10; if ($x == 5) { } } }");
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL404")),
+            "numeric compare with nested-block declared scalar should not fire PL404: {diags:?}"
+        );
+    }
+
+    #[test]
     fn pl403_diagnostic_suggests_double_equals() {
         let diags = common_mistakes_diags("my $x; if ($x = 5) { }");
         let pl403 = must_some(diags.iter().find(|d| d.code.as_deref() == Some("PL403")));
