@@ -426,20 +426,23 @@ impl LspServer {
             // block via `Drop`, so it emits correctly regardless of which of
             // this function's several early `return` points fires.
             //
-            // Consistency note: this trades a whole-request-consistent read
-            // (the pre-#3396 single guard held from `doc_owned` through the
-            // final fallback) for point-in-time snapshots at each lock
-            // acquisition. A `didChange` racing in between `doc_owned` and a
-            // later `docs_snapshot` fetch means the fallback's regex text
-            // search can run against fresher text for `uri` than the
-            // `symbol_key`/`offset` computed from `doc_owned` above. This is
-            // safe here because the fallback is a heuristic, name-based
-            // regex scan (not offset-dependent on `doc_owned` for other
-            // documents), matches the same check-once-then-off-lock contract
-            // `ensure_latest` already provides at entry (a point-in-time
-            // admission check, not a whole-request consistency guarantee),
-            // and mirrors the identical `doc_text`-then-`documents_text_snapshot()`
-            // pattern already established in `handle_type_definition`.
+            // Consistency note: each `docs_snapshot` fetch is a fresh,
+            // independent lock acquisition, so in general it observes
+            // whatever generation of each document is live *at that later
+            // point* -- not necessarily the same generation `doc_owned`
+            // captured above. For every *other* open document that's fine
+            // (the fallback is a heuristic, name-based regex scan with no
+            // offset dependency on `doc_owned`). For `uri` itself it is not:
+            // `symbol_key`/`offset`/`needle` below are all derived from
+            // `doc_owned`'s generation, so searching them against a *fresher*
+            // re-read of the same uri (if a `didChange` races in between the
+            // two lock acquisitions) would pair a generation-N identity with
+            // generation-N+1 text for the same document -- the exact
+            // single-instance/single-generation invariant this off-lock
+            // pattern must preserve to stay behavior-identical. Each
+            // `docs_snapshot` construction below therefore pins `uri`'s own
+            // entry to `doc.text` (i.e. `doc_owned`, not the live map) and
+            // only lets *other* documents float to the freshest read.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
             let doc_owned = {
@@ -610,11 +613,27 @@ impl LspServer {
                                     // Re-acquires a fresh, brief documents-map lock only at this
                                     // point of use (#3396 off-lock provider consumption) -- the
                                     // outer lock was already dropped after fetching `doc` above.
+                                    //
+                                    // `uri`'s own entry is pinned to `doc.text` (the exact
+                                    // generation captured in `doc_owned` above) rather than
+                                    // whatever is live now -- `symbol_name`/`package_name` below
+                                    // were derived from that same capture's AST, so searching them
+                                    // against a *fresher* re-read of `uri` (if a `didChange` raced
+                                    // in between the two lock acquisitions) would pair a
+                                    // generation-N identity with generation-N+1 text for the same
+                                    // document. Every other open document is unaffected by this and
+                                    // still gets the freshest available read.
                                     let docs_snapshot: Vec<(String, String)> = {
                                         let documents = self.documents_guard();
                                         documents
                                             .iter()
-                                            .map(|(k, v)| (k.clone(), v.text.clone()))
+                                            .map(|(k, v)| {
+                                                if k.as_str() == uri {
+                                                    (k.clone(), doc.text.clone())
+                                                } else {
+                                                    (k.clone(), v.text.clone())
+                                                }
+                                            })
                                             .collect()
                                     };
 
@@ -838,12 +857,23 @@ impl LspServer {
                                                     // Snapshot only (uri, text) to minimize cloning overhead.
                                                     // Re-acquires a fresh, brief documents-map lock only at
                                                     // this point of use (#3396 off-lock provider consumption).
+                                                    //
+                                                    // `uri`'s own entry is pinned to `doc.text` (the
+                                                    // generation captured in `doc_owned` above) -- see
+                                                    // the identical rationale on the enhanced-fallback
+                                                    // snapshot above: `qualified_name` was derived from
+                                                    // that same capture, so this document must not be
+                                                    // re-read at a fresher generation for this search.
                                                     let docs_snapshot: Vec<(String, String)> = {
                                                         let documents = self.documents_guard();
                                                         documents
                                                             .iter()
                                                             .map(|(k, v)| {
-                                                                (k.clone(), v.text.clone())
+                                                                if k.as_str() == uri {
+                                                                    (k.clone(), doc.text.clone())
+                                                                } else {
+                                                                    (k.clone(), v.text.clone())
+                                                                }
                                                             })
                                                             .collect()
                                                     };
@@ -970,11 +1000,24 @@ impl LspServer {
                                     // Re-acquires a fresh, brief documents-map lock only at this
                                     // point of use (#3396 off-lock provider consumption) -- the
                                     // outer lock was already dropped after fetching `doc` above.
+                                    //
+                                    // `uri`'s own entry is pinned to `doc.text` (the generation
+                                    // captured in `doc_owned` above) -- `needle` was derived from
+                                    // that same capture (`token_under_cursor(&doc.text, ...)`
+                                    // above), so this document must not be re-read at a fresher
+                                    // generation for this search. Every other open document still
+                                    // gets the freshest available read.
                                     let docs_snapshot: Vec<(String, String)> = {
                                         let documents = self.documents_guard();
                                         documents
                                             .iter()
-                                            .map(|(k, v)| (k.clone(), v.text.clone()))
+                                            .map(|(k, v)| {
+                                                if k.as_str() == uri {
+                                                    (k.clone(), doc.text.clone())
+                                                } else {
+                                                    (k.clone(), v.text.clone())
+                                                }
+                                            })
                                             .collect()
                                     };
                                     let open_doc_locations = search_document_texts_for_references(
