@@ -350,11 +350,18 @@ impl DocumentState {
     }
 
     /// Update document content and invalidate caches
+    ///
+    /// `parsed` is deliberately **preserved**, not cleared: bumping
+    /// `generation` already makes [`Self::current_parsed`] correctly report
+    /// staleness (the snapshot's `generation` no longer matches), while
+    /// [`Self::latest_parsed`] keeps exposing the previous snapshot until a
+    /// fresh parse republishes for the new generation -- see
+    /// [`Self::replace_text_state`] for the invariant this preserves and why
+    /// clearing `parsed` on every edit would violate it.
     pub fn update_content(&mut self, content: &str, version: i32) {
         self.rope = ropey::Rope::from_str(content);
         self.text = content.to_string();
         self.version = version;
-        self.parsed = None;
         self.line_starts = LineStartsCache::new(content);
         self.generation.fetch_add(1, Ordering::SeqCst);
         #[cfg(feature = "incremental")]
@@ -362,6 +369,40 @@ impl DocumentState {
             self.incremental_doc = None;
             self.incremental_state = None;
         }
+    }
+
+    /// Replace this document's text state (rope/text/version/line_starts)
+    /// in place, without touching `parsed` or `generation`.
+    ///
+    /// Unlike [`Self::new`]/[`Self::from_parts`] (which always start with
+    /// `parsed: None`), this preserves whatever was previously published.
+    /// That is the production invariant [`Self::latest_parsed`] promises --
+    /// "the last publication, even if stale" -- and it only holds if a real
+    /// text edit doesn't silently discard the previous snapshot by
+    /// reconstructing a fresh `DocumentState`. After calling this:
+    /// - `current_parsed()` correctly becomes `None` once `generation` no
+    ///   longer matches the preserved snapshot's generation (see below).
+    /// - `latest_parsed()` keeps returning the previous snapshot until a
+    ///   fresh parse publishes one for the new generation via
+    ///   [`Self::publish_parsed_if_current`].
+    ///
+    /// **Does not bump `generation` itself** -- that is the caller's
+    /// responsibility, and deliberately decoupled from the text-state
+    /// update: production callers (see the `didChange` handler in
+    /// `runtime/text_sync.rs`) bump the generation counter *before* this is
+    /// called, as part of the same edit, for a reason unrelated to this
+    /// method (stale-request detection while the parse is in flight -- a
+    /// concurrent edit must be detectable before the slow parse even
+    /// starts). Calling `replace_text_state` without an intervening
+    /// generation bump leaves `current_parsed()` re-validating a snapshot
+    /// that predates this edit, which is almost never what a caller wants;
+    /// bump `generation` (e.g. via `self.generation.fetch_add(1, ..)`)
+    /// first.
+    pub(crate) fn replace_text_state(&mut self, rope: ropey::Rope, text: String, version: i32) {
+        self.line_starts = LineStartsCache::new_rope(&rope);
+        self.rope = rope;
+        self.text = text;
+        self.version = version;
     }
 
     /// Get the current generation number
@@ -461,10 +502,10 @@ impl DocumentState {
             self.rope.insert(start_idx, new_text);
         }
 
-        // Update cached string and caches
+        // Update cached string and caches. `parsed` is deliberately
+        // preserved -- see the doc comment on `update_content`.
         self.text = self.rope.to_string();
         self.version = version;
-        self.parsed = None;
         self.line_starts = LineStartsCache::new(&self.text);
         self.generation.fetch_add(1, Ordering::SeqCst);
     }
@@ -541,20 +582,38 @@ mod tests {
     }
 
     #[test]
-    fn latest_parsed_survives_a_generation_gap() {
+    fn latest_parsed_survives_a_real_text_edit() {
+        // Real-edit-path proof, not an artificial generation bump: a
+        // published snapshot must survive `apply_change` -- the actual
+        // production text-mutation method -- not just a bare
+        // `generation.fetch_add`. Before `replace_text_state` existed, every
+        // text-mutating method (`apply_change`, `update_content`, and
+        // `DocumentState::from_parts` reconstruction as used by
+        // `runtime/text_sync.rs`'s didChange) unconditionally cleared
+        // `parsed`, so `latest_parsed()` silently returned `None`
+        // immediately after any real edit in production -- the invariant
+        // only ever passed in tests that bypassed the real edit path by
+        // bumping the atomic directly.
         let mut doc = DocumentState::new("my $x = 1;", 1);
         let doc_gen = doc.current_generation();
         let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
         assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
+        let old = must_some(doc.current_parsed());
 
-        doc.generation.fetch_add(1, Ordering::SeqCst);
-        assert!(doc.current_parsed().is_none(), "should be stale for current_parsed");
-        let latest = must_some(doc.latest_parsed());
-        assert_eq!(
-            latest.generation(),
-            doc_gen,
-            "latest_parsed still exposes the last publication"
+        // A real ranged edit: replace the "1" in "my $x = 1;" (0-indexed
+        // char 8, one char wide) with "2".
+        doc.apply_change(0, 8, 0, 9, "2", 2);
+
+        assert!(
+            doc.current_parsed().is_none(),
+            "generation must have advanced past the pre-edit snapshot with no fresh parse yet"
         );
+        let latest = must_some(doc.latest_parsed());
+        assert!(
+            Arc::ptr_eq(&old, &latest),
+            "apply_change must preserve the exact pre-edit snapshot object, not just its generation value"
+        );
+        assert_eq!(doc.text, "my $x = 2;", "the edit itself must still take effect");
     }
 
     #[test]

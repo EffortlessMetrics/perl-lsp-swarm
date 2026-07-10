@@ -825,15 +825,20 @@ impl LspServer {
                 let incremental_doc_update_ms =
                     crate::runtime::timing::elapsed_ms(t_incremental_start);
 
-                // Update document state with properly updated content.
-                // Preserve the generation counter (same Arc<AtomicU32>, already
-                // bumped to `next_gen` above).
-                doc_state = DocumentState::from_parts(
-                    doc.rope.clone(),
-                    text.to_string(),
-                    version,
-                    doc_state.generation.clone(),
-                );
+                // Update document state's text fields IN PLACE (not a fresh
+                // `DocumentState::from_parts`) so the previously-published
+                // snapshot -- whatever was published for the pre-edit
+                // generation -- is preserved rather than silently
+                // discarded. `generation` was
+                // already bumped to `next_gen` above (same Arc<AtomicU32>),
+                // before this edit's text was applied, so `current_parsed()`
+                // already reports stale for the remainder of this handler
+                // (correctly: the just-parsed snapshot below hasn't
+                // published yet) while `latest_parsed()` keeps exposing the
+                // pre-edit snapshot until the `publish_parsed_if_current`
+                // call below lands the new one -- see
+                // `state::DocumentState::replace_text_state`.
+                doc_state.replace_text_state(doc.rope.clone(), text.to_string(), version);
                 #[cfg(feature = "incremental")]
                 {
                     doc_state.incremental_doc = incremental_doc;
