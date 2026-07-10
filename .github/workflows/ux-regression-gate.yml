@@ -410,7 +410,7 @@ jobs:
         working-directory: vscode-extension
         run: npm ci
 
-      - name: Lint (eslint)
+      - name: Lint (oxlint --type-aware)
         working-directory: vscode-extension
         run: npm run lint
 
