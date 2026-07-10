@@ -145,8 +145,11 @@ Primary-artifact findings:
 
 Decision for PREP-1: **remove `pnpm-lock.yaml` in favor of npm-only.** The file was
 already broken (`ERR_PNPM_BROKEN_LOCKFILE`, duplicate `packages:` keys), consumed by no
-workflow/script (no `packageManager` field; dependabot registers only the `npm`
-ecosystem for `/vscode-extension`), and excluded from the VSIX (`.vscodeignore`). After
+install/script path (no `packageManager` field; dependabot registers only the `npm`
+ecosystem for `/vscode-extension`), and excluded from the VSIX (`.vscodeignore`). The
+manifest does retain a dormant `pnpm.overrides` block — package-level config pnpm *would*
+read if ever invoked, but not itself an install or lockfile path; it is harmless with the
+lock removed and left in place for a possible future pnpm lane. After
 this PR removed `ts-jest` from `package.json`/`package-lock.json`, the stale lock also
 disagreed with the manifest. Deleting it is the minimal, **validatable**, contract-safe
 resolution of that disagreement:
