@@ -295,6 +295,29 @@ mod tests {
     }
 
     #[test]
+    fn numeric_compare_with_nested_block_scope_no_pl404() {
+        // Nested scope test: `my $x` in a double-nested block, then used in
+        // an `if` at the same nesting level. Ensures scope_at_offset correctly
+        // selects the innermost scope when multiple scopes enclose the usage.
+        let diags = common_mistakes_diags("sub f { { my $x = 10; if ($x == 5) { } } }");
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL404")),
+            "variable in nested block scope should not fire PL404: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn numeric_compare_with_for_loop_scope_no_pl404() {
+        // Loop scope test: `my $x` in a for loop, then used in an `if` within
+        // the same loop body. Tests scope selection with loop block scopes.
+        let diags = common_mistakes_diags("sub f { for my $x (1..10) { if ($x == 5) { } } }");
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL404")),
+            "variable in for loop scope should not fire PL404: {diags:?}"
+        );
+    }
+
+    #[test]
     fn numeric_compare_with_sub_local_undeclared_scalar_fires_pl404() {
         // True-positive guard: a genuinely undeclared variable inside a sub
         // should still fire PL404 -- the fix must not over-suppress across

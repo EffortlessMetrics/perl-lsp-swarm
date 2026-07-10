@@ -304,6 +304,14 @@ impl SymbolTable {
     /// scope with the greatest `location.start` that still contains
     /// `offset` is therefore the most specific (innermost) enclosing scope.
     ///
+    /// Range semantics: uses half-open interval [start, end), so `offset` is
+    /// contained if `start <= offset < end`. This matches the convention used
+    /// by [`SourceLocation`] producers in the parser and AST traversal.
+    ///
+    /// When multiple scopes share the same start offset (e.g. a block scope
+    /// nested directly after another), the scope with the higher ID (more
+    /// recently added) is preferred, ensuring we select the innermost scope.
+    ///
     /// Falls back to the global scope (`0`) when no scope's range contains
     /// `offset` -- e.g. top-level, package-scope code before any block or
     /// subroutine opens.
@@ -311,7 +319,7 @@ impl SymbolTable {
         self.scopes
             .values()
             .filter(|scope| scope.location.start <= offset && offset < scope.location.end)
-            .max_by_key(|scope| scope.location.start)
+            .max_by_key(|scope| (scope.location.start, scope.id))
             .map(|scope| scope.id)
             .unwrap_or(0)
     }
