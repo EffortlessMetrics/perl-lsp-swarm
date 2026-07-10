@@ -1,12 +1,14 @@
 .vscode/**
 .vscode-test/**
 out/test/**
+out-test/**
 coverage/**
 src/**
 test/**
 .gitignore
 .yarnrc
 **/tsconfig.json
+tsconfig.test.json
 **/.eslintrc.json
 **/*.map
 **/*.ts
