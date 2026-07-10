@@ -692,11 +692,26 @@ fn lookup_workspace_definition(
         workspace_index.search_symbols(name)
     };
 
-    // Find the first matching symbol that matches the package
+    // Find the first matching symbol that matches the package.
+    //
+    // The qualified-name comparison must be anchored on the `::` package
+    // separator. A boundary-less `q.starts_with(pkg)` matches any package
+    // whose qualified name merely has `pkg` as a *string* prefix — e.g. with
+    // pkg="Foo" it matches "FooBar::new", silently navigating `Foo->new` to
+    // the unrelated `FooBar` package. Perl method resolution walks `@ISA`,
+    // never a string-prefix of package names (perlobj); `Foo` and `FooBar`
+    // are unrelated packages, so such a jump is definitively wrong. Anchor on
+    // the exact `pkg::name` symbol or the `pkg::` package boundary instead.
+    let qualified_exact = format!("{pkg}::{name}");
+    let package_prefix = format!("{pkg}::");
     for symbol in ranked_symbols {
         // Check if this symbol matches our package
         if symbol.container_name.as_deref() == Some(pkg)
-            || symbol.qualified_name.as_ref().map(|q| q.starts_with(pkg)).unwrap_or(false)
+            || symbol
+                .qualified_name
+                .as_ref()
+                .map(|q| *q == qualified_exact || q.starts_with(&package_prefix))
+                .unwrap_or(false)
         {
             if let Some(lsp_location) = crate::workspace_index::lsp_adapter::to_lsp_location(
                 &crate::workspace_index::Location { uri: symbol.uri.clone(), range: symbol.range },
