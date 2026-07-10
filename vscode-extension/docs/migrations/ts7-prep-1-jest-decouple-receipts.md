@@ -143,16 +143,23 @@ Primary-artifact findings:
   `vscode-textmate@7.0.4`, `vscode-tmgrammar-test@0.1.3` each appear 4× consecutively).
   No `pnpm install --frozen-lockfile` could ever have passed on it.
 
-Decision for PREP-1: **remove `pnpm-lock.yaml` in favor of npm-only.** The file was
-already broken (`ERR_PNPM_BROKEN_LOCKFILE`, duplicate `packages:` keys), consumed by no
-install/script path (no `packageManager` field; dependabot registers only the `npm`
-ecosystem for `/vscode-extension`), and excluded from the VSIX (`.vscodeignore`). The
-manifest does retain a dormant `pnpm.overrides` block — package-level config pnpm *would*
-read if ever invoked, but not itself an install or lockfile path; it is harmless with the
-lock removed and left in place for a possible future pnpm lane. After
-this PR removed `ts-jest` from `package.json`/`package-lock.json`, the stale lock also
-disagreed with the manifest. Deleting it is the minimal, **validatable**, contract-safe
-resolution of that disagreement:
+Decision for PREP-1: **remove `pnpm-lock.yaml` and the dormant `pnpm.overrides` block
+in favor of npm-only.** The lockfile was already broken (`ERR_PNPM_BROKEN_LOCKFILE`,
+duplicate `packages:` keys), consumed by no install/script path (no `packageManager`
+field; dependabot registers only the `npm` ecosystem for `/vscode-extension`), and
+excluded from the VSIX (`.vscodeignore`). The `pnpm.overrides` block was package-level
+config that only pnpm reads — never applied on any real install (all install/CI paths
+are npm; the pnpm lock could never install) — so removing it changes **zero** installed
+versions: `npm ci` and `package-lock.json` are byte-identical before and after (npm does
+not read the `pnpm` key). It is also not a live safety control here: the npm-resolved
+dev-only dependencies it named remain at `diff@7.0.0` and `serialize-javascript@6.0.2`,
+neither of which carries an active advisory (serialize-javascript's CVE-2024-11831 was
+fixed in 6.0.2). Keeping a half-configuration (pnpm overrides but no pnpm lockfile) would
+have left a trap where a future `pnpm install` resolves a tree that diverges from the
+authoritative npm one; removing both leaves a single, fully-consistent npm-only contract.
+After this PR removed `ts-jest` from `package.json`/`package-lock.json`, the stale lock
+also disagreed with the manifest. Deleting the lock (and the orphaned overrides) is the
+minimal, **validatable**, contract-safe resolution of that disagreement:
 
 - It introduces **zero** dependency version changes (unlike a clean `pnpm install`, which
   performs a forbidden ~128-pkg in-range refresh: `eslint` 10.5.0→10.6.0,
