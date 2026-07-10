@@ -50,8 +50,47 @@ pub struct GoalsNextOutput {
 }
 
 pub fn next(program: Option<String>, fixture: Option<PathBuf>, json: bool) -> Result<()> {
-    let snap = snapshot::build_snapshot(program, fixture)?;
-    let decision = select::select_next(&snap);
+    let (repository, snap_result) = match snapshot::build_snapshot(program.clone(), fixture.clone()) {
+        Ok(snap) => (snap.repository.clone(), Ok(snap)),
+        Err(err) => {
+            // Extract repository for error response; construct a minimal snapshot
+            let repository = std::env::var("GIT_REPOSITORY")
+                .unwrap_or_else(|_| "unknown".to_owned());
+            (repository, Err(err))
+        }
+    };
+    
+    let (snap, decision) = match snap_result {
+        Ok(snap) => {
+            let decision = select::select_next(&snap);
+            (snap, decision)
+        }
+        Err(err) => {
+            // Return Blocked with error details instead of failing
+            let snap = select::SelectionSnapshot {
+                repository: repository.clone(),
+                requested_program: program.clone(),
+                default_program: None,
+                known_programs: vec![],
+                resolved_program: None,
+                mode: "maintainer".to_owned(),
+                board: None,
+                program_title: None,
+                tracker_issue: None,
+                non_goals: vec![],
+                candidates: vec![],
+                live_open_prs: vec![],
+            };
+            let decision = select::SelectionDecision::Blocked(vec![select::SelectionBlocker {
+                kind: "build_snapshot_failed".to_owned(),
+                detail: format!("Failed to build snapshot: {err}"),
+                pr_number: None,
+                pr_url: None,
+            }]);
+            (snap, decision)
+        }
+    };
+    
     let output = GoalsNextOutput {
         repository: snap.repository,
         program: snap.resolved_program,

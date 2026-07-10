@@ -26,6 +26,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use super::select::MilestoneStatus;
 
 pub const ACTIVE_GOAL_PATH: &str = ".perl-lsp/goals/active.toml";
 
@@ -78,7 +79,8 @@ pub struct MilestoneEntry {
     pub id: String,
     pub title: String,
     /// `completed | in_progress | pending | blocked | deferred`.
-    pub status: String,
+    #[serde(deserialize_with = "deserialize_status")]
+    pub status: MilestoneStatus,
     #[serde(default)]
     pub issue: Option<u64>,
     #[serde(default)]
@@ -86,8 +88,28 @@ pub struct MilestoneEntry {
     pub exit_criteria: String,
 }
 
+#[allow(dead_code)]
 pub const ALLOWED_MILESTONE_STATUSES: &[&str] =
     &["completed", "in_progress", "pending", "blocked", "deferred"];
+
+fn deserialize_status<'de, D>(deserializer: D) -> Result<MilestoneStatus, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let s = String::deserialize(deserializer)?;
+    match s.as_str() {
+        "completed" => Ok(MilestoneStatus::Completed),
+        "in_progress" => Ok(MilestoneStatus::InProgress),
+        "pending" => Ok(MilestoneStatus::Pending),
+        "blocked" => Ok(MilestoneStatus::Blocked),
+        "deferred" => Ok(MilestoneStatus::Deferred),
+        _ => Err(Error::custom(format!(
+            "unknown status {s:?}; must be one of: completed, in_progress, pending, blocked, deferred"
+        ))),
+    }
+}
+
 
 pub fn load_milestone_ledger(root: &Path, relative_path: &str) -> Result<MilestoneLedger> {
     let text = fs::read_to_string(root.join(relative_path))
@@ -127,10 +149,7 @@ pub fn validate_milestone_ledger(ledger: &MilestoneLedger) -> Vec<String> {
         if milestone.title.trim().is_empty() {
             violations.push(format!("{doc}: title must not be empty"));
         }
-        if !ALLOWED_MILESTONE_STATUSES.contains(&milestone.status.as_str()) {
-            violations.push(format!("{doc}: unsupported status {:?}", milestone.status));
-        }
-        if milestone.exit_criteria.trim().is_empty() {
+if milestone.exit_criteria.trim().is_empty() {
             violations.push(format!("{doc}: exit_criteria must not be empty"));
         }
         for dep in &milestone.depends_on {
@@ -212,10 +231,18 @@ mod tests {
     }
 
     fn entry(id: &str, status: &str, depends_on: &[&str]) -> MilestoneEntry {
+        let status_enum = match status {
+            "completed" => MilestoneStatus::Completed,
+            "in_progress" => MilestoneStatus::InProgress,
+            "pending" => MilestoneStatus::Pending,
+            "blocked" => MilestoneStatus::Blocked,
+            "deferred" => MilestoneStatus::Deferred,
+            _ => panic!("unknown status {status}"),
+        };
         MilestoneEntry {
             id: id.to_owned(),
             title: format!("title-{id}"),
-            status: status.to_owned(),
+            status: status_enum,
             issue: None,
             depends_on: depends_on.iter().map(|s| (*s).to_owned()).collect(),
             exit_criteria: "exit".to_owned(),
@@ -234,9 +261,18 @@ mod tests {
 
     #[test]
     fn rejects_unknown_status() {
-        let l = ledger(vec![entry("M2", "surprise", &[])]);
-        let violations = validate_milestone_ledger(&l);
-        assert!(violations.iter().any(|v| v.contains("unsupported status")));
+        // Unknown status in TOML should fail deserialization
+        let toml_text = r#"
+[[milestone]]
+id = "M2"
+title = "M2"
+status = "surprise"
+exit_criteria = "done"
+"#;
+        let result: Result<MilestoneLedger, _> = toml::from_str(toml_text);
+        assert!(result.is_err(), "deserialization should reject unknown status");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("unknown status"));
     }
 
     #[test]

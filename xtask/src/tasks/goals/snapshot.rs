@@ -190,7 +190,7 @@ fn load_milestone_candidates(
         .map(|m| MilestoneCandidate {
             id: m.id,
             title: m.title,
-            status: parse_status(&m.status),
+            status: m.status,
             issue: m.issue,
             depends_on: m.depends_on,
             exit_criteria: m.exit_criteria,
