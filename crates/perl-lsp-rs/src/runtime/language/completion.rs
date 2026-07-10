@@ -44,32 +44,50 @@ const UNCANCELLABLE_LOCAL_TOKEN_ID: JsonRpcId = JsonRpcId::Integer(-1);
 
 /// Test-only observer, notified exactly once the next time
 /// `handle_completion_cancellable` enters its analysis phase (the
-/// `if let Some(doc)` arm, before any provider work begins). Lets a
-/// regression test cancel a request deterministically *after* analysis has
-/// genuinely started, instead of guessing the timing with a fixed sleep.
-/// Mirrors `set_index_ready_wait_entered_observer` in `readiness.rs`.
+/// `if let Some(doc)` arm, before any provider work begins) *for the URI it
+/// was armed with*. Lets a regression test cancel a request deterministically
+/// *after* analysis has genuinely started, instead of guessing the timing
+/// with a fixed sleep. Mirrors `set_index_ready_wait_entered_observer` in
+/// `readiness.rs`, but keyed by URI: unlike readiness (a rare, mostly-
+/// synthetic wait path), every completion test that resolves an open
+/// document passes through this call site, so an unkeyed global slot could
+/// be consumed by an unrelated concurrent test's request and wake the
+/// canceller before the armed test's own analysis started (cubic
+/// review-run fbb70c75, discussion_r3560238397).
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-static COMPLETION_ANALYSIS_STARTED_OBSERVER: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> =
-    std::sync::Mutex::new(None);
+static COMPLETION_ANALYSIS_STARTED_OBSERVER: std::sync::Mutex<
+    Option<(String, std::sync::mpsc::Sender<()>)>,
+> = std::sync::Mutex::new(None);
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-pub(crate) fn set_completion_analysis_started_observer(sender: std::sync::mpsc::Sender<()>) {
+pub(crate) fn set_completion_analysis_started_observer(
+    uri: &str,
+    sender: std::sync::mpsc::Sender<()>,
+) {
     if let Ok(mut observer) = COMPLETION_ANALYSIS_STARTED_OBSERVER.lock() {
-        *observer = Some(sender);
+        *observer = Some((uri.to_string(), sender));
     }
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-fn notify_completion_analysis_started() {
-    let sender =
-        COMPLETION_ANALYSIS_STARTED_OBSERVER.lock().ok().and_then(|mut observer| observer.take());
+fn notify_completion_analysis_started(uri: &str) {
+    let sender = COMPLETION_ANALYSIS_STARTED_OBSERVER.lock().ok().and_then(|mut observer| {
+        // Only consume the slot for the URI it was armed with -- an
+        // unrelated concurrent test's request must not wake this one's
+        // canceller (leaves the slot untouched for its rightful owner).
+        if observer.as_ref().is_some_and(|(armed_uri, _)| armed_uri == uri) {
+            observer.take().map(|(_, tx)| tx)
+        } else {
+            None
+        }
+    });
     if let Some(sender) = sender {
         let _ = sender.send(());
     }
 }
 
 #[cfg(not(any(test, feature = "expose_lsp_test_api")))]
-fn notify_completion_analysis_started() {}
+fn notify_completion_analysis_started(_uri: &str) {}
 
 static SNIPPET_PLACEHOLDER_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 static SNIPPET_SIMPLE_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
@@ -1261,7 +1279,7 @@ impl LspServer {
             let _analyze_span =
                 crate::runtime::timing::ScopedSpan::start("provider.completion.analyze", uri);
             let response = if let Some(doc) = doc_owned.as_ref() {
-                notify_completion_analysis_started();
+                notify_completion_analysis_started(uri);
 
                 let offset = self.pos16_to_offset(doc, line, character);
                 let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
@@ -1920,7 +1938,7 @@ mod tests {
         crate::runtime::timing::capture::start();
 
         let (analysis_started_tx, analysis_started_rx) = std::sync::mpsc::channel();
-        set_completion_analysis_started_observer(analysis_started_tx);
+        set_completion_analysis_started_observer(uri, analysis_started_tx);
 
         let landed = Arc::new(AtomicBool::new(false));
         let canceller = {
