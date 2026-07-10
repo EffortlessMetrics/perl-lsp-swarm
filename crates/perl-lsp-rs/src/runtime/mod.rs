@@ -26,6 +26,7 @@ mod latency;
 mod lifecycle;
 mod notebook;
 pub(crate) mod outbound;
+pub(crate) mod parse_worker;
 #[cfg(feature = "workspace")]
 pub(crate) mod readiness;
 mod refresh;
@@ -205,6 +206,13 @@ pub struct LspServer {
     refresh_controller: refresh::RefreshController,
     /// Diagnostic publication debouncer (installed after Arc wrapping in Scheduler::new)
     diagnostic_debouncer: Mutex<Option<diagnostic_debounce::DiagnosticDebouncer>>,
+    /// Off-lock async parse worker (#3396 Phase 3), installed after Arc
+    /// wrapping in `Scheduler::new` (production) or explicitly by tests
+    /// that want to exercise the real async gap. `None` means the
+    /// synchronous fallback path is active -- see
+    /// `LspServer::install_default_parse_worker` and
+    /// `handle_did_change_with_cancellation`.
+    parse_worker_handle: Mutex<Option<Arc<parse_worker::ParseWorker>>>,
     /// File watcher change debouncer (installed after Arc wrapping in Scheduler::new)
     file_watcher_debouncer: Mutex<Option<file_watcher_debounce::FileWatcherDebouncer>>,
     /// Notebook document store (LSP 3.17)
@@ -1167,6 +1175,39 @@ impl LspServer {
             drop(guard);
             self.publish_diagnostics(uri);
         }
+    }
+
+    /// Install the off-lock async parse worker (#3396 Phase 3).
+    ///
+    /// Requires `Arc<Self>` because the worker's post-publish callback calls
+    /// back into `LspServer` methods (symbol reindex, diagnostics,
+    /// workspace index) from a background thread -- mirrors how
+    /// `Scheduler::new` builds the diagnostic debouncer's `publish_fn`
+    /// closure. Called from `Scheduler::new` for the production runtime
+    /// (the path a real editor's `didChange` traffic takes). Tests that
+    /// want to exercise the real async gap (rather than the #3589
+    /// forced test-only gap) call this explicitly on an `Arc<LspServer>`
+    /// they construct themselves; a bare `LspServer::new()` with no worker
+    /// installed keeps the synchronous fallback (`handle_did_change` parses
+    /// inline, exactly as before this PR).
+    pub(crate) fn install_default_parse_worker(self: &Arc<Self>) {
+        let cb_server = Arc::clone(self);
+        let on_published: Arc<dyn Fn(parse_worker::PublishedParseTicket) + Send + Sync> =
+            Arc::new(move |ticket: parse_worker::PublishedParseTicket| {
+                cb_server.run_post_parse_side_effects(ticket);
+            });
+        let worker = parse_worker::ParseWorker::spawn(
+            Arc::clone(&self.documents),
+            Arc::clone(&self.ast_cache),
+            on_published,
+        );
+        *self.parse_worker_handle.lock() = Some(Arc::new(worker));
+    }
+
+    /// The installed off-lock parse worker, if any. `None` means the
+    /// synchronous fallback path is active.
+    pub(crate) fn parse_worker(&self) -> Option<Arc<parse_worker::ParseWorker>> {
+        self.parse_worker_handle.lock().clone()
     }
 
     /// Install the file watcher debouncer (called from Scheduler::new after Arc wrapping).
