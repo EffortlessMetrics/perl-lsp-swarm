@@ -1447,4 +1447,80 @@ mod tests {
             );
         }
     }
+
+    // ---- Lifecycle: LspServer <-> ParseWorker must not form an Arc cycle -
+
+    /// End-to-end proof for #3618: `LspServer::install_default_parse_worker`
+    /// captures `Weak<LspServer>` (not `Arc<LspServer>`) in the worker's
+    /// `on_published` closure. Before that fix, the reference chain
+    /// `LspServer -> parse_worker_handle -> ParseWorker -> [4 worker
+    /// threads] -> on_published closure -> Arc<LspServer>` was a genuine
+    /// cycle: the server's strong count could never reach zero while the
+    /// worker threads were alive, and the worker threads never exit (they
+    /// only stop once `ParseWorker::drop` requests shutdown -- see
+    /// `impl Drop for ParseWorker` above -- which never runs because it is
+    /// only reachable through `LspServer`'s own drop). Both sides wait on
+    /// each other forever: a leak, not a deadlock in the panicking sense,
+    /// but nothing ever joins.
+    ///
+    /// This test drops the only strong `Arc<LspServer>` on a dedicated
+    /// thread and waits on a channel with a bounded timeout rather than
+    /// asserting synchronously in the test thread: if the cycle were still
+    /// present, `drop(server)` would never return (the field drop of
+    /// `parse_worker_handle` blocks inside `ParseWorker::drop`'s
+    /// `handle.join()` forever), and a bare `drop(server)` on the test
+    /// thread would hang the whole test binary instead of failing cleanly.
+    #[test]
+    fn dropping_the_server_joins_the_installed_parse_worker_threads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::mpsc;
+
+        let server = Arc::new(crate::runtime::LspServer::new());
+        server.install_default_parse_worker();
+        assert!(
+            server.parse_worker().is_some(),
+            "the real production worker must be installed before this test can \
+             prove anything about its shutdown behaviour"
+        );
+
+        // Exercise the worker for real through one full enqueue -> parse ->
+        // publish -> on_published cycle over the exact `Weak<LspServer>`
+        // wiring `install_default_parse_worker` uses in production -- not a
+        // synthetic callback like the other tests in this module. Proves
+        // the worker threads were live (holding their captured `cb_server`)
+        // immediately before the drop this test is actually about.
+        let uri = "file:///lifecycle_drop.pl";
+        server.test_apply_did_open(uri, "my $a = 1;\n", 1)?;
+        let normalized_uri = server.normalize_uri_key(uri);
+        let settled =
+            must_some(server.parse_worker()).wait_until_settled(&normalized_uri, TEST_TIMEOUT);
+        assert!(settled, "the initial open's parse must settle before this test drops the server");
+
+        // `Weak`, not a second `Arc` -- observing this must NOT keep the
+        // server alive; it only lets the test check, after the drop, that
+        // the server really was deallocated rather than merely having its
+        // strong count decremented by one of several outstanding refs.
+        let server_weak = Arc::downgrade(&server);
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            drop(server);
+            let _ = tx.send(());
+        });
+
+        assert!(
+            rx.recv_timeout(TEST_TIMEOUT).is_ok(),
+            "dropping the server's last Arc must complete within the timeout -- a hang \
+             here means `on_published` is still holding a strong Arc<LspServer>, which \
+             recreates the pre-#3618 LspServer<->ParseWorker reference cycle and leaks \
+             every worker thread"
+        );
+        assert!(
+            server_weak.upgrade().is_none(),
+            "the server must actually deallocate once its last strong Arc drops -- a \
+             lingering strong reference held by the parse worker's callback would keep \
+             it alive forever even if `drop()` itself happened to return"
+        );
+        Ok(())
+    }
 }
