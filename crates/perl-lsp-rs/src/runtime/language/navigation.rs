@@ -77,7 +77,17 @@ static NAVIGATION_SAME_DOC_FALLBACK_GAP: std::sync::Mutex<
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 fn wait_at_same_doc_fallback_gap() {
-    let hook = NAVIGATION_SAME_DOC_FALLBACK_GAP.lock().ok().and_then(|mut hook| hook.take());
+    // A poisoned mutex (some earlier test panicked while holding the lock)
+    // must not silently disable this synchronization point: `.lock().ok()`
+    // would turn `Err` into `None` and the gate would just not fire, so a
+    // later race test could false-pass without ever exercising the race it
+    // claims to prove. Recover the guard instead -- the hook slot's own
+    // invariants (armed at most once, consumed via `take()`) stay intact
+    // even if a prior holder panicked.
+    let hook = match NAVIGATION_SAME_DOC_FALLBACK_GAP.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
     if let Some((reached, resume)) = hook {
         let _ = reached.send(());
         let _ = resume.recv();
@@ -1943,6 +1953,55 @@ impl LspServer {
         serde_json::to_value(location).ok()
     }
 
+    /// Builds the fallback `doc_map` shared by `handle_type_definition` and
+    /// `handle_implementation`'s same-document TOCTOU fix (#3613).
+    ///
+    /// Both handlers capture the request document's ast/text under one lock
+    /// acquisition, then later re-read all open documents via
+    /// `documents_text_snapshot()` for the fallback cross-file scan.
+    ///
+    /// Consistency note: `documents_text_snapshot()` is a fresh, independent
+    /// lock acquisition, so in general it observes whatever generation of
+    /// each document is live *at this later point* -- not necessarily the
+    /// same generation `captured_text` captured. For every *other* open
+    /// document that's fine (the provider's cross-file scan is a heuristic,
+    /// name-based search with no offset dependency on the earlier capture).
+    /// For `uri` itself it is not: the caller's `ast` was parsed from
+    /// `captured_text`'s generation, and the provider converts the
+    /// request's line/character into a byte offset using
+    /// `documents.get(uri)` -- so searching that offset against a *fresher*
+    /// re-read of the same uri (if a `didChange` races in between the two
+    /// lock acquisitions) would pair a generation-N AST with generation-N+1
+    /// text for the same document, the exact single-instance/single-
+    /// generation invariant this off-lock pattern must preserve (mirrors
+    /// the references.rs fix, #3396 / a95ad72). `uri`'s own entry is
+    /// therefore pinned to `captured_text` (the exact generation captured
+    /// by the caller) instead of the live map; every other open document
+    /// still gets the freshest read.
+    ///
+    /// The pin is applied by an unconditional `insert` after the snapshot
+    /// is collected, not a substitute-in-place during the iteration: a
+    /// concurrent `didClose` racing between the caller's up-front capture
+    /// and this later re-read removes `uri` from
+    /// `documents_text_snapshot()` entirely, so substituting only when `k
+    /// == uri` is already present would silently drop `uri` from the map
+    /// instead of pinning it -- and the provider's `documents.get(uri)?`
+    /// would then return `None` (an empty result) even though a valid
+    /// captured snapshot exists. The unconditional `insert` restores `uri`
+    /// regardless of whether the live map still has it, closing that
+    /// residual TOCTOU window.
+    fn pinned_doc_map_for(&self, uri: &str, captured_text: &str) -> HashMap<String, String> {
+        // Test-only: pauses here (no-op in production) so a race
+        // regression test can apply a real edit (or close) to `uri` before
+        // the fallback re-reads `documents_text_snapshot()` below (#3613).
+        wait_at_same_doc_fallback_gap();
+
+        let mut doc_map: HashMap<String, String> =
+            self.documents_text_snapshot().into_iter().collect();
+        doc_map.insert(uri.to_string(), captured_text.to_string());
+        doc_map
+    }
+
     /// Handle textDocument/typeDefinition request
     pub(crate) fn handle_type_definition(
         &self,
@@ -2005,36 +2064,10 @@ impl LspServer {
                 (ast, doc.text.clone())
             };
 
-            // Test-only: pauses here (no-op in production) so a race
-            // regression test can apply a real edit to `uri` before the
-            // fallback re-reads `documents_text_snapshot()` below (#3613).
-            wait_at_same_doc_fallback_gap();
-
-            // Build doc_map outside the lock using snapshot helper.
-            //
-            // Consistency note: `documents_text_snapshot()` is a fresh, independent
-            // lock acquisition, so in general it observes whatever generation of
-            // each document is live *at this later point* -- not necessarily the
-            // same generation `doc_owned` (via `ast`/`doc_text` above) captured.
-            // For every *other* open document that's fine (the provider's
-            // cross-file scan is a heuristic, name-based search with no offset
-            // dependency on the earlier capture). For `uri` itself it is not:
-            // `ast` above was parsed from `doc_text`'s generation, and
-            // `find_type_definition` below converts the request's line/character
-            // into a byte offset using `documents.get(uri)` -- so searching that
-            // offset against a *fresher* re-read of the same uri (if a
-            // `didChange` races in between the two lock acquisitions) would pair
-            // a generation-N AST with generation-N+1 text for the same document,
-            // the exact single-instance/single-generation invariant this
-            // off-lock pattern must preserve (mirrors the references.rs fix,
-            // #3396 / a95ad72). `uri`'s own entry is therefore pinned to
-            // `doc_text` (the exact generation captured above) instead of the
-            // live map; every other open document still gets the freshest read.
-            let doc_map: HashMap<String, String> = self
-                .documents_text_snapshot()
-                .into_iter()
-                .map(|(k, v)| if k == uri { (k, doc_text.clone()) } else { (k, v) })
-                .collect();
+            // Build doc_map outside the lock, pinning `uri`'s own entry to
+            // the captured generation -- see `pinned_doc_map_for`'s
+            // doc-comment for why (#3613).
+            let doc_map = self.pinned_doc_map_for(uri, &doc_text);
 
             let provider = TypeDefinitionProvider::new();
             if let Some(locations) =
@@ -2176,30 +2209,12 @@ impl LspServer {
 
             #[cfg(feature = "workspace")]
             {
-                // Test-only: pauses here (no-op in production) so a race
-                // regression test can apply a real edit to `uri` before the
-                // fallback re-reads `documents_text_snapshot()` below (#3613).
-                wait_at_same_doc_fallback_gap();
-
-                // Build doc_map outside the lock using snapshot helper.
-                //
-                // Consistency note: mirrors the identical fix in
-                // `handle_type_definition` above (and the references.rs fix,
-                // #3396 / a95ad72). `find_implementations` below converts the
-                // request's line/character into a byte offset using
-                // `documents.get(uri)` and combines it with `ast` (parsed from
-                // `doc_text`'s generation, captured above) to compute the
-                // enclosing package at the cursor -- so `uri`'s own entry must
-                // stay pinned to `doc_text` rather than a fresher live re-read,
-                // or a `didChange` racing between the two lock acquisitions
-                // would pair a generation-N AST with generation-N+1 text for the
-                // same document. Every other open document still gets the
-                // freshest available read.
-                let doc_map: HashMap<String, String> = self
-                    .documents_text_snapshot()
-                    .into_iter()
-                    .map(|(k, v)| if k == uri { (k, doc_text.clone()) } else { (k, v) })
-                    .collect();
+                // Build doc_map outside the lock, pinning `uri`'s own entry
+                // to the captured generation -- mirrors
+                // `handle_type_definition` above; see `pinned_doc_map_for`'s
+                // doc-comment for why (#3613, and the references.rs fix,
+                // #3396 / a95ad72).
+                let doc_map = self.pinned_doc_map_for(uri, &doc_text);
 
                 // Wait for the workspace index to finish building before querying it.
                 // Without this, an implementation request while the index is in Building

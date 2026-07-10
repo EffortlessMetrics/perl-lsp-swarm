@@ -165,6 +165,85 @@ fn type_definition_fallback_pins_captured_generation_under_racing_didchange() ->
     Ok(())
 }
 
+/// `handle_type_definition`'s fallback must resolve `MyClass` from the
+/// CAPTURED ast/text pair even when a concurrent `didClose` removes `uri`
+/// from the live documents map entirely between the up-front capture and
+/// the fallback's `documents_text_snapshot()` re-read.
+///
+/// This is the residual TOCTOU instance the racing-`didChange` test above
+/// does not cover: `didChange` leaves `uri` present in the map (just at a
+/// fresher generation), but `didClose` removes it outright
+/// (`handle_did_close` -> `evict_open_document_session_state` ->
+/// `documents.remove(key)`). A fallback that only *substitutes* `uri`'s
+/// entry when the map iteration still yields it (rather than
+/// unconditionally pinning the captured snapshot) would silently drop
+/// `uri` from `doc_map`, and the provider's `documents.get(uri)?` would
+/// then return `None` -- an empty result -- even though the request
+/// already captured a perfectly valid document snapshot before the close
+/// raced in.
+#[test]
+fn type_definition_fallback_resolves_when_uri_closes_during_fallback_gap() -> TestResult {
+    let _guard = toctou_hook_lock().lock().map_err(|_| "toctou hook lock poisoned")?;
+
+    let server = Arc::new(fresh_server());
+    let uri = "file:///same_doc_toctou_type_definition_close_race.pl";
+
+    server.test_apply_did_open(uri, TYPE_DEF_BEFORE, 1)?;
+
+    let (line, character) =
+        find_pos(TYPE_DEF_BEFORE, "MyClass->new()").ok_or("MyClass->new() not found in fixture")?;
+
+    let (reached_tx, reached_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    server.test_set_navigation_same_doc_fallback_gap_hook(reached_tx, resume_rx);
+
+    let handler = {
+        let server = Arc::clone(&server);
+        thread::spawn(move || {
+            server.test_handle_type_definition(Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            })))
+        })
+    };
+
+    // Block (no sleep) until the handler has captured ast/doc_text and
+    // reached the gap right before it re-reads `documents_text_snapshot()`
+    // for the fallback.
+    reached_rx.recv().map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
+
+    // Race a real close into the SAME document while the handler is paused.
+    server.test_apply_did_close(uri)?;
+
+    // Release the handler.
+    resume_tx.send(()).map_err(|err| format!("failed to resume the paused handler: {err}"))?;
+
+    let result = handler.join().map_err(|_| "handler thread panicked")??;
+
+    let locations = result.as_ref().and_then(Value::as_array).ok_or_else(|| {
+        format!(
+            "expected a non-empty type-definition result resolved from the CAPTURED \
+             snapshot even though `uri` closed mid-flight; got: {result:?}"
+        )
+    })?;
+    assert!(
+        !locations.is_empty(),
+        "type-definition fallback must resolve `MyClass` using the captured ast/text pair \
+         even when a racing didClose removes `uri` from the live documents map before the \
+         fallback's documents_text_snapshot() re-read; got empty result: {result:?}"
+    );
+
+    let target_line = first_target_start_line(&result)
+        .ok_or("missing targetRange.start.line in LocationLink result")?;
+    assert_eq!(
+        target_line, 0,
+        "type-definition must resolve to 'package MyClass;' at line 0 of the captured text \
+         despite the racing didClose; got line {target_line}"
+    );
+
+    Ok(())
+}
+
 const IMPL_BEFORE: &str = "package Derived;\nuse parent 'Base';\nsub method { }\npackage Base;\nsub new { bless {}, shift }\npackage main;\nmy $obj = Derived->new();\n";
 
 /// Same source, but line 0 (`package Derived;`) is padded with 200 filler
@@ -246,6 +325,74 @@ fn implementation_fallback_pins_captured_generation_under_racing_didchange() -> 
          generation-0 text -- a fresher generation-1 re-read would misalign the ast-derived \
          offset against the padded line 0 and fail to resolve `Base`'s cursor position at all; \
          got line {target_line}"
+    );
+
+    Ok(())
+}
+
+/// `handle_implementation`'s fallback must resolve `Derived` as an
+/// implementor of `Base` from the CAPTURED ast/text pair even when a
+/// concurrent `didClose` removes `uri` from the live documents map
+/// entirely between the up-front capture and the fallback's
+/// `documents_text_snapshot()` re-read (see the type-definition sibling
+/// test above for why this is a distinct case from the racing-`didChange`
+/// test).
+#[test]
+fn implementation_fallback_resolves_when_uri_closes_during_fallback_gap() -> TestResult {
+    let _guard = toctou_hook_lock().lock().map_err(|_| "toctou hook lock poisoned")?;
+
+    let server = Arc::new(fresh_server());
+    let uri = "file:///same_doc_toctou_implementation_close_race.pl";
+
+    server.test_apply_did_open(uri, IMPL_BEFORE, 1)?;
+
+    let (line, character) =
+        find_pos(IMPL_BEFORE, "package Base;").ok_or("package Base; not found in fixture")?;
+    let character = character + u32::try_from("package ".len()).unwrap_or(0);
+
+    let (reached_tx, reached_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    server.test_set_navigation_same_doc_fallback_gap_hook(reached_tx, resume_rx);
+
+    let handler = {
+        let server = Arc::clone(&server);
+        thread::spawn(move || {
+            server.test_handle_implementation(Some(json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": character }
+            })))
+        })
+    };
+
+    reached_rx.recv().map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
+
+    // Race a real close into the SAME document while the handler is paused.
+    server.test_apply_did_close(uri)?;
+
+    resume_tx.send(()).map_err(|err| format!("failed to resume the paused handler: {err}"))?;
+
+    let result = handler.join().map_err(|_| "handler thread panicked")??;
+
+    let locations = result.as_ref().and_then(Value::as_array).ok_or_else(|| {
+        format!(
+            "expected a non-empty implementation result resolved from the CAPTURED \
+             snapshot even though `uri` closed mid-flight; got: {result:?}"
+        )
+    })?;
+    assert!(
+        !locations.is_empty(),
+        "implementation fallback must resolve `Derived` as an implementor of `Base` using \
+         the captured ast/text pair even when a racing didClose removes `uri` from the live \
+         documents map before the fallback's documents_text_snapshot() re-read; got empty \
+         result: {result:?}"
+    );
+
+    let target_line = first_target_start_line(&result)
+        .ok_or("missing targetRange.start.line in LocationLink result")?;
+    assert_eq!(
+        target_line, 0,
+        "implementation must resolve to 'package Derived;' at line 0 of the captured text \
+         despite the racing didClose; got line {target_line}"
     );
 
     Ok(())
