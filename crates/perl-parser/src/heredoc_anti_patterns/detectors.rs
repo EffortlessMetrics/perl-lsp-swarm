@@ -227,8 +227,13 @@ impl PatternDetector for BeginTimeHeredocDetector {
 struct DynamicDelimiterDetector;
 
 /// Pattern for identifying dynamic heredoc delimiters
+///
+/// Length-bound character classes (`{1,2000}`) cap worst-case scan cost per attempt
+/// while preserving multi-line detection ability. The `regex` crate's NFA engine
+/// cannot exhibit catastrophic backtracking, but explicit bounds are honest
+/// defense-in-depth against a future engine swap and document intent clearly.
 static DYNAMIC_DELIMITER_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}]+\}|<<\s*\$\w+|<<\s*`[^`]+`") {
+    LazyLock::new(|| match Regex::new(r"<<\s*\$\{[^}]{1,2000}\}|<<\s*\$\w+|<<\s*`[^`]{1,2000}`") {
         Ok(re) => re,
         Err(_) => unreachable!("DYNAMIC_DELIMITER_PATTERN regex failed to compile"),
     });
@@ -333,8 +338,11 @@ impl PatternDetector for SourceFilterDetector {
 struct RegexHeredocDetector;
 
 /// Pattern for identifying heredocs inside regex code blocks
+///
+/// `[^}]{0,2000}` caps worst-case scan cost per attempt while preserving
+/// multi-line detection (heredoc content can span lines).
 static REGEX_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r"\(\?\{[^}]*<<[^}]*\}") {
+    LazyLock::new(|| match Regex::new(r"\(\?\{[^}]{0,2000}<<[^}]{0,2000}\}") {
         Ok(re) => re,
         Err(_) => unreachable!("REGEX_HEREDOC_PATTERN regex failed to compile"),
     });
@@ -383,11 +391,15 @@ impl PatternDetector for RegexHeredocDetector {
 struct EvalHeredocDetector;
 
 /// Pattern for identifying heredocs inside eval strings
-static EVAL_HEREDOC_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| match Regex::new(r#"eval\s+(?:'[^']*<<[^']*'|"[^"]*<<[^"]*")"#) {
+///
+/// `[^']{0,2000}` and `[^"]{0,2000}` cap worst-case scan cost per attempt
+/// while preserving multi-line detection (eval strings with heredocs span lines).
+static EVAL_HEREDOC_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    match Regex::new(r#"eval\s+(?:'[^']{0,2000}<<[^']{0,2000}'|"[^"]{0,2000}<<[^"]{0,2000}")"#) {
         Ok(re) => re,
         Err(_) => unreachable!("EVAL_HEREDOC_PATTERN regex failed to compile"),
-    });
+    }
+});
 
 impl PatternDetector for EvalHeredocDetector {
     fn detect(
