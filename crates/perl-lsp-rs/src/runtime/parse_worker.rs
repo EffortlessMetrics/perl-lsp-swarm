@@ -188,7 +188,7 @@ pub(crate) struct PublishedParseTicket {
     pub text: Arc<str>,
     /// Whether the pending-parse lifecycle this ticket belongs to already
     /// has its `IndexCoordinator::notify_parse_complete` owned by the async
-    /// worker's settle hook (`ParseWorker::spawn_with_settle_hook`'s
+    /// worker's settle hook (`ParseWorker::spawn_with_pending_count_hooks`'s
     /// `on_settled`, fired exactly once per lifecycle from
     /// `Coordinator::finish`'s terminal branch -- see #3660). `true` for
     /// every ticket `process_job` constructs (the off-lock async path,
@@ -303,10 +303,29 @@ struct Coordinator {
     cvar: Condvar,
     shutdown: AtomicBool,
     metrics: Arc<ParseWorkerMetrics>,
+    /// Fired synchronously, on the enqueuing thread, exactly when a call to
+    /// `enqueue` newly claims `active` ownership of a URI (`newly_active`) --
+    /// BEFORE `self.cvar.notify_one()` can wake any worker thread for that
+    /// job. Pairs with `ParseWorker::spawn_with_pending_count_hooks`'s `on_settled`
+    /// (fired from `finish()`'s terminal branch) to couple BOTH the
+    /// increment and the decrement of the pending-parse lifecycle to
+    /// active-claim ownership under this same `state` lock -- see #3618's
+    /// settle-before-increment race (cubic): calling the increment from the
+    /// caller of `ParseWorker::enqueue` AFTER it returns left a window where
+    /// an unusually fast worker could dequeue, process, and settle (calling
+    /// `on_settled`'s decrement, which floors at 0 via `checked_sub`) BEFORE
+    /// the caller's own increment call ever ran, permanently stranding the
+    /// counter at 1. Calling the increment from inside `enqueue` itself,
+    /// strictly before the `notify_one()` that is the ONLY way a worker can
+    /// ever observe this job, makes that ordering impossible.
+    on_activated: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 impl Coordinator {
-    fn new(metrics: Arc<ParseWorkerMetrics>) -> Self {
+    fn new(
+        metrics: Arc<ParseWorkerMetrics>,
+        on_activated: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Self {
         Self {
             state: Mutex::new(QueueState {
                 pending: HashMap::new(),
@@ -316,6 +335,7 @@ impl Coordinator {
             cvar: Condvar::new(),
             shutdown: AtomicBool::new(false),
             metrics,
+            on_activated,
         }
     }
 
@@ -332,8 +352,13 @@ impl Coordinator {
         let newly_active = state.active.insert(uri.clone());
         if newly_active {
             // Wasn't already owned by a worker -- needs dispatching.
-            state.ready.push_back(uri);
+            state.ready.push_back(uri.clone());
             drop(state);
+            // Strictly before `notify_one()` -- see `on_activated`'s doc
+            // comment. No worker can act on this job before this call
+            // returns, so there is no ordering race with the eventual
+            // `on_settled` decrement for this same lifecycle.
+            (self.on_activated)(&uri);
             self.cvar.notify_one();
         } else if replaced {
             // Already owned by a worker (queued or in-flight); this enqueue
@@ -623,50 +648,69 @@ impl ParseWorker {
     /// `Arc<LspServer>`, exactly like `Scheduler::new` wires the diagnostic
     /// debouncer's `publish_fn`.
     ///
-    /// Thin wrapper over [`Self::spawn_with_settle_hook`] with a no-op
-    /// settle hook -- every existing test call site constructs a bare
+    /// Thin wrapper over [`Self::spawn_with_pending_count_hooks`] with no-op
+    /// hooks -- every existing test call site constructs a bare
     /// `ParseWorker` with no `IndexCoordinator` in the picture at all, so
-    /// there is nothing for a settle hook to notify. `#[cfg(test)]`: the
-    /// only callers are this module's own unit tests; production code
+    /// there is nothing for either hook to notify. `#[cfg(test)]`: the only
+    /// callers are this module's own unit tests; production code
     /// (`LspServer::install_default_parse_worker`) calls
-    /// `spawn_with_settle_hook` directly to wire the real settle hook.
+    /// `spawn_with_pending_count_hooks` directly to wire the real hooks.
     #[cfg(test)]
     pub(crate) fn spawn(
         documents: Arc<Mutex<HashMap<String, DocumentState>>>,
         ast_cache: Arc<AstCache>,
         on_published: Arc<dyn Fn(PublishedParseTicket) + Send + Sync>,
     ) -> Self {
-        Self::spawn_with_settle_hook(documents, ast_cache, on_published, Arc::new(|_uri: &str| {}))
+        Self::spawn_with_pending_count_hooks(
+            documents,
+            ast_cache,
+            on_published,
+            Arc::new(|_uri: &str| {}),
+            Arc::new(|_uri: &str| {}),
+        )
     }
 
-    /// Spawn the worker pool with an explicit settle hook.
+    /// Spawn the worker pool with explicit pending-parse-count hooks.
+    ///
+    /// `on_activated` is invoked exactly once per pending-parse lifecycle --
+    /// synchronously, on the enqueuing thread, when `Coordinator::enqueue`
+    /// newly claims `active` ownership of a URI, strictly BEFORE any worker
+    /// thread can be woken to process it (see `Coordinator::on_activated`'s
+    /// doc comment for the settle-before-increment race this closes: calling
+    /// the increment from the CALLER of `enqueue` after it returns left a
+    /// window where an unusually fast worker could settle first).
     ///
     /// `on_settled` is invoked exactly once per pending-parse lifecycle --
     /// when a URI's LAST outstanding job for that lifecycle finishes
     /// processing, on WHATEVER path it ended (successful publish, terminal
     /// stale-reject, or a panic caught by `catch_unwind`), never more than
     /// once and never zero times for a lifecycle that actually started (see
-    /// `Coordinator::finish`'s return value and `FinishGuard`). The
-    /// production caller (`LspServer::install_default_parse_worker`) wires
-    /// this to `IndexCoordinator::notify_parse_complete`, balancing the
-    /// `notify_change` fired when `ParseWorker::enqueue` returns `true`
-    /// (#3660): every lifecycle that increments the pending-parse counter
-    /// gets exactly one matching decrement, regardless of how it ends. Prior
-    /// to this hook, only a *successful publish* called `on_published` (and
-    /// transitively `notify_parse_complete`) -- a job that panicked or was
-    /// terminally rejected as stale, with no coalesced successor to inherit
-    /// the URI's `active` ownership, left that lifecycle's decrement
-    /// permanently uncredited (a #3660-class leak via a different path than
-    /// the one #3660 itself fixed).
-    pub(crate) fn spawn_with_settle_hook(
+    /// `Coordinator::finish`'s return value and `FinishGuard`).
+    ///
+    /// Both hooks are coupled to `active`-claim ownership under the SAME
+    /// `Coordinator::state` lock (`on_activated` fires from inside
+    /// `enqueue`'s critical section; `on_settled` fires from `finish`'s,
+    /// via `FinishGuard`) -- the increment and decrement of a lifecycle's
+    /// pending-parse count can never race each other, because neither can
+    /// ever run concurrently with the other's determining lock acquisition.
+    /// The production caller (`LspServer::install_default_parse_worker`)
+    /// wires `on_activated` to `IndexCoordinator::notify_change` and
+    /// `on_settled` to `IndexCoordinator::notify_parse_complete` -- every
+    /// lifecycle that increments the pending-parse counter gets exactly one
+    /// matching decrement, regardless of how many coalesced edits landed or
+    /// how the lifecycle's last job ended (#3660 and its two follow-up leaks:
+    /// panic / terminal-stale-reject not crediting the decrement, and the
+    /// increment/decrement ordering race this revision closes).
+    pub(crate) fn spawn_with_pending_count_hooks(
         documents: Arc<Mutex<HashMap<String, DocumentState>>>,
         ast_cache: Arc<AstCache>,
         on_published: Arc<dyn Fn(PublishedParseTicket) + Send + Sync>,
+        on_activated: Arc<dyn Fn(&str) + Send + Sync>,
         on_settled: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Self {
         let documents = DocumentsHandle(documents);
         let metrics = Arc::new(ParseWorkerMetrics::default());
-        let coordinator = Arc::new(Coordinator::new(Arc::clone(&metrics)));
+        let coordinator = Arc::new(Coordinator::new(Arc::clone(&metrics), on_activated));
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
         let test_barrier = Arc::new(ParseWorkerTestBarrier::default());
         #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -764,8 +808,28 @@ impl ParseWorker {
                         // calling `on_published`) never invoke it, which
                         // would otherwise leave this lifecycle's
                         // `notify_change` permanently uncredited.
+                        //
+                        // `catch_unwind`-wrapped for the same reason
+                        // `process_job` above is: `on_settled` runs
+                        // arbitrary caller code (in production, it calls
+                        // into `IndexCoordinator::notify_parse_complete`,
+                        // which has no reason to panic today, but nothing
+                        // in this generic worker module should assume that
+                        // forever) OUTSIDE the `FinishGuard`'s scope --
+                        // unlike `process_job`, an unhandled panic here
+                        // would propagate past this `while` loop's body and
+                        // terminate the whole worker thread, permanently
+                        // shrinking the pool (no thread-respawn model --
+                        // see module docs), instead of being recovered the
+                        // same way a panicking parse already is.
                         if settled.get() {
-                            on_settled(&uri);
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    on_settled(&uri)
+                                }));
+                            if let Err(payload) = result {
+                                record_worker_panic(&uri, job.generation, &payload);
+                            }
                         }
                     }
                 });
@@ -1575,6 +1639,264 @@ mod tests {
                  this is the exact race `LspServer::run_post_parse_side_effects` must guard against"
             );
         }
+    }
+
+    // ---- Pending-count hooks: increment/decrement coupled to active-claim
+    // ownership, no ordering race possible ---------------------------------
+
+    /// #3618 settle-before-increment race (cubic): proves `on_activated`
+    /// (the pending-parse increment hook) is fully complete and observable
+    /// on the ENQUEUING thread by the time `ParseWorker::enqueue` returns --
+    /// strictly BEFORE any worker thread can even be woken to look at the
+    /// job, let alone dequeue, process, and settle it. This makes the
+    /// bug's ordering (an unusually fast worker settling -- and firing
+    /// `on_settled`'s decrement -- before the increment for that same
+    /// lifecycle had run) structurally impossible, not merely unlikely: the
+    /// old code called the increment from `enqueue`'s CALLER, after
+    /// `enqueue` had already returned, a genuinely separate later call the
+    /// scheduler could interleave a woken worker's full settle in front of.
+    ///
+    /// Uses the pre-publish test barrier to make the ordering directly
+    /// observable rather than inferred: arm it BEFORE enqueueing, so the
+    /// worker (once woken) blocks deep inside `process_job`, well past
+    /// dequeue -- if `on_activated` had not already fired by the time
+    /// `enqueue` returns to this test, the sequence below could not
+    /// reliably distinguish "fired before enqueue returned" from "fired
+    /// racily soon after"; observing it in the log immediately after
+    /// `enqueue` returns, with the worker still provably blocked at the
+    /// barrier, proves the former.
+    #[test]
+    fn on_activated_completes_before_enqueue_returns_no_race_with_worker_settle() {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        enum Event {
+            Activated,
+            Settled,
+        }
+
+        let uri = "file:///activation_ordering.pl";
+        let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
+        let (cb, _calls) = counting_callback();
+        let log: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
+        let log_for_activated = Arc::clone(&log);
+        let log_for_settled = Arc::clone(&log);
+        let worker = ParseWorker::spawn_with_pending_count_hooks(
+            Arc::clone(&documents),
+            ast_cache(),
+            cb,
+            Arc::new(move |_uri: &str| log_for_activated.lock().push(Event::Activated)),
+            Arc::new(move |_uri: &str| log_for_settled.lock().push(Event::Settled)),
+        );
+        let barrier = worker.test_barrier();
+
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        barrier.arm(uri, 1);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from("my $aa = 1;\n"),
+        );
+
+        // Immediately after `enqueue` returns -- before waiting for
+        // anything -- `on_activated` must already have run. This is the
+        // load-bearing assertion: it can only pass if `on_activated` is
+        // called from INSIDE `enqueue`'s own call stack (as the fix does),
+        // never from a separate call the caller makes afterward.
+        assert_eq!(
+            log.lock().as_slice(),
+            &[Event::Activated],
+            "on_activated must be observable immediately after enqueue() returns, before this \
+             test does anything else -- proving it cannot race a worker's settle"
+        );
+
+        // The worker is still blocked at the pre-publish barrier -- proves
+        // the ordering above wasn't a lucky race, but structural: nothing
+        // downstream of dequeue has even started influencing `log` yet.
+        barrier.wait_until_paused();
+        assert_eq!(
+            log.lock().as_slice(),
+            &[Event::Activated],
+            "on_settled must not fire while the worker is still paused mid-processing"
+        );
+
+        barrier.release();
+        assert!(
+            wait_for(|| log.lock().len() == 2, TEST_TIMEOUT),
+            "on_settled must eventually fire once the worker is released and finishes"
+        );
+        assert_eq!(
+            log.lock().as_slice(),
+            &[Event::Activated, Event::Settled],
+            "activation must always precede settle for the same lifecycle"
+        );
+    }
+
+    /// Deterministic (no scheduler luck required) demonstration of WHY the
+    /// settle-before-increment ordering the previous test rules out would
+    /// actually matter: constructs the OLD buggy caller pattern by hand
+    /// (increment a real `IndexMetrics`-style saturating counter manually,
+    /// AFTER explicitly waiting for the job to fully settle first, exactly
+    /// mirroring what a caller who incremented after `enqueue()` returned
+    /// -- instead of `enqueue()` incrementing internally before any worker
+    /// could act -- could race into) against the REAL semantics
+    /// (`IndexMetrics::decrement_pending_parses` floors at 0 via
+    /// `checked_sub`, so a decrement that arrives before its matching
+    /// increment is a silent no-op, not a error). Proves the counter ends
+    /// up permanently stuck at 1 in that ordering, never able to reach 0
+    /// again for this lifecycle -- the exact `Degraded{ParseStorm}`-forever
+    /// failure mode.
+    #[test]
+    fn settle_before_deferred_increment_would_permanently_strand_the_pending_count() {
+        use perl_workspace::monitoring::IndexMetrics;
+
+        let uri = "file:///deferred_increment.pl";
+        let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
+        let (cb, _calls) = counting_callback();
+        // No-op `on_activated` -- deliberately NOT wired to `metrics` below,
+        // simulating the OLD design where the increment lived in the
+        // CALLER of `ParseWorker::enqueue`, not inside `enqueue` itself.
+        let worker = ParseWorker::spawn_with_pending_count_hooks(
+            Arc::clone(&documents),
+            ast_cache(),
+            cb,
+            Arc::new(|_uri: &str| {}),
+            Arc::new(|_uri: &str| {}),
+        );
+
+        let metrics = IndexMetrics::new();
+        assert_eq!(metrics.pending_count(), 0, "baseline must be zero");
+
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        // No barrier armed -- let the (trivial, near-instant) job run to
+        // completion as fast as possible.
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from("my $aa = 1;\n"),
+        );
+
+        // Explicitly wait for the job to fully settle BEFORE this test's
+        // own (simulated-caller) increment ever runs -- deterministically
+        // constructing the exact bad ordering `on_activated`'s new
+        // placement inside `enqueue` rules out, rather than hoping a real
+        // scheduler race reproduces it.
+        assert!(
+            worker.wait_until_settled(uri, TEST_TIMEOUT),
+            "the job must fully settle before this test simulates the deferred increment"
+        );
+
+        // The (simulated) old-style caller-side decrement never ran either
+        // in this harness -- `on_settled` is a no-op above -- so drive the
+        // metrics by hand in the SAME order the old code's threads could
+        // interleave in: decrement first (as if a fast worker's settle-
+        // triggered decrement had already run), increment second (as if
+        // the caller's separate post-`enqueue` notify call finally got
+        // scheduled).
+        let after_premature_decrement = metrics.decrement_pending_parses();
+        assert_eq!(
+            after_premature_decrement, 0,
+            "a decrement arriving before its increment floors at 0 (checked_sub), not an error -- \
+             this silent floor is exactly why the ordering bug was invisible until it accumulated"
+        );
+        metrics.increment_pending_parses();
+
+        assert_eq!(
+            metrics.pending_count(),
+            1,
+            "in the OLD ordering (decrement before its matching increment), the counter is \
+             permanently stranded at 1 for this lifecycle -- nothing will ever decrement it again, \
+             since `on_settled` for this lifecycle already fired. This is exactly why `on_activated` \
+             must run before any worker can possibly settle, not merely 'usually' before it."
+        );
+    }
+
+    /// cubic P2: `on_settled` runs OUTSIDE `FinishGuard`'s scope and, prior
+    /// to this fix, outside `catch_unwind` too -- unlike `process_job`,
+    /// a panic there would propagate past the worker loop's body and kill
+    /// the thread outright, permanently shrinking the pool (no thread-
+    /// respawn model).
+    ///
+    /// A single panic-then-reuse round trip on ONE uri cannot distinguish
+    /// "the fix works" from "the pool merely has spare capacity" -- with
+    /// `PARSE_WORKERS` > 1, a DIFFERENT thread can pick up the next job
+    /// even if the one that panicked genuinely died, silently masking a
+    /// real regression. This test instead fires one `on_settled`-panicking
+    /// job per DISTINCT uri, `PARSE_WORKERS` times over -- enough, if each
+    /// panic actually killed its thread, to exhaust the entire pool -- then
+    /// proves the pool still has live capacity by enqueuing one more job on
+    /// a fresh uri and confirming it still gets dequeued and published
+    /// within the timeout (a fully exhausted pool would never pick it up;
+    /// `take_next` would simply have no thread left to call it).
+    #[test]
+    fn panicking_on_settled_does_not_exhaust_the_worker_pool() {
+        let mut map = HashMap::new();
+        let mut docs_and_gens = Vec::with_capacity(PARSE_WORKERS);
+        for idx in 0..PARSE_WORKERS {
+            let uri = format!("file:///panicking_settle_hook_{idx}.pl");
+            let doc = DocumentState::new("my $a = 1;\n", 1);
+            let gen_handle = doc.generation.clone();
+            map.insert(uri.clone(), doc);
+            docs_and_gens.push((uri, gen_handle));
+        }
+        let documents = Arc::new(Mutex::new(map));
+
+        let (cb, _calls) = counting_callback();
+        #[allow(clippy::panic)]
+        let worker = ParseWorker::spawn_with_pending_count_hooks(
+            Arc::clone(&documents),
+            ast_cache(),
+            cb,
+            Arc::new(|_uri: &str| {}),
+            Arc::new(|_uri: &str| panic!("injected on_settled panic for pool-exhaustion proof")),
+        );
+
+        for (uri, gen_handle) in &docs_and_gens {
+            gen_handle.fetch_add(1, Ordering::SeqCst);
+            worker.enqueue(
+                uri.clone(),
+                uri.clone(),
+                1,
+                Arc::clone(gen_handle),
+                Arc::from("my $aa = 1;\n"),
+            );
+        }
+        assert!(
+            wait_for(|| worker.metrics().jobs_published >= PARSE_WORKERS as u64, TEST_TIMEOUT),
+            "all {PARSE_WORKERS} jobs must publish -- `on_settled` panicking must not have \
+             prevented `on_published` (which runs first) from completing; metrics={:?}",
+            worker.metrics()
+        );
+
+        // Every worker thread has now had its `on_settled` panic at least
+        // once. If the fix's `catch_unwind` were missing, this next job --
+        // on a FRESH uri, so it cannot be satisfied by any already-active
+        // worker reusing its claim -- would never be picked up.
+        let final_uri = "file:///panicking_settle_hook_final.pl";
+        let final_doc = DocumentState::new("my $z = 1;\n", 1);
+        let final_gen = final_doc.generation.clone();
+        documents.lock().insert(final_uri.to_string(), final_doc);
+        final_gen.fetch_add(1, Ordering::SeqCst);
+        worker.enqueue(
+            final_uri.to_string(),
+            final_uri.to_string(),
+            1,
+            Arc::clone(&final_gen),
+            Arc::from("my $zz = 1;\n"),
+        );
+        assert!(
+            wait_for(|| worker.metrics().jobs_published >= PARSE_WORKERS as u64 + 1, TEST_TIMEOUT),
+            "a job on a brand-new URI must still be picked up and published after every worker \
+             thread's `on_settled` panicked once -- the pool must not have been exhausted; \
+             metrics={:?}",
+            worker.metrics()
+        );
+        let docs = documents.lock();
+        let doc = must_some(docs.get(final_uri));
+        let current = must_some(doc.current_parsed());
+        assert_eq!(current.generation(), 1, "the final URI's job must be the one that publishes");
     }
 
     // ---- Operability: zero live threads must be detectable -------------

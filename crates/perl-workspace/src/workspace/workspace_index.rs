@@ -1797,7 +1797,20 @@ impl WorkspaceIndex {
         text.hash(&mut hasher);
         let content_hash = hasher.finish();
 
-        // Check if content is unchanged (early-exit optimization)
+        // Check if content is unchanged (early-exit optimization), and --
+        // still under the SAME `files.write()` guard -- update
+        // `document_store`. `document_store` has its own, entirely separate
+        // internal lock (`DocumentStore::documents: Arc<RwLock<..>>`, no
+        // cross-reference to `self.files`), so holding `files.write()`
+        // across both the generation check AND the `document_store` write
+        // does not risk any lock-ordering deadlock; it makes the two
+        // genuinely atomic with respect to any other writer of this URI's
+        // entry, closing the race outright rather than narrowing it (an
+        // earlier revision applied this same generation check here but
+        // released `files.write()` before the `document_store` write,
+        // leaving a real, if nanosecond-scale, window a stale out-of-order
+        // task could still land in -- flagged again by factory-droid on
+        // PR #3618 after that partial fix).
         let key = DocumentStore::uri_key(&uri_str);
         {
             let mut files = self.files.write();
@@ -1810,26 +1823,23 @@ impl WorkspaceIndex {
                 // Same monotonic generation guard as the one under the later
                 // `files.write()` block below (see its doc comment for the
                 // full out-of-order-completion race this closes) -- applied
-                // here too, BEFORE the `document_store` write below, so a
-                // stale out-of-order task can't overwrite `document_store`'s
-                // text with older content even when it's correctly rejected
-                // from `self.files` by the later guard. This early check is
-                // NOT atomic with the `document_store` write (the lock is
-                // released in between), so it narrows the race window rather
-                // than closing it outright -- the later, insert-atomic guard
-                // remains the authoritative one for `self.files` itself.
+                // here too so a stale out-of-order task can't overwrite
+                // `document_store`'s text with older content even when it's
+                // correctly rejected from `self.files` by the later guard.
                 if generation > 0 && existing_index.generation > 0 && existing_index.generation > generation
                 {
                     return Ok(());
                 }
             }
-        }
 
-        // Update document store
-        if self.document_store.is_open(&uri_str) {
-            self.document_store.update(&uri_str, 1, text.clone());
-        } else {
-            self.document_store.open(uri_str.clone(), 1, text.clone());
+            // Update document store -- still holding `files.write()`, so no
+            // other writer of this URI can observe a partial state between
+            // the generation check above and this write.
+            if self.document_store.is_open(&uri_str) {
+                self.document_store.update(&uri_str, 1, text.clone());
+            } else {
+                self.document_store.open(uri_str.clone(), 1, text.clone());
+            }
         }
 
         // Parse the file

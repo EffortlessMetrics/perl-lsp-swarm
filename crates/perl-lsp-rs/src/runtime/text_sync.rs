@@ -712,25 +712,24 @@ impl LspServer {
                             }
                         }
 
-                        // Notify coordinator of pending change (tracks parse
-                        // storm) ONLY when this edit establishes a NEW
-                        // pending-parse lifecycle for the URI, not on every
-                        // coalescing edit into an already-outstanding one --
-                        // see the doc comment on `ParseWorker::enqueue`'s
-                        // return value (#3660).
-                        let is_new_lifecycle = worker.enqueue(
+                        // Coordinator notification for a NEW pending-parse
+                        // lifecycle (tracks parse storm) is fired from
+                        // INSIDE `enqueue` itself (`Coordinator::on_activated`,
+                        // wired in `install_default_parse_worker`), not from
+                        // here after `enqueue` returns -- calling it from
+                        // this caller left a window where an unusually fast
+                        // worker could dequeue, process, and settle (its
+                        // decrement) before this call ever ran, permanently
+                        // stranding the pending-parse counter (#3618 settle-
+                        // before-increment race). `enqueue`'s return value
+                        // is no longer needed by this caller.
+                        worker.enqueue(
                             uri.to_string(),
                             normalized_uri,
                             next_gen,
                             generation_handle,
                             Arc::from(text.as_str()),
                         );
-                        if is_new_lifecycle {
-                            #[cfg(feature = "workspace")]
-                            if let Some(coordinator) = self.coordinator() {
-                                coordinator.notify_change(uri);
-                            }
-                        }
 
                         return Ok(());
                     }

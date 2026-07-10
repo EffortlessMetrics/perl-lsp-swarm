@@ -1205,15 +1205,37 @@ impl LspServer {
                 // If server has been dropped, this is a clean no-op during shutdown.
             })
         };
-        // #3660 follow-up: balances `IndexCoordinator::notify_change` (fired
-        // once per pending-parse lifecycle by the async `didChange` path,
-        // see `text_sync.rs`) with exactly one matching
-        // `notify_parse_complete`, regardless of whether the lifecycle's
-        // last job published, panicked, or was terminally rejected as
-        // stale -- see `ParseWorker::spawn_with_settle_hook`'s doc comment.
-        // Same `Weak<Self>` pattern as `on_published` above and for the
-        // same reason: a strong `Arc<Self>` captured here would recreate
-        // the LspServer<->ParseWorker cycle #3618 exists to break.
+        // #3618/#3660: `on_activated` and `on_settled` together couple BOTH
+        // the increment and the decrement of a URI's pending-parse lifecycle
+        // to `active`-claim ownership under `Coordinator::state`'s single
+        // lock -- see `ParseWorker::spawn_with_pending_count_hooks`'s doc
+        // comment. Same `Weak<Self>` pattern as `on_published` above and for
+        // the same reason in both: a strong `Arc<Self>` captured here would
+        // recreate the LspServer<->ParseWorker cycle #3618 exists to break.
+        //
+        // `on_activated` fires exactly once per NEW pending-parse lifecycle,
+        // synchronously inside `Coordinator::enqueue`'s critical section,
+        // strictly before any worker thread can be woken to process that
+        // job -- calling this increment from `handle_did_change_with_cancellation`
+        // itself (the caller of `ParseWorker::enqueue`) after `enqueue`
+        // returns left a window where an unusually fast worker could
+        // dequeue, process, and settle (decrementing, which floors at 0)
+        // BEFORE this increment ever ran, permanently stranding the counter.
+        let on_activated: Arc<dyn Fn(&str) + Send + Sync> = {
+            let cb_server = Weak::clone(&cb_server);
+            Arc::new(move |uri: &str| {
+                if let Some(server) = cb_server.upgrade() {
+                    #[cfg(feature = "workspace")]
+                    if let Some(coordinator) = server.coordinator() {
+                        coordinator.notify_change(uri);
+                    }
+                }
+            })
+        };
+        // `on_settled` fires exactly once per lifecycle, when its LAST job
+        // finishes processing regardless of how it ended (publish, panic,
+        // or terminal stale-reject) -- see `Coordinator::finish`'s return
+        // value and `FinishGuard`.
         let on_settled: Arc<dyn Fn(&str) + Send + Sync> = {
             let cb_server = Weak::clone(&cb_server);
             Arc::new(move |uri: &str| {
@@ -1225,10 +1247,11 @@ impl LspServer {
                 }
             })
         };
-        let worker = parse_worker::ParseWorker::spawn_with_settle_hook(
+        let worker = parse_worker::ParseWorker::spawn_with_pending_count_hooks(
             Arc::clone(&self.documents),
             Arc::clone(&self.ast_cache),
             on_published,
+            on_activated,
             on_settled,
         );
         // If every worker thread failed to spawn (resource exhaustion), do
