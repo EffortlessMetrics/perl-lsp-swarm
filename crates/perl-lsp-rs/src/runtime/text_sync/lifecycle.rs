@@ -82,11 +82,13 @@ impl LspServer {
             let documents = self.documents.lock();
             if let Some(doc) = self.get_document(&documents, &normalized_uri) {
                 let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     // `parsed` is guaranteed `Some` here since `ast` was
                     // derived from it.
                     let empty_errors: Arc<[perl_parser::error::ParseError]> = Arc::from([]);
-                    let parse_errors = parsed.as_ref().map_or(&empty_errors, |p| &p.parse_errors);
+                    let parse_errors = parsed
+                        .as_ref()
+                        .map_or_else(|| empty_errors.clone(), |p| p.parse_errors_arc());
                     // Run diagnostics, threading workspace semantic queries when available.
                     let provider = DiagnosticsProvider::new(ast, doc.text.clone());
                     let source_path = source_path_from_uri(uri);
@@ -100,7 +102,7 @@ impl LspServer {
                                 |file_id, queries| {
                                     provider.get_diagnostics_with_path_and_semantics(
                                         ast,
-                                        parse_errors,
+                                        &parse_errors,
                                         &doc.text,
                                         None,
                                         &[],
@@ -114,7 +116,7 @@ impl LspServer {
                         semantic_diags.unwrap_or_else(|| {
                             provider.get_diagnostics_with_path(
                                 ast,
-                                parse_errors,
+                                &parse_errors,
                                 &doc.text,
                                 None,
                                 &[],
@@ -125,7 +127,7 @@ impl LspServer {
                     #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
                     let diagnostics = provider.get_diagnostics_with_path(
                         ast,
-                        parse_errors,
+                        &parse_errors,
                         &doc.text,
                         None,
                         &[],

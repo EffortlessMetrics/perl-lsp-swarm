@@ -1045,7 +1045,7 @@ impl LspServer {
             .map(|(k, v)| DocumentScanView {
                 uri: k.clone(),
                 text: v.text.clone(),
-                ast: v.current_parsed().and_then(|p| p.ast.clone()),
+                ast: v.current_parsed().and_then(|p| p.ast().cloned()),
             })
             .collect()
     }

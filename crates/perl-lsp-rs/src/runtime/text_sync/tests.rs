@@ -221,7 +221,7 @@ fn test_incremental_path_taken_on_ranged_change() -> Result<(), Box<dyn std::err
         let doc = docs.get(uri).ok_or("document not stored after didChange")?;
         assert!(doc.text.contains("43"), "document text must be updated");
         assert!(
-            doc.current_parsed().is_some_and(|p| p.ast.is_some()),
+            doc.current_parsed().is_some_and(|p| p.ast().is_some()),
             "AST must be present after incremental change"
         );
         // incremental_doc must still be present after a ranged edit
@@ -535,7 +535,7 @@ fn test_incremental_state_off_by_default_on_did_change() -> Result<(), Box<dyn s
         );
         // The full-parse AST is still present — providers read this.
         assert!(
-            doc.current_parsed().is_some_and(|p| p.ast.is_some()),
+            doc.current_parsed().is_some_and(|p| p.ast().is_some()),
             "committed AST must be present after didOpen"
         );
     }
@@ -568,7 +568,7 @@ fn test_incremental_state_off_by_default_on_did_change() -> Result<(), Box<dyn s
         assert!(doc.text.contains("43"), "document text must be updated by the full parse path");
         assert!(!doc.text.contains("42"), "old value must be gone from committed text");
         assert!(
-            doc.current_parsed().is_some_and(|p| p.ast.is_some()),
+            doc.current_parsed().is_some_and(|p| p.ast().is_some()),
             "committed AST must be present after the ranged edit"
         );
     }
@@ -1263,12 +1263,12 @@ fn test_binary_file_guard_did_open_skips_parse() -> Result<(), Box<dyn std::erro
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("document not stored after binary didOpen")?;
     assert_eq!(
-        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier),
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
         DegradationTier::Minimal,
         "binary content should result in Minimal degradation tier"
     );
     assert!(
-        doc.current_parsed().is_none_or(|p| p.ast.is_none()),
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
         "parser must not be called on binary content"
     );
     Ok(())
@@ -1294,12 +1294,12 @@ fn test_binary_file_guard_single_null_byte_triggers_guard() -> Result<(), Box<dy
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("document not stored after single-null didOpen")?;
     assert_eq!(
-        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier),
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
         DegradationTier::Minimal,
         "a single null byte must trigger the binary guard"
     );
     assert!(
-        doc.current_parsed().is_none_or(|p| p.ast.is_none()),
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
         "parser must not be called when null byte is present"
     );
     Ok(())
@@ -1323,7 +1323,7 @@ fn test_binary_file_guard_normal_perl_still_parses() -> Result<(), Box<dyn std::
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("document not stored after normal didOpen")?;
     assert_ne!(
-        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier),
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
         DegradationTier::Minimal,
         "normal Perl should not be treated as binary content"
     );
@@ -1355,12 +1355,12 @@ fn test_binary_file_guard_did_change_skips_parse() -> Result<(), Box<dyn std::er
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("document not stored after binary didChange")?;
     assert_eq!(
-        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier),
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
         DegradationTier::Minimal,
         "binary content via didChange should result in Minimal degradation tier"
     );
     assert!(
-        doc.current_parsed().is_none_or(|p| p.ast.is_none()),
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
         "parser must not be called on binary content via didChange"
     );
     Ok(())
@@ -1384,12 +1384,12 @@ fn test_template_file_guard_skips_parse_for_non_perl_language_id()
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("template document not stored after didOpen")?;
     assert_eq!(
-        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier),
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
         DegradationTier::Minimal,
         "template with non-Perl language mode should stay in no-parse mode"
     );
     assert!(
-        doc.current_parsed().is_none_or(|p| p.ast.is_none()),
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
         "template with non-Perl languageId must skip parse"
     );
     Ok(())
@@ -1417,12 +1417,12 @@ fn test_template_file_guard_persists_across_did_change() -> Result<(), Box<dyn s
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("template document not stored after didChange")?;
     assert_eq!(
-        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier),
+        doc.current_parsed().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
         DegradationTier::Minimal,
         "template should remain in no-parse mode after didChange"
     );
     assert!(
-        doc.current_parsed().is_none_or(|p| p.ast.is_none()),
+        doc.current_parsed().is_none_or(|p| p.ast().is_none()),
         "template should continue skipping parse on didChange"
     );
     Ok(())
@@ -1446,7 +1446,7 @@ fn test_template_file_guard_parses_embedded_perl_language_id()
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("template document not stored after didOpen")?;
     assert!(
-        doc.current_parsed().is_some_and(|p| p.ast.is_some()),
+        doc.current_parsed().is_some_and(|p| p.ast().is_some()),
         "template with embedded-perl languageId should be parsed as Perl"
     );
     Ok(())
@@ -1470,7 +1470,7 @@ fn test_template_file_guard_parses_mojolicious_language_id()
     let docs = server.documents.lock();
     let doc = docs.get(uri).ok_or("template document not stored after didOpen")?;
     assert!(
-        doc.current_parsed().is_some_and(|p| p.ast.is_some()),
+        doc.current_parsed().is_some_and(|p| p.ast().is_some()),
         "template with mojolicious languageId should be parsed as Perl"
     );
     Ok(())

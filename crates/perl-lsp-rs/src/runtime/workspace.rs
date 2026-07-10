@@ -443,7 +443,7 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast.clone()))
+                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast().cloned()))
                 })
                 .collect()
         };
@@ -777,7 +777,7 @@ impl LspServer {
             documents
                 .iter()
                 .map(|(k, v)| {
-                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast.clone()))
+                    (k.clone(), v.text.clone(), v.current_parsed().and_then(|p| p.ast().cloned()))
                 })
                 .collect()
         };
@@ -845,7 +845,7 @@ impl LspServer {
 
             if let Some(doc) = doc_opt {
                 let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     // Find the symbol in the AST to get more accurate information
                     let extractor = crate::symbol::SymbolExtractor::new_with_source(&doc.text);
                     let symbol_table = extractor.extract(ast);

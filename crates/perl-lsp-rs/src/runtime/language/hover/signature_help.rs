@@ -67,7 +67,7 @@ impl LspServer {
                 {
                     // Try to get signature from user-defined functions first (if AST exists)
                     let parsed = doc.current_parsed();
-                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
+                    if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                         if let Some(signature) =
                             self.get_user_function_signature(ast, &function_name)
                         {

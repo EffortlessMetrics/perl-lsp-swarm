@@ -31,7 +31,7 @@ impl LspServer {
                 .get_document(&documents, uri)
                 .ok_or_else(|| semantic_tokens_document_not_open(uri))?;
             let parsed = doc.current_parsed();
-            if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
+            if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                 let data =
                     crate::semantic_tokens::collect_semantic_tokens(ast, &doc.text, &|off| {
                         self.offset_to_pos16(doc, off)
@@ -420,7 +420,7 @@ impl LspServer {
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
                 let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let all_tokens =
                         crate::semantic_tokens::collect_semantic_tokens(ast, &doc.text, &|off| {
                             self.offset_to_pos16(doc, off)

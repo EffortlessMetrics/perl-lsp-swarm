@@ -417,7 +417,7 @@ impl LspServer {
                 data: None,
             })?;
             let parsed = doc.current_parsed();
-            if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
+            if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                 let mut hints = Vec::new();
                 if param_hints {
                     // Build a workspace method resolver that is called for every
@@ -613,7 +613,7 @@ impl LspServer {
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
         let parsed = doc.current_parsed();
-        let ast = parsed.as_ref().and_then(|p| p.ast.as_ref())?;
+        let ast = parsed.as_ref().and_then(|p| p.ast())?;
 
         let sub_node = Self::find_subroutine_node(ast, function_name).or_else(|| {
             (short_name != function_name)
@@ -712,7 +712,7 @@ impl LspServer {
                 let start = Instant::now();
                 let deadline = code_lens_resolve_deadline();
                 let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let provider = CodeLensProvider::with_source(doc.text.clone())
                         .with_file_path(uri.to_string());
                     let mut lenses = provider.extract(ast);
@@ -1391,7 +1391,7 @@ impl LspServer {
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
                 let parsed = doc.current_parsed();
-                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let runner = TestRunner::new(doc.text.clone(), uri.to_string());
                     let tests = runner.discover_tests(ast);
 

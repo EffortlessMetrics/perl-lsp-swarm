@@ -201,20 +201,7 @@ impl LspServer {
             // Convert AST to Arc for stable pointers
             let ast_arc = ast.map(Arc::new);
 
-            // Build parent map from the Arc'd AST so pointers remain stable
-            let mut parent_map = ParentMap::default();
-            if let Some(ref arc) = ast_arc {
-                crate::declaration::DeclarationProvider::build_parent_map(
-                    arc,
-                    &mut parent_map,
-                    None,
-                );
-            }
-
             let rope = ropey::Rope::from_str(text);
-
-            // Compute degradation tier before moving errors
-            let degradation_tier = DegradationTier::from_parse_result(&ast_arc, &errors);
 
             // Store document state with normalized URI
             let normalized_uri = self.normalize_uri_key(uri);
@@ -266,18 +253,18 @@ impl LspServer {
             }
             // Publish the parse result as a single ParsedSnapshot rather than
             // writing ast/parse_errors/parent_map/degradation_tier
-            // separately -- see `state::ParsedSnapshot`. didOpen always
-            // starts at generation 0 (freshly created above), so this
+            // separately -- see `state::ParsedSnapshot`. `from_parse_result`
+            // derives content_hash/parent_map/degradation_tier internally so
+            // they can never disagree with `ast_arc`/`errors`/`text`. didOpen
+            // always starts at generation 0 (freshly created above), so this
             // publication always succeeds synchronously.
             let doc_generation = doc_state.current_generation();
-            let snapshot = Arc::new(ParsedSnapshot {
-                generation: doc_generation,
-                content_hash: perl_lsp_rs_core::tooling::perl_critic::hash_content(text),
-                ast: ast_arc.clone(),
-                parse_errors: Arc::from(errors),
-                parent_map: Arc::new(parent_map),
-                degradation_tier,
-            });
+            let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
+                doc_generation,
+                text,
+                ast_arc.clone(),
+                errors,
+            ));
             doc_state.publish_parsed_if_current(doc_generation, snapshot);
 
             self.documents.lock().insert(normalized_uri.clone(), doc_state);
@@ -487,7 +474,7 @@ impl LspServer {
                 let skip_template_parse = is_embedded_template_uri(uri)
                     && doc_state
                         .current_parsed()
-                        .map(|s| s.degradation_tier)
+                        .map(|s| s.degradation_tier())
                         .unwrap_or(DegradationTier::Minimal)
                         == DegradationTier::Minimal;
 
@@ -693,20 +680,23 @@ impl LspServer {
                 // Convert AST to Arc for stable pointers
                 let ast_arc = ast.map(Arc::new);
 
-                // Build parent map from the Arc'd AST so pointers remain stable
+                // Build the ParsedSnapshot now, while `errors` is still
+                // available to move -- `from_parse_result` derives
+                // content_hash/parent_map/degradation_tier internally from
+                // `text`/`ast_arc`/`errors` so they can never disagree (see
+                // `state::ParsedSnapshot`). Timed as `parent_map_ms` since
+                // parent-map construction (inside `from_parse_result`)
+                // dominates this call's cost; hashing and tier derivation
+                // are cheap by comparison. Published later, once `doc_state`
+                // has been rebuilt below.
                 let t_parent_map_start = std::time::Instant::now();
-                let mut parent_map = ParentMap::default();
-                if let Some(ref arc) = ast_arc {
-                    crate::declaration::DeclarationProvider::build_parent_map(
-                        arc,
-                        &mut parent_map,
-                        None,
-                    );
-                }
+                let snapshot = Arc::new(ParsedSnapshot::from_parse_result(
+                    next_gen,
+                    &text,
+                    ast_arc.clone(),
+                    errors,
+                ));
                 let parent_map_ms = crate::runtime::timing::elapsed_ms(t_parent_map_start);
-
-                // Compute degradation tier before moving errors
-                let degradation_tier = DegradationTier::from_parse_result(&ast_arc, &errors);
 
                 let t_incremental_start = std::time::Instant::now();
                 // Maintain the per-document incremental parsing state — but only
@@ -849,20 +839,10 @@ impl LspServer {
                     doc_state.incremental_doc = incremental_doc;
                     doc_state.incremental_state = incremental_state;
                 }
-                // Publish the parse result as a single ParsedSnapshot rather
-                // than writing ast/parse_errors/parent_map/degradation_tier
-                // separately -- see `state::ParsedSnapshot`. `doc_state`'s
-                // generation Arc was already bumped to `next_gen` above (same
-                // atomic, cloned), so this publication always succeeds in
-                // today's synchronous parse-under-the-lock world.
-                let snapshot = Arc::new(ParsedSnapshot {
-                    generation: next_gen,
-                    content_hash: perl_lsp_rs_core::tooling::perl_critic::hash_content(&text),
-                    ast: ast_arc.clone(),
-                    parse_errors: Arc::from(errors),
-                    parent_map: Arc::new(parent_map),
-                    degradation_tier,
-                });
+                // Publish the snapshot built above -- `doc_state`'s
+                // generation Arc was already bumped to `next_gen` earlier
+                // (same atomic, cloned), so this publication always succeeds
+                // in today's synchronous parse-under-the-lock world.
                 doc_state.publish_parsed_if_current(next_gen, snapshot);
 
                 // Check if a newer change arrived while we were parsing

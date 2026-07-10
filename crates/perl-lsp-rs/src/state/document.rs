@@ -87,43 +87,122 @@ impl std::fmt::Display for DegradationTier {
 /// separate `ast` / `parse_errors` / `parent_map` / `degradation_tier` fields
 /// it used to carry, so there is no dual-write and no way for those fields to
 /// disagree with each other or with the generation they were parsed from.
+///
+/// ## Construction is guarded, not free
+///
+/// Every field is private. The only way to build a `ParsedSnapshot` is
+/// [`Self::from_parse_result`], which derives `content_hash` from the exact
+/// source text passed in, builds `parent_map` from the exact `ast` passed in
+/// (never a different AST), and derives `degradation_tier` from the `(ast,
+/// parse_errors)` pair -- so a caller cannot assemble a snapshot with a
+/// parent map from one parse paired with an AST from another, a
+/// `content_hash` that doesn't describe the parsed source, or a
+/// degradation tier that disagrees with `ast`/`parse_errors`. Read fields
+/// through the accessor methods below.
 #[derive(Debug, Clone)]
 pub struct ParsedSnapshot {
     /// The document generation this snapshot was parsed from.
-    ///
-    /// Compared against [`DocumentState::current_generation`] to decide
-    /// whether the snapshot is still fresh -- see
-    /// [`DocumentState::current_parsed`].
-    pub generation: u32,
-
+    generation: u32,
     /// Hash of the document text this snapshot was parsed from.
+    content_hash: u64,
+    /// Parsed AST, or `None` when the parse failed completely.
+    ast: Option<Arc<perl_parser::ast::Node>>,
+    /// Parse errors from this parse attempt.
+    parse_errors: Arc<[perl_parser::error::ParseError]>,
+    /// Parent map built from `ast`, for O(1) scope traversal.
+    parent_map: Arc<ParentMap>,
+    /// Degradation tier computed from `ast` and `parse_errors`.
+    degradation_tier: DegradationTier,
+}
+
+impl ParsedSnapshot {
+    /// Build a `ParsedSnapshot` from a parse attempt's raw outputs.
     ///
-    /// Uses the same `DefaultHasher`-over-text scheme as the semantic
-    /// analyzer / type-inference caches (see
-    /// `perl_lsp_rs_core::tooling::perl_critic::hash_content`, reused here
-    /// rather than a second hashing scheme). Carried for future duplicate-
-    /// parse detection; `publish_parsed_if_current` does not consult it
-    /// today -- only `generation` gates publication.
-    pub content_hash: u64,
+    /// This is the *only* way to construct a `ParsedSnapshot` -- it derives
+    /// every dependent field from `source`/`ast`/`parse_errors` so the
+    /// result is internally consistent by construction:
+    /// - `content_hash` is `hash_content(source)` (the same
+    ///   `DefaultHasher`-over-text scheme the semantic-analyzer /
+    ///   type-inference caches already use --
+    ///   `perl_lsp_rs_core::tooling::perl_critic::hash_content`, reused
+    ///   here rather than a second hashing scheme). Callers must pass the
+    ///   exact source text `ast` was parsed from.
+    /// - `parent_map` is built from `ast` via
+    ///   `DeclarationProvider::build_parent_map`, so it can never be paired
+    ///   with an AST from a different parse.
+    /// - `degradation_tier` is [`DegradationTier::from_parse_result`] over
+    ///   `(&ast, &parse_errors)`.
+    ///
+    /// `generation` is the caller's responsibility (it's the document
+    /// generation this parse was performed for, which the constructor has
+    /// no way to derive on its own) -- pair it with the same value passed
+    /// to [`DocumentState::publish_parsed_if_current`] as
+    /// `expected_generation`, which will reject a mismatch.
+    pub(crate) fn from_parse_result(
+        generation: u32,
+        source: &str,
+        ast: Option<Arc<perl_parser::ast::Node>>,
+        parse_errors: Vec<perl_parser::error::ParseError>,
+    ) -> Self {
+        let content_hash = perl_lsp_rs_core::tooling::perl_critic::hash_content(source);
+        let mut parent_map = ParentMap::default();
+        if let Some(ref arc) = ast {
+            crate::declaration::DeclarationProvider::build_parent_map(arc, &mut parent_map, None);
+        }
+        let degradation_tier = DegradationTier::from_parse_result(&ast, &parse_errors);
+        Self {
+            generation,
+            content_hash,
+            ast,
+            parse_errors: Arc::from(parse_errors),
+            parent_map: Arc::new(parent_map),
+            degradation_tier,
+        }
+    }
+
+    /// The document generation this snapshot was parsed from.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// Hash of the document text this snapshot was parsed from. See
+    /// [`Self::from_parse_result`] for the hashing scheme.
+    pub fn content_hash(&self) -> u64 {
+        self.content_hash
+    }
 
     /// Parsed AST, or `None` when the parse failed completely.
-    pub ast: Option<Arc<perl_parser::ast::Node>>,
+    pub fn ast(&self) -> Option<&Arc<perl_parser::ast::Node>> {
+        self.ast.as_ref()
+    }
 
     /// Parse errors from this parse attempt.
-    ///
-    /// `Arc<[_]>` rather than `Vec<_>` so cloning a snapshot (or a
-    /// `DocumentState` that holds one) is a refcount bump, not a deep copy.
-    pub parse_errors: Arc<[perl_parser::error::ParseError]>,
+    pub fn parse_errors(&self) -> &[perl_parser::error::ParseError] {
+        &self.parse_errors
+    }
 
-    /// Parent map built from `ast`, for O(1) scope traversal.
+    /// Parse errors from this parse attempt, as a cheaply-clonable `Arc<[_]>`.
     ///
-    /// Shared via `Arc` for the same reason as `parse_errors`; methods are
-    /// still callable directly through `Deref`.
-    pub parent_map: Arc<ParentMap>,
+    /// For callers that need to carry the error list past the lifetime of
+    /// this `ParsedSnapshot` reference (e.g. escaping a `documents` map lock
+    /// by snapshotting into an owned tuple) without the allocation
+    /// `Arc::from(self.parse_errors())` would incur -- a refcount bump
+    /// against the same backing allocation `self.parse_errors()` borrows
+    /// from. Prefer [`Self::parse_errors`] when a borrow suffices.
+    pub(crate) fn parse_errors_arc(&self) -> Arc<[perl_parser::error::ParseError]> {
+        Arc::clone(&self.parse_errors)
+    }
+
+    /// Parent map built from [`Self::ast`], for O(1) scope traversal.
+    pub fn parent_map(&self) -> &ParentMap {
+        &self.parent_map
+    }
 
     /// Degradation tier computed from `ast` and `parse_errors` for this
     /// parse attempt. See [`DegradationTier::from_parse_result`].
-    pub degradation_tier: DegradationTier,
+    pub fn degradation_tier(&self) -> DegradationTier {
+        self.degradation_tier
+    }
 }
 
 /// Document state with Rope-based content management for efficient LSP operations
@@ -422,8 +501,8 @@ mod tests {
     use perl_tdd_support::must_some;
 
     /// Build a `ParsedSnapshot` at `generation` from real parse output for
-    /// `source` -- exercises the same `Parser::parse` -> `ParentMap` ->
-    /// `DegradationTier::from_parse_result` sequence the publication site
+    /// `source` via [`ParsedSnapshot::from_parse_result`] -- exercises the
+    /// same guarded construction path the publication site
     /// (`runtime/text_sync.rs`) uses, rather than hand-rolling fixture data.
     fn snapshot_for(source: &str, generation: u32) -> ParsedSnapshot {
         let mut parser = perl_parser::Parser::new(source);
@@ -432,19 +511,7 @@ mod tests {
             Err(e) => (None, vec![e]),
         };
         let ast_arc = ast.map(Arc::new);
-        let mut parent_map = ParentMap::default();
-        if let Some(ref arc) = ast_arc {
-            crate::declaration::DeclarationProvider::build_parent_map(arc, &mut parent_map, None);
-        }
-        let degradation_tier = DegradationTier::from_parse_result(&ast_arc, &errors);
-        ParsedSnapshot {
-            generation,
-            content_hash: perl_lsp_rs_core::tooling::perl_critic::hash_content(source),
-            ast: ast_arc,
-            parse_errors: Arc::from(errors),
-            parent_map: Arc::new(parent_map),
-            degradation_tier,
-        }
+        ParsedSnapshot::from_parse_result(generation, source, ast_arc, errors)
     }
 
     #[test]
@@ -454,7 +521,7 @@ mod tests {
         let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
         assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
         let current = must_some(doc.current_parsed());
-        assert_eq!(current.generation, doc_gen);
+        assert_eq!(current.generation(), doc_gen);
     }
 
     #[test]
@@ -483,7 +550,11 @@ mod tests {
         doc.generation.fetch_add(1, Ordering::SeqCst);
         assert!(doc.current_parsed().is_none(), "should be stale for current_parsed");
         let latest = must_some(doc.latest_parsed());
-        assert_eq!(latest.generation, doc_gen, "latest_parsed still exposes the last publication");
+        assert_eq!(
+            latest.generation(),
+            doc_gen,
+            "latest_parsed still exposes the last publication"
+        );
     }
 
     #[test]
@@ -539,9 +610,9 @@ mod tests {
         // is the tier/ast/errors relationship computed by
         // `DegradationTier::from_parse_result`, not this specific input's
         // exact recovery behavior.
-        if snapshot.ast.is_none() {
-            assert_eq!(snapshot.degradation_tier, DegradationTier::Minimal);
-            assert!(!snapshot.parse_errors.is_empty(), "a failed parse must carry errors");
+        if snapshot.ast().is_none() {
+            assert_eq!(snapshot.degradation_tier(), DegradationTier::Minimal);
+            assert!(!snapshot.parse_errors().is_empty(), "a failed parse must carry errors");
         }
     }
 
@@ -550,8 +621,8 @@ mod tests {
         // Malformed but recoverable: parser produces a partial AST plus errors.
         let source = "sub foo { my $x = 1; ";
         let snapshot = snapshot_for(source, 0);
-        if snapshot.ast.is_some() && !snapshot.parse_errors.is_empty() {
-            assert_eq!(snapshot.degradation_tier, DegradationTier::Partial);
+        if snapshot.ast().is_some() && !snapshot.parse_errors().is_empty() {
+            assert_eq!(snapshot.degradation_tier(), DegradationTier::Partial);
         }
     }
 
@@ -581,7 +652,8 @@ mod tests {
         );
         let cloned_snapshot = must_some(cloned.latest_parsed());
         assert_eq!(
-            cloned_snapshot.generation, doc_gen,
+            cloned_snapshot.generation(),
+            doc_gen,
             "the clone's snapshot must be unaffected by edits on the original"
         );
     }

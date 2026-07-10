@@ -461,13 +461,13 @@ impl LspServer {
             documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
                 let parsed = doc.current_parsed();
                 (
-                    parsed.as_ref().and_then(|p| p.ast.clone()),
+                    parsed.as_ref().and_then(|p| p.ast().cloned()),
                     doc.text.clone(),
                     parsed
                         .as_ref()
-                        .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| Arc::clone(&p.parse_errors)),
+                        .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| p.parse_errors_arc()),
                     doc.version,
-                    parsed.as_ref().map_or(DegradationTier::Minimal, |p| p.degradation_tier),
+                    parsed.as_ref().map_or(DegradationTier::Minimal, |p| p.degradation_tier()),
                     doc.line_starts.clone(),
                     doc.rope.clone(),
                     Arc::clone(&doc.generation),
@@ -776,7 +776,7 @@ impl LspServer {
             documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
                 let parse_errors = doc
                     .current_parsed()
-                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| Arc::clone(&p.parse_errors));
+                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| p.parse_errors_arc());
                 (
                     parse_errors,
                     doc.text.clone(),
@@ -855,7 +855,7 @@ impl LspServer {
             documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
                 let parse_errors = doc
                     .current_parsed()
-                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| Arc::clone(&p.parse_errors));
+                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| p.parse_errors_arc());
                 (
                     parse_errors,
                     doc.version,
@@ -1001,7 +1001,7 @@ impl LspServer {
                 let markup_message_support = self.client_capabilities.lock().markup_message_support;
                 let parse_errors = doc
                     .current_parsed()
-                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| Arc::clone(&p.parse_errors));
+                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| p.parse_errors_arc());
                 let items = Self::syntax_only_lsp_diagnostics(
                     &parse_errors,
                     &doc.text,
@@ -1407,8 +1407,8 @@ impl LspServer {
                 previous_result_ids.iter().find(|(u, _)| u == uri_str).map(|(_, id)| id.clone());
 
             let Some(parsed) = doc.current_parsed() else { continue };
-            if let Some(ast) = parsed.ast.as_ref() {
-                let parse_errors = &parsed.parse_errors;
+            if let Some(ast) = parsed.ast() {
+                let parse_errors = parsed.parse_errors();
                 let provider = DiagnosticsProvider::new(ast, doc.text.clone());
                 // Position-aware resolver: each `use` statement is checked against only
                 // the @INC roots that are lexically active at its offset, so `no lib`
