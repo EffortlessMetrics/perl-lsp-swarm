@@ -125,12 +125,16 @@ impl LspServer {
         tracing::debug!(uri, ?previous_result_id, "Getting semantic tokens delta");
 
         // Compute the current full token set from the live AST (same source as
-        // `textDocument/semanticTokens/full`).
-        let current: Vec<u32> = {
+        // `textDocument/semanticTokens/full`). Clone the `DocumentState` under a
+        // brief documents-map lock and drop the guard before any analysis runs
+        // (#3396 off-lock provider consumption), matching the sibling handlers.
+        let doc_owned = {
             let documents = self.documents_guard();
-            let doc = self
-                .get_document(&documents, uri)
-                .ok_or_else(|| semantic_tokens_document_not_open(uri))?;
+            self.get_document(&documents, uri).cloned()
+        };
+        // documents guard dropped here
+        let current: Vec<u32> = {
+            let doc = doc_owned.as_ref().ok_or_else(|| semantic_tokens_document_not_open(uri))?;
             let parsed = doc.current_parsed();
             match parsed.as_ref().and_then(|p| p.ast()) {
                 Some(ast) => {
