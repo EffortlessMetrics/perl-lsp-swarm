@@ -32,20 +32,22 @@ describe('Oxlint configuration', () => {
     expect(config.plugins).toContain('typescript');
   });
 
-  test('.oxlintrc.json declares the six rules translated from the former ESLint config', () => {
+  test('.oxlintrc.json declares exactly the six rules translated from the former ESLint config (no more, no less)', () => {
     const configPath = path.join(EXT_ROOT, '.oxlintrc.json');
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const ruleNames = Object.keys(config.rules);
-    expect(ruleNames).toEqual(
-      expect.arrayContaining([
-        'typescript/no-explicit-any',
-        'typescript/consistent-type-imports',
-        'typescript/no-floating-promises',
-        'no-unused-vars',
-        'no-console',
-        'eqeqeq',
-      ]),
-    );
+    const ruleNames = Object.keys(config.rules).sort();
+    const expectedRuleNames = [
+      'typescript/no-explicit-any',
+      'typescript/consistent-type-imports',
+      'typescript/no-floating-promises',
+      'no-unused-vars',
+      'no-console',
+      'eqeqeq',
+    ].sort();
+    // Exact-set equality (not arrayContaining): a silently added or removed
+    // rule — config drift, or a future default the schema starts requiring
+    // — must fail this test, not just a missing one.
+    expect(ruleNames).toEqual(expectedRuleNames);
   });
 
   test('package.json lint script runs oxlint in type-aware mode', () => {

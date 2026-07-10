@@ -350,3 +350,51 @@ train, unblocked on the lint axis by this PR and — per the earlier
 investigation on this issue — already proven to compile the extension's
 source cleanly under the real `typescript@7.0.2` CLI with byte-identical JS
 emission (zero source changes required).
+
+## 12. Review-thread adjudication (3 unresolved threads, pre-merge)
+
+Each thread was evaluated against the actual current diff/behavior — not
+bulk-dismissed — before resolving.
+
+**Thread 1 (sourcery-ai, `src/test/oxlint.test.ts:35`)** — "the rule-set test
+only checks the six expected rules are present (`arrayContaining`), not that
+they're the *only* six; config drift or an accidental extra rule wouldn't
+fail it." **Valid — fixed.** The rule-name assertion now does exact-set
+equality (`ruleNames.sort()` vs `expectedRuleNames.sort()`), so a silently
+added or removed rule now fails the test.
+
+**Thread 2 (factory-droid, `.oxlintrc.json:19`)** — "missing trailing
+newline; sibling config files in `vscode-extension/` all end with `\n`."
+**Valid — fixed.** Added the trailing newline; verified the file still
+parses as valid JSON and `oxlint src --type-aware` still exits 0.
+
+**Thread 3 (chatgpt-codex-connector, `.oxlintrc.json:3`)** — "`no-unused-vars`,
+`no-console`, `eqeqeq` belong to the `eslint` plugin, not `typescript`; since
+`plugins` only lists `typescript`, oxlint's own docs say `plugins` overwrites
+the default plugin set, so these three rules may not actually be enforced —
+future violations could pass `npm run lint` silently." **Refuted — with
+direct measurement, not left as an assertion.** Built a throwaway fixture
+with all three violations (unused var, `console.log`, `==`) and ran the
+project's real `.oxlintrc.json` + `tsconfig.json` against it:
+
+```
+probe.ts:2:10: warning eslint(no-unused-vars): Function 'unusedVarCheck' is declared but never used.
+probe.ts:4:3:  warning eslint(no-console): Unexpected console statement.
+probe.ts:5:9:  error   eslint(eqeqeq): Expected === and instead saw ==
+probe.ts:6:5:  warning eslint(no-console): Unexpected console statement.
+exit 1
+```
+
+All three fire correctly today, tagged `eslint(...)` in the diagnostic
+output. To rule out a fluke, re-ran with `"plugins": []` (empty array,
+strictly narrower than the current `["typescript"]`) against the same
+fixture — the three rules **still** fired identically. This empirically
+shows oxlint 1.73.0's core ESLint-equivalent rule namespace
+(`no-unused-vars`/`no-console`/`eqeqeq`/`eqeqeq` etc.) is not gated by the
+`plugins` array at all — `plugins` extends the rule surface with optional
+families (react, vue, jsx-a11y, ...); it does not replace a "default set"
+that would otherwise include core rules. (`"eslint"` *is* a valid enum value
+in `configuration_schema.json`'s `LintPluginOptionsSchema`, so the reviewer's
+suggested fix would not have errored — it's just unnecessary given the
+measured behavior.) No code change made; replied on the thread with this
+exact evidence before resolving.
