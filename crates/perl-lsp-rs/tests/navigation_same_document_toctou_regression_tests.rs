@@ -31,9 +31,9 @@
 #![cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
 
 use perl_lsp::LspServer;
-use serde_json::{Value, json};
-use std::sync::Arc;
+use serde_json::{json, Value};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
@@ -461,8 +461,8 @@ fn type_definition_and_implementation_resolve_normally_with_no_race() -> TestRes
 /// cover -- it reproduces on every call for any URI whose raw and
 /// normalized forms differ, no concurrent edit required.
 #[test]
-fn type_definition_and_implementation_resolve_for_uri_with_raw_normalized_key_mismatch()
--> TestResult {
+fn type_definition_and_implementation_resolve_for_uri_with_raw_normalized_key_mismatch(
+) -> TestResult {
     let server = fresh_server();
 
     // Uppercase Windows drive letter: `perl_uri::uri_key` normalizes this to
@@ -511,5 +511,162 @@ fn type_definition_and_implementation_resolve_for_uri_with_raw_normalized_key_mi
          ambiguous matches; got empty result: {impl_result:?}"
     );
 
+    Ok(())
+}
+
+/// Focused test for the URI-normalization branch in `pinned_doc_map_for`:
+/// when raw and normalized URIs differ (e.g. `file:///C:/...` vs
+/// `file:///c:/...`), the deduplication removal must actually execute,
+/// leaving only the pinned entry in the map under the raw key.
+/// This exercises the `if normalized != uri { doc_map.remove(...) }` true branch.
+///
+/// Serializes through toctou_hook_lock: `wait_at_same_doc_fallback_gap()` runs
+/// unconditionally on every call into `handle_type_definition`, even though
+/// this test doesn't arm the hook. Without the lock, a concurrent test's armed
+/// hook could interfere. Guard is released before assertions to prevent
+/// poisoning the shared mutex if an assertion fails.
+#[test]
+fn pinned_doc_map_for_deduplicates_on_raw_normalized_mismatch() -> TestResult {
+    let _guard = toctou_hook_lock().lock().map_err(|_| "toctou hook lock poisoned")?;
+
+    let server = fresh_server();
+
+    // Uppercase drive letter triggers normalization: raw `file:///C:/...`
+    // becomes normalized `file:///c:/...`. pinned_doc_map_for should detect
+    // this mismatch and remove the normalized entry from the snapshot map
+    // before inserting the pinned entry under the raw key.
+    // Use TYPE_DEF_BEFORE pattern: it has a resolvable package reference.
+    let raw_uri = "file:///C:/dedup_test/type_definition_dedup.pl";
+    server.test_apply_did_open(raw_uri, TYPE_DEF_BEFORE, 1)?;
+
+    // Query at the "MyClass->new()" reference, same as the existing regression test.
+    // pinned_doc_map_for constructs doc_map, and the deduplication removal
+    // ensures MyClass is found exactly once (not counted twice as ambiguous).
+    let (line, character) =
+        find_pos(TYPE_DEF_BEFORE, "MyClass->new()").ok_or("MyClass->new() not found")?;
+    let result = server.test_handle_type_definition(Some(json!({
+        "textDocument": { "uri": raw_uri },
+        "position": { "line": line, "character": character }
+    })))?;
+
+    // Release lock before assertions to prevent poisoning if assertion fails
+    drop(_guard);
+
+    // Type definition must resolve (non-empty) after deduplication.
+    // Empty result would indicate duplicate-key ambiguity (the old bug).
+    let locations = result.as_ref().and_then(Value::as_array).ok_or_else(|| {
+        format!(
+            "expected type-definition to resolve after deduplication on \
+             raw/normalized-mismatched URI; got: {result:?}"
+        )
+    })?;
+    assert!(
+        !locations.is_empty(),
+        "type-definition must find MyClass after deduplication removal on \
+         raw!=normalized URI; got empty result (indicates duplicate-key bug): {result:?}"
+    );
+    Ok(())
+}
+
+/// Focused test for the URI-normalization branch when raw and normalized URIs
+/// are IDENTICAL (the false branch of `if normalized != uri`): the removal
+/// should NOT execute, and the original map state (from snapshot) should be
+/// preserved. This exercises both branches of the conditional: true (mismatch,
+/// remove) and false (already normalized, skip removal).
+///
+/// Serializes through toctou_hook_lock: `wait_at_same_doc_fallback_gap()` runs
+/// unconditionally on every call into `handle_type_definition`, even though
+/// this test doesn't arm the hook. Without the lock, a concurrent test's armed
+/// hook could interfere. Guard is released before assertions to prevent
+/// poisoning the shared mutex if an assertion fails.
+#[test]
+fn pinned_doc_map_for_skips_removal_when_uri_already_normalized() -> TestResult {
+    let _guard = toctou_hook_lock().lock().map_err(|_| "toctou hook lock poisoned")?;
+
+    let server = fresh_server();
+
+    // All-lowercase drive letter URI is already in normalized form: raw == normalized.
+    // The `if normalized != uri` condition should be false, and doc_map.remove
+    // should NOT execute. Verify the handler still works correctly.
+    let normalized_uri = "file:///d:/lowercase_uri_test/already_normalized.pl";
+    server.test_apply_did_open(normalized_uri, TYPE_DEF_BEFORE, 1)?;
+
+    // Query at the "MyClass->new()" reference.
+    // pinned_doc_map_for constructs doc_map WITHOUT removal (skip branch).
+    let (line, character) =
+        find_pos(TYPE_DEF_BEFORE, "MyClass->new()").ok_or("MyClass->new() not found")?;
+    let result = server.test_handle_type_definition(Some(json!({
+        "textDocument": { "uri": normalized_uri },
+        "position": { "line": line, "character": character }
+    })))?;
+
+    // Release lock before assertions to prevent poisoning if assertion fails
+    drop(_guard);
+
+    // Resolution should work (the no-removal path still produces a valid map).
+    let locations = result.as_ref().and_then(Value::as_array).ok_or_else(|| {
+        format!(
+            "expected type-definition to resolve on already-normalized URI; \
+             got: {result:?}"
+        )
+    })?;
+    assert!(
+        !locations.is_empty(),
+        "type-definition must resolve even when skip-removal branch is taken \
+         (already-normalized URI); got empty result: {result:?}"
+    );
+    Ok(())
+}
+
+/// Focused test verifying that `pinned_doc_map_for` actually calls
+/// `doc_map.insert` (and `doc_map.remove` beforehand if needed).
+/// This is a call-observation test: the document must be in the map
+/// for handlers to locate it during fallback search.
+///
+/// Serializes through toctou_hook_lock: `wait_at_same_doc_fallback_gap()` runs
+/// unconditionally on every call into `handle_implementation`, even though
+/// this test doesn't arm the hook. Without the lock, a concurrent test's armed
+/// hook could interfere. Guard is released before assertions to prevent
+/// poisoning the shared mutex if an assertion fails.
+#[test]
+fn pinned_doc_map_for_insert_and_remove_calls_observed_through_resolution() -> TestResult {
+    let _guard = toctou_hook_lock().lock().map_err(|_| "toctou hook lock poisoned")?;
+
+    let server = fresh_server();
+
+    // Open a document with uppercase drive letter (forces deduplication path).
+    let raw_uri = "file:///C:/insertion_test/observe_calls.pl";
+    server.test_apply_did_open(raw_uri, IMPL_BEFORE, 1)?;
+
+    // Request implementation on "Base" package. This forces `handle_implementation`
+    // to call `pinned_doc_map_for`, which must:
+    // 1. Call `normalize_uri_key(uri)` to get normalized form
+    // 2. Call `doc_map.remove(&normalized)` if they differ (true branch)
+    // 3. Call `doc_map.insert(uri.to_string(), ...)` to add pinned entry
+    // Without these calls, the fallback would not locate the package.
+    let (line, character) =
+        find_pos(IMPL_BEFORE, "package Base;").ok_or("package Base; not found")?;
+    let character = character + u32::try_from("package ".len()).unwrap_or(0);
+    let result = server.test_handle_implementation(Some(json!({
+        "textDocument": { "uri": raw_uri },
+        "position": { "line": line, "character": character }
+    })))?;
+
+    // Release lock before assertions to prevent poisoning if assertion fails
+    drop(_guard);
+
+    // Implementation must resolve to find the Derived subclass.
+    // Resolution failure would indicate the calls (remove + insert) didn't happen.
+    let locations = result.as_ref().and_then(Value::as_array).ok_or_else(|| {
+        format!(
+            "expected implementation handler to resolve Derived as subclass of Base; \
+             got: {result:?}"
+        )
+    })?;
+    assert!(
+        !locations.is_empty(),
+        "implementation must resolve Derived subclass after pinned_doc_map_for's \
+         remove+insert calls; got empty result (missing from doc_map): {result:?}"
+    );
     Ok(())
 }

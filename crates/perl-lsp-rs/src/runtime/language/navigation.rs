@@ -1999,21 +1999,24 @@ impl LspServer {
         let mut doc_map: HashMap<String, String> =
             self.documents_text_snapshot().into_iter().collect();
 
-        // The live map is always keyed by `normalize_uri_key` (see
-        // `handle_did_open`'s "Store document state with normalized URI"),
-        // but `uri` here is the raw request URI as received from the client
-        // -- which can differ from its normalized form (e.g. Windows
-        // drive-letter casing: `file:///C:/...` vs the normalized
-        // `file:///c:/...`). If the two differ, `documents_text_snapshot()`
-        // above already contains this SAME document under its normalized
-        // key; inserting the pinned entry under the raw key without first
-        // removing that normalized entry would leave the same document
-        // present under two keys. A scan that iterates every entry (e.g.
-        // `find_package_definition_in_docs`) would then find the same
-        // package declaration twice, producing an "ambiguous identity"
+        // In the text-sync (open/change/close) path, the live map is keyed by
+        // `normalize_uri_key` (see text_sync.rs "Store document state with
+        // normalized URI"), but `uri` here is the raw request URI as received
+        // from the client -- which can differ from its normalized form (e.g.
+        // Windows drive-letter casing: `file:///C:/...` vs the normalized
+        // `file:///c:/...`). If the two differ AND the document remains open
+        // through the snapshot read, `documents_text_snapshot()` above
+        // contains this SAME document under its normalized key; inserting the
+        // pinned entry under the raw key without first removing that
+        // normalized entry would leave the same document present under two
+        // keys. A scan that iterates every entry (e.g.
+        // `find_package_definition_in_docs`) would then find the same package
+        // declaration twice, producing an "ambiguous identity"
         // (`locations.len() > 1`) empty result -- even for a request with no
-        // race at all. Remove the normalized entry first so the pinned
-        // insert is the only copy of this document in the map.
+        // race at all. Remove the normalized entry first so the pinned insert
+        // is the only copy of this document in the map (see #3613 for the
+        // didClose case where the normalized entry is absent, and #3665 for
+        // the rename path edge case).
         let normalized = self.normalize_uri_key(uri);
         if normalized != uri {
             doc_map.remove(&normalized);
