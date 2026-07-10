@@ -1812,6 +1812,14 @@ impl WorkspaceIndex {
         // task could still land in -- flagged again by factory-droid on
         // PR #3618 after that partial fix).
         let key = DocumentStore::uri_key(&uri_str);
+        // Set below iff the early guard actually advances the tracked
+        // generation (a genuine reservation, not a same-or-older no-op) --
+        // read back on a parse failure so that failure can roll the
+        // reservation back rather than leaving `self.files[key].generation`
+        // claiming a generation this task never actually committed. See the
+        // rollback site after `parser.parse()` below for why this can only
+        // safely restore, never blindly overwrite.
+        let mut reserved_generation: Option<(u32, u32)> = None; // (pre_reservation, reserved)
         {
             let mut files = self.files.write();
             if let Some(existing_index) = files.get_mut(&key) {
@@ -1854,8 +1862,10 @@ impl WorkspaceIndex {
                 // FINAL `self.files` write below: after this reservation,
                 // `existing.generation == generation` for the winning task
                 // (not `>`), so it is not rejected by its own reservation.
-                if generation > 0 {
-                    existing_index.generation = existing_index.generation.max(generation);
+                if generation > 0 && generation > existing_index.generation {
+                    let pre_reservation = existing_index.generation;
+                    existing_index.generation = generation;
+                    reserved_generation = Some((pre_reservation, generation));
                 }
             }
 
@@ -1873,7 +1883,29 @@ impl WorkspaceIndex {
         let mut parser = Parser::new(&text);
         let ast = match parser.parse() {
             Ok(ast) => ast,
-            Err(e) => return Err(format!("Parse error: {}", e)),
+            Err(e) => {
+                // This task never reaches the late guard's `self.files`
+                // insert below -- if the early-guard reservation above
+                // actually advanced the generation (as opposed to it
+                // already being at or past `generation`, i.e. this being a
+                // same-generation retry), roll it back so a parse failure
+                // doesn't leave `self.files[key].generation` claiming a
+                // generation whose symbols/content_hash/document_store text
+                // this task never actually committed. Only rolls back if
+                // NOTHING newer has claimed the slot since -- a concurrent
+                // task for a later generation racing in during this
+                // parse must not have its own legitimate reservation
+                // stomped by this failure's cleanup.
+                if let Some((pre_reservation, reserved)) = reserved_generation {
+                    let mut files = self.files.write();
+                    if let Some(existing_index) = files.get_mut(&key) {
+                        if existing_index.generation == reserved {
+                            existing_index.generation = pre_reservation;
+                        }
+                    }
+                }
+                return Err(format!("Parse error: {}", e));
+            }
         };
 
         // Get the document for line index
