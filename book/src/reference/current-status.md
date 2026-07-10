@@ -1,5 +1,5 @@
 # Current Status
 
-Test counts, coverage, and other project metrics are computed and regenerated automatically — this page does not hardcode them, so it can't go stale.
+Test counts, coverage, and other project metrics are maintained in the canonical status overview (the linked page is human-owned narrative, with only its linked subsystem files auto-regenerated), so this stub does not restate them.
 
 See the canonical status overview: [docs/project/status/index.md](../../../docs/project/status/index.md)
