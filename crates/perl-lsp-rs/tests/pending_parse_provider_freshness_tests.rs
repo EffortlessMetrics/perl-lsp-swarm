@@ -438,18 +438,31 @@ fn signature_help_never_answers_from_stale_ast_with_matching_name_during_pending
     );
 
     // Post-publish: once the gap-closing snapshot is published, the fresh
-    // 2-parameter `calc` signature must resolve -- proving the honest "no
+    // *2-parameter* `calc` signature must resolve -- proving the honest "no
     // answer" above was a gap-time policy, not a provider that can never
-    // find `calc` at all.
+    // find `calc` at all. Checking `parameters.len() == 2` (not merely that
+    // the response mentions "calc") is deliberate: a 0-parameter match would
+    // also contain the substring "calc" and would silently pass a substring
+    // check, undermining the very asymmetry this assertion exists to prove.
     server.test_publish_parse_for_current_generation(uri)?;
     let sig_fresh = server.test_handle_signature_help(Some(json!({
         "textDocument": { "uri": uri },
         "position": { "line": 1, "character": 5 }
     })))?;
-    assert!(
-        json_contains(&sig_fresh, "calc"),
-        "post-publish: signature help must resolve the fresh `calc` signature \
-         once the generation-1 snapshot is current; got: {sig_fresh:?}"
+    let fresh_param_count = sig_fresh
+        .as_ref()
+        .and_then(|v| v.get("signatures"))
+        .and_then(Value::as_array)
+        .and_then(|sigs| sigs.first())
+        .and_then(|s| s.get("parameters"))
+        .and_then(Value::as_array)
+        .map(Vec::len);
+    assert_eq!(
+        fresh_param_count,
+        Some(2),
+        "post-publish: signature help must resolve the fresh 2-parameter `calc` \
+         signature once the generation-1 snapshot is current, not a 0-parameter \
+         (stale-shaped) or missing signature; got: {sig_fresh:?}"
     );
 
     Ok(())
