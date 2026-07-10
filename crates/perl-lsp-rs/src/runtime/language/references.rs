@@ -425,6 +425,21 @@ impl LspServer {
             // any analysis in between. `ScopedSpan` covers the whole analysis
             // block via `Drop`, so it emits correctly regardless of which of
             // this function's several early `return` points fires.
+            //
+            // Consistency note: this trades a whole-request-consistent read
+            // (the pre-#3396 single guard held from `doc_owned` through the
+            // final fallback) for point-in-time snapshots at each lock
+            // acquisition. A `didChange` racing in between `doc_owned` and a
+            // later `docs_snapshot` fetch means the fallback's regex text
+            // search can run against fresher text for `uri` than the
+            // `symbol_key`/`offset` computed from `doc_owned` above. This is
+            // safe here because the fallback is a heuristic, name-based
+            // regex scan (not offset-dependent on `doc_owned` for other
+            // documents), matches the same check-once-then-off-lock contract
+            // `ensure_latest` already provides at entry (a point-in-time
+            // admission check, not a whole-request consistency guarantee),
+            // and mirrors the identical `doc_text`-then-`documents_text_snapshot()`
+            // pattern already established in `handle_type_definition`.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
             let doc_owned = {

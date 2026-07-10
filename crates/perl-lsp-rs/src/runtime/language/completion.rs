@@ -922,9 +922,16 @@ impl LspServer {
             // Phase 1: grab an owned `DocumentState` clone under a brief
             // documents-map lock, then drop the guard before doing any analysis
             // (#3396 off-lock provider consumption). `DocumentState` derives
-            // `Clone` -- the rope and generation counter clone cheaply
-            // (structural sharing / `Arc`), and `current_parsed()` (#3579)
-            // returns an owned `Arc<ParsedSnapshot>`.
+            // `Clone`: `rope` (structural sharing) and `generation`/`parsed`
+            // (`Arc` bumps, incl. the owned `Arc<ParsedSnapshot>` from #3579)
+            // clone cheaply, but `text` (`String`) and `line_starts`
+            // (`Vec<usize>`) are real O(document-size) copies -- both are
+            // needed by the analysis below (offset/position mapping, symbol
+            // text extraction), so this isn't wasted work, but it is a
+            // genuine per-request cost, not a free clone. It is bounded and
+            // single-threaded (a memcpy), unlike the alternative of holding
+            // the documents-map mutex -- shared by every open document, not
+            // just this one -- for the full analysis duration below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
             let doc_owned = {
@@ -1185,9 +1192,16 @@ impl LspServer {
             // Phase 1: grab an owned `DocumentState` clone under a brief
             // documents-map lock, then drop the guard before doing any analysis
             // (#3396 off-lock provider consumption). `DocumentState` derives
-            // `Clone` -- the rope and generation counter clone cheaply
-            // (structural sharing / `Arc`), and `current_parsed()` (#3579)
-            // returns an owned `Arc<ParsedSnapshot>`.
+            // `Clone`: `rope` (structural sharing) and `generation`/`parsed`
+            // (`Arc` bumps, incl. the owned `Arc<ParsedSnapshot>` from #3579)
+            // clone cheaply, but `text` (`String`) and `line_starts`
+            // (`Vec<usize>`) are real O(document-size) copies -- both are
+            // needed by the analysis below, so this isn't wasted work, but it
+            // is a genuine per-request cost, not a free clone. It is bounded
+            // and single-threaded (a memcpy), unlike the alternative of
+            // holding the documents-map mutex -- shared by every open
+            // document, not just this one -- for the full analysis duration
+            // below.
             let timing_on = crate::runtime::timing::is_enabled();
             let t_lock_start = std::time::Instant::now();
             let doc_owned = {
