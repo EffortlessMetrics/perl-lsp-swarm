@@ -30,6 +30,13 @@
  * are excluded from tsconfig.test.json, so they are never emitted into out-test
  * and never picked up here — they run via their own tsconfig + runner.
  *
+ * Targeted runs: `roots`/`testMatch` only see out-test/, so a source-path
+ * filter like `--runTestsByPath src/test/commands.test.ts` would otherwise
+ * match nothing. The `test`/`test:ci` scripts invoke Jest through
+ * scripts/run-jest.js, which remaps any `src/**\/*.ts` argument to its
+ * compiled `out-test/**\/*.js` counterpart before forwarding to Jest — so
+ * source-path targeted runs still work.
+ *
  * @type {import('jest').Config}
  */
 module.exports = {
