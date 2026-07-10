@@ -1,5 +1,13 @@
 # Current Status
 
-Test counts, coverage, and other project metrics are maintained in the canonical status overview (the linked page is human-owned narrative, with only its linked subsystem files auto-regenerated), so this stub does not restate them.
+Project status, metrics, and roadmap are maintained in the canonical documentation and automatically regenerated on each merge.
 
-See the canonical status overview: [Status Overview](./status/index.md)
+**Canonical source**: [perl-lsp Status Overview](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/project/status/index.md)
+
+For current test counts, LSP coverage, parser status, and quality metrics, refer to the canonical documentation above. The status dashboard includes:
+- LSP feature coverage and protocol compliance
+- Test counts and tracked debt
+- Parser corpus and coverage metrics
+- Quality metrics and mutation scores
+- DAP implementation status
+- Release readiness
