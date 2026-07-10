@@ -86,11 +86,15 @@ Priority 3 (highest): didChangeConfiguration — live editor settings
 
 ## All Settings at a Glance
 
-The full, canonical settings reference — `.perl-lsp.toml` keys, LSP `perl.*`
-workspace settings, and the `perl.limits.*` table — lives in
-[CONFIG.md](CONFIG.md#project-configuration-file-perl-lsptoml) and
-[CONFIGURATION_SCHEMA.md](CONFIGURATION_SCHEMA.md#configuration-options) to
-avoid two documents drifting out of sync. This guide's [Quick
+The full, canonical settings reference lives in
+[CONFIG.md](CONFIG.md) and
+[CONFIGURATION_SCHEMA.md](CONFIGURATION_SCHEMA.md#configuration-options), to
+avoid two documents drifting out of sync: `.perl-lsp.toml` keys are in
+[CONFIG.md § Project Configuration File](CONFIG.md#project-configuration-file-perl-lsptoml),
+LSP `perl.*` workspace settings are in
+[CONFIG.md § Workspace Settings (LSP)](CONFIG.md#workspace-settings-lsp), and
+the `perl.limits.*` table is in
+[CONFIG.md § perl.limits](CONFIG.md#perllimits). This guide's [Quick
 Start](#quick-start) above covers the handful of keys most projects touch;
 the [Copy-Paste Scenarios](#copy-paste-scenarios) below cover the rest by
 example.
