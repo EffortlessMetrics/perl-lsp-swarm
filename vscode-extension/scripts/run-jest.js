@@ -27,7 +27,6 @@
  */
 
 const path = require('path');
-const { spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const SRC_DIR = path.join(ROOT, 'src');
@@ -117,19 +116,20 @@ function remapRunTestsByPathArgs(argv) {
 
 const jestArgs = remapRunTestsByPathArgs(process.argv.slice(2));
 
-// Resolve Jest's own CLI entry point and invoke it with `node` directly,
-// rather than shelling out through `npx`/`npx.cmd` — the latter requires
-// `shell: true` on Windows (a quoting hazard) just to launch a .cmd shim.
+// Run Jest's own CLI entry point in-process (require it directly) rather
+// than spawning it as a child process. Two reasons:
+//   - `npx`/`npx.cmd` needs `shell: true` on Windows just to reach the
+//     .cmd shim — a quoting hazard avoided entirely by not shelling out.
+//   - `spawnSync` would add an extra process layer between this wrapper
+//     and Jest's own worker pool (jest-worker forks its own child
+//     processes for parallel test execution). That extra nesting caused
+//     worker forks to fail intermittently in CI ("Jest worker encountered
+//     N child process exceptions, exceeding retry limit") — a regression
+//     introduced by wrapping Jest in a subprocess at all. Requiring
+//     Jest's CLI entry directly makes this script's process the same
+//     top-level process Jest's workers fork from, exactly as when `jest`
+//     is invoked directly (no wrapper).
 const jestBin = require.resolve('jest/bin/jest', { paths: [ROOT] });
-
-const result = spawnSync(process.execPath, [jestBin, ...jestArgs], {
-  stdio: 'inherit',
-  cwd: ROOT,
-});
-
-if (result.error) {
-  console.error('Failed to launch Jest:', result.error.message);
-  process.exit(1);
-}
-
-process.exit(result.status === null ? 1 : result.status);
+process.chdir(ROOT);
+process.argv = [process.argv[0], jestBin, ...jestArgs];
+require(jestBin);
