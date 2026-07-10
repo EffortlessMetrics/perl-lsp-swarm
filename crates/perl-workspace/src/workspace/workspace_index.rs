@@ -1832,6 +1832,31 @@ impl WorkspaceIndex {
                 {
                     return Ok(());
                 }
+                // Reserve this generation on `self.files` NOW, before parsing
+                // -- not just at the later guard, which only runs AFTER
+                // `Parser::new(&text).parse()` below completes. Without this,
+                // two concurrent tasks for adjacent generations N and N+1 can
+                // BOTH read `existing_index.generation` here before EITHER
+                // has finished parsing (`self.files[key].generation` is only
+                // otherwise updated by the later guard, post-parse), so
+                // neither guard sees the other as newer and both proceed to
+                // write `document_store` -- if N's (older) write lands after
+                // N+1's, `document_store.text` ends up holding stale content
+                // indefinitely, observable by cross-file consumers (rename,
+                // safe-delete preview, navigation, hover for other-file
+                // symbols) that read `document_store()` directly (flagged by
+                // factory-droid and cubic on PR #3618). Bumping the
+                // generation here, still under this SAME `files.write()`
+                // acquisition, makes it visible to the very next racer's
+                // early check immediately -- it does not need to wait for
+                // this task's parse to finish. The later guard's own check
+                // (`existing.generation > generation`) still holds for the
+                // FINAL `self.files` write below: after this reservation,
+                // `existing.generation == generation` for the winning task
+                // (not `>`), so it is not rejected by its own reservation.
+                if generation > 0 {
+                    existing_index.generation = existing_index.generation.max(generation);
+                }
             }
 
             // Update document store -- still holding `files.write()`, so no
@@ -6304,6 +6329,114 @@ sub hello {
              older out-of-order write must not leave document_store and self.files disagreeing \
              about which generation is current"
         );
+
+        Ok(())
+    }
+
+    /// #3618 review defect (factory-droid P1, cubic P1): the test above
+    /// forces generation N+1 to FULLY COMMIT (parse finished, late guard
+    /// run, `self.files` updated) before generation N's thread even starts
+    /// -- so N is correctly rejected by the early guard reading an
+    /// ALREADY-CURRENT `self.files[key].generation`. That does not exercise
+    /// the actual reported race: `self.files[key].generation` is only
+    /// otherwise updated by the LATE guard, which runs AFTER
+    /// `Parser::new(&text).parse()` completes -- so a task for generation N
+    /// whose early guard check runs WHILE a concurrent task for generation
+    /// N+1 has only reserved its slot but is STILL PARSING (not yet at the
+    /// late guard) would, without the early reservation this test proves,
+    /// see a stale (pre-N+1) generation and incorrectly proceed to
+    /// overwrite `document_store` with N's older text.
+    ///
+    /// Constructs that window directly: releases both threads from the SAME
+    /// barrier (no full-completion ordering imposed), gives generation N+1
+    /// a LARGE document (many subs) so its parse takes measurably longer
+    /// than generation N's trivial one, and gives N a brief, bounded head
+    /// start (not a polling sleep -- a single fixed delay establishing
+    /// relative ordering, the same class of technique the barrier above
+    /// replaces sleep-based polling with, just biasing rather than forcing
+    /// the race here since there is no production pause hook to force it
+    /// exactly). Repeats several iterations, since a race that depends on
+    /// relative thread-scheduling timing is not guaranteed to manifest on
+    /// every single run even when present -- consistent reproduction across
+    /// iterations is the meaningful signal, not any single run.
+    #[test]
+    fn concurrent_still_parsing_newer_generation_still_wins_document_store()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const GEN_N: u32 = 1;
+        const GEN_N_PLUS_1: u32 = 2;
+        let gen_n_text = "package StillParsing;\nsub gen_n_symbol { 1 }\n1;\n".to_string();
+        // Large enough that parsing takes measurably longer than the small
+        // generation-N document's parse + N's own early-guard check --
+        // widens the window generation N+1 spends between reserving its
+        // generation and reaching the late guard.
+        let mut gen_n_plus_1_text = String::from("package StillParsing;\n");
+        for i in 0..2000 {
+            gen_n_plus_1_text.push_str(&format!("sub gen_n_plus_1_symbol_{i} {{ {i} }}\n"));
+        }
+        gen_n_plus_1_text.push_str("1;\n");
+
+        for iteration in 0..10 {
+            let index = Arc::new(WorkspaceIndex::new());
+            let uri =
+                must(url::Url::parse(&format!("file:///lib/StillParsing{iteration}.pm")));
+            // Baseline generation 0 so `self.files.get_mut(&key)` finds an
+            // existing entry for the early guard/reservation to act on --
+            // matches the real scenario (an already-tracked document being
+            // edited), not a brand-new never-before-seen URI.
+            index.index_file_with_generation(
+                uri.clone(),
+                "package StillParsing;\n1;\n".to_string(),
+                0,
+            )?;
+
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+
+            let index_n1 = Arc::clone(&index);
+            let uri_n1 = uri.clone();
+            let barrier_n1 = Arc::clone(&barrier);
+            let text_n1 = gen_n_plus_1_text.clone();
+            let handle_n1 = std::thread::spawn(move || -> Result<(), String> {
+                barrier_n1.wait();
+                index_n1.index_file_with_generation(uri_n1, text_n1, GEN_N_PLUS_1)
+            });
+
+            let index_n = Arc::clone(&index);
+            let uri_n = uri.clone();
+            let barrier_n = Arc::clone(&barrier);
+            let text_n = gen_n_text.clone();
+            let handle_n = std::thread::spawn(move || -> Result<(), String> {
+                barrier_n.wait();
+                // Brief, bounded head start for generation N+1 to reach and
+                // pass its early-guard reservation (a fast, un-parsed
+                // operation: hash + lock + compare + document_store write)
+                // before generation N's own early-guard check runs -- not a
+                // polling loop, a single fixed delay biasing which side of
+                // the reservation window this thread's check lands in. Kept
+                // well under generation N+1's own parse time (thousands of
+                // subs) so this thread's check reliably lands DURING that
+                // still-parsing window, not after it.
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                index_n.index_file_with_generation(uri_n, text_n, GEN_N)
+            });
+
+            handle_n1
+                .join()
+                .map_err(|_| "generation N+1 thread panicked")?
+                .map_err(|e| format!("generation N+1 write returned an error: {e}"))?;
+            handle_n
+                .join()
+                .map_err(|_| "generation N thread panicked")?
+                .map_err(|e| format!("generation N write returned an error: {e}"))?;
+
+            let stored_doc = must_some(index.document_store().get(uri.as_str()));
+            assert!(
+                !stored_doc.text.contains("gen_n_symbol"),
+                "iteration {iteration}: document_store must never end up holding generation N's \
+                 (older) text once generation N+1 has been reserved, even while N+1 is still \
+                 parsing when N's early guard runs; got: {:?}",
+                stored_doc.text
+            );
+        }
 
         Ok(())
     }
