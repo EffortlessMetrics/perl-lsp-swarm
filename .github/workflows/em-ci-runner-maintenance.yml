@@ -1,0 +1,234 @@
+name: EM CI Runner Maintenance
+
+# Scheduled host-side reclamation for the persistent CX43/CX53 runners.
+# This deliberately does not checkout the repository: checkout can itself fail
+# when a previous root-owned Docker job left a dirty workspace. The sweep runs
+# directly on the host and does not depend on em-ci-rust:1.95 being present.
+on:
+  schedule:
+    - cron: "11,41 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: em-ci-runner-maintenance-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  maintain:
+    name: Reclaim runner storage (${{ matrix.pool }})
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pool: cx43
+            labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
+            sccache_cap_gb: 30
+            cargo_home_cap_gb: 12
+            min_free_gb: 40
+          - pool: cx53
+            labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]
+            sccache_cap_gb: 60
+            cargo_home_cap_gb: 20
+            min_free_gb: 40
+    runs-on:
+      group: em-ci-small
+      labels: ${{ matrix.labels }}
+    timeout-minutes: 15
+    steps:
+      - name: Reclaim owned scratch and bound shared caches
+        shell: bash
+        env:
+          SCRATCH_ROOT: /mnt/ci-scratch
+          CACHE_ROOT: /mnt/ci-cache
+          GRACE_MINUTES: "120"
+          SCCACHE_CAP_GB: ${{ matrix.sccache_cap_gb }}
+          CARGO_HOME_CAP_GB: ${{ matrix.cargo_home_cap_gb }}
+          MIN_FREE_GB: ${{ matrix.min_free_gb }}
+          REQUIRED_IMAGE: em-ci-rust:1.95
+          POOL: ${{ matrix.pool }}
+        run: |
+          set -u
+
+          repo_scratch="$SCRATCH_ROOT/perl-lsp-swarm"
+          tmp_scratch="$SCRATCH_ROOT/tmp"
+          sccache_dir="$CACHE_ROOT/sccache"
+          cargo_home="$CACHE_ROOT/cargo-home"
+          removed=0
+          remove_failures=0
+
+          size_gb() {
+            local path="$1" mb
+            if [ ! -e "$path" ]; then
+              echo 0
+              return
+            fi
+            mb="$(du -sm -- "$path" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+            mb="${mb:-0}"
+            echo $(( (mb + 1023) / 1024 ))
+          }
+
+          free_gb() {
+            local path="$1"
+            df -Pk -- "$path" 2>/dev/null | awk 'NR == 2 { print int($4 / 1024 / 1024) }'
+          }
+
+          allowed_path() {
+            case "$1" in
+              "$SCRATCH_ROOT"/*|"$CACHE_ROOT"/*|"$GITHUB_WORKSPACE"/*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          remove_tree() {
+            local path="$1" parent base
+            [ -e "$path" ] || return 0
+            if ! allowed_path "$path"; then
+              echo "::error::refusing unsafe cleanup path: $path"
+              remove_failures=$((remove_failures + 1))
+              return 1
+            fi
+
+            if rm -rf -- "$path" 2>/dev/null && [ ! -e "$path" ]; then
+              echo "removed: $path"
+              removed=$((removed + 1))
+              return 0
+            fi
+
+            if command -v sudo >/dev/null 2>&1 \
+              && sudo -n rm -rf -- "$path" 2>/dev/null \
+              && [ ! -e "$path" ]; then
+              echo "removed with sudo: $path"
+              removed=$((removed + 1))
+              return 0
+            fi
+
+            # Root-owned files are normally produced by this image. Use it only
+            # as a fallback; the normal host cleanup remains independent of it.
+            if command -v docker >/dev/null 2>&1 \
+              && docker image inspect "$REQUIRED_IMAGE" >/dev/null 2>&1; then
+              parent="$(dirname -- "$path")"
+              base="$(basename -- "$path")"
+              if docker run --rm \
+                -v "$parent:/gc" \
+                --entrypoint bash \
+                "$REQUIRED_IMAGE" \
+                -c 'rm -rf -- "/gc/$1"' _ "$base" >/dev/null 2>&1 \
+                && [ ! -e "$path" ]; then
+                echo "removed with Docker ownership fallback: $path"
+                removed=$((removed + 1))
+                return 0
+              fi
+            fi
+
+            echo "::warning::could not remove $path; host ownership repair is required"
+            remove_failures=$((remove_failures + 1))
+            return 1
+          }
+
+          reap_pattern() {
+            local root="$1" pattern="$2" path
+            [ -d "$root" ] || return 0
+            while IFS= read -r -d '' path; do
+              remove_tree "$path" || true
+            done < <(
+              find "$root" \
+                -mindepth 1 -maxdepth 1 -type d \
+                -name "$pattern" -mmin "+$GRACE_MINUTES" \
+                -print0 2>/dev/null
+            )
+          }
+
+          clear_children() {
+            local root="$1" path
+            [ -d "$root" ] || return 0
+            while IFS= read -r -d '' path; do
+              remove_tree "$path" || true
+            done < <(find "$root" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+          }
+
+          before_scratch_free="$(free_gb "$SCRATCH_ROOT")"
+          before_cache_free="$(free_gb "$CACHE_ROOT")"
+
+          # Current Rust Small paths.
+          reap_pattern "$repo_scratch" '[0-9]*-[0-9]*'
+          reap_pattern "$tmp_scratch" '[0-9]*-[0-9]*'
+
+          # Current ripr paths. The inline ripr preflight previously searched
+          # /mnt/ci-scratch at maxdepth 1 and therefore missed both nested roots.
+          reap_pattern "$repo_scratch" 'ripr-[0-9]*-[0-9]*'
+          reap_pattern "$tmp_scratch" 'ripr-[0-9]*-[0-9]*'
+
+          # Legacy layout retained for safe migration cleanup.
+          reap_pattern "$SCRATCH_ROOT" 'ripr-[0-9]*-[0-9]*'
+
+          # The maintenance job owns this workspace and no checkout is running.
+          # Remove only disposable generated output, not the checkout itself.
+          remove_tree "$GITHUB_WORKSPACE/target" || true
+
+          workers="$(pgrep -fc 'Runner.Worker' 2>/dev/null || true)"
+          workers="${workers:-0}"
+          if [ "$workers" -le 1 ]; then
+            sccache_gb="$(size_gb "$sccache_dir")"
+            if [ "$sccache_gb" -gt "$SCCACHE_CAP_GB" ]; then
+              echo "::warning::sccache is ${sccache_gb} GB; purging above ${SCCACHE_CAP_GB} GB cap"
+              clear_children "$sccache_dir"
+            fi
+
+            cargo_home_gb="$(size_gb "$cargo_home")"
+            if [ "$cargo_home_gb" -gt "$CARGO_HOME_CAP_GB" ]; then
+              echo "::warning::cargo home is ${cargo_home_gb} GB; trimming disposable registry/git caches"
+              remove_tree "$cargo_home/registry/cache" || true
+              remove_tree "$cargo_home/registry/src" || true
+              remove_tree "$cargo_home/git/checkouts" || true
+              remove_tree "$cargo_home/git/db" || true
+
+              cargo_home_gb="$(size_gb "$cargo_home")"
+              if [ "$cargo_home_gb" -gt "$CARGO_HOME_CAP_GB" ]; then
+                remove_tree "$cargo_home/registry/index" || true
+              fi
+            fi
+
+            # Keep the required tagged image. These commands remove only stopped
+            # containers and dangling images; no broad image/volume prune.
+            if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+              docker container prune -f --filter 'until=2h' >/dev/null 2>&1 || true
+              docker image prune -f --filter 'until=24h' >/dev/null 2>&1 || true
+            fi
+          else
+            echo "::warning::detected $workers Runner.Worker processes; skipped shared-cache and Docker pruning"
+          fi
+
+          after_scratch_free="$(free_gb "$SCRATCH_ROOT")"
+          after_cache_free="$(free_gb "$CACHE_ROOT")"
+          image_state=missing
+          if command -v docker >/dev/null 2>&1 \
+            && docker image inspect "$REQUIRED_IMAGE" >/dev/null 2>&1; then
+            image_state=present
+          else
+            echo "::warning::required image $REQUIRED_IMAGE is missing on $POOL"
+          fi
+
+          if [ "$after_scratch_free" -lt "$MIN_FREE_GB" ]; then
+            echo "::warning::$SCRATCH_ROOT has ${after_scratch_free} GB free after maintenance; target is ${MIN_FREE_GB} GB"
+          fi
+
+          {
+            echo "### EM CI runner maintenance: $POOL"
+            echo
+            echo "- stale trees removed: $removed"
+            echo "- removal failures: $remove_failures"
+            echo "- scratch free: ${before_scratch_free} GB → ${after_scratch_free} GB"
+            echo "- cache free: ${before_cache_free} GB → ${after_cache_free} GB"
+            echo "- required image: $image_state"
+            echo "- Runner.Worker processes observed: $workers"
+            echo
+            echo '```text'
+            du -sh "$repo_scratch" "$tmp_scratch" "$sccache_dir" "$cargo_home" 2>/dev/null | sort -rh || true
+            df -h "$SCRATCH_ROOT" "$CACHE_ROOT" /mnt/docker / 2>/dev/null || true
+            df -ih "$SCRATCH_ROOT" "$CACHE_ROOT" /mnt/docker / 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
