@@ -69,15 +69,32 @@ pub fn check_strict_warnings(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         || top_level_state.signatures_strict;
     let mut has_warnings = top_level_state.warnings;
 
-    // OO frameworks that implicitly provide strict+warnings
+    // OO frameworks that implicitly provide strict+warnings.
+    //
+    // `Catalyst` and `Mojolicious` were removed (2026-07, issue #3644 item 3):
+    // neither implicitly enables strict/warnings in the *importing* package.
+    // - `Catalyst::import()` only performs Moose meta-class/superclass setup;
+    //   it never calls `strict->import`/`warnings->import` for the caller, so
+    //   Catalyst app files must (and always do, per Catalyst::Devel's App.pm.tt
+    //   skeleton) declare `use strict; use warnings;` explicitly.
+    // - `Mojolicious.pm` defines no `import()` of its own -- it inherits
+    //   `Mojo::Base::import()`, whose very first line is
+    //   `return unless my @flags = @_;`. A bare `use Mojolicious;` (no `-base`
+    //   or other flag) passes zero arguments, so the import returns
+    //   immediately without touching strict/warnings at all.
+    // `Mojolicious::Lite` was added: its `import()` ends with
+    // `unshift @_, 'Mojo::Base', '-strict'; goto &Mojo::Base::import;`, which
+    // always passes the non-empty `-strict` flag into `Mojo::Base::import()`,
+    // unconditionally enabling `strict`/`warnings`/`utf8`/`feature` in the
+    // caller's package -- so a single-file `use Mojolicious::Lite;` app gets
+    // strict+warnings for free.
     const IMPLICIT_STRICT_MODULES: &[&str] = &[
         "Moo",
         "Moose",
         "MooseX::StrictConstructor",
         "Modern::Perl",
         "Dancer2",
-        "Catalyst",
-        "Mojolicious",
+        "Mojolicious::Lite",
         "Mojo::Base",
     ];
 
@@ -694,6 +711,61 @@ mod tests {
         assert!(
             diags.iter().any(|d| d.code.as_deref() == Some("PL101")),
             "sub-scoped Moose should not suppress missing-warnings (PL101)"
+        );
+    }
+
+    #[test]
+    fn catalyst_does_not_suppress_missing_strict_or_warnings() {
+        // Catalyst app packages do NOT get strict/warnings implicitly from
+        // `use Catalyst qw(...)`. Catalyst::Manual and generated app skeletons
+        // (Catalyst::Devel's App.pm.tt) always emit an explicit `use strict;`
+        // and `use warnings;` above `use Catalyst`. Catalyst.pm's import()
+        // (Catalyst.pm, sub import) only registers plugins/config -- it never
+        // calls strict->import or warnings->import into the caller.
+        let diags = strict_warnings_diags("use Catalyst qw(-Debug);\nmy $x = 1;\n");
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL100")),
+            "use Catalyst must not suppress missing-strict (PL100) -- Catalyst does not \
+             implicitly enable strict in the importing package"
+        );
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL101")),
+            "use Catalyst must not suppress missing-warnings (PL101) -- Catalyst does not \
+             implicitly enable warnings in the importing package"
+        );
+    }
+
+    #[test]
+    fn mojolicious_does_not_suppress_missing_strict_or_warnings() {
+        // Mojolicious.pm's own import() (Mojolicious.pm, sub import) only
+        // forwards to Mojo::Base's import when the caller passes '-base' as
+        // an argument (`use Mojolicious -base;`). Plain `use Mojolicious;`
+        // with no arguments does not enable strict/warnings in the importer --
+        // it only loads the module. Only the `-base` form (or Mojolicious::Lite)
+        // wires in Mojo::Base's `-strict` behavior.
+        let diags = strict_warnings_diags("use Mojolicious;\nmy $x = 1;\n");
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL100")),
+            "plain `use Mojolicious;` must not suppress missing-strict (PL100)"
+        );
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("PL101")),
+            "plain `use Mojolicious;` must not suppress missing-warnings (PL101)"
+        );
+    }
+
+    #[test]
+    fn mojolicious_lite_suppresses_missing_strict_and_warnings() {
+        // Mojolicious::Lite's import() (Mojolicious/Lite.pm, sub import) does
+        // `Mojo::Base->import('-strict')` (via `unshift @_, 'Mojo::Base', '-strict';
+        // goto &Mojo::Base::import` in older releases, or an equivalent direct
+        // call in newer ones) which in turn calls strict->import and
+        // warnings->import into the *caller's* package. So a single-file
+        // `use Mojolicious::Lite;` app has strict+warnings enabled for free.
+        let diags = strict_warnings_diags("use Mojolicious::Lite;\nmy $x = 1;\n");
+        assert!(
+            diags.iter().all(|d| !matches!(d.code.as_deref(), Some("PL100") | Some("PL101"))),
+            "use Mojolicious::Lite should suppress both missing strict/warnings diagnostics"
         );
     }
 
