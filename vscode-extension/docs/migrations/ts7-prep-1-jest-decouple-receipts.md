@@ -124,7 +124,7 @@ config — `jest.config.js`, `eslint.config.js`, `tsconfig.integration.json`,
 - `npm ci` (frozen contract) against the new lockfile: exit 0. `ts-jest` references in
   `package-lock.json`: 0.
 
-## Package-manager policy — npm is the sole supported contract; pnpm-lock is broken
+## Package-manager policy — npm is the sole supported contract; broken pnpm-lock removed
 
 Primary-artifact findings:
 
@@ -143,15 +143,26 @@ Primary-artifact findings:
   `vscode-textmate@7.0.4`, `vscode-tmgrammar-test@0.1.3` each appear 4× consecutively).
   No `pnpm install --frozen-lockfile` could ever have passed on it.
 
-Decision for PREP-1: **do not touch `pnpm-lock.yaml`.** A clean `pnpm install`
-regenerates a valid lock but performs a large in-range dependency refresh (~128 pkgs:
-`eslint` 10.5.0→10.6.0, `@typescript-eslint` 8.61.1→8.63.0, `@types/node`, `tar`,
-`vscode-languageclient`, `@babel/*`, …) — a forbidden general refresh — and a
-hand-prune cannot be validated because `--frozen-lockfile` rejects the pre-existing
-duplicate keys regardless. Leaving the (already-broken, CI-unused) file pristine is the
-minimal, safe action. **Follow-up (package-manager-policy):** decide whether to
-regenerate `pnpm-lock.yaml` cleanly and wire a pnpm CI lane, or remove it in favor of
-npm-only.
+Decision for PREP-1: **remove `pnpm-lock.yaml` in favor of npm-only.** The file was
+already broken (`ERR_PNPM_BROKEN_LOCKFILE`, duplicate `packages:` keys), consumed by no
+workflow/script (no `packageManager` field; dependabot registers only the `npm`
+ecosystem for `/vscode-extension`), and excluded from the VSIX (`.vscodeignore`). After
+this PR removed `ts-jest` from `package.json`/`package-lock.json`, the stale lock also
+disagreed with the manifest. Deleting it is the minimal, **validatable**, contract-safe
+resolution of that disagreement:
+
+- It introduces **zero** dependency version changes (unlike a clean `pnpm install`, which
+  performs a forbidden ~128-pkg in-range refresh: `eslint` 10.5.0→10.6.0,
+  `@typescript-eslint` 8.61.1→8.63.0, `@types/node`, `tar`, `vscode-languageclient`,
+  `@babel/*`, …).
+- It needs no `--frozen-lockfile` validation (a hand-prune could not be validated because
+  the pre-existing duplicate keys make `--frozen-lockfile` abort regardless).
+- npm remains the single authoritative, fully-consistent contract (`npm ci` exit 0; VSIX
+  inventory unchanged — the lock was never in the VSIX).
+
+**Follow-up (package-manager-policy):** if the project later wants pnpm support, add a
+pnpm CI lane and regenerate a fresh `pnpm-lock.yaml` from scratch at that time (the
+deleted lock had zero forward value — a future lane would regenerate it anyway).
 
 ## Commands (reproduce)
 
