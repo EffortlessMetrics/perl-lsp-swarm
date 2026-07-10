@@ -36,6 +36,15 @@ and does not execute it.
   `cargo-allow init --profile spec-system --dry-run` at S1 time. This plan
   does not hardcode an assumed shape — the dry-run output is the source of
   truth when S1 opens.
+- `cargo-allow init --profile spec-system --dry-run` was run (read-only,
+  this worktree) to check whether its defaults fit the actual repo layout.
+  They do not: the dry-run would create `.allow\goals\` (not the existing
+  `.perl-lsp/goals/`), `docs\status\SUPPORT_TIERS.md` (not the existing
+  `docs/project/status/SUPPORT_TIERS.md`), and a competing `docs\templates\`
+  tree (canonical templates already live in `docs/reference/`). Its
+  `.allow\artifacts\doc-artifacts.toml` default does match a sensible
+  ledger location. This is why S1 must explicitly configure roots rather
+  than accept built-in defaults — see "S1 repo roots" below.
 - See the doctor/check raw output appendix at the bottom of this plan.
 
 ## Objective
@@ -76,6 +85,30 @@ caps, permitted-lane rules, hazard-class completeness). CI executes proof
 structural: does the graph parse, are IDs unique, do links resolve, are
 lifecycle transitions valid.
 
+## Two Independent Axes: Scan Mode vs. Enforcement Posture
+
+This plan uses two axes that sound similar but are not the same knob:
+
+- **`cargo-allow` command/scan mode** (`audit` / `no-new` / `strict` /
+  `release`) — a per-invocation flag to `cargo-allow check` that controls how
+  strictly *that single run* evaluates the currently-registered graph (e.g.
+  `audit` reports everything, `no-new` fails only on newly-introduced
+  findings relative to a baseline, `strict`/`release` tighten further). This
+  is chosen per CI job or per local run.
+- **Profile enforcement posture** (advisory -> shadow -> narrow-block) — the
+  phase-train-level decision (S1 through S6) about whether *any* finding
+  from the `spec-system` profile is allowed to fail a build at all, and if
+  so, which finding classes. This is a property of the profile config and
+  CI wiring, changed rarely, one finding class at a time (see S6).
+
+A CI job can run `cargo-allow check --profile spec-system --mode audit` (scan
+mode: report everything) while the job itself stays advisory (enforcement
+posture: never fails the build) — that is exactly the S1-S5 setup. Only in
+S6 does a specific finding class, evaluated under whatever scan mode the CI
+job uses, get to fail the build. Do not conflate "audit mode" with
+"advisory posture" — a `strict`-mode scan can still run inside an
+advisory-posture CI job.
+
 ## Phase Train S0-S6
 
 S1-S6 are **explicitly deferred** until #3579 lands / a separate WIP slot
@@ -103,12 +136,55 @@ compiler-program plan + goal manifest, Fresh Facts Fast plan + goal manifest,
 the support-tier surface, and the source-exception policy ledger. Add an
 advisory CI job separate from the existing source-exception check.
 
+**S1 repo roots** — the dry-run's built-in defaults create *new* files that
+compete with paths that already exist in this repo (see "Grounded Tool
+Facts"). S1 must explicitly point the profile config at the real layout
+instead of accepting those defaults:
+
+```toml
+goals = ".perl-lsp/goals"
+support_tiers = "docs/project/status/SUPPORT_TIERS.md"
+artifact_ledger = ".allow/artifacts/doc-artifacts.toml"
+```
+
+**S1 requirements posture** — start from these settings, adjusted to match
+whatever the actual `cargo-allow init --profile spec-system --dry-run`
+output supports at S1 time (this is a starting point, not a locked
+contract):
+
+```toml
+ledger_required = true
+templates_required = false   # do not create a competing docs/templates/
+                              # tree — canonical templates live in
+                              # docs/reference/
+support_tiers_required = true
+active_goal_required = false # enable after the small graph resolves clean
+closeout_required_for_done_items = false  # enable after closeouts are
+                                           # dogfooded (S5)
+```
+
+**S1 legacy `.spec` import** — the historical `.spec` tree is registered as
+a read-only *import root*, not folded into the canonical ledger:
+
+```toml
+[[import_roots.entries]]
+id = "legacy-perl-lsp-specs"
+path = ".spec"
+ecosystem = "generic-spec"
+role = "legacy"
+```
+
+Findings from this import root stay advisory; individual imported files are
+never force-registered into the canonical ledger by this phase (see "Legacy
+`.spec` posture" below for the backfill criteria).
+
 Stop condition: `cargo-allow doctor --profile spec-system` reports
 `Ready: true` for the registered roots; the advisory CI job runs and reports
 findings without blocking merge; no more than the named small graph is
-registered.
+registered; the legacy `.spec` import root produces only advisory findings.
 
-Explicit non-goal: do NOT hand-register the whole historical `.spec` tree.
+Explicit non-goal: do NOT hand-register the whole historical `.spec` tree
+into the canonical ledger — it is imported read-only, advisory-only.
 
 ### S2 — Generic markdown adapter improvements (upstream)
 
@@ -119,9 +195,14 @@ front-matter normalizes into typed edges; explicit identity gets
 high-confidence scoring; imports are never rewritten; duplicate IDs are
 diagnosed. Ship and pin the release before any native cutover in S3.
 
-Stop condition: the upstream release is published, pinned in this repo's
-`Cargo.lock`/toolchain manifest, and the S1 registered graph re-validates
-cleanly under the new adapter version.
+`cargo-allow` is a separately-installed CLI, not a workspace dependency —
+pinning it does not touch `Cargo.lock`. Stop condition: publish the
+upstream release; pin the exact `cargo-allow` version in the repo's CI/
+tool-bootstrap surface via `cargo install cargo-allow --version <VERSION>
+--locked`; assert `cargo-allow --version` reports that pin in CI; rerun the
+S1 graph against that version and confirm it re-validates cleanly. (Only if
+`cargo-allow` is ever intentionally made a workspace dependency would
+`Cargo.lock` be the right pin surface — it is not, as of this plan.)
 
 ### S3 — Native bundles for new `.spec` work
 
@@ -129,7 +210,7 @@ Goal: new `.spec` bundles become `cargo-allow`-native: `context.md` ->
 `proposal`, `acceptance.md` -> `spec`, `checklist.md` -> `implementation_plan`,
 add `closeout.md` -> `closeout`. Globally-unique IDs follow the pattern
 `PLSP-SWARM-{PROP,SPEC,PLAN,CLOSEOUT}-<issue>-<run>`. Update
-`docs/reference/SPEC_TEMPLATE.md`, `docs/reference/SPEC_UPDATE_CHECKLIST.md`,
+`docs/reference/SPEC_TEMPLATE.md`, `docs/agents/SPEC_UPDATE_CHECKLIST.md`,
 the `spec-planner` agent + commands, `spec-builder.js`, the
 builder/red-tdd prompts, and `spec-test-code-match` to know about the new
 `closeout.md` file and the native ID scheme.
@@ -137,7 +218,9 @@ builder/red-tdd prompts, and `spec-test-code-match` to know about the new
 Stop condition: a newly created `.spec/<issue#>-<slug>/` bundle round-trips
 through `cargo-allow check --profile spec-system` with zero structural
 findings, and all named docs/agents/commands are updated to reference the
-native shape.
+native shape. The `spec-system` contract spec's PLSP-SPEC ID is allocated
+when this phase actually creates the file (checked against the current
+`docs/specs/` numbering at that time) — not reserved in advance by S0.
 
 Explicit non-goal: this phase does not touch the historical `.spec` tree
 (see "Legacy `.spec` posture" below).
@@ -145,31 +228,45 @@ Explicit non-goal: this phase does not touch the historical `.spec` tree
 ### S4 — Fresh Facts Fast as first native dogfood graph
 
 Goal: Fresh Facts Fast (proposal -> spec -> plan -> goal -> phase closeouts)
-becomes the first fully `cargo-allow`-native graph. Only after all linked
-artifacts are registered and `cargo-allow explain` shows the intended graph
-with no unknown-link findings does this phase set
+becomes the first fully `cargo-allow`-native graph. This phase dogfoods **at
+least one `closeout.md`** for a completed Fresh Facts Fast phase and
+validates that `cargo-allow` links it back to its spec/plan — but
+`closeout_required_for_done_items` stays `false` here; closeouts are proven
+optional-but-working in S4, not yet enforced (enforcement is S5's job, so
+S4 and S5 do not both gate on the same flag at the same time). Only after
+all linked artifacts are registered and `cargo-allow explain` shows the
+intended graph with no unknown-link findings does this phase set
 `active_goal_required = true`.
 
 Stop condition: `cargo-allow explain --profile spec-system` renders the
-complete Fresh Facts Fast graph (proposal through closeouts) with zero
-unknown-link findings; `active_goal_required = true` is set only after that
-check passes.
+complete Fresh Facts Fast graph (proposal through at least one closeout)
+with zero unknown-link findings; the dogfooded closeout links to its
+spec/plan without a manual patch; `active_goal_required = true` is set only
+after that check passes.
 
 Explicit non-goal: do NOT move `.perl-lsp/goals` to `.allow/goals` in the same
 PR as this dogfood cutover — that is a separate, later migration once the
-dogfood graph has run clean for a full lane cycle.
+dogfood graph has run clean for a full lane cycle. Do NOT set
+`closeout_required_for_done_items = true` in this phase.
 
 ### S5 — Closeouts become part of "done"
 
-Goal: a `closeout.md` at merge time (merged SHA, production entrypoint,
-tests/receipts, reachable behavior, fallback remaining, deferred work,
-rollback, uncertainty) becomes a required artifact. A work item is `done`
-only once its closeout exists and is linked.
+Goal: update the authoring workflow (spec-planner/builder/wisdom prompts and
+commands) so a `closeout.md` at merge time (merged SHA, production
+entrypoint, tests/receipts, reachable behavior, fallback remaining, deferred
+work, rollback, uncertainty) is produced for every newly-completed work item,
+then flip `closeout_required_for_done_items = true` in the profile config so
+`cargo-allow` enforces it going forward. A work item is `done` only once its
+closeout exists and is linked. This phase depends on S4 having already
+proven the closeout shape and linkage mechanics work (S4 dogfoods, S5
+enforces — not the reverse).
 
-Stop condition: at least one full lane (proposal through merge) produces a
-closeout that `cargo-allow` links back to its spec/plan without a manual
-patch; the closeout fields above are populated from real merge data, not
-placeholders.
+Stop condition: the authoring workflow reliably produces closeouts for newly
+completed work; `closeout_required_for_done_items = true` is set and
+`cargo-allow check --profile spec-system` blocks (at least in shadow mode)
+a newly-completed work item that lacks a linked closeout; the closeout
+fields above are populated from real merge data, not placeholders, across
+more than one lane.
 
 ### S6 — Shadow, then narrowly block
 
@@ -186,7 +283,13 @@ finding-class, not as a single flag flip.
 
 ## Legacy `.spec` Posture
 
-The historical `.spec` tree is **read-only import**. Backfill only:
+Assigned to **S1**: the historical `.spec` tree is registered as a
+**read-only import root** (`id = "legacy-perl-lsp-specs"`, `path = ".spec"`,
+`ecosystem = "generic-spec"`, `role = "legacy"` — see "S1 legacy `.spec`
+import" above), not folded into the canonical ledger. Its findings stay
+advisory permanently, independent of the S6 promotion train for the
+canonical graph. Individual files backfill into the canonical ledger only
+when:
 
 - Currently-active specs (an open PR or in-flight build references them)
 - Specs linked by an active goal manifest
@@ -198,12 +301,19 @@ No mass rewrite of the old tree is in scope at any phase of this train.
 ## Governance Clause (long-running operating goal)
 
 > `cargo-allow`'s `spec-system` profile is the canonical structural graph
-> validator for the perl-lsp spec system. Claude still authors artifacts. At
-> session start, run `doctor`/`check`/`worklist` for the `spec-system`
-> profile. New governed artifacts carry stable IDs, kinds, owners, statuses,
-> and typed links. A work item is not consolidated until its closeout is
-> linked. `cargo-allow` findings never substitute for proof execution or live
-> GitHub state. Legacy `.spec` bundles stay read-only until touched.
+> validator for the perl-lsp spec system. Claude still authors artifacts.
+> **After S1 merges**, run `doctor`/`check`/`worklist` for the `spec-system`
+> profile at session start. New governed artifacts carry stable IDs, kinds,
+> owners, statuses, and typed links. A work item is not consolidated until
+> its closeout is linked (enforced from S5 onward). `cargo-allow` findings
+> never substitute for proof execution or live GitHub state. Legacy `.spec`
+> bundles stay read-only until touched.
+>
+> Before S1 merges, `.allow/profiles/spec-system.toml` does not exist and
+> `cargo-allow doctor --profile spec-system` reports `Ready: false` by
+> design — that red readiness output is migration **evidence** for this
+> plan, not a session-start gate to act on. Do not treat pre-S1 doctor
+> output as an actionable failure.
 
 ## Cutover/Rollback
 
@@ -219,9 +329,13 @@ config is sufficient to roll back validation without touching the underlying
 
 - Proposal: `PLSP-PROP-0003` (allocated by this PR — next free ID after
   `PLSP-PROP-0002`; see `docs/proposals/PLSP-PROP-0003-spec-governance.md`)
-- Spec: `PLSP-SPEC-0036` is reserved for the future `spec-system` contract
-  spec (next free ID after `PLSP-SPEC-0035`; not created in this PR — S2/S3
-  will author it once the adapter and native-bundle shapes are settled)
+- Spec: not allocated by this PR. A prose-only ID reservation for a
+  not-yet-created file is exactly the kind of invisible convention this
+  migration exists to eliminate — see "Two Independent Axes" and the
+  Objective above: `cargo-allow` owns identity, not chat/plan prose. When
+  S2/S3 actually creates the `spec-system` contract spec, that phase
+  allocates its `PLSP-SPEC-####` ID by checking `docs/specs/` numbering at
+  that time (see the S3 stop condition above).
 
 ## Appendix: `cargo-allow doctor --profile spec-system` (read-only, this worktree)
 
