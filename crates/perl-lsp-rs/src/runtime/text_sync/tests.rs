@@ -1137,6 +1137,22 @@ fn stale_side_effects_never_commit_through_the_real_worker_after_a_newer_edit()
     let side_effect_barrier = worker.side_effect_barrier();
     let normalized_uri = server.normalize_uri_key(uri);
 
+    // RAII guard: releases the paused worker thread even if an assertion
+    // below panics. Without this, a panic between `arm` and the manual
+    // `release()` call leaves a real worker thread permanently blocked
+    // inside `ParseWorkerTestBarrier::maybe_pause`'s condvar wait -- which
+    // has no shutdown-awareness (see its doc comment) -- so `server`'s own
+    // drop (during the panic's unwind) hangs forever inside
+    // `ParseWorker::drop`'s `handle.join()`. A failing assertion must
+    // report FAILED, not hang the whole test binary.
+    struct ReleaseOnDrop<'a>(&'a parse_worker::ParseWorkerTestBarrier);
+    impl Drop for ReleaseOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+    let _release_guard = ReleaseOnDrop(&side_effect_barrier);
+
     // Edit N (generation 1): arm the side-effect barrier so the worker
     // pauses immediately after N's publish succeeds, before its side
     // effects (symbol reindex) commit.
