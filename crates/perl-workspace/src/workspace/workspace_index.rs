@@ -6921,6 +6921,87 @@ sub hello {
         Ok(())
     }
 
+    /// #3618 review thread (factory-droid, PRRT_kwDOSid81M6QBZ1u): before the
+    /// `generation`/`pending_generation` split added in this PR's fix-3
+    /// round, the early guard's reservation wrote directly onto
+    /// `FileIndex::generation` (`existing_index.generation = generation`) --
+    /// the SAME field `indexed_generation()` reads. For the entire window
+    /// between that reservation and the late guard's insert, a reader
+    /// (including `LspServer::workspace_index_stale_for_document`, which
+    /// gates hover/navigation/references/completion's local-provider
+    /// fallback on `indexed_generation() == DocumentState::current_generation()`)
+    /// would see the NEW generation number while `file_symbols()` (and
+    /// everything else keyed off the same `FileIndex`) still returned the
+    /// OLD generation's facts -- a window where the index looks caught up
+    /// but isn't.
+    ///
+    /// The `generation`/`pending_generation` split closes this as a side
+    /// effect: the early guard now only ever advances `pending_generation`;
+    /// `generation` -- the only field `indexed_generation()` reads -- is
+    /// written exclusively by the late guard's successful insert, AFTER
+    /// parsing and symbol extraction have already completed. There is no
+    /// longer a reservation write on the path `indexed_generation()` reads
+    /// at all, so this test asserts the window is actually closed: while a
+    /// large document is still parsing in another thread, `indexed_generation()`
+    /// must keep reporting the PREVIOUS generation, never the in-flight one.
+    #[test]
+    fn indexed_generation_never_advances_speculatively_during_a_still_parsing_task()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut gen_5_text = String::from("package StaleWindow;\n");
+        for i in 0..3000 {
+            gen_5_text.push_str(&format!("sub gen_5_symbol_{i} {{ {i} }}\n"));
+        }
+        gen_5_text.push_str("1;\n");
+
+        for iteration in 0..10 {
+            let index = Arc::new(WorkspaceIndex::new());
+            let uri = must(url::Url::parse(&format!("file:///lib/StaleWindow{iteration}.pm")));
+
+            index.index_file_with_generation(
+                uri.clone(),
+                "package StaleWindow;\nsub baseline { 1 }\n1;\n".to_string(),
+                3,
+            )?;
+            assert_eq!(index.indexed_generation(uri.as_str()), Some(3));
+
+            let index_parse = Arc::clone(&index);
+            let uri_parse = uri.clone();
+            let text_parse = gen_5_text.clone();
+            let parse_handle = std::thread::spawn(move || {
+                index_parse.index_file_with_generation(uri_parse, text_parse, 5)
+            });
+
+            // Brief, bounded head start so the parse thread's early guard has
+            // reserved generation 5 (bumped `pending_generation`) before this
+            // thread reads `indexed_generation()` -- the exact reservation
+            // window the pre-fix code would have leaked into `generation`.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            let generation_while_still_parsing = index.indexed_generation(uri.as_str());
+
+            parse_handle
+                .join()
+                .map_err(|_| "generation 5 parse thread panicked")?
+                .map_err(|e| format!("generation 5 write returned an error: {e}"))?;
+
+            assert_eq!(
+                generation_while_still_parsing,
+                Some(3),
+                "iteration {iteration}: indexed_generation() must never report a generation \
+                 whose symbols haven't actually been committed yet -- observed {:?} while \
+                 generation 5 was still mid-parse (baseline was 3)",
+                generation_while_still_parsing
+            );
+            assert_eq!(
+                index.indexed_generation(uri.as_str()),
+                Some(5),
+                "iteration {iteration}: after the parse genuinely completes, indexed_generation() \
+                 must reflect it"
+            );
+        }
+
+        Ok(())
+    }
+
     #[test]
     fn test_early_exit_optimization_changed_content() {
         let index = WorkspaceIndex::new();
