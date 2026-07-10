@@ -37,6 +37,7 @@
 | Native formatter/critic replacement status | [native_tooling.md](native_tooling.md) | Generator | Native formatter or critic capability changes |
 | CI hardening implementation status | [ci_hardening.md](ci_hardening.md) | Human | CI hardening state changes |
 | Coverage and RIPR enforcement | [coverage_and_ripr_enforcement.md](coverage_and_ripr_enforcement.md) | Human | Proof-lane policy or transition-exception changes |
+| Editor intelligence scorecard | [editor.md](editor.md) | Generator | Every editor-UX or gold-corpus change |
 
 ## What's Next
 
