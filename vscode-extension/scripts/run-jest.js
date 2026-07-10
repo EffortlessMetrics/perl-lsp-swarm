@@ -44,11 +44,20 @@ function mapSourcePathToCompiled(arg) {
     return arg;
   }
 
-  const compiledRelative = relativeToSrc.endsWith('.ts')
-    ? `${relativeToSrc.slice(0, -3)}.js`
-    : relativeToSrc;
+  return path.join(OUT_TEST_DIR, withCompiledExtension(relativeToSrc));
+}
 
-  return path.join(OUT_TEST_DIR, compiledRelative);
+function withCompiledExtension(relativePath) {
+  if (relativePath.endsWith('.ts')) {
+    return `${relativePath.slice(0, -3)}.js`;
+  }
+  if (relativePath.endsWith('.js')) {
+    return relativePath;
+  }
+  // No recognized extension (e.g. `src/test/commands.test`, matching how
+  // some Jest CLI flags accept an extension-less path) — tsc always emits
+  // `.js`, so that is the only compiled artifact that could exist.
+  return `${relativePath}.js`;
 }
 
 const jestArgs = process.argv.slice(2).map(mapSourcePathToCompiled);

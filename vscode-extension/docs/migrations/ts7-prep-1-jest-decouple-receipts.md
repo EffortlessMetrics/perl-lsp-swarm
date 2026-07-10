@@ -145,18 +145,30 @@ Primary-artifact findings:
 
 Decision for PREP-1: **remove `pnpm-lock.yaml` and the dormant `pnpm.overrides` block
 in favor of npm-only.** The lockfile was already broken (`ERR_PNPM_BROKEN_LOCKFILE`,
-duplicate `packages:` keys), consumed by no install/script path (no `packageManager`
+duplicate package entries), consumed by no install/script path (no `packageManager`
 field; dependabot registers only the `npm` ecosystem for `/vscode-extension`), and
 excluded from the VSIX (`.vscodeignore`). The `pnpm.overrides` block was package-level
 config that only pnpm reads — never applied on any real install (all install/CI paths
 are npm; the pnpm lock could never install) — so removing it changes **zero** installed
 versions: `npm ci` and `package-lock.json` are byte-identical before and after (npm does
-not read the `pnpm` key). It is also not a live safety control here: the npm-resolved
-dev-only dependencies it named remain at `diff@7.0.0` and `serialize-javascript@6.0.2`,
-neither of which carries an active advisory (serialize-javascript's CVE-2024-11831 was
-fixed in 6.0.2). Keeping a half-configuration (pnpm overrides but no pnpm lockfile) would
-have left a trap where a future `pnpm install` resolves a tree that diverges from the
-authoritative npm one; removing both leaves a single, fully-consistent npm-only contract.
+not read the `pnpm` key). It is also not a live safety control here, in either
+direction: the npm-resolved dev-only dependencies it named remain at `diff@7.0.0` and
+`serialize-javascript@6.0.2`, and per `npm audit` (run on this HEAD) both currently
+carry **active** advisories — `diff@7.0.0`: low-severity DoS in `parsePatch`/
+`applyPatch` ([GHSA-73rr-hh4g-fpgx](https://github.com/advisories/GHSA-73rr-hh4g-fpgx),
+fixed in 8.0.3); `serialize-javascript@6.0.2`: high-severity RCE via `RegExp.flags`/
+`Date.prototype.toISOString()` ([GHSA-5c6j-r48x-rmvq](https://github.com/advisories/GHSA-5c6j-r48x-rmvq),
+fixed in 7.0.3) plus a moderate CPU-exhaustion DoS
+([GHSA-qj8w-gfj5-8c6v](https://github.com/advisories/GHSA-qj8w-gfj5-8c6v), fixed in
+7.0.5). Both are transitive via `mocha` (dev-only; used by the unrelated
+`@vscode/test-electron` integration/published-smoke suites, not by this PR's Jest
+change), pre-date PREP-1, and `npm audit`'s only fix path is a semver-major
+`mocha@11.3.0+` bump — out of scope here. Removing the pnpm override does not change
+any of this: npm never read it, so the installed tree — and its advisory exposure —
+is identical before and after this PR. Keeping a half-configuration (pnpm overrides
+but no pnpm lockfile) would have left a trap where a future `pnpm install` resolves a
+tree that diverges from the authoritative npm one; removing both leaves a single,
+fully-consistent npm-only contract.
 After this PR removed `ts-jest` from `package.json`/`package-lock.json`, the stale lock
 also disagreed with the manifest. Deleting the lock (and the orphaned overrides) is the
 minimal, **validatable**, contract-safe resolution of that disagreement:
