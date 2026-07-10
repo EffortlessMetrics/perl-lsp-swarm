@@ -17,6 +17,7 @@
 //! |---|---|
 //! | Completion | bounded text/syntax fallback (may still answer) |
 //! | Hover | no exact semantic answer from the stale AST |
+//! | Signature help | no exact answer from stale current-file facts (falls back to the name-only builtin table, never the AST) |
 //! | Definition / References | no exact answer from stale current-file facts |
 //! | Semantic tokens | no fresh current-generation semantic-token claim |
 //! | Rename | FAIL CLOSED (produces no edits) |
@@ -238,6 +239,19 @@ fn sub_foo_to_bar_cross_provider_freshness_canary() -> TestResult {
         "gap: rename must fail closed (zero edits) rather than rename a stale/absent AST; got: {rename_gap:?}"
     );
 
+    // Signature help: the user-defined-function branch requires the AST
+    // (`current_parsed()`), which is unavailable during the gap, so it must
+    // never surface the stale `foo` signature; the name-only builtin-function
+    // fallback does not recognize `foo`.
+    let sig_gap = server.test_handle_signature_help(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 4 }
+    })))?;
+    assert!(
+        !json_contains(&sig_gap, "foo"),
+        "gap: signature help must never surface the stale `foo` fact; got: {sig_gap:?}"
+    );
+
     // Completion may still answer, but only from its declared bounded
     // text/syntax fallback -- never a claim requiring the (unavailable) AST.
     let completion_gap = server.test_handle_completion(Some(json!({
@@ -296,6 +310,20 @@ fn sub_foo_to_bar_cross_provider_freshness_canary() -> TestResult {
         "post-publish: references result must not mention `foo`"
     );
 
+    let sig1 = server.test_handle_signature_help(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 4 }
+    })))?;
+    assert!(
+        json_contains(&sig1, "bar"),
+        "post-publish: signature help must resolve `bar` once the generation-1 \
+         snapshot is current; got: {sig1:?}"
+    );
+    assert!(
+        !json_contains(&sig1, "foo"),
+        "post-publish: signature help result must not mention `foo`; got: {sig1:?}"
+    );
+
     Ok(())
 }
 
@@ -323,6 +351,33 @@ fn hover_degrades_during_pending_parse_gap() -> TestResult {
     assert!(
         !json_contains(&hover, "foo"),
         "gap: hover must never surface the stale `foo` fact; got: {hover:?}"
+    );
+
+    Ok(())
+}
+
+/// Signature help: falls back to the name-only builtin-function table (never
+/// consults the stale AST) when `current_parsed()` is `None` --
+/// `get_user_function_signature` requires `doc.current_parsed().ast()`, so
+/// that branch is skipped entirely during the gap. Mirrors
+/// `hover_degrades_during_pending_parse_gap`'s "no error, no stale claim"
+/// contract: `foo` is not a Perl builtin, so the fallback does not know it
+/// either.
+#[test]
+fn signature_help_no_stale_claim_during_pending_parse_gap() -> TestResult {
+    let server = fresh_server();
+    let uri = "file:///gap_signature_help.pl";
+
+    server.test_apply_did_open(uri, BEFORE_TEXT, 1)?;
+    server.test_apply_text_change_without_reparse(uri, AFTER_TEXT, 2)?;
+
+    let sig = server.test_handle_signature_help(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 4 }
+    })))?;
+    assert!(
+        !json_contains(&sig, "foo"),
+        "gap: signature help must never surface the stale `foo` fact; got: {sig:?}"
     );
 
     Ok(())
