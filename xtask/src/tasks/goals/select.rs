@@ -141,8 +141,10 @@ pub enum SelectionDecision {
 ///
 /// Precedence:
 /// 1. Ambiguous program authority (`resolved_program` unset) -> `Blocked`.
-/// 2. A live open PR already references an in-progress candidate in this
-///    program -> `Blocked`, naming the PR (never mutated/closed here).
+/// 2. A live open PR already references any non-terminal (not
+///    `Completed`/`Deferred`) candidate in this program -> `Blocked`,
+///    naming the PR (never mutated/closed here). Live PR state outranks
+///    the candidate's self-reported ledger status.
 /// 3. Earliest candidate (declaration order) that is itself `Pending` and
 ///    whose `depends_on` are all `Completed` -> `Selected`.
 /// 4. Every candidate `Completed`/`Deferred` -> `Complete`.
@@ -158,16 +160,27 @@ pub fn select_next(snapshot: &SelectionSnapshot) -> SelectionDecision {
         }]);
     };
 
-    let in_progress_issues: Vec<u64> = snapshot
+    // Match live open PRs against every non-terminal candidate's issue
+    // (in-progress, pending, AND blocked), not only in-progress ones.
+    // A candidate's ledger `status` is self-reported and can drift from
+    // reality (e.g. a PR opened for a "pending" candidate before its
+    // status was updated); per CLAUDE.md's truth hierarchy live GitHub PR
+    // state outranks the manifest, so scoping this guard to `InProgress`
+    // alone would let `select_next` hand out a sibling candidate while
+    // real work is already in flight for one the ledger hasn't caught up
+    // on yet. Completed/Deferred candidates are excluded: they are done,
+    // and a PR merely mentioning their issue (e.g. in a changelog) must
+    // not block selection.
+    let non_terminal_issues: Vec<u64> = snapshot
         .candidates
         .iter()
-        .filter(|c| c.status == MilestoneStatus::InProgress)
+        .filter(|c| !matches!(c.status, MilestoneStatus::Completed | MilestoneStatus::Deferred))
         .filter_map(|c| c.issue)
         .collect();
     let blocking_prs: Vec<&LiveOpenPr> = snapshot
         .live_open_prs
         .iter()
-        .filter(|pr| in_progress_issues.iter().any(|issue| references_issue(pr, *issue)))
+        .filter(|pr| non_terminal_issues.iter().any(|issue| references_issue(pr, *issue)))
         .collect();
     if !blocking_prs.is_empty() {
         return SelectionDecision::Blocked(
@@ -176,7 +189,7 @@ pub fn select_next(snapshot: &SelectionSnapshot) -> SelectionDecision {
                 .map(|pr| SelectionBlocker {
                     kind: "active_work_must_be_dispositioned".to_owned(),
                     detail: format!(
-                        "PR #{} ({:?}) is open for in-progress work in program {program_id:?}; disposition it before selecting new work",
+                        "PR #{} ({:?}) is open for tracked work in program {program_id:?}; disposition it before selecting new work",
                         pr.number, pr.title
                     ),
                     pr_number: Some(pr.number),
@@ -261,7 +274,20 @@ fn ambiguity_detail(snapshot: &SelectionSnapshot) -> String {
 
 fn references_issue(pr: &LiveOpenPr, issue: u64) -> bool {
     let needle = format!("#{issue}");
-    pr.title.contains(&needle) || pr.body.contains(&needle)
+    contains_issue_reference(&pr.title, &needle) || contains_issue_reference(&pr.body, &needle)
+}
+
+/// Raw substring matching on `#<issue>` false-matches when one issue
+/// number is a numeric prefix of another (candidate `#12` would match a
+/// mention of `#120`; candidate `#3602` would match `#36024`). Requires
+/// the character immediately after the match to be end-of-string or a
+/// non-digit, so the matched `#<issue>` is not itself a prefix of a
+/// longer issue reference.
+fn contains_issue_reference(text: &str, needle: &str) -> bool {
+    text.match_indices(needle).any(|(idx, _)| {
+        let after = idx + needle.len();
+        after >= text.len() || !text.as_bytes()[after].is_ascii_digit()
+    })
 }
 
 #[cfg(test)]
@@ -379,6 +405,94 @@ mod tests {
         // (no PR close/mutate call exists in this module at all).
         assert_eq!(before.candidates.len(), snapshot.candidates.len());
         assert_eq!(before.live_open_prs.len(), snapshot.live_open_prs.len());
+    }
+
+    #[test]
+    fn pending_candidate_with_live_pr_blocks_selection_even_though_not_in_progress() {
+        // Live GitHub state outranks the manifest's self-reported status
+        // (CLAUDE.md truth hierarchy): a PR already open for a "pending"
+        // candidate (ledger not yet updated to "in_progress") must still
+        // block, not be silently skipped in favor of a different pending
+        // sibling.
+        let mut m3 = candidate("M3", MilestoneStatus::Pending, &["M2"]);
+        m3.issue = Some(3624);
+        let mut snapshot = base_snapshot(vec![
+            candidate("M2", MilestoneStatus::Completed, &[]),
+            m3,
+            candidate("M4", MilestoneStatus::Pending, &["M2"]),
+        ]);
+        snapshot.live_open_prs = vec![LiveOpenPr {
+            number: 4242,
+            title: "feat(goals): M3 selector (#3624)".to_owned(),
+            body: String::new(),
+            url: "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/4242".to_owned(),
+            is_draft: true,
+        }];
+
+        let decision = select_next(&snapshot);
+
+        match decision {
+            SelectionDecision::Blocked(blockers) => {
+                assert_eq!(blockers[0].kind, "active_work_must_be_dispositioned");
+                assert_eq!(blockers[0].pr_number, Some(4242));
+            }
+            other => panic!("expected Blocked(active_work_must_be_dispositioned), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn completed_candidate_referenced_by_a_pr_does_not_block_selection() {
+        // A PR that merely mentions a *completed* candidate's issue (e.g. a
+        // changelog entry, a "see also") must not block selection of new
+        // work — only non-terminal candidates participate in the guard.
+        let mut m2 = candidate("M2", MilestoneStatus::Completed, &[]);
+        m2.issue = Some(3614);
+        let mut snapshot =
+            base_snapshot(vec![m2, candidate("M3", MilestoneStatus::Pending, &["M2"])]);
+        snapshot.live_open_prs = vec![LiveOpenPr {
+            number: 5000,
+            title: "docs: mention M2 (#3614) in the changelog".to_owned(),
+            body: String::new(),
+            url: "u".to_owned(),
+            is_draft: false,
+        }];
+
+        let decision = select_next(&snapshot);
+
+        match decision {
+            SelectionDecision::Selected(packet) => assert_eq!(packet.id, "M3"),
+            other => panic!("expected Selected(M3), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn references_issue_does_not_prefix_match_a_longer_issue_number() {
+        // Candidate issue #12 must not be considered referenced by a PR
+        // that only mentions #120 or #1234 — `references_issue` requires a
+        // non-digit boundary after the match.
+        let mut m2 = candidate("M2", MilestoneStatus::InProgress, &[]);
+        m2.issue = Some(12);
+        let mut snapshot = base_snapshot(vec![m2]);
+        snapshot.live_open_prs = vec![LiveOpenPr {
+            number: 1,
+            title: "unrelated work (#120)".to_owned(),
+            body: "see also #1234".to_owned(),
+            url: "u".to_owned(),
+            is_draft: false,
+        }];
+
+        let decision = select_next(&snapshot);
+
+        // No pending candidate here (M2 is in_progress with no siblings),
+        // so the real assertion is that the PR did NOT trip the
+        // active-work-conflict blocker; it falls through to
+        // `no_eligible_candidate` instead.
+        match decision {
+            SelectionDecision::Blocked(blockers) => {
+                assert_eq!(blockers[0].kind, "no_eligible_candidate");
+            }
+            other => panic!("expected Blocked(no_eligible_candidate), got {other:?}"),
+        }
     }
 
     #[test]

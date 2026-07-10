@@ -46,16 +46,20 @@ pub fn build_snapshot(
 
     let known_programs = discover_known_programs(&root)?;
 
-    if let Some(requested) = &program_arg
-        && !known_programs.iter().any(|p| &p.id == requested)
-    {
-        bail!(
-            "unknown program {requested:?}; known programs: {:?}",
-            known_programs.iter().map(|p| p.id.as_str()).collect::<Vec<_>>()
-        );
-    }
-
-    let resolved_program = program_arg.clone().or_else(|| default_program.clone());
+    // Fail closed rather than erroring: an explicitly requested program
+    // that isn't discoverable under `.perl-lsp/goals/programs/` leaves
+    // `resolved_program` unset so `select_next` reports the structured
+    // `ambiguous_program_authority` blocker (with `requested_program`
+    // naming what was asked for and `known_programs` listing valid ids)
+    // instead of `goals next --json` exiting with a non-JSON error —
+    // `--json` callers must always get parseable output.
+    let resolved_program = match &program_arg {
+        Some(requested) if known_programs.iter().any(|p| &p.id == requested) => {
+            Some(requested.clone())
+        }
+        Some(_unknown) => None,
+        None => default_program.clone(),
+    };
 
     let (repository, live_open_prs) = load_live_prs(&root, fixture)?;
 
@@ -157,7 +161,7 @@ fn load_candidates_for_program(
     let text = fs::read_to_string(&full_path)
         .with_context(|| format!("failed to read {manifest_path}"))?;
 
-    if text.contains("[[milestone]]") {
+    if manifest::is_milestone_ledger(&text) {
         load_milestone_candidates(root, &manifest_path, snapshot)
     } else {
         load_lane_routing_candidates(&text, &manifest_path, snapshot)
@@ -170,6 +174,14 @@ fn load_milestone_candidates(
     snapshot: &mut SelectionSnapshot,
 ) -> Result<()> {
     let ledger = manifest::load_milestone_ledger(root, manifest_path)?;
+    // Structural validation (status/dependency/cycle checks) must gate
+    // selection the same way it gates `check-active-goal-manifest` — this
+    // is the ONE typed loader shared by both so `goals next` can never
+    // select from a ledger the validator would have rejected.
+    let violations = manifest::validate_milestone_ledger(&ledger);
+    if !violations.is_empty() {
+        bail!("{manifest_path}: invalid milestone ledger:\n{}", violations.join("\n"));
+    }
     snapshot.program_title = ledger.title.clone();
     snapshot.tracker_issue = ledger.tracker_issue;
     snapshot.non_goals = ledger.non_goals;
@@ -316,6 +328,89 @@ commands = ["rtk cargo test"]
         assert_eq!(snapshot.candidates[0].issue, None);
         assert_eq!(snapshot.board.as_deref(), Some("docs/board.md"));
         assert_eq!(snapshot.non_goals, vec!["Do not broaden.".to_owned()]);
+        Ok(())
+    }
+
+    fn blank_snapshot(resolved_program: &str) -> SelectionSnapshot {
+        SelectionSnapshot {
+            repository: "r".to_owned(),
+            requested_program: None,
+            default_program: None,
+            known_programs: Vec::new(),
+            resolved_program: Some(resolved_program.to_owned()),
+            mode: "maintainer".to_owned(),
+            board: None,
+            program_title: None,
+            tracker_issue: None,
+            non_goals: Vec::new(),
+            candidates: Vec::new(),
+            live_open_prs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unknown_requested_program_resolves_to_none_not_an_error() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let fixture_path = temp.path().join("prs.json");
+        fs::write(&fixture_path, r#"{"repository":"r","prs":[]}"#)?;
+
+        let snapshot = build_snapshot(
+            Some("definitely-not-a-real-program-xyz".to_owned()),
+            Some(fixture_path),
+        )?;
+
+        assert_eq!(
+            snapshot.requested_program.as_deref(),
+            Some("definitely-not-a-real-program-xyz")
+        );
+        assert_eq!(snapshot.resolved_program, None);
+        assert!(snapshot.candidates.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn load_candidates_for_program_classifies_by_parsed_toml_not_substring() -> Result<()> {
+        // A lane-routing manifest that merely *mentions* "[[milestone]]" in
+        // a comment must still be parsed as lane-routing, not misclassified
+        // as a (structurally empty, therefore invalid) milestone ledger.
+        let temp = tempfile::tempdir()?;
+        let programs_dir = temp.path().join(".perl-lsp/goals/programs");
+        fs::create_dir_all(&programs_dir)?;
+        fs::write(
+            programs_dir.join("p.toml"),
+            "# this program intentionally does not use [[milestone]] entries\n\n[[work_item]]\nid = \"wi-1\"\nstatus = \"active\"\n",
+        )?;
+        let mut snapshot = blank_snapshot("p");
+
+        load_candidates_for_program(temp.path(), "p", &mut snapshot)?;
+
+        assert_eq!(snapshot.candidates.len(), 1);
+        assert_eq!(snapshot.candidates[0].id, "wi-1");
+        Ok(())
+    }
+
+    #[test]
+    fn load_candidates_for_program_rejects_an_invalid_milestone_ledger() -> Result<()> {
+        // The shared `validate_milestone_ledger` checks (status vocabulary,
+        // dangling depends_on, cycles, and the in-progress-requires-issue
+        // rule) must gate `goals next` selection, not just
+        // `check-active-goal-manifest` — otherwise the two can drift on
+        // what a valid ledger looks like.
+        let temp = tempfile::tempdir()?;
+        let programs_dir = temp.path().join(".perl-lsp/goals/programs");
+        fs::create_dir_all(&programs_dir)?;
+        fs::write(
+            programs_dir.join("p.toml"),
+            "id = \"p\"\ntitle = \"t\"\n\n[[milestone]]\nid = \"M1\"\ntitle = \"one\"\nstatus = \"in_progress\"\nexit_criteria = \"x\"\n",
+        )?;
+        let mut snapshot = blank_snapshot("p");
+
+        let err = load_candidates_for_program(temp.path(), "p", &mut snapshot)
+            .expect_err("in_progress milestone with no issue must fail validation");
+        assert!(
+            err.to_string().contains("issue number"),
+            "expected an issue-number violation in the error, got {err}"
+        );
         Ok(())
     }
 }

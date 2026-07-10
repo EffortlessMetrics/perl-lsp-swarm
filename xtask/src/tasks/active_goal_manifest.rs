@@ -287,6 +287,22 @@ fn validate_default_program(
         return;
     }
 
+    // `default_program` must be a bare program id, not a path: it is
+    // interpolated directly into `program_manifest_path` below, so a value
+    // containing a path separator or `..` could otherwise escape
+    // `.perl-lsp/goals/programs/` and be loaded as if it were a
+    // discoverable program.
+    if default_program.contains('/')
+        || default_program.contains('\\')
+        || default_program.contains(':')
+        || default_program.contains("..")
+    {
+        violations.push(format!(
+            "{ACTIVE_GOAL_PATH}: default_program must be a bare program id (no path separators or \"..\"), got {default_program:?}"
+        ));
+        return;
+    }
+
     let manifest_path = goals_manifest::program_manifest_path(default_program);
     if !root.join(&manifest_path).exists() {
         violations.push(format!(
@@ -296,7 +312,7 @@ fn validate_default_program(
     }
 
     match fs::read_to_string(root.join(&manifest_path)) {
-        Ok(text) if text.contains("[[milestone]]") => {
+        Ok(text) if goals_manifest::is_milestone_ledger(&text) => {
             match goals_manifest::load_milestone_ledger(root, &manifest_path) {
                 Ok(ledger) => {
                     violations.extend(goals_manifest::validate_milestone_ledger(&ledger));
@@ -1393,6 +1409,43 @@ mod tests {
             "got command violations: {command_violations:?}"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn validate_default_program_rejects_path_like_ids() -> Result<()> {
+        let root = fixture_root(&[])?;
+        for hostile in ["../../etc/passwd", "programs/../secret", "a/b", "a\\b", "C:evil"] {
+            let mut pointer_table = Table::new();
+            pointer_table.insert("default_program".to_owned(), Value::String(hostile.to_owned()));
+            let mut violations = Vec::new();
+
+            validate_default_program(root.path(), &pointer_table, "expected", &mut violations);
+
+            assert!(
+                violations.iter().any(|v| v.contains("bare program id")),
+                "expected a bare-program-id violation for {hostile:?}, got {violations:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn validate_default_program_accepts_a_bare_known_milestone_ledger_id() -> Result<()> {
+        // The real repo tree has a genuine milestone-ledger program
+        // (agent_loop_enablement) — exercise the parsed-TOML
+        // `is_milestone_ledger` classification against it end to end.
+        let root = project_root()?;
+        let mut pointer_table = Table::new();
+        pointer_table.insert(
+            "default_program".to_owned(),
+            Value::String("agent_loop_enablement".to_owned()),
+        );
+        let mut violations = Vec::new();
+
+        validate_default_program(&root, &pointer_table, "expected", &mut violations);
+
+        assert_eq!(violations, Vec::<String>::new(), "got violations: {violations:?}");
         Ok(())
     }
 

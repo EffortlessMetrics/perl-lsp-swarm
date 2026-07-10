@@ -140,8 +140,12 @@ mod tests {
             "\"worktree\"",
             "\"commit\"",
             "\"push\"",
-            "pr create",
-            "issue create",
+            // Catches `gh` command arrays written as separate string-literal
+            // args (e.g. `.args(["pr", "create", ...])`) as well as the
+            // combined-phrase form; a plain `"pr create"` check misses the
+            // array-literal shape entirely since "create" never appears
+            // adjacent to "pr" as one token.
+            "\"create\"",
             "fs::write",
             "fs::remove",
             "fs::create_dir",

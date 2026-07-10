@@ -59,6 +59,23 @@ pub fn program_manifest_path(id: &str) -> String {
     format!(".perl-lsp/goals/programs/{id}.toml")
 }
 
+/// Detects whether a program manifest's TOML text declares a `[[milestone]]`
+/// array-of-tables (a milestone ledger, `load_milestone_ledger`'s shape) as
+/// opposed to the lane-routing `[[work_item]]` shape. Parses the TOML and
+/// checks for a top-level `milestone` key rather than doing a raw substring
+/// scan on the source text, so a `[[milestone]]` mention inside a comment or
+/// string literal elsewhere in an unrelated manifest can't mis-classify it
+/// as a ledger (and conversely a real ledger with unusual formatting can't
+/// be missed). Malformed TOML is treated as "not a ledger" — the caller's
+/// subsequent `load_milestone_ledger`/lane-routing parse will surface the
+/// real parse error with better context.
+pub fn is_milestone_ledger(text: &str) -> bool {
+    toml::from_str::<toml::Value>(text)
+        .ok()
+        .and_then(|value| value.as_table().cloned())
+        .is_some_and(|table| table.contains_key("milestone"))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MilestoneLedger {
     #[serde(default)]
@@ -129,6 +146,19 @@ pub fn validate_milestone_ledger(ledger: &MilestoneLedger) -> Vec<String> {
         }
         if !ALLOWED_MILESTONE_STATUSES.contains(&milestone.status.as_str()) {
             violations.push(format!("{doc}: unsupported status {:?}", milestone.status));
+        }
+        if milestone.status == "in_progress" && milestone.issue.is_none() {
+            // The selector's active-work guard (select_next's precedence
+            // rule 2) matches live open PRs against in-progress milestones
+            // by issue number; an in-progress milestone with no issue is
+            // invisible to that guard, silently breaking the single-flight
+            // guarantee for exactly the manifest shape most likely to
+            // trigger it (a milestone marked in_progress before its
+            // tracking issue is filed). Fail closed at validation time
+            // rather than let it reach the selector.
+            violations.push(format!(
+                "{doc}: status \"in_progress\" requires an issue number (the active-work guard cannot detect a live PR for in-progress work with no issue)"
+            ));
         }
         if milestone.exit_criteria.trim().is_empty() {
             violations.push(format!("{doc}: exit_criteria must not be empty"));
@@ -222,14 +252,28 @@ mod tests {
         }
     }
 
+    fn entry_with_issue(id: &str, status: &str, issue: u64, depends_on: &[&str]) -> MilestoneEntry {
+        MilestoneEntry { issue: Some(issue), ..entry(id, status, depends_on) }
+    }
+
     #[test]
     fn accepts_a_well_formed_ledger() {
         let l = ledger(vec![
             entry("M2", "completed", &[]),
-            entry("M3", "in_progress", &["M2"]),
+            entry_with_issue("M3", "in_progress", 3624, &["M2"]),
             entry("M4", "pending", &["M2"]),
         ]);
         assert_eq!(validate_milestone_ledger(&l), Vec::<String>::new());
+    }
+
+    #[test]
+    fn rejects_in_progress_milestone_with_no_issue() {
+        let l = ledger(vec![entry("M2", "in_progress", &[])]);
+        let violations = validate_milestone_ledger(&l);
+        assert!(
+            violations.iter().any(|v| v.contains("in_progress") && v.contains("issue number")),
+            "expected an in_progress/issue-number violation, got {violations:?}"
+        );
     }
 
     #[test]
@@ -265,5 +309,26 @@ mod tests {
         let l = ledger(Vec::new());
         let violations = validate_milestone_ledger(&l);
         assert!(violations.iter().any(|v| v.contains("at least one")));
+    }
+
+    #[test]
+    fn is_milestone_ledger_detects_real_milestone_table() {
+        let text = "id = \"x\"\n\n[[milestone]]\nid = \"M2\"\n";
+        assert!(is_milestone_ledger(text));
+    }
+
+    #[test]
+    fn is_milestone_ledger_ignores_mention_in_a_comment() {
+        // A lane-routing program that merely *mentions* "[[milestone]]" in a
+        // comment (e.g. explaining why it is NOT a milestone ledger) must
+        // not be mis-classified as one.
+        let text =
+            "# this program does not use [[milestone]] entries\n\n[[work_item]]\nid = \"wi-1\"\n";
+        assert!(!is_milestone_ledger(text));
+    }
+
+    #[test]
+    fn is_milestone_ledger_false_for_malformed_toml() {
+        assert!(!is_milestone_ledger("not valid toml {{{"));
     }
 }
