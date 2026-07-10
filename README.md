@@ -49,6 +49,7 @@ The README is a front door, not the metric source of truth. Current release post
 | Release posture | [release status](docs/project/status/release.md) |
 | Project status | [status overview](docs/project/status/index.md) |
 | Real Perl Editor Trust | [user guide](docs/how-to/EDITOR_TRUST.md), [trust dashboard](docs/project/status/real_perl_editor_trust_v1.md) |
+| Editor intelligence | [editor scorecard](docs/project/status/editor.md) |
 | LSP and DAP coverage | [LSP status](docs/project/status/lsp.md), [DAP status](docs/project/status/dap.md) |
 | Parser corpus and coverage | [parser status](docs/project/status/parser.md) |
 | Workspace/indexing | [workspace status](docs/project/status/workspace.md) |

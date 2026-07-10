@@ -18,6 +18,7 @@
 
 | Subsystem | File | Owner | Updated when |
 |-----------|------|-------|-------------|
+| Editor intelligence scorecard | [editor.md](editor.md) | Generator | Every scorecard-touching merge |
 | LSP coverage & compliance | [lsp.md](lsp.md) | Generator | Every LSP-touching merge |
 | Test counts & debt | [tests.md](tests.md) | Generator | Every merge |
 | Parser corpus & coverage | [parser.md](parser.md) | Generator | Every parser-touching merge |
