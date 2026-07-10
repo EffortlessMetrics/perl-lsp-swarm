@@ -33,8 +33,8 @@
  * Targeted runs: `roots`/`testMatch` only see out-test/, so a source-path
  * filter like `--runTestsByPath src/test/commands.test.ts` would otherwise
  * match nothing. The `test`/`test:ci` scripts invoke Jest through
- * scripts/run-jest.js, which remaps any `src/**\/*.ts` argument to its
- * compiled `out-test/**\/*.js` counterpart before forwarding to Jest — so
+ * scripts/run-jest.js, which remaps any `.ts` argument under `src/` to the
+ * corresponding `.js` path under `out-test/` before forwarding to Jest — so
  * source-path targeted runs still work.
  *
  * @type {import('jest').Config}

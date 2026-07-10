@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * Thin wrapper around the Jest CLI that remaps developer-facing `src/**\/*.ts`
- * test paths to their compiled `out-test/**\/*.js` counterparts before handing
- * off to Jest.
+ * Thin wrapper around the Jest CLI that remaps `--runTestsByPath` operands
+ * under `src/` to their compiled `out-test/` counterparts before handing off
+ * to Jest.
  *
  * jest.config.js runs Jest directly against tsc's compile-ahead output
  * (`roots: ['<rootDir>/out-test/test']`, `transform: {}` — no ts-jest, no
@@ -13,10 +13,13 @@
  * silently matches nothing: `--runTestsByPath` compares literal file paths,
  * and the source path was never on Jest's radar.
  *
- * This script only rewrites arguments that look like a filesystem path under
- * `src/` (relative or absolute, with or without a `.ts` extension). Flags
- * (`--ci`, `--coverage`, `--verbose`, ...) and any other positional argument
- * (patterns, already-compiled `out-test/` paths) pass through untouched, so
+ * This script only rewrites arguments in `--runTestsByPath` operand
+ * position — both the `--runTestsByPath <path>` and
+ * `--runTestsByPath=<path>` forms, and any further bare paths immediately
+ * following the flag (Jest allows multiple). It does not rewrite arbitrary
+ * `src/`-prefixed tokens: an unrelated option value that happens to start
+ * with `src/` (e.g. `--testNamePattern src/test`) passes through untouched,
+ * because it never occupies `--runTestsByPath` operand position. So
  * `npm test -- --runTestsByPath src/test/commands.test.ts` keeps working
  * exactly as before the ts-jest removal — now against the emitted JS, with
  * coverage and failure locations still mapped back to the .ts via the inline
@@ -29,17 +32,17 @@ const { spawnSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const SRC_DIR = path.join(ROOT, 'src');
 const OUT_TEST_DIR = path.join(ROOT, 'out-test');
+const RUN_TESTS_BY_PATH_FLAG = '--runTestsByPath';
 
 function mapSourcePathToCompiled(arg) {
-  if (!arg || arg.startsWith('-')) {
+  if (!arg) {
     return arg;
   }
 
   const absolute = path.isAbsolute(arg) ? arg : path.resolve(ROOT, arg);
   const relativeToSrc = path.relative(SRC_DIR, absolute);
 
-  // Not under src/ — e.g. already an out-test/ path, or an unrelated
-  // positional argument such as a testNamePattern. Leave it alone.
+  // Not under src/ — e.g. already an out-test/ path. Leave it alone.
   if (relativeToSrc.startsWith('..') || path.isAbsolute(relativeToSrc)) {
     return arg;
   }
@@ -60,7 +63,59 @@ function withCompiledExtension(relativePath) {
   return `${relativePath}.js`;
 }
 
-const jestArgs = process.argv.slice(2).map(mapSourcePathToCompiled);
+// Rewrite `--runTestsByPath` operands only — everything else (flags, other
+// option values, already-compiled paths) passes through untouched. This is
+// deliberately narrower than "any src/-prefixed argument": an option value
+// that happens to start with `src/` but isn't a --runTestsByPath operand
+// (e.g. `--testNamePattern src/test`) must not be treated as a file path.
+//
+// `--runTestsByPath=<path>` is split into the two-token `--runTestsByPath
+// <path>` form rather than reassembled as `--runTestsByPath=<mapped>`:
+// Jest's own CLI (yargs, `runTestsByPath` is boolean-typed) does not treat
+// the `=value` form as a path operand — verified directly against
+// `node_modules/jest/bin/jest.js` on this HEAD, where
+// `--runTestsByPath=out-test/test/commands.test.js` silently runs the
+// entire suite ("Ran all test suites"), while
+// `--runTestsByPath out-test/test/commands.test.js` correctly scopes to
+// that one file ("Ran all test suites within paths ..."). Splitting to the
+// two-token form is what makes the `=` syntax actually work end to end.
+function remapRunTestsByPathArgs(argv) {
+  const result = [];
+  let collectingPaths = false;
+
+  for (const arg of argv) {
+    const equalsForm = arg.startsWith(`${RUN_TESTS_BY_PATH_FLAG}=`);
+    if (equalsForm) {
+      const value = arg.slice(RUN_TESTS_BY_PATH_FLAG.length + 1);
+      result.push(RUN_TESTS_BY_PATH_FLAG, mapSourcePathToCompiled(value));
+      collectingPaths = true;
+      continue;
+    }
+
+    if (arg === RUN_TESTS_BY_PATH_FLAG) {
+      result.push(arg);
+      collectingPaths = true;
+      continue;
+    }
+
+    if (collectingPaths && !arg.startsWith('-')) {
+      result.push(mapSourcePathToCompiled(arg));
+      continue;
+    }
+
+    // Any other flag ends path collection — its own value (if any) is not a
+    // --runTestsByPath operand and must not be remapped.
+    if (arg.startsWith('-')) {
+      collectingPaths = false;
+    }
+
+    result.push(arg);
+  }
+
+  return result;
+}
+
+const jestArgs = remapRunTestsByPathArgs(process.argv.slice(2));
 
 // Resolve Jest's own CLI entry point and invoke it with `node` directly,
 // rather than shelling out through `npx`/`npx.cmd` — the latter requires
