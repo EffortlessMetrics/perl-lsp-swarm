@@ -6824,6 +6824,103 @@ sub hello {
         Ok(())
     }
 
+    /// #3618 review-3660: the three tests above (3a/3b/3c) prove a failed
+    /// reservation doesn't leave `indexed_generation()` claiming an
+    /// un-indexed generation, and that a SAME-generation retry still
+    /// succeeds -- but `indexed_generation()` only ever reads
+    /// `FileIndex::generation`, which `ReservationGuard::drop` never
+    /// touches (only `pending_generation` is rolled back), and a
+    /// same-generation retry sails through the early guard's strict `>`
+    /// high-water comparison whether or not the rollback ran. review-3660
+    /// proved this empirically: no-op'ing `ReservationGuard::drop` left
+    /// all three tests passing unchanged. None of them actually exercise
+    /// `pending_generation`.
+    ///
+    /// This test does. It reproduces review-3660's exact discriminating
+    /// scenario: a HIGHER generation (10) reserves then fails to parse,
+    /// leaking `pending_generation = 10` if the rollback doesn't run. A
+    /// LEGITIMATE, LOWER, still-uncommitted generation (7) then arrives
+    /// with valid content -- modeling an out-of-order background index
+    /// task (`LspServer::run_post_parse_side_effects`'s `spawn_blocking`)
+    /// completing after a later generation was merely attempted, not
+    /// after it committed. Without rollback, the early guard's high-water
+    /// check (`existing.generation.max(existing.pending_generation) = 10
+    /// > 7`) rejects generation 7 outright -- `index_file_with_generation`
+    /// returns `Ok(())` but SILENTLY skips indexing it, permanently
+    /// stranding the index at generation 3 even though generation 7's
+    /// content was never anything but valid. With the rollback (this PR's
+    /// fix), generation 10's parse failure clears the leaked reservation
+    /// back to the committed floor (3), so generation 7 correctly passes
+    /// the high-water check and gets indexed.
+    ///
+    /// Mutation-proved: with `ReservationGuard::drop` temporarily no-op'd,
+    /// this test fails (`indexed_generation()` reports `Some(3)`, symbols
+    /// lack `gen_7_symbol`); restored, it passes. See the PR comment for
+    /// both outputs.
+    #[test]
+    fn failed_higher_generation_reservation_does_not_silently_drop_a_legitimate_lower_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        let uri = must(url::Url::parse("file:///lib/LeakedReservation.pm"));
+
+        // Baseline committed generation 3.
+        index.index_file_with_generation(
+            uri.clone(),
+            "package LeakedReservation;\nsub baseline { 1 }\n1;\n".to_string(),
+            3,
+        )?;
+        assert_eq!(index.indexed_generation(uri.as_str()), Some(3));
+
+        // Generation 10 reserves (pending_generation: 3 -> 10 if the
+        // reservation is taken), then fails to parse -- 200 levels of
+        // nesting deterministically exceeds MAX_RECURSION_DEPTH (128).
+        let mut too_deep = String::from("package LeakedReservation;\n");
+        for _ in 0..200 {
+            too_deep.push_str("if ($a) { ");
+        }
+        too_deep.push_str("1;");
+        for _ in 0..200 {
+            too_deep.push('}');
+        }
+        too_deep.push('\n');
+        let result_10 = index.index_file_with_generation(uri.clone(), too_deep, 10);
+        assert!(result_10.is_err(), "generation 10's over-nested text must fail to parse");
+
+        // Generation 7 -- lower than the failed generation 10, but higher
+        // than (and still uncommitted relative to) the baseline of 3 --
+        // arrives with genuinely valid content. This is the discriminating
+        // assertion: it only passes if generation 10's leaked reservation
+        // was actually rolled back.
+        index.index_file_with_generation(
+            uri.clone(),
+            "package LeakedReservation;\nsub gen_7_symbol { 1 }\n1;\n".to_string(),
+            7,
+        )?;
+
+        assert_eq!(
+            index.indexed_generation(uri.as_str()),
+            Some(7),
+            "a legitimate generation (7) must not be silently dropped by a higher generation's \
+             (10) leaked-and-failed reservation -- without the rollback, the high-water check \
+             (10 > 7) rejects it and the index stays permanently stuck at the baseline (3)"
+        );
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(
+            symbols.iter().any(|s| s.name == "gen_7_symbol"),
+            "generation 7's content must actually be indexed, not silently skipped; got \
+             symbols: {:?}",
+            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !symbols.iter().any(|s| s.name == "baseline"),
+            "generation 7's content must have REPLACED the baseline (3) index, not merely left \
+             it in place; got symbols: {:?}",
+            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn test_early_exit_optimization_changed_content() {
         let index = WorkspaceIndex::new();
