@@ -439,7 +439,7 @@ commands = ["rtk cargo test"]
             SelectionDecision::Blocked(blockers) => {
                 assert_eq!(blockers[0].kind, "ambiguous_program_authority");
             }
-            other => panic!("expected Blocked(ambiguous_program_authority), got {other:?}"),
+            other => bail!("expected Blocked(ambiguous_program_authority), got {other:?}"),
         }
         Ok(())
     }
