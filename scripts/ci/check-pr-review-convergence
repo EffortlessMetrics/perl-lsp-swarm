@@ -293,9 +293,14 @@ fi
 #    auto-review bot's last run predates the latest push — the same
 #    over-block class this script exists to eliminate (see #3621 self-test:
 #    every push after a bot's last comment permanently fails convergence).
-#    A stale bot review is reported as ADVISORY, same treatment as an
-#    outdated thread: visible, not blocking. Only non-bot (human) reviewers'
-#    staleness blocks convergence.
+#    A stale bot review is reported as ADVISORY — visible, not blocking.
+#    NOTE: this is the ONLY advisory-only (non-blocking) category left in
+#    this script. Unresolved review threads, whether active or outdated,
+#    both BLOCK convergence (see the "ACTIVE vs outdated vs resolved
+#    threads" section above and issue #3679) — stale bot reviews are NOT
+#    "the same treatment as an outdated thread" anymore. Only non-bot
+#    (human) reviewers' staleness blocks convergence among review
+#    submissions.
 LATEST_REVIEWS="$(paginate_pr_connection "latestReviews" "author { login __typename } state commit { oid }")"
 
 HUMAN_REVIEWS="$(printf '%s' "$LATEST_REVIEWS" | jq -c '[.[] | select((.author.__typename // "User") != "Bot")]')"

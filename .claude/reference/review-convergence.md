@@ -41,11 +41,15 @@ Both are separate, necessary conditions. A PR is only review-converged when
    unrequested auto-review apps, never appear in `reviewRequests`, aren't
    required by branch protection, and don't reliably re-run on every push
    (rate limits). A stale bot review is reported as **ADVISORY**, not
-   `BLOCK` — the same treatment as an outdated thread. This was found by
-   running the script against #3621's own PR: blocking on bot staleness
-   meant the PR could never converge again once any auto-review app fell
-   behind a push, without a human manually re-triggering it — the exact
-   over-block class this script exists to eliminate.
+   `BLOCK`. This was found by running the script against #3621's own PR:
+   blocking on bot staleness meant the PR could never converge again once
+   any auto-review app fell behind a push, without a human manually
+   re-triggering it — the exact over-block class this script exists to
+   eliminate. **Note:** stale bot reviews are now the *only* advisory-only
+   (non-blocking) category the script reports — unresolved review threads
+   (item 3, below) block regardless of `isOutdated`, so "the same
+   treatment as an outdated thread" is no longer an accurate parallel to
+   draw; see issue #3679.
 3. **No unresolved threads — active or outdated.** Every `reviewThreads`
    node with `isResolved == false` blocks convergence, regardless of
    `isOutdated`. `isOutdated` (the diff hunk a thread commented on no
