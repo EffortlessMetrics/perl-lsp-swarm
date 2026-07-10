@@ -42,6 +42,35 @@ use super::super::LspServer;
 /// provider's cancel-check closure can read.
 const UNCANCELLABLE_LOCAL_TOKEN_ID: JsonRpcId = JsonRpcId::Integer(-1);
 
+/// Test-only observer, notified exactly once the next time
+/// `handle_completion_cancellable` enters its analysis phase (the
+/// `if let Some(doc)` arm, before any provider work begins). Lets a
+/// regression test cancel a request deterministically *after* analysis has
+/// genuinely started, instead of guessing the timing with a fixed sleep.
+/// Mirrors `set_index_ready_wait_entered_observer` in `readiness.rs`.
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+static COMPLETION_ANALYSIS_STARTED_OBSERVER: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) fn set_completion_analysis_started_observer(sender: std::sync::mpsc::Sender<()>) {
+    if let Ok(mut observer) = COMPLETION_ANALYSIS_STARTED_OBSERVER.lock() {
+        *observer = Some(sender);
+    }
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+fn notify_completion_analysis_started() {
+    let sender =
+        COMPLETION_ANALYSIS_STARTED_OBSERVER.lock().ok().and_then(|mut observer| observer.take());
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+fn notify_completion_analysis_started() {}
+
 static SNIPPET_PLACEHOLDER_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 static SNIPPET_SIMPLE_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
@@ -1217,17 +1246,23 @@ impl LspServer {
                 ));
             }
 
+            // RAII span: covers the whole analysis attempt via `Drop`, so it
+            // emits `provider.completion.analyze` on every exit path --
+            // including the cancellation early `return Err` below -- not
+            // just the normal fall-through. A manual Instant+emit pair
+            // placed after this `if`/`else` (the prior shape) is skipped
+            // by any early `return` inside the `if` arm; see
+            // `provider.references.analyze` in references.rs for the same
+            // pattern (#3619). Started outside the `if let Some(doc)` arm so
+            // the `lock_hold`/`analyze` pair is preserved on the
+            // doc-no-longer-in-map path too, matching the prior manual-
+            // Instant behavior, which emitted unconditionally regardless of
+            // whether `doc_owned` resolved.
+            let _analyze_span =
+                crate::runtime::timing::ScopedSpan::start("provider.completion.analyze", uri);
             let response = if let Some(doc) = doc_owned.as_ref() {
-                // RAII span: covers this whole analysis block via `Drop`, so it
-                // emits `provider.completion.analyze` on every exit path --
-                // including the cancellation early `return Err` below -- not
-                // just the normal fall-through. A manual Instant+emit pair
-                // placed after this `if`/`else` (the prior shape) is skipped
-                // by any early `return` inside the `if` arm; see
-                // `provider.references.analyze` in references.rs for the same
-                // pattern (#3619).
-                let _analyze_span =
-                    crate::runtime::timing::ScopedSpan::start("provider.completion.analyze", uri);
+                notify_completion_analysis_started();
+
                 let offset = self.pos16_to_offset(doc, line, character);
                 let ast_available = doc.current_parsed().is_some_and(|p| p.ast().is_some());
 
@@ -1832,14 +1867,24 @@ mod tests {
         // `Drop` regardless of which `return` fires.
         //
         // This test uses a genuinely concurrent cancellation (a background
-        // thread calling `token.cancel()` shortly after the request starts)
-        // against a fixture with `sub_count` candidate subs, so the off-lock
-        // analysis phase (owned-document clone + completion generation over
-        // thousands of `func_`-prefixed candidates) has a wide window to
-        // observe the cancellation before it returns -- reproducing the
-        // exact interleaving the bug depended on, not just the general RAII
+        // thread calling `token.cancel()`) against a fixture with
+        // `sub_count` candidate subs, so the off-lock analysis phase
+        // (owned-document clone + completion generation over thousands of
+        // `func_`-prefixed candidates) has a wide window to observe the
+        // cancellation before it returns -- reproducing the exact
+        // interleaving the bug depended on, not just the general RAII
         // contract already covered by `timing.rs`'s
         // `scoped_span_emits_on_early_return_from_enclosing_fn`.
+        //
+        // Timing is controlled deterministically, not with a fixed sleep: a
+        // `notify_completion_analysis_started` hook (module-level, mirrors
+        // `set_index_ready_wait_entered_observer` in `readiness.rs`) fires
+        // the instant the handler enters its analysis phase. The canceller
+        // thread blocks on that signal before calling `token.cancel()`, so
+        // the cancellation is guaranteed to land no earlier than the start
+        // of analysis -- a fixed sleep can only guess at that boundary and
+        // is either too short (fires before analysis begins, proving
+        // nothing) or too long (analysis already finished) under CI load.
         use std::sync::atomic::{AtomicBool, Ordering};
 
         // Each sub is called once below so the dead-code lint stays quiet --
@@ -1874,14 +1919,23 @@ mod tests {
         let _lock = crate::runtime::timing::capture::test_lock();
         crate::runtime::timing::capture::start();
 
+        let (analysis_started_tx, analysis_started_rx) = std::sync::mpsc::channel();
+        set_completion_analysis_started_observer(analysis_started_tx);
+
         let landed = Arc::new(AtomicBool::new(false));
         let canceller = {
             let token = token.clone();
             let landed = Arc::clone(&landed);
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_micros(500));
+            std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                // Bounded wait: fail loudly instead of hanging forever if the
+                // analysis phase is never entered (e.g. a future refactor
+                // moves or removes the notify call).
+                analysis_started_rx.recv_timeout(std::time::Duration::from_secs(5)).map_err(
+                    |_| "timed out waiting for completion analysis to start".to_string(),
+                )?;
                 token.cancel();
                 landed.store(true, Ordering::SeqCst);
+                Ok(())
             })
         };
 
@@ -1896,7 +1950,10 @@ mod tests {
             Some(&request_id_value),
         );
 
-        canceller.join().map_err(|_| "canceller thread panicked")?;
+        canceller
+            .join()
+            .map_err(|_| "canceller thread panicked")?
+            .map_err(|e| format!("canceller thread failed: {e}"))?;
         assert!(landed.load(Ordering::SeqCst), "canceller thread must have run");
 
         let spans = crate::runtime::timing::capture::drain();
