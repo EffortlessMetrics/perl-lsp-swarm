@@ -321,18 +321,27 @@ impl DocumentState {
     }
 
     /// Publish a parse result, but only if `expected_generation` still
-    /// matches the document's current generation.
+    /// matches the document's current generation *and* the snapshot itself
+    /// was parsed from that generation.
     ///
     /// Returns `true` and stores `snapshot` when the publication is
     /// accepted; returns `false` and leaves the existing `parsed` value
-    /// untouched when a newer generation has already superseded
-    /// `expected_generation` (a stale parse result publishes nothing).
+    /// untouched when either:
+    /// - a newer generation has already superseded `expected_generation`
+    ///   (a stale parse result publishes nothing), or
+    /// - `snapshot.generation != expected_generation` (a mismatched caller
+    ///   passing a snapshot parsed from a different generation than the one
+    ///   it claims to be publishing for -- every current call site
+    ///   constructs the two to match, so this only guards against a future
+    ///   caller mistake, not a live path).
     pub fn publish_parsed_if_current(
         &mut self,
         expected_generation: u32,
         snapshot: Arc<ParsedSnapshot>,
     ) -> bool {
-        if self.current_generation() != expected_generation {
+        if self.current_generation() != expected_generation
+            || snapshot.generation != expected_generation
+        {
             return false;
         }
         self.parsed = Some(snapshot);
@@ -488,6 +497,25 @@ mod tests {
         let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
         assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
         assert!(doc.current_parsed().is_some());
+    }
+
+    #[test]
+    fn publish_parsed_if_current_rejects_mismatched_snapshot_generation() {
+        // A malformed caller: `expected_generation` matches the document's
+        // current generation, but the snapshot itself carries a different
+        // `generation` value than the one it claims to publish for. No
+        // current call site can produce this (every publication site builds
+        // `expected_generation` and `snapshot.generation` from the same
+        // value), but the guard must still reject it rather than let a
+        // mismatched snapshot report itself as fresh via `current_parsed`.
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        let mismatched_snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen + 1));
+        assert!(
+            !doc.publish_parsed_if_current(doc_gen, mismatched_snapshot),
+            "a snapshot whose generation disagrees with expected_generation must be rejected"
+        );
+        assert!(doc.latest_parsed().is_none(), "rejected publication must not be stored");
     }
 
     #[test]
