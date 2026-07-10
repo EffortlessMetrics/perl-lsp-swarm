@@ -1863,6 +1863,69 @@ impl WorkspaceIndex {
         {
             let mut files = self.files.write();
 
+            // Monotonic generation guard: an older TRACKED generation must
+            // never overwrite a newer TRACKED one, regardless of
+            // completion order.
+            //
+            // This write path is reached by, among other callers, a
+            // fire-and-forget background indexing task (see
+            // `LspServer::run_post_parse_side_effects` in perl-lsp-rs --
+            // `handle.spawn_blocking(task)`) that returns to its caller as
+            // soon as it is *spawned*, not when it completes. Two such
+            // tasks for adjacent generations N and N+1 of the same URI can
+            // therefore run on different blocking-pool threads and finish
+            // OUT OF ORDER. Each independently passes its own
+            // pre-spawn freshness check (a single check-then-act that is
+            // NOT atomic with this write), so completion order alone
+            // decided which generation's content ended up stored here --
+            // if N finishes after N+1, N would silently overwrite N+1,
+            // producing torn state: this index at N while the document's
+            // own symbol_index/AST are already at N+1, externally
+            // observable as inconsistent `workspace/symbol` vs.
+            // same-file answers until the next edit.
+            //
+            // This check closes that hole at the STORE itself -- a second,
+            // independent line of defense that does not depend on task
+            // completion order. It is evaluated under the SAME
+            // `files.write()` acquisition as the `files.insert` below, so
+            // the check-then-act is atomic with respect to any other
+            // writer of this URI's entry.
+            //
+            // `generation == 0` is deliberately treated as "untracked" and
+            // exempt from this guard, matching every other call site in
+            // the codebase that does not thread a real per-document
+            // generation counter through `index_file_with_generation`:
+            // `index_file()` (the ungenerationed convenience wrapper used
+            // by file-watcher re-indexing, workspace-wide rescans, rename
+            // preview indexing, and most tests) and the `didOpen`
+            // background index task (`runtime/text_sync.rs`, which always
+            // passes `0` since a freshly opened document always starts at
+            // generation 0) both intentionally call this with `generation:
+            // 0` on every invocation, including *legitimate re-indexes of
+            // already-tracked documents* (e.g. reopening a file that was
+            // previously edited to some generation > 0, or an external
+            // on-disk change picked up by the file watcher after edits).
+            // A strict numeric comparison across these untracked calls and
+            // the async parse worker's tracked calls would incorrectly
+            // block those legitimate refreshes once any document reached
+            // generation > 0 -- confirmed empirically: an unconditional
+            // `existing.generation >= generation` guard here made 7
+            // existing tests fail (`test_early_exit_optimization_changed_content`
+            // et al.), all of which re-index the same URI twice through the
+            // untracked `generation: 0` convention and expect the second
+            // (later) call to win. Only comparing when BOTH sides are
+            // genuinely tracked (`> 0`) closes the out-of-order race for
+            // the async parse worker -- the only caller that ever supplies
+            // a real, monotonically-increasing generation for the same
+            // in-flight document -- without touching any untracked caller.
+            if generation > 0 {
+                if let Some(existing) = files.get(&key) {
+                    if existing.generation > 0 && existing.generation > generation {
+                        return Ok(());
+                    }
+                }
+            }
+
             // Remove stale global references from previous version of this file
             if let Some(old_index) = files.get(&key) {
                 let mut global_refs = self.global_references.write();
@@ -6107,6 +6170,87 @@ sub hello {
             index.is_index_generation_stale(uri.as_str(), 3),
             "indexed_generation < expected_generation must be stale"
         );
+    }
+
+    /// #3618 review defect: two fire-and-forget background index tasks for
+    /// adjacent generations N and N+1 of the same URI can run on different
+    /// threads and complete OUT OF ORDER (the caller's own pre-spawn
+    /// freshness check is not atomic with this write -- see the monotonic
+    /// generation guard's doc comment on `index_file_with_generation`
+    /// above). This deterministically forces exactly that ordering with a
+    /// `std::sync::Barrier` (no sleeps): generation N+1's commit is fully
+    /// complete (its thread has returned from `index_file_with_generation`
+    /// and reached the barrier) BEFORE generation N's thread is released to
+    /// attempt its own (now late) write. The older generation must never
+    /// win, regardless of which thread's call happened to finish last.
+    #[test]
+    fn out_of_order_generation_commits_never_regress_the_stored_index()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let index = Arc::new(WorkspaceIndex::new());
+        let uri = must(url::Url::parse("file:///lib/OutOfOrder.pm"));
+
+        const GEN_N: u32 = 5;
+        const GEN_N_PLUS_1: u32 = 6;
+        let gen_n_text = "package OutOfOrder;\nsub gen_n_symbol { 1 }\n1;\n".to_string();
+        let gen_n_plus_1_text =
+            "package OutOfOrder;\nsub gen_n_plus_1_symbol { 1 }\n1;\n".to_string();
+
+        // Released only once BOTH threads have reached it. Generation N+1's
+        // thread reaches the barrier AFTER its write has fully committed;
+        // generation N's thread reaches the barrier BEFORE attempting its
+        // write. So N cannot even start writing until N+1's write is
+        // already visible in the store -- the exact "N completes after
+        // N+1" ordering the real background-task race can produce.
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+
+        let index_n = Arc::clone(&index);
+        let uri_n = uri.clone();
+        let barrier_n = Arc::clone(&barrier);
+        let handle_n = std::thread::spawn(move || -> Result<(), String> {
+            barrier_n.wait();
+            index_n.index_file_with_generation(uri_n, gen_n_text, GEN_N)
+        });
+
+        let index_n1 = Arc::clone(&index);
+        let uri_n1 = uri.clone();
+        let barrier_n1 = Arc::clone(&barrier);
+        let handle_n1 = std::thread::spawn(move || -> Result<(), String> {
+            let result =
+                index_n1.index_file_with_generation(uri_n1, gen_n_plus_1_text, GEN_N_PLUS_1);
+            barrier_n1.wait();
+            result
+        });
+
+        handle_n1
+            .join()
+            .map_err(|_| "generation N+1 thread panicked")?
+            .map_err(|e| format!("generation N+1 write returned an error: {e}"))?;
+        handle_n
+            .join()
+            .map_err(|_| "generation N thread panicked")?
+            .map_err(|e| format!("generation N write returned an error: {e}"))?;
+
+        assert_eq!(
+            index.indexed_generation(uri.as_str()),
+            Some(GEN_N_PLUS_1),
+            "the stored generation must be N+1 even though N's write completed after it"
+        );
+
+        let symbols = index.file_symbols(uri.as_str());
+        assert!(
+            symbols.iter().any(|s| s.name == "gen_n_plus_1_symbol"),
+            "the newer generation's content must be the one stored, even though its writer \
+             finished first; got symbols: {:?}",
+            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        assert!(
+            !symbols.iter().any(|s| s.name == "gen_n_symbol"),
+            "the older generation's write must never win, even though it committed AFTER the \
+             newer one; got symbols: {:?}",
+            symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        Ok(())
     }
 
     #[test]
