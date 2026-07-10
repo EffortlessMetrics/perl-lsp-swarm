@@ -443,3 +443,73 @@ fn type_definition_and_implementation_resolve_normally_with_no_race() -> TestRes
 
     Ok(())
 }
+
+/// Deterministic (no race, no hook needed) regression for a dual-key bug in
+/// `pinned_doc_map_for`: the live documents map is always keyed by
+/// `normalize_uri_key` (`handle_did_open` stores under the normalized URI),
+/// but the pinned entry was inserted under the RAW request URI. For a
+/// document whose raw and normalized forms differ -- e.g. a Windows
+/// drive-letter-cased URI like `file:///C:/...` vs its normalized
+/// `file:///c:/...` -- this left the SAME document present in `doc_map`
+/// under two keys: the normalized one (from `documents_text_snapshot()`)
+/// and the raw one (the pinned insert). `find_package_definition_in_docs`
+/// then finds the same `package` declaration twice and treats the result as
+/// ambiguous (`locations.len() > 1`), returning an empty result even though
+/// exactly one document matched.
+///
+/// This has nothing to do with the TOCTOU race the other tests in this file
+/// cover -- it reproduces on every call for any URI whose raw and
+/// normalized forms differ, no concurrent edit required.
+#[test]
+fn type_definition_and_implementation_resolve_for_uri_with_raw_normalized_key_mismatch()
+-> TestResult {
+    let server = fresh_server();
+
+    // Uppercase Windows drive letter: `perl_uri::uri_key` normalizes this to
+    // lowercase (`file:///c:/...`), so raw != normalized for this URI.
+    let type_def_uri = "file:///C:/same_doc_toctou/type_definition_uri_variant.pl";
+    server.test_apply_did_open(type_def_uri, TYPE_DEF_BEFORE, 1)?;
+    let (line, character) =
+        find_pos(TYPE_DEF_BEFORE, "MyClass->new()").ok_or("MyClass->new() not found")?;
+    let type_def_result = server.test_handle_type_definition(Some(json!({
+        "textDocument": { "uri": type_def_uri },
+        "position": { "line": line, "character": character }
+    })))?;
+    let type_def_locations =
+        type_def_result.as_ref().and_then(Value::as_array).ok_or_else(|| {
+            format!(
+                "expected a non-empty type-definition result for a URI whose raw and normalized \
+             forms differ; got: {type_def_result:?}"
+            )
+        })?;
+    assert!(
+        !type_def_locations.is_empty(),
+        "type-definition must resolve `MyClass` for a raw/normalized-mismatched URI, not treat \
+         the single matching document as two ambiguous matches; got empty result: \
+         {type_def_result:?}"
+    );
+
+    let impl_uri = "file:///C:/same_doc_toctou/implementation_uri_variant.pl";
+    server.test_apply_did_open(impl_uri, IMPL_BEFORE, 1)?;
+    let (line, character) =
+        find_pos(IMPL_BEFORE, "package Base;").ok_or("package Base; not found")?;
+    let character = character + u32::try_from("package ".len()).unwrap_or(0);
+    let impl_result = server.test_handle_implementation(Some(json!({
+        "textDocument": { "uri": impl_uri },
+        "position": { "line": line, "character": character }
+    })))?;
+    let impl_locations = impl_result.as_ref().and_then(Value::as_array).ok_or_else(|| {
+        format!(
+            "expected a non-empty implementation result for a URI whose raw and normalized \
+             forms differ; got: {impl_result:?}"
+        )
+    })?;
+    assert!(
+        !impl_locations.is_empty(),
+        "implementation must resolve `Derived` as an implementor of `Base` for a \
+         raw/normalized-mismatched URI, not treat the single matching document as two \
+         ambiguous matches; got empty result: {impl_result:?}"
+    );
+
+    Ok(())
+}
