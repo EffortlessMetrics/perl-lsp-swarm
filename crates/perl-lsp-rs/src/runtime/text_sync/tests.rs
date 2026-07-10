@@ -1095,6 +1095,9 @@ fn stale_generation_side_effects_never_reindex_symbols() -> Result<(), Box<dyn s
         generation: 0, // the generation this (now-stale) parse was captured for
         snapshot: stale_snapshot,
         text: Arc::from(stale_text),
+        // Simulates what `process_job`/`on_published` would construct on
+        // the real async path -- see `PublishedParseTicket`'s doc comment.
+        settle_notified_by_worker: true,
     });
 
     assert!(
@@ -2221,6 +2224,155 @@ fn rapid_burst_does_not_permanently_degrade_the_workspace_index_coordinator()
     assert!(
         !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
         "the coordinator must not remain Degraded once the burst has fully settled; got: {:?}",
+        coordinator.state()
+    );
+
+    Ok(())
+}
+
+/// #3660 follow-up (factory-droid): a NEW-lifecycle job that ends WITHOUT
+/// publishing must still credit its pending-parse settle. `notify_change`
+/// fires once per new lifecycle (`ParseWorker::enqueue` returning `true`);
+/// prior to `on_settled`, only a SUCCESSFUL publish ever called
+/// `on_published` (and transitively `notify_parse_complete`) -- a job that
+/// panics is caught by `catch_unwind` and never reaches `on_published` at
+/// all, so with no coalesced successor to inherit `active` ownership, that
+/// lifecycle's decrement was permanently uncredited: a #3660-class leak via
+/// a different path than the one #3660 itself fixed.
+///
+/// Wires the REAL `LspServer` + installed async worker + real
+/// `IndexCoordinator` (not a bare `ParseWorker` with a synthetic callback,
+/// which has no coordinator to leak against) and injects a real panic via
+/// the production panic-recovery path.
+#[cfg(feature = "workspace")]
+#[test]
+fn panicking_new_lifecycle_job_still_credits_the_pending_parse_settle()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = StdArc::new(LspServer::new());
+    server.install_default_parse_worker();
+    let uri = "file:///panic_credits_settle.pl";
+    server.test_apply_did_open(uri, "my $a = 1;\n", 1)?;
+    let normalized_uri = server.normalize_uri_key(uri);
+    assert!(
+        must_some(server.parse_worker()).wait_until_settled(&normalized_uri, Duration::from_secs(5)),
+        "initial open must settle"
+    );
+
+    let coordinator = must_some(server.coordinator());
+    let baseline = coordinator.pending_parse_count();
+
+    // Arm the panic injector for generation 1, then apply the edit that
+    // both bumps to generation 1 AND establishes this as a NEW pending-parse
+    // lifecycle (nothing was queued/active for this URI a moment ago, so
+    // `enqueue` returns `true` and `notify_change` fires -- see #3660).
+    server.test_parse_worker_arm_panic(uri, 1);
+    server.test_apply_did_change(uri, "my $aa = 1;\n", 2)?;
+    assert!(
+        must_some(server.parse_worker()).wait_until_settled(&normalized_uri, Duration::from_secs(5)),
+        "the panicking job's lifecycle must settle (worker recovers, URI released) within the timeout"
+    );
+
+    let metrics = must_some(server.test_parse_worker_metrics());
+    assert!(
+        metrics.jobs_panicked >= 1,
+        "the panic injector must have actually fired for this test to prove anything; metrics={metrics:?}"
+    );
+
+    assert_eq!(
+        coordinator.pending_parse_count(),
+        baseline,
+        "a panicking job's pending-parse increment must still be credited a matching decrement \
+         even though it never reaches on_published; got pending_parse_count={}, baseline={baseline}",
+        coordinator.pending_parse_count()
+    );
+    assert!(
+        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        "the coordinator must not be left Degraded by an uncredited panic; got: {:?}",
+        coordinator.state()
+    );
+
+    Ok(())
+}
+
+/// #3660 follow-up (factory-droid): a NEW-lifecycle job terminally rejected
+/// as stale (no coalesced successor queued behind it to inherit `active`
+/// ownership) must still credit its pending-parse settle -- the same class
+/// of leak as the panic case above, via `process_job`'s `!published` early
+/// return instead of a caught panic.
+///
+/// Constructs the terminal-stale-reject-with-no-successor case via the
+/// close/reopen document-instance-identity (ABA) hazard: a job paused at
+/// the pre-publish barrier, whose document is then closed and reopened
+/// (`didOpen` is always synchronous -- see `handle_did_open` -- so this
+/// enqueues NOTHING behind the paused job), so when released it is rejected
+/// by `Arc::ptr_eq` failing against the fresh `DocumentState`'s generation
+/// handle, `pending` is empty for this URI at that point, and `finish()`
+/// takes its terminal branch on a job that was rejected, not published.
+#[cfg(feature = "workspace")]
+#[test]
+fn terminal_stale_reject_with_no_successor_still_credits_the_pending_parse_settle()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = StdArc::new(LspServer::new());
+    server.install_default_parse_worker();
+    let uri = "file:///terminal_reject_credits_settle.pl";
+    server.test_apply_did_open(uri, "my $a = 1;\n", 1)?;
+    let normalized_uri = server.normalize_uri_key(uri);
+    assert!(
+        must_some(server.parse_worker()).wait_until_settled(&normalized_uri, Duration::from_secs(5)),
+        "initial open must settle"
+    );
+
+    let coordinator = must_some(server.coordinator());
+    let baseline = coordinator.pending_parse_count();
+
+    // Pause generation 1's job immediately before it attempts to publish --
+    // this is the new-lifecycle enqueue, so `notify_change` fires once here.
+    server.test_parse_worker_arm_barrier(uri, 1);
+    server.test_apply_did_change(uri, "my $aa = 1;\n", 2)?;
+    server.test_parse_worker_wait_until_paused();
+
+    // Close + reopen while generation 1 is paused: `didOpen` is always
+    // synchronous (never touches the async worker), so nothing gets
+    // enqueued behind the paused job -- `pending` stays empty for this URI.
+    // The reopened document gets a brand-new `DocumentState` with a fresh
+    // `Arc<AtomicU32>` generation handle.
+    server.handle_did_close(Some(json!({"textDocument": {"uri": uri}})))?;
+    server.test_apply_did_open(uri, "my $reopened = 1;\n", 1)?;
+
+    // Release generation 1's paused job: `Arc::ptr_eq` against the fresh
+    // document's generation handle fails, so `publish_parsed_if_current`'s
+    // caller treats it as unpublished -- `jobs_rejected_stale` increments,
+    // `on_published` never fires, and (with nothing queued behind it)
+    // `finish()` takes its terminal branch on this rejected job.
+    server.test_parse_worker_release_barrier();
+    assert!(
+        must_some(server.parse_worker())
+            .wait_until_settled(&server.normalize_uri_key(uri), Duration::from_secs(5)),
+        "the rejected job's lifecycle must settle within the timeout"
+    );
+
+    let metrics = must_some(server.test_parse_worker_metrics());
+    assert!(
+        metrics.jobs_rejected_stale >= 1,
+        "the close/reopen ABA must have actually produced a stale rejection for this test to \
+         prove anything; metrics={metrics:?}"
+    );
+
+    assert_eq!(
+        coordinator.pending_parse_count(),
+        baseline,
+        "a terminally-stale-rejected job's pending-parse increment must still be credited a \
+         matching decrement even though it never reaches on_published; got \
+         pending_parse_count={}, baseline={baseline}",
+        coordinator.pending_parse_count()
+    );
+    assert!(
+        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        "the coordinator must not be left Degraded by an uncredited terminal stale-reject; got: {:?}",
         coordinator.state()
     );
 

@@ -439,6 +439,15 @@ impl IndexCoordinator {
         &self.caps
     }
 
+    /// Current pending-parse counter (lock-free read). Exposed for tests
+    /// that need to assert the counter returns to baseline after a burst
+    /// of `notify_change`/`notify_parse_complete` calls -- e.g. proving a
+    /// coalescing or panic/stale-reject accounting fix actually balances
+    /// (#3660), rather than only checking the coarser `state()` transition.
+    pub fn pending_parse_count(&self) -> usize {
+        self.metrics.pending_count()
+    }
+
     /// Snapshot lifecycle instrumentation (durations, transitions, early exits)
     pub fn instrumentation_snapshot(&self) -> IndexInstrumentationSnapshot {
         self.instrumentation.snapshot()

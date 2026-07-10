@@ -186,6 +186,20 @@ pub(crate) struct PublishedParseTicket {
     pub generation: u32,
     pub snapshot: Arc<ParsedSnapshot>,
     pub text: Arc<str>,
+    /// Whether the pending-parse lifecycle this ticket belongs to already
+    /// has its `IndexCoordinator::notify_parse_complete` owned by the async
+    /// worker's settle hook (`ParseWorker::spawn_with_settle_hook`'s
+    /// `on_settled`, fired exactly once per lifecycle from
+    /// `Coordinator::finish`'s terminal branch -- see #3660). `true` for
+    /// every ticket `process_job` constructs (the off-lock async path,
+    /// where `install_default_parse_worker` wires `on_settled` to do this);
+    /// `false` for the synchronous fallback path, which has no worker
+    /// queue / `finish()` / settle hook at all and must keep firing
+    /// `notify_parse_complete` itself the way it always has.
+    /// `run_post_parse_side_effects` (shared by both paths) checks this to
+    /// avoid double-crediting the async path's decrement while still
+    /// crediting the sync path's.
+    pub settle_notified_by_worker: bool,
 }
 
 /// Worker-visible counters, read by tests and (future) diagnostics.
@@ -356,18 +370,26 @@ impl Coordinator {
     /// landed in `pending` while this one was being processed, re-queue it
     /// (still latest-only -- no thread-per-keystroke); otherwise release
     /// ownership of the URI.
-    fn finish(&self, uri: &str) {
+    ///
+    /// Returns `true` iff this call released ownership -- the terminal
+    /// settle for this URI's pending-parse lifecycle (see
+    /// `ParseWorker::spawn`'s `on_settled` hook) -- or `false` if a
+    /// coalesced successor was re-queued and the lifecycle continues.
+    fn finish(&self, uri: &str) -> bool {
         let mut state = self.state.lock();
-        if state.pending.contains_key(uri) {
+        let settled = if state.pending.contains_key(uri) {
             state.ready.push_back(uri.to_string());
+            false
         } else {
             state.active.remove(uri);
-        }
+            true
+        };
         // Notify unconditionally (not just on re-queue) so
         // `wait_until_settled` waiters wake up on every completion, not
         // only on jobs that get re-queued.
         drop(state);
         self.cvar.notify_all();
+        settled
     }
 
     fn request_shutdown(&self) {
@@ -400,22 +422,32 @@ impl Coordinator {
     }
 }
 
-/// RAII guard: calls `coord.finish(uri)` when dropped. Constructed BEFORE
-/// calling `process_job` in the worker loop (not inside the `catch_unwind`
-/// closure), so a job's URI is released on every exit from that loop
-/// iteration -- normal completion, a panic recovered by `catch_unwind`, or
-/// (defensively) a panic somewhere outside that wrapped closure. See the
-/// worker loop's own doc comment in `ParseWorker::spawn` for the full
-/// panic-recovery model and why this guard's lock acquisition is never
-/// nested inside another lock during unwind.
+/// RAII guard: calls `coord.finish(uri)` when dropped, recording whether
+/// that call was the terminal settle into `settled` (see `Coordinator::finish`'s
+/// return value). Constructed BEFORE calling `process_job` in the worker
+/// loop (not inside the `catch_unwind` closure), so a job's URI is released
+/// on every exit from that loop iteration -- normal completion, a panic
+/// recovered by `catch_unwind`, or (defensively) a panic somewhere outside
+/// that wrapped closure. See the worker loop's own doc comment in
+/// `ParseWorker::spawn` for the full panic-recovery model and why this
+/// guard's lock acquisition is never nested inside another lock during
+/// unwind.
+///
+/// `settled` is a `&Cell<bool>` (not a return value) because `Drop::drop`
+/// cannot itself return anything to the caller -- the guard's owning scope
+/// reads `settled` after the guard has dropped to decide whether to fire
+/// `on_settled` (see #3660: a job that never reaches `on_published` --
+/// panic or terminal stale-reject -- must still credit exactly one settle
+/// per lifecycle, or the pending-parse counter leaks).
 struct FinishGuard<'a> {
     coord: &'a Coordinator,
     uri: &'a str,
+    settled: &'a std::cell::Cell<bool>,
 }
 
 impl Drop for FinishGuard<'_> {
     fn drop(&mut self) {
-        self.coord.finish(self.uri);
+        self.settled.set(self.coord.finish(self.uri));
     }
 }
 
@@ -590,10 +622,47 @@ impl ParseWorker {
     /// `LspServer::run_post_parse_side_effects` via a captured
     /// `Arc<LspServer>`, exactly like `Scheduler::new` wires the diagnostic
     /// debouncer's `publish_fn`.
+    ///
+    /// Thin wrapper over [`Self::spawn_with_settle_hook`] with a no-op
+    /// settle hook -- every existing test call site constructs a bare
+    /// `ParseWorker` with no `IndexCoordinator` in the picture at all, so
+    /// there is nothing for a settle hook to notify. `#[cfg(test)]`: the
+    /// only callers are this module's own unit tests; production code
+    /// (`LspServer::install_default_parse_worker`) calls
+    /// `spawn_with_settle_hook` directly to wire the real settle hook.
+    #[cfg(test)]
     pub(crate) fn spawn(
         documents: Arc<Mutex<HashMap<String, DocumentState>>>,
         ast_cache: Arc<AstCache>,
         on_published: Arc<dyn Fn(PublishedParseTicket) + Send + Sync>,
+    ) -> Self {
+        Self::spawn_with_settle_hook(documents, ast_cache, on_published, Arc::new(|_uri: &str| {}))
+    }
+
+    /// Spawn the worker pool with an explicit settle hook.
+    ///
+    /// `on_settled` is invoked exactly once per pending-parse lifecycle --
+    /// when a URI's LAST outstanding job for that lifecycle finishes
+    /// processing, on WHATEVER path it ended (successful publish, terminal
+    /// stale-reject, or a panic caught by `catch_unwind`), never more than
+    /// once and never zero times for a lifecycle that actually started (see
+    /// `Coordinator::finish`'s return value and `FinishGuard`). The
+    /// production caller (`LspServer::install_default_parse_worker`) wires
+    /// this to `IndexCoordinator::notify_parse_complete`, balancing the
+    /// `notify_change` fired when `ParseWorker::enqueue` returns `true`
+    /// (#3660): every lifecycle that increments the pending-parse counter
+    /// gets exactly one matching decrement, regardless of how it ends. Prior
+    /// to this hook, only a *successful publish* called `on_published` (and
+    /// transitively `notify_parse_complete`) -- a job that panicked or was
+    /// terminally rejected as stale, with no coalesced successor to inherit
+    /// the URI's `active` ownership, left that lifecycle's decrement
+    /// permanently uncredited (a #3660-class leak via a different path than
+    /// the one #3660 itself fixed).
+    pub(crate) fn spawn_with_settle_hook(
+        documents: Arc<Mutex<HashMap<String, DocumentState>>>,
+        ast_cache: Arc<AstCache>,
+        on_published: Arc<dyn Fn(PublishedParseTicket) + Send + Sync>,
+        on_settled: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Self {
         let documents = DocumentsHandle(documents);
         let metrics = Arc::new(ParseWorkerMetrics::default());
@@ -611,6 +680,7 @@ impl ParseWorker {
             let documents = documents.clone();
             let ast_cache = Arc::clone(&ast_cache);
             let on_published = Arc::clone(&on_published);
+            let on_settled = Arc::clone(&on_settled);
             let metrics = Arc::clone(&metrics);
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             let test_barrier = Arc::clone(&test_barrier);
@@ -634,7 +704,7 @@ impl ParseWorker {
                     //    recovery path: it converts the panic to `Err`
                     //    before it can unwind any further, so in the common
                     //    case `_finish_guard` below simply drops normally at
-                    //    the end of the loop body, panic or not.
+                    //    the end of the inner scope, panic or not.
                     // 2. `FinishGuard` is an RAII guard constructed BEFORE
                     //    calling `process_job` (in this outer scope, not
                     //    inside the `catch_unwind` closure) whose `Drop`
@@ -652,29 +722,51 @@ impl ParseWorker {
                     //    `finish()`'s lock acquisition is never nested
                     //    inside another lock during unwind.
                     while let Some((uri, job)) = coord.take_next() {
-                        let _finish_guard = FinishGuard { coord: &coord, uri: &uri };
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            process_job(
-                                &job,
-                                &documents,
-                                &ast_cache,
-                                &on_published,
-                                &metrics,
-                                #[cfg(any(test, feature = "expose_lsp_test_api"))]
-                                &test_barrier,
-                                #[cfg(any(test, feature = "expose_lsp_test_api"))]
-                                &side_effect_barrier,
-                                #[cfg(any(test, feature = "expose_lsp_test_api"))]
-                                &panic_injector,
-                            );
-                        }));
-                        if let Err(payload) = result {
-                            metrics.jobs_panicked.fetch_add(1, Ordering::SeqCst);
-                            record_worker_panic(&uri, job.generation, &payload);
+                        // `settled` is written by `FinishGuard::drop` (see
+                        // its own doc comment) and read AFTER the guard's
+                        // scope ends -- `Drop::drop` can't return a value
+                        // directly, so this `Cell` is the handoff.
+                        let settled = std::cell::Cell::new(false);
+                        {
+                            let _finish_guard =
+                                FinishGuard { coord: &coord, uri: &uri, settled: &settled };
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    process_job(
+                                        &job,
+                                        &documents,
+                                        &ast_cache,
+                                        &on_published,
+                                        &metrics,
+                                        #[cfg(any(test, feature = "expose_lsp_test_api"))]
+                                        &test_barrier,
+                                        #[cfg(any(test, feature = "expose_lsp_test_api"))]
+                                        &side_effect_barrier,
+                                        #[cfg(any(test, feature = "expose_lsp_test_api"))]
+                                        &panic_injector,
+                                    );
+                                }));
+                            if let Err(payload) = result {
+                                metrics.jobs_panicked.fetch_add(1, Ordering::SeqCst);
+                                record_worker_panic(&uri, job.generation, &payload);
+                            }
+                            // `_finish_guard` drops here at the normal end
+                            // of this inner scope, calling
+                            // `coord.finish(&uri)` exactly once for this
+                            // dequeued job and recording into `settled`
+                            // whether it was the terminal settle.
                         }
-                        // `_finish_guard` drops here at the normal end of
-                        // the loop body, calling `coord.finish(&uri)`
-                        // exactly once for this dequeued job.
+                        // #3660 follow-up: fire the settle hook exactly
+                        // once per lifecycle, on WHATEVER path it ended.
+                        // `on_published` alone is not a reliable settle
+                        // signal -- a panic (caught above) or a terminal
+                        // stale-reject (`process_job` returning without
+                        // calling `on_published`) never invoke it, which
+                        // would otherwise leave this lifecycle's
+                        // `notify_change` permanently uncredited.
+                        if settled.get() {
+                            on_settled(&uri);
+                        }
                     }
                 });
             match spawned {
@@ -927,6 +1019,11 @@ fn process_job(
         generation: job.generation,
         snapshot,
         text: Arc::clone(&job.text),
+        // The async worker's settle hook (fired from `finish()`'s terminal
+        // branch, back in the caller's loop) owns this lifecycle's
+        // `notify_parse_complete` -- see `PublishedParseTicket`'s doc
+        // comment and #3660.
+        settle_notified_by_worker: true,
     });
 }
 

@@ -1035,6 +1035,11 @@ impl LspServer {
                     generation: next_gen,
                     snapshot,
                     text: Arc::from(text.as_str()),
+                    // No worker, no queue, no `finish()` settle hook on
+                    // this path -- `run_post_parse_side_effects` must keep
+                    // firing `notify_parse_complete` itself. See
+                    // `PublishedParseTicket`'s doc comment and #3660.
+                    settle_notified_by_worker: false,
                 });
             }
         }
@@ -1092,10 +1097,14 @@ impl LspServer {
             // coordinator's completion bookkeeping consistent (mirrors the
             // pre-existing "still notify completion even if discarding, to
             // keep coordinator state consistent" precedent in the
-            // synchronous fallback path's own stale-parse discard branch).
-            #[cfg(feature = "workspace")]
-            if let Some(coordinator) = self.coordinator() {
-                coordinator.notify_parse_complete(&ticket.uri);
+            // synchronous fallback path's own stale-parse discard branch)
+            // -- unless the async worker's settle hook already owns this
+            // lifecycle's decrement (see `PublishedParseTicket` and #3660).
+            if !ticket.settle_notified_by_worker {
+                #[cfg(feature = "workspace")]
+                if let Some(coordinator) = self.coordinator() {
+                    coordinator.notify_parse_complete(&ticket.uri);
+                }
             }
             return;
         }
@@ -1123,6 +1132,7 @@ impl LspServer {
                     let expected_generation = ticket.generation;
                     let document_instance = Arc::clone(&ticket.document_instance);
                     let task_counter = Arc::clone(&self.pending_index_task_count);
+                    let settle_notified_by_worker = ticket.settle_notified_by_worker;
                     task_counter.fetch_add(1, Ordering::SeqCst);
 
                     let task = move || {
@@ -1151,7 +1161,12 @@ impl LspServer {
                                 "Skipping stale background index task after document close/change"
                             );
                         }
-                        coordinator_clone.notify_parse_complete(&uri_owned);
+                        // See `PublishedParseTicket` and #3660: the async
+                        // worker's settle hook already owns this
+                        // lifecycle's decrement when `true`.
+                        if !settle_notified_by_worker {
+                            coordinator_clone.notify_parse_complete(&uri_owned);
+                        }
                         task_counter.fetch_sub(1, Ordering::SeqCst);
                     };
 
@@ -1179,10 +1194,14 @@ impl LspServer {
             }
         }
 
-        // Notify coordinator synchronously when no coordinator/URL/workspace feature.
-        #[cfg(feature = "workspace")]
-        if let Some(coordinator) = self.coordinator() {
-            coordinator.notify_parse_complete(&ticket.uri);
+        // Notify coordinator synchronously when no coordinator/URL/workspace
+        // feature -- unless the async worker's settle hook already owns
+        // this lifecycle's decrement (see `PublishedParseTicket` and #3660).
+        if !ticket.settle_notified_by_worker {
+            #[cfg(feature = "workspace")]
+            if let Some(coordinator) = self.coordinator() {
+                coordinator.notify_parse_complete(&ticket.uri);
+            }
         }
 
         // Fast path: immediately publish parse-error diagnostics.

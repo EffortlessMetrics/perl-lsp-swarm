@@ -117,7 +117,7 @@ use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
+    Arc, Weak,
     atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
 };
 use url::Url;
@@ -1192,7 +1192,8 @@ impl LspServer {
     /// inline, exactly as before this PR).
     pub(crate) fn install_default_parse_worker(self: &Arc<Self>) {
         let cb_server = Arc::downgrade(self);
-        let on_published: Arc<dyn Fn(parse_worker::PublishedParseTicket) + Send + Sync> =
+        let on_published: Arc<dyn Fn(parse_worker::PublishedParseTicket) + Send + Sync> = {
+            let cb_server = Weak::clone(&cb_server);
             Arc::new(move |ticket: parse_worker::PublishedParseTicket| {
                 // Break the Arc cycle: if the server has been dropped (shutdown path),
                 // skip the side-effect cleanly. If the server is still live, invoke
@@ -1202,11 +1203,33 @@ impl LspServer {
                     server.run_post_parse_side_effects(ticket);
                 }
                 // If server has been dropped, this is a clean no-op during shutdown.
-            });
-        let worker = parse_worker::ParseWorker::spawn(
+            })
+        };
+        // #3660 follow-up: balances `IndexCoordinator::notify_change` (fired
+        // once per pending-parse lifecycle by the async `didChange` path,
+        // see `text_sync.rs`) with exactly one matching
+        // `notify_parse_complete`, regardless of whether the lifecycle's
+        // last job published, panicked, or was terminally rejected as
+        // stale -- see `ParseWorker::spawn_with_settle_hook`'s doc comment.
+        // Same `Weak<Self>` pattern as `on_published` above and for the
+        // same reason: a strong `Arc<Self>` captured here would recreate
+        // the LspServer<->ParseWorker cycle #3618 exists to break.
+        let on_settled: Arc<dyn Fn(&str) + Send + Sync> = {
+            let cb_server = Weak::clone(&cb_server);
+            Arc::new(move |uri: &str| {
+                if let Some(server) = cb_server.upgrade() {
+                    #[cfg(feature = "workspace")]
+                    if let Some(coordinator) = server.coordinator() {
+                        coordinator.notify_parse_complete(uri);
+                    }
+                }
+            })
+        };
+        let worker = parse_worker::ParseWorker::spawn_with_settle_hook(
             Arc::clone(&self.documents),
             Arc::clone(&self.ast_cache),
             on_published,
+            on_settled,
         );
         // If every worker thread failed to spawn (resource exhaustion), do
         // NOT install it: the async `didChange` path only checks
