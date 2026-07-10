@@ -29,8 +29,10 @@ thread performatively:
 or refute; **Question** -> refute (answer) or follow-up; **Nitpick** -> fix if
 trivial, refute if subjective.)
 
-### 3. Address blocking comments
-For each blocking comment:
+### 3. Address every Fix-classified comment
+For each comment classified **Fix** in step 2 (not just the ones a bot flagged
+"blocking" — a non-blocking `Fix` still requires the change, or it shouldn't have
+been classified `Fix`):
 1. Read the file and understand the concern
 2. Make the fix
 3. Commit: `fix(review): address <reviewer> feedback — <what>`
@@ -54,10 +56,14 @@ gh pr comment $ARGUMENTS --body "Addressed review feedback:
 After replying with evidence, resolve the GitHub review thread — only once it
 has a real disposition (fixed/refuted/superseded/accepted-with-follow-up), not
 performatively:
+
 ```bash
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread-id>"}) { thread { isResolved } } }'
 ```
-Get thread IDs via `gh api graphql -f query='query { repository(owner:"OWNER", name:"REPO") { pullRequest(number: $ARGUMENTS) { reviewThreads(first: 50) { nodes { id isResolved path body } } } } }'`.
+
+Get thread IDs via `gh api graphql -f query='query { repository(owner:"OWNER", name:"REPO") { pullRequest(number: $ARGUMENTS) { reviewThreads(first: 50) { nodes { id isResolved path body } pageInfo { hasNextPage endCursor } } } } }'`.
+If `hasNextPage` is true, re-run with `after: "<endCursor>"` and keep paging — a PR
+with more than 50 threads will otherwise silently hide later ones from discovery.
 
 ### 5. Re-verify
 ```bash
@@ -82,6 +88,12 @@ gh pr edit $ARGUMENTS --add-reviewer <original-reviewer> 2>/dev/null || true
 
 Before this PR can be marked ready or auto-merge enabled, every requested
 reviewer must finish on the current HEAD SHA and every substantive thread must
-be resolved (see step 4.5) — check with
-`gh pr view $ARGUMENTS --json reviewRequests,reviews,reviewDecision`. Never
-enable or retain auto-merge while either condition is unmet.
+be resolved. `reviewDecision` alone doesn't prove either: it says nothing about
+thread resolution, and a review can predate the current push. Check both:
+- `gh pr view $ARGUMENTS --json reviewRequests,reviews,headRefOid,reviewDecision`
+  — a reviewer only counts as finished if their review's `commit.oid` equals
+  `headRefOid`
+- the `reviewThreads` query from step 4.5, paginated — every node must have
+  `isResolved: true`
+
+Never enable or retain auto-merge while either condition is unmet.

@@ -43,8 +43,20 @@ Optionally validate receipt freshness when `deep-reviewed` is present to ensure 
 
 ### 3.5 Verify conversation resolution and reviewer completion
 
+`reviewDecision` alone doesn't prove either condition below — it says nothing
+about thread resolution, and a review can predate the current push. Check both:
+
 ```bash
-gh pr view $NUMBER --json reviewRequests,reviews,reviewDecision
+gh pr view $NUMBER --json reviewRequests,reviews,headRefOid,reviewDecision
+```
+
+A reviewer only counts as finished if their review's `commit.oid` equals
+`headRefOid` — a review left on an older commit doesn't count. Then check every
+review thread is resolved (paginate if `hasNextPage` is true — see
+`/pr-respond` step 4.5 for the query and pagination guidance):
+
+```bash
+gh api graphql -f query='query { repository(owner:"OWNER", name:"REPO") { pullRequest(number: $NUMBER) { reviewThreads(first: 50) { nodes { id isResolved path } pageInfo { hasNextPage endCursor } } } } }'
 ```
 
 **Never enable or retain auto-merge, and never mark a PR ready for merge
@@ -52,9 +64,9 @@ pickup, while any requested reviewer has not yet finished on the current HEAD
 SHA or any substantive review thread remains unresolved.** Resolve threads for
 a reason (fixed/refuted/superseded/accepted-with-follow-up), not
 performatively — main mechanically requires conversation resolution before
-merge. If `reviewRequests` is non-empty or an active reviewer hasn't
-re-reviewed since the last push, **STOP** and report which reviewer is still
-pending instead of proceeding.
+merge. If `reviewRequests` is non-empty, a review's `commit.oid` is stale
+relative to `headRefOid`, or any thread node has `isResolved: false`, **STOP**
+and report which reviewer or thread is still pending instead of proceeding.
 
 ### 4. Mark ready and signal merge-readiness
 

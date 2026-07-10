@@ -39,11 +39,11 @@ You also read agent comments for context:
 
 For each bot comment / CI failure / review conversation:
 1. **Classify** — fix / refute / supersede / follow-up
-2. **Fix it on the branch** (or gather the refute/supersede/follow-up evidence) — checkout, edit, commit, push
+2. **Fix it on the branch** (or gather the refute/supersede/follow-up evidence) — checkout, edit, commit, push. For **follow-up**, don't just note it — create or identify the tracked issue first; a follow-up with no issue number is deferred work that silently disappears once the thread closes.
 3. **Prove it** — re-run the relevant check/test
-4. **Reply with evidence** — state what you fixed, with commit hash or reasoning
+4. **Reply with evidence** — state what you fixed, with commit hash or reasoning; for follow-up, cite the issue number
 5. **Resolve the thread** — for the real reason (fixed/refuted/superseded/accepted-with-follow-up), never performatively
-6. **Verify all requested reviewers finished on the current HEAD SHA** before treating the PR as ready — check `gh pr view <N> --json reviewRequests,reviews,reviewDecision`
+6. **Verify all requested reviewers finished on the current HEAD SHA** before treating the PR as ready — check `gh pr view <N> --json reviewRequests,reviews,headRefOid,reviewDecision` and confirm each review's `commit.oid` matches `headRefOid` (a review left on an older commit doesn't count as finished)
 
 ## Principles
 
