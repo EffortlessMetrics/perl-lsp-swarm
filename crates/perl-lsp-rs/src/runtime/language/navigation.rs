@@ -2348,4 +2348,58 @@ mod tests {
         })));
         assert!(result.is_ok(), "handle_implementation must not error: {result:?}");
     }
+
+    /// Verifies `wait_at_same_doc_fallback_gap`'s poison-recovery path
+    /// (#3613): a previously panicked holder of
+    /// `NAVIGATION_SAME_DOC_FALLBACK_GAP` must not silently disable the
+    /// synchronization point for a later caller. Deliberately poisons the
+    /// static mutex (a thread panics while holding its lock), then confirms
+    /// the recovery branch (`Err(poisoned) => poisoned.into_inner().take()`)
+    /// still lets an armed hook fire instead of the `.lock().ok()` pattern
+    /// this replaces, which would turn the poisoned `Err` into `None` and
+    /// silently skip the pause.
+    ///
+    /// The deliberate `panic!` (to poison the mutex) and the `.expect()`
+    /// calls (to fail loudly, with a diagnosing message, if the recovery
+    /// path regresses) are the point of this test, not banned production
+    /// patterns creeping in -- narrowly allowed here the same way
+    /// `LazyLock` regex initializers are elsewhere in this codebase.
+    #[test]
+    #[allow(clippy::panic, clippy::expect_used)]
+    fn test_wait_at_same_doc_fallback_gap_recovers_from_poisoned_mutex() {
+        // Poison the static by panicking while holding its lock on another
+        // thread. `thread::spawn` catches the panic and reports it via
+        // `join()`'s `Err`, so this does not abort the test process.
+        let poison_result = std::thread::spawn(|| {
+            let _guard = NAVIGATION_SAME_DOC_FALLBACK_GAP.lock();
+            panic!("deliberately poisoning the hook mutex for #3613 test coverage");
+        })
+        .join();
+        assert!(poison_result.is_err(), "the poisoning thread must have panicked");
+        assert!(NAVIGATION_SAME_DOC_FALLBACK_GAP.lock().is_err(), "the mutex must now be poisoned");
+
+        // Arm the hook directly, recovering the poisoned guard the same way
+        // `wait_at_same_doc_fallback_gap` does -- this unit test lives in
+        // the same module, so it can reach the private static directly.
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        {
+            let mut hook = match NAVIGATION_SAME_DOC_FALLBACK_GAP.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *hook = Some((reached_tx, resume_rx));
+        }
+
+        // The function under test must recover the still-poisoned mutex and
+        // still fire the hook -- not silently no-op like `.lock().ok()` would.
+        let handler = std::thread::spawn(wait_at_same_doc_fallback_gap);
+        reached_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("poison recovery must still let the hook fire `reached`");
+        resume_tx.send(()).expect("resume channel must still be open");
+        handler.join().expect(
+            "wait_at_same_doc_fallback_gap must not panic after recovering a poisoned lock",
+        );
+    }
 }
