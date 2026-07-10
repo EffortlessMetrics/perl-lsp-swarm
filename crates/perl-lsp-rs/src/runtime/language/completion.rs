@@ -925,9 +925,10 @@ impl LspServer {
                 let ast_available = doc.current_parsed().is_some_and(|p| p.ast.is_some());
 
                 // Get completions, with fallback for missing AST
+                let parsed = doc.current_parsed();
                 #[cfg_attr(not(feature = "workspace"), allow(unused_mut))]
                 let mut completions = if let Some(ast) =
-                    doc.current_parsed().and_then(|p| p.ast.as_ref())
+                    parsed.as_ref().and_then(|p| p.ast.as_ref())
                 {
                     let (include_paths, system_inc_paths, include_system_inc) =
                         self.module_completion_roots_for_doc(uri, &doc.text, offset);
@@ -1170,8 +1171,9 @@ impl LspServer {
                 };
 
                 // Get completions with optimized cancellation support
+                let parsed = doc.current_parsed();
                 let mut completions = if let Some(ast) =
-                    doc.current_parsed().and_then(|p| p.ast.as_ref())
+                    parsed.as_ref().and_then(|p| p.ast.as_ref())
                 {
                     let (include_paths, system_inc_paths, include_system_inc) =
                         self.module_completion_roots_for_doc(uri, &doc.text, offset);

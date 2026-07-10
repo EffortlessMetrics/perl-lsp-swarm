@@ -844,7 +844,8 @@ impl LspServer {
             let doc_opt = documents.get(&uri_key).or_else(|| documents.get(uri)); // try raw as a fallback
 
             if let Some(doc) = doc_opt {
-                if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
+                let parsed = doc.current_parsed();
+                if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
                     // Find the symbol in the AST to get more accurate information
                     let extractor = crate::symbol::SymbolExtractor::new_with_source(&doc.text);
                     let symbol_table = extractor.extract(ast);

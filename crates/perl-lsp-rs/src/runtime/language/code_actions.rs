@@ -492,7 +492,7 @@ impl LspServer {
         };
 
         let parsed = doc.current_parsed();
-        if let Some(ast) = parsed.and_then(|p| p.ast.as_ref()) {
+        if let Some(ast) = parsed.as_ref().and_then(|p| p.ast.as_ref()) {
             let start_offset = self.pos16_to_offset(doc, start_line, start_char);
             let end_offset = self.pos16_to_offset(doc, end_line, end_char);
 
@@ -500,7 +500,7 @@ impl LspServer {
             // here since `ast` was derived from it.
             let empty_errors: std::sync::Arc<[perl_parser::error::ParseError]> =
                 std::sync::Arc::from([]);
-            let parse_errors = parsed.map_or(&empty_errors, |p| &p.parse_errors);
+            let parse_errors = parsed.as_ref().map_or(&empty_errors, |p| &p.parse_errors);
             let diag_provider = DiagnosticsProvider::new(ast, doc.text.clone());
             let mut diagnostics = diag_provider.get_diagnostics(ast, parse_errors, &doc.text, None);
             diagnostics.extend(self.context_diagnostics_for_code_actions(&params, doc));

@@ -461,12 +461,13 @@ impl LspServer {
             documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
                 let parsed = doc.current_parsed();
                 (
-                    parsed.and_then(|p| p.ast.clone()),
+                    parsed.as_ref().and_then(|p| p.ast.clone()),
                     doc.text.clone(),
                     parsed
+                        .as_ref()
                         .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| Arc::clone(&p.parse_errors)),
                     doc.version,
-                    parsed.map_or(DegradationTier::Minimal, |p| p.degradation_tier),
+                    parsed.as_ref().map_or(DegradationTier::Minimal, |p| p.degradation_tier),
                     doc.line_starts.clone(),
                     doc.rope.clone(),
                     Arc::clone(&doc.generation),

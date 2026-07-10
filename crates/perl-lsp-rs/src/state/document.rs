@@ -293,16 +293,28 @@ impl DocumentState {
     /// The last published parse result, regardless of whether it matches the
     /// current document generation.
     ///
+    /// Returns an **owned** `Arc<ParsedSnapshot>` (a refcount bump, not a
+    /// data clone -- the backing field is already `Option<Arc<ParsedSnapshot>>`)
+    /// rather than a borrow tied to `&self`. This is deliberate: a borrowed
+    /// return would force every caller to hold the `documents` map lock for
+    /// the full lifetime of its analysis, cementing exactly the lock
+    /// boundary this seam exists to eventually break. An owned return lets a
+    /// caller grab the snapshot, drop the lock, and analyze off-lock later
+    /// (the async parse worker's read path will need this).
+    ///
     /// Use this only when the caller deliberately wants to tolerate
     /// staleness (e.g. keep showing the previous parse's results while a
     /// newer parse is in flight). Most callers should prefer
     /// [`Self::current_parsed`].
-    pub fn latest_parsed(&self) -> Option<&ParsedSnapshot> {
-        self.parsed.as_deref()
+    pub fn latest_parsed(&self) -> Option<Arc<ParsedSnapshot>> {
+        self.parsed.clone()
     }
 
     /// The published parse result, but only if it was parsed from the
     /// document's *current* generation.
+    ///
+    /// Returns an **owned** `Arc<ParsedSnapshot>` for the same reason as
+    /// [`Self::latest_parsed`] -- see that method's doc comment.
     ///
     /// Returns `None` when no snapshot has ever been published, or when the
     /// last published snapshot is stale (parsed from an older generation
@@ -315,8 +327,8 @@ impl DocumentState {
     /// `didOpen`/`didChange` completes -- behavior-identical to reading the
     /// old `ast`/`parse_errors`/`parent_map`/`degradation_tier` fields
     /// directly.
-    pub fn current_parsed(&self) -> Option<&ParsedSnapshot> {
-        let snapshot = self.parsed.as_deref()?;
+    pub fn current_parsed(&self) -> Option<Arc<ParsedSnapshot>> {
+        let snapshot = self.parsed.clone()?;
         (snapshot.generation == self.current_generation()).then_some(snapshot)
     }
 
@@ -551,12 +563,12 @@ mod tests {
         assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
 
         let cloned = doc.clone();
-        let original_ptr = std::ptr::from_ref(must_some(doc.latest_parsed()));
-        let cloned_ptr = std::ptr::from_ref(must_some(cloned.latest_parsed()));
+        let original_arc = must_some(doc.latest_parsed());
+        let cloned_arc = must_some(cloned.latest_parsed());
         // Both point at the *same* allocation -- cloning DocumentState is a
         // refcount bump on the Arc<ParsedSnapshot>, not a deep copy.
         assert!(
-            std::ptr::eq(original_ptr, cloned_ptr),
+            Arc::ptr_eq(&original_arc, &cloned_arc),
             "clone must share the same Arc<ParsedSnapshot> allocation"
         );
 
