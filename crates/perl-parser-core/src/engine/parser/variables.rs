@@ -300,6 +300,13 @@ impl<'a> Parser<'a> {
         // We need to split the sigil from the name
         let text = &token.text;
 
+        if let Some(name) = Self::simple_braced_scalar_token_name(text) {
+            return Ok(Node::new(
+                NodeKind::Variable { sigil: String::from("$"), name: name.to_string() },
+                SourceLocation { start: token.start, end: token.end },
+            ));
+        }
+
         // Special handling for @{, %{, and ${ (array/hash/scalar dereference)
         // e.g. @{$ref}, %{$hash}, ${"${pkg}::$sym"}
         if &**text == "@{" || &**text == "%{" || &**text == "${" {
@@ -545,9 +552,45 @@ impl<'a> Parser<'a> {
             return Ok(expr);
         }
 
+        if let Some(expr) = self.try_parse_simple_braced_scalar()? {
+            return Ok(expr);
+        }
+
         match self.try_parse_braced_qualified_scalar()? {
             Some(expr) => Ok(expr),
             None => self.parse_expression(),
+        }
+    }
+
+    fn try_parse_simple_braced_scalar(&mut self) -> ParseResult<Option<Node>> {
+        if self.peek_kind() != Some(TokenKind::Identifier) {
+            return Ok(None);
+        }
+
+        // The peeked identifier must be a plain bareword (e.g. `sep`), not a
+        // sigil-prefixed variable reference (e.g. `$ref` inside `${$ref}`,
+        // which is a nested dereference, not `${name}` == `$name` folding).
+        if !is_simple_scalar_name(&self.tokens.peek()?.text) {
+            return Ok(None);
+        }
+
+        if self.tokens.peek_second()?.kind != TokenKind::RightBrace {
+            return Ok(None);
+        }
+
+        let name_token = self.tokens.next()?;
+        Ok(Some(Node::new(
+            NodeKind::Variable { sigil: String::from("$"), name: name_token.text.to_string() },
+            SourceLocation { start: name_token.start, end: name_token.end },
+        )))
+    }
+
+    fn simple_braced_scalar_token_name(text: &str) -> Option<&str> {
+        let inner = text.strip_prefix("${")?.strip_suffix('}')?;
+        if is_simple_scalar_name(inner) {
+            Some(inner)
+        } else {
+            None
         }
     }
 
@@ -1377,6 +1420,27 @@ impl<'a> Parser<'a> {
 /// `$` `@` `%` `&` `*` `\` `;` `+` `_`, bracketed ref groups, and ASCII space.
 fn is_valid_prototype_char(c: char) -> bool {
     matches!(c, '$' | '@' | '%' | '&' | '*' | '\\' | ';' | '+' | '_' | '[' | ']' | ' ')
+}
+
+/// Return `true` if `name` is a simple bareword identifier suitable for the
+/// `${name}` == `$name` folding described in perlref: `${foo}` is exactly
+/// `$foo` when `foo` is a plain identifier, not an arbitrary dereference
+/// expression.
+///
+/// Valid: first character alphabetic or underscore, remaining characters
+/// alphanumeric or underscore. Matches the identifier text the lexer already
+/// produces for the `${identifier}` single-token form (see
+/// `perl-lexer`'s braced-variable scan), so no `::` package-separator
+/// handling is needed here.
+fn is_simple_scalar_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]

@@ -44,6 +44,19 @@ fn braced_scalar_deref_is_unary() {
 }
 
 #[test]
+fn braced_simple_scalar_name_is_variable_not_deref() {
+    let sexp = first_expr_sexp("${sep};");
+    assert!(
+        sexp.contains("(variable $ sep)"),
+        "simple braced scalar should parse as a variable, got {sexp}"
+    );
+    assert!(
+        !sexp.contains("unary_${}"),
+        "simple braced scalar must not parse as symbolic deref, got {sexp}"
+    );
+}
+
+#[test]
 fn braced_array_deref_is_unary() {
     // @{$ref} must produce (unary_@{} (variable $ ref))
     let sexp = first_expr_sexp("@{$ref};");
