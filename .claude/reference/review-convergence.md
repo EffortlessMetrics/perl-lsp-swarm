@@ -10,7 +10,7 @@ authoritative contract — read it first if the two ever disagree.
 ## Why this exists
 
 Three review rounds on this repo's control-plane fixes (culminating in PR
-#3621, which addressed #3598) re-introduced the same defect in four
+#3621, which addressed #3598) re-introduced the same defect in five
 different files: `pr-ready.md`, `pr-respond.md`, `ops-merge-batch.md`,
 `pr-responder.md`, and `ops.md` each computed "is review done?" with their
 own hand-copied GraphQL query. The queries drifted from each other every

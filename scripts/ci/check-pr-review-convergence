@@ -181,12 +181,22 @@ EOF
 #    read via the REST-ish `gh pr view` for simplicity — reviewRequests over
 #    50 simultaneous requested reviewers is not a realistic case for this
 #    repo's review model) ─────────────────────────────────────────────────
-if ! PR_META="$(gh pr view "$PR" --json headRefOid,reviewRequests 2>&1)"; then
+if ! PR_META="$(gh pr view "$PR" --repo "$OWNER/$REPO" --json headRefOid,reviewRequests 2>&1)"; then
     echo "ERROR: could not fetch PR #$PR metadata: $PR_META" >&2
     exit 2
 fi
 HEAD_REF_OID="$(printf '%s' "$PR_META" | jq -r '.headRefOid')"
-PENDING_REVIEWERS="$(printf '%s' "$PR_META" | jq -c '[.reviewRequests[]?.login // .reviewRequests[]?.name // empty]')"
+# NOTE: reviewRequests mixes User nodes (have `.login`) and Team nodes (have
+# `.name`, no `.login`). The fallback MUST be applied per-element — piping
+# each node through `(.login // .name // empty)` individually — not across
+# the whole generator. `[.reviewRequests[]?.login // .reviewRequests[]?.name
+# // empty]` looks equivalent but isn't: jq's `//` operator evaluates its
+# right side only when the LEFT side produces zero truthy outputs across ALL
+# of `.reviewRequests[]?.login`'s results, so a single requested User in the
+# list makes `//` skip `.name` entirely and any co-requested Team is silently
+# dropped from the pending-reviewer set — the exact "reports CONVERGED with a
+# team review still pending" bug this script exists to prevent.
+PENDING_REVIEWERS="$(printf '%s' "$PR_META" | jq -c '[.reviewRequests[]? | (.login // .name // empty)]')"
 PENDING_REVIEWER_COUNT="$(printf '%s' "$PENDING_REVIEWERS" | jq 'length')"
 
 if [[ -z "$HEAD_REF_OID" || "$HEAD_REF_OID" == "null" ]]; then
@@ -247,9 +257,9 @@ CONVERGED="true"
 
 if [[ "$PENDING_REVIEWER_COUNT" -gt 0 ]]; then
     CONVERGED="false"
-    for reviewer in $(printf '%s' "$PENDING_REVIEWERS" | jq -r '.[]'); do
+    while IFS= read -r reviewer; do
         echo "BLOCK PR #$PR: review still requested from '$reviewer' — not yet reviewed" >&2
-    done
+    done < <(printf '%s' "$PENDING_REVIEWERS" | jq -r '.[]')
 fi
 
 if [[ "$STALE_REVIEW_COUNT" -gt 0 ]]; then
@@ -291,7 +301,12 @@ fi
 if [[ "$CONVERGED" == "true" ]]; then
     echo "OK   PR #$PR: review convergence achieved at $HEAD_REF_OID (0 pending reviewers, 0 stale human reviews, $ACTIVE_THREAD_COUNT active threads, $RESOLVED_THREAD_COUNT resolved, $OUTDATED_THREAD_COUNT outdated-unresolved, $STALE_BOT_REVIEW_COUNT stale-bot-advisory)"
 else
-    echo "FAIL PR #$PR: review convergence NOT achieved at $HEAD_REF_OID — see BLOCK lines above" >&2
+    # Per the documented output contract (script header + review-convergence.md):
+    # stdout always carries a human-readable summary line + the JSON verdict,
+    # on BOTH the converged and not-converged paths. This line previously went
+    # to stderr only, so a caller reading stdout for the summary got just the
+    # bare JSON object on a non-converged PR.
+    echo "FAIL PR #$PR: review convergence NOT achieved at $HEAD_REF_OID — see BLOCK lines above"
 fi
 
 jq -n \
