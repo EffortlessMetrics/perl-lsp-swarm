@@ -28,13 +28,13 @@ Merge up to 3 PRs from the candidates identified in step 1.
    - No blocking review comments
    - `reviewRequests` empty and every entry in `latestReviews` has `commit.oid == headRefOid`
      (only the latest review per reviewer counts as finished; earlier reviews are superseded)
-   - **No unresolved substantive review conversation threads** — query
-     `reviewThreads` via GraphQL (see `/pr-respond` step 4.5 for the paginated
-     query) and confirm every node has `isResolved: true`. Never merge, and
-     never enable/retain auto-merge, while any requested reviewer is still
-     pending on the current HEAD SHA or any thread remains unresolved. Threads
-     must be resolved for a reason (fixed/refuted/superseded/accepted-with-follow-up),
-     not performatively.
+   - **No unresolved review conversation threads** — query `reviewThreads` via
+     GraphQL (see `/pr-respond` step 4.5 for the paginated query) and confirm
+     every node has `isResolved: true`. Never merge, and never enable/retain
+     auto-merge, while any requested reviewer is still pending on the current
+     HEAD SHA or any thread remains unresolved. Threads must be resolved for a
+     reason (fixed/refuted/superseded/accepted-with-follow-up), not
+     performatively.
    - **NO active `needs-*` label** (per the 2026-04-26 sign-off-as-routing rule: presence of `needs-builder-fix` / `needs-ci-fix` / `needs-diff-fix` / `needs-spec-fix` / `needs-red-tdd-fix` MUST block merge regardless of `merge-ready`). Sign-off is one of the routing decisions; if any gate ALSO bounced, the PR is not actually signed off.
    - **Workspace-wide CI checks SUCCESS** (Compile All Targets, PR Smoke including workspace fmt, Windows Guardrails compile/module-separator/sandbox), not just per-crate. Per the 2026-04-26 master-green directive: per-crate gates miss workspace drift.
 

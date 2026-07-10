@@ -93,9 +93,10 @@ Before this PR can be marked ready or auto-merge enabled, every requested
 reviewer must finish on the current HEAD SHA and every substantive thread must
 be resolved. `reviewDecision` alone doesn't prove either: it says nothing about
 thread resolution, and a review can predate the current push. Check both:
-- `gh pr view $ARGUMENTS --json reviewRequests,reviews,headRefOid,reviewDecision`
+- `gh pr view $ARGUMENTS --json reviewRequests,latestReviews,headRefOid,reviewDecision`
   — a reviewer only counts as finished if their review's `commit.oid` equals
-  `headRefOid`
+  `headRefOid` (only the latest review per reviewer counts; earlier submissions
+  are superseded)
 - the `reviewThreads` query from step 4.5, paginated — every node must have
   `isResolved: true`
 

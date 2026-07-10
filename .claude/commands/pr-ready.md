@@ -47,12 +47,12 @@ Optionally validate receipt freshness when `deep-reviewed` is present to ensure 
 about thread resolution, and a review can predate the current push. Check both:
 
 ```bash
-gh pr view $NUMBER --json reviewRequests,reviews,headRefOid,reviewDecision
+gh pr view $NUMBER --json reviewRequests,latestReviews,headRefOid,reviewDecision
 ```
 
 A reviewer only counts as finished if their review's `commit.oid` equals
-`headRefOid` — a review left on an older commit doesn't count. Then check every
-review thread is resolved (paginate if `hasNextPage` is true — see
+`headRefOid` — only the latest review per reviewer counts (earlier reviews are
+superseded). Then check every review thread is resolved (paginate if `hasNextPage` is true — see
 `/pr-respond` step 4.5 for the query and pagination guidance):
 
 ```bash
