@@ -209,7 +209,11 @@ fn split_leading_ws(s: &[u8]) -> (usize, &[u8]) {
 
 /// For label comparison only, drop a trailing '\r' (CRLF normalization).
 fn strip_trailing_cr(s: &[u8]) -> &[u8] {
-    if s.last().copied() == Some(b'\r') { &s[..s.len() - 1] } else { s }
+    if s.last().copied() == Some(b'\r') {
+        &s[..s.len() - 1]
+    } else {
+        s
+    }
 }
 
 /// Returns the length of the common byte prefix between two slices.
