@@ -1208,7 +1208,23 @@ impl LspServer {
             Arc::clone(&self.ast_cache),
             on_published,
         );
-        *self.parse_worker_handle.lock() = Some(Arc::new(worker));
+        // If every worker thread failed to spawn (resource exhaustion), do
+        // NOT install it: the async `didChange` path only checks
+        // `self.parse_worker().is_some()` to decide whether to enqueue
+        // instead of parsing inline, and an installed-but-threadless worker
+        // would silently accept jobs no thread will ever process -- a
+        // permanent stall instead of a crash. Leaving `parse_worker_handle`
+        // as `None` here keeps the existing synchronous fallback path (the
+        // one hundreds of unit tests and any editor session already
+        // exercise) as the effective behavior instead.
+        if worker.is_operational() {
+            *self.parse_worker_handle.lock() = Some(Arc::new(worker));
+        } else {
+            tracing::error!(
+                "parse worker pool failed to spawn any threads; \
+                 falling back to the synchronous parse path"
+            );
+        }
     }
 
     /// The installed off-lock parse worker, if any. `None` means the

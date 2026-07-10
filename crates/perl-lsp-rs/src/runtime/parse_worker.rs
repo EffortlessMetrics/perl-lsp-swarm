@@ -690,6 +690,23 @@ impl ParseWorker {
         }
     }
 
+    /// Whether at least one worker thread is actually alive to dequeue and
+    /// process jobs. `spawn` never fails outright -- a `thread::Builder`
+    /// spawn error is logged and skipped per-thread (see the loop above) so
+    /// one failure doesn't abort constructing the rest of the pool -- but if
+    /// EVERY spawn attempt failed (thread/resource exhaustion), the returned
+    /// `ParseWorker` would silently accept `enqueue`d jobs that no thread
+    /// will ever dequeue: `didChange` on the async path returns immediately
+    /// having only committed the text mutation, and the document's parse,
+    /// diagnostics, and index update never happen -- a permanent, silent
+    /// stall rather than a crash. Callers (see
+    /// `LspServer::install_default_parse_worker`) must check this before
+    /// installing the worker and fall back to the synchronous path if it is
+    /// `false`.
+    pub(crate) fn is_operational(&self) -> bool {
+        !self.handles.lock().is_empty()
+    }
+
     /// Enqueue (or coalesce-replace) a parse job for `normalized_uri`.
     pub(crate) fn enqueue(
         &self,
@@ -1448,6 +1465,46 @@ mod tests {
         }
     }
 
+    // ---- Operability: zero live threads must be detectable -------------
+
+    /// `ParseWorker::spawn` never fails outright -- a per-thread spawn error
+    /// is logged and skipped (see the `match spawned` loop in `spawn`), so
+    /// the pool degrades thread-by-thread rather than aborting construction.
+    /// `is_operational()` is the guard `install_default_parse_worker` relies
+    /// on to detect the all-threads-failed case (every `thread::Builder`
+    /// spawn errored) and fall back to the synchronous parse path instead of
+    /// installing a worker that accepts jobs no thread will ever process.
+    /// A real OS-level thread-exhaustion failure isn't reproducible
+    /// deterministically in a unit test, so this proves the method's
+    /// contract directly: true immediately after a normal spawn (threads
+    /// are live), false once every handle is gone (the all-spawns-failed
+    /// state `spawn` would have produced).
+    #[test]
+    fn is_operational_reflects_whether_any_worker_thread_is_alive() {
+        let uri = "file:///operability.pl";
+        let (documents, _generation_handle) = one_doc(uri, "my $a = 1;\n");
+        let (cb, _calls) = counting_callback();
+        let worker = ParseWorker::spawn(documents, ast_cache(), cb);
+        assert!(
+            worker.is_operational(),
+            "a freshly spawned pool must report at least one live worker thread"
+        );
+
+        // Simulate the all-spawns-failed case `spawn` would produce if every
+        // `thread::Builder::spawn` call in its loop returned `Err`. Signal
+        // shutdown first so the real live threads see it and exit on their
+        // own (there is nothing enqueued, so this is immediate) before
+        // dropping their `JoinHandle`s -- clearing `handles` without this
+        // would leak live OS threads that nothing ever joins.
+        worker.coordinator.request_shutdown();
+        worker.handles.lock().clear();
+        assert!(
+            !worker.is_operational(),
+            "zero live handles must report not-operational -- this is exactly the state \
+             `install_default_parse_worker` must detect and refuse to install"
+        );
+    }
+
     // ---- Lifecycle: LspServer <-> ParseWorker must not form an Arc cycle -
 
     /// End-to-end proof for #3618: `LspServer::install_default_parse_worker`
@@ -1483,18 +1540,48 @@ mod tests {
              prove anything about its shutdown behaviour"
         );
 
-        // Exercise the worker for real through one full enqueue -> parse ->
-        // publish -> on_published cycle over the exact `Weak<LspServer>`
-        // wiring `install_default_parse_worker` uses in production -- not a
-        // synthetic callback like the other tests in this module. Proves
-        // the worker threads were live (holding their captured `cb_server`)
-        // immediately before the drop this test is actually about.
+        // `didOpen` is ALWAYS synchronous (`handle_did_open` never touches
+        // `self.parse_worker()`) -- this alone does not enqueue a job or
+        // invoke `on_published`. It's still meaningful setup: it proves the
+        // worker threads are live (holding their captured `cb_server`) and
+        // gives the document a real `DocumentState` to normalize/settle
+        // against, but it is NOT the thing that exercises the real
+        // enqueue -> parse -> publish -> `on_published` cycle -- see the
+        // real `didChange` right below for that (#3618 review, cubic).
         let uri = "file:///lifecycle_drop.pl";
         server.test_apply_did_open(uri, "my $a = 1;\n", 1)?;
         let normalized_uri = server.normalize_uri_key(uri);
         let settled =
             must_some(server.parse_worker()).wait_until_settled(&normalized_uri, TEST_TIMEOUT);
         assert!(settled, "the initial open's parse must settle before this test drops the server");
+
+        // Now exercise the worker for real through one full
+        // enqueue -> parse -> publish -> `on_published` cycle over the
+        // exact `Weak<LspServer>` wiring `install_default_parse_worker`
+        // uses in production, via a genuine async `didChange` (not a
+        // synthetic callback like the other tests in this module). This is
+        // NOT required to prove the cycle-vs-no-cycle fix itself -- Rust
+        // closures capture their environment at construction time, so
+        // whether `cb_server` above is `Arc` (cycle) or `Weak` (no cycle) is
+        // already decided the moment `install_default_parse_worker` builds
+        // the `on_published` closure, before any job ever runs; the
+        // drop-and-join proof below would catch a reverted fix even with
+        // ONLY the didOpen above (confirmed independently by reverting
+        // `cb_server` to `Arc::clone` during PR review: the test still
+        // failed, on the deallocation assertion, with no real async publish
+        // in between). Exercising the real callback path here is a
+        // meaningful hardening on top of that, not a prerequisite: it also
+        // proves a live `on_published` invocation's temporary
+        // `cb_server.upgrade()` doesn't itself leave behind an extra strong
+        // reference once the callback returns.
+        server.test_apply_did_change(uri, "my $aa = 1;\n", 2)?;
+        let settled_after_change =
+            must_some(server.parse_worker()).wait_until_settled(&normalized_uri, TEST_TIMEOUT);
+        assert!(
+            settled_after_change,
+            "the real async didChange's enqueue -> parse -> publish -> on_published cycle \
+             must settle before this test drops the server"
+        );
 
         // `Weak`, not a second `Arc` -- observing this must NOT keep the
         // server alive; it only lets the test check, after the drop, that
