@@ -56,6 +56,38 @@ static LABEL_DECLARATION_RE: OnceLock<Result<regex::Regex, regex::Error>> = Once
 
 static QUOTED_FRAMEWORK_MODULE_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
 
+/// Test-only synchronization point for deterministic same-document TOCTOU
+/// regression tests (#3613).
+///
+/// `handle_type_definition` and `handle_implementation` capture the request
+/// document's ast/text under one lock acquisition, then later re-read all
+/// open documents via `documents_text_snapshot()` for the fallback
+/// cross-file scan. This hook -- fired (and consumed) exactly once, right
+/// after the up-front capture and right before that later re-read -- lets a
+/// test pause the handler mid-flight, apply a real edit to the same
+/// document on another thread, then release the handler, so the assertion
+/// proves the fallback used the captured (generation-N) text and not the
+/// newer (generation-N+1) text a racing `didChange` produced. No sleeps: the
+/// handler blocks on `resume.recv()` until the test explicitly signals it to
+/// continue.
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+static NAVIGATION_SAME_DOC_FALLBACK_GAP: std::sync::Mutex<
+    Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+fn wait_at_same_doc_fallback_gap() {
+    let hook = NAVIGATION_SAME_DOC_FALLBACK_GAP.lock().ok().and_then(|mut hook| hook.take());
+    if let Some((reached, resume)) = hook {
+        let _ = reached.send(());
+        let _ = resume.recv();
+    }
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+#[inline]
+fn wait_at_same_doc_fallback_gap() {}
+
 fn lsp_location_count(value: Option<&Value>) -> usize {
     match value {
         Some(Value::Array(items)) => items.len(),
@@ -1973,9 +2005,36 @@ impl LspServer {
                 (ast, doc.text.clone())
             };
 
-            // Build doc_map outside the lock using snapshot helper
-            let doc_map: HashMap<String, String> =
-                self.documents_text_snapshot().into_iter().collect();
+            // Test-only: pauses here (no-op in production) so a race
+            // regression test can apply a real edit to `uri` before the
+            // fallback re-reads `documents_text_snapshot()` below (#3613).
+            wait_at_same_doc_fallback_gap();
+
+            // Build doc_map outside the lock using snapshot helper.
+            //
+            // Consistency note: `documents_text_snapshot()` is a fresh, independent
+            // lock acquisition, so in general it observes whatever generation of
+            // each document is live *at this later point* -- not necessarily the
+            // same generation `doc_owned` (via `ast`/`doc_text` above) captured.
+            // For every *other* open document that's fine (the provider's
+            // cross-file scan is a heuristic, name-based search with no offset
+            // dependency on the earlier capture). For `uri` itself it is not:
+            // `ast` above was parsed from `doc_text`'s generation, and
+            // `find_type_definition` below converts the request's line/character
+            // into a byte offset using `documents.get(uri)` -- so searching that
+            // offset against a *fresher* re-read of the same uri (if a
+            // `didChange` races in between the two lock acquisitions) would pair
+            // a generation-N AST with generation-N+1 text for the same document,
+            // the exact single-instance/single-generation invariant this
+            // off-lock pattern must preserve (mirrors the references.rs fix,
+            // #3396 / a95ad72). `uri`'s own entry is therefore pinned to
+            // `doc_text` (the exact generation captured above) instead of the
+            // live map; every other open document still gets the freshest read.
+            let doc_map: HashMap<String, String> = self
+                .documents_text_snapshot()
+                .into_iter()
+                .map(|(k, v)| if k == uri { (k, doc_text.clone()) } else { (k, v) })
+                .collect();
 
             let provider = TypeDefinitionProvider::new();
             if let Some(locations) =
@@ -2104,7 +2163,7 @@ impl LspServer {
             let (line, character) = req_position(&params)?;
 
             // Acquire minimal data under lock, then drop it
-            let ast = {
+            let (ast, doc_text) = {
                 let documents = self.documents_guard();
                 let Some(doc) = self.get_document(&documents, uri) else {
                     return Ok(Some(json!([])));
@@ -2112,14 +2171,35 @@ impl LspServer {
                 let Some(ast) = doc.current_parsed().and_then(|p| p.ast().cloned()) else {
                     return Ok(Some(json!([])));
                 };
-                ast
+                (ast, doc.text.clone())
             };
 
             #[cfg(feature = "workspace")]
             {
-                // Build doc_map outside the lock using snapshot helper
-                let doc_map: HashMap<String, String> =
-                    self.documents_text_snapshot().into_iter().collect();
+                // Test-only: pauses here (no-op in production) so a race
+                // regression test can apply a real edit to `uri` before the
+                // fallback re-reads `documents_text_snapshot()` below (#3613).
+                wait_at_same_doc_fallback_gap();
+
+                // Build doc_map outside the lock using snapshot helper.
+                //
+                // Consistency note: mirrors the identical fix in
+                // `handle_type_definition` above (and the references.rs fix,
+                // #3396 / a95ad72). `find_implementations` below converts the
+                // request's line/character into a byte offset using
+                // `documents.get(uri)` and combines it with `ast` (parsed from
+                // `doc_text`'s generation, captured above) to compute the
+                // enclosing package at the cursor -- so `uri`'s own entry must
+                // stay pinned to `doc_text` rather than a fresher live re-read,
+                // or a `didChange` racing between the two lock acquisitions
+                // would pair a generation-N AST with generation-N+1 text for the
+                // same document. Every other open document still gets the
+                // freshest available read.
+                let doc_map: HashMap<String, String> = self
+                    .documents_text_snapshot()
+                    .into_iter()
+                    .map(|(k, v)| if k == uri { (k, doc_text.clone()) } else { (k, v) })
+                    .collect();
 
                 // Wait for the workspace index to finish building before querying it.
                 // Without this, an implementation request while the index is in Building
@@ -2144,11 +2224,54 @@ impl LspServer {
 
             #[cfg(not(feature = "workspace"))]
             {
-                let _ = (ast, line, character, uri); // Suppress unused warnings
+                let _ = (ast, doc_text, line, character, uri); // Suppress unused warnings
             }
         }
 
         Ok(Some(json!([])))
+    }
+
+    /// Test-only entrypoint for LSP `textDocument/typeDefinition`.
+    ///
+    /// Exposes the internal [`Self::handle_type_definition`] handler for
+    /// integration tests (#3613 same-document TOCTOU regression coverage).
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub fn test_handle_type_definition(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_type_definition(params)
+    }
+
+    /// Test-only entrypoint for LSP `textDocument/implementation`.
+    ///
+    /// Exposes the internal [`Self::handle_implementation`] handler for
+    /// integration tests (#3613 same-document TOCTOU regression coverage).
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub fn test_handle_implementation(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_implementation(params)
+    }
+
+    /// Test-only: arm [`wait_at_same_doc_fallback_gap`] for one deterministic
+    /// pause.
+    ///
+    /// The next call into `handle_type_definition` or `handle_implementation`
+    /// that reaches the same-document fallback gap will send on `reached`
+    /// and then block on `resume.recv()` until the test signals it to
+    /// continue. Consumed (armed exactly once) per call -- see #3613.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub fn test_set_navigation_same_doc_fallback_gap_hook(
+        &self,
+        reached: std::sync::mpsc::Sender<()>,
+        resume: std::sync::mpsc::Receiver<()>,
+    ) {
+        let _ = self;
+        if let Ok(mut hook) = NAVIGATION_SAME_DOC_FALLBACK_GAP.lock() {
+            *hook = Some((reached, resume));
+        }
     }
 
     /// Non-blocking definition handler with fallback
