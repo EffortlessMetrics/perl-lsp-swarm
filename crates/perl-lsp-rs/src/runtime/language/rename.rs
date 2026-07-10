@@ -301,7 +301,7 @@ impl LspServer {
         let symbol_len = key.name.as_ref().len();
         let documents = self.documents_guard();
         let request_doc = self.get_document(&documents, request_uri)?;
-        let request_ast = request_doc.ast.as_ref()?;
+        let request_ast = request_doc.current_parsed().and_then(|p| p.ast.as_ref())?;
         let request_edit_uri = workspace_edit_uri_key(request_uri);
         let mut live_document_keys = BTreeSet::new();
         let mut indexed_document_keys = BTreeSet::new();
@@ -1009,7 +1009,7 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                if let Some(_ast) = &doc.ast {
+                if let Some(_ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                     let offset = self.pos16_to_offset(doc, line, character);
                     if Self::rename_blocked_at(doc, offset) {
                         return Ok(Some(json!(null)));
@@ -1244,7 +1244,7 @@ impl LspServer {
                     ) = {
                         let documents = self.documents_guard();
                         self.get_document(&documents, uri).and_then(|doc| {
-                            doc.ast.as_ref().and_then(|ast| {
+                            doc.current_parsed().and_then(|p| p.ast.as_ref()).and_then(|ast| {
                                 let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
                                 let current_pkg =
                                     crate::declaration::current_package_at(ast, offset);
@@ -1620,7 +1620,7 @@ impl LspServer {
                 // Same-file fallback for degraded/partial modes
                 let documents = self.documents_guard();
                 if let Some(doc) = self.get_document(&documents, uri) {
-                    if let Some(ref ast) = doc.ast {
+                    if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                         let offset = self.pos16_to_offset(doc, line as u32, ch as u32);
                         let current_symbol = self.get_token_at_position(&doc.text, offset);
                         let normalized_name =

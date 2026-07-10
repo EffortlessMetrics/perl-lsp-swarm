@@ -23,7 +23,7 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                if let Some(ref ast) = doc.ast {
+                if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                     let offset = self.pos16_to_offset(doc, line, character);
 
                     // Find the symbol at the cursor position

@@ -418,7 +418,7 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                if let Some(ref ast) = doc.ast {
+                if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                     let offset = self.pos16_to_offset(doc, line, character);
                     let needle = token_under_cursor(&doc.text, line as usize, character as usize)
                         .unwrap_or_default();
@@ -1282,7 +1282,7 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                if let Some(ref ast) = doc.ast {
+                if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                     let offset = self.pos16_to_offset(doc, line, character);
 
                     // Guard: if the resolved offset doesn't map back to the

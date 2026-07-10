@@ -9,6 +9,7 @@ use crate::features::diagnostics::{
     Diagnostic as InternalDiagnostic, DiagnosticTag as InternalDiagnosticTag,
     PullDiagnosticsContext,
 };
+use crate::state::DegradationTier;
 use perl_diagnostics::codes::DiagnosticCode;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -458,12 +459,14 @@ impl LspServer {
         let snapshot = {
             let documents = self.documents.lock();
             documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
+                let parsed = doc.current_parsed();
                 (
-                    doc.ast.clone(),
+                    parsed.and_then(|p| p.ast.clone()),
                     doc.text.clone(),
-                    doc.parse_errors.clone(),
+                    parsed
+                        .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| Arc::clone(&p.parse_errors)),
                     doc.version,
-                    doc.degradation_tier,
+                    parsed.map_or(DegradationTier::Minimal, |p| p.degradation_tier),
                     doc.line_starts.clone(),
                     doc.rope.clone(),
                     Arc::clone(&doc.generation),
@@ -770,8 +773,11 @@ impl LspServer {
         let snapshot = {
             let documents = self.documents.lock();
             documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
+                let parse_errors = doc
+                    .current_parsed()
+                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| Arc::clone(&p.parse_errors));
                 (
-                    doc.parse_errors.clone(),
+                    parse_errors,
                     doc.text.clone(),
                     doc.version,
                     doc.line_starts.clone(),
@@ -846,8 +852,11 @@ impl LspServer {
         let snapshot = {
             let documents = self.documents.lock();
             documents.get(&normalized_uri).or_else(|| documents.get(uri)).map(|doc| {
+                let parse_errors = doc
+                    .current_parsed()
+                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| Arc::clone(&p.parse_errors));
                 (
-                    doc.parse_errors.clone(),
+                    parse_errors,
                     doc.version,
                     doc.line_starts.clone(),
                     doc.rope.clone(),
@@ -989,8 +998,11 @@ impl LspServer {
             };
             if let Some((doc, generation, gen_at_snapshot)) = doc_snapshot {
                 let markup_message_support = self.client_capabilities.lock().markup_message_support;
+                let parse_errors = doc
+                    .current_parsed()
+                    .map_or_else(|| Arc::from([]) as Arc<[_]>, |p| Arc::clone(&p.parse_errors));
                 let items = Self::syntax_only_lsp_diagnostics(
-                    &doc.parse_errors,
+                    &parse_errors,
                     &doc.text,
                     &doc.line_starts,
                     &doc.rope,
@@ -1393,7 +1405,9 @@ impl LspServer {
             let prev_id =
                 previous_result_ids.iter().find(|(u, _)| u == uri_str).map(|(_, id)| id.clone());
 
-            if let Some(ast) = &doc.ast {
+            let Some(parsed) = doc.current_parsed() else { continue };
+            if let Some(ast) = parsed.ast.as_ref() {
+                let parse_errors = &parsed.parse_errors;
                 let provider = DiagnosticsProvider::new(ast, doc.text.clone());
                 // Position-aware resolver: each `use` statement is checked against only
                 // the @INC roots that are lexically active at its offset, so `no lib`
@@ -1422,7 +1436,7 @@ impl LspServer {
                             |file_id, queries| {
                                 provider.get_diagnostics_with_search_context_and_semantics(
                                     ast,
-                                    &doc.parse_errors,
+                                    parse_errors,
                                     &doc.text,
                                     Some(&resolver),
                                     &search_context,
@@ -1436,7 +1450,7 @@ impl LspServer {
                     semantic_diags.unwrap_or_else(|| {
                         provider.get_diagnostics_with_search_context(
                             ast,
-                            &doc.parse_errors,
+                            parse_errors,
                             &doc.text,
                             Some(&resolver),
                             &search_context,
@@ -1447,7 +1461,7 @@ impl LspServer {
                 #[cfg(not(all(feature = "workspace", not(target_arch = "wasm32"))))]
                 let mut diagnostics = provider.get_diagnostics_with_search_context(
                     ast,
-                    &doc.parse_errors,
+                    parse_errors,
                     &doc.text,
                     Some(&resolver),
                     &search_context,

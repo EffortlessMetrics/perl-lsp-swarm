@@ -58,7 +58,7 @@ impl LspServer {
                     let offset = self.pos16_to_offset(doc, line, character);
                     let live_compiler_context =
                         Self::live_hover_compiler_context(uri, &doc.text, offset);
-                    if let Some(ast) = &doc.ast {
+                    if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                         // Check for `use Module` at this offset first
                         let extracted = if let Some(module_name) =
                             Self::find_use_module_at_offset(ast, offset)

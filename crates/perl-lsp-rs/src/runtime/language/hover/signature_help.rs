@@ -66,7 +66,7 @@ impl LspServer {
                     self.find_function_context(&doc.text, offset)
                 {
                     // Try to get signature from user-defined functions first (if AST exists)
-                    if let Some(ref ast) = doc.ast {
+                    if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                         if let Some(signature) =
                             self.get_user_function_signature(ast, &function_name)
                         {

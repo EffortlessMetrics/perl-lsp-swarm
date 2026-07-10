@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::protocol::invalid_params;
-use crate::state::DegradationTier;
+use crate::state::{DegradationTier, ParsedSnapshot};
 #[cfg(feature = "workspace")]
 use perl_parser::workspace_index::{IndexPhase, IndexState};
 use perl_parser_core::source_file::is_binary_content;
@@ -211,9 +211,7 @@ impl LspServer {
                 );
             }
 
-            // Build line starts cache for O(log n) position conversion
             let rope = ropey::Rope::from_str(text);
-            let line_starts = LineStartsCache::new_rope(&rope);
 
             // Compute degradation tier before moving errors
             let degradation_tier = DegradationTier::from_parse_result(&ast_arc, &errors);
@@ -255,24 +253,34 @@ impl LspServer {
                 (None, None)
             };
 
-            self.documents.lock().insert(
-                normalized_uri.clone(),
-                DocumentState {
-                    rope: rope.clone(),
-                    text: text.to_string(),
-                    version,
-                    ast: ast_arc.clone(),
-                    parse_errors: errors,
-                    parent_map,
-                    line_starts,
-                    generation: Arc::clone(&generation),
-                    degradation_tier,
-                    #[cfg(feature = "incremental")]
-                    incremental_doc,
-                    #[cfg(feature = "incremental")]
-                    incremental_state,
-                },
+            let mut doc_state = DocumentState::from_parts(
+                rope.clone(),
+                text.to_string(),
+                version,
+                Arc::clone(&generation),
             );
+            #[cfg(feature = "incremental")]
+            {
+                doc_state.incremental_doc = incremental_doc;
+                doc_state.incremental_state = incremental_state;
+            }
+            // Publish the parse result as a single ParsedSnapshot rather than
+            // writing ast/parse_errors/parent_map/degradation_tier
+            // separately -- see `state::ParsedSnapshot`. didOpen always
+            // starts at generation 0 (freshly created above), so this
+            // publication always succeeds synchronously.
+            let doc_generation = doc_state.current_generation();
+            let snapshot = Arc::new(ParsedSnapshot {
+                generation: doc_generation,
+                content_hash: perl_lsp_rs_core::tooling::perl_critic::hash_content(text),
+                ast: ast_arc.clone(),
+                parse_errors: Arc::from(errors),
+                parent_map: Arc::new(parent_map),
+                degradation_tier,
+            });
+            doc_state.publish_parsed_if_current(doc_generation, snapshot);
+
+            self.documents.lock().insert(normalized_uri.clone(), doc_state);
 
             if let Some(ref ast) = ast_arc {
                 self.reindex_document_symbols(uri, ast, text);
@@ -477,7 +485,11 @@ impl LspServer {
                 let version =
                     incoming_version.unwrap_or_else(|| doc_state.version.saturating_add(1));
                 let skip_template_parse = is_embedded_template_uri(uri)
-                    && doc_state.degradation_tier == DegradationTier::Minimal;
+                    && doc_state
+                        .current_parsed()
+                        .map(|s| s.degradation_tier)
+                        .unwrap_or(DegradationTier::Minimal)
+                        == DegradationTier::Minimal;
 
                 // Increment generation counter for this change
                 let next_gen = doc_state.generation.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
@@ -693,9 +705,6 @@ impl LspServer {
                 }
                 let parent_map_ms = crate::runtime::timing::elapsed_ms(t_parent_map_start);
 
-                // Build line starts cache for O(log n) position conversion
-                let line_starts = LineStartsCache::new_rope(&doc.rope);
-
                 // Compute degradation tier before moving errors
                 let degradation_tier = DegradationTier::from_parse_result(&ast_arc, &errors);
 
@@ -826,22 +835,35 @@ impl LspServer {
                 let incremental_doc_update_ms =
                     crate::runtime::timing::elapsed_ms(t_incremental_start);
 
-                // Update document state with properly updated content
-                doc_state = DocumentState {
-                    rope: doc.rope.clone(),
-                    text: text.to_string(),
+                // Update document state with properly updated content.
+                // Preserve the generation counter (same Arc<AtomicU32>, already
+                // bumped to `next_gen` above).
+                doc_state = DocumentState::from_parts(
+                    doc.rope.clone(),
+                    text.to_string(),
                     version,
+                    doc_state.generation.clone(),
+                );
+                #[cfg(feature = "incremental")]
+                {
+                    doc_state.incremental_doc = incremental_doc;
+                    doc_state.incremental_state = incremental_state;
+                }
+                // Publish the parse result as a single ParsedSnapshot rather
+                // than writing ast/parse_errors/parent_map/degradation_tier
+                // separately -- see `state::ParsedSnapshot`. `doc_state`'s
+                // generation Arc was already bumped to `next_gen` above (same
+                // atomic, cloned), so this publication always succeeds in
+                // today's synchronous parse-under-the-lock world.
+                let snapshot = Arc::new(ParsedSnapshot {
+                    generation: next_gen,
+                    content_hash: perl_lsp_rs_core::tooling::perl_critic::hash_content(&text),
                     ast: ast_arc.clone(),
-                    parse_errors: errors,
-                    parent_map,
-                    line_starts,
-                    generation: doc_state.generation.clone(), // Preserve the generation counter
+                    parse_errors: Arc::from(errors),
+                    parent_map: Arc::new(parent_map),
                     degradation_tier,
-                    #[cfg(feature = "incremental")]
-                    incremental_doc,
-                    #[cfg(feature = "incremental")]
-                    incremental_state,
-                };
+                });
+                doc_state.publish_parsed_if_current(next_gen, snapshot);
 
                 // Check if a newer change arrived while we were parsing
                 if let Some(existing_doc) = self.get_document(&documents, uri) {

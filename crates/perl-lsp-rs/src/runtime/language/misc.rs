@@ -416,7 +416,7 @@ impl LspServer {
                 message: format!("Document not open: {}", uri),
                 data: None,
             })?;
-            if let Some(ref ast) = doc.ast {
+            if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                 let mut hints = Vec::new();
                 if param_hints {
                     // Build a workspace method resolver that is called for every
@@ -611,7 +611,7 @@ impl LspServer {
 
         let documents = self.documents_guard();
         let doc = self.get_document(&documents, uri)?;
-        let ast = doc.ast.as_ref()?;
+        let ast = doc.current_parsed().and_then(|p| p.ast.as_ref())?;
 
         let sub_node = Self::find_subroutine_node(ast, function_name).or_else(|| {
             (short_name != function_name)
@@ -709,7 +709,7 @@ impl LspServer {
             if let Some(doc) = doc_snapshot {
                 let start = Instant::now();
                 let deadline = code_lens_resolve_deadline();
-                if let Some(ref ast) = doc.ast {
+                if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                     let provider = CodeLensProvider::with_source(doc.text.clone())
                         .with_file_path(uri.to_string());
                     let mut lenses = provider.extract(ast);
@@ -1387,7 +1387,7 @@ impl LspServer {
 
             let documents = self.documents_guard();
             if let Some(doc) = self.get_document(&documents, uri) {
-                if let Some(ref ast) = doc.ast {
+                if let Some(ast) = doc.current_parsed().and_then(|p| p.ast.as_ref()) {
                     let runner = TestRunner::new(doc.text.clone(), uri.to_string());
                     let tests = runner.discover_tests(ast);
 

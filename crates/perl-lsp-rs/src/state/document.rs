@@ -74,6 +74,58 @@ impl std::fmt::Display for DegradationTier {
     }
 }
 
+/// A single, immutable, generation-tagged parse result.
+///
+/// Constructed once per parse attempt (successful, partial, or fully failed)
+/// and published onto a [`DocumentState`] via
+/// [`DocumentState::publish_parsed_if_current`]. Once published a snapshot
+/// never changes -- a new parse produces a brand-new `ParsedSnapshot`, never
+/// a mutation of an existing one.
+///
+/// This is the single source of truth for parsed state: `DocumentState` holds
+/// at most one snapshot (`Option<Arc<ParsedSnapshot>>`) rather than the four
+/// separate `ast` / `parse_errors` / `parent_map` / `degradation_tier` fields
+/// it used to carry, so there is no dual-write and no way for those fields to
+/// disagree with each other or with the generation they were parsed from.
+#[derive(Debug, Clone)]
+pub struct ParsedSnapshot {
+    /// The document generation this snapshot was parsed from.
+    ///
+    /// Compared against [`DocumentState::current_generation`] to decide
+    /// whether the snapshot is still fresh -- see
+    /// [`DocumentState::current_parsed`].
+    pub generation: u32,
+
+    /// Hash of the document text this snapshot was parsed from.
+    ///
+    /// Uses the same `DefaultHasher`-over-text scheme as the semantic
+    /// analyzer / type-inference caches (see
+    /// `perl_lsp_rs_core::tooling::perl_critic::hash_content`, reused here
+    /// rather than a second hashing scheme). Carried for future duplicate-
+    /// parse detection; `publish_parsed_if_current` does not consult it
+    /// today -- only `generation` gates publication.
+    pub content_hash: u64,
+
+    /// Parsed AST, or `None` when the parse failed completely.
+    pub ast: Option<Arc<perl_parser::ast::Node>>,
+
+    /// Parse errors from this parse attempt.
+    ///
+    /// `Arc<[_]>` rather than `Vec<_>` so cloning a snapshot (or a
+    /// `DocumentState` that holds one) is a refcount bump, not a deep copy.
+    pub parse_errors: Arc<[perl_parser::error::ParseError]>,
+
+    /// Parent map built from `ast`, for O(1) scope traversal.
+    ///
+    /// Shared via `Arc` for the same reason as `parse_errors`; methods are
+    /// still callable directly through `Deref`.
+    pub parent_map: Arc<ParentMap>,
+
+    /// Degradation tier computed from `ast` and `parse_errors` for this
+    /// parse attempt. See [`DegradationTier::from_parse_result`].
+    pub degradation_tier: DegradationTier,
+}
+
 /// Document state with Rope-based content management for efficient LSP operations
 ///
 /// This structure maintains both a Rope for efficient edits and a cached String
@@ -86,6 +138,20 @@ impl std::fmt::Display for DegradationTier {
 /// - **String operations**: O(1) access for parsing and analysis
 /// - **Position mapping**: O(log n) with line starts cache
 /// - **Memory usage**: ~2x content size due to dual representation
+///
+/// ## Parsed state
+///
+/// Parsed state (AST, parse errors, parent map, degradation tier) lives
+/// behind a single `parsed: Option<Arc<ParsedSnapshot>>` field, not as
+/// separate `DocumentState` fields. This is deliberate: it is the load-
+/// bearing seam for the async parse worker (a later change) -- once parsing
+/// moves off the mutation lock, a read can no longer assume the latest
+/// snapshot matches the current text generation, and every call site must
+/// make an explicit choice between "give me the current-generation parse or
+/// nothing" ([`Self::current_parsed`]) and "give me whatever was last
+/// published, even if stale" ([`Self::latest_parsed`]). Access the field only
+/// through these accessors and [`Self::publish_parsed_if_current`] -- never
+/// add the four fields back directly.
 #[derive(Clone)]
 pub struct DocumentState {
     /// Rope-backed document content providing O(log n) edit performance
@@ -103,20 +169,14 @@ pub struct DocumentState {
     /// LSP document version number for synchronization
     pub version: i32,
 
-    /// Cached parsed AST for semantic analysis
+    /// Latest published parse result, if any.
     ///
-    /// Rebuilt when document content changes, providing fast access to
-    /// structured representation for LSP features like hover and completion.
-    pub ast: Option<Arc<perl_parser::ast::Node>>,
-
-    /// Parse errors from last AST generation attempt
-    pub parse_errors: Vec<perl_parser::error::ParseError>,
-
-    /// Parent map for O(1) scope traversal during semantic analysis
-    ///
-    /// Built once per AST generation, uses FxHashMap for faster pointer hashing
-    /// enabling efficient parent lookups during symbol resolution.
-    pub parent_map: ParentMap,
+    /// Private by design -- read it only through [`Self::latest_parsed`],
+    /// [`Self::current_parsed`], or write it only through
+    /// [`Self::publish_parsed_if_current`]. This keeps the freshness
+    /// invariant (`current_parsed().is_some()` iff `parsed.generation ==
+    /// generation.load()`) from being bypassed by a scattered direct read.
+    parsed: Option<Arc<ParsedSnapshot>>,
 
     /// Line starts cache for O(log n) LSP position conversion
     ///
@@ -126,12 +186,6 @@ pub struct DocumentState {
 
     /// Generation counter for race condition prevention in concurrent access
     pub generation: Arc<AtomicU32>,
-
-    /// Current degradation tier based on the most recent parse attempt.
-    ///
-    /// Computed from `ast` and `parse_errors` after each parse. Feature
-    /// providers should check this before attempting AST-dependent operations.
-    pub degradation_tier: DegradationTier,
 
     /// Incremental document state for the (dormant) keystroke fast-path.
     ///
@@ -176,12 +230,39 @@ impl DocumentState {
             rope,
             text,
             version,
-            ast: None,
-            parse_errors: Vec::new(),
-            parent_map: ParentMap::default(),
+            parsed: None,
             line_starts,
             generation: Arc::new(AtomicU32::new(0)),
-            degradation_tier: DegradationTier::Minimal,
+            #[cfg(feature = "incremental")]
+            incremental_doc: None,
+            #[cfg(feature = "incremental")]
+            incremental_state: None,
+        }
+    }
+
+    /// Construct a document state from raw rope/text/version parts while
+    /// preserving an existing generation counter.
+    ///
+    /// Used by `didChange` handling: when a change reuses a document's
+    /// generation `Arc` (rather than starting a fresh one, as `new` does),
+    /// callers outside this module cannot build a `DocumentState` via struct
+    /// literal syntax because `parsed` is private -- this is the sanctioned
+    /// construction path. `parsed` starts `None`; publish a snapshot via
+    /// [`Self::publish_parsed_if_current`] afterward.
+    pub(crate) fn from_parts(
+        rope: ropey::Rope,
+        text: String,
+        version: i32,
+        generation: Arc<AtomicU32>,
+    ) -> Self {
+        let line_starts = LineStartsCache::new_rope(&rope);
+        Self {
+            rope,
+            text,
+            version,
+            parsed: None,
+            line_starts,
+            generation,
             #[cfg(feature = "incremental")]
             incremental_doc: None,
             #[cfg(feature = "incremental")]
@@ -194,12 +275,9 @@ impl DocumentState {
         self.rope = ropey::Rope::from_str(content);
         self.text = content.to_string();
         self.version = version;
-        self.ast = None;
-        self.parse_errors.clear();
-        self.parent_map = ParentMap::default();
+        self.parsed = None;
         self.line_starts = LineStartsCache::new(content);
         self.generation.fetch_add(1, Ordering::SeqCst);
-        self.degradation_tier = DegradationTier::Minimal;
         #[cfg(feature = "incremental")]
         {
             self.incremental_doc = None;
@@ -210,6 +288,55 @@ impl DocumentState {
     /// Get the current generation number
     pub fn current_generation(&self) -> u32 {
         self.generation.load(Ordering::SeqCst)
+    }
+
+    /// The last published parse result, regardless of whether it matches the
+    /// current document generation.
+    ///
+    /// Use this only when the caller deliberately wants to tolerate
+    /// staleness (e.g. keep showing the previous parse's results while a
+    /// newer parse is in flight). Most callers should prefer
+    /// [`Self::current_parsed`].
+    pub fn latest_parsed(&self) -> Option<&ParsedSnapshot> {
+        self.parsed.as_deref()
+    }
+
+    /// The published parse result, but only if it was parsed from the
+    /// document's *current* generation.
+    ///
+    /// Returns `None` when no snapshot has ever been published, or when the
+    /// last published snapshot is stale (parsed from an older generation
+    /// than the document is now at). This is the freshness-correct default:
+    /// once an async parse worker can publish out of order, a stale
+    /// `Some` here would let a provider silently answer from an outdated
+    /// AST. In today's fully synchronous parse-under-the-lock world, a
+    /// published snapshot's generation always equals the current generation
+    /// immediately after commit, so this is always `Some` right after a
+    /// `didOpen`/`didChange` completes -- behavior-identical to reading the
+    /// old `ast`/`parse_errors`/`parent_map`/`degradation_tier` fields
+    /// directly.
+    pub fn current_parsed(&self) -> Option<&ParsedSnapshot> {
+        let snapshot = self.parsed.as_deref()?;
+        (snapshot.generation == self.current_generation()).then_some(snapshot)
+    }
+
+    /// Publish a parse result, but only if `expected_generation` still
+    /// matches the document's current generation.
+    ///
+    /// Returns `true` and stores `snapshot` when the publication is
+    /// accepted; returns `false` and leaves the existing `parsed` value
+    /// untouched when a newer generation has already superseded
+    /// `expected_generation` (a stale parse result publishes nothing).
+    pub fn publish_parsed_if_current(
+        &mut self,
+        expected_generation: u32,
+        snapshot: Arc<ParsedSnapshot>,
+    ) -> bool {
+        if self.current_generation() != expected_generation {
+            return false;
+        }
+        self.parsed = Some(snapshot);
+        true
     }
 
     /// Apply a text change to the document
@@ -237,12 +364,9 @@ impl DocumentState {
         // Update cached string and caches
         self.text = self.rope.to_string();
         self.version = version;
-        self.ast = None;
-        self.parse_errors.clear();
-        self.parent_map = ParentMap::default();
+        self.parsed = None;
         self.line_starts = LineStartsCache::new(&self.text);
         self.generation.fetch_add(1, Ordering::SeqCst);
-        self.degradation_tier = DegradationTier::Minimal;
     }
 
     /// Convert LSP position (line, character) to rope char index
@@ -268,6 +392,213 @@ impl DocumentState {
         }
 
         line_start + char_idx.min(line_len)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_tdd_support::must_some;
+
+    /// Build a `ParsedSnapshot` at `generation` from real parse output for
+    /// `source` -- exercises the same `Parser::parse` -> `ParentMap` ->
+    /// `DegradationTier::from_parse_result` sequence the publication site
+    /// (`runtime/text_sync.rs`) uses, rather than hand-rolling fixture data.
+    fn snapshot_for(source: &str, generation: u32) -> ParsedSnapshot {
+        let mut parser = perl_parser::Parser::new(source);
+        let (ast, errors) = match parser.parse() {
+            Ok(ast) => (Some(ast), parser.errors().to_vec()),
+            Err(e) => (None, vec![e]),
+        };
+        let ast_arc = ast.map(Arc::new);
+        let mut parent_map = ParentMap::default();
+        if let Some(ref arc) = ast_arc {
+            crate::declaration::DeclarationProvider::build_parent_map(arc, &mut parent_map, None);
+        }
+        let degradation_tier = DegradationTier::from_parse_result(&ast_arc, &errors);
+        ParsedSnapshot {
+            generation,
+            content_hash: perl_lsp_rs_core::tooling::perl_critic::hash_content(source),
+            ast: ast_arc,
+            parse_errors: Arc::from(errors),
+            parent_map: Arc::new(parent_map),
+            degradation_tier,
+        }
+    }
+
+    #[test]
+    fn current_parsed_matches_generation() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
+        assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
+        let current = must_some(doc.current_parsed());
+        assert_eq!(current.generation, doc_gen);
+    }
+
+    #[test]
+    fn current_parsed_none_when_generation_differs() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
+        assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
+
+        // Advance the generation without publishing a new snapshot -- the
+        // previously published one is now stale relative to `current_parsed`.
+        doc.generation.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            doc.current_parsed().is_none(),
+            "current_parsed must be None once the generation has moved past the snapshot"
+        );
+    }
+
+    #[test]
+    fn latest_parsed_survives_a_generation_gap() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
+        assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
+
+        doc.generation.fetch_add(1, Ordering::SeqCst);
+        assert!(doc.current_parsed().is_none(), "should be stale for current_parsed");
+        let latest = must_some(doc.latest_parsed());
+        assert_eq!(latest.generation, doc_gen, "latest_parsed still exposes the last publication");
+    }
+
+    #[test]
+    fn publish_parsed_if_current_rejects_stale_expected_generation() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        // Simulate another writer bumping the generation before this
+        // publication lands.
+        doc.generation.fetch_add(1, Ordering::SeqCst);
+
+        let stale_snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
+        assert!(
+            !doc.publish_parsed_if_current(doc_gen, stale_snapshot),
+            "a stale expected_generation must be rejected"
+        );
+        assert!(doc.latest_parsed().is_none(), "rejected publication must not be stored");
+    }
+
+    #[test]
+    fn publish_parsed_if_current_accepts_matching_generation() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
+        assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
+        assert!(doc.current_parsed().is_some());
+    }
+
+    #[test]
+    fn failed_parse_yields_minimal_snapshot() {
+        // Deliberately malformed Perl that fails to produce any AST at all.
+        let source = "my $x = ";
+        let snapshot = snapshot_for(source, 0);
+        // Whatever the parser does with this input, the invariant under test
+        // is the tier/ast/errors relationship computed by
+        // `DegradationTier::from_parse_result`, not this specific input's
+        // exact recovery behavior.
+        if snapshot.ast.is_none() {
+            assert_eq!(snapshot.degradation_tier, DegradationTier::Minimal);
+            assert!(!snapshot.parse_errors.is_empty(), "a failed parse must carry errors");
+        }
+    }
+
+    #[test]
+    fn partial_parse_retains_ast_and_errors() {
+        // Malformed but recoverable: parser produces a partial AST plus errors.
+        let source = "sub foo { my $x = 1; ";
+        let snapshot = snapshot_for(source, 0);
+        if snapshot.ast.is_some() && !snapshot.parse_errors.is_empty() {
+            assert_eq!(snapshot.degradation_tier, DegradationTier::Partial);
+        }
+    }
+
+    #[test]
+    fn snapshot_is_immutable_and_shared_across_clone() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let doc_gen = doc.current_generation();
+        let snapshot = Arc::new(snapshot_for("my $x = 1;", doc_gen));
+        assert!(doc.publish_parsed_if_current(doc_gen, snapshot));
+
+        let cloned = doc.clone();
+        let original_ptr = std::ptr::from_ref(must_some(doc.latest_parsed()));
+        let cloned_ptr = std::ptr::from_ref(must_some(cloned.latest_parsed()));
+        // Both point at the *same* allocation -- cloning DocumentState is a
+        // refcount bump on the Arc<ParsedSnapshot>, not a deep copy.
+        assert!(
+            std::ptr::eq(original_ptr, cloned_ptr),
+            "clone must share the same Arc<ParsedSnapshot> allocation"
+        );
+
+        // A subsequent edit on the original must not mutate the snapshot the
+        // clone (or the original, before republishing) still observes.
+        doc.update_content("my $y = 2;", 2);
+        assert!(
+            doc.current_parsed().is_none(),
+            "current_parsed must be None immediately after an edit with no new snapshot published yet"
+        );
+        let cloned_snapshot = must_some(cloned.latest_parsed());
+        assert_eq!(
+            cloned_snapshot.generation, doc_gen,
+            "the clone's snapshot must be unaffected by edits on the original"
+        );
+    }
+
+    #[test]
+    fn ratchet_no_direct_field_access_to_removed_document_state_fields() {
+        // Guardrail against regressing back to scattered direct reads of the
+        // fields `ParsedSnapshot` replaced. The `parsed` field on
+        // `DocumentState` is module-private (compiler-enforced already);
+        // this ratchet additionally guards against a future PR widening its
+        // visibility (e.g. to `pub(crate)`) and then bypassing the
+        // accessors with `doc.parsed.as_ref()...` from elsewhere in the
+        // crate, which would defeat the freshness invariant.
+        let manifest_dir = must_some(std::env::var("CARGO_MANIFEST_DIR").ok());
+        let src_dir = std::path::Path::new(&manifest_dir).join("src");
+        let this_file = std::path::Path::new(file!())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("document.rs");
+
+        let mut offenders = Vec::new();
+        for entry in walkdir::WalkDir::new(&src_dir).into_iter().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            // document.rs (this file) defines `parsed` and is exempt.
+            let is_this_file = path.file_name().and_then(|n| n.to_str()) == Some(this_file)
+                && path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str())
+                    == Some("state");
+            if is_this_file {
+                continue;
+            }
+            let Ok(contents) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            for (idx, line) in contents.lines().enumerate() {
+                // `.parsed` is the only field DocumentState now has for
+                // parsed state; direct access to it outside this module
+                // would only compile if visibility were widened, but a
+                // textual match here catches that at review time even
+                // before such a widening would need to happen.
+                let mentions_parsed = line.contains(".parsed") && !line.contains(".parsed_range");
+                let via_accessor = line.contains("current_parsed")
+                    || line.contains("latest_parsed")
+                    || line.contains("publish_parsed_if_current");
+                if mentions_parsed && !via_accessor {
+                    offenders.push(format!("{}:{}: {}", path.display(), idx + 1, line.trim()));
+                }
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "found direct `.parsed` field access outside DocumentState's accessors:\n{}",
+            offenders.join("\n")
+        );
     }
 }
 
