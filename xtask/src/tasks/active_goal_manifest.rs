@@ -77,17 +77,36 @@ fn validate(root: &Path) -> Result<ManifestStats> {
     let mut stats = ManifestStats::default();
     let mut violations = Vec::new();
 
+    // Captured from the pointer before validate_pointer/validate_program_manifest
+    // run, so the program-manifest and lane-manifest cross-checks below can fail
+    // loud on dangling/mistyped pointer-to-program and pointer-to-lane references
+    // (see #3612 M2 review: factory-droid P1, sourcery, cubic).
+    let expected_program = string_field(pointer_table, "active_program").unwrap_or_default();
+    let expected_lane = string_field(pointer_table, "active_lane").unwrap_or_default();
+
     let resolved = validate_pointer(root, pointer_table, &mut stats, &mut violations);
 
     if let Some((program_path, _board_path)) = resolved {
         match load_table(root, &program_path) {
             Ok(program_table) => {
-                let lane_ownership =
-                    validate_program_manifest(root, &program_table, &mut stats, &mut violations);
+                let lane_ownership = validate_program_manifest(
+                    root,
+                    &program_table,
+                    expected_lane,
+                    &mut stats,
+                    &mut violations,
+                );
                 for owned in &lane_ownership {
                     match load_table(root, &owned.manifest) {
                         Ok(lane_table) => {
-                            validate_lane_manifest(root, &lane_table, owned, &mut violations);
+                            validate_lane_manifest(
+                                root,
+                                &lane_table,
+                                owned,
+                                expected_program,
+                                &mut stats,
+                                &mut violations,
+                            );
                         }
                         Err(err) => violations.push(format!(
                             "{ACTIVE_GOAL_PATH}: [program].manifest lane_ownership[{}]: failed to load {}: {err}",
@@ -119,7 +138,10 @@ fn load_table(root: &Path, relative_path: &str) -> Result<Table> {
         .with_context(|| format!("failed to read {relative_path}"))?;
     let value: Value =
         toml::from_str(&text).with_context(|| format!("failed to parse {relative_path}"))?;
-    value.as_table().cloned().ok_or_else(|| color_eyre::eyre::eyre!("expected TOML table"))
+    match value {
+        Value::Table(table) => Ok(table),
+        _ => Err(color_eyre::eyre::eyre!("expected TOML table")),
+    }
 }
 
 /// Validates the small `active.toml` pointer. Returns the resolved
@@ -233,6 +255,7 @@ struct LaneOwnership {
 fn validate_program_manifest(
     root: &Path,
     table: &Table,
+    expected_lane: &str,
     stats: &mut ManifestStats,
     violations: &mut Vec<String>,
 ) -> Vec<LaneOwnership> {
@@ -257,9 +280,9 @@ fn validate_program_manifest(
         validate_path_array(root, doc, table, field, stats, violations);
     }
 
-    validate_current(doc, table, stats, violations);
+    validate_current(doc, table, expected_lane, stats, violations);
     let limits = validate_limits(doc, table, violations);
-    let lane_ownership = validate_lane_ownership(doc, table, &limits, violations);
+    let lane_ownership = validate_lane_ownership(root, doc, table, &limits, stats, violations);
     validate_selection_priority(doc, table, &lane_ownership, violations);
 
     let declared_lanes: BTreeSet<String> =
@@ -272,6 +295,7 @@ fn validate_program_manifest(
 fn validate_current(
     doc: &str,
     table: &Table,
+    expected_lane: &str,
     stats: &mut ManifestStats,
     violations: &mut Vec<String>,
 ) {
@@ -299,6 +323,15 @@ fn validate_current(
 
     if let Some(lane) = string_field(current, "lane") {
         stats.lane = lane.to_owned();
+        // Cross-check the pointer's active_lane against the durable program
+        // manifest's own idea of the active lane, so a stale/mistyped
+        // active.toml.active_lane fails loudly instead of silently drifting
+        // from [current].lane (#3612 M2 review: sourcery, cubic).
+        if !expected_lane.is_empty() && lane != expected_lane {
+            violations.push(format!(
+                "{doc}: [current].lane {lane:?} does not match {ACTIVE_GOAL_PATH} active_lane {expected_lane:?}"
+            ));
+        }
     }
 }
 
@@ -329,9 +362,11 @@ fn validate_limits(
 }
 
 fn validate_lane_ownership(
+    root: &Path,
     doc: &str,
     table: &Table,
     limits: &BTreeMap<String, i64>,
+    stats: &mut ManifestStats,
     violations: &mut Vec<String>,
 ) -> Vec<LaneOwnership> {
     let mut owned = Vec::new();
@@ -350,7 +385,18 @@ fn validate_lane_ownership(
         };
 
         require_non_empty_string(&entry_doc, entry, "lane", violations);
-        require_non_empty_string(&entry_doc, entry, "manifest", violations);
+        // Validated as a repo-relative existing path (not just a non-empty
+        // string) so an absolute or out-of-repo lane manifest path is
+        // rejected before load_table ever reads it as trusted schema input
+        // (#3612 M2 review: chatgpt-codex, cubic).
+        match string_field(entry, "manifest") {
+            Some(path) => {
+                validate_relative_existing_path(
+                    root, &entry_doc, "manifest", path, stats, violations,
+                );
+            }
+            None => violations.push(format!("{entry_doc}: manifest must be a string path")),
+        }
 
         let Some(lane) = string_field(entry, "lane") else {
             continue;
@@ -425,6 +471,8 @@ fn validate_lane_manifest(
     root: &Path,
     table: &Table,
     owned: &LaneOwnership,
+    expected_program: &str,
+    stats: &mut ManifestStats,
     violations: &mut Vec<String>,
 ) {
     let doc = format!("lane manifest \"{}\"", owned.lane);
@@ -439,8 +487,7 @@ fn validate_lane_manifest(
 
     match string_field(table, "board") {
         Some(path) => {
-            let mut stats = ManifestStats::default();
-            validate_relative_existing_path(root, &doc, "board", path, &mut stats, violations);
+            validate_relative_existing_path(root, &doc, "board", path, stats, violations);
         }
         None => violations.push(format!("{doc}: board must be a string path")),
     }
@@ -457,6 +504,21 @@ fn validate_lane_manifest(
         }
     }
 
+    // Cross-check the lane manifest's own "program" field against the
+    // pointer's active_program. This is the program manifest's short slug
+    // (distinct from the program manifest's globally-namespaced "id"), and
+    // is already required to be populated consistently across every lane a
+    // program owns, so a mismatch here is a real dangling/mistyped
+    // pointer-to-program reference (#3612 M2 review: factory-droid P1).
+    if let Some(program) = string_field(table, "program")
+        && !expected_program.is_empty()
+        && program != expected_program
+    {
+        violations.push(format!(
+            "{doc}: program {program:?} does not match {ACTIVE_GOAL_PATH} active_program {expected_program:?}"
+        ));
+    }
+
     match table.get("pr_cap").and_then(Value::as_integer) {
         Some(value) if value > 0 => {
             if value != owned.pr_cap {
@@ -471,6 +533,11 @@ fn validate_lane_manifest(
     }
 }
 
+// Each parameter is a distinct manifest contract point (root for path
+// resolution, lanes/stats/violations accumulators, and the allow_completed
+// flag distinguishing active vs. archived work-item validation); splitting
+// this into a struct would obscure the single validate_work_items call site
+// rather than clarify it (#3612 M2 review: chatgpt-codex).
 #[allow(clippy::too_many_arguments)]
 fn validate_work_items(
     root: &Path,
@@ -812,7 +879,7 @@ mod tests {
         let mut violations = Vec::new();
 
         let lane_ownership =
-            validate_program_manifest(root.path(), &table, &mut stats, &mut violations);
+            validate_program_manifest(root.path(), &table, "", &mut stats, &mut violations);
 
         ensure!(
             lane_ownership.is_empty(),
@@ -855,7 +922,7 @@ mod tests {
         let mut stats = ManifestStats::default();
         let mut violations = Vec::new();
 
-        validate_current("program manifest", &table, &mut stats, &mut violations);
+        validate_current("program manifest", &table, "lane-a", &mut stats, &mut violations);
 
         ensure!(stats.repo == "wrong-repo", "got stats: {stats:?}");
         ensure!(stats.lane == "lane-a", "got stats: {stats:?}");
@@ -867,6 +934,31 @@ mod tests {
                         .to_owned(),
                 ],
             "got violations: {violations:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_goal_manifest_rejects_current_lane_mismatched_with_pointer_active_lane() -> Result<()>
+    {
+        let mut table = Table::new();
+        let mut current = Table::new();
+        current.insert("lane".to_owned(), Value::String("stale-lane".to_owned()));
+        current.insert("repo".to_owned(), Value::String("perl-lsp-swarm".to_owned()));
+        current.insert("release_lineage_repo".to_owned(), Value::String("perl-lsp".to_owned()));
+        current.insert("status".to_owned(), Value::String("active".to_owned()));
+        table.insert("current".to_owned(), Value::Table(current));
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+
+        validate_current("program manifest", &table, "pointer-lane", &mut stats, &mut violations);
+
+        assert_eq!(
+            violations,
+            vec![
+                "program manifest: [current].lane \"stale-lane\" does not match .perl-lsp/goals/active.toml active_lane \"pointer-lane\"".to_owned()
+            ]
         );
 
         Ok(())
@@ -916,9 +1008,25 @@ mod tests {
                 Value::Table(missing_cap),
             ]),
         );
+        let root = fixture_root(&[
+            "lanes/x.toml",
+            "lanes/unknown.toml",
+            "lanes/trust.toml",
+            "lanes/trust2.toml",
+            "lanes/substrate.toml",
+            "lanes/reliability.toml",
+        ])?;
+        let mut stats = ManifestStats::default();
         let mut violations = Vec::new();
 
-        let owned = validate_lane_ownership("program manifest", &table, &limits, &mut violations);
+        let owned = validate_lane_ownership(
+            root.path(),
+            "program manifest",
+            &table,
+            &limits,
+            &mut stats,
+            &mut violations,
+        );
 
         let owned_lanes: BTreeSet<String> = owned.iter().map(|o| o.lane.clone()).collect();
         ensure!(
@@ -949,6 +1057,42 @@ mod tests {
     }
 
     #[test]
+    fn active_goal_manifest_rejects_out_of_repo_lane_ownership_manifest_path() -> Result<()> {
+        let limits = BTreeMap::from([("trust".to_owned(), 1)]);
+        let mut absolute = Table::new();
+        absolute.insert("lane".to_owned(), Value::String("trust".to_owned()));
+        absolute.insert("manifest".to_owned(), Value::String("C:/etc/lane.toml".to_owned()));
+        absolute.insert("pr_cap".to_owned(), Value::Integer(1));
+        let mut table = Table::new();
+        table.insert("lane_ownership".to_owned(), Value::Array(vec![Value::Table(absolute)]));
+        let root = fixture_root(&[])?;
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+
+        let owned = validate_lane_ownership(
+            root.path(),
+            "program manifest",
+            &table,
+            &limits,
+            &mut stats,
+            &mut violations,
+        );
+
+        ensure!(
+            owned.len() == 1,
+            "expected the entry to still be recorded, got {} entries",
+            owned.len()
+        );
+        ensure!(
+            violations.iter().any(|violation| violation
+                == "program manifest: lane_ownership[0]: manifest must be a repo-relative slash path: C:/etc/lane.toml"),
+            "missing out-of-repo path violation; got {violations:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn active_goal_manifest_reports_lane_manifest_shape_contracts() -> Result<()> {
         let root = fixture_root(&[])?;
         let mut table = Table::new();
@@ -963,9 +1107,10 @@ mod tests {
             pr_cap: 2,
             manifest: "lanes/trust.toml".to_owned(),
         };
+        let mut stats = ManifestStats::default();
         let mut violations = Vec::new();
 
-        validate_lane_manifest(root.path(), &table, &owned, &mut violations);
+        validate_lane_manifest(root.path(), &table, &owned, "p", &mut stats, &mut violations);
 
         for expected in [
             "lane manifest \"trust\": must_route_elsewhere must not be empty",
@@ -980,6 +1125,50 @@ mod tests {
                 "missing violation {expected:?}; got {violations:?}"
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn active_goal_manifest_reports_lane_manifest_program_mismatch_and_counts_board_stat()
+    -> Result<()> {
+        let root = fixture_root(&["docs/board.md"])?;
+        let mut table = Table::new();
+        table.insert("id".to_owned(), Value::String("trust".to_owned()));
+        table.insert("program".to_owned(), Value::String("wrong_program".to_owned()));
+        table.insert("proof_policy".to_owned(), Value::String("policy".to_owned()));
+        table.insert("must_route_elsewhere".to_owned(), Value::String("elsewhere".to_owned()));
+        table.insert("may_change".to_owned(), Value::Array(vec![Value::String("x".to_owned())]));
+        table.insert("next_items".to_owned(), Value::Array(vec![Value::String("y".to_owned())]));
+        table.insert("board".to_owned(), Value::String("docs/board.md".to_owned()));
+        table.insert("pr_cap".to_owned(), Value::Integer(2));
+        let owned = LaneOwnership {
+            lane: "trust".to_owned(),
+            pr_cap: 2,
+            manifest: "lanes/trust.toml".to_owned(),
+        };
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+
+        validate_lane_manifest(
+            root.path(),
+            &table,
+            &owned,
+            "real_perl_editor_trust",
+            &mut stats,
+            &mut violations,
+        );
+
+        // The lane manifest's board path must be counted into the aggregate
+        // stats, not silently dropped by a locally-scoped ManifestStats
+        // (#3612 M2 review: gemini, cubic).
+        assert_eq!(stats.path_references, 1, "got stats: {stats:?}");
+        assert_eq!(
+            violations,
+            vec![
+                "lane manifest \"trust\": program \"wrong_program\" does not match .perl-lsp/goals/active.toml active_program \"real_perl_editor_trust\"".to_owned()
+            ]
+        );
 
         Ok(())
     }
