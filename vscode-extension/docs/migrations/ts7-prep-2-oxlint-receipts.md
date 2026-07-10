@@ -218,6 +218,129 @@ $ npm run test:ci       → Test Suites: 1 skipped, 23 passed, 23 of 24 total
 $ npm run test:grammar  → 9/9 fixtures pass, exit 0
 ```
 
+## 11. Hardening: exact version pins + permanent type-aware canary
+
+Oxlint type-aware linting is alpha upstream. The dangerous failure mode is
+not "the rule is wrong" — it's "the type-aware engine silently doesn't run
+(crash during `tsgolint` init, unsupported platform, version mismatch) and
+the lint check passes green anyway." Two changes make that invariant durable
+rather than a one-time local observation:
+
+### Exact pins (no float)
+
+`oxlint` and `oxlint-tsgolint` are pinned to **exact** versions in
+`package.json` (no `^`/`~`):
+
+```diff
+-    "oxlint": "^1.73.0",
+-    "oxlint-tsgolint": "^0.24.0",
++    "oxlint": "1.73.0",
++    "oxlint-tsgolint": "0.24.0",
+```
+
+`package-lock.json` was regenerated from a clean `npm install` (no
+`--force`/`--legacy-peer-deps`) against the pinned `package.json`; the lock
+resolves both packages to exactly `1.73.0` / `0.24.0`, verified by reading
+`package-lock.json`'s `packages["node_modules/oxlint"].version` and
+`packages["node_modules/oxlint-tsgolint"].version` directly. Future upgrades
+happen through a deliberate, reviewed dependency PR — never a silent float
+that swaps the executable and semantic engine during an unrelated
+`npm install`.
+
+### Permanent, committed type-aware canary
+
+`vscode-extension/scripts/lint-canary.js` is a committed harness (not the
+scratch probe file used for the earlier one-off parity proof, which was
+deleted before commit). It runs as the **first step of `npm run lint`**
+(`"lint": "npm run lint:canary && oxlint src --type-aware"`) — so it is
+blocking in CI and for any local `npm run lint`, not an opt-in extra.
+
+At run time it:
+
+1. Generates two fixtures into a fresh `os.tmpdir()` directory (never under
+   `src/`, never shipped in the VSIX — `scripts/**` is already excluded via
+   `.vscodeignore`, and the fixtures themselves never touch the repo):
+   - `bad.ts` — a bare, unhandled floating promise
+     (`doAsyncThing();` with no `await`/`void`/`.catch()`).
+   - `good.ts` — the same call, `await`ed.
+2. Runs oxlint's own JS entry (`node_modules/oxlint/bin/oxlint`, invoked
+   directly via `node`, not the `.bin` shim — see below) with `--type-aware`
+   against each fixture, using a minimal generated `.oxlintrc.json` /
+   `tsconfig.json` in the temp dir.
+3. Asserts **all** of:
+   - (a) `bad.ts` is flagged with `typescript/no-floating-promises` and the
+     process exits nonzero. This can only happen if the type-aware engine
+     genuinely ran — there is no syntax-only equivalent of this rule.
+   - (b) `good.ts` passes cleanly (exit 0, no violation).
+   - (c) Any failure to complete cleanly on the `good.ts` run — including
+     `tsgolint` failing to initialize — is itself treated as case (b)
+     failing, i.e. RED, never silently ignored.
+   - (d) Because case (a) requires the rule to fire, a silent fallback to
+     syntax-only linting cannot produce a green result: syntax-only mode has
+     no way to catch a bare floating-promise call, so case (a) would fail
+     and the harness would exit nonzero.
+4. Echoes the resolved `oxlint`/`oxlint-tsgolint` versions and a per-case
+   PASS/FAIL line, so a green CI run is auditable, not just a bare exit code.
+
+**Windows spawn note**: initial versions of this script invoked
+`node_modules/.bin/oxlint.cmd` and hit `spawnSync ... EINVAL` (Windows
+requires `shell: true` for `.cmd` shims), and then a Node `DEP0190`
+deprecation warning once `shell: true` was added (shell-mode args are
+concatenated, not escaped — a real risk once paths can contain spaces, e.g.
+a user profile directory). The final version invokes
+`node_modules/oxlint/bin/oxlint` (oxlint's own JS entry point, which
+dispatches to the platform-native binding) directly via
+`spawnSync(process.execPath, [OXLINT_ENTRY, ...args])`, with no shell
+involved and no `.cmd` indirection.
+
+### Local Windows smoke (per coordinator instruction: local only, not CI)
+
+Run directly on this Windows dev machine, not added as a CI job (only
+self-hosted Ubuntu runners are free here):
+
+```
+$ node scripts/lint-canary.js
+[lint-canary] oxlint@1.73.0, oxlint-tsgolint@0.24.0
+[lint-canary] asserting type-aware mode is genuinely engaged (not a silent syntax-only fallback)...
+[lint-canary] OK  case (a): bad.ts flagged by typescript/no-floating-promises (type-aware engine ran).
+[lint-canary] OK  case (b): good.ts passes cleanly.
+[lint-canary] PASS — type-aware typescript/no-floating-promises genuinely executed.
+exit 0
+```
+
+### Proof the canary actually detects a broken/missing type-aware engine
+
+To validate the canary's core safety property (not just that it passes when
+everything is healthy), `node_modules/oxlint-tsgolint` was moved out of the
+tree and the canary re-run:
+
+```
+$ mv node_modules/oxlint-tsgolint /tmp/hidden
+$ node scripts/lint-canary.js
+node:internal/modules/cjs/loader:1478
+Error: Cannot find module '.../node_modules/oxlint-tsgolint/package.json'
+...
+exit 1                                          <-- RED, not a false green
+
+$ mv /tmp/hidden node_modules/oxlint-tsgolint    (restored)
+$ node scripts/lint-canary.js
+[lint-canary] PASS ...
+exit 0                                          <-- confirmed green again
+```
+
+A related probe against raw `oxlint --type-aware` (not the canary wrapper)
+with `oxlint-tsgolint` removed showed oxlint itself fails loudly
+(`Error running tsgolint: exit status: exit code: 1`, process exit 1) rather
+than silently falling back to syntax-only linting for that specific failure
+mode — a useful data point, but the canary's guarantee does not depend on
+that specific current behavior; it holds for any future cause of a silent
+type-aware failure because case (a) structurally requires the rule to fire.
+
+CI wiring: `.github/workflows/ux-regression-gate.yml`'s existing
+`extension-jest` job step is renamed
+`Lint (oxlint --type-aware, with type-aware canary)` — same `npm run lint`
+invocation, same `ubuntu-24.04` runner, no new job.
+
 ## Scope boundary
 
 This PR does not: bump `typescript`, touch `tsconfig*.json`, change the Jest
