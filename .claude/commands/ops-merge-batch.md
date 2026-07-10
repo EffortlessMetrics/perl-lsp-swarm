@@ -25,6 +25,11 @@ Merge up to 3 PRs from the candidates identified in step 1.
    - mergeStateStatus = CLEAN (NOT UNSTABLE, NOT UNKNOWN, NOT DIRTY)
    - CI checks green on the current HEAD SHA using **latest-per-check filter** (per `feedback_status_check_rollup_stale_entries.md`)
    - No blocking review comments
+   - **No unresolved substantive review conversation threads, and no requested
+     reviewer still pending on the current HEAD SHA** — never merge, and never
+     enable/retain auto-merge, while either condition holds. Threads must be
+     resolved for a reason (fixed/refuted/superseded/accepted-with-follow-up),
+     not performatively.
    - **NO active `needs-*` label** (per the 2026-04-26 sign-off-as-routing rule: presence of `needs-builder-fix` / `needs-ci-fix` / `needs-diff-fix` / `needs-spec-fix` / `needs-red-tdd-fix` MUST block merge regardless of `merge-ready`). Sign-off is one of the routing decisions; if any gate ALSO bounced, the PR is not actually signed off.
    - **Workspace-wide CI checks SUCCESS** (Compile All Targets, PR Smoke including workspace fmt, Windows Guardrails compile/module-separator/sandbox), not just per-crate. Per the 2026-04-26 master-green directive: per-crate gates miss workspace drift.
 

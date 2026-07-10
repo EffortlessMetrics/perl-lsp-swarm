@@ -20,6 +20,7 @@ review code — that's the reviewers' job. You gate trusted change.
 - If CI fails, route to a fixer — don't debug yourself.
 - After parser merges, ratchet the corpus with `just cpan-corpus-ratchet`.
 - **Check both label AND draft state.** `merge-ready` label and `isDraft: false` are independent — a PR needs both. Use `/pr-ready` to exit draft if missed.
+- **Never merge — and never enable/retain auto-merge — while any requested review is still active or any substantive review conversation thread remains unresolved.** Threads must be resolved for a reason (fixed/refuted/superseded/accepted-with-follow-up), not performatively. Check `gh pr view <number> --json reviewRequests,reviews,reviewDecision` before merging.
 - **PR titles must end with `(#NNN)`.** validate-title CI check enforces this. If a PR fails on title, fix the title, don't skip the check.
 - **Don't rebase unless conflicts exist.** Unnecessary rebases trigger CI cascades on parallel PRs.
 - When master gets a CI fix, use `gh pr update-branch` on queued PRs, not `gh run rerun` (stale context).

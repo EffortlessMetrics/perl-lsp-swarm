@@ -41,6 +41,21 @@ Optionally validate receipt freshness when `deep-reviewed` is present to ensure 
 /label-receipt-validate pr $NUMBER deep-reviewed
 ```
 
+### 3.5 Verify conversation resolution and reviewer completion
+
+```bash
+gh pr view $NUMBER --json reviewRequests,reviews,reviewDecision
+```
+
+**Never enable or retain auto-merge, and never mark a PR ready for merge
+pickup, while any requested reviewer has not yet finished on the current HEAD
+SHA or any substantive review thread remains unresolved.** Resolve threads for
+a reason (fixed/refuted/superseded/accepted-with-follow-up), not
+performatively — main mechanically requires conversation resolution before
+merge. If `reviewRequests` is non-empty or an active reviewer hasn't
+re-reviewed since the last push, **STOP** and report which reviewer is still
+pending instead of proceeding.
+
 ### 4. Mark ready and signal merge-readiness
 
 ```bash
