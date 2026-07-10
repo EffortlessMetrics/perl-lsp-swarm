@@ -1089,12 +1089,59 @@ impl FormatResult {
 
 // ─────────────────────────────── Binary Resolution ───────────────────────────
 
+/// Environment variable that flips [`binary_available`] from a silent skip
+/// into a hard failure when the `perl-lsp` binary cannot be resolved.
+///
+/// Every scenario in this crate follows the pattern
+/// `if !binary_available() { eprintln!("SKIP ..."); return Ok(()); }`, which
+/// means an unbuilt binary makes the whole UX suite report "N passed" while
+/// exercising nothing (#3596). CI jobs that are supposed to actually run
+/// these scenarios should set `PERL_LSP_UX_REQUIRE_BINARY=1` so a missing
+/// binary fails loudly instead of vacuously greening.
+pub const REQUIRE_BINARY_ENV: &str = "PERL_LSP_UX_REQUIRE_BINARY";
+
 /// Return whether the perl-lsp binary can be resolved for UX scenario tests.
 ///
 /// This is a lightweight guard for integration tests that need to skip when the
 /// server binary has not been built in the current environment.
+///
+/// When [`REQUIRE_BINARY_ENV`] is set to a truthy value, a missing binary is
+/// treated as a hard failure (a clear `assert!` panic with an actionable
+/// message) instead of a silent skip. Because every scenario funnels its skip
+/// decision through this single function, setting the env var in a CI job
+/// makes the entire suite fail loud if `cargo build -p perl-lsp-rs` was never
+/// run — see #3596. Uses `assert!` rather than `panic!` directly: this
+/// workspace denies `clippy::panic` in production code, and `assert!` is the
+/// sanctioned hard-failure idiom.
 pub fn binary_available() -> bool {
-    resolve_binary().is_ok()
+    match resolve_binary() {
+        Ok(_) => true,
+        Err(err) => {
+            assert!(
+                !strict_binary_required(),
+                "{REQUIRE_BINARY_ENV}=1 is set, which forbids the silent \
+                 UX-suite SKIP path — perl-lsp binary not built. \
+                 Run `cargo build -p perl-lsp-rs` first. \
+                 Resolution error: {err}"
+            );
+            false
+        }
+    }
+}
+
+/// True when [`REQUIRE_BINARY_ENV`] is set to `1`/`true` (case-insensitive).
+fn strict_binary_required() -> bool {
+    is_truthy_env_value(std::env::var(REQUIRE_BINARY_ENV).ok().as_deref())
+}
+
+/// Pure truthy-value predicate behind [`strict_binary_required`].
+///
+/// Factored out of the env lookup so the parsing rules can be unit tested
+/// deterministically without mutating process-global environment state —
+/// this crate denies `unsafe_code`, which `std::env::set_var`/`remove_var`
+/// require since Rust made them `unsafe fn`.
+fn is_truthy_env_value(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("1") | Some("true") | Some("TRUE") | Some("True"))
 }
 
 /// Standard skip reason for scenarios that require a runnable perl-lsp binary.
@@ -1272,8 +1319,8 @@ pub fn find_perlcritic() -> Option<String> {
 #[cfg(test)]
 mod normalize_tests {
     use super::{
-        document_symbol_names, find_binary_near_exe, is_index_ready_event, normalize_lsp_payload,
-        normalize_uri_for_expectations,
+        document_symbol_names, find_binary_near_exe, is_index_ready_event, is_truthy_env_value,
+        normalize_lsp_payload, normalize_uri_for_expectations,
     };
     use crate::LspEvent;
     use serde_json::{Value, json};
@@ -1345,6 +1392,30 @@ mod normalize_tests {
 
         assert_eq!(resolved, agent_bin.to_string_lossy());
         Ok(())
+    }
+
+    /// Documents the strict-mode env-var contract behind `binary_available()`'s
+    /// fail-loud guard (#3596): with the var unset or falsy, the skip path stays
+    /// allowed (returns `false`, no panic); only an explicit truthy value flips
+    /// it to strict. The panic itself is exercised indirectly — this test locks
+    /// down the pure predicate `strict_binary_required()` delegates to before
+    /// deciding whether to panic, without mutating process env (this crate
+    /// denies `unsafe_code`, which `env::set_var` now requires) or faking a
+    /// missing binary end-to-end.
+    #[test]
+    fn is_truthy_env_value_recognizes_expected_forms() {
+        assert!(
+            !is_truthy_env_value(None),
+            "unset var must not trigger strict mode (skip allowed)"
+        );
+
+        for value in ["1", "true", "TRUE", "True"] {
+            assert!(is_truthy_env_value(Some(value)), "{value:?} should be treated as truthy");
+        }
+
+        for value in ["0", "false", "yes", ""] {
+            assert!(!is_truthy_env_value(Some(value)), "{value:?} should not be treated as truthy");
+        }
     }
 
     // ── normalize_uri_for_expectations ────────────────────────────────────────
