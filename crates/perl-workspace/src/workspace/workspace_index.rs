@@ -1798,6 +1798,21 @@ impl WorkspaceIndex {
                     // Content unchanged, skip re-indexing
                     return Ok(());
                 }
+                // Same monotonic generation guard as the one under the later
+                // `files.write()` block below (see its doc comment for the
+                // full out-of-order-completion race this closes) -- applied
+                // here too, BEFORE the `document_store` write below, so a
+                // stale out-of-order task can't overwrite `document_store`'s
+                // text with older content even when it's correctly rejected
+                // from `self.files` by the later guard. This early check is
+                // NOT atomic with the `document_store` write (the lock is
+                // released in between), so it narrows the race window rather
+                // than closing it outright -- the later, insert-atomic guard
+                // remains the authoritative one for `self.files` itself.
+                if generation > 0 && existing_index.generation > 0 && existing_index.generation > generation
+                {
+                    return Ok(());
+                }
             }
         }
 
@@ -6194,6 +6209,7 @@ sub hello {
         let gen_n_text = "package OutOfOrder;\nsub gen_n_symbol { 1 }\n1;\n".to_string();
         let gen_n_plus_1_text =
             "package OutOfOrder;\nsub gen_n_plus_1_symbol { 1 }\n1;\n".to_string();
+        let gen_n_plus_1_text_for_assertion = gen_n_plus_1_text.clone();
 
         // Released only once BOTH threads have reached it. Generation N+1's
         // thread reaches the barrier AFTER its write has fully committed;
@@ -6248,6 +6264,24 @@ sub hello {
             "the older generation's write must never win, even though it committed AFTER the \
              newer one; got symbols: {:?}",
             symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        // #3618 review defect (cubic): `document_store` is a SEPARATE piece
+        // of state from `self.files`, written unconditionally earlier in
+        // `index_file_with_generation` -- before the monotonic generation
+        // guard runs. Proving the guard closes the race for `self.files`
+        // (above) does not prove `document_store` stayed consistent with
+        // it; a cross-file consumer (workspace rename, safe-delete preview,
+        // navigation, hover for symbols in other files -- all read
+        // `document_store()` directly) could still observe generation N's
+        // stale text even though the symbol index correctly holds N+1's
+        // facts.
+        let stored_doc = must_some(index.document_store().get(uri.as_str()));
+        assert_eq!(
+            stored_doc.text, gen_n_plus_1_text_for_assertion,
+            "document_store must hold the newer generation's text, matching self.files -- an \
+             older out-of-order write must not leave document_store and self.files disagreeing \
+             about which generation is current"
         );
 
         Ok(())
