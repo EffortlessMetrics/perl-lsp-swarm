@@ -55,10 +55,11 @@ pub fn build_snapshot(
     // `--json` callers must always get parseable output.
     //
     // The `default_program` arm used to assign it straight from
-    // `active.toml` with no validation at all (#3647 follow-up finding):
-    // an unknown, malformed, or path-traversal-shaped `default_program`
-    // reached `resolved_program` unchecked whenever no explicit `--program`
-    // was given — fail-OPEN on a control-plane work-routing authority.
+    // `active.toml` with no validation at all (#3647 follow-up finding,
+    // #3696/#3697): an unknown, malformed, or path-traversal-shaped
+    // `default_program` reached `resolved_program` unchecked whenever no
+    // explicit `--program` was given — fail-OPEN on a control-plane
+    // work-routing authority (this was also #3692 defect 5). This
     // `resolve_program` now runs BOTH sources through the same
     // `manifest::validate_program_id` check the static
     // `active_goal_manifest::validate_default_program` validator uses, so
@@ -67,6 +68,7 @@ pub fn build_snapshot(
         resolve_program(&root, program_arg.as_deref(), default_program.as_deref());
 
     let (repository, live_open_prs) = load_live_prs(&root, fixture)?;
+    let current_git_ref = current_git_ref(&root);
 
     let mut snapshot = SelectionSnapshot {
         repository,
@@ -81,6 +83,7 @@ pub fn build_snapshot(
         non_goals: Vec::new(),
         candidates: Vec::new(),
         live_open_prs,
+        current_git_ref,
     };
 
     if let Some(program_id) = &resolved_program {
@@ -107,6 +110,39 @@ fn resolve_program(
 ) -> Option<String> {
     let candidate = program_arg.or(default_program)?;
     manifest::validate_program_id(root, candidate).ok().map(|()| candidate.to_owned())
+}
+
+/// Measures the actual local git ref this snapshot's evidence was read
+/// from (see #3692 defect 6): `WorkPacket::inputs_used` previously
+/// hardcoded the literal `"origin/main"` regardless of what was actually
+/// checked out, misattributing the receipt's own evidence on a feature
+/// branch. Falls back to `"unknown"` when `git` itself is unavailable or
+/// fails (this must never turn into an `Err` — provenance is
+/// best-effort, not load-bearing for selection correctness), and to the
+/// short commit SHA when `HEAD` is detached (so the value still names
+/// something concrete rather than the literal string `"HEAD"`).
+fn current_git_ref(root: &Path) -> String {
+    let branch = Command::new("git")
+        .current_dir(root)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|s| !s.is_empty());
+
+    match branch {
+        Some(name) if name != "HEAD" => name,
+        _ => Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| format!("detached@{}", String::from_utf8_lossy(&o.stdout).trim()))
+            .filter(|s| s != "detached@")
+            .unwrap_or_else(|| "unknown".to_owned()),
+    }
 }
 
 fn discover_known_programs(root: &Path) -> Result<Vec<ProgramCandidate>> {
@@ -344,6 +380,7 @@ commands = ["rtk cargo test"]
             non_goals: Vec::new(),
             candidates: Vec::new(),
             live_open_prs: Vec::new(),
+            current_git_ref: "main".to_owned(),
         };
 
         load_lane_routing_candidates(text, "programs/p.toml", &mut snapshot)?;
@@ -369,8 +406,19 @@ commands = ["rtk cargo test"]
             non_goals: Vec::new(),
             candidates: Vec::new(),
             live_open_prs: Vec::new(),
+            current_git_ref: "main".to_owned(),
         }
     }
+
+    // #3692 defect 5 ("stale default_program -> non-JSON error") is now
+    // covered by #3697's `resolve_program_rejects_an_unvalidated_default_program`
+    // and `unvalidated_default_program_blocks_selection_with_ambiguous_program_authority`
+    // tests below (landed on main in a7eccc885 before this branch was
+    // rebased) — that PR's shared `manifest::validate_program_id` fully
+    // subsumes the fail-closed filtering this PR originally added here
+    // with a different `resolve_program` signature; dropped as a
+    // duplicate rather than re-litigated. See PR #3701's reconciliation
+    // note.
 
     #[test]
     fn unknown_requested_program_resolves_to_none_not_an_error() -> Result<()> {
