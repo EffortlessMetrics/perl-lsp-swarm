@@ -383,6 +383,63 @@ fn signature_help_no_stale_claim_during_pending_parse_gap() -> TestResult {
     Ok(())
 }
 
+/// Signature help must never answer from the stale AST even when the
+/// function *name* is unchanged across the gap-opening edit.
+///
+/// `signature_help_no_stale_claim_during_pending_parse_gap` (above) and the
+/// headline canary both rename the function (`foo` -> `bar`), so a
+/// regression that swapped `current_parsed()` for `latest_parsed()` (reading
+/// the stale N-1 AST instead of honestly reporting no fresh answer) would
+/// look up `bar` in an AST that only defines `foo` -- the lookup misses by
+/// name regardless of which snapshot is consulted, and the assertion passes
+/// either way. That makes those tests unable to distinguish "gap handled
+/// honestly" from "gap handled by silently falling back to the stale AST"
+/// for a same-named function. This test closes that gap: the function name
+/// (`calc`) is stable across the edit, only its signature changes, so a
+/// stale-AST answer is name-matchable but observably wrong (0 parameters)
+/// versus the honest "no answer" the gap policy requires.
+#[test]
+fn signature_help_never_answers_from_stale_ast_with_matching_name_during_pending_parse_gap()
+-> TestResult {
+    let server = fresh_server();
+    let uri = "file:///gap_signature_help_same_name.pl";
+
+    const BEFORE: &str = "sub calc { return 1; }\ncalc();\n";
+    const AFTER: &str = "sub calc($x, $y) { return $x + $y; }\ncalc(1, 2);\n";
+
+    server.test_apply_did_open(uri, BEFORE, 1)?;
+    server.test_apply_text_change_without_reparse(uri, AFTER, 2)?;
+    assert_eq!(
+        server.test_document_generation(uri),
+        Some(1),
+        "helper must bump the text generation without republishing a snapshot"
+    );
+
+    let sig = server.test_handle_signature_help(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 5 }
+    })))?;
+
+    // The honest gap answer has no user-defined-function signature at all:
+    // the AST-gated branch (`get_user_function_signature`) is skipped
+    // because `current_parsed()` is `None`, and `calc` is not a Perl
+    // builtin. A regression that reads `latest_parsed()` instead would
+    // match `calc` by name in the stale (0-parameter) AST and return the
+    // label `"sub calc"` -- distinguishably wrong once the live text
+    // defines a 2-parameter `calc`.
+    let stale_zero_param_label_present =
+        sig.as_ref().and_then(|v| v.get("signatures")).and_then(Value::as_array).is_some_and(
+            |sigs| sigs.iter().any(|s| s.get("label").and_then(Value::as_str) == Some("sub calc")),
+        );
+    assert!(
+        !stale_zero_param_label_present,
+        "gap: signature help must never surface the stale 0-parameter `calc` \
+         signature from the N-1 AST just because the name still matches; got: {sig:?}"
+    );
+
+    Ok(())
+}
+
 /// Definition: no exact answer from stale current-file facts during the gap.
 #[test]
 fn definition_fails_closed_during_pending_parse_gap() -> TestResult {

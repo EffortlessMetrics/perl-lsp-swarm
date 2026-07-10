@@ -285,7 +285,7 @@ File: `crates/perl-lsp-rs/tests/pending_parse_provider_freshness_tests.rs`.
 |----------|-----------|------|------|
 | Semantic tokens (full + range) | emit nothing (no gen-N claim from N-1 AST) | `semantic_tokens_emit_nothing_during_pending_parse_gap` | `:385` |
 | Hover | no stale AST claim | `hover_degrades_during_pending_parse_gap` | `:311` |
-| Signature help | no stale AST claim (falls back to the name-only builtin table, never the AST) | `signature_help_no_stale_claim_during_pending_parse_gap` | (see file; also asserted inline in the headline canary) |
+| Signature help | no stale AST claim (falls back to the name-only builtin table, never the AST) | `signature_help_no_stale_claim_during_pending_parse_gap`, `signature_help_never_answers_from_stale_ast_with_matching_name_during_pending_parse_gap` | (see file; also asserted inline in the headline canary) |
 | Definition (navigation) | fail closed | `definition_fails_closed_during_pending_parse_gap` | `:335` |
 | References | fail closed, never leak `foo` | `references_fail_closed_during_pending_parse_gap` | `:362` |
 | Rename | fail closed (zero edits) | `rename_fails_closed_during_pending_parse_gap` | `:417` |
@@ -318,6 +318,21 @@ identifiers (`foo` is not a Perl builtin), so no stale claim surfaces. Proven by
 `hover_degrades_during_pending_parse_gap`) and by the two new assertion blocks
 added to `sub_foo_to_bar_cross_provider_freshness_canary` (gap: `!json_contains(&sig_gap, "foo")`;
 post-publish: `json_contains(&sig1, "bar")` and `!json_contains(&sig1, "foo")`).
+
+*Revert-proves-red note (deep review, #3649).* The `foo` -> `bar` rename
+fixture shared by the two tests above cannot by itself distinguish "gap
+handled honestly" from "gap handled by silently reading `latest_parsed()`
+instead of `current_parsed()`": the mutated code would look up `bar` in the
+stale AST that only defines `foo`, miss by name regardless of which
+snapshot is consulted, and the assertion (`!json_contains(&sig, "foo")`)
+would pass either way — verified experimentally by reverting
+`current_parsed()` -> `latest_parsed()` in `signature_help.rs` and observing
+the original two assertions stay green. `signature_help_never_answers_from_stale_ast_with_matching_name_during_pending_parse_gap`
+closes that hole with a same-named, signature-changing fixture (`sub calc {}`
+-> `sub calc($x, $y) {}`) where a stale-AST answer is name-matchable but
+produces a distinguishable wrong label (`"sub calc"`, 0 params); this test
+was confirmed to fail under the same mutation and pass on the real
+`current_parsed()`-gated implementation.
 
 **7b. Diagnostics honesty during the gap — COVERED (closed for document-pull).**
 The internal side-effect staleness was already proven (§5), and
@@ -406,7 +421,7 @@ Each done-condition tracked on the Implemented (production seam exists) · Cover
 | 5 | Edit-during-analysis (stale side-effect drop) | ✅ | ✅ 3 layers (worker barrier + oracle + real-worker) | — |
 | 6 | Stale-effect rejection (publish gate) | ✅ | ✅ `stale_generation_is_rejected…`, `rejected_publish_never_invokes…`, unit gate | — |
 | 7 | Provider honesty canaries (9 providers) | ✅ | ✅ per-provider + synthetic + real-async cross-provider canary | — |
-| 7a | — signature-help canary | ✅ (reads `current_parsed`) | ✅ `signature_help_no_stale_claim_during_pending_parse_gap` + headline canary assertions | — |
+| 7a | — signature-help canary | ✅ (reads `current_parsed`) | ✅ `signature_help_no_stale_claim_during_pending_parse_gap` + `signature_help_never_answers_from_stale_ast_with_matching_name_during_pending_parse_gap` + headline canary assertions | — |
 | 7b | — diagnostics honesty-through-gap canary | ✅ | ✅ `pull_document_diagnostic_does_not_report_a_fixed_syntax_error_as_current_during_pending_parse_gap` (document-pull); workspace-pull already covered | — |
 | 8 | Neovim receipts (no full-parse/parent-map in didChange) | ✅ | ✅ `ux_neovim_ranged_typing_medium_file_receipt` | — |
 
