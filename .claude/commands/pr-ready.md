@@ -56,7 +56,7 @@ review thread is resolved (paginate if `hasNextPage` is true — see
 `/pr-respond` step 4.5 for the query and pagination guidance):
 
 ```bash
-gh api graphql -f query='query { repository(owner:"OWNER", name:"REPO") { pullRequest(number: $NUMBER) { reviewThreads(first: 50) { nodes { id isResolved path } pageInfo { hasNextPage endCursor } } } } }'
+gh api graphql -f pr=$NUMBER -f query='query($pr:Int!) { repository(owner:"OWNER", name:"REPO") { pullRequest(number:$pr) { reviewThreads(first: 50) { nodes { id isResolved path comments(first:1) { nodes { body } } } pageInfo { hasNextPage endCursor } } } } }'
 ```
 
 **Never enable or retain auto-merge, and never mark a PR ready for merge

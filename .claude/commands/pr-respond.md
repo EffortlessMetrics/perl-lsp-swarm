@@ -61,7 +61,10 @@ performatively:
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread-id>"}) { thread { isResolved } } }'
 ```
 
-Get thread IDs via `gh api graphql -f query='query { repository(owner:"OWNER", name:"REPO") { pullRequest(number: $ARGUMENTS) { reviewThreads(first: 50) { nodes { id isResolved path body } pageInfo { hasNextPage endCursor } } } } }'`.
+Get thread IDs via:
+```bash
+gh api graphql -f pr=$ARGUMENTS -f query='query($pr:Int!) { repository(owner:"OWNER", name:"REPO") { pullRequest(number:$pr) { reviewThreads(first: 50) { nodes { id isResolved path comments(first:1) { nodes { body } } } pageInfo { hasNextPage endCursor } } } } }'
+```
 If `hasNextPage` is true, re-run with `after: "<endCursor>"` and keep paging — a PR
 with more than 50 threads will otherwise silently hide later ones from discovery.
 
