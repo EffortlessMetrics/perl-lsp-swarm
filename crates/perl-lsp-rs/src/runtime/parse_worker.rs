@@ -305,19 +305,41 @@ struct Coordinator {
     metrics: Arc<ParseWorkerMetrics>,
     /// Fired synchronously, on the enqueuing thread, exactly when a call to
     /// `enqueue` newly claims `active` ownership of a URI (`newly_active`) --
-    /// BEFORE `self.cvar.notify_one()` can wake any worker thread for that
-    /// job. Pairs with `ParseWorker::spawn_with_pending_count_hooks`'s `on_settled`
-    /// (fired from `finish()`'s terminal branch) to couple BOTH the
-    /// increment and the decrement of the pending-parse lifecycle to
-    /// active-claim ownership under this same `state` lock -- see #3618's
-    /// settle-before-increment race (cubic): calling the increment from the
-    /// caller of `ParseWorker::enqueue` AFTER it returns left a window where
-    /// an unusually fast worker could dequeue, process, and settle (calling
-    /// `on_settled`'s decrement, which floors at 0 via `checked_sub`) BEFORE
-    /// the caller's own increment call ever ran, permanently stranding the
-    /// counter at 1. Calling the increment from inside `enqueue` itself,
-    /// strictly before the `notify_one()` that is the ONLY way a worker can
-    /// ever observe this job, makes that ordering impossible.
+    /// called WHILE STILL HOLDING `self.state`'s lock, before it is
+    /// released. Pairs with `ParseWorker::spawn_with_pending_count_hooks`'s
+    /// `on_settled` (fired from `finish()`'s terminal branch) to couple
+    /// BOTH the increment and the decrement of the pending-parse lifecycle
+    /// to active-claim ownership under this same `state` lock -- see
+    /// #3618's settle-before-increment race (cubic, two rounds):
+    ///
+    /// Round 1: calling the increment from the CALLER of
+    /// `ParseWorker::enqueue`, after it returns, left a window where an
+    /// unusually fast worker could dequeue, process, and settle (calling
+    /// `on_settled`'s decrement, which floors at 0 via `checked_sub`)
+    /// before the caller's own increment call ever ran, permanently
+    /// stranding the counter at 1.
+    ///
+    /// Round 2 (this field): moving the call inside `enqueue` but AFTER
+    /// `drop(state)` (still before `notify_one()`) narrowed but did not
+    /// close the same class of race: `take_next()` acquires `self.state`
+    /// unconditionally at the top of its own loop, not only via
+    /// `notify_one()`'s wakeup -- a worker thread already contending for
+    /// the lock (e.g. one that just returned from `finish()` on a
+    /// different job and looped straight back into `take_next()`) could
+    /// win an unfair `parking_lot::Mutex` acquisition the instant
+    /// `drop(state)` ran, see this URI already pushed to `ready`, and
+    /// dequeue + process + settle it before a POST-`drop(state)` call to
+    /// this hook ever executed on the enqueuing thread.
+    ///
+    /// Calling this hook BEFORE `drop(state)` -- while the lock is still
+    /// held -- closes this completely: no other thread can acquire `state`
+    /// (and therefore cannot reach `take_next`'s dequeue at all) until this
+    /// call returns. The production implementation
+    /// (`IndexCoordinator::notify_change` via a `Weak<LspServer>` upgrade)
+    /// is fast, non-blocking, and touches only `IndexCoordinator`'s own
+    /// separate internal lock -- never this `Coordinator`'s `state` --
+    /// so holding `state` across the call carries no deadlock or
+    /// reentrancy risk.
     on_activated: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -353,12 +375,24 @@ impl Coordinator {
         if newly_active {
             // Wasn't already owned by a worker -- needs dispatching.
             state.ready.push_back(uri.clone());
-            drop(state);
-            // Strictly before `notify_one()` -- see `on_activated`'s doc
-            // comment. No worker can act on this job before this call
+            // While STILL HOLDING `state` -- not after `drop(state)` -- see
+            // `on_activated`'s doc comment. `take_next()` unconditionally
+            // acquires this SAME lock at the top of its loop (not only via
+            // `notify_one()`'s wakeup path): a worker thread already
+            // contending for it (e.g. one that just returned from
+            // `finish()` on a different job and looped straight back into
+            // `take_next()`) could win an unfair `parking_lot::Mutex`
+            // acquisition the instant the lock is released, see this URI
+            // already in `ready`, and dequeue it -- all before a
+            // post-`drop(state)` call to `on_activated` on THIS thread ever
+            // ran. Calling it before `drop(state)` closes that window
+            // completely: no other thread can acquire `state` (and
+            // therefore cannot reach `take_next`'s dequeue) until this call
             // returns, so there is no ordering race with the eventual
-            // `on_settled` decrement for this same lifecycle.
+            // `on_settled` decrement for this same lifecycle, full stop --
+            // not merely "before `notify_one()`, which is usually enough."
             (self.on_activated)(&uri);
+            drop(state);
             self.cvar.notify_one();
         } else if replaced {
             // Already owned by a worker (queued or in-flight); this enqueue
@@ -673,12 +707,16 @@ impl ParseWorker {
     /// Spawn the worker pool with explicit pending-parse-count hooks.
     ///
     /// `on_activated` is invoked exactly once per pending-parse lifecycle --
-    /// synchronously, on the enqueuing thread, when `Coordinator::enqueue`
-    /// newly claims `active` ownership of a URI, strictly BEFORE any worker
-    /// thread can be woken to process it (see `Coordinator::on_activated`'s
-    /// doc comment for the settle-before-increment race this closes: calling
-    /// the increment from the CALLER of `enqueue` after it returns left a
-    /// window where an unusually fast worker could settle first).
+    /// synchronously, on the enqueuing thread, WHILE STILL HOLDING
+    /// `Coordinator::state`'s lock, when `enqueue` newly claims `active`
+    /// ownership of a URI. No other thread can acquire that lock (and
+    /// therefore no worker thread can reach `take_next`'s dequeue) until
+    /// this call returns -- see `Coordinator::on_activated`'s doc comment
+    /// for the two-round settle-before-increment race this closes: calling
+    /// the increment from the CALLER of `enqueue` after it returned (round
+    /// 1), or from inside `enqueue` but after releasing the lock (round 2),
+    /// each left a real window where an unusually fast/contending worker
+    /// could settle first.
     ///
     /// `on_settled` is invoked exactly once per pending-parse lifecycle --
     /// when a URI's LAST outstanding job for that lifecycle finishes
@@ -1729,6 +1767,88 @@ mod tests {
             log.lock().as_slice(),
             &[Event::Activated, Event::Settled],
             "activation must always precede settle for the same lifecycle"
+        );
+    }
+
+    /// #3618 round 2 (cubic, via review-3660): the previous test proves
+    /// `on_activated` completes before `enqueue()` RETURNS, but that alone
+    /// does not prove no OTHER thread could have raced in during the call --
+    /// it doesn't distinguish "called while still holding `state`'s lock"
+    /// from "called just after releasing it, but still fast enough that a
+    /// woken worker didn't win the barrier-gated race in THIS particular
+    /// run." Swapping `on_activated`'s call and `drop(state)`'s order still
+    /// passes the previous test, because the barrier keeps the worker
+    /// parked regardless.
+    ///
+    /// This test instead proves the STRONGER, load-bearing invariant
+    /// directly and deterministically: `on_activated` observes
+    /// `Coordinator::state`'s lock as ALREADY HELD (by itself, reentrantly,
+    /// via `try_lock` failing to acquire it) at the moment it runs. Since
+    /// `enqueue` is the only place that ever holds this lock while calling
+    /// `on_activated`, this can only be true if the call happens from
+    /// INSIDE `enqueue`'s critical section, before `drop(state)` --
+    /// exactly what makes it impossible for `take_next` (which
+    /// unconditionally acquires the same lock at the top of its loop) to
+    /// ever run concurrently with it, regardless of `notify_one()` or any
+    /// other thread's scheduling.
+    #[test]
+    fn on_activated_observes_the_state_lock_as_still_held() {
+        let uri = "file:///activation_holds_lock.pl";
+        let (documents, generation_handle) = one_doc(uri, "my $a = 1;\n");
+        let (cb, _calls) = counting_callback();
+
+        // Filled in with a `Weak<Coordinator>` AFTER `worker` is
+        // constructed (chicken-and-egg: the closure needs the coordinator
+        // to probe its lock, but the coordinator doesn't exist until this
+        // closure has already been built and passed in) -- safe because
+        // `on_activated` is only ever CALLED later, by `enqueue`, well
+        // after this cell has been populated below.
+        let coord_cell: Arc<Mutex<Option<std::sync::Weak<Coordinator>>>> =
+            Arc::new(Mutex::new(None));
+        let coord_cell_for_closure = Arc::clone(&coord_cell);
+        let observed_locked: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
+        let observed_locked_for_closure = Arc::clone(&observed_locked);
+
+        let worker = ParseWorker::spawn_with_pending_count_hooks(
+            Arc::clone(&documents),
+            ast_cache(),
+            cb,
+            Arc::new(move |_uri: &str| {
+                if let Some(coord) =
+                    coord_cell_for_closure.lock().as_ref().and_then(std::sync::Weak::upgrade)
+                {
+                    // `try_lock` returning `None` means the lock is
+                    // currently held (by this very thread, reentrantly,
+                    // from inside `enqueue`) -- `parking_lot::Mutex` is
+                    // not reentrant, so a second acquisition attempt from
+                    // the SAME thread fails exactly like a genuine
+                    // cross-thread contender would.
+                    *observed_locked_for_closure.lock() = Some(coord.state.try_lock().is_none());
+                }
+            }),
+            Arc::new(|_uri: &str| {}),
+        );
+        *coord_cell.lock() = Some(Arc::downgrade(&worker.coordinator));
+
+        generation_handle.fetch_add(1, Ordering::SeqCst);
+        worker.enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            Arc::clone(&generation_handle),
+            Arc::from("my $aa = 1;\n"),
+        );
+
+        assert!(
+            wait_for(|| worker.metrics().jobs_published >= 1, TEST_TIMEOUT),
+            "the job must publish for this test to have exercised on_activated at all"
+        );
+        assert_eq!(
+            *observed_locked.lock(),
+            Some(true),
+            "on_activated must observe Coordinator::state as already held (by itself) -- \
+             proving the call happens from inside enqueue's critical section, before \
+             drop(state), not merely before notify_one()"
         );
     }
 

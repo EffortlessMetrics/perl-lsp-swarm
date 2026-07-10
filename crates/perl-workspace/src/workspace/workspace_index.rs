@@ -1826,7 +1826,9 @@ impl WorkspaceIndex {
                 // here too so a stale out-of-order task can't overwrite
                 // `document_store`'s text with older content even when it's
                 // correctly rejected from `self.files` by the later guard.
-                if generation > 0 && existing_index.generation > 0 && existing_index.generation > generation
+                if generation > 0
+                    && existing_index.generation > 0
+                    && existing_index.generation > generation
                 {
                     return Ok(());
                 }
