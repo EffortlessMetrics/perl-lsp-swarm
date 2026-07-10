@@ -1191,10 +1191,17 @@ impl LspServer {
     /// installed keeps the synchronous fallback (`handle_did_change` parses
     /// inline, exactly as before this PR).
     pub(crate) fn install_default_parse_worker(self: &Arc<Self>) {
-        let cb_server = Arc::clone(self);
+        let cb_server = Arc::downgrade(self);
         let on_published: Arc<dyn Fn(parse_worker::PublishedParseTicket) + Send + Sync> =
             Arc::new(move |ticket: parse_worker::PublishedParseTicket| {
-                cb_server.run_post_parse_side_effects(ticket);
+                // Break the Arc cycle: if the server has been dropped (shutdown path),
+                // skip the side-effect cleanly. If the server is still live, invoke
+                // the callback. This ensures the server can drop and its worker threads
+                // can join on shutdown.
+                if let Some(server) = cb_server.upgrade() {
+                    server.run_post_parse_side_effects(ticket);
+                }
+                // If server has been dropped, this is a clean no-op during shutdown.
             });
         let worker = parse_worker::ParseWorker::spawn(
             Arc::clone(&self.documents),
