@@ -353,6 +353,81 @@ mod tests {
         Ok(())
     }
 
+    // Regression coverage for #3692 defect 6 (factory-droid review thread,
+    // PR #3701): `current_git_ref` was previously only exercised
+    // indirectly via `inputs_used_reflects_the_actual_current_git_ref_not_a_hardcoded_literal`
+    // in `select.rs`, which starts from an already-populated
+    // `SelectionSnapshot` and never calls this function at all. Pin its
+    // three branches directly against throwaway repos so a regression in
+    // the fallback chain (git unavailable/failing -> "unknown"; detached
+    // HEAD -> "detached@<sha>", never the literal "HEAD") is caught here
+    // rather than only showing up as a confusing provenance string deep
+    // in a JSON receipt.
+
+    #[test]
+    fn current_git_ref_returns_unknown_outside_a_git_repo() -> Result<()> {
+        // Both `git rev-parse` invocations fail (not a git repo at all),
+        // so the function must fall back to "unknown" rather than
+        // propagating an `Err` — this value is best-effort provenance
+        // metadata, never load-bearing for selection correctness.
+        let temp = tempfile::tempdir()?;
+
+        assert_eq!(current_git_ref(temp.path()), "unknown");
+        Ok(())
+    }
+
+    #[test]
+    fn current_git_ref_names_the_actual_branch_in_a_real_repo() -> Result<()> {
+        // Pinned against a throwaway repo (rather than this crate's own
+        // checkout, whose branch/detached state varies across local runs
+        // and CI's frequently-detached PR checkouts) so the assertion is
+        // deterministic.
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        init_throwaway_repo(root)?;
+
+        assert_eq!(current_git_ref(root), "trunk");
+        Ok(())
+    }
+
+    #[test]
+    fn current_git_ref_names_the_short_sha_when_detached() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        init_throwaway_repo(root)?;
+        run_git(root, &["checkout", "-q", "--detach", "HEAD"])?;
+
+        let result = current_git_ref(root);
+        assert!(
+            result.starts_with("detached@") && result.len() > "detached@".len(),
+            "expected \"detached@<sha>\", got {result:?}"
+        );
+        Ok(())
+    }
+
+    /// Runs a `git` subcommand in `root`, failing the test (via `Err`) if
+    /// it exits nonzero.
+    fn run_git(root: &Path, args: &[&str]) -> Result<()> {
+        let status = std::process::Command::new("git").args(args).current_dir(root).status()?;
+        if !status.success() {
+            bail!("git {args:?} failed with {:?}", status.code());
+        }
+        Ok(())
+    }
+
+    /// Initializes a minimal one-commit repo on branch `trunk` in `root`,
+    /// for `current_git_ref` tests that need a real (but throwaway) git
+    /// history rather than this crate's own checkout.
+    fn init_throwaway_repo(root: &Path) -> Result<()> {
+        run_git(root, &["init", "-q", "-b", "trunk"])?;
+        run_git(root, &["config", "user.email", "test@example.com"])?;
+        run_git(root, &["config", "user.name", "Test"])?;
+        fs::write(root.join("f.txt"), "x")?;
+        run_git(root, &["add", "."])?;
+        run_git(root, &["commit", "-q", "-m", "init"])?;
+        Ok(())
+    }
+
     #[test]
     fn lane_routing_candidates_leave_issue_unresolved() -> Result<()> {
         let text = r#"
