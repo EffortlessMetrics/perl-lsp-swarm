@@ -305,14 +305,18 @@ impl Coordinator {
         }
     }
 
-    /// Enqueue (or coalesce-replace) a parse job for its URI.
-    fn enqueue(&self, job: ParseJob) {
+    /// Enqueue (or coalesce-replace) a parse job for its URI. Returns `true`
+    /// iff this call newly claimed `active` ownership of the URI (nothing
+    /// was queued or in-flight for it) -- see the doc comment on
+    /// `ParseWorker::enqueue`, the public wrapper this backs.
+    fn enqueue(&self, job: ParseJob) -> bool {
         self.metrics.jobs_enqueued.fetch_add(1, Ordering::SeqCst);
         let uri = job.normalized_uri.clone();
         let mut state = self.state.lock();
         let replaced = state.pending.insert(uri.clone(), job).is_some();
         self.metrics.bump_queue_depth(state.pending.len());
-        if state.active.insert(uri.clone()) {
+        let newly_active = state.active.insert(uri.clone());
+        if newly_active {
             // Wasn't already owned by a worker -- needs dispatching.
             state.ready.push_back(uri);
             drop(state);
@@ -322,6 +326,7 @@ impl Coordinator {
             // replaced a not-yet-started job that was waiting behind it.
             self.metrics.jobs_coalesced.fetch_add(1, Ordering::SeqCst);
         }
+        newly_active
     }
 
     /// Block until a URI is ready, then atomically pop it from `ready` and
@@ -708,6 +713,16 @@ impl ParseWorker {
     }
 
     /// Enqueue (or coalesce-replace) a parse job for `normalized_uri`.
+    ///
+    /// Returns `true` if this call established a NEW pending-parse lifecycle
+    /// for this URI (nothing was queued or in-flight for it a moment ago),
+    /// `false` if it coalesced into an already-outstanding one. Callers use
+    /// this to decide whether to notify a pending-parse counter (see
+    /// `IndexCoordinator::notify_change` in perl-lsp-rs) exactly once per
+    /// lifecycle rather than once per edit -- otherwise a rapid same-URI
+    /// burst increments the counter once per coalesced-away edit but only
+    /// ever decrements it once (when the *one* surviving job eventually
+    /// publishes), permanently over-counting (#3660).
     pub(crate) fn enqueue(
         &self,
         uri: String,
@@ -715,7 +730,7 @@ impl ParseWorker {
         generation: u32,
         generation_handle: Arc<AtomicU32>,
         text: Arc<str>,
-    ) {
+    ) -> bool {
         self.coordinator.enqueue(ParseJob {
             uri,
             normalized_uri,
@@ -723,7 +738,7 @@ impl ParseWorker {
             generation_handle,
             text,
             enqueued_at: Instant::now(),
-        });
+        })
     }
 
     /// Test-API-only consumer (`test_parse_worker_metrics`); dead in the

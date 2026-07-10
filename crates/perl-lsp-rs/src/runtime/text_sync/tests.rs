@@ -2162,3 +2162,67 @@ fn did_open_normalizes_plain_windows_path_uri() -> Result<(), Box<dyn std::error
     );
     Ok(())
 }
+
+/// #3660 regression: a rapid burst of same-URI edits on the async parse
+/// worker path must NOT leave `IndexCoordinator` permanently stuck in
+/// `Degraded{ParseStorm}` once the burst has fully settled.
+///
+/// Root cause (independently confirmed both ways during #3618 review): the
+/// pre-fix code called `coordinator.notify_change(uri)` once per edit
+/// (`handle_did_change_with_cancellation`'s async branch), but the parse
+/// worker coalesces same-URI jobs so only the surviving job ever publishes
+/// and calls the matching `coordinator.notify_parse_complete(uri)` (from
+/// `run_post_parse_side_effects`) -- for N rapid edits to one URI, only 1
+/// decrement ever fires against N increments, so the pending-parse counter
+/// never returns to zero and the coordinator's `if pending == 0` recovery
+/// guard (`workspace_index.rs`) never fires. Confirmed this does NOT
+/// reproduce on bare `origin/main` (no off-lock parse worker exists there,
+/// so every edit fully parses synchronously with no coalescing possible,
+/// keeping `notify_change`/`notify_parse_complete` inherently 1:1) --
+/// this is introduced by, not pre-existing to, the off-lock coalescing
+/// path.
+///
+/// Fix: `ParseWorker::enqueue` (and the internal `Coordinator::enqueue` it
+/// wraps) now returns `true` only when this call establishes a NEW
+/// pending-parse lifecycle for the URI (nothing was queued or in-flight a
+/// moment ago), `false` when it coalesces into an already-outstanding one.
+/// The caller only calls `notify_change` on `true`, so a burst of N
+/// coalesced edits increments the counter at most once per lifecycle,
+/// matching the (also once-per-lifecycle, in the common case) eventual
+/// `notify_parse_complete`.
+#[cfg(feature = "workspace")]
+#[test]
+fn rapid_burst_does_not_permanently_degrade_the_workspace_index_coordinator()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_tdd_support::must_some;
+
+    let server = StdArc::new(LspServer::new());
+    server.install_default_parse_worker();
+    let uri = "file:///burst_does_not_degrade_coordinator.pl";
+    server.test_apply_did_open(uri, "my $a = 1;\n", 1)?;
+    let normalized_uri = server.normalize_uri_key(uri);
+    assert!(
+        must_some(server.parse_worker()).wait_until_settled(&normalized_uri, Duration::from_secs(5)),
+        "initial open must settle"
+    );
+
+    // Burst well above the parse-storm threshold (10) so a pre-fix run
+    // would reliably transition to Degraded and (per the bug) never
+    // recover.
+    for v in 2..=16i32 {
+        server.test_apply_did_change(uri, &format!("my $a = {v};\n"), v)?;
+    }
+    assert!(
+        must_some(server.parse_worker()).wait_until_settled(&normalized_uri, Duration::from_secs(5)),
+        "the burst must settle within the timeout"
+    );
+
+    let coordinator = must_some(server.coordinator());
+    assert!(
+        !matches!(coordinator.state(), perl_parser::workspace_index::IndexState::Degraded { .. }),
+        "the coordinator must not remain Degraded once the burst has fully settled; got: {:?}",
+        coordinator.state()
+    );
+
+    Ok(())
+}

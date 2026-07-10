@@ -653,12 +653,6 @@ impl LspServer {
                     return Ok(());
                 }
 
-                // Notify coordinator of pending change (tracks parse storm)
-                #[cfg(feature = "workspace")]
-                if let Some(coordinator) = self.coordinator() {
-                    coordinator.notify_change(uri);
-                }
-
                 // ---- Off-lock async parse path (#3396 Phase 3, default) ----
                 //
                 // Active whenever a parse worker is installed (the
@@ -718,13 +712,25 @@ impl LspServer {
                             }
                         }
 
-                        worker.enqueue(
+                        // Notify coordinator of pending change (tracks parse
+                        // storm) ONLY when this edit establishes a NEW
+                        // pending-parse lifecycle for the URI, not on every
+                        // coalescing edit into an already-outstanding one --
+                        // see the doc comment on `ParseWorker::enqueue`'s
+                        // return value (#3660).
+                        let is_new_lifecycle = worker.enqueue(
                             uri.to_string(),
                             normalized_uri,
                             next_gen,
                             generation_handle,
                             Arc::from(text.as_str()),
                         );
+                        if is_new_lifecycle {
+                            #[cfg(feature = "workspace")]
+                            if let Some(coordinator) = self.coordinator() {
+                                coordinator.notify_change(uri);
+                            }
+                        }
 
                         return Ok(());
                     }
@@ -733,7 +739,16 @@ impl LspServer {
                 // ---- Synchronous fallback path (unchanged behavior) ----
                 // Active when no worker is installed, or `incremental_eager`
                 // opted into the dormant fast-path that needs the parse
-                // under this same lock.
+                // to happen synchronously under this same lock. Every call
+                // here fully parses before returning (no coalescing is
+                // possible), so `notify_change` below is always followed by
+                // exactly one matching `notify_parse_complete` for THIS
+                // edit -- unlike the async branch above, this unconditional
+                // call is already balanced.
+                #[cfg(feature = "workspace")]
+                if let Some(coordinator) = self.coordinator() {
+                    coordinator.notify_change(uri);
+                }
 
                 // Check cache first
                 let t_parse_start = std::time::Instant::now();
