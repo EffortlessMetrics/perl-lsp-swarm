@@ -278,10 +278,16 @@ fn sub_foo_to_bar_cross_provider_freshness_canary() -> TestResult {
         decoded1.contains(&(1, 0, 5, "function".to_string())),
         "post-publish: `bar()` call must decode as function; decoded={decoded1:?}"
     );
-    assert!(
-        !decoded1.iter().any(|(_l, _c, _len, type_name)| type_name == "foo"),
-        "post-publish: no current result may contain `foo`; decoded={decoded1:?}"
-    );
+    // NOTE: there is deliberately no "`decoded1` must not contain `foo`"
+    // assertion here. `decode_semantic_tokens` resolves `type_name` from the
+    // LSP semantic-token legend (categories like "function"/"keyword"), not
+    // from source identifier text -- the wire format is purely positional
+    // (line delta, column delta, length, legend index, modifiers bitmask)
+    // and never carries the identifier string at all. `type_name == "foo"`
+    // would be vacuously false forever regardless of whether a stale `foo`
+    // fact leaked, so it cannot detect that. The `refs1` / `json_contains`
+    // check right below is the one that actually carries text and proves
+    // freshness.
 
     let refs1 = server.test_handle_references(Some(json!({
         "textDocument": { "uri": uri },
@@ -753,10 +759,12 @@ fn sub_foo_to_bar_cross_provider_freshness_canary_real_async_worker() -> TestRes
         decoded1.contains(&(0, 4, 3, "function".to_string())),
         "post-publish: `bar` declaration must decode as function; decoded={decoded1:?}"
     );
-    assert!(
-        !decoded1.iter().any(|(_l, _c, _len, type_name)| type_name == "foo"),
-        "post-publish: no current result may contain `foo`; decoded={decoded1:?}"
-    );
+    // See the analogous NOTE in `sub_foo_to_bar_cross_provider_freshness_canary`:
+    // `decode_semantic_tokens`'s `type_name` comes from the legend (token
+    // categories), never from source identifier text, so a
+    // `type_name == "foo"` check is vacuously false forever and cannot
+    // detect a leaked stale `foo` fact -- the `refs1` / `json_contains`
+    // check right below is the one that actually carries text.
 
     let refs1 = server.test_handle_references(Some(json!({
         "textDocument": { "uri": uri },
