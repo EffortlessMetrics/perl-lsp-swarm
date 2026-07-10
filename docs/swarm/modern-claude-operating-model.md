@@ -237,6 +237,12 @@ SHA, current CI status, or current blocker list — those change every few minut
 belong at truth-hierarchy rank 1–3, queried fresh each time, never cached in a
 long-lived memory file where they will silently go stale.
 
+**Meta labels** (self-descriptive, no dedicated table needed): `size/S` / `size/M` /
+`size/L` record effort estimate; `swarm-discovered` records provenance ("found by an
+automated sweep, not a human report"). Per-label live-vs-authoritative detail for every
+other label (Sign-off, State, Routing) lives in
+[LIVE_SIGNALS_VS_LABELS.md](../reference/LIVE_SIGNALS_VS_LABELS.md).
+
 ---
 
 ## See also
