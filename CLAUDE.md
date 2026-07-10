@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-**Latest Release**: 0.17.0 | **Metrics**: [status/index.md](docs/project/status/index.md) | **API Stability**: [STABILITY.md](docs/reference/STABILITY.md) | **Implementation agents**: [AGENTS.md](AGENTS.md)
+**Metrics**: [status/index.md](docs/project/status/index.md) | **API Stability**: [STABILITY.md](docs/reference/STABILITY.md) | **Implementation agents**: [AGENTS.md](AGENTS.md)
 
 This file is a **router**, not the doctrine itself: it names what every agent must
 hold in working memory; everything else is one link away. Full operating model
@@ -69,7 +69,7 @@ OR bounce back (`needs-*`) — never both in the same pass. Per the 2026-04-26 #
 incident, applying both confused the merge gate and let unfixed bugs ride to master.
 
 **No `needs-*` label on a PR may merge**, even with `merge-ready` present — the label
-means unaddressed work exists. **Master must stay green; merge requires green**
+means unaddressed work exists. **Main must stay green; merge requires green**
 (2026-04-26 directive) — verify workspace-wide CI, not just per-crate, before merging.
 
 ## Publication and proof
