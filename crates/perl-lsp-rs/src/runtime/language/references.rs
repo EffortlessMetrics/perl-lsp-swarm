@@ -416,8 +416,33 @@ impl LspServer {
                 true
             };
 
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
+            // Phase 1: grab an owned `DocumentState` clone under a brief
+            // documents-map lock, then drop the guard before doing any analysis
+            // (#3396 off-lock provider consumption). Below, the two full-
+            // workspace text-snapshot fallbacks (qualified-name scan, open-doc
+            // scan) each re-acquire a fresh, equally brief lock only at the
+            // point they need it -- neither acquisition holds the guard across
+            // any analysis in between. `ScopedSpan` covers the whole analysis
+            // block via `Drop`, so it emits correctly regardless of which of
+            // this function's several early `return` points fires.
+            let timing_on = crate::runtime::timing::is_enabled();
+            let t_lock_start = std::time::Instant::now();
+            let doc_owned = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned()
+            };
+            // documents guard dropped here
+            if timing_on {
+                crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
+                    "provider.references.lock_hold",
+                    crate::runtime::timing::elapsed_ms(t_lock_start),
+                    crate::runtime::timing::uri_tail(uri),
+                ));
+            }
+
+            if let Some(doc) = doc_owned.as_ref() {
+                let _analyze_span =
+                    crate::runtime::timing::ScopedSpan::start("provider.references.analyze", uri);
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let offset = self.pos16_to_offset(doc, line, character);
@@ -566,11 +591,17 @@ impl LspServer {
 
                                     // Enhanced fallback: always search for both qualified and unqualified references
                                     // Snapshot only (uri, text) to minimize cloning overhead - we don't need
-                                    // AST, rope, or other DocumentState fields for text search
-                                    let docs_snapshot: Vec<(String, String)> = documents
-                                        .iter()
-                                        .map(|(k, v)| (k.clone(), v.text.clone()))
-                                        .collect();
+                                    // AST, rope, or other DocumentState fields for text search.
+                                    // Re-acquires a fresh, brief documents-map lock only at this
+                                    // point of use (#3396 off-lock provider consumption) -- the
+                                    // outer lock was already dropped after fetching `doc` above.
+                                    let docs_snapshot: Vec<(String, String)> = {
+                                        let documents = self.documents_guard();
+                                        documents
+                                            .iter()
+                                            .map(|(k, v)| (k.clone(), v.text.clone()))
+                                            .collect()
+                                    };
 
                                     let mut enhanced_locations = Vec::new();
                                     let symbol_name = &symbol_key.name;
@@ -789,14 +820,18 @@ impl LspServer {
                                                     }
 
                                                     // Fallback: scan open documents for qualified name references
-                                                    // Snapshot only (uri, text) to minimize cloning overhead
-                                                    let docs_snapshot: Vec<(String, String)> =
+                                                    // Snapshot only (uri, text) to minimize cloning overhead.
+                                                    // Re-acquires a fresh, brief documents-map lock only at
+                                                    // this point of use (#3396 off-lock provider consumption).
+                                                    let docs_snapshot: Vec<(String, String)> = {
+                                                        let documents = self.documents_guard();
                                                         documents
                                                             .iter()
                                                             .map(|(k, v)| {
                                                                 (k.clone(), v.text.clone())
                                                             })
-                                                            .collect();
+                                                            .collect()
+                                                    };
 
                                                     let mut all_locations = Vec::new();
                                                     let qualified_name =
@@ -917,9 +952,19 @@ impl LspServer {
 
                                 tracing::debug!(reason, "References: using same-file fallback");
                                 if !needle.is_empty() {
+                                    // Re-acquires a fresh, brief documents-map lock only at this
+                                    // point of use (#3396 off-lock provider consumption) -- the
+                                    // outer lock was already dropped after fetching `doc` above.
+                                    let docs_snapshot: Vec<(String, String)> = {
+                                        let documents = self.documents_guard();
+                                        documents
+                                            .iter()
+                                            .map(|(k, v)| (k.clone(), v.text.clone()))
+                                            .collect()
+                                    };
                                     let open_doc_locations = search_document_texts_for_references(
-                                        documents.iter().map(|(doc_uri, doc)| {
-                                            (doc_uri.as_str(), doc.text.as_str())
+                                        docs_snapshot.iter().map(|(doc_uri, doc_text)| {
+                                            (doc_uri.as_str(), doc_text.as_str())
                                         }),
                                         &needle,
                                         cap,
@@ -1281,8 +1326,14 @@ impl LspServer {
             let uri = req_uri(&params)?;
             let (line, character) = req_position(&params)?;
 
-            let documents = self.documents_guard();
-            if let Some(doc) = self.get_document(&documents, uri) {
+            // Grab an owned `DocumentState` clone under a brief documents-map
+            // lock, then drop the guard before doing any analysis (#3396
+            // off-lock provider consumption).
+            let doc_owned = {
+                let documents = self.documents_guard();
+                self.get_document(&documents, uri).cloned()
+            };
+            if let Some(doc) = doc_owned.as_ref() {
                 let parsed = doc.current_parsed();
                 if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
                     let offset = self.pos16_to_offset(doc, line, character);
