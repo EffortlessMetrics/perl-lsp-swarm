@@ -31,9 +31,9 @@
 #![cfg(all(feature = "workspace", feature = "expose_lsp_test_api"))]
 
 use perl_lsp::LspServer;
-use serde_json::{json, Value};
-use std::sync::mpsc;
+use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
@@ -124,7 +124,12 @@ fn type_definition_fallback_pins_captured_generation_under_racing_didchange() ->
     // Block (no sleep) until the handler has captured ast/doc_text from
     // generation 0 and reached the gap right before it re-reads
     // `documents_text_snapshot()` for the fallback.
-    reached_rx.recv().map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
+    // Bounded, not a bare `.recv()`: a regression in the handler that never
+    // reaches the gap must fail this test promptly instead of hanging the
+    // suite forever.
+    reached_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
 
     // Race a real edit into the SAME document while the handler is paused.
     let after = type_def_after();
@@ -210,7 +215,12 @@ fn type_definition_fallback_resolves_when_uri_closes_during_fallback_gap() -> Te
     // Block (no sleep) until the handler has captured ast/doc_text and
     // reached the gap right before it re-reads `documents_text_snapshot()`
     // for the fallback.
-    reached_rx.recv().map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
+    // Bounded, not a bare `.recv()`: a regression in the handler that never
+    // reaches the gap must fail this test promptly instead of hanging the
+    // suite forever.
+    reached_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
 
     // Race a real close into the SAME document while the handler is paused.
     server.test_apply_did_close(uri)?;
@@ -290,7 +300,12 @@ fn implementation_fallback_pins_captured_generation_under_racing_didchange() -> 
         })
     };
 
-    reached_rx.recv().map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
+    // Bounded, not a bare `.recv()`: a regression in the handler that never
+    // reaches the gap must fail this test promptly instead of hanging the
+    // suite forever.
+    reached_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
 
     let after = impl_after();
     server.test_apply_did_change(uri, &after, 2)?;
@@ -364,7 +379,12 @@ fn implementation_fallback_resolves_when_uri_closes_during_fallback_gap() -> Tes
         })
     };
 
-    reached_rx.recv().map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
+    // Bounded, not a bare `.recv()`: a regression in the handler that never
+    // reaches the gap must fail this test promptly instead of hanging the
+    // suite forever.
+    reached_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|err| format!("handler never reached the fallback gap: {err}"))?;
 
     // Race a real close into the SAME document while the handler is paused.
     server.test_apply_did_close(uri)?;
@@ -460,9 +480,22 @@ fn type_definition_and_implementation_resolve_normally_with_no_race() -> TestRes
 /// This has nothing to do with the TOCTOU race the other tests in this file
 /// cover -- it reproduces on every call for any URI whose raw and
 /// normalized forms differ, no concurrent edit required.
+///
+/// Still takes `toctou_hook_lock()` for the same reason
+/// `type_definition_and_implementation_resolve_normally_with_no_race` above
+/// does even though it never arms the hook itself:
+/// `wait_at_same_doc_fallback_gap()` runs unconditionally on every call into
+/// `handle_type_definition`/`handle_implementation`, including this test's.
+/// Without the lock, this test could run concurrently (under the crate's
+/// `--test-threads=2` convention) with a racing test in the narrow window
+/// between that test arming the hook and its own handler thread reaching the
+/// gate -- stealing the armed hook meant for the other test and corrupting
+/// both.
 #[test]
-fn type_definition_and_implementation_resolve_for_uri_with_raw_normalized_key_mismatch(
-) -> TestResult {
+fn type_definition_and_implementation_resolve_for_uri_with_raw_normalized_key_mismatch()
+-> TestResult {
+    let _guard = toctou_hook_lock().lock().map_err(|_| "toctou hook lock poisoned")?;
+
     let server = fresh_server();
 
     // Uppercase Windows drive letter: `perl_uri::uri_key` normalizes this to

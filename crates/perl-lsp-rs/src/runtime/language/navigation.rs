@@ -2300,6 +2300,13 @@ impl LspServer {
     /// that reaches the same-document fallback gap will send on `reached`
     /// and then block on `resume.recv()` until the test signals it to
     /// continue. Consumed (armed exactly once) per call -- see #3613.
+    ///
+    /// Recovers a poisoned `NAVIGATION_SAME_DOC_FALLBACK_GAP` the same way
+    /// `wait_at_same_doc_fallback_gap` does. Without this, `if let Ok(...) =
+    /// ...lock()` would silently no-op after any prior poisoning (e.g. a
+    /// deliberate-poison test running earlier in the same process), leaving
+    /// the hook never armed and a caller's `reached_rx.recv()` blocking
+    /// forever waiting for a signal that will never come.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn test_set_navigation_same_doc_fallback_gap_hook(
         &self,
@@ -2307,9 +2314,11 @@ impl LspServer {
         resume: std::sync::mpsc::Receiver<()>,
     ) {
         let _ = self;
-        if let Ok(mut hook) = NAVIGATION_SAME_DOC_FALLBACK_GAP.lock() {
-            *hook = Some((reached, resume));
-        }
+        let mut hook = match NAVIGATION_SAME_DOC_FALLBACK_GAP.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *hook = Some((reached, resume));
     }
 
     /// Non-blocking definition handler with fallback
@@ -2343,6 +2352,19 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Serializes tests in this module that touch
+    /// `NAVIGATION_SAME_DOC_FALLBACK_GAP`, mirroring `toctou_hook_lock` in
+    /// `tests/navigation_same_document_toctou_regression_tests.rs`: any call
+    /// into `handle_type_definition`/`handle_implementation` unconditionally
+    /// drains the hook slot via `wait_at_same_doc_fallback_gap`, so two
+    /// tests touching it concurrently (this crate's own guidance is
+    /// `--test-threads=2`, not 1) could steal each other's armed hook.
+    /// Self-heals from a poisoned lock, matching `timing::capture::test_lock`.
+    fn same_doc_fallback_gap_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Verifies that `handle_implementation` executes the workspace
     /// index-readiness wait when indexing is in progress (#3095).
     ///
@@ -2351,6 +2373,8 @@ mod tests {
     #[cfg(feature = "workspace")]
     #[test]
     fn test_wait_guard_fires_in_handle_implementation_when_indexing_in_progress() {
+        let _serial = same_doc_fallback_gap_test_lock();
+
         let server = LspServer::new();
         let uri = "file:///test-impl-race.pl";
         let open_result = server.test_handle_did_open(Some(json!({
@@ -2387,9 +2411,20 @@ mod tests {
     /// path regresses) are the point of this test, not banned production
     /// patterns creeping in -- narrowly allowed here the same way
     /// `LazyLock` regex initializers are elsewhere in this codebase.
+    ///
+    /// Takes `same_doc_fallback_gap_test_lock()` for the same reason
+    /// `test_wait_guard_fires_in_handle_implementation_when_indexing_in_progress`
+    /// above does: any concurrently running test that reaches
+    /// `wait_at_same_doc_fallback_gap` could otherwise steal the hook this
+    /// test arms. Calls `clear_poison()` at the end so a poisoned mutex from
+    /// this deliberate test doesn't linger for the rest of the process --
+    /// every access site already recovers poison correctly, so this is
+    /// hygiene, not a correctness requirement.
     #[test]
     #[allow(clippy::panic, clippy::expect_used)]
     fn test_wait_at_same_doc_fallback_gap_recovers_from_poisoned_mutex() {
+        let _serial = same_doc_fallback_gap_test_lock();
+
         // Poison the static by panicking while holding its lock on another
         // thread. `thread::spawn` catches the panic and reports it via
         // `join()`'s `Err`, so this does not abort the test process.
@@ -2424,5 +2459,13 @@ mod tests {
         handler.join().expect(
             "wait_at_same_doc_fallback_gap must not panic after recovering a poisoned lock",
         );
+
+        // Hygiene: clear the poison this test deliberately introduced so it
+        // doesn't linger for the rest of the process. Every access site
+        // already recovers poison correctly (that's what this test proves),
+        // so this is not required for correctness -- it just keeps the
+        // mutex's poisoned flag from being permanently true after this test
+        // runs, matching "no test leaving the mutex poisoned".
+        NAVIGATION_SAME_DOC_FALLBACK_GAP.clear_poison();
     }
 }
