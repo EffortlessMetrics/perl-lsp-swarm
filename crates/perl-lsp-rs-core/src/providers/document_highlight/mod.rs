@@ -101,8 +101,12 @@ impl DocumentHighlightProvider {
 
     /// Find the node at the given byte offset
     fn find_node_at_offset(&self, node: &Node, offset: usize) -> Option<Node> {
-        // Check if offset is within this node
-        if offset < node.location.start || offset >= node.location.end {
+        // Check if offset is within this node. The end is inclusive so a caret
+        // resting at the trailing edge of a token (the common "caret just after
+        // the word" position produced by double-click-select) is treated as
+        // on-token — matching the sibling references provider
+        // (navigation/references.rs).
+        if offset < node.location.start || offset > node.location.end {
             return None;
         }
 
@@ -131,7 +135,9 @@ impl DocumentHighlightProvider {
         source: &str,
         offset: usize,
     ) -> Option<SymbolInfo> {
-        if offset < node.location.start || offset >= node.location.end {
+        // Inclusive end (see `find_node_at_offset`): a trailing-edge caret is
+        // on-token so the synthetic-symbol fallback also recovers it.
+        if offset < node.location.start || offset > node.location.end {
             return None;
         }
 
