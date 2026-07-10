@@ -3936,9 +3936,18 @@ impl IndexVisitor {
                 self.visit_node(body, file_index);
             }
 
-            NodeKind::VariableDeclaration { initializer, .. } => {
-                // Visit initializer
-                if let Some(init) = initializer {
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                // our @ISA = qw(Base1 Base2) → register base classes as dependencies
+                if is_isa_variable(variable) {
+                    if let Some(init) = initializer {
+                        for name in
+                            extract_module_names_from_call_args(std::slice::from_ref(&**init))
+                        {
+                            file_index.dependencies.insert(normalize_dependency_module_name(&name));
+                        }
+                        self.visit_node(init, file_index);
+                    }
+                } else if let Some(init) = initializer {
                     self.visit_node(init, file_index);
                 }
             }
@@ -4002,6 +4011,19 @@ impl IndexVisitor {
                             .dependencies
                             .insert(normalize_dependency_module_name(&module_name));
                     }
+                } else if name == "push" {
+                    // push @ISA, 'Base' → register Base as a dependency
+                    if let Some(first_arg) = args.first() {
+                        if is_isa_variable(first_arg) {
+                            for module_name in
+                                extract_module_names_from_call_args(args.get(1..).unwrap_or(&[]))
+                            {
+                                file_index
+                                    .dependencies
+                                    .insert(normalize_dependency_module_name(&module_name));
+                            }
+                        }
+                    }
                 }
 
                 // Visit arguments
@@ -4033,6 +4055,13 @@ impl IndexVisitor {
 
             // Handle assignment to detect writes
             NodeKind::Assignment { lhs, rhs, op } => {
+                // @ISA = ('Base') or @ISA = qw(Base1 Base2) → register as dependencies
+                if op == "=" && is_isa_variable(lhs) {
+                    for name in extract_module_names_from_call_args(std::slice::from_ref(&**rhs)) {
+                        file_index.dependencies.insert(normalize_dependency_module_name(&name));
+                    }
+                }
+
                 // For compound assignments (+=, -=, .=, etc.), the LHS is both read and written
                 let is_compound = op != "=";
 
@@ -4471,6 +4500,11 @@ fn legacy_perl_module_name(name: &str) -> String {
 /// Converts legacy `'` separators to `::` so stored keys are canonical.
 fn normalize_dependency_module_name(module_name: &str) -> String {
     canonicalize_perl_module_name(module_name)
+}
+
+/// Returns true if `node` is the `@ISA` array variable.
+fn is_isa_variable(node: &Node) -> bool {
+    matches!(&node.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
 }
 
 fn extract_qw_words(input: &str) -> (Vec<String>, String) {

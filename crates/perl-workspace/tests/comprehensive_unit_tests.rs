@@ -2148,3 +2148,53 @@ fn test_find_dependents_via_use_parent_qw() -> Result<(), Box<dyn std::error::Er
     assert!(!other_deps.is_empty(), "Other::Base should be a registered dependency");
     Ok(())
 }
+
+// =========================================================================
+// WorkspaceIndex – find_dependents via @ISA forms (#955)
+// =========================================================================
+
+/// `our @ISA = qw(Base::Class)` must register the parent as a dependency
+/// so that `find_dependents("Base::Class")` includes the child file.
+#[test]
+fn test_find_dependents_via_our_isa() -> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = file_url("/our_isa_child.pm")?;
+    index.index_file(uri, "package OurIsaChild;\nour @ISA = qw(Base::Class);\n1;\n".to_string())?;
+
+    let dependents = index.find_dependents("Base::Class");
+    assert!(
+        !dependents.is_empty(),
+        "our @ISA = qw(Base::Class) should register Base::Class as a dependency"
+    );
+    Ok(())
+}
+
+/// Bare `@ISA = ('My::Root')` (no declarator) must register the parent.
+#[test]
+fn test_find_dependents_via_bare_isa() -> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = file_url("/bare_isa_derived.pm")?;
+    index.index_file(uri, "package BareIsaDerived;\n@ISA = ('My::Root');\n1;\n".to_string())?;
+
+    let dependents = index.find_dependents("My::Root");
+    assert!(!dependents.is_empty(), "@ISA = ('My::Root') should register My::Root as a dependency");
+    Ok(())
+}
+
+/// `push @ISA, 'Base::Extended'` must register the parent as a dependency.
+#[test]
+fn test_find_dependents_via_push_isa() -> Result<(), Box<dyn std::error::Error>> {
+    let index = WorkspaceIndex::new();
+    let uri = file_url("/push_isa_extended.pm")?;
+    index.index_file(
+        uri,
+        "package PushIsaExtended;\npush @ISA, 'Base::Extended';\n1;\n".to_string(),
+    )?;
+
+    let dependents = index.find_dependents("Base::Extended");
+    assert!(
+        !dependents.is_empty(),
+        "push @ISA, 'Base::Extended' should register Base::Extended as a dependency"
+    );
+    Ok(())
+}
