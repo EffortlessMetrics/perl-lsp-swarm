@@ -18,23 +18,20 @@ Merge up to 3 PRs from the candidates identified in step 1.
 2. **Fresh green check** — immediately before each merge, verify live state:
    ```bash
    gh pr view <number> --json isDraft,mergeable,mergeStateStatus,labels,headRefOid,reviewRequests,reviewDecision,statusCheckRollup
-   gh api graphql -f pr=<number> -f query='query($pr:Int!) { repository(owner:"OWNER",name:"REPO") { pullRequest(number:$pr) { latestReviews(first:50) { nodes { author{login} commit{oid} state } } } } }'
+   scripts/ci/check-pr-review-convergence <number>
    ```
-   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` for isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewRequests, reviewDecision fields; additionally call `mcp__github__pull_request_read(method:"get_check_runs", pullNumber:<number>)` for CI status rollup. For latestReviews, use GraphQL query with latestReviews field selecting author.login, commit.oid, state.
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` for isDraft, mergeable, mergeStateStatus, labels, headRefOid, reviewRequests, reviewDecision fields; additionally call `mcp__github__pull_request_read(method:"get_check_runs", pullNumber:<number>)` for CI status rollup. Review convergence still requires the canonical script — there is no MCP equivalent that pages both `latestReviews` and `reviewThreads` correctly.
    All of these must be true AT MERGE TIME (not remembered from earlier):
    - Not draft
    - mergeStateStatus = CLEAN (NOT UNSTABLE, NOT UNKNOWN, NOT DIRTY)
    - CI checks green on the current HEAD SHA using **latest-per-check filter** (per `feedback_status_check_rollup_stale_entries.md`)
    - No blocking review comments
-   - `reviewRequests` empty and every entry in `latestReviews` has `commit.oid == headRefOid`
-     (only the latest review per reviewer counts as finished; earlier reviews are superseded)
-   - **No unresolved review conversation threads** — query `reviewThreads` via
-     GraphQL (see `/pr-respond` step 4.5 for the paginated query) and confirm
-     every node has `isResolved: true`. Never merge, and never enable/retain
-     auto-merge, while any requested reviewer is still pending on the current
-     HEAD SHA or any thread remains unresolved. Threads must be resolved for a
-     reason (fixed/refuted/superseded/accepted-with-follow-up), not
-     performatively.
+   - **Review convergence** — `scripts/ci/check-pr-review-convergence <number>` exits `0`
+     (see [.claude/reference/review-convergence.md](../reference/review-convergence.md)
+     for the contract). Do not reproduce or modify its query locally. Never
+     merge, and never enable/retain auto-merge, while it exits non-zero —
+     that means a requested reviewer is still pending on the current HEAD SHA
+     or an active thread remains unresolved.
    - **NO active `needs-*` label** (per the 2026-04-26 sign-off-as-routing rule: presence of `needs-builder-fix` / `needs-ci-fix` / `needs-diff-fix` / `needs-spec-fix` / `needs-red-tdd-fix` MUST block merge regardless of `merge-ready`). Sign-off is one of the routing decisions; if any gate ALSO bounced, the PR is not actually signed off.
    - **Workspace-wide CI checks SUCCESS** (Compile All Targets, PR Smoke including workspace fmt, Windows Guardrails compile/module-separator/sandbox), not just per-crate. Per the 2026-04-26 master-green directive: per-crate gates miss workspace drift.
 

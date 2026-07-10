@@ -43,7 +43,11 @@ For each bot comment / CI failure / review conversation:
 3. **Prove it** — re-run the relevant check/test
 4. **Reply with evidence** — state what you fixed, with commit hash or reasoning; for follow-up, cite the issue number
 5. **Resolve the thread** — for the real reason (fixed/refuted/superseded/accepted-with-follow-up), never performatively
-6. **Verify all requested reviewers finished on the current HEAD SHA** before treating the PR as ready — check `gh pr view <N> --json reviewRequests,latestReviews,headRefOid,reviewDecision` and confirm each review's `commit.oid` matches `headRefOid` (only the latest review per reviewer counts as finished; earlier submissions are superseded)
+6. **Verify review convergence** before treating the PR as ready — run the
+   canonical review-convergence check (see
+   [.claude/reference/review-convergence.md](../reference/review-convergence.md)):
+   `scripts/ci/check-pr-review-convergence <N>`. Do not reproduce or modify
+   its query locally.
 
 ## Principles
 

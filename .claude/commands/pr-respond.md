@@ -61,12 +61,16 @@ performatively:
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread-id>"}) { thread { isResolved } } }'
 ```
 
-Get thread IDs via:
+To find which threads still need attention (including their IDs), run the
+canonical review-convergence check (see
+[.claude/reference/review-convergence.md](../reference/review-convergence.md)),
+which pages through every thread rather than truncating at 50:
+
 ```bash
-gh api graphql -f pr=$ARGUMENTS -f query='query($pr:Int!) { repository(owner:"OWNER", name:"REPO") { pullRequest(number:$pr) { reviewThreads(first: 50) { nodes { id isResolved path comments(first:1) { nodes { body } } } pageInfo { hasNextPage endCursor } } } } }'
+scripts/ci/check-pr-review-convergence $ARGUMENTS
 ```
-If `hasNextPage` is true, re-run with `after: "<endCursor>"` and keep paging — a PR
-with more than 50 threads will otherwise silently hide later ones from discovery.
+
+Do not reproduce or modify its query locally.
 
 ### 5. Re-verify
 ```bash
@@ -92,12 +96,13 @@ gh pr edit $ARGUMENTS --add-reviewer <original-reviewer> 2>/dev/null || true
 Before this PR can be marked ready or auto-merge enabled, every requested
 reviewer must finish on the current HEAD SHA and every substantive thread must
 be resolved. `reviewDecision` alone doesn't prove either: it says nothing about
-thread resolution, and a review can predate the current push. Check both:
-- `gh pr view $ARGUMENTS --json reviewRequests,latestReviews,headRefOid,reviewDecision`
-  — a reviewer only counts as finished if their review's `commit.oid` equals
-  `headRefOid` (only the latest review per reviewer counts; earlier submissions
-  are superseded)
-- the `reviewThreads` query from step 4.5, paginated — every node must have
-  `isResolved: true`
+thread resolution, and a review can predate the current push. Run the
+canonical review-convergence check (see
+[.claude/reference/review-convergence.md](../reference/review-convergence.md)):
 
-Never enable or retain auto-merge while either condition is unmet.
+```bash
+scripts/ci/check-pr-review-convergence $ARGUMENTS
+```
+
+Do not reproduce or modify its query locally. Never enable or retain
+auto-merge while the check exits non-zero.

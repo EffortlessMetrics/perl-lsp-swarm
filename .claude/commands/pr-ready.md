@@ -44,29 +44,22 @@ Optionally validate receipt freshness when `deep-reviewed` is present to ensure 
 ### 3.5 Verify conversation resolution and reviewer completion
 
 `reviewDecision` alone doesn't prove either condition below — it says nothing
-about thread resolution, and a review can predate the current push. Check both:
+about thread resolution, and a review can predate the current push. Run the
+canonical review-convergence check (see
+[.claude/reference/review-convergence.md](../reference/review-convergence.md)):
 
 ```bash
-gh pr view $NUMBER --json reviewRequests,latestReviews,headRefOid,reviewDecision
+scripts/ci/check-pr-review-convergence $NUMBER
 ```
 
-A reviewer only counts as finished if their review's `commit.oid` equals
-`headRefOid` — only the latest review per reviewer counts (earlier reviews are
-superseded). Then check every review thread is resolved (paginate if `hasNextPage` is true — see
-`/pr-respond` step 4.5 for the query and pagination guidance):
-
-```bash
-gh api graphql -f pr=$NUMBER -f query='query($pr:Int!) { repository(owner:"OWNER", name:"REPO") { pullRequest(number:$pr) { reviewThreads(first: 50) { nodes { id isResolved path comments(first:1) { nodes { body } } } pageInfo { hasNextPage endCursor } } } } }'
-```
+Do not reproduce or modify its query locally.
 
 **Never enable or retain auto-merge, and never mark a PR ready for merge
-pickup, while any requested reviewer has not yet finished on the current HEAD
-SHA or any substantive review thread remains unresolved.** Resolve threads for
-a reason (fixed/refuted/superseded/accepted-with-follow-up), not
-performatively — main mechanically requires conversation resolution before
-merge. If `reviewRequests` is non-empty, a review's `commit.oid` is stale
-relative to `headRefOid`, or any thread node has `isResolved: false`, **STOP**
-and report which reviewer or thread is still pending instead of proceeding.
+pickup, while the check above exits non-zero.** Resolve threads for a reason
+(fixed/refuted/superseded/accepted-with-follow-up), not performatively — main
+mechanically requires conversation resolution before merge. If the script
+exits non-zero, **STOP** and report which reviewer or thread is still
+pending (its `BLOCK` lines name them) instead of proceeding.
 
 ### 4. Mark ready and signal merge-readiness
 
