@@ -44,6 +44,20 @@ fn constructed_symbolic_reference_remains_a_dynamic_boundary() {
 }
 
 #[test]
+fn variable_symbolic_reference_is_a_dynamic_boundary() {
+    // Block-dereference of a variable operand under no strict 'refs' is a symbolic reference
+    // because the variable might contain a package name (e.g., @{$name} where $name='Foo::Bar').
+    let file = lower_source("no strict 'refs'; my $name = 'Runtime::names'; @{$name} = (); ");
+
+    assert!(
+        file.compile_environment.dynamic_boundaries.iter().any(|boundary| {
+            boundary.kind == CompileEnvironmentBoundaryKind::SymbolicReferenceDeref
+        }),
+        "block-dereference of a variable under no strict 'refs' must emit SymbolicReferenceDeref boundary"
+    );
+}
+
+#[test]
 fn init_and_end_are_deferred_lifecycle_phases() {
     let file = lower_source("INIT { initialize() } END { cleanup() }");
 
