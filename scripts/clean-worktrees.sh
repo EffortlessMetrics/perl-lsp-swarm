@@ -228,6 +228,11 @@ worktree_last_activity_ts() {
     echo "$max"
 }
 
+# salvage_worktree writes a recovery packet for a dirty worktree and returns
+# non-zero if ANY write step fails (disk-full, permissions, etc.) — the
+# caller MUST check this return value and abort removal on failure. A dirty
+# worktree whose salvage packet did not fully land on disk must never be
+# force-removed (see PR #3577 review, blocker 2).
 salvage_worktree() {
     local wt="$1"
     local name
@@ -235,15 +240,36 @@ salvage_worktree() {
     local date_dir
     date_dir="$(date +%Y-%m-%d)"
     local archive_dir="$REPO_ROOT/.claude/worktree-archive/$date_dir/$name"
+    local failed=0
+    local rc=0
+
+    # NOTE on error-capture style: every step below uses `cmd || rc=$?`
+    # rather than `if ! cmd; then`. This is deliberate, not stylistic —
+    # `if ! { compound group } > file; then` was found (while reproducing
+    # the fix for this exact blocker) to NOT report a redirection-open
+    # failure through `!` reliably in bash (the negation applies to the
+    # compound list's status, but a redirection error when opening the
+    # target — e.g. the target path is itself a directory — is a distinct
+    # bash error class that `!` does not consistently invert, verified by
+    # constructing a directory at the target file path and observing
+    # `if ! { ...; } > dir; then` silently take the *success* branch).
+    # `cmd || rc=$?` reads the real exit status directly and additionally
+    # keeps `set -e` from aborting the function on the very failure we're
+    # here to detect.
 
     echo "    salvage -> $archive_dir"
-    mkdir -p "$archive_dir"
+    mkdir -p "$archive_dir" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        echo "    salvage FAILED: could not create $archive_dir" >&2
+        return 1
+    fi
 
     local branch head_sha status_out
     branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
     head_sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null || echo "unknown")"
     status_out="$(git -C "$wt" status --porcelain 2>/dev/null || echo "")"
 
+    rc=0
     {
         echo "worktree_path: $wt"
         echo "branch: $branch"
@@ -252,10 +278,25 @@ salvage_worktree() {
         echo ""
         echo "git status --porcelain:"
         echo "$status_out"
-    } > "$archive_dir/meta.txt"
+    } > "$archive_dir/meta.txt" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        echo "    salvage FAILED: could not write meta.txt" >&2
+        failed=1
+    fi
 
-    git -C "$wt" diff --cached --binary > "$archive_dir/staged.patch" 2>/dev/null || true
-    git -C "$wt" diff --binary > "$archive_dir/unstaged.patch" 2>/dev/null || true
+    rc=0
+    git -C "$wt" diff --cached --binary > "$archive_dir/staged.patch" 2>/dev/null || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        echo "    salvage FAILED: could not write staged.patch" >&2
+        failed=1
+    fi
+
+    rc=0
+    git -C "$wt" diff --binary > "$archive_dir/unstaged.patch" 2>/dev/null || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        echo "    salvage FAILED: could not write unstaged.patch" >&2
+        failed=1
+    fi
 
     # Copy untracked, non-ignored files — explicitly skip build caches even
     # if --exclude-standard somehow lets one through.
@@ -268,9 +309,22 @@ salvage_worktree() {
         local src="$wt/$rel"
         [[ -f "$src" ]] || continue
         local dest="$untracked_dir/$rel"
-        mkdir -p "$(dirname "$dest")"
-        cp -p "$src" "$dest" 2>/dev/null || true
+        rc=0
+        mkdir -p "$(dirname "$dest")" || rc=$?
+        if [[ "$rc" -ne 0 ]]; then
+            echo "    salvage FAILED: could not create dir for untracked/$rel" >&2
+            failed=1
+            continue
+        fi
+        rc=0
+        cp -p "$src" "$dest" 2>/dev/null || rc=$?
+        if [[ "$rc" -ne 0 ]]; then
+            echo "    salvage FAILED: could not copy untracked/$rel" >&2
+            failed=1
+        fi
     done < <(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null || true)
+
+    [[ "$failed" -eq 0 ]]
 }
 
 # ── Main reap loop ───────────────────────────────────────────────────────────
@@ -313,6 +367,33 @@ for idx in "${ORDER[@]}"; do
         continue
     fi
 
+    # Guard against destroying a KEPT (or not-yet-processed) nested worktree:
+    # re-derive nesting from the live registered-worktree list (WT_PATHS),
+    # not from in-loop removal decisions. Depth-first ordering only protects
+    # a child that is ITSELF a remove candidate (it's visited and removed
+    # first); it does nothing for a child that is KEPT (locked/open-PR/
+    # active) while its shallower parent is a remove candidate — removing
+    # the parent would physically sweep the still-present kept child off
+    # disk with no salvage. If any other registered worktree path is nested
+    # under $wt and still exists on disk, $wt must not be removed.
+    nested_child=""
+    for other in "${WT_PATHS[@]}"; do
+        [[ "$other" == "$wt" ]] && continue
+        case "$other" in
+            "$wt"/*)
+                if [[ -d "$other" ]]; then
+                    nested_child="$other"
+                    break
+                fi
+                ;;
+        esac
+    done
+    if [[ -n "$nested_child" ]]; then
+        echo "  KEEP $name (nested worktree still present: $nested_child — refusing to remove parent)"
+        kept=$((kept + 1))
+        continue
+    fi
+
     is_dirty=0
     if [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
         is_dirty=1
@@ -326,7 +407,11 @@ for idx in "${ORDER[@]}"; do
 
     if [[ "$APPLY" -eq 1 ]]; then
         if [[ "$is_dirty" -eq 1 ]]; then
-            salvage_worktree "$wt"
+            if ! salvage_worktree "$wt"; then
+                echo "  ABORT $name: salvage did not fully write — worktree KEPT, not removed" >&2
+                kept=$((kept + 1))
+                continue
+            fi
         fi
         git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
     fi
