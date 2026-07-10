@@ -84,6 +84,18 @@ impl LspServer {
         self.handle_did_change(Some(params))
     }
 
+    /// Convenience helper: apply a `didClose` for a document.
+    ///
+    /// Used by same-document TOCTOU regression tests (#3613) to simulate a
+    /// racing close between a navigation handler's up-front capture and its
+    /// later `documents_text_snapshot()` re-read.
+    pub fn test_apply_did_close(&self, uri: &str) -> Result<(), JsonRpcError> {
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+        });
+        self.handle_did_close(Some(params))
+    }
+
     /// Test-only helper that updates an open document snapshot without touching
     /// the workspace index.
     ///
@@ -380,6 +392,27 @@ impl LspServer {
     /// Returns [`JsonRpcError`] if params are invalid or document not found.
     pub fn test_handle_hover(&self, params: Option<Value>) -> Result<Option<Value>, JsonRpcError> {
         self.handle_hover(params)
+    }
+
+    /// Test-only entrypoint for LSP `textDocument/signatureHelp`.
+    ///
+    /// Exercises signature-help functionality in tests. Returns parameter
+    /// hints for the function call at the given position.
+    ///
+    /// # Parameters
+    /// - `params`: JSON-RPC params with `textDocument.uri` and `position`.
+    ///
+    /// # Returns
+    /// - `Ok(Some(signature_help))`: Signature information found.
+    /// - `Ok(None)`: No signature help available at position.
+    ///
+    /// # Errors
+    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    pub fn test_handle_signature_help(
+        &self,
+        params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_signature_help(params)
     }
 
     /// Test-only entrypoint for LSP `textDocument/codeAction`.
