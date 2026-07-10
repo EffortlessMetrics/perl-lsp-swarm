@@ -254,8 +254,19 @@ fn implementation_fallback_pins_captured_generation_under_racing_didchange() -> 
 /// Non-racing control: with no concurrent edit, both handlers must still
 /// resolve correctly -- proves the fix is behavior-identical when there is
 /// no gap to exploit.
+///
+/// Also takes `toctou_hook_lock()` even though it never arms the hook itself:
+/// `wait_at_same_doc_fallback_gap()` runs unconditionally on every call into
+/// `handle_type_definition`/`handle_implementation`, including this test's.
+/// Without the lock, this test could run concurrently (under the crate's
+/// `--test-threads=2` convention) with a racing test in the narrow window
+/// between that test arming the hook and its own handler thread reaching the
+/// gate -- stealing the armed hook meant for the other test and corrupting
+/// both. Serializing through the same lock closes that window.
 #[test]
 fn type_definition_and_implementation_resolve_normally_with_no_race() -> TestResult {
+    let _guard = toctou_hook_lock().lock().map_err(|_| "toctou hook lock poisoned")?;
+
     let server = fresh_server();
 
     let type_def_uri = "file:///no_race_type_definition.pl";
