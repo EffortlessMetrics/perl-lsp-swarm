@@ -31,10 +31,21 @@ Both are separate, necessary conditions. A PR is only review-converged when
 
 1. **No pending review requests.** `reviewRequests` is empty — nobody who
    was asked to review has failed to respond at all.
-2. **No stale reviews.** Every reviewer's *latest* review (`latestReviews`,
-   never the full historical `reviews` connection — earlier submissions are
-   superseded and don't count) has `commit.oid == headRefOid`. A reviewer
-   who approved three commits ago has not reviewed the current code.
+2. **No stale human reviews.** Every non-bot reviewer's *latest* review
+   (`latestReviews`, never the full historical `reviews` connection —
+   earlier submissions are superseded and don't count) has
+   `commit.oid == headRefOid`. A reviewer who approved three commits ago has
+   not reviewed the current code. **Bot-authored reviews are excluded from
+   this check** (author `__typename == "Bot"` — sourcery-ai, coderabbitai,
+   chatgpt-codex-connector, cubic-dev-ai, factory-droid, etc.): they're
+   unrequested auto-review apps, never appear in `reviewRequests`, aren't
+   required by branch protection, and don't reliably re-run on every push
+   (rate limits). A stale bot review is reported as **ADVISORY**, not
+   `BLOCK` — the same treatment as an outdated thread. This was found by
+   running the script against #3621's own PR: blocking on bot staleness
+   meant the PR could never converge again once any auto-review app fell
+   behind a push, without a human manually re-triggering it — the exact
+   over-block class this script exists to eliminate.
 3. **No active threads.** Every `reviewThreads` node with
    `isResolved == false && isOutdated == false` blocks convergence. Threads
    that are `isOutdated == true` (the diff hunk they commented on no longer

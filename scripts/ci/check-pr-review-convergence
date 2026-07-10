@@ -15,10 +15,17 @@
 # and `reviewDecision` does not surface that at all. A correct convergence
 # check must look at BOTH axes:
 #
-#   1. Reviewer completion at HEAD — every requested reviewer has a review
-#      whose `commit.oid` equals the PR's current `headRefOid`. Earlier
-#      reviews (submitted before the latest push) are superseded and do not
-#      count, no matter how recent their `state`.
+#   1. Reviewer completion at HEAD — every HUMAN reviewer's latest review has
+#      a `commit.oid` equal to the PR's current `headRefOid`. Earlier reviews
+#      (submitted before the latest push) are superseded and do not count, no
+#      matter how recent their `state`. Bot-authored reviews (author
+#      `__typename == "Bot"` — sourcery-ai, coderabbitai,
+#      chatgpt-codex-connector, cubic-dev-ai, factory-droid, etc.) are
+#      EXCLUDED from this blocking check: they're unrequested auto-review
+#      apps, never appear in `reviewRequests`, aren't required by branch
+#      protection, and don't reliably re-run on every push (rate limits). A
+#      stale bot review is reported ADVISORY, not BLOCK — see the #3621
+#      self-check incident below.
 #   2. Thread resolution — every review thread that is still ACTIVE (not
 #      resolved AND not outdated — see below) has been resolved for a real
 #      reason (fixed/refuted/superseded/accepted-with-follow-up).
@@ -27,6 +34,13 @@
 # pr-respond.md, ops-merge-batch.md, pr-responder.md, and ops.md, and drifted
 # across three separate review rounds (see PR #3621, which fixed #3598). This
 # script is the fix: ONE authority, everything else points at it.
+#
+# The bot-exclusion above was itself found by running this script against
+# #3621's own PR: five auto-review bots (none requested, all `Bot`-typed)
+# had commented on an earlier push, and treating their staleness as blocking
+# meant the PR could never converge again without a human re-triggering each
+# bot — the exact over-block class this script exists to eliminate, just one
+# axis over (bot review staleness instead of `reviews` vs `latestReviews`).
 #
 # ── ACTIVE vs outdated vs resolved threads ──────────────────────────────────
 #
@@ -60,10 +74,11 @@
 #
 # ── Exit codes ───────────────────────────────────────────────────────────────
 #
-#   0  CONVERGED — every requested reviewer has a review at the current HEAD
-#      SHA, and no ACTIVE thread remains unresolved. Merge-ready from a
-#      review-convergence standpoint (other gates — CI, labels — are
-#      separate and NOT checked by this script).
+#   0  CONVERGED — no pending review requests, every human reviewer's latest
+#      review is at the current HEAD SHA, and no ACTIVE thread remains
+#      unresolved. (Stale bot reviews do not block — see bot-exclusion note
+#      above.) Merge-ready from a review-convergence standpoint (other gates
+#      — CI, labels — are separate and NOT checked by this script).
 #   1  NOT CONVERGED — one or more blocking conditions found; reasons are
 #      printed to stderr, one per line, prefixed "BLOCK".
 #   2  USAGE / FETCH ERROR — bad arguments, `gh`/`jq` missing, or the GraphQL
@@ -74,14 +89,21 @@
 # stdout: a short human-readable summary line + a machine-readable JSON
 # object on the final line (for callers that want structured output):
 #   {"pr":N,"headRefOid":"...","converged":true|false,
-#    "pending_reviewers":[...],"stale_reviews":[...],
+#    "pending_reviewers":[...],"stale_reviews":[...],"stale_bot_reviews":[...],
 #    "active_threads":N,"outdated_threads":N,"resolved_threads":N}
+# ("stale_reviews" is human reviewers only — BLOCKING. "stale_bot_reviews" is
+# auto-review-app reviewers whose latest review predates HEAD — ADVISORY,
+# never blocking; see the bot-exclusion note above.)
 # stderr: BLOCK lines for anything that fails convergence; ADVISORY lines
 # for outdated threads that don't block but are worth a human glance.
 #
 set -euo pipefail
 
-PR="${1:?usage: $0 <pr-number> [owner/repo]}"
+if [[ $# -lt 1 ]]; then
+    echo "usage: $0 <pr-number> [owner/repo]" >&2
+    exit 2
+fi
+PR="$1"
 
 if ! command -v gh >/dev/null 2>&1; then
     echo "ERROR: gh CLI not found on PATH" >&2
@@ -159,7 +181,10 @@ EOF
 #    read via the REST-ish `gh pr view` for simplicity — reviewRequests over
 #    50 simultaneous requested reviewers is not a realistic case for this
 #    repo's review model) ─────────────────────────────────────────────────
-PR_META="$(gh pr view "$PR" --json headRefOid,reviewRequests)"
+if ! PR_META="$(gh pr view "$PR" --json headRefOid,reviewRequests 2>&1)"; then
+    echo "ERROR: could not fetch PR #$PR metadata: $PR_META" >&2
+    exit 2
+fi
 HEAD_REF_OID="$(printf '%s' "$PR_META" | jq -r '.headRefOid')"
 PENDING_REVIEWERS="$(printf '%s' "$PR_META" | jq -c '[.reviewRequests[]?.login // .reviewRequests[]?.name // empty]')"
 PENDING_REVIEWER_COUNT="$(printf '%s' "$PENDING_REVIEWERS" | jq 'length')"
@@ -173,11 +198,31 @@ fi
 #    This is deliberately `latestReviews`, not the full historical `reviews`
 #    connection: superseded reviews from before the current push must not
 #    count as "finished". ──────────────────────────────────────────────────
-LATEST_REVIEWS="$(paginate_pr_connection "latestReviews" "author { login } state commit { oid }")"
+#
+#    Bot-authored reviews (sourcery-ai, coderabbitai, chatgpt-codex-connector,
+#    cubic-dev-ai, factory-droid, etc.) are EXCLUDED from staleness blocking.
+#    These are unrequested auto-review apps — they never appear in
+#    `reviewRequests`, this repo's branch protection does not require their
+#    approval, and they don't reliably re-run on every push (rate limits).
+#    Blocking on their staleness means a PR can never converge once ANY
+#    auto-review bot's last run predates the latest push — the same
+#    over-block class this script exists to eliminate (see #3621 self-test:
+#    every push after a bot's last comment permanently fails convergence).
+#    A stale bot review is reported as ADVISORY, same treatment as an
+#    outdated thread: visible, not blocking. Only non-bot (human) reviewers'
+#    staleness blocks convergence.
+LATEST_REVIEWS="$(paginate_pr_connection "latestReviews" "author { login __typename } state commit { oid }")"
 
-STALE_REVIEWS="$(printf '%s' "$LATEST_REVIEWS" | jq -c --arg head "$HEAD_REF_OID" \
+HUMAN_REVIEWS="$(printf '%s' "$LATEST_REVIEWS" | jq -c '[.[] | select((.author.__typename // "User") != "Bot")]')"
+BOT_REVIEWS="$(printf '%s' "$LATEST_REVIEWS" | jq -c '[.[] | select(.author.__typename == "Bot")]')"
+
+STALE_REVIEWS="$(printf '%s' "$HUMAN_REVIEWS" | jq -c --arg head "$HEAD_REF_OID" \
     '[.[] | select(.commit.oid != $head) | {login: .author.login, reviewedAt: .commit.oid, state: .state}]')"
 STALE_REVIEW_COUNT="$(printf '%s' "$STALE_REVIEWS" | jq 'length')"
+
+STALE_BOT_REVIEWS="$(printf '%s' "$BOT_REVIEWS" | jq -c --arg head "$HEAD_REF_OID" \
+    '[.[] | select(.commit.oid != $head) | {login: .author.login, reviewedAt: .commit.oid, state: .state}]')"
+STALE_BOT_REVIEW_COUNT="$(printf '%s' "$STALE_BOT_REVIEWS" | jq 'length')"
 
 # ── Fetch reviewThreads (paginated) — classify ACTIVE vs outdated vs
 #    resolved. Only ACTIVE (isResolved==false && isOutdated==false) blocks
@@ -233,10 +278,18 @@ if [[ "$OUTDATED_THREAD_COUNT" -gt 0 ]]; then
     done < <(printf '%s' "$OUTDATED_UNRESOLVED_THREADS" | jq -c '.[]')
 fi
 
+if [[ "$STALE_BOT_REVIEW_COUNT" -gt 0 ]]; then
+    while IFS= read -r row; do
+        login="$(printf '%s' "$row" | jq -r '.login')"
+        state="$(printf '%s' "$row" | jq -r '.state')"
+        echo "ADVISORY PR #$PR: bot reviewer '$login's latest review ($state) predates the current HEAD — not blocking (auto-review bots aren't required reviewers and don't reliably re-run per push)" >&2
+    done < <(printf '%s' "$STALE_BOT_REVIEWS" | jq -c '.[]')
+fi
+
 # ── Report ───────────────────────────────────────────────────────────────────
 
 if [[ "$CONVERGED" == "true" ]]; then
-    echo "OK   PR #$PR: review convergence achieved at $HEAD_REF_OID (0 pending reviewers, 0 stale reviews, $ACTIVE_THREAD_COUNT active threads, $RESOLVED_THREAD_COUNT resolved, $OUTDATED_THREAD_COUNT outdated-unresolved)"
+    echo "OK   PR #$PR: review convergence achieved at $HEAD_REF_OID (0 pending reviewers, 0 stale human reviews, $ACTIVE_THREAD_COUNT active threads, $RESOLVED_THREAD_COUNT resolved, $OUTDATED_THREAD_COUNT outdated-unresolved, $STALE_BOT_REVIEW_COUNT stale-bot-advisory)"
 else
     echo "FAIL PR #$PR: review convergence NOT achieved at $HEAD_REF_OID — see BLOCK lines above" >&2
 fi
@@ -247,10 +300,11 @@ jq -n \
     --argjson converged "$CONVERGED" \
     --argjson pending "$PENDING_REVIEWERS" \
     --argjson stale "$STALE_REVIEWS" \
+    --argjson staleBot "$STALE_BOT_REVIEWS" \
     --argjson active "$ACTIVE_THREAD_COUNT" \
     --argjson outdated "$OUTDATED_THREAD_COUNT" \
     --argjson resolved "$RESOLVED_THREAD_COUNT" \
-    '{pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, stale_reviews: $stale, active_threads: $active, outdated_threads: $outdated, resolved_threads: $resolved}'
+    '{pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, stale_reviews: $stale, stale_bot_reviews: $staleBot, active_threads: $active, outdated_threads: $outdated, resolved_threads: $resolved}'
 
 if [[ "$CONVERGED" == "true" ]]; then
     exit 0
