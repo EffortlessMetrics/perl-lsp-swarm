@@ -36,9 +36,10 @@ pub enum MilestoneStatus {
 pub fn parse_status(raw: &str) -> MilestoneStatus {
     match raw {
         "completed" => MilestoneStatus::Completed,
-        "in_progress" | "active" => MilestoneStatus::InProgress,
-        "pending" | "ready" | "planned" => MilestoneStatus::Pending,
+        "in_progress" => MilestoneStatus::InProgress,
+        "pending" => MilestoneStatus::Pending,
         "deferred" => MilestoneStatus::Deferred,
+        "blocked" => MilestoneStatus::Blocked,
         _ => MilestoneStatus::Blocked,
     }
 }
@@ -158,17 +159,58 @@ pub fn select_next(snapshot: &SelectionSnapshot) -> SelectionDecision {
         }]);
     };
 
-    let in_progress_issues: Vec<u64> = snapshot
+    let in_progress_candidates: Vec<&MilestoneCandidate> = snapshot
         .candidates
         .iter()
         .filter(|c| c.status == MilestoneStatus::InProgress)
-        .filter_map(|c| c.issue)
         .collect();
+    
+    // Check for blocking PRs by issue number or milestone ID
     let blocking_prs: Vec<&LiveOpenPr> = snapshot
         .live_open_prs
         .iter()
-        .filter(|pr| in_progress_issues.iter().any(|issue| references_issue(pr, *issue)))
+        .filter(|pr| {
+            in_progress_candidates.iter().any(|c| {
+                if let Some(issue) = c.issue {
+                    references_issue(pr, issue)
+                } else {
+                    // Fallback to matching milestone ID in PR title/body
+                    let id_pattern = format!("({})", c.id);
+                    pr.title.contains(&id_pattern) || pr.body.contains(&id_pattern)
+                }
+            })
+        })
         .collect();
+    
+    // Also check pending milestones against live PRs to prevent duplicate work
+    let pending_issues: Vec<u64> = snapshot
+        .candidates
+        .iter()
+        .filter(|c| c.status == MilestoneStatus::Pending)
+        .filter_map(|c| c.issue)
+        .collect();
+    let pending_blocking_prs: Vec<&LiveOpenPr> = snapshot
+        .live_open_prs
+        .iter()
+        .filter(|pr| pending_issues.iter().any(|issue| references_issue(pr, *issue)))
+        .collect();
+    
+    if !pending_blocking_prs.is_empty() {
+        return SelectionDecision::Blocked(
+            pending_blocking_prs
+                .iter()
+                .map(|pr| SelectionBlocker {
+                    kind: "active_work_must_be_dispositioned".to_owned(),
+                    detail: format!(
+                        "PR #{} ({:?}) is already open for pending work in program {program_id:?}; disposition it before selecting a duplicate",
+                        pr.number, pr.title
+                    ),
+                    pr_number: Some(pr.number),
+                    pr_url: Some(pr.url.clone()),
+                })
+                .collect(),
+        );
+    }
     if !blocking_prs.is_empty() {
         return SelectionDecision::Blocked(
             blocking_prs
@@ -261,7 +303,13 @@ fn ambiguity_detail(snapshot: &SelectionSnapshot) -> String {
 
 fn references_issue(pr: &LiveOpenPr, issue: u64) -> bool {
     let needle = format!("#{issue}");
-    pr.title.contains(&needle) || pr.body.contains(&needle)
+    let is_match = |text: &str| {
+        text.match_indices(&needle).any(|(idx, _)| {
+            let after = idx + needle.len();
+            after >= text.len() || !text.as_bytes()[after].is_ascii_digit()
+        })
+    };
+    is_match(&pr.title) || is_match(&pr.body)
 }
 
 #[cfg(test)]

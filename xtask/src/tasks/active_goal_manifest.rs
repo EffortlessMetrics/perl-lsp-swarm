@@ -287,6 +287,26 @@ fn validate_default_program(
         return;
     }
 
+    if default_program.contains('/') {
+        violations.push(format!(
+            "{ACTIVE_GOAL_PATH}: default_program must be a program id, got {default_program:?}"
+        ));
+        return;
+    }
+    // Windows path separator check
+    if default_program.contains("\\") {
+        violations.push(format!(
+            "{ACTIVE_GOAL_PATH}: default_program must be a program id, got {default_program:?}"
+        ));
+        return;
+    }
+    if default_program.contains(':') || default_program.contains("..") {
+        violations.push(format!(
+            "{ACTIVE_GOAL_PATH}: default_program must be a program id, got {default_program:?}"
+        ));
+        return;
+    }
+
     let manifest_path = goals_manifest::program_manifest_path(default_program);
     if !root.join(&manifest_path).exists() {
         violations.push(format!(
@@ -295,8 +315,8 @@ fn validate_default_program(
         return;
     }
 
-    match fs::read_to_string(root.join(&manifest_path)) {
-        Ok(text) if text.contains("[[milestone]]") => {
+    match load_table(root, &manifest_path) {
+        Ok(table) if table.contains_key("milestone") => {
             match goals_manifest::load_milestone_ledger(root, &manifest_path) {
                 Ok(ledger) => {
                     violations.extend(goals_manifest::validate_milestone_ledger(&ledger));
