@@ -1303,7 +1303,8 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "compile:test": "tsc -p ./tsconfig.test.json",
+    "clean:test": "node -e \"require('fs').rmSync('out-test',{recursive:true,force:true})\"",
+    "compile:test": "npm run clean:test && tsc -p ./tsconfig.test.json",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext .ts",
     "test": "npm run compile:test && jest --verbose",

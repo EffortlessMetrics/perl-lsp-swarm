@@ -11,6 +11,14 @@
  * version. No Babel / SWC / esbuild is introduced: `transform: {}` disables all
  * transformation and Jest executes the tsc output as-is.
  *
+ * Discovery parity: ts-jest discovered live .ts sources, so a renamed/deleted
+ * test vanished from the run immediately. Here Jest discovers emitted .js in
+ * out-test/, and tsc never prunes stale outputs — so `compile:test` runs
+ * `clean:test` (rm -rf out-test) before every emit. That keeps discovery keyed
+ * to the current sources: a removed/renamed .ts leaves no orphan .js ghost suite
+ * behind for Jest to keep running locally. (CI is already fresh — out-test/ is
+ * gitignored and rebuilt from a clean `npm ci` checkout.)
+ *
  * Source maps: tsconfig.test.json emits `inlineSourceMap` + `inlineSources`, so
  * stack traces and coverage map back to the original .ts (verified: a failing
  * assertion reports `src/test/<file>.ts:line:col`).
