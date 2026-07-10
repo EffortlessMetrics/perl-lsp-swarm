@@ -41,6 +41,8 @@ echo "Setting up Getting Started..."
 # editor-setup.md is a committed canonical-pointer stub (see #3642) — do not
 # overwrite it with the full canonical doc, or the published book drifts back
 # to a copy that goes stale independently of docs/how-to/EDITOR_SETUP.md.
+# Copy the canonical source to reference/ for in-book linking from the stub.
+copy_doc "$DOCS_DIR/how-to/EDITOR_SETUP.md" "$BOOK_SRC/reference/editor-setup-canonical.md"
 copy_doc "$DOCS_DIR/reference/CONFIG.md" "$BOOK_SRC/getting-started/configuration.md"
 copy_doc "$DOCS_DIR/project/ORIENTATION.md" "$BOOK_SRC/getting-started/first-steps.md"
 
