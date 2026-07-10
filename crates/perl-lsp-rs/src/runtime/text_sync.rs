@@ -1049,12 +1049,16 @@ impl LspServer {
     /// below actually running, a newer edit can land and supersede
     /// `ticket.generation`. Every mutating side effect therefore commits
     /// through [`Self::commit_parse_effect_if_current`] -- the single
-    /// sanctioned oracle that re-validates freshness AT THE MOMENT OF
-    /// COMMIT, not merely once at this method's entry. This makes "a side
-    /// effect forgot to re-check freshness" structurally impossible to
-    /// introduce by accident: there is no other sanctioned way to write
+    /// sanctioned oracle that re-validates freshness immediately before
+    /// commit, not merely once at this method's entry. This makes "a side
+    /// effect forgot to re-check freshness at all" structurally impossible
+    /// to introduce by accident: there is no other sanctioned way to write
     /// parse-derived state, so a future side effect either goes through the
-    /// oracle or has no path to commit at all.
+    /// oracle or has no path to commit at all. It does NOT make the
+    /// check-then-commit sequence atomic -- see the TOCTOU note on
+    /// [`document_generation_still_current`] for the residual (nanosecond-
+    /// scale, `documents.lock()`-released-before-`commit()`-runs) window a
+    /// newer edit can still land in.
     pub(crate) fn run_post_parse_side_effects(&self, ticket: parse_worker::PublishedParseTicket) {
         let ast_arc = ticket.snapshot.ast().cloned();
 
@@ -1184,13 +1188,25 @@ impl LspServer {
     /// symbol-cache updates, semantic-fact publication, any
     /// freshness-claiming trace -- routes through this function rather than
     /// hand-rolling its own generation re-check. Re-validates document
-    /// instance identity + generation freshness AT THE MOMENT OF COMMIT (not
-    /// merely when the ticket was constructed, and not merely once at some
-    /// earlier "entry point") via [`document_generation_still_current`].
+    /// instance identity + generation freshness immediately before `commit`
+    /// runs (not merely when the ticket was constructed, and not merely once
+    /// at some earlier "entry point") via [`document_generation_still_current`].
     /// Runs `commit` and returns `Some` only if `ticket`'s
-    /// `(document_instance, generation)` still matches the live document at
-    /// the instant this is called; otherwise the effect is dropped entirely
+    /// `(document_instance, generation)` still matched the live document at
+    /// the instant the check ran; otherwise the effect is dropped entirely
     /// and this returns `None`.
+    ///
+    /// NOT atomic with `commit` itself: the check takes `documents.lock()`,
+    /// reads, and releases it before `commit` runs (`commit` closures do
+    /// I/O -- notifications, index writes -- that must not run while holding
+    /// the documents lock, or every side effect would serialize behind it
+    /// and defeat the point of moving parse work off that lock). A newer
+    /// edit can therefore still land in the gap between the check passing
+    /// and `commit` actually writing. In practice this window is
+    /// nanoseconds wide (no `.await`, no I/O, no blocking call between the
+    /// check returning and `commit()` being invoked) and is not eliminated,
+    /// only made vanishingly unlikely; a caller that needs a hard guarantee
+    /// must not rely on this function for it.
     pub(crate) fn commit_parse_effect_if_current<T>(
         &self,
         ticket: &parse_worker::PublishedParseTicket,
