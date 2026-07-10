@@ -111,11 +111,15 @@ Exactly two branch-protection required checks (authoritative:
 
 (`Codecov / Patch 95`, `CI Gate (Merge-Blocking)`, `PR Smoke` are advisory — not
 required.) Merge in batches of 3 (CI cancellation cascade); run
-`just cpan-corpus-ratchet` after parser merges. Local preflight, timing, and the
-Codecov false-low recipe: [CI_GATE_PLAYBOOK.md](docs/reference/CI_GATE_PLAYBOOK.md).
-Batch-merge mechanics and same-file-conflict ordering:
+`just cpan-corpus-ratchet` after parser merges — batch-of-3 mechanics:
 [.claude/agents/ops.md](.claude/agents/ops.md) and
-[PROCESS_LESSONS.md §3](docs/reference/PROCESS_LESSONS.md).
+[PROCESS_LESSONS.md §3](docs/reference/PROCESS_LESSONS.md). **Before merging a batch,
+compare changed-file lists (`gh pr diff --name-only`); when two PRs in the batch touch
+the same file, merge the older/smaller one first and expect the other to need a
+conflict-resolution merge afterward — don't merge same-file PRs back-to-back blind**
+(observed 2026-07-04: #3397 and #3381 both touched `runtime/scheduler.rs`; wrong order
+created an avoidable conflict). Local preflight, timing, and the Codecov false-low
+recipe: [CI_GATE_PLAYBOOK.md](docs/reference/CI_GATE_PLAYBOOK.md).
 
 ## Quick reference
 

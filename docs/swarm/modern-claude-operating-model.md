@@ -245,6 +245,25 @@ other label (Sign-off, State, Routing) lives in
 
 ---
 
+## Worktree / agent operational gotchas
+
+Field-learned failures specific to running agents in git worktrees. None of these
+change product behavior — they are how to avoid wasting an agent's turn on
+infrastructure friction.
+
+- **`gh pr checkout` can fail with exit 128 inside a worktree.** Use
+  `git fetch origin pull/<N>/head:<branch>` instead to check out a PR's branch in a
+  worktree.
+- **Run cargo builds/tests in the foreground with an explicit long timeout.** A
+  workflow/background agent that ends its turn waiting on a background build loses the
+  completion notification and its work along with it.
+- **If a long build is killed by a tool timeout, re-run the same command.**
+  Incremental compilation resumes where it stopped — the prior work is not lost.
+- **Under concurrent worktree builds, `sccache` can fail with a bare exit-1 on
+  unrelated crates.** Set `RUSTC_WRAPPER=""` for agent builds to avoid this.
+
+---
+
 ## See also
 
 - [docs/reference/PIPELINE_GATES.md](../reference/PIPELINE_GATES.md) — the 7-gate
