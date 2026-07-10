@@ -437,6 +437,21 @@ fn signature_help_never_answers_from_stale_ast_with_matching_name_during_pending
          signature from the N-1 AST just because the name still matches; got: {sig:?}"
     );
 
+    // Post-publish: once the gap-closing snapshot is published, the fresh
+    // 2-parameter `calc` signature must resolve -- proving the honest "no
+    // answer" above was a gap-time policy, not a provider that can never
+    // find `calc` at all.
+    server.test_publish_parse_for_current_generation(uri)?;
+    let sig_fresh = server.test_handle_signature_help(Some(json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": 1, "character": 5 }
+    })))?;
+    assert!(
+        json_contains(&sig_fresh, "calc"),
+        "post-publish: signature help must resolve the fresh `calc` signature \
+         once the generation-1 snapshot is current; got: {sig_fresh:?}"
+    );
+
     Ok(())
 }
 

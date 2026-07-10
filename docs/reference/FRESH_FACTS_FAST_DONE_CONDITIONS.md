@@ -27,15 +27,19 @@ be closed without re-researching the substrate.
 > §3a, §3b, §4, §5, §6, and the worker-metrics assertions in §8** — describes
 > that branch, not a present-tense inventory of `origin/main`. It is an accurate
 > *landing plan* for #3396/#3618, not a claim that these tests run today outside
-> that branch. **§7 (provider honesty canaries, this PR's own contribution) and
-> the base `ux_neovim_ranged_typing_medium_file_receipt` test in §8 (minus the
-> worker-specific fields) are the only content in this document that is actually
-> on `origin/main` today** — verified directly: `DocumentState::current_parsed` /
-> `latest_parsed` / `publish_parsed_if_current` (`document.rs:450/429/469`) and
+> that branch. **§7 (provider honesty canaries) is added BY THIS PR** — it lives
+> on this PR's branch (`test/done-condition-canary-gaps`) and becomes an
+> `origin/main` fact only once this PR merges, not before; do not read "COVERED"
+> in §7/§7a/§7b as an existing-on-`main`-today claim while this PR is still open.
+> What genuinely predates this PR **and is on `origin/main` today** is the
+> substrate §7 exercises: `DocumentState::current_parsed` / `latest_parsed` /
+> `publish_parsed_if_current` (`document.rs:450/429/469`) and
 > `test_apply_text_change_without_reparse` / `test_publish_parse_for_current_generation`
-> (`test_api.rs:161/201`) all exist on `origin/main` at the cited lines and are
-> what §7's tests exercise. Re-verify this banner's SHAs before trusting any
-> "COVERED" verdict below as a main-branch fact rather than a branch-pending one.
+> (`test_api.rs:161/201`). The base `ux_neovim_ranged_typing_medium_file_receipt`
+> test in §8 (minus the worker-specific fields) also predates this PR and is on
+> `main` today. Re-verify this banner's SHAs, and this PR's merge state, before
+> trusting any "COVERED" verdict below as a main-branch fact rather than a
+> branch-pending one.
 
 ---
 
@@ -204,42 +208,23 @@ unproven either way. This PR (#3649) does not depend on, verify, or take
 credit for that test; it is cited here only so the next reader of #3618 knows
 to re-assess this section precisely (not just "closed?") once that PR merges.
 
-**Test design to add (deterministic, no sleeps):**
+**Two deterministic regression tests are still needed** (drain-on-shutdown;
+self-join-from-callback-thread) to close this gap — tracked for design and
+implementation via #3618, not sketched here. A prior revision of this section
+proposed a specific self-join test design; it was removed after review found
+the sketch could not actually reproduce the callback-thread-holds-the-last-ref
+scenario as written (the side-effect barrier pauses *before* `on_published`
+runs, i.e. before `Weak::upgrade()` — a real witness needs the barrier/handshake
+placed *inside* the callback, after a successful `upgrade()`, so the external
+strong reference can be dropped while that callback is still holding its own).
+This is exactly the kind of prescriptive detail a done-condition **contract**
+doc shouldn't carry speculatively — the actual test belongs in #3618, reviewed
+against the real code at the time it's written, not pre-designed here against
+a moving target.
 
-*Drain-on-shutdown.* Construct a `ParseWorker` with an `on_published` counting
-stub. Arm the pre-publish `test_barrier` for `(uri_a, 1)`. Enqueue gen-1 jobs for
-several *distinct* URIs (`uri_a`..`uri_d`) so some sit in `ready` behind the
-paused one. `wait_until_paused()`. Release the barrier, then immediately `drop`
-the worker. Assert (via a channel the callback sends on) that every enqueued URI
-either published or was cleanly abandoned — no hang, and `jobs_started +
-jobs_rejected_stale + <drained>` accounts for all enqueues. The join itself
-returning is the liveness proof; wrap the `drop` in a watchdog thread that fails
-the test if `drop` hasn't returned within `TEST_TIMEOUT` (channel recv with
-timeout — deterministic, bounded, no bare sleep).
-
-*Self-join guard.* Build `let server = Arc::new(LspServer::new());
-server.install_default_parse_worker();`. Drive one real `didChange` so a worker
-thread will invoke `on_published` (which `upgrade()`s the `Weak<LspServer>`
-captured at `runtime/mod.rs:1192`). Arm the side-effect barrier,
-`wait_until_paused`, then drop the test's own last strong `Arc<LspServer>`
-**and** release the barrier so the *worker thread* holds the final
-`upgrade()` temp and drops it — cascading `LspServer::drop` →
-`ParseWorker::drop` on that worker thread. Assert the process does not deadlock:
-run the body on a spawned thread and `join` it with a bounded channel/timeout;
-a timeout is the failing signal. (This is the scenario `ParseWorker::drop`'s
-unconditional join loop, `parse_worker.rs:752`–`759`, does **not** guard
-against — see the Correction above; it deserves an executable witness from
-inside a worker thread's own callback, not just the external-thread drop PR
-#3618 currently has.)
-
-**Feature-gate / run.** Drain test: inline `#[cfg(test)]` in `parse_worker.rs`.
-Self-join test: `crates/perl-lsp-rs/tests/` behind
-`#![cfg(feature = "expose_lsp_test_api")]` (needs `install_default_parse_worker`
-+ `Arc<LspServer>` test API). Run:
-`cargo test -p perl-lsp-rs --features expose_lsp_test_api --test <name> -- --nocapture`.
-
-**Receipt.** `jobs_panicked` (3a, existing); for 3b, a bounded-timeout "drop
-returned" boolean the test asserts — the absence of a hang IS the receipt.
+**Receipt.** `jobs_panicked` (3a, existing); for 3b, once written: a
+bounded-timeout "drop returned" boolean the test asserts — the absence of a
+hang IS the receipt.
 
 ---
 
@@ -357,6 +342,13 @@ side-effect log.
 
 ## 7. Provider honesty canaries — every user-facing provider stays honest through the gap
 
+**🆕 Added by this PR (#3649) — on this PR's branch, not yet on `origin/main`.**
+The substrate this section exercises (`DocumentState::current_parsed` /
+`latest_parsed`, the `test_apply_text_change_without_reparse` /
+`test_publish_parse_for_current_generation` helpers) predates this PR and is
+on `main` today; the tests themselves (§7, §7a, §7b) are this PR's own
+contribution and become a main-branch fact only once this PR merges.
+
 **Invariant.** While `current_parsed()` is `None` (text generation ran ahead of
 the last published snapshot), NO provider may present a **stale** fact (the
 superseded identifier) or an **unearned fresh** fact (a claim about the
@@ -369,7 +361,7 @@ rather than `latest_parsed()`; the gap is forced by the #3589 helpers
 `test_apply_text_change_without_reparse` / `test_publish_parse_for_current_generation`,
 and driven for real by the worker's pre-publish `test_barrier`.
 
-**Existing coverage — COVERED for 9 providers (deterministic), synthetic + real.**
+**Existing coverage — COVERED for 10 providers (deterministic), synthetic + real.**
 File: `crates/perl-lsp-rs/tests/pending_parse_provider_freshness_tests.rs`.
 
 | Provider | Gap policy | Test | Line |
@@ -423,7 +415,10 @@ closes that hole with a same-named, signature-changing fixture (`sub calc {}`
 -> `sub calc($x, $y) {}`) where a stale-AST answer is name-matchable but
 produces a distinguishable wrong label (`"sub calc"`, 0 params); this test
 was confirmed to fail under the same mutation and pass on the real
-`current_parsed()`-gated implementation.
+`current_parsed()`-gated implementation. It also asserts a post-publish
+positive resolve (the fresh 2-parameter `calc` signature appears once
+`test_publish_parse_for_current_generation` closes the gap), mirroring the
+headline canary's gap/post-publish asymmetry.
 
 **7b. Diagnostics honesty during the gap — COVERED (closed for document-pull).**
 The internal side-effect staleness was already proven (§5), and
@@ -524,7 +519,9 @@ Each done-condition tracked on the Implemented (production seam exists) · Cover
 column — verified 2026-07-10 against `origin/main` @ `c93911bf0` and PR #3618
 (open, unmerged) @ `209b9cf56`. A row can be "Covered" and still ❌ on `main`:
 that means the proof is real and passing on the cited branch, not that it runs
-in CI today outside that branch.
+in CI today outside that branch. "🆕 this PR" means the row's proof lives on
+*this* PR's branch (`test/done-condition-canary-gaps`, also open/unmerged) and
+becomes a main-branch fact only once this PR merges — not before.
 
 | # | Done-condition | Implemented | Covered (deterministic, runs) | On `main`? | Gap |
 |---|----------------|:-----------:|:-----------------------------:|:----------:|-----|
@@ -534,10 +531,10 @@ in CI today outside that branch.
 | 3b | Shutdown drain + self-join (#3618) | ⚠️ Weak-downgrade breaks the cycle (`runtime/mod.rs:1192`); `ParseWorker::drop` itself has no self-join guard | ⚠️ implicit only + one external-thread-drop test (`209b9cf56`) that doesn't reproduce the callback-thread case | ❌ PR #3618 | **GAP** — no dedicated drain / self-join-from-callback-thread regression test; see §3b Correction |
 | 4 | Cross-document progress | ✅ | ✅ `one_document_paused_does_not_block_another…` | ❌ PR #3618 | — |
 | 5 | Edit-during-analysis (stale side-effect drop) | ✅ | ✅ 3 layers (worker barrier + oracle + real-worker) | ❌ PR #3618 | — |
-| 6 | Stale-effect rejection (publish gate) | ✅ | ✅ `stale_generation_is_rejected…`, `rejected_publish_never_invokes…` (PR #3618); unit gate `publish_parsed_if_current_*` | ⚠️ unit gate only | — |
-| 7 | Provider honesty canaries (9 providers) | ✅ | ✅ per-provider + synthetic cross-provider canary | ✅ on `main` (this PR) | — |
-| 7a | — signature-help canary | ✅ (reads `current_parsed`) | ✅ `signature_help_no_stale_claim_during_pending_parse_gap` + `signature_help_never_answers_from_stale_ast_with_matching_name_during_pending_parse_gap` + headline canary assertions | ✅ on `main` (this PR) | — |
-| 7b | — diagnostics honesty-through-gap canary | ✅ | ✅ `pull_document_diagnostic_does_not_report_a_fixed_syntax_error_as_current_during_pending_parse_gap` (document-pull); workspace-pull already covered | ✅ on `main` (this PR) | — |
+| 6 | Stale-effect rejection (publish gate) | ✅ | ✅ `stale_generation_is_rejected…`, `rejected_publish_never_invokes…` (PR #3618); unit gate `publish_parsed_if_current_*` | ⚠️ partial — unit gate on `main`, worker-level tests PR #3618 only | — |
+| 7 | Provider honesty canaries (10 providers) | ✅ | ✅ per-provider + synthetic cross-provider canary | 🆕 this PR | — |
+| 7a | — signature-help canary | ✅ (reads `current_parsed`) | ✅ `signature_help_no_stale_claim_during_pending_parse_gap` + `signature_help_never_answers_from_stale_ast_with_matching_name_during_pending_parse_gap` + headline canary assertions | 🆕 this PR | — |
+| 7b | — diagnostics honesty-through-gap canary | ✅ | ✅ `pull_document_diagnostic_does_not_report_a_fixed_syntax_error_as_current_during_pending_parse_gap` (document-pull); workspace-pull already covered | 🆕 this PR | — |
 | — | — real-async cross-provider canary (`…_real_async_worker`) | ✅ (needs installed `ParseWorker`) | ✅ | ❌ PR #3618 | — |
 | 8 | Neovim receipts (no full-parse/parent-map in didChange) | ✅ | ✅ `ux_neovim_ranged_typing_medium_file_receipt` (worker-shape assertions) | ❌ PR #3618 (same-named test exists on `main` today but asserts a *different*, still-synchronous invariant — see §8 Correction) | — |
 
@@ -572,16 +569,23 @@ writing.
    watchdog, run from *inside* a worker thread's own `on_published`
    invocation). Tracked for closure via #3618.
 
-§7a and §7b (signature-help and diagnostics honesty-through-gap canaries) were
-closed by the PR that landed this revision of the document — see §7 for the new
-test names and receipts. **These are the only rows in this checklist that are
-actually on `origin/main` today** (along with §7's base coverage and the older,
-differently-scoped `ux_neovim_ranged_typing_medium_file_receipt` already on
-`main`).
+§7a and §7b (signature-help and diagnostics honesty-through-gap canaries) are
+closed **by this PR** — see §7 for the new test names and receipts. They are
+not yet an `origin/main` fact while this PR is open; they become one on merge.
+What is already on `origin/main` today, independent of this PR landing, is
+narrower: the `document.rs` freshness primitives (§0, §6's unit-level gate)
+and the pre-existing (differently-scoped) `ux_neovim_ranged_typing_medium_file_receipt`
+test discussed in §8's Correction. §6 is **partial** on `main` today — its
+`document.rs` unit-level gate (`publish_parsed_if_current_*`) is there now,
+but its worker-level tests (`stale_generation_is_rejected_latest_generation_publishes`,
+`rejected_publish_never_invokes_the_side_effect_callback`) are not; do not
+read §6 as either "fully on main" or "fully branch-only."
 
 Conditions 1, 2, 3a, 4, 5 (worker layer), 6 (worker layer), and the
 worker-shape half of 8 are **fully and deterministically covered on PR #3618**
 — not yet a present-tense fact about `origin/main`. Once #3618 merges, those
-rows become main-branch facts and this document's per-section "not on `main`"
-notes should be removed (or re-verified and left in place if #3618 lands via
-squash/rebase with different line numbers — re-grep first).
+rows become main-branch facts. Once *this* PR (#3649) merges, §7/§7a/§7b
+become main-branch facts on their own, independent timeline. This document's
+per-section "not on `main`" / "added by this PR" notes should be revisited
+against whichever of the two has landed (or re-verified and left in place if
+either lands via squash/rebase with different line numbers — re-grep first).
