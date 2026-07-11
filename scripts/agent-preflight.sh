@@ -8,16 +8,21 @@
 #   2 — worktree issue (not running in an isolated git worktree)
 #   3 — conflict issue (unresolved merge conflicts present)
 #   4 — cwd issue (running from the main repo root, not a worktree path)
+#   5 — CARGO_TARGET_DIR is set (defeats automatic per-worktree isolation)
 #   6 — stash issue (shared stash has entries — cross-contamination risk)
 #
 # Usage:
 #   bash scripts/agent-preflight.sh
 #
-# Check 5 confirms target-dir isolation. Cargo's default (unconfigured)
-# target-dir resolves per-worktree (issue #3854) — agents must NOT export
-# CARGO_TARGET_DIR. If it's already set, that's a leftover to investigate
-# (usually a stale shell-profile export from a prior session/worktree), not
-# something to leave in place.
+# Check 5 ENFORCES target-dir isolation (issue #3854). Cargo's default
+# (unconfigured) target-dir already resolves per-worktree — agents must NOT
+# export CARGO_TARGET_DIR. This check FAILS (non-zero exit) when the
+# variable is set: a stale shell-profile export from a prior session or a
+# different worktree/branch silently overrides the correct per-worktree
+# default for every subsequently-sourced shell, redirecting builds to the
+# wrong worktree (the "stale-binary trap"). There is no legitimate reason
+# for an agent to set it under the current convention — unset it and rely
+# on the default.
 
 set -uo pipefail
 
@@ -110,15 +115,20 @@ fi
 # step (issue #3854). A stray CARGO_TARGET_DIR in the environment (usually a
 # stale `export` left in a shell profile from a prior session or a different
 # worktree/branch) silently overrides that per-worktree default for every
-# subsequently-sourced shell — the "stale-binary trap." Do not export it.
+# subsequently-sourced shell — the "stale-binary trap." This check FAILS if
+# it's set: unsetting it (not documenting around it) is the enforcement
+# point.
 
 if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
-    ok "CARGO_TARGET_DIR already set: $CARGO_TARGET_DIR"
-    echo "    This overrides cargo's per-worktree default. If this came from a"
-    echo "    shell profile (~/.bashrc, ~/.zshrc), it may be a stale leftover"
-    echo "    from another worktree/branch — verify it, don't assume it's safe."
+    err "CARGO_TARGET_DIR is set (\"$CARGO_TARGET_DIR\") — unset it; cargo's default is already per-worktree isolated and a stale export redirects builds to the wrong worktree (see WORKTREE_PROTOCOL.md / #3854)."
+    echo "    Fix: unset CARGO_TARGET_DIR"
+    echo "    If this came from a shell profile (~/.bashrc, ~/.zshrc), remove that"
+    echo "    line — it is a leftover from another worktree/branch/session, not a"
+    echo "    legitimate setting under the current convention."
+    TARGET_DIR_OK=false
 else
     ok "CARGO_TARGET_DIR is unset — cargo will use this worktree's own target/ (isolation is automatic)"
+    TARGET_DIR_OK=true
 fi
 
 # ── Check 6: No git stash entries (shared across worktrees) ──────────────────
@@ -173,6 +183,10 @@ fi
 
 if [[ "$CWD_OK" == false ]]; then
     exit 4
+fi
+
+if [[ "$TARGET_DIR_OK" == false ]]; then
+    exit 5
 fi
 
 if [[ "$STASH_OK" == false ]]; then

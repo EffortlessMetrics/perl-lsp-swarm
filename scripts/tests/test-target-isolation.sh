@@ -25,11 +25,19 @@
 #
 # This test proves the ACTUAL mechanism (cargo's default, unconfigured
 # per-worktree target-dir) by creating two throwaway worktrees the way agents
-# actually get them (`git worktree add --detach <tmp> origin/main`, mirroring
+# actually get them (`git worktree add --detach <tmp> <sha>`, mirroring
 # harness `isolation: worktree` behavior), and — with CARGO_TARGET_DIR unset —
 # asserting `cargo metadata --no-deps --format-version 1 -q | jq -r
 # .target_directory` resolves to `<worktree>/target` in each, and that the two
 # worktrees' resolved paths differ.
+#
+# The throwaway worktrees are cut from the CURRENT checked-out commit
+# (`git rev-parse HEAD` of this checkout), not `origin/main`. This is
+# deliberate: a future PR that changes target-dir configuration (e.g.
+# `.cargo/config.toml`) must have THIS test exercise that PR's own HEAD, not
+# whatever is on `origin/main` at the time the test happens to run — otherwise
+# the self-test would silently validate a stale baseline instead of the
+# change actually under test.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,14 +78,16 @@ echo ""
 
 TMPDIR_BASE="$(mktemp -d)"
 
-git -C "$REPO_ROOT" fetch origin main --quiet 2>/dev/null || true
+CURRENT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+echo "Cutting throwaway worktrees from the checked-out commit: ${CURRENT_SHA}"
+echo ""
 
-if ! git -C "$REPO_ROOT" worktree add --detach "${TMPDIR_BASE}/wt1" origin/main -q 2>/tmp/wt1-add.err; then
+if ! git -C "$REPO_ROOT" worktree add --detach "${TMPDIR_BASE}/wt1" "$CURRENT_SHA" -q 2>/tmp/wt1-add.err; then
   echo "ERROR: failed to create throwaway worktree 1:"
   cat /tmp/wt1-add.err
   exit 1
 fi
-if ! git -C "$REPO_ROOT" worktree add --detach "${TMPDIR_BASE}/wt2" origin/main -q 2>/tmp/wt2-add.err; then
+if ! git -C "$REPO_ROOT" worktree add --detach "${TMPDIR_BASE}/wt2" "$CURRENT_SHA" -q 2>/tmp/wt2-add.err; then
   echo "ERROR: failed to create throwaway worktree 2:"
   cat /tmp/wt2-add.err
   exit 1
