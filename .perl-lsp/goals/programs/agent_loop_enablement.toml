@@ -71,10 +71,30 @@ issue = 3751
 depends_on = ["M2"]
 exit_criteria = "review workflows mechanically cannot write"
 
+# M5 status = "completed" (2026-07-11, #3777 "M5 exit criteria SUBSTANTIALLY
+# SATISFIED" verdict): the exit_criteria ("parallel writers cannot share
+# target or branch lease") is mechanically satisfied on merged main for the
+# SAME-MACHINE swarm, verified empirically rather than by narrative claim —
+# git refuses a 2nd worktree on an already-checked-out branch ("already used
+# by worktree", branch-lease enforced topologically) and cargo's target-dir
+# build lock serializes concurrent same-target builds ("Blocking waiting for
+# file lock"), on top of: per-worktree default `CARGO_TARGET_DIR` (#3856),
+# worktree-manager fetching origin first before allocating a slot (#3798),
+# and the session-start receipt capturing checkout/HEAD-SHA state for a
+# liveness/staleness check (#3866). Phase 3 (build-lease schema) is
+# redundant with git worktree exclusivity + cargo's build lock for
+# correctness — optional observability only, tracked as follow-up #3869, not
+# required for this exit criterion. Phase 5 (stage-boundary checks) is
+# workflow-discipline, not addressed to this exit criterion, tracked as
+# follow-up #3870. Claim boundary: SAME-MACHINE is mechanically enforced;
+# cross-machine sharing (e.g. an NFS-mounted target across machines) is the
+# tracked, admin-hard residual on #3845, out of M5's scope — unlike M4
+# (advisory enforcement, NOT mechanically completable pending admin access),
+# M5's controls are genuinely mechanical and verified.
 [[milestone]]
 id = "M5"
 title = "Real worktree + build isolation"
-status = "pending"
+status = "completed"
 issue = 3777
 depends_on = ["M2"]
 exit_criteria = "parallel writers cannot share target or branch lease"
