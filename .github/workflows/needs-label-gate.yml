@@ -17,12 +17,37 @@ name: Needs Label Gate
 # independent of whether `merge-ready` has been applied yet, and it
 # re-evaluates on `labeled`/`unlabeled` so it clears automatically.
 #
+# Bot-authored label backstop (PR #3751 review thread): GitHub suppresses
+# `labeled`/`unlabeled` `pull_request` triggers for events caused by a
+# workflow's own `GITHUB_TOKEN` API calls. `pipeline-labels.yml` (adds/
+# removes `needs-deep-review`) and `pr-title-check.yml` (adds/removes
+# `needs-issue-link`) both write labels with their default token, so this
+# gate would NOT normally re-run when they do. The `workflow_run` trigger
+# below re-checks live label state after either of those workflows
+# completes, closing that gap without touching either file. Note:
+# `workflow_run` definitions are read from the DEFAULT branch, so this
+# backstop only becomes active once this workflow file lands on `main` —
+# expected and harmless (the direct `pull_request` triggers above already
+# cover the common case on this very PR).
+#
 # Admin step still required (out of scope here, needs branch-protection
 # admin): register this check as a required status check / ruleset rule
 # so it actually blocks merge. Until then it is visible-red but advisory.
 on:
   pull_request:
     types: [opened, synchronize, labeled, unlabeled, reopened]
+  workflow_run:
+    workflows: ["Pipeline Labels", "PR Title Check"]
+    types: [completed]
+
+# Serialize re-checks per PR so an older run can't overwrite a newer one's
+# verdict. Only cancel in-flight runs on `synchronize` (a real push) —
+# cancelling on `labeled`/`unlabeled` would trip the repo's own
+# LABEL_EVENT_CANCELS_PR_RUN workflow-policy-lint rule, and would risk
+# cancelling a run that's evaluating a just-added blocking label.
+concurrency:
+  group: needs-label-gate-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
 
 permissions:
   contents: read
@@ -36,25 +61,68 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Block on any needs-* label
-        uses: actions/github-script@v9
+        # v9.0.0, verified via `gh api repos/actions/github-script/git/tags/v9.0.0`
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
-            const pr = context.payload.pull_request;
-            if (!pr) {
-              core.setFailed('needs-label-gate: pull_request payload missing from event.');
+            const blockersFor = (labels) => labels.filter((name) => name.startsWith('needs-'));
+
+            if (context.eventName === 'pull_request') {
+              const pr = context.payload.pull_request;
+              if (!pr) {
+                core.setFailed('needs-label-gate: pull_request payload missing from event.');
+                return;
+              }
+
+              const labels = (pr.labels || []).map((label) => label.name);
+              const blockers = blockersFor(labels);
+
+              if (blockers.length > 0) {
+                core.setFailed(
+                  `Merge gate: this PR carries needs-* label(s) that must be resolved before merge: ${blockers.join(', ')}. ` +
+                  'Per CLAUDE.md ("no needs-* label may merge"), address the blocking review/fix pass and remove the label(s). ' +
+                  'This check re-evaluates automatically on label add/remove (labeled/unlabeled triggers) and turns green once no needs-* label remains.'
+                );
+                return;
+              }
+
+              core.info(`No needs-* labels present (checked ${labels.length} label(s)). Gate clear.`);
               return;
             }
 
-            const labels = (pr.labels || []).map((label) => label.name);
-            const blockers = labels.filter((name) => name.startsWith('needs-'));
+            if (context.eventName === 'workflow_run') {
+              // Backstop for bot-authored label changes (see header comment):
+              // re-fetch live label state instead of trusting any payload,
+              // since the triggering event carries no label snapshot.
+              const associated = context.payload.workflow_run.pull_requests || [];
+              if (associated.length === 0) {
+                core.info('needs-label-gate: workflow_run carried no associated pull_requests (e.g. fork PR or non-PR run); nothing to re-check.');
+                return;
+              }
 
-            if (blockers.length > 0) {
-              core.setFailed(
-                `Merge gate: this PR carries needs-* label(s) that must be resolved before merge: ${blockers.join(', ')}. ` +
-                'Per CLAUDE.md ("no needs-* label may merge"), address the blocking review/fix pass and remove the label(s). ' +
-                'This check re-evaluates automatically on label add/remove (labeled/unlabeled triggers) and turns green once no needs-* label remains.'
-              );
+              const blockedPrs = [];
+              for (const ref of associated) {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: ref.number,
+                });
+                const labels = (pr.labels || []).map((label) => label.name);
+                const blockers = blockersFor(labels);
+                if (blockers.length > 0) {
+                  blockedPrs.push(`#${ref.number}: ${blockers.join(', ')}`);
+                }
+              }
+
+              if (blockedPrs.length > 0) {
+                core.setFailed(
+                  `Merge gate: needs-* label(s) present after label-writer run (${context.payload.workflow.name}): ${blockedPrs.join('; ')}.`
+                );
+                return;
+              }
+
+              core.info('needs-label-gate: re-checked PR(s) after label-writer run — no needs-* labels present.');
               return;
             }
 
-            core.info(`No needs-* labels present (checked ${labels.length} label(s)). Gate clear.`);
+            core.info(`needs-label-gate: unhandled event "${context.eventName}", skipping.`);
