@@ -33,12 +33,14 @@ For PRs, get the HEAD SHA:
 CURRENT_SHA=$(gh pr view $NUMBER --json headRefOid --jq '.headRefOid')
 CURRENT_UPDATED=$(gh pr view $NUMBER --json updatedAt --jq '.updatedAt')
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:$NUMBER)` → `.headRefOid` and `.updatedAt`. See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
 
 For issues, get the updated_at timestamp:
 ```bash
 CURRENT_UPDATED=$(gh issue view $NUMBER --json updatedAt --jq '.updatedAt')
 CURRENT_SHA="n/a"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get", owner, repo, issue_number:$NUMBER)` → `.updatedAt`. See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
 
 ### 3. Check for existing receipt comment
 
@@ -51,6 +53,7 @@ EXISTING_COMMENT=$(gh api "repos/{owner}/{repo}/issues/$NUMBER/comments" \
   --jq '.[] | select(.body | contains("<!-- LABEL_RECEIPT_v1 -->")) | {id: .id, body: .body}' \
   | head -1)
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__issue_read(method:"get_comments", owner, repo, issue_number:$NUMBER)` → filter for `.body` containing `<!-- LABEL_RECEIPT_v1 -->` in the agent. Note: searching existing comments to find a receipt is client-side filtering regardless of transport.
 
 ### 4. Build the label binding
 
@@ -105,11 +108,13 @@ For PRs:
 ```bash
 gh pr comment $NUMBER --body "$BODY"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:$NUMBER, body:$BODY)` — GitHub treats PR comments as issue comments; full parity. See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
 
 For issues:
 ```bash
 gh issue comment $NUMBER --body "$BODY"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:$NUMBER, body:$BODY)` — full parity.
 
 **If existing receipt comment**, update it:
 1. Parse the existing JSON from the comment body
@@ -122,6 +127,7 @@ gh issue comment $NUMBER --body "$BODY"
 gh api --method PATCH "repos/{owner}/{repo}/issues/comments/$COMMENT_ID" \
   -f body="$UPDATED_BODY"
 ```
+> **MCP alternative (web/no-gh sessions):** editing an existing comment has no direct MCP tool (known gap — see [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md)). Workaround: post a new comment with the full updated receipt body and note that the previous receipt is superseded (the newer comment's label binding takes precedence by timestamp).
 
 Note: `issues/comments` endpoint works for both PR and issue comments on GitHub API.
 

@@ -36,6 +36,11 @@ gh issue list --state open --limit 200 --json number | jq length
 gh run list --branch master --limit 1
 just clean-worktrees 2>/dev/null || git worktree prune
 ```
+> **MCP alternative (web/no-gh sessions):** replace the three `gh` calls above:
+> - PR count: `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:100)` → count results
+> - Issue count: `mcp__github__list_issues(owner, repo, state:"OPEN", perPage:100)` → count results
+> - Run list: `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:1)` → check `conclusion`
+> See [docs/reference/GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
 
 **Stop if master CI is red.** Fix it first.
 
@@ -55,6 +60,7 @@ gh issue list --label "structural-blocker" --state open # blocked work
 gh pr list --label "merge-ready"                        # ready to merge
 gh pr list --label "in-review"                          # being reviewed (check for stalls)
 ```
+> **MCP alternative (web/no-gh sessions):** for issue queries use `mcp__github__list_issues(owner, repo, labels:["<label>"], state:"OPEN", perPage:50)`; for PR label queries use `mcp__github__search_issues(owner, repo, query:"repo:effortlessmetrics/perl-lsp-swarm label:<label> is:pr is:open")`. See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
 
 **Routing rules (sequential — check in order, spawn the first missing):**
 
@@ -238,3 +244,9 @@ gh issue list --label "builder-ready" --state open --json number,title,labels \
 # Health check
 /health-check
 ```
+> **MCP alternative (web/no-gh sessions):**
+> - Open PRs: `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:20)`
+> - Label-filtered issues: `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN", perPage:10)` (repeat per label)
+> - Run list: `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:3)` → check `status`/`conclusion` per run
+> - Advanced label query: `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN", perPage:50)` then filter client-side for missing `plan-reviewed`
+> See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).

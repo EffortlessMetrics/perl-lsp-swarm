@@ -46,6 +46,35 @@ first when tool parity changes.
 | `gh api repos/.../commits/<sha>/check-runs` | `mcp__github__list_commits` / `mcp__github__get_commit` + `pull_request_read(method:"get_check_runs")` | Commit-scoped check-run listing goes through the PR when one exists |
 | `gh search code` | `mcp__github__search_code(query:"repo:<owner>/<repo> ...")` | Stay inside session repo scope |
 
+## PR / issue operations (label and state queries)
+
+| gh CLI | MCP equivalent | Parity notes |
+|---|---|---|
+| `gh pr list --state open --label X` | `mcp__github__search_issues(query:"repo:<owner>/<repo> label:X is:pr is:open")` | GitHub's unified search covers PRs; use `is:pr` to scope. `mcp__github__list_pull_requests` has no label-filter param. |
+| `gh pr list --state merged --limit N` | `mcp__github__list_pull_requests(state:"closed", perPage:N)` then filter `merged_at != null` | Merged state is client-side; see also the Merge-critical row for base-filtered variant |
+| `gh pr list --state open --limit N` | `mcp__github__list_pull_requests(state:"open", perPage:N)` | Full parity when no label filter needed |
+| `gh pr list --state open --json number \| jq length` | `mcp__github__list_pull_requests(state:"open", perPage:100)` → count `.length` | Pagination needed for >100 open PRs (rare in practice) |
+| `gh issue list --label X --state open` | `mcp__github__list_issues(labels:["X"], state:"OPEN", perPage:50)` | Full parity; use `perPage:100` for large queues |
+| `gh issue list --label X --state open --json number \| jq length` | `mcp__github__list_issues(labels:["X"], state:"OPEN", perPage:100)` → count `.length` | Full parity |
+| `gh issue view <n> --json updatedAt` | `mcp__github__issue_read(method:"get", issue_number:n)` → `.updatedAt` | Full parity; also returns all other fields in one call |
+| `gh pr checks <N>` | `mcp__github__pull_request_read(method:"get_check_runs", pullNumber:N)` | Full parity — already in Merge-critical table above |
+| `gh repo view --json nameWithOwner` | Not needed in web sessions: owner/repo are always `effortlessmetrics`/`perl-lsp-swarm` — substitute directly. | Local sessions: `gh repo view` works. Web sessions: substitute the literal strings. |
+
+## Comment operations
+
+| gh CLI | MCP equivalent | Parity notes |
+|---|---|---|
+| `gh pr comment <n> --body "..."` | `mcp__github__add_issue_comment(issue_number:n, body:"...")` | GitHub treats PR comments as issue comments; full parity |
+| `gh issue comment <n> --body "..."` | `mcp__github__add_issue_comment(issue_number:n, body:"...")` | Already in Issue/triage table above |
+| `gh api repos/.../issues/comments/$ID --method PATCH` | **Known gap** — editing an existing comment has no direct MCP tool. Workaround: delete the old comment and create a new one (via `mcp__github__add_issue_comment`), or accept the limitation and post a follow-up comment instead. | |
+
+## Local-only operations (no MCP equivalent)
+
+| gh CLI | MCP equivalent | Notes |
+|---|---|---|
+| `gh pr checkout <n>` | No MCP equivalent — this is a local git operation. | In `isolation:worktree` agents the PR branch is already checked out. In non-worktree web sessions, use `git fetch origin <branch> && git checkout <branch>` if the remote branch name is known from `mcp__github__pull_request_read(method:"get")` → `.headRefName`. |
+| `gh run rerun <id>` | No direct equivalent — already listed in Known gaps below | Push an empty-diff commit or `update_pull_request_branch` to retrigger |
+
 ## Known gaps (true no-equivalents)
 
 - **Re-running a specific failed workflow run** (`gh run rerun <id>`): not exposed;

@@ -80,6 +80,7 @@ gh issue list --label "swarm-architectural"
 # Recent merges
 gh pr list --state merged --limit 20 --json number,title,mergedAt
 ```
+> **MCP alternative (web/no-gh sessions):** for label-filtered PR queries use `mcp__github__search_issues(owner, repo, query:"repo:effortlessmetrics/perl-lsp-swarm label:<label> is:pr is:open")`; for issue queries use `mcp__github__list_issues(owner, repo, labels:["<label>"], state:"OPEN", perPage:50)`; for recent merges use `mcp__github__list_pull_requests(owner, repo, state:"closed", perPage:20)` then filter `merged_at != null`. See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
 
 ## 4. Metrics
 
@@ -101,8 +102,11 @@ When your agent definition is wrong or incomplete, file a GitHub issue with labe
 
 Before starting work:
 1. `gh issue list --label "swarm-discovered"` — already an issue?
+   > **MCP:** `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN", perPage:50)`
 2. `gh pr list --state open` — already a PR?
+   > **MCP:** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:50)`
 3. `gh issue list --label "swarm-architectural"` — architectural decision pending?
+   > **MCP:** `mcp__github__list_issues(owner, repo, labels:["swarm-architectural"], state:"OPEN", perPage:50)`
 
 After completing:
 1. `swarm-metrics.jsonl` — always
@@ -160,6 +164,7 @@ Before creating any PR, check the current open PR count:
 ```bash
 gh pr list --state open --json number --jq length
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:100)` → count results. See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
 
 **If > 5 open PRs**: do NOT create another PR. Instead, message the lead with the work that is ready, and wait for guidance. CI queues are finite — piling on more PRs when the queue is already congested slows everything down.
 
@@ -266,6 +271,11 @@ gh pr checks <N>           # Must show all checks passing — run IMMEDIATELY be
 gh run list --limit 5      # Confirm master CI is green
 gh pr merge <N> --squash --delete-branch   # Only if both above are green
 ```
+> **MCP alternative (web/no-gh sessions):**
+> - `gh pr checks <N>` → `mcp__github__pull_request_read(method:"get_check_runs", owner, repo, pullNumber:N)` — filter by head SHA matching PR head
+> - `gh run list --limit 5` → `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:5)` → check `status`/`conclusion`
+> - `gh pr merge --squash` → `mcp__github__merge_pull_request(owner, repo, pullNumber:N, merge_method:"squash", commit_title:"<title> (#N)", commit_message:"<summary>")`
+> See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
 
 ## 11. Scout Deliverables
 

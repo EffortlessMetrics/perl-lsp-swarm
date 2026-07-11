@@ -41,6 +41,8 @@ Each agent sees its own step. Nobody has checked that:
 
    cat .spec/*/acceptance.md 2>/dev/null
    ```
+   > **MCP alternative (web/no-gh sessions):** skip `gh repo view` — owner/repo are always `effortlessmetrics`/`perl-lsp-swarm` in web sessions; substitute directly. For the file list: `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<number>)`. For base ref: `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → `.baseRefName`. The `git diff` and `git merge-base` commands are local operations and always available. See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
+
    Every acceptance criterion should be addressable from the diff.
 
 2. **Scope cleanliness** — are there files in the diff that shouldn't be?
@@ -53,12 +55,14 @@ Each agent sees its own step. Nobody has checked that:
    BASE=$(gh pr view <number> --json baseRefName -q .baseRefName)
    git diff "$(git merge-base "origin/$BASE" HEAD)"..HEAD | grep -E "TODO|FIXME|HACK|XXX|dbg!|println!|eprintln!"
    ```
+   > **MCP alternative (web/no-gh sessions):** for base ref: `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → `.baseRefName`; `git diff` and `grep` are local operations.
 
 4. **Commit coherence** — do the commits tell a story?
    ```bash
    BASE=$(gh pr view <number> --json baseRefName -q .baseRefName)
    git log "$(git merge-base "origin/$BASE" HEAD)"..HEAD --oneline
    ```
+   > **MCP alternative (web/no-gh sessions):** for base ref: `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<number>)` → `.baseRefName`; alternatively `mcp__github__pull_request_read(method:"get_commits", owner, repo, pullNumber:<number>)` lists commits directly without local git.
    Expected: plan commit, red tests, implementation, green tests, review fixes, refactoring.
    Red flag: random interleaved commits, "wip", "fix fix fix" chains.
 
@@ -84,7 +88,7 @@ Each agent sees its own step. Nobody has checked that:
 
 These aren't "next-step" operations — they're background context to carry as you audit. Keep them in mind for every PR.
 
-**Stale-base disambiguation first.** Before crying SCOPE DRIFT on a 500+ deletion diff, check the base. PRs branched before recent base fire-fix cascades will show mass "deletions" against the current base branch - those are pre-cascade state, not scope drift. If the PR is >3 days old and shows 500+ deletions with no author edits in those files, call `/refresh-stale-prs` instead of flagging. Compare against the PR base merge point (`BASE=$(gh pr view <number> --json baseRefName -q .baseRefName); git diff "$(git merge-base "origin/$BASE" HEAD)"..HEAD`) instead of using a two-dot base branch diff. See `docs/articles/FIRE_FIX_CASCADE_METHODOLOGY.md`.
+**Stale-base disambiguation first.** Before crying SCOPE DRIFT on a 500+ deletion diff, check the base. PRs branched before recent base fire-fix cascades will show mass "deletions" against the current base branch - those are pre-cascade state, not scope drift. If the PR is >3 days old and shows 500+ deletions with no author edits in those files, call `/refresh-stale-prs` instead of flagging. Compare against the PR base merge point (`BASE=$(gh pr view <number> --json baseRefName -q .baseRefName); git diff "$(git merge-base "origin/$BASE" HEAD)"..HEAD`) instead of using a two-dot base branch diff (MCP: `mcp__github__pull_request_read(method:"get", pullNumber:<number>)` → `.baseRefName`). See `docs/articles/FIRE_FIX_CASCADE_METHODOLOGY.md`.
 
 **Agent audit-trail additions are KEEP, not ARTIFACTS.** `.hermes/` / `.spec/` / `.jules/` / `.run/` / `.codex/` content from the PR's OWN agent for its OWN issue is the agent's audit trail — equivalent to our `.spec/` dirs — and must stay. Only flag as drift if: (a) the directory is for a DIFFERENT PR's issue, or (b) pre-existing agent-trail dirs in the repo were modified by this PR. Before flagging, check the dir name vs the PR's issue ref and whether the dir was new or pre-existing. See `memory/feedback_agent_audit_trail_directories.md`.
 
@@ -102,6 +106,7 @@ Detection heuristic — for every file in the diff, ask: "does this file's path/
 - If the diff adds ADRs whose work-id doesn't match this PR's branch work-id: flag as CONTAMINATION
 - Tell-tale: PR title claims a small change but `--stat` shows >100 lines outside the named scope. Diff bulk shouldn't be unrelated to the title.
 - Mechanical check: use the GitHub API file list, not `gh pr diff`: `REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner) && gh api repos/$REPO/pulls/<num>/files --jq '.[].filename'`. For each crate path, ask whether the PR title/body mentions it; orphan-crate paths are contamination candidates.
+  > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_files", owner, repo, pullNumber:<num>)` — returns the same file list without needing `gh repo view` or `gh api`. See [GH_MCP_FALLBACK.md](../../docs/reference/GH_MCP_FALLBACK.md).
 - Self-check: before flagging any file as cross-PR contamination, confirm it appears in `pulls/N/files` as PR-authored. If it only appears in a branch-vs-base diff, it is inherited base state, not drift. This check is mandatory.
 
 When found, route to `needs-diff-fix` with a `git rm` list. Don't let a 22-of-2063-line legitimate change ride a 2043-line contaminated diff into master.
