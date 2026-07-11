@@ -123,8 +123,13 @@ recipe: [CI_GATE_PLAYBOOK.md](docs/reference/CI_GATE_PLAYBOOK.md).
 
 **Never enable or retain auto-merge while any requested review is still active or any
 substantive review conversation remains unresolved.** Resolve threads for a reason
-(fixed/refuted/superseded/accepted-with-follow-up), not performatively — main
-mechanically requires conversation resolution before merge.
+(fixed/refuted/superseded/accepted-with-follow-up), each backed by a machine-readable
+`Disposition:`/`Evidence:` reply posted BEFORE resolution — never performatively. Main
+mechanically requires conversation resolution before merge, and the
+`resolved_without_disposition` gate (#3693/#3732) blocks any resolved thread with no
+reply — the resolved-to-clear pattern that shipped 6 live P1 defects through #3647.
+Canonical convention: [review-convergence.md § Disposition-reply
+convention](.claude/reference/review-convergence.md#disposition-reply-convention-before-calling-resolvereviewthread).
 
 ## Quick reference
 

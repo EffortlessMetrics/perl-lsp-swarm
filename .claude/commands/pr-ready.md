@@ -55,11 +55,17 @@ scripts/ci/check-pr-review-convergence $NUMBER
 Do not reproduce or modify its query locally.
 
 **Never enable or retain auto-merge, and never mark a PR ready for merge
-pickup, while the check above exits non-zero.** Resolve threads for a reason
-(fixed/refuted/superseded/accepted-with-follow-up), not performatively — main
-mechanically requires conversation resolution before merge. If the script
-exits non-zero, **STOP** and report which reviewer or thread is still
-pending (its `BLOCK` lines name them) instead of proceeding.
+pickup, while the check above exits non-zero.** Threads must be resolved
+for a reason (fixed/refuted/superseded/accepted-with-follow-up), each with
+a machine-readable disposition reply posted BEFORE resolution — see the
+canonical convention in
+[.claude/reference/review-convergence.md § Disposition-reply
+convention](../reference/review-convergence.md#disposition-reply-convention-before-calling-resolvereviewthread).
+Never performatively — main mechanically requires conversation resolution
+before merge, and the `resolved_without_disposition` gate (#3693/#3732)
+blocks any resolved thread with no reply. If the script exits non-zero,
+**STOP** and report which reviewer or thread is still pending (its `BLOCK`
+lines name them) instead of proceeding.
 
 ### 4. Mark ready and signal merge-readiness
 
