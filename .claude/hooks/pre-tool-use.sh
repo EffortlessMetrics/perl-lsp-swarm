@@ -31,13 +31,17 @@ CMD_TERMINATOR='([[:space:];&|<>)]|$)'
 # the PreToolUse hook payload self-identifies the calling subagent via
 # `agent_type` when Claude Code invokes a hook inside a subagent (absent at
 # the top level, which is why the jq filter above defaults to "main"). This
-# lets us deny the genuinely-irreversible PUBLISH actions -- `git push` in
-# any form and `gh pr merge` -- for review/audit personas specifically,
-# with no env var and no CLAUDE_AGENT_READONLY opt-in required. A
-# reviewer's local Edit/Write/git-commit stay available (the harness grants
-# them regardless of this hook, and they are reversible / never reach main
-# on their own) but the reviewer can never push or merge, so nothing it
-# writes locally can publish.
+# lets us deny direct, routine `git push` forms (including the tested
+# global-option and shell-separator variants below) and `gh pr merge` for
+# review/audit personas specifically, with no env var required.
+#
+# Named review/audit personas already carry a read-only `tools:` allowlist
+# that excludes Edit/Write/Agent (`.claude/agents/*.md`, enforced by
+# `cargo xtask check-agent-capabilities` / #3771) -- their only residual
+# write surface is `Bash`. This block closes that surface for the direct
+# publish forms; shell-indirection through `Bash` (see "Known, accepted
+# limitations" below) remains a documented, accepted gap, not something
+# this hook claims to close.
 #
 # REVIEW_AUDIT_AGENT_TYPES MUST stay in sync with
 # `xtask/src/tasks/agent_capability_policy.rs`'s `REVIEW_AUDIT_AGENTS` (the
