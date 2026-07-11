@@ -1929,6 +1929,14 @@ enum Commands {
         binaries: bool,
     },
 
+    /// Spec-filing preflight checks (#2009): narrower, spec-specific sibling
+    /// of `freshness-check` (#1819) that gates spec creation on a fresh
+    /// checkout.
+    Spec {
+        #[command(subcommand)]
+        command: SpecCommand,
+    },
+
     /// Generate or check deterministic HIR semantic snapshots over a corpus slice.
     ///
     /// This command is a SNAPSHOT rail — it proves that lower_ast() is
@@ -3146,6 +3154,33 @@ enum QueueCommand {
 }
 
 #[derive(Subcommand)]
+enum SpecCommand {
+    /// Refuse to file a spec from a stale checkout (#2009).
+    ///
+    /// Fails when HEAD is behind `--base`, or when a `--paths` entry has
+    /// changed on `--base` since the checkout's merge-base with it. Narrower
+    /// than `freshness-check` (#1819): this is the spec-filing entry point,
+    /// not a general staleness guard.
+    ///
+    /// Example: `cargo xtask spec preflight --base origin/main --paths
+    /// crates/perl-lsp-rs/src/runtime/language/completion.rs`
+    Preflight {
+        /// Base git reference to compare HEAD against.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// File path(s) the spec references. Each must exist at HEAD and
+        /// must not have changed on `--base` since the merge-base. Repeatable.
+        #[arg(long = "paths")]
+        paths: Vec<String>,
+
+        /// Skip the `git fetch` step.
+        #[arg(long)]
+        no_fetch: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum SmokeCommand {
     /// Verify textDocument/inlineCompletion over stdio against a built binary.
     #[command(name = "inline-completion")]
@@ -3309,6 +3344,15 @@ fn run_cli(cli: Cli) -> Result<()> {
                     apply,
                     receipt,
                     config,
+                })
+            }
+        },
+        Commands::Spec { command } => match command {
+            SpecCommand::Preflight { base, paths, no_fetch } => {
+                tasks::spec_preflight::run(tasks::spec_preflight::SpecPreflightConfig {
+                    base,
+                    paths,
+                    no_fetch,
                 })
             }
         },

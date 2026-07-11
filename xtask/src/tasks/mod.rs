@@ -131,6 +131,7 @@ pub mod semantic_scorecard;
 pub mod semantic_shadow_compare;
 pub mod semantic_token_classes;
 pub mod session_receipt;
+pub mod spec_preflight;
 pub mod srp_microcrates;
 pub mod supported_editor_inline_smoke;
 pub mod swarm_agent_roster;
