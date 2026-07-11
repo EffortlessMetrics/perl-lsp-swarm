@@ -3,12 +3,24 @@
     "id": "PRRT_resolved_active_shape_1",
     "isResolved": true,
     "isOutdated": false,
-    "path": "crates/perl-lsp-rs/src/handlers/completion.rs"
+    "path": "crates/perl-lsp-rs/src/handlers/completion.rs",
+    "comments": {
+      "totalCount": 2,
+      "nodes": [
+        { "author": { "login": "reviewbot" } }
+      ]
+    }
   },
   {
     "id": "PRRT_resolved_outdated_shape_1",
     "isResolved": true,
     "isOutdated": true,
-    "path": "crates/perl-lsp-rs/src/handlers/references.rs"
+    "path": "crates/perl-lsp-rs/src/handlers/references.rs",
+    "comments": {
+      "totalCount": 2,
+      "nodes": [
+        { "author": { "login": "alice" } }
+      ]
+    }
   }
 ]

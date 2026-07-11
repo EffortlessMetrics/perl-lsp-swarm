@@ -72,6 +72,40 @@ Both are separate, necessary conditions. A PR is only review-converged when
    `converged:true` on a PR GitHub would still refuse to merge — the exact
    "internal verdict disagrees with GitHub mergeability" defect class this
    script exists to eliminate. See issue #3679.
+4. **No resolved thread lacking a disposition reply.** `0 unresolved
+   threads` is necessary but **not sufficient** — #3647 merged out-of-band,
+   while its independent correctness review was still running, with 6 P1
+   defects live on main, because a responder silently `resolveReviewThread`'d
+   15 threads with **no reply at all**. The ruleset enforces "resolved"; it
+   cannot enforce "resolved for a justified reason." This script closes the
+   mechanical half of that gap: for every `reviewThreads` node with
+   `isResolved == true`, it checks `comments.totalCount`. A thread whose
+   `totalCount <= 1` (only the original review comment, nobody — bot,
+   human, or the original author — ever replied before it was resolved) is
+   the mechanical signature of resolved-to-clear, reported as
+   `resolved_without_disposition` and `BLOCK`ed.
+
+   **Heuristic, not intent detection — documented limits:**
+   - A thread the *original* reviewer resolves immediately after posting a
+     genuine one-line follow-up ("fixed in a1b2c3d") is **not** flagged —
+     that reply is the second comment, so `totalCount` is 2. The check is
+     "did anyone say anything after the finding," not "did someone else."
+   - A low-effort reply ("ok") that isn't a real disposition still passes —
+     the script can verify a reply's *existence*, not its *content*. See
+     issue #3693 for the `Disposition: fixed|refuted|superseded|follow-up`
+     reply-format convention this check assumes reviewers/responders
+     follow (content-quality enforcement is a human/reviewer judgment
+     call, not a mechanical one).
+   - `totalCount` is connection metadata, accurate independent of how many
+     comment `nodes` are actually fetched (the script only fetches
+     `first: 1`, for the opening commenter's login).
+5. **No independent review in flight.** The `needs-deep-review` label is
+   treated as a durable, repo-visible blocking marker — while present,
+   `independent_review_pending` is `true` and convergence is `BLOCK`ed
+   regardless of thread/review state. This makes an in-flight correctness
+   review mechanically visible: the other half of the #3647 root cause was
+   that the PR merged while its deep review was still running, with that
+   review existing only in an orchestrator's task list — not in the repo.
 
 ## Pagination
 
@@ -99,12 +133,16 @@ scripts/ci/check-pr-review-convergence <pr-number> [owner/repo]
 {"pr": N, "headRefOid": "...", "converged": true|false,
  "pending_reviewers": [...], "stale_reviews": [...], "stale_bot_reviews": [...],
  "unresolved_active": N, "unresolved_outdated": N, "unresolved_total": N,
- "resolved_threads": N}
+ "resolved_threads": N, "resolved_without_disposition": N,
+ "independent_review_pending": true|false}
 ```
 
 `unresolved_active` and `unresolved_outdated` both block convergence;
-`unresolved_total` is their sum. `stale_bot_reviews` is the only
-non-blocking (ADVISORY) count in the object.
+`unresolved_total` is their sum. `resolved_without_disposition` (count of
+resolved threads with `comments.totalCount <= 1` — see item 4 above) and
+`independent_review_pending` (the `needs-deep-review` label — item 5 above)
+both block convergence too. `stale_bot_reviews` is the only non-blocking
+(ADVISORY) count in the object.
 
 ### Test seam (no network)
 

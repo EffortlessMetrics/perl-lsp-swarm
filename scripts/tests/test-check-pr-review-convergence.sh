@@ -173,6 +173,62 @@ test_missing_fixture_dir_errors() {
     fi
 }
 
+# ── Test 7: resolved thread with NO reply BLOCKS (#3693, resolved-to-clear) ─
+# A resolved thread whose comments connection has totalCount == 1 (only the
+# original review comment, no reply from anyone) is the mechanical
+# signature of the #3647 incident: 15 threads resolved with zero evidence.
+
+test_resolved_without_disposition_blocks() {
+    run_case "resolved-without-disposition-blocks"
+
+    local converged resolved_without_disposition
+    converged="$(json_field "$RUN_STDOUT" '.converged')"
+    resolved_without_disposition="$(json_field "$RUN_STDOUT" '.resolved_without_disposition')"
+
+    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
+          "$resolved_without_disposition" -ge 1 ]]; then
+        pass "resolved thread with no reply blocks convergence (exit 1, converged:false, resolved_without_disposition>=1)"
+    else
+        fail "resolved-without-disposition thread should block — got exit=$RUN_EXIT converged=$converged resolved_without_disposition=$resolved_without_disposition"
+    fi
+}
+
+# ── Test 8: resolved thread WITH a disposition reply does NOT trip the block
+
+test_resolved_with_disposition_does_not_block() {
+    run_case "resolved-with-disposition-ok"
+
+    local converged resolved_without_disposition
+    converged="$(json_field "$RUN_STDOUT" '.converged')"
+    resolved_without_disposition="$(json_field "$RUN_STDOUT" '.resolved_without_disposition')"
+
+    if [[ "$RUN_EXIT" -eq 0 && "$converged" == "true" && \
+          "$resolved_without_disposition" -eq 0 ]]; then
+        pass "resolved thread with a disposition reply does not block (exit 0, converged:true, resolved_without_disposition=0)"
+    else
+        fail "resolved-with-disposition thread should NOT block — got exit=$RUN_EXIT converged=$converged resolved_without_disposition=$resolved_without_disposition"
+    fi
+}
+
+# ── Test 9: 'needs-deep-review' label BLOCKS regardless of thread state ────
+# Makes an in-flight independent review mechanically visible — the #3647
+# hole was that the review existed only in an orchestrator's task list.
+
+test_pending_independent_review_blocks() {
+    run_case "pending-independent-review-blocks"
+
+    local converged independent_review_pending
+    converged="$(json_field "$RUN_STDOUT" '.converged')"
+    independent_review_pending="$(json_field "$RUN_STDOUT" '.independent_review_pending')"
+
+    if [[ "$RUN_EXIT" -eq 1 && "$converged" == "false" && \
+          "$independent_review_pending" == "true" ]]; then
+        pass "'needs-deep-review' label blocks convergence (exit 1, converged:false, independent_review_pending:true)"
+    else
+        fail "needs-deep-review label should block — got exit=$RUN_EXIT converged=$converged independent_review_pending=$independent_review_pending"
+    fi
+}
+
 # ── Run all tests ─────────────────────────────────────────────────────────────
 
 echo "=== check-pr-review-convergence test suite ==="
@@ -184,6 +240,9 @@ test_all_resolved_converges
 test_stale_bot_review_advisory_only
 test_outdated_case_emits_block_line
 test_missing_fixture_dir_errors
+test_resolved_without_disposition_blocks
+test_resolved_with_disposition_does_not_block
+test_pending_independent_review_blocks
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="

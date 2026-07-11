@@ -75,6 +75,60 @@
 # BLOCK rather than an ADVISORY should rarely add real friction — but it is
 # still required, because the ruleset requires it.
 #
+# ── Resolved-without-disposition (#3693, follow-up to #3647) ───────────────
+#
+# "0 unresolved threads" is necessary but NOT sufficient for real
+# convergence. #3647 merged — out of band, while its independent
+# correctness review was still running — with 6 P1 defects live on main,
+# because a responder had silently `resolveReviewThread`'d 15 threads with
+# NO reply and no evidence. The ruleset enforces "resolved"; it cannot
+# enforce "resolved for a justified reason." Every unresolved-thread check
+# above is blind to this: a thread that is `isResolved == true` passes
+# those checks whether it was fixed-and-verified or just clicked away.
+#
+# The mechanical signature of resolved-to-clear: a resolved thread whose
+# `comments` connection has `totalCount <= 1` — i.e. it carries ONLY the
+# original review comment, with no reply from anyone (bot, human, or the
+# original author) posted before resolution. A real disposition — even a
+# terse one — always adds at least a second comment to the thread before
+# `resolveReviewThread` is called, so "no reply" is a strong, cheap,
+# id-stable proxy for "resolved without evidence."
+#
+# Heuristic limits (documented, not solved — this is a proxy, not intent
+# detection):
+#   - A thread the ORIGINAL author immediately resolves after posting a
+#     genuine one-line follow-up ("fixed in a1b2c3d") is NOT flagged: that
+#     follow-up IS the second comment, so `totalCount` is 2 and the thread
+#     passes. This is deliberate — the check is "was anything said after
+#     the finding," not "did a different person say it."
+#   - Conversely, a low-effort reply ("ok") that is not a real disposition
+#     (no commit/test/invariant/issue reference) still satisfies this
+#     check — the script cannot verify the CONTENT of a disposition reply,
+#     only its EXISTENCE. Content-quality enforcement is a human/reviewer
+#     judgment call, not a mechanical one; see #3693 item 2 for the
+#     disposition-format convention this check assumes reviewers follow.
+#   - A thread with a reply that itself gets edited to blank/deleted after
+#     resolution would still show `totalCount >= 2` (comment count does not
+#     decrease on edit) and would NOT be flagged — a known blind spot.
+#   - `totalCount` is read from GraphQL's connection metadata, which is
+#     accurate regardless of how many comment `nodes` are actually
+#     fetched (this script only fetches `first: 1`, for the opening
+#     comment's author, to keep the query cheap) — so the count itself is
+#     not subject to the "first N" pagination cap.
+#
+# ── Independent-review-pending marker (#3693) ───────────────────────────────
+#
+# A correctness/deep review existing only in an orchestrator's task list is
+# not repository truth and cannot protect the merge (the other half of the
+# #3647 root cause: the PR merged while its deep review was still running,
+# because nothing in the repo made that in-flight review visible). This
+# script treats the `needs-deep-review` label as a durable, repo-visible
+# blocking marker: while present, convergence is BLOCKED regardless of
+# thread/review state. The label is expected to be applied when an
+# independent review is launched and cleared once the reviewer posts a
+# verdict and any confirmed defects are fixed/refuted — see the sequence in
+# issue #3693.
+#
 # ── Pagination ───────────────────────────────────────────────────────────────
 #
 # Both `reviewThreads` and `latestReviews`/`reviews` can exceed a single
@@ -93,11 +147,14 @@
 # ── Exit codes ───────────────────────────────────────────────────────────────
 #
 #   0  CONVERGED — no pending review requests, every human reviewer's latest
-#      review is at the current HEAD SHA, and NO unresolved thread remains
+#      review is at the current HEAD SHA, NO unresolved thread remains
 #      (neither active nor outdated — see the ACTIVE vs outdated vs resolved
-#      section above). (Stale bot reviews do not block — see bot-exclusion
-#      note above.) Merge-ready from a review-convergence standpoint (other
-#      gates — CI, labels — are separate and NOT checked by this script).
+#      section above), NO resolved thread lacks a disposition reply (see the
+#      resolved-without-disposition section above), and NO independent
+#      review is in flight (`needs-deep-review` label absent). (Stale bot
+#      reviews do not block — see bot-exclusion note above.) Merge-ready
+#      from a review-convergence standpoint (other gates — CI, other labels
+#      — are separate and NOT checked by this script).
 #   1  NOT CONVERGED — one or more blocking conditions found; reasons are
 #      printed to stderr, one per line, prefixed "BLOCK".
 #   2  USAGE / FETCH ERROR — bad arguments, `gh`/`jq` missing, or the GraphQL
@@ -110,14 +167,20 @@
 #   {"pr":N,"headRefOid":"...","converged":true|false,
 #    "pending_reviewers":[...],"stale_reviews":[...],"stale_bot_reviews":[...],
 #    "unresolved_active":N,"unresolved_outdated":N,"unresolved_total":N,
-#    "resolved_threads":N}
+#    "resolved_threads":N,"resolved_without_disposition":N,
+#    "independent_review_pending":true|false}
 # ("stale_reviews" is human reviewers only — BLOCKING. "stale_bot_reviews" is
 # auto-review-app reviewers whose latest review predates HEAD — ADVISORY,
 # never blocking; see the bot-exclusion note above. "unresolved_active" and
-# "unresolved_outdated" both BLOCK; "unresolved_total" is their sum.)
-# stderr: BLOCK lines for anything that fails convergence (both unresolved
-# categories — active and outdated); ADVISORY lines only for stale bot
-# reviews, which never block.
+# "unresolved_outdated" both BLOCK; "unresolved_total" is their sum.
+# "resolved_without_disposition" counts RESOLVED threads whose comment
+# count is <= 1, i.e. no reply was ever posted — BLOCKING; see the
+# resolved-without-disposition section above. "independent_review_pending"
+# reflects the `needs-deep-review` label — BLOCKING while true.)
+# stderr: BLOCK lines for anything that fails convergence (unresolved
+# threads — active and outdated; resolved-without-disposition threads; a
+# pending independent review); ADVISORY lines only for stale bot reviews,
+# which never block.
 #
 # ── Test seam (no network) ──────────────────────────────────────────────────
 #
@@ -248,7 +311,8 @@ EOF
 #
 # Test seam: when CONVERGENCE_TEST_FIXTURE_DIR is set, read
 # "$CONVERGENCE_TEST_FIXTURE_DIR/pr_view.json" (same shape as
-# `gh pr view --json headRefOid,reviewRequests`) instead of calling `gh`.
+# `gh pr view --json headRefOid,reviewRequests,labels`) instead of calling
+# `gh`.
 if [[ -n "$CONVERGENCE_TEST_FIXTURE_DIR" ]]; then
     fixture_file="$CONVERGENCE_TEST_FIXTURE_DIR/pr_view.json"
     if [[ ! -f "$fixture_file" ]]; then
@@ -256,7 +320,7 @@ if [[ -n "$CONVERGENCE_TEST_FIXTURE_DIR" ]]; then
         exit 2
     fi
     PR_META="$(jq -c '.' "$fixture_file")"
-elif ! PR_META="$(gh pr view "$PR" --repo "$OWNER/$REPO" --json headRefOid,reviewRequests 2>&1)"; then
+elif ! PR_META="$(gh pr view "$PR" --repo "$OWNER/$REPO" --json headRefOid,reviewRequests,labels 2>&1)"; then
     echo "ERROR: could not fetch PR #$PR metadata: $PR_META" >&2
     exit 2
 fi
@@ -273,6 +337,18 @@ HEAD_REF_OID="$(printf '%s' "$PR_META" | jq -r '.headRefOid')"
 # team review still pending" bug this script exists to prevent.
 PENDING_REVIEWERS="$(printf '%s' "$PR_META" | jq -c '[.reviewRequests[]? | (.login // .name // empty)]')"
 PENDING_REVIEWER_COUNT="$(printf '%s' "$PENDING_REVIEWERS" | jq 'length')"
+
+# ── Independent-review-pending marker (#3693) ───────────────────────────────
+# `.labels` is a plain array of `{name, ...}` objects (no User/Team-style
+# fallback trap like reviewRequests above — every label node always has
+# `.name`). Iterating `.labels[]?` on a missing/null `labels` key yields no
+# results rather than erroring, so older fixtures without a "labels" key
+# are still handled safely.
+LABELS="$(printf '%s' "$PR_META" | jq -c '[.labels[]?.name]')"
+INDEPENDENT_REVIEW_PENDING="false"
+if printf '%s' "$LABELS" | jq -e 'index("needs-deep-review") != null' >/dev/null; then
+    INDEPENDENT_REVIEW_PENDING="true"
+fi
 
 if [[ -z "$HEAD_REF_OID" || "$HEAD_REF_OID" == "null" ]]; then
     echo "ERROR: could not resolve headRefOid for PR #$PR" >&2
@@ -319,7 +395,11 @@ STALE_BOT_REVIEW_COUNT="$(printf '%s' "$STALE_BOT_REVIEWS" | jq 'length')"
 #    convergence (isOutdated is metadata, not a blocking discriminator —
 #    see the "ACTIVE vs outdated vs resolved threads" header section).
 #    ────────────────────────────────────────────────────────────────────────
-REVIEW_THREADS="$(paginate_pr_connection "reviewThreads" "id isResolved isOutdated path")"
+#    `comments(first: 1)` is fetched alongside `totalCount` so the verdict
+#    can also report the opening commenter's login — `totalCount` itself is
+#    connection metadata and is accurate regardless of the `first` cap (see
+#    the resolved-without-disposition header section above).
+REVIEW_THREADS="$(paginate_pr_connection "reviewThreads" "id isResolved isOutdated path comments(first: 1) { totalCount nodes { author { login } } }")"
 
 UNRESOLVED_ACTIVE_THREADS="$(printf '%s' "$REVIEW_THREADS" | jq -c '[.[] | select(.isResolved == false and .isOutdated == false)]')"
 UNRESOLVED_ACTIVE_COUNT="$(printf '%s' "$UNRESOLVED_ACTIVE_THREADS" | jq 'length')"
@@ -330,6 +410,15 @@ UNRESOLVED_OUTDATED_COUNT="$(printf '%s' "$UNRESOLVED_OUTDATED_THREADS" | jq 'le
 UNRESOLVED_TOTAL_COUNT="$((UNRESOLVED_ACTIVE_COUNT + UNRESOLVED_OUTDATED_COUNT))"
 
 RESOLVED_THREAD_COUNT="$(printf '%s' "$REVIEW_THREADS" | jq '[.[] | select(.isResolved == true)] | length')"
+
+# ── Resolved-without-disposition (#3693) — see header section above for the
+#    heuristic and its documented limits. `(.comments.totalCount // 0) <= 1`
+#    means "only the original comment (or none at all) — no reply from
+#    anyone before resolution." Missing `.comments` (old fixtures with no
+#    resolved threads never hit this select) defaults to 0, which is
+#    correctly conservative (flagged) rather than silently passing.
+RESOLVED_WITHOUT_DISPOSITION_THREADS="$(printf '%s' "$REVIEW_THREADS" | jq -c '[.[] | select(.isResolved == true) | select((.comments.totalCount // 0) <= 1)]')"
+RESOLVED_WITHOUT_DISPOSITION_COUNT="$(printf '%s' "$RESOLVED_WITHOUT_DISPOSITION_THREADS" | jq 'length')"
 
 # ── Verdict — the ONE place the merge-ready condition is computed ──────────
 #
@@ -375,6 +464,21 @@ if [[ "$UNRESOLVED_OUTDATED_COUNT" -gt 0 ]]; then
     done < <(printf '%s' "$UNRESOLVED_OUTDATED_THREADS" | jq -c '.[]')
 fi
 
+if [[ "$RESOLVED_WITHOUT_DISPOSITION_COUNT" -gt 0 ]]; then
+    CONVERGED="false"
+    while IFS= read -r row; do
+        path="$(printf '%s' "$row" | jq -r '.path')"
+        id="$(printf '%s' "$row" | jq -r '.id')"
+        opener="$(printf '%s' "$row" | jq -r '.comments.nodes[0].author.login // "unknown"')"
+        echo "BLOCK PR #$PR: resolved review thread on '$path' (id=$id, opened by '$opener') has NO disposition reply — post 'Disposition: fixed|refuted|superseded|follow-up' with evidence before resolving (resolved-to-clear signature; see #3647/#3693)" >&2
+    done < <(printf '%s' "$RESOLVED_WITHOUT_DISPOSITION_THREADS" | jq -c '.[]')
+fi
+
+if [[ "$INDEPENDENT_REVIEW_PENDING" == "true" ]]; then
+    CONVERGED="false"
+    echo "BLOCK PR #$PR: 'needs-deep-review' label present — an independent review is in flight; convergence is blocked until the reviewer posts a verdict, confirmed defects are fixed/refuted, and the label clears (see #3693)" >&2
+fi
+
 if [[ "$STALE_BOT_REVIEW_COUNT" -gt 0 ]]; then
     while IFS= read -r row; do
         login="$(printf '%s' "$row" | jq -r '.login')"
@@ -386,7 +490,7 @@ fi
 # ── Report ───────────────────────────────────────────────────────────────────
 
 if [[ "$CONVERGED" == "true" ]]; then
-    echo "OK   PR #$PR: review convergence achieved at $HEAD_REF_OID (0 pending reviewers, 0 stale human reviews, 0 unresolved threads [$UNRESOLVED_ACTIVE_COUNT active + $UNRESOLVED_OUTDATED_COUNT outdated], $RESOLVED_THREAD_COUNT resolved, $STALE_BOT_REVIEW_COUNT stale-bot-advisory)"
+    echo "OK   PR #$PR: review convergence achieved at $HEAD_REF_OID (0 pending reviewers, 0 stale human reviews, 0 unresolved threads [$UNRESOLVED_ACTIVE_COUNT active + $UNRESOLVED_OUTDATED_COUNT outdated], $RESOLVED_THREAD_COUNT resolved [0 without disposition], 0 independent review pending, $STALE_BOT_REVIEW_COUNT stale-bot-advisory)"
 else
     # Per the documented output contract (script header + review-convergence.md):
     # stdout always carries a human-readable summary line + the JSON verdict,
@@ -407,7 +511,9 @@ jq -n \
     --argjson unresolvedOutdated "$UNRESOLVED_OUTDATED_COUNT" \
     --argjson unresolvedTotal "$UNRESOLVED_TOTAL_COUNT" \
     --argjson resolved "$RESOLVED_THREAD_COUNT" \
-    '{pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, stale_reviews: $stale, stale_bot_reviews: $staleBot, unresolved_active: $unresolvedActive, unresolved_outdated: $unresolvedOutdated, unresolved_total: $unresolvedTotal, resolved_threads: $resolved}'
+    --argjson resolvedWithoutDisposition "$RESOLVED_WITHOUT_DISPOSITION_COUNT" \
+    --argjson independentReviewPending "$INDEPENDENT_REVIEW_PENDING" \
+    '{pr: $pr, headRefOid: $head, converged: $converged, pending_reviewers: $pending, stale_reviews: $stale, stale_bot_reviews: $staleBot, unresolved_active: $unresolvedActive, unresolved_outdated: $unresolvedOutdated, unresolved_total: $unresolvedTotal, resolved_threads: $resolved, resolved_without_disposition: $resolvedWithoutDisposition, independent_review_pending: $independentReviewPending}'
 
 if [[ "$CONVERGED" == "true" ]]; then
     exit 0
