@@ -20,7 +20,7 @@ The script checks:
 2. **Worktree isolation** — Running inside a git worktree, not the main checkout. Exit 2 if failed.
 3. **No merge conflicts** — No unresolved conflict markers in the working tree. Exit 3 if failed.
 4. **cwd isolation** — Not running from the main repo root. Exit 4 if failed.
-5. **CARGO_TARGET_DIR isolation** — Computes the recommended `CARGO_TARGET_DIR` (a per-branch path under `/tmp/`) and reports it. Prevents shared build artifact collisions between concurrent agents. **Note:** Because the script runs in a subshell, you must set the variable yourself before running cargo commands — see the builder environment setup section.
+5. **CARGO_TARGET_DIR isolation** — Confirms isolation is automatic: cargo's default (unconfigured) target-dir resolves to `<workspace-root>/target`, which for a `git worktree` checkout is this worktree's own directory. **Do not `export CARGO_TARGET_DIR`** — an env var set anywhere (including a stale line in a shell profile) overrides that per-worktree default for every subsequently-sourced shell, regardless of which worktree/branch it's actually in (issue #3854). If the script reports `CARGO_TARGET_DIR` already set, treat that as a signal to investigate, not a setup step to keep.
 6. **No git stash entries** — Git stash is shared across all worktrees. Any entries risk cross-contamination between agents. Exit 6 if failed.
 
 ## Interpreting results
