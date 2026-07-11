@@ -94,12 +94,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conformance reference, never a shipped path); and release archives now fail
   validation if they bundle external Perl tooling or legacy bridge payloads.
   (#3277, #3279, #3282, #3348)
-- **VS Code extension modernized to the TypeScript 7 / Oxc / Rolldown
-  toolchain.** The packaged VSIX shrank from 458 files / 1.25 MB to 33 files /
-  291 KB (~93% fewer files, ~77% smaller) — faster install and download. See
-  [vscode-extension/CHANGELOG.md](vscode-extension/CHANGELOG.md) for the full
-  toolchain detail (TS7 type-checking, Oxlint, Oxfmt, Rolldown bundling).
-  (#3645, #3690, #3721, #3736, #3755)
 
 ### Fixed
 
