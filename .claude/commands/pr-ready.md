@@ -56,7 +56,7 @@ Do not reproduce or modify its query locally.
 
 **Never enable or retain auto-merge, and never mark a PR ready for merge
 pickup, while the check above exits non-zero.** Threads must be resolved
-for a reason (fixed/refuted/superseded/accepted-with-follow-up), each with
+for a reason (fixed/refuted/superseded/follow-up), each with
 a machine-readable disposition reply posted BEFORE resolution — see the
 canonical convention in
 [.claude/reference/review-convergence.md § Disposition-reply

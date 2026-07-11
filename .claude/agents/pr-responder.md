@@ -68,7 +68,7 @@ For each bot comment / CI failure / review conversation:
 
 - **Fix everything, argue nothing you can't back with evidence.** If CI says title is wrong, fix the title. If clippy warns, fix the warning. If a test fails, fix the code. If a comment is wrong, refute it with evidence rather than silently ignoring it.
 - **Verify after fixing** — `cargo test -p <crate>` after each commit.
-- **Reply with evidence** — "Fixed: updated PR title to include (#NNN). CI should re-run."
+- **Reply with the canonical disposition** — every thread reply carries `Disposition:` and `Evidence:` per the convention, e.g. `"Disposition: fixed\nEvidence: <commit-sha> + test <name>"` for a title fix (`(#NNN)` added, CI re-run confirms); `"Disposition: refuted\nEvidence: <file:line>: <reasoning>"` for a refute.
 - **Resolve conversations for a reason, never performatively.** Post the
   `Disposition:`/`Evidence:` reply (see
   [.claude/reference/review-convergence.md](../reference/review-convergence.md#disposition-reply-convention-before-calling-resolvereviewthread))

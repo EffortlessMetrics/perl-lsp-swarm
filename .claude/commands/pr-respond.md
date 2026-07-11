@@ -52,14 +52,16 @@ Evidence: <commit sha + test name>  /  <file:line + why>  /  <superseding head s
 ```bash
 gh api repos/:owner/:repo/pulls/$ARGUMENTS/comments/<comment-id>/replies \
   -f body="Disposition: fixed
-Evidence: <commit-hash>; test <name>"
+Evidence: <commit-hash> + test <name>"
 ```
 
 Or for general review comments:
 ```bash
 gh pr comment $ARGUMENTS --body "Addressed review feedback:
-- <comment 1>: Disposition: fixed / Evidence: <hash>; test <name>
-- <comment 2>: Disposition: refuted / Evidence: <file:line>; <reasoning>
+- <comment 1>: Disposition: fixed
+  Evidence: <hash> + test <name>
+- <comment 2>: Disposition: refuted
+  Evidence: <file:line>: <reasoning>
 "
 ```
 
