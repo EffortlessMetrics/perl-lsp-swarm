@@ -502,7 +502,12 @@ impl TypeHierarchyProvider {
     // Helper methods
 
     fn find_node_at_offset<'a>(&self, node: &'a Node, offset: usize) -> Option<&'a Node> {
-        if offset >= node.location.start && offset < node.location.end {
+        // Inclusive end: a caret resting at the trailing edge of a token (the
+        // common "caret just after the word" position produced by
+        // double-click-select) is treated as on-token — matching the sibling
+        // references (navigation/references.rs) and document_highlight
+        // providers, which use the same inclusive-end convention.
+        if offset >= node.location.start && offset <= node.location.end {
             // First check children
             if let Some(children) = self.get_children(node) {
                 for child in children {
@@ -595,6 +600,30 @@ mod tests {
     use super::*;
     use perl_parser_core::parser::Parser;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn test_prepare_at_trailing_edge_of_package_name() {
+        // "package MyClass;" -- the Package node spans byte offsets 0..15,
+        // so offset 15 is the caret resting immediately after "MyClass"
+        // (before the ';'), the common "caret just after the word" position
+        // produced by double-click-select. Prior to the inclusive-end fix
+        // in `find_node_at_offset`, this offset fell outside the half-open
+        // `[start, end)` range and `prepare` returned `None`.
+        let code = "package MyClass;\nuse parent 'BaseClass';\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = TypeHierarchyProvider::new();
+
+        let items = provider.prepare(&ast, code, 15);
+        let items = must_some(items);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "MyClass");
+
+        // Guard against over-widening: one byte further (on the ';') must
+        // still find nothing, since it belongs to neither the Package nor
+        // the following Use node.
+        assert!(provider.prepare(&ast, code, 16).is_none());
+    }
 
     #[test]
     fn test_type_hierarchy_for_package() {
