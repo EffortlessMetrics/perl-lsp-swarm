@@ -220,12 +220,19 @@ fn classify_in_progress(
 ///
 /// Precedence:
 /// 1. Ambiguous program authority (`resolved_program` unset) -> `Blocked`.
-/// 2. Guard A (#3696 item B): every `InProgress` candidate must reconcile
-///    against live PR state (exactly one matching open PR) -> otherwise
-///    `Blocked` with `in_progress_state_requires_reconciliation`, naming
-///    the unreconciled candidate (declaration order). This runs BEFORE
-///    rule 3 below so a stale/identity-less in-progress milestone can never
-///    be silently skipped in favor of a later Pending sibling.
+/// 2. Guard A (#3696 item B): every `InProgress` MILESTONE candidate
+///    (`lane.is_none()` — the same milestone-vs-lane-routing discriminator
+///    `load_milestone_candidates`/`load_lane_routing_candidates` already
+///    establish: milestone candidates always have `lane: None`, lane work
+///    items always carry `lane: Some(_)`) must reconcile against live PR
+///    state (exactly one matching open PR) -> otherwise `Blocked` with
+///    `in_progress_state_requires_reconciliation`, naming the unreconciled
+///    candidate (declaration order). This runs BEFORE rule 3 below so a
+///    stale/identity-less in-progress milestone can never be silently
+///    skipped in favor of a later Pending sibling. Scoped to milestones
+///    ONLY (decision 3, #3696 item B): a lane work item is legitimately
+///    identity-less/in-progress by design (the #3634 trust lane), so it
+///    must never trip this guard.
 /// 3. A live open PR already references any non-terminal (not
 ///    `Completed`/`Deferred`) candidate in this program -> `Blocked`,
 ///    naming the PR (never mutated/closed here). Live PR state outranks
@@ -248,7 +255,10 @@ pub fn select_next(snapshot: &SelectionSnapshot) -> SelectionDecision {
     };
 
     let mut guard_a_blockers = Vec::new();
-    for candidate in snapshot.candidates.iter().filter(|c| c.status == MilestoneStatus::InProgress)
+    for candidate in snapshot
+        .candidates
+        .iter()
+        .filter(|c| c.status == MilestoneStatus::InProgress && c.lane.is_none())
     {
         match classify_in_progress(
             candidate,
@@ -568,6 +578,11 @@ fn contains_issue_url(text: &str, repository: &str, issue: u64) -> bool {
 ///   of `manifest::validate_milestone_ledger`'s hard violations, so
 ///   `check-active-goal-manifest` is never red-CI'd by this): `Pending`
 ///   candidate with no issue.
+///
+/// Scoped to MILESTONE candidates only (`lane.is_none()`, mirroring Guard
+/// A's scoping in `select_next` and decision 3, #3696 item B): a lane work
+/// item is legitimately identity-less by design (the #3634 trust lane), so
+/// it must never generate an identity-drift finding here either.
 pub fn reconcile_in_progress(
     candidates: &[MilestoneCandidate],
     open_prs: &[LiveOpenPr],
@@ -575,7 +590,7 @@ pub fn reconcile_in_progress(
     repository: &str,
 ) -> Vec<ReconciliationFinding> {
     let mut findings = Vec::new();
-    for candidate in candidates {
+    for candidate in candidates.iter().filter(|c| c.lane.is_none()) {
         match candidate.status {
             MilestoneStatus::InProgress => match candidate.issue {
                 None => findings.push(ReconciliationFinding {
@@ -1206,6 +1221,60 @@ mod tests {
         }
     }
 
+    /// A lane-routing work item candidate — `lane: Some(_)`, the same
+    /// discriminator `load_lane_routing_candidates` sets (milestone
+    /// candidates always have `lane: None` via `candidate` above).
+    fn lane_candidate(id: &str, status: MilestoneStatus, lane: &str) -> MilestoneCandidate {
+        let mut c = candidate(id, status, &[]);
+        c.lane = Some(lane.to_owned());
+        c
+    }
+
+    #[test]
+    fn lane_work_item_in_progress_without_issue_does_not_trip_guard_a() {
+        // Guard A is MILESTONE-only (decision 3, #3696 item B): a
+        // lane-routing work item (`lane: Some(_)`) that is in_progress
+        // with no issue is legitimately identity-less by design (the
+        // #3634 trust lane) and must never trip
+        // `in_progress_state_requires_reconciliation`. With no Pending
+        // sibling at all, this must fall all the way through to
+        // `no_eligible_candidate` -- exactly the real
+        // `real_perl_editor_trust` lane's current live shape (one
+        // in_progress work item, no issue, no Pending sibling).
+        let in_flight = lane_candidate("wi-1", MilestoneStatus::InProgress, "reliability");
+        let snapshot = base_snapshot(vec![in_flight]);
+
+        let decision = select_next(&snapshot);
+        match decision {
+            SelectionDecision::Blocked(blockers) => {
+                assert_eq!(blockers.len(), 1);
+                assert_eq!(blockers[0].kind, "no_eligible_candidate");
+            }
+            other => panic!("expected Blocked(no_eligible_candidate), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lane_work_item_in_progress_without_issue_still_allows_a_pending_sibling_to_be_selected() {
+        // Same guard, but with a Pending sibling present: Guard A must not
+        // hard-block on the identity-less in_progress lane item, so the
+        // Pending sibling (which carries its own issue, satisfying the
+        // unrelated `pending_candidate_missing_issue` gate from #3701) is
+        // still selectable. This is the scenario the reviewer flagged:
+        // "it only looks harmless today because that lane has zero
+        // Pending siblings -- add one and Guard A wrongly hard-blocks it."
+        let in_flight = lane_candidate("wi-1", MilestoneStatus::InProgress, "reliability");
+        let mut pending = lane_candidate("wi-2", MilestoneStatus::Pending, "reliability");
+        pending.issue = Some(4242);
+        let snapshot = base_snapshot(vec![in_flight, pending]);
+
+        let decision = select_next(&snapshot);
+        match decision {
+            SelectionDecision::Selected(packet) => assert_eq!(packet.id, "wi-2"),
+            other => panic!("expected Selected(wi-2), got {other:?}"),
+        }
+    }
+
     fn reconciliation_candidate(
         id: &str,
         status: MilestoneStatus,
@@ -1274,5 +1343,27 @@ mod tests {
             findings.iter().any(|f| f.milestone_id == "M4" && f.kind == "pending_without_identity")
         );
         assert!(!findings.iter().any(|f| f.milestone_id == "M5"));
+    }
+
+    #[test]
+    fn reconcile_in_progress_never_flags_a_lane_work_item() {
+        // `reconcile_in_progress` mirrors Guard A's milestone-only scoping
+        // (`lane.is_none()`): a lane work item (`lane: Some(_)`) that is
+        // in_progress or pending with no issue is expected to lack one by
+        // design and must never generate an identity-drift finding here.
+        let mut lane_in_progress =
+            reconciliation_candidate("wi-1", MilestoneStatus::InProgress, None);
+        lane_in_progress.lane = Some("reliability".to_owned());
+        let mut lane_pending = reconciliation_candidate("wi-2", MilestoneStatus::Pending, None);
+        lane_pending.lane = Some("reliability".to_owned());
+
+        let findings = reconcile_in_progress(
+            &[lane_in_progress, lane_pending],
+            &[],
+            &[],
+            "EffortlessMetrics/perl-lsp-swarm",
+        );
+
+        assert!(findings.is_empty(), "expected no findings for lane work items, got {findings:?}");
     }
 }
