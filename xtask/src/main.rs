@@ -4080,7 +4080,27 @@ fn run_cli(cli: Cli) -> Result<()> {
         },
         Commands::Changelog { command } => match command {
             ChangelogCommand::Check { base, changed_files, pr_body_file, self_test, root } => {
-                tasks::changelog::check(base, changed_files, pr_body_file, self_test, root)
+                // Three-outcome contract (see xtask/src/tasks/changelog.rs docs):
+                //   Ok(PolicySatisfied | AdvisoryFinding) => exit 0.
+                //   Ok(BlockingViolation)                 => exit 1 (only reachable
+                //     once policy/changelog.toml's `blocking_enforced_from` is set
+                //     and reached).
+                //   Err(instrument/config failure)         => exit 2, distinct from
+                //     both — never a silent pass, never a policy verdict.
+                match tasks::changelog::check(base, changed_files, pr_body_file, self_test, root) {
+                    Ok(
+                        tasks::changelog::CheckOutcome::PolicySatisfied
+                        | tasks::changelog::CheckOutcome::AdvisoryFinding,
+                    ) => Ok(()),
+                    Ok(tasks::changelog::CheckOutcome::BlockingViolation) => {
+                        eprintln!("changelog check: blocking policy violation");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("changelog check: instrument failure: {e}");
+                        std::process::exit(2);
+                    }
+                }
             }
         },
         Commands::GateReceipts { command } => match command {

@@ -15,11 +15,16 @@ coexist:
 
 ## PR-time release notes (Changie)
 
-> **Status: FOUNDATION / ADVISORY (issue #3768).** This flow is wired into an
-> **advisory** check that never blocks a PR. Release execution — Cargo
-> versions, publishing, and the git-cliff generation documented below — is
-> **unchanged**. A follow-up PR decides whether/when fragments become
-> merge-blocking and whether Changie replaces the git-cliff step.
+> **Status: FOUNDATION / ADVISORY (tracking issue #3784 — the Changie
+> program; #3768 is the retrospective baseline artifact only).** This flow is
+> wired into a check that always exits 0 or 2 today — never 1 — because the
+> blocking boundary (`blocking_enforced_from` in `policy/changelog.toml`) is
+> unset. This PR does not change release execution: Cargo versions,
+> publishing, and the git-cliff generation documented below remain the
+> versioning/tag/publish authority, and git-cliff remains an audit lens. A
+> later reviewed cutover makes Changie batching the changelog-preparation
+> authority; a follow-up PR decides whether/when fragments become
+> merge-blocking.
 
 ### Why
 
@@ -75,8 +80,7 @@ or add a tracked note under `.changes/exemptions/<slug>.md`. Recognized
 ### The advisory check
 
 ```bash
-# Check the current branch's disposition against origin/main (advisory: prints
-# findings, always exits 0, never blocks a PR).
+# Check the current branch's disposition against origin/main.
 cargo xtask changelog check
 
 # Validate + render the sample fragments end-to-end (requires `changie`).
@@ -91,16 +95,31 @@ feature PR hand-edits a generated changelog. It runs in CI as the non-required
 **Changelog Ledger (Advisory)** workflow (`.github/workflows/changelog-advisory.yml`).
 
 `changie` is pinned via the nix devShell (`flake.nix`) for local use and
-downloaded at a pinned version in the advisory CI workflow.
+downloaded at a pinned, checksum-verified version in the advisory CI workflow.
 
-### Enforcement cutoff (#3768)
+**Exit codes** (see `xtask/src/tasks/changelog.rs` module docs for the full
+contract): `0` = policy satisfied or an advisory finding was reported; `1` =
+blocking violation (unreachable today — `blocking_enforced_from` is unset);
+`2` = instrument/config failure (malformed config, unresolvable changed-file
+list, `changie` render crash) — never a policy verdict.
 
-Fragments/exemptions are only *expected* for PRs merged **at or after** the
-enforcement cutoff recorded in `policy/changelog.toml`
-(`fragment_enforcement_from`). Everything before the cutoff is covered by the
-comprehensive 0.18.0 retrospective changelog audit in **#3768**. Until #3768
-merges the cutoff is a `TODO-3768-MERGE-SHA` placeholder and the advisory check
-reports the boundary as inactive (it never nags for pre-cutoff history).
+### The three-clock cutoff model
+
+A single "cutoff SHA" is the wrong model: it silently drops any PR merged
+between when #3768's manual catalog was *authored* and when #3768 itself
+*merged* (e.g. #3765). `policy/changelog.toml` instead declares three
+independent clocks:
+
+| Field | Meaning |
+|-------|---------|
+| `retrospective_covered_through` | Last `main` SHA #3768's manual catalog actually audited (a conservative floor). |
+| `advisory_expected_from` | This PR's (#3775) own merge SHA. A disposition is *expected* (missing = reported finding, exit 0) only for PRs whose base is at/after this commit. Empty = not yet armed. |
+| `blocking_enforced_from` | A future SHA. A missing disposition is a *blocking* violation (exit 1) only for PRs whose base is at/after this commit. Empty = no blocking path is reachable, ever. |
+
+The half-open interval `(retrospective_covered_through, advisory_expected_from]`
+— PRs merged after the retrospective floor but before the advisory boundary
+armed — is covered by a separate bridge audit (a later PR), not by this
+policy file.
 
 ---
 
