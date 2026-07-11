@@ -166,11 +166,45 @@ def parse_worktree_list() -> list[dict[str, str]]:
     return entries
 
 
+def fetch_origin(refspec: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Fetch from `origin` so ref resolution reflects current remote state.
+
+    Best-effort: fetch failures (offline, no `origin` remote, etc.) do not
+    raise — callers fall back to whatever local refs are already available.
+    """
+    cmd = ["fetch", "origin"]
+    if refspec:
+        cmd.append(refspec)
+    return git(cmd, check=False)
+
+
 def base_ref() -> str:
     for candidate in DEFAULT_BRANCH_BASES:
         if git(["rev-parse", "--verify", f"{candidate}^{{commit}}"], check=False).returncode == 0:
             return candidate
     return "HEAD"
+
+
+def origin_branch_ref(branch: str) -> str | None:
+    """Return ``origin/<branch>`` if `branch` already exists on `origin`.
+
+    Fetches that specific branch ref from `origin` first (via an explicit
+    refspec, so the local remote-tracking ref is updated regardless of git
+    version defaults) so the check reflects current remote state rather than
+    a possibly-absent or stale local tracking ref.
+
+    This is the fix for issue #3749: slot re-allocation for a branch that is
+    already pushed to `origin` must check out that branch's real content,
+    never branch off local/base main.
+    """
+    wanted = normalize_branch(branch)
+    if not wanted or wanted == "HEAD":
+        return None
+    fetch_origin(f"+refs/heads/{wanted}:refs/remotes/origin/{wanted}")
+    proc = git(["ls-remote", "--exit-code", "--heads", "origin", wanted], check=False)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return f"origin/{wanted}"
 
 
 def branch_exists_elsewhere(branch: str, entries: list[dict[str, str]], slot_id: str | None = None) -> str | None:
@@ -363,7 +397,18 @@ def allocate(args: argparse.Namespace, state: dict[str, Any], state_path: Path, 
     if slot.get("status") not in {"idle", "missing", "retired"} and not args.force:
         raise RuntimeError(f"slot {args.slot!r} is currently {slot.get('status')!r}; use --force to reallocate")
 
-    base = args.ref or base_ref()
+    if args.ref:
+        # Explicit override: honor it as-is, no origin-branch inference.
+        base = args.ref
+    else:
+        # Issue #3749: never silently branch off local/base main when the
+        # requested branch is already pushed to origin — check out its real
+        # content instead. Only cut from base_ref() (freshly fetched) when
+        # the branch is genuinely new.
+        base = origin_branch_ref(args.branch)
+        if base is None:
+            fetch_origin()
+            base = base_ref()
     action = "reuse" if slot_path.exists() else "create"
 
     if args.dry_run:
