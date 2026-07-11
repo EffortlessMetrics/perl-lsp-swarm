@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!-- changelog coverage: retrospective_covered_through = da86c123a (this PR's
+     base commit, conservative floor for the audited range). Post-audit
+     user-facing PRs merged after this PR was authored are NOT covered here
+     and are bridge-backfill candidates for the Changie ledger (#3784). -->
+
 ### Changed
 
 - **VS Code extension toolchain modernized to TypeScript 7 / Oxc / Rolldown**,
@@ -226,13 +231,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-- **`didChange` returns before parsing completes.** Full-parse and parent-map
-  construction moved off the `didChange` mutation path onto a bounded pool of
-  off-lock parse workers; a 20-edit burst on a 78KB fixture dropped
-  `did_change_handler_max_ms` from 269ms to 1.6ms. Providers reading
-  mid-flight now see an explicit pending-parse generation gap instead of
-  racing a stale or half-updated parse. (#3618, Fresh Facts Fast program
-  #3396)
+- **Editor responsiveness: `didChange` returns before parsing completes.**
+  Moved full parsing and parent-map construction out of the
+  `textDocument/didChange` critical path and onto a bounded, latest-only
+  background worker. Stale parses and parse-derived effects remain
+  generation-gated. In the 78 KB, 20-edit Neovim receipt, maximum
+  `didChange` handler time fell from about 269 ms to 1.6 ms. (#3618, Fresh
+  Facts Fast program #3396)
 - **Type inference is cached per document.** Hover and completion previously
   rebuilt the type-inference engine on every request for an unchanged
   document; it's now cached by URI and content hash and invalidated on
