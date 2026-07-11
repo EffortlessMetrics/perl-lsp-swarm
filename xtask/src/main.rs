@@ -1341,6 +1341,10 @@ enum Commands {
         /// Write receipt JSON to target/receipts/corpus-sweep.json
         #[arg(long)]
         receipt: bool,
+
+        /// Prefix for the generated receipt file target/receipts/<profile>-corpus-sweep.json
+        #[arg(long)]
+        profile: Option<String>,
     },
 
     /// Run upstream Perl core test harness against perl-lsp compiler modes.
@@ -3789,22 +3793,10 @@ fn run_cli(cli: Cli) -> Result<()> {
             enforce,
             verbose,
             receipt,
-        } => {
-            let base_roots = roots.unwrap_or_else(parser_corpus_sweep::default_base_roots);
-            let corpus_roots = parser_corpus_sweep::resolve_corpus_roots(&base_roots);
-            parser_corpus_sweep::run(parser_corpus_sweep::SweepConfig {
-                corpus_profile: None,
-                base_roots,
-                corpus_roots,
-                manifest_path: manifest,
-                manifest_perl5lib: Vec::new(),
-                output_path: output,
-                baseline_path: baseline,
-                enforce,
-                verbose,
-                receipt,
-            })
-        }
+            profile,
+        } => parser_corpus_sweep::run(build_parser_corpus_sweep_config(
+            roots, manifest, output, baseline, enforce, verbose, receipt, profile,
+        )),
         Commands::PerlCoreHarness { command } => match command {
             PerlCoreHarnessCommand::Prepare { perl_ref, output_dir } => {
                 perl_core_harness::prepare(perl_core_harness::PrepareConfig {
@@ -4358,6 +4350,36 @@ fn print_top_level_commands() {
     }
 }
 
+/// Build the `SweepConfig` for the `parser-corpus-sweep` command, resolving
+/// `roots` to concrete corpus directories and threading `profile` through to
+/// `SweepConfig.corpus_profile` (used for report/receipt naming).
+#[allow(clippy::too_many_arguments)]
+fn build_parser_corpus_sweep_config(
+    roots: Option<Vec<PathBuf>>,
+    manifest: Option<PathBuf>,
+    output: Option<PathBuf>,
+    baseline: Option<PathBuf>,
+    enforce: bool,
+    verbose: bool,
+    receipt: bool,
+    profile: Option<String>,
+) -> parser_corpus_sweep::SweepConfig {
+    let base_roots = roots.unwrap_or_else(parser_corpus_sweep::default_base_roots);
+    let corpus_roots = parser_corpus_sweep::resolve_corpus_roots(&base_roots);
+    parser_corpus_sweep::SweepConfig {
+        corpus_profile: profile,
+        base_roots,
+        corpus_roots,
+        manifest_path: manifest,
+        manifest_perl5lib: Vec::new(),
+        output_path: output,
+        baseline_path: baseline,
+        enforce,
+        verbose,
+        receipt,
+    }
+}
+
 fn convert_gate_receipts_format(format: GateReceiptsFormat) -> gate_receipts::OutputFormat {
     match format {
         GateReceiptsFormat::Human => gate_receipts::OutputFormat::Human,
@@ -4408,6 +4430,50 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn parser_corpus_sweep_accepts_profile_flag() -> TestResult {
+        match Cli::try_parse_from(["xtask", "parser-corpus-sweep", "--profile", "cpan"])?.command {
+            Commands::ParserCorpusSweep { profile, .. } => {
+                assert_eq!(profile.as_deref(), Some("cpan"));
+            }
+            _ => return Err(std::io::Error::other("expected parser-corpus-sweep command").into()),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn parser_corpus_sweep_profile_defaults_to_none() -> TestResult {
+        match Cli::try_parse_from(["xtask", "parser-corpus-sweep"])?.command {
+            Commands::ParserCorpusSweep { profile, .. } => {
+                assert_eq!(profile, None);
+            }
+            _ => return Err(std::io::Error::other("expected parser-corpus-sweep command").into()),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn parser_corpus_sweep_threads_profile_into_sweep_config() {
+        let config = build_parser_corpus_sweep_config(
+            Some(Vec::new()),
+            None,
+            None,
+            None,
+            false,
+            false,
+            false,
+            Some("cpan".to_string()),
+        );
+
+        assert_eq!(
+            config.corpus_profile.as_deref(),
+            Some("cpan"),
+            "--profile should flow through to SweepConfig.corpus_profile"
+        );
     }
 
     #[test]
