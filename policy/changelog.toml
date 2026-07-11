@@ -1,0 +1,48 @@
+# Changelog ledger policy (issue #3768).
+#
+# Consumed by `cargo xtask changelog check`. FOUNDATION / ADVISORY: the check
+# prints findings and ALWAYS exits 0 in this PR. This file declares the projects
+# and the disposition rule; a follow-up PR flips `enforcement` to "blocking".
+
+schema_version = 1
+
+# "advisory" => the check never fails a PR (this PR).
+# "blocking"  => a future PR may make a missing disposition merge-blocking.
+enforcement = "advisory"
+
+# Enforcement cutoff. Fragments/exemptions are only EXPECTED for PRs merged at
+# or after this commit. Everything before it is covered by the comprehensive
+# 0.18.0 retrospective changelog audit (#3768).
+#
+# TODO(cutoff): fill with #3768's MERGE SHA once it lands. #3768
+# ("docs(changelog): record TS7/Oxc extension modernization for 0.18.0") is the
+# 0.18.0 baseline; its merge commit is the enforcement boundary. #3768 is not
+# merged yet, so this is a placeholder — the maintainer (or a one-line
+# follow-up commit) fills it after #3768 merges. Until then the advisory check
+# treats the cutoff as "not yet active" and only reports (never nags).
+fragment_enforcement_from = "TODO-3768-MERGE-SHA"
+
+# The two release-note projects. Keys match `.changie.yaml` project keys.
+[[projects]]
+key = "product"
+label = "Product (perl-lsp workspace)"
+changelog = "CHANGELOG.md"
+
+[[projects]]
+key = "vscode"
+label = "VS Code extension"
+changelog = "vscode-extension/CHANGELOG.md"
+
+# Every PR carries ONE explicit disposition: a Changie fragment OR an
+# exemption-with-reason drawn from these categories. This is NOT "every PR needs
+# a fragment" — an evidenced exemption is a first-class disposition.
+exemption_categories = [
+  "tests",                    # test-only changes
+  "ci",                       # CI/workflow/policy plumbing
+  "refactor",                 # behavior-preserving internal refactor
+  "generated-status",         # auto-generated status/metrics surfaces
+  "docs-no-contract-change",  # docs that change no user-facing contract
+  "deps",                     # dependency lockfile/version bumps
+  "release-prep",             # version bump + changelog batch PRs
+  "changelog-tooling",        # changes to the changelog tooling itself
+]

@@ -1,0 +1,68 @@
+name: Changelog Ledger (Advisory)
+
+# ADVISORY / NON-REQUIRED (issue #3768). Prints the PR's changelog disposition
+# (Changie fragment OR exemption) and validates any added fragment. It ALWAYS
+# succeeds — `cargo xtask changelog check` exits 0 by design — so it can never
+# block a merge. It is intentionally NOT listed in
+# `.ci/policies/required-checks.toml`. A follow-up PR decides if/when a missing
+# disposition becomes merge-blocking. This workflow changes no release
+# execution.
+#
+# Ubuntu-only (no Windows job — see CI runner economics).
+
+on:
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changelog-advisory-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+env:
+  # Pinned to the nixpkgs devShell version (flake.nix) for local/CI parity.
+  CHANGIE_VERSION: "1.25.0"
+
+jobs:
+  changelog-disposition:
+    name: Changelog disposition (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history so we can diff against the PR base SHA.
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install changie (pinned)
+        run: |
+          set -euo pipefail
+          url="https://github.com/miniscruff/changie/releases/download/v${CHANGIE_VERSION}/changie_${CHANGIE_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL "$url" -o /tmp/changie.tar.gz
+          mkdir -p /tmp/changie-bin
+          tar -xzf /tmp/changie.tar.gz -C /tmp/changie-bin changie
+          echo "/tmp/changie-bin" >> "$GITHUB_PATH"
+          /tmp/changie-bin/changie --version
+
+      - name: Config self-test (parse + render samples)
+        run: cargo xtask changelog check --self-test
+
+      - name: Disposition check (advisory)
+        if: github.event_name == 'pull_request'
+        env:
+          # Passed via env (not shell-interpolated) to avoid injection.
+          CHANGELOG_PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          git diff --name-only "${base}...HEAD" > /tmp/changed-files.txt || true
+          echo "Changed files:"
+          cat /tmp/changed-files.txt || true
+          echo "---"
+          cargo xtask changelog check --changed-files /tmp/changed-files.txt

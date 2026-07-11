@@ -1,6 +1,108 @@
 # Changelog Workflow
 
-This document describes the automated changelog generation system for perl-lsp using [git-cliff](https://git-cliff.org).
+This document describes changelog generation for perl-lsp. Two mechanisms
+coexist:
+
+1. **PR-time release-note fragments ([Changie](https://changie.dev)) — the new
+   direction.** Each PR records its own release note as a file-based fragment
+   (or an evidenced exemption) at the moment the change is made. See
+   [PR-time release notes (Changie)](#pr-time-release-notes-changie) below.
+2. **Release-time generation ([git-cliff](https://git-cliff.org)) — the current
+   execution path.** Unchanged. The sections after the Changie block document
+   it.
+
+---
+
+## PR-time release notes (Changie)
+
+> **Status: FOUNDATION / ADVISORY (issue #3768).** This flow is wired into an
+> **advisory** check that never blocks a PR. Release execution — Cargo
+> versions, publishing, and the git-cliff generation documented below — is
+> **unchanged**. A follow-up PR decides whether/when fragments become
+> merge-blocking and whether Changie replaces the git-cliff step.
+
+### Why
+
+Reconstructing a release changelog from hundreds of merged PRs is a release-time
+archaeology exercise. Changie moves the release-note decision to **PR time**:
+the author who made the change writes its note while the context is fresh, as a
+small YAML fragment under `.changes/unreleased/`. At release time
+`changie batch <version> --project <p>` folds every fragment into the project's
+Keep-a-Changelog file.
+
+### The disposition rule
+
+**Every PR carries exactly one explicit *disposition* — a fragment OR an
+exemption-with-reason.** This is *not* "every PR needs a fragment": an evidenced
+exemption is a first-class disposition.
+
+**Option A — add a fragment** (user-facing change):
+
+```bash
+changie new    # interactive: pick project, component, kind; write the body
+```
+
+This writes `.changes/unreleased/<project>-<PR>-<kind>-<HHMMSS>.yaml`. Fragments
+carry a `project:` field (`product` → `CHANGELOG.md`, `vscode` →
+`vscode-extension/CHANGELOG.md`), a `component`, a `kind`
+(Added/Changed/Fixed/Performance/Deprecated/Removed/Security), a body, and custom
+metadata (`PR`, optional `Slug`, `Breaking: no|yes`). See `.changes/samples/`
+for two worked examples. Do **not** hand-edit `CHANGELOG.md` /
+`vscode-extension/CHANGELOG.md` directly in a feature PR — add a fragment
+instead; those files are generated.
+
+**Option B — declare an exemption** (no user-facing change). Add a marker line
+to the **PR body**:
+
+```
+changelog-exempt: <category> — <reason>
+```
+
+or add a tracked note under `.changes/exemptions/<slug>.md`. Recognized
+`<category>` values (see `policy/changelog.toml`):
+
+| Category | For |
+|----------|-----|
+| `tests` | test-only changes |
+| `ci` | CI / workflow / policy plumbing |
+| `refactor` | behavior-preserving internal refactor |
+| `generated-status` | auto-generated status / metrics surfaces |
+| `docs-no-contract-change` | docs that change no user-facing contract |
+| `deps` | dependency lockfile / version bumps |
+| `release-prep` | version bump + changelog batch PRs |
+| `changelog-tooling` | changes to the changelog tooling itself |
+
+### The advisory check
+
+```bash
+# Check the current branch's disposition against origin/main (advisory: prints
+# findings, always exits 0, never blocks a PR).
+cargo xtask changelog check
+
+# Validate + render the sample fragments end-to-end (requires `changie`).
+cargo xtask changelog check --self-test
+```
+
+The check, for a PR's changed files, verifies that: (a) a valid fragment was
+added, OR (b) an explicit exemption is present, OR (c) the PR is a recognized
+release-prep. It validates each fragment's project/kind/component/PR metadata,
+confirms it renders via `changie batch --dry-run --keep`, and warns when a
+feature PR hand-edits a generated changelog. It runs in CI as the non-required
+**Changelog Ledger (Advisory)** workflow (`.github/workflows/changelog-advisory.yml`).
+
+`changie` is pinned via the nix devShell (`flake.nix`) for local use and
+downloaded at a pinned version in the advisory CI workflow.
+
+### Enforcement cutoff (#3768)
+
+Fragments/exemptions are only *expected* for PRs merged **at or after** the
+enforcement cutoff recorded in `policy/changelog.toml`
+(`fragment_enforcement_from`). Everything before the cutoff is covered by the
+comprehensive 0.18.0 retrospective changelog audit in **#3768**. Until #3768
+merges the cutoff is a `TODO-3768-MERGE-SHA` placeholder and the advisory check
+reports the boundary as inactive (it never nags for pre-cutoff history).
+
+---
 
 ## Overview
 
