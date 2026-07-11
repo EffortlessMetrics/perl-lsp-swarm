@@ -5,6 +5,45 @@
 
 INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // "main"')
+
+# M4b publication boundary (#3763, "publication-boundary moves DEFER -> BUILD"):
+# the PreToolUse hook payload self-identifies the calling subagent via
+# `agent_type` when Claude Code invokes a hook inside a subagent (absent at
+# the top level, which is why the jq filter above defaults to "main"). This
+# lets us deny the genuinely-irreversible PUBLISH actions -- `git push` in
+# any form and `gh pr merge` -- for review/audit personas specifically,
+# with no env var and no CLAUDE_AGENT_READONLY opt-in required. A
+# reviewer's local Edit/Write/git-commit stay available (the harness grants
+# them regardless of this hook, and they are reversible / never reach main
+# on their own) but the reviewer can never push or merge, so nothing it
+# writes locally can publish.
+#
+# REVIEW_AUDIT_AGENT_TYPES MUST stay in sync with
+# `xtask/src/tasks/agent_capability_policy.rs`'s `REVIEW_AUDIT_AGENTS` (the
+# same cohort already excluded from Edit/Write by #3771). Do not hand-edit
+# one without the other --
+# `.claude/hooks/tests/test_review_audit_agents_sync.sh` fails CI the
+# moment the two lists disagree.
+REVIEW_AUDIT_AGENT_TYPES="reviewer reviewer-deep diff-auditor maintainer-pr maintainer-issue architecture-reviewer advocatus-diaboli accuracy-scout research-verifier oppositional-planner plan-reviewer spec-test-code-match scout-find-ci-ops-gaps scout-find-dap-gaps scout-find-docs-receipt-drift scout-find-lsp-gaps scout-find-parser-gaps scout-find-robustness-gaps"
+
+is_review_audit_agent() {
+  case " $REVIEW_AUDIT_AGENT_TYPES " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if is_review_audit_agent "$AGENT_TYPE" && [ -n "$CMD" ]; then
+  if echo "$CMD" | grep -qE '(^|[^[:alnum:]_])git[[:space:]]+push([[:space:]]|$)'; then
+    echo "Blocked (publish boundary, #3763 M4b): agent_type=$AGENT_TYPE is a review/audit persona and may not 'git push'. Review/audit agents return findings; a writer, publisher, or the orchestrator performs the push." >&2
+    exit 2
+  fi
+  if echo "$CMD" | grep -qE '(^|[^[:alnum:]_])gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)'; then
+    echo "Blocked (publish boundary, #3763 M4b): agent_type=$AGENT_TYPE is a review/audit persona and may not 'gh pr merge'. Merging is an ops/orchestrator responsibility." >&2
+    exit 2
+  fi
+fi
 
 # M4b read-only shell (#3763): review/audit agents are mechanically read-only.
 # Their tool allowlist already excludes Edit/Write/NotebookEdit/Agent (see
