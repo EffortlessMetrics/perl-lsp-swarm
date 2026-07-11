@@ -272,9 +272,11 @@ fn test_scope_references_are_positive() -> TestResult {
 
 // ── 2. Fallback variable tests (no live session) ──────────────────────────────
 
-/// Without a live session the adapter returns deterministic fallback variables.
-/// The Locals fallback must contain only lexical-style names (no `::`) — no
-/// package-qualified or global built-in names.
+/// Without a live session the adapter returns an honest empty list for Locals.
+///
+/// When the B module is unavailable (fallback mode), we have no reliable way to
+/// enumerate `my` variables, so we return nothing rather than fake `$self`/`@_`
+/// placeholders that do not reflect the real program state (issue #1006).
 #[test]
 fn test_fallback_locals_scope_contains_no_package_or_global_names() -> TestResult {
     let mut adapter = DebugAdapter::new();
@@ -287,24 +289,13 @@ fn test_fallback_locals_scope_contains_no_package_or_global_names() -> TestResul
         .ok_or("locals variables request returned no body")?;
 
     let names = var_names(&body);
-    assert!(!names.is_empty(), "fallback locals scope must contain at least one variable");
 
-    // No variable in the locals fallback should contain "::" (package qualifier).
-    for name in &names {
-        assert!(
-            !name.contains("::"),
-            "fallback locals variable '{name}' must not contain '::' (would be a package var)"
-        );
-    }
-
-    // No variable in the locals fallback should be a known global built-in.
-    let known_globals = ["%ENV", "@ARGV", "$_", "$!", "$@", "$/", "$|", "$0", "$^W"];
-    for name in &names {
-        assert!(
-            !known_globals.contains(&name.as_str()),
-            "fallback locals variable '{name}' is a known global built-in — scope contamination"
-        );
-    }
+    // Locals fallback must be empty — returning fake placeholders would be misleading.
+    assert!(
+        names.is_empty(),
+        "#1006 regression: Locals fallback must return empty when B module is unavailable; \
+         got variables: {names:?}"
+    );
 
     Ok(())
 }
@@ -401,13 +392,13 @@ fn test_fallback_scopes_have_no_overlapping_variable_names() -> TestResult {
 /// When debugger output contains mixed variable kinds (lexicals, package-qualified,
 /// built-in globals), the Locals scope must only surface lexical-style names.
 ///
-/// This exercises `scope_allows_variable_name(1, name)` via the full
-/// `handle_request("variables", …)` path.
+/// This exercises the fallback path via the full `handle_request("variables", …)` path.
 ///
 /// NOTE: `push_recent_output_line_for_test` is `#[cfg(test)]` and private to
-/// the crate, so we use the `variables` fallback path for deterministic output.
-/// The filtering logic is further verified end-to-end by the Perl-requiring tests
-/// below.
+/// the crate, so we use the variables fallback path here.  The Locals fallback
+/// returns empty (issue #1006 — no fake $self/@_ placeholders); we verify the
+/// reference arithmetic and that the request succeeds with an empty-but-valid
+/// response.  Actual variable content is verified by the Perl-requiring e2e tests.
 #[test]
 fn test_locals_scope_reference_routes_to_scope_type_1() -> TestResult {
     let mut adapter = DebugAdapter::new();
@@ -425,14 +416,14 @@ fn test_locals_scope_reference_routes_to_scope_type_1() -> TestResult {
         "locals ref {locals_ref} must have remainder 1 (scope_type=locals)"
     );
 
-    // The variables request must succeed.
+    // The variables request must succeed (success=true, variables key present).
     let body = request_variables(&mut adapter, locals_ref)
         .ok_or("locals variables request for frame 5 failed")?;
+    assert!(body.get("variables").is_some(), "locals scope response must include 'variables' key");
+
+    // Fallback Locals is empty (no B module, no fake placeholders — issue #1006).
     let names = var_names(&body);
-    assert!(
-        !names.is_empty(),
-        "locals scope for frame {frame_id} must return at least one variable"
-    );
+    assert!(names.is_empty(), "#1006: Locals fallback must be empty; got: {names:?}");
 
     Ok(())
 }
