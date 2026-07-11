@@ -952,6 +952,41 @@ $obj->method();
     }
 
     #[test]
+    fn test_line_declares_custom_type_requires_boundary_for_every_keyword() {
+        // The boundary check guards a shared loop over all six declaration
+        // keywords, not just "type" -- each one has an ordinary-identifier
+        // false-positive sibling that must not be matched as a declaration.
+        let false_positives: &[(&str, &str)] = &[
+            ("subtypes => 1,", "s"),
+            ("class_typescript => 'x',", "script"),
+            ("role_typewriter => 'y',", "writer"),
+            ("enumerate(@list);", "erate"),
+            ("declared_variable = 5;", "d_variable"),
+        ];
+        for (line, bogus_name) in false_positives {
+            assert!(
+                !TypeDefinitionProvider::line_declares_custom_type(line, bogus_name),
+                "line `{line}` must not be mistaken for a declaration of `{bogus_name}`"
+            );
+        }
+
+        // The legitimate, word-boundary-anchored form for each keyword still matches.
+        let real_declarations: &[(&str, &str)] = &[
+            ("subtype PositiveInt => ...", "PositiveInt"),
+            ("class_type Bar => ...", "Bar"),
+            ("role_type Baz => ...", "Baz"),
+            ("enum Color => [qw(Red Green Blue)];", "Color"),
+            ("declare 'Foo', as 'Str';", "Foo"),
+        ];
+        for (line, name) in real_declarations {
+            assert!(
+                TypeDefinitionProvider::line_declares_custom_type(line, name),
+                "line `{line}` should still be recognized as declaring `{name}`"
+            );
+        }
+    }
+
+    #[test]
     fn test_find_custom_type_definition_in_docs_does_not_leak_to_keyword_prefix() {
         let provider = TypeDefinitionProvider::new();
         let mut documents = HashMap::new();
