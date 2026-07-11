@@ -15,6 +15,11 @@ Doctrine: `docs/reference/ISSUE_DISCOVERY_DOCTRINE.md`.
 Target: **$ARGUMENTS** (default: first wave — dap, lsp, parser, ci-ops,
 robustness, docs)
 
+A saved, reproducible port of Step 1's fan-out exists: the `issue-discovery`
+workflow (`.claude/workflows/issue-discovery.js`) — invoke it via the Workflow
+tool for a deterministic run of the same six scouts + triage synthesis instead
+of hand-issuing the `Agent()` calls below.
+
 ## Core rule
 
 > **Discovery can batch. Filing cannot.** Read-only sweeps run wide and in
