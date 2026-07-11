@@ -39,6 +39,24 @@ run_case() {
   fi
 }
 
+# Same as run_case, but builds the payload with `subagent_type` instead of
+# `agent_type` -- proves the defensive fallback (`.agent_type // .subagent_type
+# // "main"`) actually engages when only `subagent_type` is present.
+run_case_subagent_type_only() {
+  local label="$1" subagent_type="$2" cmd="$3" expected_exit="$4"
+  local actual payload
+
+  payload=$(jq -nc --arg t "$subagent_type" --arg c "$cmd" '{subagent_type:$t, tool_input:{command:$c}}')
+  actual=$(printf '%s' "$payload" | bash "$HOOK" >/dev/null 2>&1; echo $?)
+
+  if [ "$actual" = "$expected_exit" ]; then
+    echo "PASS  $label (exit $actual)"
+  else
+    echo "FAIL  $label (expected $expected_exit, got $actual) subagent_type=$subagent_type CMD=$cmd"
+    FAIL=1
+  fi
+}
+
 # --- (a) review/audit persona: git push blocked ---
 run_case "reviewer-deep: git push blocked"       "reviewer-deep" "git push origin HEAD"     2
 
@@ -87,6 +105,14 @@ run_case "reviewer-deep: (git push) blocked"       "reviewer-deep" '(git push)' 
 #     is NOT caught. This is an accepted gap, not a claim of adversarial
 #     sandboxing; expected result is ALLOW (exit 0), not a bug.
 run_case "KNOWN LIMITATION: sh -c 'git push' not caught" "reviewer-deep" 'sh -c "git push"'     0
+
+# --- subagent_type fallback (2026-07-11): agent_type is the confirmed,
+#     PRIMARY PreToolUse field (captured live from a real diff-auditor
+#     persona: agent_type="diff-auditor" populated, subagent_type null).
+#     subagent_type is read as a defensive fallback for other event shapes /
+#     future harness versions. A payload carrying ONLY subagent_type (no
+#     agent_type at all) must still be recognized and denied. ---
+run_case_subagent_type_only "subagent_type-only fallback: reviewer-deep git push blocked" "reviewer-deep" "git push" 2
 
 if [ "$FAIL" -eq 0 ]; then
   echo

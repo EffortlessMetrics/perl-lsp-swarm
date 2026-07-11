@@ -5,7 +5,14 @@
 
 INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
-AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // "main"')
+# agent_type is the confirmed PreToolUse subagent field (captured live,
+# 2026-07-11: a real diff-auditor persona's payload carried a populated
+# agent_type="diff-auditor" with subagent_type null) -- it stays PRIMARY.
+# subagent_type is read as a defensive fallback only, in case a future
+# harness version or a different event shape (e.g. an Agent-Teams teammate
+# session) populates that field instead. Absent both -> "main" (top-level
+# orchestrator), matching the confirmed top-level payload shape.
+AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // .subagent_type // "main"')
 
 # Shared regex fragments (#3763 deep-review hardening, 2026-07-11): the
 # publish-boundary and read-only-shell blocks below both match a git/gh

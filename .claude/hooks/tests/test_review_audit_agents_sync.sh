@@ -34,8 +34,8 @@ if [ -z "$policy_list" ]; then
   exit 1
 fi
 
-hook_sorted=$(printf '%s\n' $hook_list | sort -u)
-policy_sorted=$(printf '%s\n' $policy_list | sort -u)
+hook_sorted=$(printf '%s\n' "$hook_list" | tr ' ' '\n' | sort -u)
+policy_sorted=$(printf '%s\n' "$policy_list" | sort -u)
 
 if [ "$hook_sorted" = "$policy_sorted" ]; then
   count=$(printf '%s\n' "$hook_sorted" | wc -l | tr -d ' ')
