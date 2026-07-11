@@ -765,12 +765,15 @@ mod tests {
 
     #[test]
     fn mojolicious_does_not_suppress_missing_strict_or_warnings() {
-        // Mojolicious.pm's own import() (Mojolicious.pm, sub import) only
-        // forwards to Mojo::Base's import when the caller passes '-base' as
-        // an argument (`use Mojolicious -base;`). Plain `use Mojolicious;`
-        // with no arguments does not enable strict/warnings in the importer --
-        // it only loads the module. Only the `-base` form (or Mojolicious::Lite)
-        // wires in Mojo::Base's `-strict` behavior.
+        // Mojolicious.pm defines NO `sub import` of its own (verified against
+        // github.com/mojolicious/mojo/blob/main/lib/Mojolicious.pm) -- its
+        // very first line is `use Mojo::Base -base;`, which sets Mojolicious's
+        // own @ISA to include Mojo::Base. So `use Mojolicious;` in a downstream
+        // script resolves to the *inherited* `Mojo::Base::import()` (there is
+        // no Mojolicious::import to shadow it), which opens with
+        // `return unless my @flags = @_;`. A bare `use Mojolicious;` passes
+        // zero flags, so that inherited import returns immediately without
+        // touching strict/warnings -- it only loads the module.
         let diags = strict_warnings_diags("use Mojolicious;\nmy $x = 1;\n");
         assert!(
             diags.iter().any(|d| d.code.as_deref() == Some("PL100")),
@@ -785,10 +788,11 @@ mod tests {
     #[test]
     fn mojolicious_base_flag_suppresses_missing_strict_and_warnings() {
         // `use Mojolicious -base;` DOES enable strict/warnings: the `-base`
-        // flag is a non-empty argument, so Mojolicious.pm's inherited
-        // `Mojo::Base::import()` (`return unless my @flags = @_;`) proceeds
-        // past its early return and imports strict/warnings/utf8/feature
-        // into the caller. This is the flagged counterpart to the bare
+        // flag is a non-empty argument, so the *inherited* `Mojo::Base::import()`
+        // (there is no Mojolicious::import to shadow it -- see the comment on
+        // the test above) proceeds past its `return unless my @flags = @_;`
+        // early return and imports strict/warnings/utf8/feature into the
+        // caller. This is the flagged counterpart to the bare
         // `use Mojolicious;` case above (which has zero args and correctly
         // stays non-strict).
         let diags = strict_warnings_diags("use Mojolicious -base;\nmy $x = 1;\n");
