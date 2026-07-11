@@ -616,15 +616,21 @@ mod tests {
 
         let items = provider.prepare(&ast, code, 15);
         let items = must_some(items);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].name, "MyClass");
+        assert_eq!(items.len(), 1, "prepare at trailing edge should find exactly one item");
+        assert_eq!(
+            items[0].name, "MyClass",
+            "prepare at trailing edge should identify the package name"
+        );
 
         // Guard against over-widening: one byte further (offset 16, the
         // position immediately after the ';' and before the trailing '\n')
         // must still find nothing -- it belongs to neither the Package node
         // (0..15) nor the following Use node (which starts later, at
         // offset 17, after the newline).
-        assert!(provider.prepare(&ast, code, 16).is_none());
+        assert!(
+            provider.prepare(&ast, code, 16).is_none(),
+            "one byte beyond the package end should not match any node"
+        );
     }
 
     /// Regression guard for the "shared boundary" hazard: when the closing
