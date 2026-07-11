@@ -7,9 +7,8 @@ class you are investigating.
 
 For the portable, repo-agnostic patterns behind these incidents, see
 [docs/concepts/](../concepts/). The 2026-06-11→13 campaign's meta-orchestration
-learnings (substrate-model, model-conformance, human-corrects-substrate, paced-merges,
-lane-relevance, spawn-guards) are distilled into three new concept docs:
-`orchestrator-substrate-model.md`, `model-conformance.md`, `human-corrects-substrate.md`.
+learnings are distilled into concept docs including `orchestrator-substrate-model.md`,
+`model-conformance.md`, and `human-corrects-substrate.md`.
 
 For spec contracts and hazard-class acceptance criteria, see
 [docs/reference/PARSER_CONTRACTS.md](../reference/PARSER_CONTRACTS.md) and
@@ -45,6 +44,22 @@ To add a new incident: copy [TEMPLATE.md](TEMPLATE.md) and fill in all sections.
 
 | [2026-06-coverage-job-ran-tests.md](2026-06-coverage-job-ran-tests.md) | Coverage-named checks must not hide test failures — decoupling measurement from validation | ci, coverage, observability, misclassification | #1457, #1470, #1469 |
 | [2026-06-substrate-self-validation-bootstrap.md](2026-06-substrate-self-validation-bootstrap.md) | You cannot validate a gate-fix through the broken gate | ci, substrate, bootstrap, recursion, incident, gate-logic, self-validation | #1469, #1477, #1478, #1479, #1484, #1485 |
+| [2026-06-ripr-draft-skip-fails-gate.md](2026-06-ripr-draft-skip-fails-gate.md) | ripr+ New Gap Gate fails on draft PRs when router skips them | ci, gate-logic, ripr, routing, draft-pr | #1578, #1574, #1556, #1555, #1512, #1511, #1558 |
+| [2026-06-docs-only-runs-rust-matrix.md](2026-06-docs-only-runs-rust-matrix.md) | Docs-only PRs run full Rust build matrix; pure .md changes fail irrelevantly | ci, routing, workflow-dispatch, build-matrix, documentation | #1558, #1512 |
+| [2026-06-validate-title-issue-ref-gap.md](2026-06-validate-title-issue-ref-gap.md) | validate-title fails on agent-generated PRs lacking issue reference in title | ci, pr-metadata, validation, agent-generated, title-check | #1583, #1519 |
+| [2026-06-merge-funnel-throughput-constraint.md](2026-06-merge-funnel-throughput-constraint.md) | Merge funnel, not discovery, is the binding throughput constraint | ci, workflow, throughput, merge-velocity, bottleneck, economics | #1578, #1574, #1556, #1555, #1512, #1511, #1558, #1583 |
+
+| [2026-07-config-scope-predicate-drift.md](2026-07-config-scope-predicate-drift.md) | Config-read scope mismatch and predicate drift in VS Code settings integration | config-read-scope, predicate-drift, vscode-config, component-vs-system, external-truth-gate | #3308, #3276 |
+| [2026-07-guard-trigger-coverage-and-matching.md](2026-07-guard-trigger-coverage-and-matching.md) | Guard trigger coverage and substring-matching in strict-product-surface scanner | guard-trigger-coverage, substring-matching, scanner-blindness, enforcement-over-doctrine, cross-pr-coupling, strict-surface, product-surface | #3315, #3308, #3319, #3276 |
+| [2026-07-external-truth-review-product-docs.md](2026-07-external-truth-review-product-docs.md) | External-truth review of product-surface documentation and CI noise triage | external-truth-gate, product-docs, fact-verification, cross-pr-reference, ci-noise, non-required-checks, flaky-gates | #3319, #3315, #3308, #3324, #3276 |
+
+| [2026-07-resolved-to-clear-ships-defects.md](2026-07-resolved-to-clear-ships-defects.md) | Resolved review threads without disposition reply ship live defects | review-integrity, multi-agent, resolve-behavior, review-thread, signal-truth-verification | #3647, #3701, #3637, #3703, #3659, #3705, #3740, #3753 |
+| [2026-07-vacuous-tests-pass-with-fix-removed.md](2026-07-vacuous-tests-pass-with-fix-removed.md) | Vacuous tests: passing with the fix removed, or guarded by impossible conditions | test-quality, test-validity, verification, green-tdd | #3618, #3765 |
+| [2026-07-ci-green-signal-wrong-sha.md](2026-07-ci-green-signal-wrong-sha.md) | CI "green" signal diverges from actual check-run state on current HEAD | ci, ci-truth, signal-truth-verification, draft-skip | #3701, #3732 |
+| [2026-07-bot-threads-noise-resolve-only.md](2026-07-bot-threads-noise-resolve-only.md) | Auto-review bots post advisory noise; resolve-only breaks churn loops | review-noise, review-integrity, churn-loop, signal-truth-verification | #3768 |
+| [2026-07-gate-rollout-blocks-all-prs.md](2026-07-gate-rollout-blocks-all-prs.md) | A correct gate rolled out too strict: blocks all in-flight PRs until skill taught | rollout, control-plane, gate-logic, enforcement, signal-truth-verification | #3732, #3740, #3753 |
+| [2026-07-held-pr-stale-in-multi-lane.md](2026-07-held-pr-stale-in-multi-lane.md) | Held-PR state goes stale in multi-lane repo: label is not an inter-lane merge-block | multi-lane, coordination, held-state, signal-truth-verification | #3627, #3650, #3659, #3637 |
+| [2026-07-recon-line-numbers-stale.md](2026-07-recon-line-numbers-stale.md) | Recon line numbers from 568-commit-stale checkout don't resolve on fresh origin/main | stale-context, recon, ground-truth, verification, signal-truth-verification | (phase5-recon) |
 
 ---
 
@@ -84,14 +99,13 @@ To add a new incident: copy [TEMPLATE.md](TEMPLATE.md) and fill in all sections.
 | verification | Pipeline artifact verification / ground-truth check |
 | stochastic-pipeline | Stochastic-pipeline posture / reliability profile |
 | test-validity | Test correctly red/green for the right reason |
+| test-quality | Test quality and signal validity (vacuous test, assertion relevance) |
 | substrate | CI gate scope, required-check list, instrument configuration |
 | economics | Token cost, CI cost, amortization, leverage arithmetic |
-| anti-pattern | Operating anti-pattern (merge-past-red, routine-override)
+| anti-pattern | Operating anti-pattern (merge-past-red, routine-override) |
 
 | observability | Observable failure / gate output clarity and naming honesty |
 | misclassification | Failure routed to wrong subsystem due to check name or output lying |
-
-
 
 | instrument | Measurement instrument failure / scope misconfiguration |
 | agent-claims | Agent output reliability / claims verification |
@@ -99,3 +113,47 @@ To add a new incident: copy [TEMPLATE.md](TEMPLATE.md) and fill in all sections.
 | bootstrap | Bootstrap recursion / self-validating layer circularity |
 | self-validation | Layer validating its own correctness or fixes |
 
+| signal-truth-verification | Signal-truth divergence / instrument reading vs. ground truth (2026-07 pattern) |
+| review-integrity | Review-process integrity and completion signals (disposition, thread resolution) |
+| review-thread | Review thread lifecycle (resolution, disposition, binding-vs-advisory) |
+| resolve-behavior | Review thread resolution behavior and semantics |
+| review-noise | Bot-generated advisory noise in review threads |
+| churn-loop | CI re-fire churn and push-triggered bot cascades |
+| ci-truth | CI ground-truth vs. reported signal (SHA verification, check-run state) |
+| draft-skip | Draft PR filtering and CI routing decisions |
+| rollout | Gate / feature rollout sequencing and readiness |
+| control-plane | CI/merge control plane configuration and mechanics |
+| enforcement | Gate enforcement mode vs. advisory mode (advisory-first pattern) |
+| multi-lane | Multi-lane coordination and parallel merge-gate interactions |
+| coordination | Multi-agent / multi-lane coordination patterns |
+| held-state | PR held-state tracking across merge lanes |
+| stale-context | Stale context and coordinate aging (line numbers, branch state) |
+| recon | Reconnaissance pass output and context validity |
+| routing | Workflow dispatch routing; gate-selection logic |
+| draft-pr | Draft PR state handling in CI gates |
+| workflow-dispatch | GitHub Actions workflow dispatch routing |
+| build-matrix | Multi-target/multi-version build matrix |
+| documentation | Documentation-only changes (no code) |
+| pr-metadata | PR title, body, labels metadata validation |
+| validation | Validation check (gate, form, contract) |
+| agent-generated | PRs created by agents, not humans |
+| title-check | PR title validation / format enforcement |
+| throughput | Merge funnel throughput / cycle time |
+| bottleneck | Pipeline bottleneck / binding constraint |
+| config-read-scope | Config API scope mismatch in integration points |
+| predicate-drift | Change-detection predicate diverges from writer parser |
+| vscode-config | VS Code configuration API integration |
+| component-vs-system | Component passes tests; system fails in integration |
+| external-truth-gate | User-visible facts verified against code/spec/oracle |
+| guard-trigger-coverage | Enforcement gate trigger condition too narrow |
+| substring-matching | Text scanner false-negative from substring vs word matching |
+| enforcement-over-doctrine | Mechanical gate required, not doctrine-only rule |
+| cross-pr-coupling | Feature or fix reaches across PR boundaries |
+| strict-surface | Strict product-surface scanner / policy enforcer |
+| product-surface | User-visible product API surface |
+| product-docs | User-facing documentation of features/capabilities |
+| fact-verification | Fact-checking docs against source |
+| cross-pr-reference | Doc references feature in in-flight/unmerged PR |
+| ci-noise | Non-actionable CI output / noise vs signal triage |
+| non-required-checks | Advisory CI checks; do not block merge |
+| flaky-gates | Stochastic gate failures on stable code |
