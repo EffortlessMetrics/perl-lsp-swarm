@@ -6,8 +6,8 @@
 use perl_parser::declaration::ParentMap;
 use perl_parser::position::LineStartsCache;
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 
 /// Degradation tier for a document, indicating what level of LSP functionality
 /// is available based on parse success.
@@ -104,12 +104,41 @@ impl std::fmt::Display for DegradationTier {
 /// `content_hash` that doesn't describe the parsed source, or a
 /// degradation tier that disagrees with `ast`/`parse_errors`. Read fields
 /// through the accessor methods below.
-#[derive(Debug, Clone)]
+///
+/// ## Generation-owned lazy analysis (#3760)
+///
+/// A snapshot also owns its `source` text and lazily materializes exactly two
+/// generation-bound analysis objects behind `OnceLock`s: a single-file
+/// [`crate::semantic::SemanticAnalyzer`] and a single-file
+/// [`crate::type_inference::TypeInferenceEngine`]. Both are derived from *this*
+/// snapshot's own `ast` and `source` — never a later generation's — so a
+/// provider holding an `Arc<ParsedSnapshot>` always reads analysis of the exact
+/// text this snapshot was parsed from, with no cross-generation bleed. They are
+/// built at most once, on first request, and shared thereafter
+/// ([`OnceLock::get_or_init`] makes concurrent first-callers initialize exactly
+/// once); a superseded snapshot on which they are never requested performs zero
+/// semantic construction, and drops its analysis with its `Arc` when the
+/// generation advances. See [`Self::semantic_analyzer`] /
+/// [`Self::type_environment`].
+///
+/// This is deliberately *not* the workspace-wide `SemanticSnapshot` /
+/// `FileSemanticBundle` substrate (#1598/#1601): those own cross-file facts on
+/// their own generation clock. These two cells are pure single-file analysis,
+/// owned per document snapshot.
+///
+/// `Debug` is hand-written (rather than derived) because neither
+/// `SemanticAnalyzer` nor `TypeInferenceEngine` implements `Debug`; the two
+/// cells render only as a `built`/`lazy` status.
+#[derive(Clone)]
 pub struct ParsedSnapshot {
     /// The document generation this snapshot was parsed from.
     generation: u32,
     /// Hash of the document text this snapshot was parsed from.
     content_hash: u64,
+    /// Source text this snapshot was parsed from, retained so the snapshot can
+    /// build its own generation-owned analysis lazily (see
+    /// [`Self::semantic_analyzer`]).
+    source: Arc<str>,
     /// Parsed AST, or `None` when the parse failed completely.
     ast: Option<Arc<perl_parser::ast::Node>>,
     /// Parse errors from this parse attempt.
@@ -118,6 +147,31 @@ pub struct ParsedSnapshot {
     parent_map: Arc<ParentMap>,
     /// Degradation tier computed from `ast` and `parse_errors`.
     degradation_tier: DegradationTier,
+    /// Lazily-built, generation-owned single-file semantic analyzer. Empty
+    /// until first requested via [`Self::semantic_analyzer`]; never populated
+    /// for a `Minimal` (AST-less) snapshot.
+    semantic_analyzer: OnceLock<Arc<crate::semantic::SemanticAnalyzer>>,
+    /// Lazily-built, generation-owned single-file type inference engine. Empty
+    /// until first requested via [`Self::type_environment`]; never populated
+    /// for a `Minimal` (AST-less) snapshot.
+    type_environment: OnceLock<Arc<crate::type_inference::TypeInferenceEngine>>,
+}
+
+impl std::fmt::Debug for ParsedSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cell_state = |initialized: bool| if initialized { "built" } else { "lazy" };
+        f.debug_struct("ParsedSnapshot")
+            .field("generation", &self.generation)
+            .field("content_hash", &self.content_hash)
+            .field("ast", &self.ast)
+            .field("parse_errors", &self.parse_errors)
+            .field("parent_map", &self.parent_map)
+            .field("degradation_tier", &self.degradation_tier)
+            .field("source", &self.source)
+            .field("semantic_analyzer", &cell_state(self.semantic_analyzer.get().is_some()))
+            .field("type_environment", &cell_state(self.type_environment.get().is_some()))
+            .finish()
+    }
 }
 
 impl ParsedSnapshot {
@@ -158,10 +212,13 @@ impl ParsedSnapshot {
         Self {
             generation,
             content_hash,
+            source: Arc::from(source),
             ast,
             parse_errors: Arc::from(parse_errors),
             parent_map: Arc::new(parent_map),
             degradation_tier,
+            semantic_analyzer: OnceLock::new(),
+            type_environment: OnceLock::new(),
         }
     }
 
@@ -207,6 +264,68 @@ impl ParsedSnapshot {
     /// parse attempt. See [`DegradationTier::from_parse_result`].
     pub fn degradation_tier(&self) -> DegradationTier {
         self.degradation_tier
+    }
+
+    /// Source text this snapshot was parsed from.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The single-file [`crate::semantic::SemanticAnalyzer`] for this
+    /// snapshot's generation, built lazily and exactly once on first request
+    /// and shared (by `Arc`) thereafter.
+    ///
+    /// Generation-owned: the analyzer is derived from *this* snapshot's own
+    /// [`Self::ast`] and [`Self::source`], never a later generation's, so a
+    /// provider holding this snapshot always reads analysis of the exact text
+    /// it was parsed from — no cross-generation bleed. A newer snapshot is a
+    /// brand-new object with its own empty cell.
+    ///
+    /// Returns `None` when the parse produced no AST (a
+    /// [`DegradationTier::Minimal`] snapshot): there is nothing to analyze and,
+    /// crucially, no *stale* analyzer from a prior generation is ever exposed.
+    /// Construction is fully lazy — a superseded snapshot on which this is never
+    /// called performs zero semantic work — and
+    /// [`OnceLock::get_or_init`] makes concurrent first-callers initialize
+    /// exactly once.
+    pub fn semantic_analyzer(&self) -> Option<Arc<crate::semantic::SemanticAnalyzer>> {
+        let ast = self.ast.as_ref()?;
+        Some(Arc::clone(self.semantic_analyzer.get_or_init(|| {
+            Arc::new(crate::semantic::SemanticAnalyzer::analyze_with_source(ast, &self.source))
+        })))
+    }
+
+    /// The single-file [`crate::type_inference::TypeInferenceEngine`] for this
+    /// snapshot's generation, built lazily and exactly once on first request
+    /// and shared (by `Arc`) thereafter.
+    ///
+    /// Same generation-ownership, laziness, `Minimal`-returns-`None`, and
+    /// exactly-once concurrency contract as [`Self::semantic_analyzer`]; the
+    /// engine is derived from this snapshot's own AST.
+    pub fn type_environment(&self) -> Option<Arc<crate::type_inference::TypeInferenceEngine>> {
+        let ast = self.ast.as_ref()?;
+        Some(Arc::clone(self.type_environment.get_or_init(|| {
+            let mut engine = crate::type_inference::TypeInferenceEngine::new();
+            let _ = engine.infer(ast);
+            Arc::new(engine)
+        })))
+    }
+
+    /// Whether the [`Self::semantic_analyzer`] cell has been materialized.
+    ///
+    /// Test-only observability for the "a superseded snapshot with no semantic
+    /// request performs zero construction" invariant: a `false` here proves the
+    /// lazy cell was never built.
+    #[cfg(test)]
+    pub(crate) fn semantic_analyzer_initialized(&self) -> bool {
+        self.semantic_analyzer.get().is_some()
+    }
+
+    /// Whether the [`Self::type_environment`] cell has been materialized.
+    /// Test-only counterpart to [`Self::semantic_analyzer_initialized`].
+    #[cfg(test)]
+    pub(crate) fn type_environment_initialized(&self) -> bool {
+        self.type_environment.get().is_some()
     }
 }
 
@@ -544,7 +663,7 @@ impl DocumentState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_tdd_support::must_some;
+    use perl_tdd_support::{must, must_some};
 
     /// Build a `ParsedSnapshot` at `generation` from real parse output for
     /// `source` via [`ParsedSnapshot::from_parse_result`] -- exercises the
@@ -791,6 +910,195 @@ mod tests {
             offenders.is_empty(),
             "found direct `.parsed` field access outside DocumentState's accessors:\n{}",
             offenders.join("\n")
+        );
+    }
+
+    // ---- #3760: generation-owned lazy analyzer + type environment ----
+
+    /// A snapshot's analyzer is built from its OWN generation's source and can
+    /// never observe a later generation's text, even after that later
+    /// generation has been parsed and its own analyzer materialized.
+    #[test]
+    fn analyzer_never_sees_next_generation_source() {
+        let gen_n = snapshot_for("sub alpha { my $x = 1; }", 0);
+        let gen_n1 = snapshot_for("sub beta { my $y = 2; }", 1);
+
+        // Materialize N+1's analyzer first, to prove it cannot back-contaminate N.
+        let analyzer_n1 = must_some(gen_n1.semantic_analyzer());
+        assert!(analyzer_n1.symbol_table().symbols.contains_key("beta"));
+
+        let analyzer_n = must_some(gen_n.semantic_analyzer());
+        assert!(
+            analyzer_n.symbol_table().symbols.contains_key("alpha"),
+            "generation N's analyzer must reflect generation N's source"
+        );
+        assert!(
+            !analyzer_n.symbol_table().symbols.contains_key("beta"),
+            "generation N's analyzer must never see generation N+1's source"
+        );
+    }
+
+    /// Two different snapshots (adjacent generations) hand out distinct analyzer
+    /// and type-environment instances — analysis identity is per-generation.
+    #[test]
+    fn analyzer_and_type_env_identities_distinct_across_generations() {
+        let gen_n = snapshot_for("my $x = 1;", 0);
+        let gen_n1 = snapshot_for("my $x = 1;", 1);
+
+        let analyzer_n = must_some(gen_n.semantic_analyzer());
+        let analyzer_n1 = must_some(gen_n1.semantic_analyzer());
+        assert!(
+            !Arc::ptr_eq(&analyzer_n, &analyzer_n1),
+            "adjacent generations must own distinct analyzer instances"
+        );
+
+        let type_n = must_some(gen_n.type_environment());
+        let type_n1 = must_some(gen_n1.type_environment());
+        assert!(
+            !Arc::ptr_eq(&type_n, &type_n1),
+            "adjacent generations must own distinct type-environment instances"
+        );
+    }
+
+    /// Repeated requests against a single snapshot reuse ONE analyzer / type
+    /// environment — the `OnceLock` materializes exactly once.
+    #[test]
+    fn multiple_requests_reuse_single_instance() {
+        let snapshot = snapshot_for("sub foo { my $x = 1; }", 0);
+
+        let a1 = must_some(snapshot.semantic_analyzer());
+        let a2 = must_some(snapshot.semantic_analyzer());
+        assert!(Arc::ptr_eq(&a1, &a2), "repeated analyzer requests must reuse one instance");
+
+        let t1 = must_some(snapshot.type_environment());
+        let t2 = must_some(snapshot.type_environment());
+        assert!(Arc::ptr_eq(&t1, &t2), "repeated type-env requests must reuse one instance");
+    }
+
+    /// A snapshot that is published and then immediately superseded by a newer
+    /// generation, with NO semantic request in between, performs zero semantic
+    /// construction: both lazy cells remain unmaterialized. Superseded
+    /// generations do not pay the analysis cost.
+    #[test]
+    fn superseded_snapshot_without_request_does_zero_construction() {
+        let mut doc = DocumentState::new("my $x = 1;", 1);
+        let gen0 = doc.current_generation();
+        let snapshot0 = Arc::new(snapshot_for("my $x = 1;", gen0));
+        assert!(doc.publish_parsed_if_current(gen0, Arc::clone(&snapshot0)));
+
+        // A real edit advances the generation and supersedes snapshot0.
+        doc.apply_change(0, 8, 0, 9, "2", 2);
+        let gen1 = doc.current_generation();
+        let snapshot1 = Arc::new(snapshot_for("my $x = 2;", gen1));
+        assert!(doc.publish_parsed_if_current(gen1, snapshot1));
+
+        // snapshot0 was never asked for analysis: it must have built nothing.
+        assert!(
+            !snapshot0.semantic_analyzer_initialized(),
+            "a superseded, never-requested snapshot must not build an analyzer"
+        );
+        assert!(
+            !snapshot0.type_environment_initialized(),
+            "a superseded, never-requested snapshot must not build a type environment"
+        );
+    }
+
+    /// A parse that yields no AST (`Minimal` tier) exposes neither an analyzer
+    /// nor a type environment — and never materializes a stale one. Providers
+    /// receive `None`, not a leftover instance.
+    #[test]
+    fn failed_parse_minimal_snapshot_has_no_analyzer() {
+        let snapshot = snapshot_for("my $x = ", 0);
+        // Only meaningful when the parser genuinely produced no AST.
+        if snapshot.ast().is_none() {
+            assert_eq!(snapshot.degradation_tier(), DegradationTier::Minimal);
+            assert!(
+                snapshot.semantic_analyzer().is_none(),
+                "a Minimal (AST-less) snapshot must expose no analyzer"
+            );
+            assert!(
+                snapshot.type_environment().is_none(),
+                "a Minimal (AST-less) snapshot must expose no type environment"
+            );
+            assert!(
+                !snapshot.semantic_analyzer_initialized()
+                    && !snapshot.type_environment_initialized(),
+                "a Minimal snapshot must not materialize any analysis cell"
+            );
+        }
+    }
+
+    /// Closing and reopening a document cannot resurrect a prior instance's
+    /// analysis: a fresh snapshot for the same source/generation owns its own
+    /// analyzer, distinct from the earlier instance's.
+    #[test]
+    fn reopen_cannot_reuse_prior_instance_analysis() {
+        let source = "sub foo { my $x = 1; }";
+        let before_close = snapshot_for(source, 0);
+        let analyzer_before = must_some(before_close.semantic_analyzer());
+
+        // Simulate close + reopen: the old snapshot is dropped and a brand-new
+        // snapshot is constructed for the same text.
+        drop(before_close);
+        let after_reopen = snapshot_for(source, 0);
+        let analyzer_after = must_some(after_reopen.semantic_analyzer());
+
+        assert!(
+            !Arc::ptr_eq(&analyzer_before, &analyzer_after),
+            "a reopened document must build its own analyzer, not reuse the closed instance's"
+        );
+    }
+
+    /// Parallel first-callers racing to initialize the lazy cell see the cell
+    /// materialize EXACTLY ONCE.
+    ///
+    /// `ParsedSnapshot` is itself thread-confined — its `ParentMap` holds raw
+    /// `*const Node` pointers, making the snapshot `!Send`/`!Sync`, so a single
+    /// snapshot can never be shared across threads in production and its cells
+    /// are never truly contended. The snapshot's own sequential exactly-once
+    /// guarantee is proven by `multiple_requests_reuse_single_instance`. This
+    /// test proves the concurrency contract of the exact primitive those cells
+    /// are built on — [`OnceLock::get_or_init`] runs its initializer exactly
+    /// once even when many threads race to be the first caller, and every racer
+    /// observes the same initialized value.
+    #[test]
+    fn parallel_readers_initialize_oncelock_exactly_once() {
+        use std::sync::Barrier;
+        use std::sync::atomic::AtomicUsize;
+
+        let cell: Arc<OnceLock<Arc<usize>>> = Arc::new(OnceLock::new());
+        let builds = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(8));
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let cell = Arc::clone(&cell);
+            let builds = Arc::clone(&builds);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                // Maximize the race: every thread arrives at get_or_init together.
+                barrier.wait();
+                Arc::clone(cell.get_or_init(|| {
+                    builds.fetch_add(1, Ordering::SeqCst);
+                    Arc::new(42usize)
+                }))
+            }));
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(must(handle.join().map_err(|_| "reader thread panicked")));
+        }
+
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            1,
+            "get_or_init must run its initializer exactly once under contention"
+        );
+        let first = must_some(results.first().cloned());
+        assert!(
+            results.iter().all(|r| Arc::ptr_eq(r, &first)),
+            "all racing readers must observe the same initialized value"
         );
     }
 }
