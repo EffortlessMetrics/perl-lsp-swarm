@@ -502,7 +502,11 @@ impl TypeHierarchyProvider {
     // Helper methods
 
     fn find_node_at_offset<'a>(&self, node: &'a Node, offset: usize) -> Option<&'a Node> {
-        if offset >= node.location.start && offset < node.location.end {
+        // Inclusive end: a trailing-edge caret (the common "caret just after
+        // the word" position, e.g. from double-click-select) must still
+        // resolve to the node, matching the sibling document_highlight and
+        // references providers' find_node_at_offset.
+        if offset >= node.location.start && offset <= node.location.end {
             // First check children
             if let Some(children) = self.get_children(node) {
                 for child in children {
@@ -621,6 +625,22 @@ sub new {
         let supertypes = provider.find_supertypes(&ast, &items[0]);
         assert_eq!(supertypes.len(), 1);
         assert_eq!(supertypes[0].name, "BaseClass");
+    }
+
+    #[test]
+    fn test_type_hierarchy_trailing_edge_caret() {
+        let code = r#"package MyClass;
+use parent 'BaseClass';
+"#;
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = TypeHierarchyProvider::new();
+
+        // "package MyClass" -> "MyClass" spans offset 8..15 (exclusive end).
+        // A caret at offset 15 (right after the 's' of MyClass, the trailing edge)
+        // should still resolve, matching find_node_at_offset elsewhere (document_highlight).
+        let items = provider.prepare(&ast, code, 15);
+        assert!(items.is_some(), "trailing-edge caret on package name should resolve");
     }
 
     #[test]
