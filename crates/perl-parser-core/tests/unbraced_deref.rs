@@ -252,3 +252,101 @@ fn debug_catfile_unbraced() {
     assert!(!unbraced.contains("ERROR"), "unbraced catfile $$self must parse cleanly: {unbraced}");
     assert!(!braced.contains("ERROR"), "braced catfile $${{$self}} must parse cleanly: {braced}");
 }
+
+// ---------------------------------------------------------------------------
+// Package-qualified braced scalar folding (issue #3593).
+//
+// Per perlref ("Not-so-symbolic references"), `${Foo::bar}` === `$Foo::bar`
+// for any bareword name, including package-qualified ones — the same
+// `${name}` == `$name` folding rule as the plain-name case, just with `::`
+// segments. Verified against real perl:
+//   perl -e '$Foo::bar = 42; print ${Foo::bar}, "\n"; print $Foo::bar, "\n";'
+//   -> 42 / 42
+//
+// Bug: before the fix, `${Foo::bar}` (no internal whitespace) produced
+// `(unary_${} (variable $ Foo::bar))` — a symbolic-dereference wrapper —
+// instead of folding to the bare scalar `(variable $ Foo::bar)`. Root cause
+// was lexer-level: the braced-variable scan didn't consume `::`-delimited
+// segments, splitting the token stream as `Identifier("${Foo")`,
+// `Operator("::")`, `Identifier("bar")`, `RightBrace`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn braced_qualified_scalar_no_space_folds_to_variable() {
+    // ${Foo::bar} (no internal whitespace) must fold to (variable $ Foo::bar),
+    // not stay a symbolic dereference.
+    let sexp = first_expr_sexp("${Foo::bar};");
+    assert_eq!(
+        sexp, "(variable $ Foo::bar)",
+        "${{Foo::bar}} must fold to a plain qualified scalar variable, got {sexp}"
+    );
+    assert!(!sexp.contains("unary_${}"), "${{Foo::bar}} must NOT be a symbolic deref, got {sexp}");
+}
+
+#[test]
+fn braced_qualified_scalar_with_whitespace_folds_to_variable() {
+    // ${ Foo::bar } (whitespace on both sides) must fold the same way.
+    let sexp = first_expr_sexp("${ Foo::bar };");
+    assert_eq!(
+        sexp, "(variable $ Foo::bar)",
+        "${{ Foo::bar }} must fold to a plain qualified scalar variable, got {sexp}"
+    );
+    assert!(
+        !sexp.contains("unary_${}"),
+        "${{ Foo::bar }} must NOT be a symbolic deref, got {sexp}"
+    );
+}
+
+#[test]
+fn braced_qualified_scalar_matches_bare_form() {
+    // ${Foo::bar} and $Foo::bar must parse identically.
+    let braced = first_expr_sexp("${Foo::bar};");
+    let bare = first_expr_sexp("$Foo::bar;");
+    assert_eq!(braced, bare, "${{Foo::bar}} should parse identically to $Foo::bar");
+}
+
+#[test]
+fn braced_qualified_scalar_three_segments_folds_to_variable() {
+    // Multi-level package paths (Foo::Bar::baz) must fold the same way.
+    let sexp = first_expr_sexp("${Foo::Bar::baz};");
+    assert_eq!(
+        sexp, "(variable $ Foo::Bar::baz)",
+        "${{Foo::Bar::baz}} must fold to a plain qualified scalar variable, got {sexp}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression guards: real dereferences must NOT be affected by the fix.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn braced_scalar_ref_deref_still_a_dereference_after_qualified_fix() {
+    // ${$ref} must remain a symbolic/scalar-ref dereference.
+    let sexp = first_expr_sexp("${$ref};");
+    assert!(
+        sexp.contains("unary_${}"),
+        "${{$ref}} must remain a dereference after the qualified-scalar fix, got {sexp}"
+    );
+}
+
+#[test]
+fn braced_array_qualified_deref_still_a_dereference() {
+    // @{Foo::bar} must remain an array dereference (not affected by the
+    // scalar-only qualified-name fold).
+    let sexp = first_expr_sexp("@{Foo::bar};");
+    assert!(
+        sexp.contains("unary_@{}"),
+        "@{{Foo::bar}} must remain an array dereference, got {sexp}"
+    );
+}
+
+#[test]
+fn braced_hash_qualified_deref_still_a_dereference() {
+    // %{Foo::bar} must remain a hash dereference (not affected by the
+    // scalar-only qualified-name fold).
+    let sexp = first_expr_sexp("%{Foo::bar};");
+    assert!(
+        sexp.contains("unary_%{}"),
+        "%{{Foo::bar}} must remain a hash dereference, got {sexp}"
+    );
+}

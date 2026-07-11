@@ -1339,6 +1339,14 @@ impl<'a> PerlLexer<'a> {
                                     break;
                                 } else if is_perl_identifier_continue(ch) {
                                     self.advance();
+                                } else if ch == ':' && self.peek_char(1) == Some(':') {
+                                    // Package-qualified segment inside braces,
+                                    // e.g. ${Foo::bar} — mirror the bare
+                                    // $Foo::bar scan below (lines ~1359-1370)
+                                    // so `::`-delimited names are consumed as
+                                    // part of the same braced-variable token.
+                                    self.advance();
+                                    self.advance();
                                 } else {
                                     break;
                                 }
