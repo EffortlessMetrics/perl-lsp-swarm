@@ -208,13 +208,39 @@ fn find_missing_strict_warnings(source: &str) -> Vec<CodeAction> {
         return actions;
     }
 
+    // OO/web framework and pragma modules that implicitly enable strict+warnings
+    // in the importing package. This is a textual (non-AST) heuristic list used
+    // only to suppress the "add use strict" code action; keep the
+    // Catalyst/Mojolicious corrections here in sync with the canonical,
+    // primary-source-verified list in
+    // `providers::diagnostics::lints::strict_warnings::IMPLICIT_STRICT_MODULES`
+    // (see that module's doc comment for the full Catalyst/Mojolicious/
+    // Mojolicious::Lite research). Full sharing of the two lists was assessed
+    // for #3730 and rejected: this list intentionally also carries `Mouse` and
+    // `common::sense` (both of which do enable strict/warnings on import) that
+    // are not yet present on the diagnostic-side list, so merging them would
+    // silently change behavior beyond this issue's scope.
+    //
+    // - `Catalyst` REMOVED (2026-07, #3730): `Catalyst::import()` only performs
+    //   Moose meta-class/plugin setup -- it never calls
+    //   `strict->import`/`warnings->import` for the caller, so Catalyst app
+    //   files must (and always do) declare `use strict; use warnings;`
+    //   explicitly.
+    // - bare `Mojolicious` REMOVED (2026-07, #3730): `Mojolicious.pm` defines
+    //   no `import()` of its own -- it inherits `Mojo::Base::import()`, whose
+    //   first line is `return unless my @flags = @_;`. A bare
+    //   `use Mojolicious;` (no `-base` or other flag) passes zero arguments,
+    //   so the inherited import returns immediately without enabling
+    //   strict/warnings.
+    // - `Mojolicious::Lite` ADDED (2026-07, #3730): its `import()` always
+    //   forwards a non-empty `-strict` flag into `Mojo::Base::import()`,
+    //   unconditionally enabling strict/warnings/utf8/feature in the caller.
     let implicit_strict = [
         "use Moo",
         "use Moose",
         "use Mouse",
         "use Dancer2",
-        "use Mojolicious",
-        "use Catalyst",
+        "use Mojolicious::Lite",
         "use Modern::Perl",
         "use common::sense",
         "use Mojo::Base",
@@ -649,6 +675,70 @@ mod tests {
         let source = "use Moose;\nprint 'hello';";
         let actions = find_missing_strict_warnings(source);
         assert!(actions.is_empty());
+    }
+
+    // ── #3730: modernize.rs's duplicate implicit_strict list corrections ──
+    //
+    // Catalyst::import() only performs Moose meta-class/plugin setup -- it
+    // never calls strict->import/warnings->import for the caller, so a
+    // Catalyst app file that lacks an explicit `use strict;` should still be
+    // OFFERED the "add use strict" code action.
+    #[test]
+    fn test_catalyst_does_not_imply_strict() {
+        let source = "use Catalyst qw(-Debug);\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "use Catalyst must not suppress the 'add use strict' code action -- \
+             Catalyst does not implicitly enable strict in the importing package"
+        );
+    }
+
+    // Mojolicious.pm has no `import()` of its own; it inherits
+    // Mojo::Base::import(), whose first line is
+    // `return unless my @flags = @_;`. A bare `use Mojolicious;` (no `-base`
+    // flag) passes zero arguments, so import returns immediately without
+    // enabling strict/warnings. A file that only has bare `use Mojolicious;`
+    // should still be OFFERED the "add use strict" code action.
+    #[test]
+    fn test_bare_mojolicious_does_not_imply_strict() {
+        let source = "use Mojolicious;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(
+            actions.iter().any(|a| a.title.contains("use strict")),
+            "bare `use Mojolicious;` must not suppress the 'add use strict' code \
+             action -- it does not implicitly enable strict in the importing package"
+        );
+    }
+
+    // Mojolicious::Lite's import() unconditionally forwards a non-empty
+    // `-strict` flag into Mojo::Base::import(), always enabling
+    // strict/warnings/utf8/feature in the caller. A file with
+    // `use Mojolicious::Lite;` should NOT be offered the "add use strict"
+    // code action.
+    #[test]
+    fn test_mojolicious_lite_implies_strict() {
+        let source = "use Mojolicious::Lite;\nprint 'hello';";
+        let actions = find_missing_strict_warnings(source);
+        assert!(
+            actions.is_empty(),
+            "use Mojolicious::Lite should suppress the 'add use strict' code \
+             action -- it always enables strict/warnings in the caller"
+        );
+    }
+
+    // Guard: genuinely-strict modules must still correctly suppress the code
+    // action (no over-offer regression from the Catalyst/Mojolicious fix).
+    #[test]
+    fn test_moo_moose_modern_perl_still_imply_strict() {
+        for module in &["Moo", "Moose", "Modern::Perl"] {
+            let source = format!("use {};\nprint 'hello';", module);
+            let actions = find_missing_strict_warnings(&source);
+            assert!(
+                actions.is_empty(),
+                "use {module} should still suppress the 'add use strict' code action"
+            );
+        }
     }
 
     #[test]
