@@ -254,6 +254,10 @@ impl LspServer {
                     .pointer("/capabilities/textDocument/codeAction/tagSupport/valueSet")
                     .and_then(Value::as_array)
                     .is_some_and(|tags| tags.iter().any(|tag| tag.as_i64() == Some(1)));
+                caps.code_action_disabled_support = params
+                    .pointer("/capabilities/textDocument/codeAction/disabledSupport")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
 
                 // Check if client supports markdown message content in diagnostics (LSP 3.18)
                 caps.markup_message_support = params
@@ -1694,5 +1698,39 @@ mod tests {
             "root_path must be set from first initializationOptions.workspaceFolders entry. Got: {:?}",
             root_path
         );
+    }
+
+    #[test]
+    fn initialize_parses_code_action_disabled_support() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "textDocument": {
+                    "codeAction": {
+                        "disabledSupport": true
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        assert!(server.client_capabilities.lock().code_action_disabled_support);
+    }
+
+    #[test]
+    fn initialize_leaves_code_action_disabled_support_false_when_omitted() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "textDocument": {
+                    "codeAction": {}
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+
+        assert!(!server.client_capabilities.lock().code_action_disabled_support);
     }
 }
