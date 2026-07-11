@@ -999,4 +999,32 @@ $obj->method();
             "a `typewriter` line must not resolve as the declaration of custom type `writer`"
         );
     }
+
+    #[test]
+    fn test_find_custom_type_definition_in_docs_still_resolves_real_declaration() {
+        // Co-located positive counterpart to the keyword-prefix-leak test above:
+        // the boundary check must not turn real declarations into false negatives.
+        let provider = TypeDefinitionProvider::new();
+        let mut documents = HashMap::new();
+        documents.insert(
+            "file:///types.pl".to_string(),
+            "type Writer => ...;\ntypewriter => 'IBM',\n".to_string(),
+        );
+
+        let locations =
+            provider.find_custom_type_definition_in_docs("Writer", "file:///origin.pl", &documents);
+        assert!(
+            locations.is_some(),
+            "a genuine `type Writer => ...` declaration must still resolve"
+        );
+    }
+
+    #[test]
+    fn test_line_declares_custom_type_matches_keyword_at_end_of_line() {
+        // The boundary check operates on `rest` after stripping the keyword; when
+        // the declared name is the last token on the line (no trailing separator),
+        // `rest` still starts with whitespace, so the boundary check must not
+        // reject it.
+        assert!(TypeDefinitionProvider::line_declares_custom_type("type Writer", "Writer"));
+    }
 }
