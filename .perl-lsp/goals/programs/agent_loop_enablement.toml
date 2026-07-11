@@ -149,12 +149,15 @@ exit_criteria = "parallel writers cannot share target or branch lease"
 # under-delivered gate. A second follow-up (#3887: 2 validator
 # false-negative edge cases) is also tracked, non-gating hardening.
 #
-# Claim boundary: context-availability + advisory-validation delivered and
-# verified (`cargo xtask check-agent-context` exits with 0 unaccounted
-# members); the literal "no volatile facts" sub-clause is not 100%
-# satisfied on the 18 pre-existing files, but per #3782 that gap is
-# deliberately deprioritized, not silently dropped. exit_criteria below is
-# left untouched as the literal #3612 quote.
+# Claim boundary: coverage is complete (46/46 workspace members accounted
+# for, 0 remaining in `needs_context` -- i.e. 0 core-product debt), BUT
+# `cargo xtask check-agent-context` CURRENTLY EXITS NON-ZERO because
+# `check_agent_context.rs` `bail!`s on ~20 volatile-fact hits across the 18
+# pre-existing CLAUDE.md files described above; that sub-check failure is
+# tracked as OPTIONAL, non-gating cleanup in #3882 per the user's #3848
+# steering, not silently dropped -- but a future reader should not have to
+# run the tool to discover it currently fails. exit_criteria below is left
+# untouched as the literal #3612 quote.
 [[milestone]]
 id = "M6"
 title = "Package-local context"
