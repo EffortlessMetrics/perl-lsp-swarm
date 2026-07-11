@@ -619,10 +619,84 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "MyClass");
 
-        // Guard against over-widening: one byte further (on the ';') must
-        // still find nothing, since it belongs to neither the Package nor
-        // the following Use node.
+        // Guard against over-widening: one byte further (offset 16, the
+        // position immediately after the ';' and before the trailing '\n')
+        // must still find nothing -- it belongs to neither the Package node
+        // (0..15) nor the following Use node (which starts later, at
+        // offset 17, after the newline).
         assert!(provider.prepare(&ast, code, 16).is_none());
+    }
+
+    /// Regression guard for the "shared boundary" hazard: when the closing
+    /// `}` of a block-form package is immediately followed by the next
+    /// statement with no separator (`Outer`'s `location.end` exactly equals
+    /// `Inner`'s `location.start`), the inclusive-end change must never
+    /// resolve to a WRONG node -- e.g. it must not silently report the
+    /// trailing `}` offset as belonging to `Inner` (the following package),
+    /// nor fabricate a match for `Outer` that isn't actually backed by a
+    /// `Package`/`Class` AST node at that exact offset.
+    ///
+    /// Empirically, `find_node_at_offset` resolves this offset to `Outer`'s
+    /// own `Block` child (recursion drills into the child whose span also
+    /// reaches the shared offset, per `get_children` for block-form
+    /// `Package`), not to the `Package` node itself and not to `Inner`
+    /// (`Inner` is never visited -- the `Program`-level loop returns as soon
+    /// as `Outer`'s subtree produces a match, per `navigation/references.rs`'s
+    /// identical first-sibling-wins convention). Since `prepare()` only
+    /// special-cases `Package`/`Class`/`Identifier` node kinds, landing on a
+    /// `Block` node is filtered out and `prepare` correctly returns `None`
+    /// -- proving the widened bound cannot produce a *wrong* match at a
+    /// shared sibling boundary, only an (already pre-existing, unchanged)
+    /// imprecise `None`.
+    #[test]
+    fn test_prepare_at_shared_boundary_of_adjacent_block_packages() {
+        // No whitespace between the closing '}' of `Outer` and `package Inner;`.
+        let code = "package Outer { 1; }package Inner;\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = TypeHierarchyProvider::new();
+
+        let outer_end = ast_package_end(&ast, "Outer");
+        let inner_start = ast_package_start(&ast, "Inner");
+        assert_eq!(
+            outer_end, inner_start,
+            "test setup assumption: Outer's end must exactly equal Inner's start \
+             for this to exercise the shared-boundary hazard"
+        );
+
+        // At the exact shared offset, `prepare` must not report `Inner`
+        // (which starts here but was never reached) nor fabricate a
+        // `Package`-kind match for `Outer` that the AST doesn't actually
+        // back at this precise offset -- it must return `None`.
+        assert!(
+            provider.prepare(&ast, code, outer_end).is_none(),
+            "shared boundary offset must not produce a wrong/stale Package match"
+        );
+    }
+
+    /// Test helper: return the `location.end` of the top-level `Package` node
+    /// with the given name (block form, so its span covers the whole `{ }`).
+    fn ast_package_end(ast: &Node, want_name: &str) -> usize {
+        must_some(find_package_span(ast, want_name)).1
+    }
+
+    /// Test helper: return the `location.start` of the top-level `Package`
+    /// node with the given name.
+    fn ast_package_start(ast: &Node, want_name: &str) -> usize {
+        must_some(find_package_span(ast, want_name)).0
+    }
+
+    fn find_package_span(ast: &Node, want_name: &str) -> Option<(usize, usize)> {
+        if let NodeKind::Program { statements } = &ast.kind {
+            for s in statements {
+                if let NodeKind::Package { name, .. } = &s.kind
+                    && name == want_name
+                {
+                    return Some((s.location.start, s.location.end));
+                }
+            }
+        }
+        None
     }
 
     #[test]
