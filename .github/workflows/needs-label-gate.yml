@@ -93,7 +93,17 @@ permissions:
   statuses: write
 
 jobs:
-  needs-label-gate:
+  # Deliberately NOT named `needs-label-gate`: this job's own check-run
+  # would otherwise carry the SAME context string as the commit status
+  # this job posts below. If both a check-run and a commit-status share a
+  # context, GitHub's required-check resolution can be ambiguous -- e.g. a
+  # stale-green pull_request-triggered check-run could satisfy the
+  # required context even after the workflow_run path posts a failing
+  # commit-status for a bot-added label, reopening the exact bypass this
+  # gate exists to close. `needs-label-gate` must be carried EXCLUSIVELY by
+  # the commit status (created via createCommitStatus below); this job's
+  # own check-run is informational only, under its own distinct name.
+  post-needs-label-status:
     runs-on:
       group: em-ci-nano
       labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
