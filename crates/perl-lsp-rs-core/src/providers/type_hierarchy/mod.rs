@@ -1160,12 +1160,30 @@ our @ISA = ('B', 'C');
         let ast = must(parser.parse());
         let provider = TypeHierarchyProvider::new();
 
+        let outer_start = ast_package_start(&ast, "Outer");
         let outer_end = ast_package_end(&ast, "Outer");
         let inner_start = ast_package_start(&ast, "Inner");
         assert_eq!(
             outer_end, inner_start,
             "test setup assumption: Outer's end must exactly equal Inner's start \
              for this to exercise the shared-boundary hazard"
+        );
+
+        // Positive controls: offsets inside each package's own name (not
+        // just near the shared boundary) must still resolve to that
+        // package. Without these, a regression that made `prepare` return
+        // `None` unconditionally would pass the boundary assertion below
+        // trivially. `+ 3` lands inside "Outer"/"Inner" respectively, past
+        // the 8-byte "package " prefix both names share.
+        let outer_items = must_some(provider.prepare(&ast, code, outer_start + 8 + 3));
+        assert_eq!(
+            outer_items[0].name, "Outer",
+            "offset inside Outer's own name must resolve to Outer"
+        );
+        let inner_items = must_some(provider.prepare(&ast, code, inner_start + 8 + 3));
+        assert_eq!(
+            inner_items[0].name, "Inner",
+            "offset inside Inner's own name must resolve to Inner"
         );
 
         // At the exact shared offset, `prepare` must not report `Inner`
