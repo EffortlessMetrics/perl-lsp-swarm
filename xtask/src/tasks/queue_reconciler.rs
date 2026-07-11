@@ -470,6 +470,14 @@ pub fn contradictions_from_current_review_receipt(
     let has = |name: &str| pr.labels.iter().any(|l| l == name);
 
     match current.verdict {
+        // Invariant #4 (M4 ledger): a pass that changes the implementation is a
+        // fix/responder pass, not independent review. A receipt where the reviewer
+        // both fixed AND approved in the same pass (`fix_forward_applied == true`)
+        // must NOT self-clear routing labels — that would let a reviewer's own
+        // fix-forward stand in for independent sign-off. The resulting head still
+        // requires a fresh, independent `Approved` receipt (`fix_forward_applied ==
+        // false`) at the same sha before routing labels are stripped.
+        ReviewReceiptVerdict::Approved if current.fix_forward_applied => {}
         ReviewReceiptVerdict::Approved => {
             if has(NEEDS_BUILDER_FIX) {
                 out.push(Contradiction {
@@ -1553,6 +1561,76 @@ required = false
         let receipt = make_review_receipt(7, "sha-7", ReviewReceiptVerdict::Approved);
         let c = contradictions_from_current_review_receipt(&pr, Some(&receipt));
         assert!(c.iter().any(|item| item.strip == NEEDS_BUILDER_FIX));
+    }
+
+    // -----------------------------------------------------------------------
+    // Invariant #4 (M4 ledger): fix-forward pass != independent review.
+    // Audit: issuecomment-4944651562 on #3763.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fix_forward_approved_receipt_does_not_strip_needs_builder_fix() {
+        let pr = make_pr(11, &[REVIEW_REVIEWED, NEEDS_BUILDER_FIX]);
+        let mut receipt = make_review_receipt(11, "sha-11", ReviewReceiptVerdict::Approved);
+        receipt.fix_forward_applied = true;
+        let c = contradictions_from_current_review_receipt(&pr, Some(&receipt));
+        assert!(
+            c.is_empty(),
+            "a fix-forward approval (reviewer fixed AND approved in the same pass) must not \
+             self-clear needs-builder-fix — that would count a fix pass as independent sign-off"
+        );
+    }
+
+    #[test]
+    fn fix_forward_approved_receipt_does_not_strip_needs_diff_fix() {
+        let pr = make_pr(12, &[DIFF_AUDITED, NEEDS_DIFF_FIX]);
+        let mut receipt = make_review_receipt(12, "sha-12", ReviewReceiptVerdict::Approved);
+        receipt.fix_forward_applied = true;
+        let c = contradictions_from_current_review_receipt(&pr, Some(&receipt));
+        assert!(c.is_empty(), "a fix-forward approval must not self-clear needs-diff-fix either");
+    }
+
+    #[test]
+    fn independent_approved_receipt_still_strips_needs_builder_fix() {
+        // Regression guard: an Approved receipt with fix_forward_applied == false (a genuine
+        // independent review) must keep stripping needs-builder-fix exactly as before.
+        let pr = make_pr(13, &[REVIEW_REVIEWED, NEEDS_BUILDER_FIX]);
+        let receipt = make_review_receipt(13, "sha-13", ReviewReceiptVerdict::Approved);
+        assert!(!receipt.fix_forward_applied, "helper default must stay false for this guard");
+        let c = contradictions_from_current_review_receipt(&pr, Some(&receipt));
+        assert!(c.iter().any(|item| item.strip == NEEDS_BUILDER_FIX));
+    }
+
+    #[test]
+    fn fix_forward_receipt_at_old_head_does_not_satisfy_new_head() {
+        // A fix-forward Approved receipt posted at old head H (a) never strips anything even
+        // at H (gated above), and (b) once the PR moves to a new head H2, the H receipt fails
+        // the sha-staleness gate too — belt-and-suspenders per invariant #5 (new head needs a
+        // fresh independent review; a stale fix-forward receipt cannot substitute for one).
+        let mut fix_forward_receipt_at_h =
+            make_review_receipt(14, "sha-H", ReviewReceiptVerdict::Approved);
+        fix_forward_receipt_at_h.fix_forward_applied = true;
+
+        let pr_at_h = OpenPr {
+            number: 14,
+            labels: labels(&[REVIEW_REVIEWED, NEEDS_BUILDER_FIX]),
+            head_ref_oid: "sha-H".to_string(),
+        };
+        let c_at_h =
+            contradictions_from_current_review_receipt(&pr_at_h, Some(&fix_forward_receipt_at_h));
+        assert!(c_at_h.is_empty(), "fix-forward receipt must not strip anything at its own head");
+
+        let pr_at_h2 = OpenPr {
+            number: 14,
+            labels: labels(&[REVIEW_REVIEWED, NEEDS_BUILDER_FIX]),
+            head_ref_oid: "sha-H2".to_string(),
+        };
+        let c_at_h2 =
+            contradictions_from_current_review_receipt(&pr_at_h2, Some(&fix_forward_receipt_at_h));
+        assert!(
+            c_at_h2.is_empty(),
+            "an old-head receipt (fix-forward or not) must not satisfy a new head — sha gate"
+        );
     }
 
     #[test]
