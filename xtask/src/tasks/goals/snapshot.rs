@@ -384,6 +384,7 @@ fn build_reconciliation_report_at(
         &snapshot.live_open_prs,
         &merged_prs,
         &snapshot.repository,
+        snapshot.live_prs_available,
     ))
 }
 

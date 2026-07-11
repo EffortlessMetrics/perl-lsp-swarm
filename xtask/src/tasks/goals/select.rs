@@ -180,12 +180,16 @@ enum InProgressReconciliation {
     /// any live PR state.
     LacksIdentity,
     /// Has an issue, but zero open PRs reference it (e.g. its PR merged,
-    /// not open — the M3/#3647-ledger case this PR fixes).
-    NoLivePr,
+    /// not open — the M3/#3647-ledger case this PR fixes). Carries the
+    /// issue number so callers never need to re-derive it from
+    /// `candidate.issue` with a fallback (it is always `Some` here by
+    /// construction — see `classify_in_progress`).
+    NoLivePr(u64),
     /// More than one open PR references the same issue — decision 4:
     /// reclassified from `active_work_must_be_dispositioned` (ambiguity is
     /// a reconciliation problem, not a plain single-flight conflict).
-    MultiplePrs(Vec<u64>),
+    /// Carries the issue number for the same reason as `NoLivePr`.
+    MultiplePrs(u64, Vec<u64>),
     /// The adapter could not obtain live PR state at all
     /// (`live_prs_available == false`). Checked FIRST so "unknown" is
     /// never conflated with "confirmed no open PR".
@@ -210,9 +214,9 @@ fn classify_in_progress(
         .map(|pr| pr.number)
         .collect();
     match matching.len() {
-        0 => InProgressReconciliation::NoLivePr,
+        0 => InProgressReconciliation::NoLivePr(issue),
         1 => InProgressReconciliation::Reconciled,
-        _ => InProgressReconciliation::MultiplePrs(matching),
+        _ => InProgressReconciliation::MultiplePrs(issue, matching),
     }
 }
 
@@ -238,9 +242,11 @@ fn classify_in_progress(
 ///    naming the PR (never mutated/closed here). Live PR state outranks
 ///    the candidate's self-reported ledger status.
 /// 4. Earliest candidate (declaration order) that is itself `Pending` and
-///    whose `depends_on` are all `Completed` -> `Selected`, unless it has
-///    no `issue` (`pending_candidate_missing_issue`) -> `Blocked`, naming it
-///    (never skipping to a later sibling that happens to have one).
+///    whose `depends_on` are all `Completed` -> `Selected`, unless
+///    `live_prs_available` is `false` (`live_pr_state_unavailable`) or it
+///    has no `issue` (`pending_candidate_missing_issue`) -> `Blocked`,
+///    naming it (never skipping to a later sibling that happens to
+///    qualify).
 /// 5. Every candidate `Completed`/`Deferred` -> `Complete`.
 /// 6. Otherwise (e.g. everything in flight/blocked with unmet deps, or no
 ///    candidates at all) -> `Blocked` rather than guessing.
@@ -289,19 +295,18 @@ pub fn select_next(snapshot: &SelectionSnapshot) -> SelectionDecision {
                     pr_url: None,
                 });
             }
-            InProgressReconciliation::NoLivePr => {
+            InProgressReconciliation::NoLivePr(issue) => {
                 guard_a_blockers.push(SelectionBlocker {
                     kind: "in_progress_state_requires_reconciliation".to_owned(),
                     detail: format!(
-                        "{}: in_progress (#{}) but no open PR references it (its PR may have merged); mark completed with merged evidence, reopen, or split — run `goals reconcile`",
-                        candidate.id,
-                        candidate.issue.unwrap_or_default()
+                        "{}: in_progress (#{issue}) but no open PR references it (its PR may have merged); mark completed with merged evidence, reopen, or split — run `goals reconcile`",
+                        candidate.id
                     ),
                     pr_number: None,
                     pr_url: None,
                 });
             }
-            InProgressReconciliation::MultiplePrs(pr_numbers) => {
+            InProgressReconciliation::MultiplePrs(issue, pr_numbers) => {
                 for pr_number in pr_numbers {
                     let pr_url = snapshot
                         .live_open_prs
@@ -311,9 +316,8 @@ pub fn select_next(snapshot: &SelectionSnapshot) -> SelectionDecision {
                     guard_a_blockers.push(SelectionBlocker {
                         kind: "in_progress_state_requires_reconciliation".to_owned(),
                         detail: format!(
-                            "{}: in_progress (#{}) has more than one open PR referencing it (#{pr_number}); disposition the ambiguity before selecting new work",
-                            candidate.id,
-                            candidate.issue.unwrap_or_default()
+                            "{}: in_progress (#{issue}) has more than one open PR referencing it (#{pr_number}); disposition the ambiguity before selecting new work",
+                            candidate.id
                         ),
                         pr_number: Some(pr_number),
                         pr_url,
@@ -382,6 +386,29 @@ pub fn select_next(snapshot: &SelectionSnapshot) -> SelectionDecision {
     });
 
     if let Some(candidate) = selected {
+        // `live_prs_available == false` is otherwise only consulted by
+        // Guard A's per-InProgress-candidate loop above; when there are
+        // no InProgress MILESTONE candidates to trip it (e.g. every
+        // candidate is Pending, or the only InProgress ones are
+        // lane-routing work items Guard A deliberately skips), an
+        // unavailable live-PR fetch was invisible to the rest of
+        // `select_next` and the active-work guard above sees an
+        // artificially empty `live_open_prs`, silently treating "unknown"
+        // as "confirmed no PR" and letting selection through. Fail closed
+        // here too: a Pending candidate must never be handed out as
+        // `Selected` while we cannot verify no PR is already open for it.
+        if !snapshot.live_prs_available {
+            return SelectionDecision::Blocked(vec![SelectionBlocker {
+                kind: "live_pr_state_unavailable".to_owned(),
+                detail: format!(
+                    "earliest eligible candidate {:?} in {program_id}, but live PR state is unavailable; cannot verify no PR is already open for it — retry with gh access, or pass --fixture",
+                    candidate.id
+                ),
+                pr_number: None,
+                pr_url: None,
+            }]);
+        }
+
         // The active-work guard above can only correlate a live PR to a
         // candidate BY ISSUE NUMBER. A pending candidate with no `issue`
         // is therefore invisible to that guard — handing it out as
@@ -578,6 +605,11 @@ fn contains_issue_url(text: &str, repository: &str, issue: u64) -> bool {
 ///   of `manifest::validate_milestone_ledger`'s hard violations, so
 ///   `check-active-goal-manifest` is never red-CI'd by this): `Pending`
 ///   candidate with no issue.
+/// - `live_state_unavailable`: `InProgress` candidate with an issue, but
+///   `live_prs_available` is `false` (the OPEN-PR fetch failed/was
+///   unauthenticated). Emitted INSTEAD of ever evaluating
+///   `merged_pr_but_still_in_progress` for that candidate — see the
+///   `live_prs_available` parameter doc below for why.
 ///
 /// Scoped to MILESTONE candidates only (`lane.is_none()`, mirroring Guard
 /// A's scoping in `select_next` and decision 3, #3696 item B): a lane work
@@ -588,6 +620,16 @@ pub fn reconcile_in_progress(
     open_prs: &[LiveOpenPr],
     merged_prs: &[LiveOpenPr],
     repository: &str,
+    // `false` when the OPEN-PR fetch (`load_live_prs`) failed/was
+    // unavailable — distinct from "queried and found zero open PRs".
+    // Without this, an asymmetric `gh` failure (the plain `gh pr list`
+    // call errors while the separate `gh pr list --state merged --search`
+    // call used for `merged_prs` succeeds — plausible, since the search
+    // endpoint has different rate limits) would make `has_open` below
+    // falsely read as "confirmed no open PR" when it is really "unknown",
+    // producing a false-positive `merged_pr_but_still_in_progress` finding
+    // for a candidate whose PR is in fact still open.
+    live_prs_available: bool,
 ) -> Vec<ReconciliationFinding> {
     let mut findings = Vec::new();
     for candidate in candidates.iter().filter(|c| c.lane.is_none()) {
@@ -601,6 +643,19 @@ pub fn reconcile_in_progress(
                     pr_number: None,
                     pr_url: None,
                 }),
+                Some(issue) if !live_prs_available => {
+                    findings.push(ReconciliationFinding {
+                        milestone_id: candidate.id.clone(),
+                        issue: Some(issue),
+                        kind: "live_state_unavailable".to_owned(),
+                        detail: format!(
+                            "{}: in_progress (#{issue}) but live open-PR state is unavailable; cannot verify whether its PR is still open or has merged — retry with gh access, or pass --fixture",
+                            candidate.id
+                        ),
+                        pr_number: None,
+                        pr_url: None,
+                    });
+                }
                 Some(issue) => {
                     let has_open =
                         open_prs.iter().any(|pr| references_issue(pr, repository, issue));
@@ -1179,6 +1234,43 @@ mod tests {
     }
 
     #[test]
+    fn pending_selection_blocks_when_live_pr_state_is_unavailable_and_no_in_progress_candidates() {
+        // coderabbit (select.rs:327) / chatgpt-codex (snapshot.rs:228):
+        // `live_prs_available` was previously only consulted by Guard A's
+        // per-InProgress-MILESTONE-candidate loop above. When there are NO
+        // such candidates (e.g. every candidate is Pending, or the only
+        // InProgress ones are lane-routing work items Guard A
+        // deliberately skips), an unavailable live-PR fetch was invisible
+        // to the rest of `select_next`: rule 3's active-work guard sees an
+        // artificially empty `live_open_prs` and finds nothing to block
+        // on, so a Pending candidate with an issue could still be handed
+        // out as `Selected` even though we cannot verify no PR is already
+        // open for it -- a real regression from the prior hard-error
+        // behavior on a failed `gh pr list`. This must now block instead.
+        let snapshot = {
+            let mut s = base_snapshot(vec![candidate_with_issue(
+                "M4",
+                MilestoneStatus::Pending,
+                &[],
+                9994,
+            )]);
+            s.live_prs_available = false;
+            s
+        };
+
+        let decision = select_next(&snapshot);
+        match decision {
+            SelectionDecision::Blocked(blockers) => {
+                assert_eq!(blockers.len(), 1);
+                assert_eq!(blockers[0].kind, "live_pr_state_unavailable");
+                assert!(blockers[0].detail.contains("M4"));
+                assert!(blockers[0].pr_number.is_none());
+            }
+            other => panic!("expected Blocked(live_pr_state_unavailable), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn multiple_open_prs_referencing_the_same_in_progress_candidate_reclassify_to_reconciliation() {
         // Decision 4 (#3696 item B): ambiguity from more than one matching
         // open PR reclassifies from `active_work_must_be_dispositioned` to
@@ -1297,8 +1389,13 @@ mod tests {
             is_draft: false,
         }];
 
-        let findings =
-            reconcile_in_progress(&candidates, &[], &merged, "EffortlessMetrics/perl-lsp-swarm");
+        let findings = reconcile_in_progress(
+            &candidates,
+            &[],
+            &merged,
+            "EffortlessMetrics/perl-lsp-swarm",
+            true,
+        );
 
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].milestone_id, "M3");
@@ -1318,8 +1415,13 @@ mod tests {
             is_draft: true,
         }];
 
-        let findings =
-            reconcile_in_progress(&candidates, &open, &[], "EffortlessMetrics/perl-lsp-swarm");
+        let findings = reconcile_in_progress(
+            &candidates,
+            &open,
+            &[],
+            "EffortlessMetrics/perl-lsp-swarm",
+            true,
+        );
         assert!(findings.is_empty(), "expected no findings, got {findings:?}");
     }
 
@@ -1332,7 +1434,7 @@ mod tests {
         ];
 
         let findings =
-            reconcile_in_progress(&candidates, &[], &[], "EffortlessMetrics/perl-lsp-swarm");
+            reconcile_in_progress(&candidates, &[], &[], "EffortlessMetrics/perl-lsp-swarm", true);
 
         assert!(
             findings
@@ -1362,8 +1464,52 @@ mod tests {
             &[],
             &[],
             "EffortlessMetrics/perl-lsp-swarm",
+            true,
         );
 
         assert!(findings.is_empty(), "expected no findings for lane work items, got {findings:?}");
+    }
+
+    #[test]
+    fn reconcile_in_progress_never_falsifies_merged_pr_but_still_in_progress_when_live_state_unavailable()
+     {
+        // factory-droid P2 finding on this PR: `reconcile_in_progress`
+        // previously had no way to distinguish "the open-PR fetch found
+        // zero matches" from "the open-PR fetch failed/was unavailable".
+        // Reproduces the exact asymmetric-gh-failure scenario: the plain
+        // `gh pr list` call (open PRs) failed (`live_prs_available =
+        // false`, `open_prs` empty), while the separate `gh pr list
+        // --state merged --search` call succeeded and found a PR that
+        // references this candidate's issue AND is in fact still open in
+        // reality (simulated here by a merged-PR fixture entry whose
+        // number would otherwise trip `merged_pr_but_still_in_progress`).
+        // With `live_prs_available: false`, this must now emit
+        // `live_state_unavailable` instead of the false-positive
+        // `merged_pr_but_still_in_progress`.
+        let candidates =
+            vec![reconciliation_candidate("M3", MilestoneStatus::InProgress, Some(3624))];
+        let merged = vec![LiveOpenPr {
+            number: 4242,
+            title: "feat(goals): M3 selector (#3624)".to_owned(),
+            body: String::new(),
+            url: "https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/4242".to_owned(),
+            is_draft: false,
+        }];
+
+        let findings = reconcile_in_progress(
+            &candidates,
+            &[],
+            &merged,
+            "EffortlessMetrics/perl-lsp-swarm",
+            false,
+        );
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].milestone_id, "M3");
+        assert_eq!(
+            findings[0].kind, "live_state_unavailable",
+            "must never emit merged_pr_but_still_in_progress when live_prs_available is false, got {findings:?}"
+        );
+        assert!(findings[0].pr_number.is_none(), "must not name a PR it cannot actually confirm");
     }
 }
