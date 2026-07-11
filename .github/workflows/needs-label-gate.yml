@@ -1,0 +1,60 @@
+name: Needs Label Gate
+
+# M4 capability enforcement (issue #3751, epic #3612): machine-block the
+# "no needs-* label may merge" policy that today lives only as prose in
+# CLAUDE.md. This is deliberately a NEW, additive workflow — it does not
+# modify the two existing required checks (`Perl LSP Rust Small Result`,
+# `ripr+ New Gap Gate`) or their semantics, and it does not touch
+# `.github/workflows/pr-title-check.yml` (which owns `needs-issue-link`
+# and self-clears it once the title carries a real issue reference).
+#
+# Scope note: `.ci/policies/label-contradictions.toml` +
+# `methodology-gate.yml` already detect the narrower contradiction of
+# `merge-ready`/`auto-merge` coexisting with a `needs-*` label (advisory,
+# `--enforce` not passed, and `pull_request:` there has no `labeled`/
+# `unlabeled` types so it does not re-run on label changes). This workflow
+# implements the broader M4 ask directly: ANY `needs-*` label blocks,
+# independent of whether `merge-ready` has been applied yet, and it
+# re-evaluates on `labeled`/`unlabeled` so it clears automatically.
+#
+# Admin step still required (out of scope here, needs branch-protection
+# admin): register this check as a required status check / ruleset rule
+# so it actually blocks merge. Until then it is visible-red but advisory.
+on:
+  pull_request:
+    types: [opened, synchronize, labeled, unlabeled, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  needs-label-gate:
+    runs-on:
+      group: em-ci-nano
+      labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
+    timeout-minutes: 5
+    steps:
+      - name: Block on any needs-* label
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed('needs-label-gate: pull_request payload missing from event.');
+              return;
+            }
+
+            const labels = (pr.labels || []).map((label) => label.name);
+            const blockers = labels.filter((name) => name.startsWith('needs-'));
+
+            if (blockers.length > 0) {
+              core.setFailed(
+                `Merge gate: this PR carries needs-* label(s) that must be resolved before merge: ${blockers.join(', ')}. ` +
+                'Per CLAUDE.md ("no needs-* label may merge"), address the blocking review/fix pass and remove the label(s). ' +
+                'This check re-evaluates automatically on label add/remove (labeled/unlabeled triggers) and turns green once no needs-* label remains.'
+              );
+              return;
+            }
+
+            core.info(`No needs-* labels present (checked ${labels.length} label(s)). Gate clear.`);
