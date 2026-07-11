@@ -7,7 +7,17 @@
     "comments": {
       "totalCount": 2,
       "nodes": [
-        { "author": { "login": "reviewbot" } }
+        {
+          "author": {
+            "login": "reviewbot"
+          }
+        },
+        {
+          "author": {
+            "login": "replier"
+          },
+          "body": "Superseded.\n\n<!-- disposition:v1 {\"v\":1,\"class\":\"superseded\",\"thread_id\":\"PRRT_resolved_active_shape_1\",\"by\":\"alice\",\"head\":\"cccc3333cccc3333cccc3333cccc3333cccc3333\",\"evidence\":{\"superseded_by\":\"#4243\"}} -->"
+        }
       ]
     }
   },
@@ -19,7 +29,17 @@
     "comments": {
       "totalCount": 2,
       "nodes": [
-        { "author": { "login": "alice" } }
+        {
+          "author": {
+            "login": "alice"
+          }
+        },
+        {
+          "author": {
+            "login": "replier"
+          },
+          "body": "Superseded.\n\n<!-- disposition:v1 {\"v\":1,\"class\":\"superseded\",\"thread_id\":\"PRRT_resolved_outdated_shape_1\",\"by\":\"alice\",\"head\":\"cccc3333cccc3333cccc3333cccc3333cccc3333\",\"evidence\":{\"superseded_by\":\"#4244\"}} -->"
+        }
       ]
     }
   }
