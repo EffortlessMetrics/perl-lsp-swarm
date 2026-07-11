@@ -19,6 +19,14 @@
 //! Read-only except for `git fetch origin main` (a read from the remote)
 //! and writing the receipt JSON to `--out`: never creates/mutates a
 //! branch, worktree, PR, or ledger.
+//!
+//! **Uniform fail-closed contract**: every field this receipt cannot
+//! actually verify reports `null`/`None`, never a value that LOOKS like a
+//! confirmed fact (a false "clean", a mismatched repo, an unvalidated
+//! program id). A receipt that silently reports a wrong default when it
+//! couldn't check is worse than one that says "unknown" -- that's the
+//! entire point of a *trustworthy* machine receipt (post-review
+//! hardening, deep-review + factory-droid P3 findings on PR #3866).
 
 use crate::utils::project_root;
 use color_eyre::eyre::Result;
@@ -49,7 +57,12 @@ pub struct SessionReceipt {
     pub kind: String,
     pub captured_at: String,
     pub timestamp_source: String,
-    pub repo: String,
+    /// `owner/repo`, derived from `git config --get remote.origin.url`
+    /// (the SAME source `git fetch origin` resolves against) -- never
+    /// from `gh`'s auth context, which can silently name a DIFFERENT repo
+    /// than `origin` actually points to. `None` when the remote is
+    /// missing or unparseable (fail-closed, not a guess).
+    pub repo: Option<String>,
     pub branch: String,
     pub head_sha: String,
     /// Whether `git fetch origin main` succeeded. When `false`,
@@ -60,10 +73,25 @@ pub struct SessionReceipt {
     pub origin_main_sha: Option<String>,
     pub behind_origin_main: Option<u32>,
     pub ahead: Option<u32>,
-    pub dirty: bool,
+    /// `None` when `git status --porcelain` itself failed to run --
+    /// fail-CLOSED rather than ever reporting a false "clean". See
+    /// `dirty_check_ok` for the underlying success flag.
+    pub dirty: Option<bool>,
+    /// Whether the `git status --porcelain` call that produced `dirty`
+    /// succeeded. `dirty` is only meaningful when this is `true`.
+    pub dirty_check_ok: bool,
     pub toolchain_version: String,
+    /// Resolved program id, validated via
+    /// `goals::manifest::validate_program_id` (bare id, no path
+    /// separators/`..`, and a manifest that actually exists) -- an
+    /// invalid/garbage `default_program` in `active.toml` never passes
+    /// through unfiltered. `None` when unresolved or invalid; see
+    /// `program_note` for why.
     pub program: Option<String>,
     pub lane: Option<String>,
+    /// Populated when `program` is `None` because the candidate id
+    /// failed validation (as opposed to simply being absent).
+    pub program_note: Option<String>,
     /// The threshold that was in effect when `stale_warning` was computed
     /// (provenance for the advisory decision).
     pub warn_threshold: u32,
@@ -94,14 +122,24 @@ pub fn run(
         println!("{}", render_human(&receipt));
     }
 
-    // Always print the staleness signal to stderr, independent of --json,
-    // so it is never buried inside a JSON blob a downstream parser might
+    // Always print advisory signals to stderr, independent of --json, so
+    // they are never buried inside a JSON blob a downstream parser might
     // discard -- visibility is the entire point of this advisory check.
     if let Some(warning) = &receipt.stale_warning {
         eprintln!("WARNING: {warning}");
     } else if !receipt.fetch_ok {
         eprintln!(
             "WARNING: could not fetch origin/main -- staleness relative to origin is UNKNOWN (fail-closed, #3777)."
+        );
+    }
+    if !receipt.dirty_check_ok {
+        eprintln!(
+            "WARNING: could not run `git status --porcelain` -- dirty-state is UNKNOWN (fail-closed, #3777)."
+        );
+    }
+    if receipt.repo.is_none() {
+        eprintln!(
+            "WARNING: could not resolve repo from `git config --get remote.origin.url` -- repo identity is UNKNOWN (fail-closed, #3777)."
         );
     }
 
@@ -117,15 +155,24 @@ fn write_receipt(out_path: &Path, receipt: &SessionReceipt) -> Result<()> {
 }
 
 fn render_human(receipt: &SessionReceipt) -> String {
+    let dirty_text = match (receipt.dirty, receipt.dirty_check_ok) {
+        (Some(dirty), true) => dirty.to_string(),
+        _ => "unknown (check failed)".to_owned(),
+    };
+
     let mut lines = vec![
-        format!("repo:             {}", receipt.repo),
+        format!("repo:             {}", receipt.repo.as_deref().unwrap_or("unknown")),
         format!("branch:           {}", receipt.branch),
         format!("head_sha:         {}", receipt.head_sha),
-        format!("dirty:            {}", receipt.dirty),
+        format!("dirty:            {dirty_text}"),
         format!("toolchain:        {}", receipt.toolchain_version),
         format!("program:          {}", receipt.program.as_deref().unwrap_or("(none)")),
         format!("lane:             {}", receipt.lane.as_deref().unwrap_or("(none)")),
     ];
+
+    if let Some(note) = &receipt.program_note {
+        lines.push(format!("program_note:     {note}"));
+    }
 
     if receipt.fetch_ok {
         lines.push(format!(
@@ -150,7 +197,9 @@ fn build_receipt(
     let repo = repo_name(root);
     let branch = current_branch(root);
     let head_sha = git_output(root, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_owned());
-    let dirty = !git_output(root, &["status", "--porcelain"]).unwrap_or_default().trim().is_empty();
+
+    let status_output = git_output(root, &["status", "--porcelain"]);
+    let (dirty, dirty_check_ok) = dirty_from_status(status_output.as_deref());
 
     let fetch_ok = fetch_origin_main(root);
     let (origin_main_sha, behind_origin_main, ahead) = if fetch_ok {
@@ -165,7 +214,11 @@ fn build_receipt(
     };
 
     let toolchain_version = rustc_version().unwrap_or_else(|| "unknown".to_owned());
-    let program = program_arg.or_else(|| default_program(root));
+
+    let (program, program_note) = match program_arg {
+        Some(explicit) => (Some(explicit), None),
+        None => resolve_default_program(root),
+    };
     let lane = lane_arg;
 
     // Distinguishes a session-start receipt captured under a CI runner
@@ -191,9 +244,11 @@ fn build_receipt(
         behind_origin_main,
         ahead,
         dirty,
+        dirty_check_ok,
         toolchain_version,
         program,
         lane,
+        program_note,
         warn_threshold,
         stale_warning,
     })
@@ -215,17 +270,48 @@ fn compute_stale_warning(behind_origin_main: Option<u32>, threshold: u32) -> Opt
     ))
 }
 
-/// Reads `.perl-lsp/goals/active.toml`'s governed `default_program`
-/// (falling back to `active_program` when unset), mirroring
-/// `goals::snapshot::build_snapshot_at`'s resolution order. Best-effort:
-/// a missing/unparseable pointer file yields `None` rather than an error
-/// -- program identity is enrichment on this receipt, not load-bearing.
-fn default_program(root: &Path) -> Option<String> {
-    let pointer = crate::tasks::goals::manifest::load_active_pointer(root).ok()?;
-    pointer
+/// Pure: derives `(dirty, dirty_check_ok)` from `git status --porcelain`
+/// output. `None` input means the underlying `git status` command itself
+/// failed to run/exit successfully -- fail-CLOSED to `(None, false)`
+/// rather than ever inferring a false "clean" from a command that never
+/// actually reported anything (factory-droid P3 finding on PR #3866).
+fn dirty_from_status(status_output: Option<&str>) -> (Option<bool>, bool) {
+    match status_output {
+        Some(text) => (Some(!text.trim().is_empty()), true),
+        None => (None, false),
+    }
+}
+
+/// Resolves the receipt's `program` the same way `goals::snapshot`'s
+/// `resolve_program` does: `.perl-lsp/goals/active.toml`'s
+/// `default_program` (falling back to `active_program` when unset), but
+/// ALWAYS run through `goals::manifest::validate_program_id` -- a bare id
+/// with no path separators/`..` whose manifest actually exists under
+/// `.perl-lsp/goals/programs/`. An invalid/garbage `default_program`
+/// (or a missing/unparseable pointer file) fails CLOSED to `(None,
+/// Some(reason))`/`(None, None)` rather than ever passing through
+/// unvalidated (deep-review finding on PR #3866: this previously matched
+/// `goals::snapshot::build_snapshot_at`'s OLD unvalidated read, not its
+/// current validated `resolve_program`).
+fn resolve_default_program(root: &Path) -> (Option<String>, Option<String>) {
+    let Ok(pointer) = crate::tasks::goals::manifest::load_active_pointer(root) else {
+        return (None, None);
+    };
+    let candidate = pointer
         .default_program
         .clone()
-        .or_else(|| (!pointer.active_program.is_empty()).then(|| pointer.active_program.clone()))
+        .or_else(|| (!pointer.active_program.is_empty()).then(|| pointer.active_program.clone()));
+
+    let Some(candidate) = candidate else {
+        return (None, None);
+    };
+
+    match crate::tasks::goals::manifest::validate_program_id(root, &candidate) {
+        Ok(()) => (Some(candidate), None),
+        Err(reason) => {
+            (None, Some(format!("default_program {candidate:?} failed validation: {reason}")))
+        }
+    }
 }
 
 fn fetch_origin_main(root: &Path) -> bool {
@@ -257,16 +343,47 @@ fn current_branch(root: &Path) -> String {
     }
 }
 
-fn repo_name(root: &Path) -> String {
-    Command::new("gh")
-        .current_dir(root)
-        .args(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_owned())
+/// Resolves `owner/repo` from `git config --get remote.origin.url` --
+/// deliberately NOT `gh repo view`, whose answer depends on `gh`'s own
+/// auth context and can name a DIFFERENT repository than `origin` (the
+/// same remote `git fetch origin` reads) actually points to (deep-review
+/// finding on PR #3866: `gh` reported `EffortlessMetrics/perl-lsp`
+/// instead of `perl-lsp-swarm` when origin was misconfigured). `None`
+/// when the remote is missing or its URL is unparseable -- fail-closed,
+/// never a mismatched guess.
+fn repo_name(root: &Path) -> Option<String> {
+    let url = git_output(root, &["config", "--get", "remote.origin.url"])?;
+    parse_repo_from_remote_url(&url)
+}
+
+/// Pure: parses `owner/repo` out of a git remote URL, handling both the
+/// scp-like SSH form (`git@host:owner/repo.git`) and URL forms
+/// (`https://host/owner/repo.git`, `ssh://git@host/owner/repo.git`).
+/// Returns `None` for anything that doesn't resolve to a non-empty
+/// `owner` and `repo` segment -- never a partial/garbage guess.
+fn parse_repo_from_remote_url(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+
+    let path = if let Some(scheme_idx) = trimmed.find("://") {
+        // scheme://host/owner/repo(.git)?
+        let rest = &trimmed[scheme_idx + 3..];
+        let host_end = rest.find('/')?;
+        rest[host_end + 1..].to_owned()
+    } else if let Some(colon_idx) = trimmed.rfind(':') {
+        // scp-like: git@host:owner/repo(.git)?
+        trimmed[colon_idx + 1..].to_owned()
+    } else {
+        return None;
+    };
+
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+
+    let (owner, repo) = path.rsplit_once('/')?;
+    if repo.is_empty() || owner.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
 }
 
 fn rustc_version() -> Option<String> {
@@ -301,17 +418,19 @@ mod tests {
             kind: RECEIPT_KIND.to_owned(),
             captured_at: "2026-07-11T00:00:00+00:00".to_owned(),
             timestamp_source: "system_clock".to_owned(),
-            repo: "EffortlessMetrics/perl-lsp-swarm".to_owned(),
+            repo: Some("EffortlessMetrics/perl-lsp-swarm".to_owned()),
             branch: "impl/3777-session-receipt-m5-phase4".to_owned(),
             head_sha: "abc123".to_owned(),
             fetch_ok: true,
             origin_main_sha: Some("def456".to_owned()),
             behind_origin_main: Some(0),
             ahead: Some(1),
-            dirty: false,
+            dirty: Some(false),
+            dirty_check_ok: true,
             toolchain_version: "rustc 1.93.1".to_owned(),
             program: Some("agent_loop_enablement".to_owned()),
             lane: None,
+            program_note: None,
             warn_threshold: DEFAULT_WARN_THRESHOLD,
             stale_warning: None,
         }
@@ -369,6 +488,102 @@ mod tests {
     }
 
     #[test]
+    fn dirty_from_status_reports_clean_when_output_is_empty() {
+        assert_eq!(dirty_from_status(Some("")), (Some(false), true));
+    }
+
+    #[test]
+    fn dirty_from_status_reports_dirty_when_output_is_nonempty() {
+        assert_eq!(dirty_from_status(Some(" M src/main.rs\n")), (Some(true), true));
+    }
+
+    #[test]
+    fn dirty_from_status_fails_closed_when_command_failed() {
+        // The critical regression guard: a failed `git status` must NEVER
+        // be reported as clean (`Some(false)`) -- it must be `None` with
+        // `dirty_check_ok == false`.
+        assert_eq!(dirty_from_status(None), (None, false));
+    }
+
+    #[test]
+    fn parse_repo_from_remote_url_handles_ssh_scp_form() {
+        assert_eq!(
+            parse_repo_from_remote_url("git@github.com:EffortlessMetrics/perl-lsp-swarm.git"),
+            Some("EffortlessMetrics/perl-lsp-swarm".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_repo_from_remote_url_handles_https_form_with_git_suffix() {
+        assert_eq!(
+            parse_repo_from_remote_url("https://github.com/EffortlessMetrics/perl-lsp-swarm.git"),
+            Some("EffortlessMetrics/perl-lsp-swarm".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_repo_from_remote_url_handles_https_form_without_git_suffix() {
+        assert_eq!(
+            parse_repo_from_remote_url("https://github.com/EffortlessMetrics/perl-lsp-swarm"),
+            Some("EffortlessMetrics/perl-lsp-swarm".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_repo_from_remote_url_handles_ssh_url_form() {
+        assert_eq!(
+            parse_repo_from_remote_url("ssh://git@github.com/EffortlessMetrics/perl-lsp-swarm.git"),
+            Some("EffortlessMetrics/perl-lsp-swarm".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_repo_from_remote_url_fails_closed_on_garbage_input() {
+        assert_eq!(parse_repo_from_remote_url("not a url"), None);
+        assert_eq!(parse_repo_from_remote_url(""), None);
+    }
+
+    #[test]
+    fn resolve_default_program_fails_closed_when_pointer_missing() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let (program, note) = resolve_default_program(temp.path());
+        assert_eq!(program, None);
+        assert_eq!(note, None);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_default_program_fails_closed_on_invalid_program_id() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let goals_dir = temp.path().join(".perl-lsp/goals");
+        fs::create_dir_all(&goals_dir)?;
+        fs::write(
+            goals_dir.join("active.toml"),
+            "active_program = \"\"\ndefault_program = \"../escape\"\n",
+        )?;
+        let (program, note) = resolve_default_program(temp.path());
+        assert_eq!(program, None, "an invalid program id must never pass through unfiltered");
+        assert!(note.is_some(), "an invalid candidate must leave a note explaining why");
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_default_program_accepts_a_validated_manifest() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let programs_dir = temp.path().join(".perl-lsp/goals/programs");
+        fs::create_dir_all(&programs_dir)?;
+        fs::write(programs_dir.join("demo_program.toml"), "")?;
+        fs::write(
+            temp.path().join(".perl-lsp/goals/active.toml"),
+            "active_program = \"\"\ndefault_program = \"demo_program\"\n",
+        )?;
+        let (program, note) = resolve_default_program(temp.path());
+        assert_eq!(program, Some("demo_program".to_owned()));
+        assert_eq!(note, None);
+        Ok(())
+    }
+
+    #[test]
     fn render_human_reports_unavailable_when_fetch_failed() {
         let mut receipt = sample_receipt();
         receipt.fetch_ok = false;
@@ -387,6 +602,23 @@ mod tests {
         let text = render_human(&receipt);
         assert!(text.contains("behind=7"), "got: {text}");
         assert!(text.contains("ahead=2"), "got: {text}");
+    }
+
+    #[test]
+    fn render_human_reports_unknown_dirty_when_check_failed() {
+        let mut receipt = sample_receipt();
+        receipt.dirty = None;
+        receipt.dirty_check_ok = false;
+        let text = render_human(&receipt);
+        assert!(text.contains("unknown (check failed)"), "got: {text}");
+    }
+
+    #[test]
+    fn render_human_reports_repo_unknown_when_unresolved() {
+        let mut receipt = sample_receipt();
+        receipt.repo = None;
+        let text = render_human(&receipt);
+        assert!(text.contains("repo:             unknown"), "got: {text}");
     }
 
     /// Cross-checks the struct's serialized field set against
