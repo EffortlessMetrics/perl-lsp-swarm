@@ -133,9 +133,9 @@ struct ChangelogPolicy {
 
 #[derive(Debug, Deserialize)]
 struct ProjectPolicy {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // reserved for future project-configuration checks
     key: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // reserved for changelog header rendering
     label: String,
     changelog: String,
 }
