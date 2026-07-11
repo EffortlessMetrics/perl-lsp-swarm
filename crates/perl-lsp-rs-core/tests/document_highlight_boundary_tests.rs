@@ -77,3 +77,88 @@ fn highlight_past_token_returns_nothing() -> Result<(), Box<dyn std::error::Erro
 
     Ok(())
 }
+
+/// Follow-up to the trailing-edge fix above: `find_node_at_offset` and
+/// `extract_symbol_at_offset` became inclusive, but a caret at the exact same
+/// trailing-edge offset also has to survive `find_subscript_parent` (the `[]`/
+/// `{}` container-normalization check) and the Try/catch synthetic fallback,
+/// both of which had their own half-open bounds left unfixed. A caret at the
+/// trailing edge of `$arr` in `$arr[0]` must still promote the sigil to `@`
+/// (matching the sibling `@arr` declaration) rather than silently keeping the
+/// stale `$` sigil and missing it.
+const SUBSCRIPT_FIXTURE: &str = "my @arr = (1, 2, 3);\n$arr[0] = 5;\n";
+
+#[test]
+fn highlight_subscript_container_at_trailing_edge_normalizes_sigil()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ast = parse(SUBSCRIPT_FIXTURE);
+    let provider = DocumentHighlightProvider::new();
+
+    let usage = SUBSCRIPT_FIXTURE.find("$arr[0]").ok_or("fixture must contain $arr[0]")?;
+    // Trailing edge of `$arr`: right after the second `r`, before `[`.
+    let trailing_edge = usage + "$arr".len();
+
+    let highlights = provider.find_highlights(&ast, SUBSCRIPT_FIXTURE, trailing_edge);
+
+    // Pre-fix: `find_subscript_parent`'s half-open bound rejected this offset
+    // as "inside the left child", so the sigil stayed `$` and cross-sigil
+    // matching against the `@arr` declaration (`is_cross_sigil_match`) never
+    // fired -- only the `$arr[0]` occurrence itself matched (1 highlight).
+    // Post-fix: the sigil normalizes to `@`, so both the `@arr` declaration
+    // and the `$arr[0]` usage (via cross-sigil match) highlight.
+    assert_eq!(
+        highlights.len(),
+        2,
+        "caret at trailing edge of `$arr` in `$arr[0]` must normalize to `@arr` and highlight \
+         both the declaration and the subscript usage, got {highlights:?}"
+    );
+
+    let decl_start = SUBSCRIPT_FIXTURE.find("@arr").ok_or("fixture must contain @arr decl")?;
+    assert!(
+        highlights.iter().any(|h| h.location.start == decl_start),
+        "the `@arr` declaration must be among the highlights, got {highlights:?}"
+    );
+
+    Ok(())
+}
+
+/// Sibling boundary for the Try/catch synthetic-symbol fallback in
+/// `extract_symbol_at_offset`: the outer containment gate is inclusive, but
+/// the inner `match_indices` search for the catch parameter string was still
+/// half-open, so a caret at the trailing edge of the catch parameter itself
+/// (e.g. `$err` in `catch ($err)`) fell through to zero highlights.
+const TRY_CATCH_FIXTURE: &str = "try {\n1;\n} catch ($err) {\nprint $err;\n}\n";
+
+#[test]
+fn highlight_catch_parameter_at_trailing_edge_returns_occurrence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ast = parse(TRY_CATCH_FIXTURE);
+    let provider = DocumentHighlightProvider::new();
+
+    let param = TRY_CATCH_FIXTURE.find("$err)").ok_or("fixture must contain catch ($err)")?;
+    // Trailing edge of the catch parameter `$err`: right after the second
+    // `r`, before the closing `)`. The catch parameter itself is stored as a
+    // bare string on the `Try` node (not a `Variable` AST node), so
+    // `find_node_at_offset` never finds it here -- this exercises the
+    // synthetic-symbol fallback in `extract_symbol_at_offset` exclusively.
+    let trailing_edge = param + "$err".len();
+
+    let highlights = provider.find_highlights(&ast, TRY_CATCH_FIXTURE, trailing_edge);
+
+    // Pre-fix: the half-open `relative_offset < pos + var_str.len()` check
+    // rejected the trailing-edge offset, so no symbol was recovered at all
+    // and `find_highlights` returned zero results (neither the synthetic
+    // catch-parameter highlight nor the `print $err;` usage). Post-fix: the
+    // symbol resolves and both the catch-parameter binding (synthesized by
+    // `collect_highlights_with_parent`'s separate Try-catch handling) and the
+    // real usage highlight.
+    assert_eq!(
+        highlights.len(),
+        2,
+        "caret at trailing edge of catch parameter `$err` must still resolve the symbol \
+         and highlight both the parameter binding and its use in the catch body, \
+         got {highlights:?}"
+    );
+
+    Ok(())
+}
