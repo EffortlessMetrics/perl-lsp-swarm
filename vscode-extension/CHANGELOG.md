@@ -44,6 +44,14 @@ All notable changes to the Perl Language Server extension will be documented in 
   completion, hover, and go-to-definition without their own project ready. The
   Get Started walkthrough's "Open a Perl Project" step now links to it. (#1635)
 
+### Fixed
+
+- **Extension activation no longer blocks on language-server startup.** UI and
+  commands now register and activation returns immediately while the language
+  client's startup tail completes in the background, instead of blocking
+  activation (and every command that depends on it) behind a slow server
+  start on large workspaces. (#3162)
+
 ## [0.12.4] - 2026-04-12
 
 ### Added
