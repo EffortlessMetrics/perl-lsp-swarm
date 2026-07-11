@@ -68,10 +68,15 @@ gh pr comment $ARGUMENTS --body "Addressed review feedback:
 **A thread must never be resolved with zero reply** — that's the
 resolved-to-clear anti-pattern the #3647 incident shipped through (a
 responder silently `resolveReviewThread`'d 15 threads with no reply and no
-evidence; the PR merged with 6 live P1 defects). The
-`resolved_without_disposition` gate (#3693/#3732) mechanically blocks this:
-a resolved thread whose `comments.totalCount <= 1` (no reply beyond the
-original comment) is `BLOCK`ing.
+evidence; the PR merged with 6 live P1 defects). Follow this now as
+process discipline: `check-pr-review-convergence` does **not yet**
+mechanically detect a missing disposition reply — that detection
+(`resolved_without_disposition`) is proposed in #3732, held back for a
+dogfood-advisory-first rollout so it doesn't retroactively block PRs
+already in flight. A resolved thread with zero reply currently passes the
+script silently. Once #3732 lands, a resolved thread whose
+`comments.totalCount <= 1` (no reply beyond the original comment) will be
+`BLOCK`ing.
 
 Only after step 4's disposition reply has been posted, resolve the GitHub
 review thread:

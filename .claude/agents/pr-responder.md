@@ -53,8 +53,11 @@ For each bot comment / CI failure / review conversation:
    **A thread must never be resolved with zero reply** — that's the
    resolved-to-clear anti-pattern the #3647 incident shipped through (15
    threads `resolveReviewThread`'d with no reply, 6 live P1 defects merged
-   on main). The `resolved_without_disposition` gate (#3693/#3732)
-   mechanically blocks any resolved thread lacking a reply.
+   on main). Required now as **process discipline**: the mechanical
+   `resolved_without_disposition` detection is proposed in #3732 (held
+   back for a dogfood-advisory-first rollout, so it doesn't retroactively
+   block PRs already in flight) and does not yet block in
+   `check-pr-review-convergence`.
 6. **Verify review convergence** before treating the PR as ready — run the
    canonical review-convergence check (see
    [.claude/reference/review-convergence.md](../reference/review-convergence.md)):
@@ -71,8 +74,10 @@ For each bot comment / CI failure / review conversation:
   [.claude/reference/review-convergence.md](../reference/review-convergence.md#disposition-reply-convention-before-calling-resolvereviewthread))
   BEFORE calling `resolveReviewThread`. Never resolve a thread just to
   clear it — zero-reply resolution is the resolved-to-clear anti-pattern
-  #3647 shipped 6 live P1s through, and what the `resolved_without_disposition`
-  gate now blocks on.
+  #3647 shipped 6 live P1s through. The `resolved_without_disposition`
+  gate that will mechanically block on this (#3732) is deliberately held
+  back for a dogfood-advisory-first rollout — follow the convention now
+  regardless of whether the script enforces it yet.
 - **Never enable or retain auto-merge while any requested review is still active or any substantive thread is unresolved** — main mechanically requires conversation resolution before merge; verify reviewer completion before signaling readiness.
 - **Don't add improvements.** Fix what's broken, nothing more. Extra changes confuse the deep reviewer.
 
