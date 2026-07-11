@@ -46,7 +46,7 @@ against `origin/main` @ `d1b5222e6`; check GitHub for anything dated after this.
 | #3649 | MERGED 2026-07-10 | Signature-help + diagnostics honesty canaries (§7a/§7b) + this done-condition spec |
 | #3765 | MERGED 2026-07-11 | Generation-owned lazy analyzer + type environment on `ParsedSnapshot` |
 | #3811 | MERGED 2026-07-11 | Hover migrated to generation-owned analyzer/type_environment; retired uri+hash caches |
-| #3817 | MERGED 2026-07-11 | §3b deterministic shutdown-drain test + self-join repro (repro `#[ignore]`d pending #3816 — see §3b) |
+| #3817 | MERGED 2026-07-11 | §3b deterministic shutdown-drain test + self-join repro (repro `#[ignore]`d at the time, pending #3816; un-`#[ignore]`d by #3825 below — see §3b) |
 | #3825 | MERGED 2026-07-11 (`fc1a1dde2629`) | Self-join guard in `Drop for ParseWorker` (self-thread-id skip); un-`#[ignore]`s the §3b self-join repro, which now passes (closes #3816) |
 
 **Provider freshness migration (generation-owned facts):**
@@ -223,8 +223,10 @@ URI and asserts it publishes — proving the URI was released and the pool survi
 > generally but does not reproduce the callback-thread case, which is exactly
 > what the now-written `self_join_…` test does.
 
-The remainder of this section is the original pre-#3817 analysis, retained for
-its root-cause detail:
+The remainder of this section preserves the original root-cause analysis for its
+design detail, **reconciled inline to the current post-#3825 state** — the
+Drop-level guard and both regression tests now exist and pass on `main` (see the
+update block above for the summary):
 
 **Invariant.** (i) Dropping the `ParseWorker` requests shutdown and joins every
 worker thread, draining any jobs still in `ready` before exit (`take_next`
@@ -233,53 +235,69 @@ Dropping the **last** `Arc<LspServer>` from *inside* a worker thread's
 `on_published` callback (the `Weak::upgrade()` temp going out of scope) must
 NOT self-join-deadlock.
 
-**Correction (deep review, #3649).** This section previously described the (ii)
-fix as "a `Drop` guard that skips joining the current thread's own handle."
-That is not what the code does: `impl Drop for ParseWorker` (`parse_worker.rs`)
-is an unconditional `for handle in handles.drain(..) { let _ = handle.join(); }`
-loop with no thread-identity check at all. The actual (ii) fix lives one layer
-up, in `LspServer::install_default_parse_worker`
-(`crates/perl-lsp-rs/src/runtime/mod.rs`): `on_published`'s closure captures
-`cb_server: Weak<LspServer>` via `Arc::downgrade(self)` rather than a strong
-`Arc`, so the callback only ever holds a transient strong ref
-(`cb_server.upgrade()`) for the duration of `run_post_parse_side_effects`,
-breaking the `LspServer -> ParseWorker -> worker threads -> on_published ->
-Arc<LspServer>` reference cycle at its root — `ParseWorker::drop` itself is
-unchanged and still has no self-join protection if a worker thread ever
-*does* end up dropping the last strong `Arc<ParseWorker>`.
+**Two-layer defense (deep review #3649 → direct fix #3825).** Scenario (ii) is
+now closed by **two** independent defenses, and both live on `main`:
 
-**Existing coverage.** Implicit only — every worker test drops the `ParseWorker`
-at scope end, so a broken join would hang the suite. There is **no dedicated
-regression test** that (a) asserts queued-but-unstarted jobs are drained on
-shutdown, or (b) reproduces the self-join-from-callback-thread path described
-in (ii) above. The guard is currently protected by code inspection + the fact
-that the suite doesn't hang — a classic "the instrument is the only witness"
-gap. #3618 separately added `dropping_the_server_joins_the_installed_parse_worker_threads`
-(`parse_worker.rs` test module) — a bounded-timeout test that drops the
-server's last strong `Arc<LspServer>` **on a dedicated thread it spawns for
-the purpose**, proving the cycle-break generally, but it does **not**
-reproduce scenario (ii): the drop happens from an external thread, not from
-inside a worker thread's own `on_published` callback holding the last strong
-ref. Do not read that test as closing (ii) — the self-join-from-callback-thread
-path remains unproven either way.
+- **First layer — cycle break (#3618/#3649).** `LspServer::install_default_parse_worker`
+  (`crates/perl-lsp-rs/src/runtime/mod.rs`) captures `cb_server: Weak<LspServer>`
+  in `on_published`'s closure via `Arc::downgrade(self)` rather than a strong
+  `Arc`, so the callback only ever holds a transient strong ref
+  (`cb_server.upgrade()`) for the duration of `run_post_parse_side_effects`,
+  breaking the `LspServer -> ParseWorker -> worker threads -> on_published ->
+  Arc<LspServer>` reference cycle at its root. At the time of the #3649 deep
+  review this was the *only* defense — `impl Drop for ParseWorker` was then an
+  unconditional `for handle in handles.drain(..) { let _ = handle.join(); }`
+  loop with no thread-identity check, so it still had no self-join protection of
+  its own.
+- **Second layer — Drop-level self-join skip-guard (#3825, `fc1a1dde2629`).**
+  #3825 added the missing guard directly to `ParseWorker::drop`: it reads
+  `thread::current().id()` and, for any handle whose `handle.thread().id()`
+  equals it, `continue`s past the `join()` (detaching that thread's own
+  `JoinHandle` — safe, because the worker loop observes the shutdown flag set at
+  the top of `drop` and exits on its own once `ready` drains), while still
+  joining every other handle. So `ParseWorker::drop` is now structurally safe
+  even if a worker thread *does* end up dropping the last strong
+  `Arc<ParseWorker>`.
 
-**Two deterministic regression tests are still needed** (drain-on-shutdown;
-self-join-from-callback-thread) to close this gap — tracked for design and
-implementation via #3618, not sketched here. A prior revision of this section
-proposed a specific self-join test design; it was removed after review found
-the sketch could not actually reproduce the callback-thread-holds-the-last-ref
-scenario as written (the side-effect barrier pauses *before* `on_published`
-runs, i.e. before `Weak::upgrade()` — a real witness needs the barrier/handshake
-placed *inside* the callback, after a successful `upgrade()`, so the external
-strong reference can be dropped while that callback is still holding its own).
-This is exactly the kind of prescriptive detail a done-condition **contract**
-doc shouldn't carry speculatively — the actual test belongs in #3618, reviewed
-against the real code at the time it's written, not pre-designed here against
-a moving target.
+**`ParseWorker::drop` is no longer unguarded.** The earlier statement that the
+only fix lived one layer up was accurate as of #3649 but is superseded by #3825.
 
-**Receipt.** `jobs_panicked` (3a, existing); for 3b, once written: a
-bounded-timeout "drop returned" boolean the test asserts — the absence of a
-hang IS the receipt.
+**Existing coverage — dedicated and deterministic (both invariants).** Both
+regression tests this section formerly said were missing now exist in the
+`parse_worker.rs` test module and pass on `main`:
+- **(a) Drain-on-shutdown** — `shutdown_drains_a_coalesced_job_never_itself_dequeued_before_the_request`
+  (#3817) asserts a queued-but-unstarted job is drained on drop.
+- **(b) Self-join-from-callback-thread** — `self_join_from_a_worker_callback_thread_does_not_deadlock_shutdown`
+  (written #3817, `#[ignore]` removed by #3825) reproduces scenario (ii)
+  directly: a worker thread resurrects a strong `Arc<ParseWorker>` from a
+  `Weak`, becomes the last owner, and drops it — driving `ParseWorker::drop`
+  into a would-be self-join — under a bounded (`wait_for`/`TEST_TIMEOUT`)
+  watchdog, and now passes against the #3825 skip-guard.
+
+The earlier "no dedicated regression test / the instrument is the only witness"
+framing is **historical**: the guard is no longer protected only by code
+inspection and the-suite-doesn't-hang. #3618 separately added
+`dropping_the_server_joins_the_installed_parse_worker_threads` (`parse_worker.rs`
+test module) — a bounded-timeout test that drops the server's last strong
+`Arc<LspServer>` **on a dedicated thread it spawns for the purpose**, proving the
+cycle-break generally; because that drop happens from an *external* thread it
+does not by itself reproduce scenario (ii), which is exactly why the
+`self_join_…` test above exists and now closes (ii).
+
+**Both deterministic regression tests now exist and pass** (drain-on-shutdown;
+self-join-from-callback-thread) — landed via #3817 and un-`#[ignore]`d by #3825,
+closing this gap. A prior revision of this section proposed a specific self-join
+test design and then removed it after review found the sketch could not
+reproduce the callback-thread-holds-the-last-ref scenario as written (the
+side-effect barrier paused *before* `on_published` ran, i.e. before
+`Weak::upgrade()`). The test as actually landed places the handshake *inside*
+the callback, after a successful `upgrade()`, so the external strong reference
+is dropped while that callback is still holding its own — the witness the
+sketch lacked. Recorded here as resolved history, not outstanding work.
+
+**Receipt.** `jobs_panicked` (3a, existing); for 3b, the two tests'
+bounded-timeout "drop returned within `TEST_TIMEOUT`" assertions — the absence
+of a hang IS the receipt, and both now run green on `main`.
 
 ---
 
