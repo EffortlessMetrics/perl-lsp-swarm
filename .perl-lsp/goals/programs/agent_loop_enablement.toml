@@ -69,15 +69,22 @@ depends_on = ["M2"]
 # fresh independent review) landed and merged via #3827 (`f8fe5a7b`) —
 # `merge_contradictions`/`is_fix_forward_current_approval` gate both
 # contradiction paths on `fix_forward_applied` on origin/main. Invariant #1
-# (one accountable writer per branch): core is machine-enforced by existing
-# structure (same-machine collision impossible by construction — git refuses
-# a second worktree checkout of an already-checked-out branch — plus GitHub
-# non-fast-forward protection prevents cross-machine force-overwrite); the
-# residual cross-machine SEQUENTIAL fast-forward-push edge has no reliable
-# per-agent identity signal available today (commit-author is a shared
-# constant identity across all agents; a local lease is gitignored/
-# per-checkout, not CI-visible) and is deliberately DEFERRED, tracked in
-# follow-up #3845 — not silently dropped.
+# (one accountable writer per branch) is machine-enforced SAME-MACHINE via
+# worktree-isolation (git refuses a 2nd worktree checkout of an
+# already-checked-out branch) — the operational reality of this
+# single-orchestrator swarm, where all agents run as subagents on one
+# machine in isolated worktrees. CROSS-MACHINE writer collision on WORK
+# branches is currently UNENFORCED: verified live against the repo's
+# rulesets (`gh api repos/.../rulesets` + `.../rulesets/16664791`) that the
+# only active branch-protection ruleset is scoped to `~DEFAULT_BRANCH`
+# (main only, includes `non_fast_forward`) — an `impl/*`/`codex/*` work
+# branch reports `protected: false` and has ZERO force-push/non-ff
+# protection. (Earlier drafts of this note and #3845 incorrectly asserted
+# GitHub non-ff protection covered work branches too — an unverified claim
+# caught by deep-review and corrected here + in #3845.) So cross-machine
+# collision on work branches is a real, currently-untriggered gap (no
+# per-agent identity signal exists to enforce it, and the current setup is
+# single-machine) — not silently dropped, tracked in follow-up #3845.
 exit_criteria = "authoring & certification integrity: one accountable writer per branch (structurally enforced); merge-ready computed from head-bound review receipts; a fix-forward pass is not independent review (a writing reviewer is reclassified, requiring fresh review) — supersedes the original 'reviewers cannot write' per #3763/#3782"
 
 [[milestone]]
