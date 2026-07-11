@@ -265,6 +265,36 @@ and build at once) is split into two clearly-named, sequential steps —
 (typecheck -> TS7, bundle -> Rolldown) and making a Rolldown-specific build
 failure surface distinctly from a type error.
 
+## 10. Review finding: `watch` broke the documented dev-loop contract
+
+chatgpt-codex-connector caught a real regression on PR #3755: the original
+version of this change kept `"watch": "tsc -watch --noEmit -p ./tsconfig.json"`
+— type-check-only. `DEVELOPMENT.md` documents `npm run watch` as "Rebuild
+on every file change (use during active development)," and `package.json`'s
+`"main"` loads `./out/extension.js` as the actual runtime entry. With the
+original change, editing `src/extension.ts` while `npm run watch` ran would
+report type errors correctly but silently leave the stale Rolldown bundle
+in place — VS Code's "Run Extension" (F5) would launch old code with no
+indication anything was wrong.
+
+Fixed: `"watch": "npm run clean:out && rolldown -c rolldown.config.mjs --watch"`
+— Rolldown's own watch mode, which rebuilds `out/extension.js` on real code
+changes (matching the documented contract). Added a separate
+`"watch:types": "tsc -watch --noEmit -p ./tsconfig.json"` script for anyone
+who wants a terminal-based live type-check loop outside VS Code's own
+built-in TypeScript language service (which already gives live
+in-editor diagnostics independent of any script, for anyone editing inside
+VS Code itself).
+
+Verified Rolldown's watch mode is genuinely tracking the right files, not
+a stale pass-through: editing `src/commandResults.ts` (imported only via
+`import type`, i.e. zero runtime footprint) does **not** trigger a rebuild
+— correct, since a type-only file's content cannot change the emitted
+bundle. Editing `src/extension.ts` itself (always-loaded, real code) does
+trigger a rebuild, confirmed via `out/extension.js`'s rebuild count and
+Rolldown's own "Rebuilt out in Nms." log line. `DEVELOPMENT.md` updated to
+document `typecheck`/`watch`/`watch:types` accurately.
+
 ## Scope boundary
 
 This PR does not: touch the Jest pipeline (PREP-1), the Oxlint config
