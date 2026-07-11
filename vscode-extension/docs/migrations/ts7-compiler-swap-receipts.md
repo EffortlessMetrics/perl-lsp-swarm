@@ -122,9 +122,17 @@ it lists exactly this package at exactly this version.
 
 `package-lock.json`'s diff is exactly the old `typescript@6.0.3` entry's
 fields replaced by the new `7.0.2` entry (version, resolved URL, integrity,
-`tsc`/`tsserver` bin paths, engines range) plus TS7's platform-binding
-subtree — nothing else in the lockfile changed (`git diff` shows 8 removed
-lines, all from the old 6.0.3 entry; the rest is purely additive).
+engines range) plus TS7's platform-binding subtree — nothing else in the
+lockfile changed (`git diff` shows 8 removed lines, all from the old 6.0.3
+entry; the rest is purely additive). One notable difference in the `bin`
+field itself, not just its path: TS6's entry declared `bin: {tsc, tsserver}`;
+TS7's declares `bin: {tsc}` only — **`tsserver` was removed, not moved**.
+Confirmed against the live installed package
+(`require('typescript/package.json').bin` -> `{ tsc: './bin/tsc' }`) and
+both lockfile entries directly. This extension doesn't invoke `tsserver`
+(it uses `tsc` for compile and its own Perl LSP for everything else), so
+it's not functionally impactful here — but worth recording accurately since
+it's a real behavioral difference in the package, not mere bin-path churn.
 
 ## 6. Full toolchain confirmed green post-swap
 
