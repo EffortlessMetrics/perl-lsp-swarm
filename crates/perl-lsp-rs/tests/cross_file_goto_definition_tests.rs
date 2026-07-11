@@ -3278,3 +3278,69 @@ my $r = Foo::Bar->m();
 
     Ok(())
 }
+
+#[test]
+fn go_to_definition_on_ancestor_prefix_does_not_leak_to_subpackage() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+
+    // Foo::Bar defines `new`. Foo is the (unrelated) ancestor-named package --
+    // Perl namespace nesting implies no `@ISA` relationship -- and has no
+    // `new` of its own.
+    harness.open(
+        "file:///lib/Foo/Bar.pm",
+        r#"package Foo::Bar;
+use strict;
+use warnings;
+
+sub new {
+    my $class = shift;
+    return bless {}, $class;
+}
+
+1;
+"#,
+    )?;
+
+    harness.open(
+        "file:///lib/Foo.pm",
+        r#"package Foo;
+use strict;
+use warnings;
+
+sub greet {
+    return "hi";
+}
+
+1;
+"#,
+    )?;
+
+    let caller = r#"#!/usr/bin/perl
+use strict;
+use warnings;
+use Foo;
+
+my $obj = Foo->new();
+"#;
+    harness.open("file:///subpkg_app.pl", caller)?;
+    harness.barrier();
+
+    // Cursor on `new` in `Foo->new()`.
+    let (line, character) = find_line_char(caller, "new")?;
+    let result = harness.request(
+        "textDocument/definition",
+        json!({
+            "textDocument": {"uri": "file:///subpkg_app.pl"},
+            "position": {"line": line, "character": character}
+        }),
+    )?;
+
+    // The bug: `Foo->new` navigated to Foo::Bar::new because
+    // "Foo::Bar::new".starts_with("Foo::") == true. Post-fix it must not --
+    // `Foo::Bar` is a nested subpackage, not `Foo` itself.
+    assert_no_location_points_to(&result, "Bar.pm");
+    assert_no_location_points_to(&result, "Bar%2Epm");
+
+    Ok(())
+}

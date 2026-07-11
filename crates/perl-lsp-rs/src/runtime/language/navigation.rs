@@ -702,6 +702,14 @@ fn lookup_workspace_definition(
     // never a string-prefix of package names (perlobj); `Foo` and `FooBar`
     // are unrelated packages, so such a jump is definitively wrong. Anchor on
     // the exact `pkg::name` symbol or the `pkg::` package boundary instead.
+    //
+    // The `pkg::` boundary alone is still not sufficient: `q.starts_with(pkg::)`
+    // also matches a symbol in a *nested subpackage*, e.g. pkg="Foo" matches
+    // "Foo::Bar::new". `Foo::Bar` is a distinct, unrelated package from `Foo`
+    // (Perl namespace nesting is purely lexical/cosmetic — it implies no
+    // `@ISA` relationship), so `Foo->new` must not resolve there either.
+    // Require the remainder after the `pkg::` prefix to contain no further
+    // `::`, i.e. the symbol's container is exactly `pkg`, not a subpackage.
     let qualified_exact = format!("{pkg}::{name}");
     let package_prefix = format!("{pkg}::");
     for symbol in ranked_symbols {
@@ -710,7 +718,11 @@ fn lookup_workspace_definition(
             || symbol
                 .qualified_name
                 .as_ref()
-                .map(|q| *q == qualified_exact || q.starts_with(&package_prefix))
+                .map(|q| {
+                    *q == qualified_exact
+                        || q.strip_prefix(package_prefix.as_str())
+                            .is_some_and(|rest| !rest.contains("::"))
+                })
                 .unwrap_or(false)
         {
             if let Some(lsp_location) = crate::workspace_index::lsp_adapter::to_lsp_location(
