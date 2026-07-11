@@ -387,6 +387,12 @@ impl TypeDefinitionProvider {
                 return false;
             };
 
+            // Require a non-identifier boundary after the keyword so a line like
+            // `typewriter => 'IBM'` isn't mistaken for a `type` declaration.
+            if rest.starts_with(|ch: char| ch.is_alphanumeric() || ch == '_') {
+                return false;
+            }
+
             Self::first_declared_name(rest).as_deref().is_some_and(|declared| declared == type_name)
         })
     }
@@ -932,5 +938,30 @@ $obj->method();
             &documents,
         );
         assert!(locations.is_none(), "binary documents must be skipped by custom type scan");
+    }
+
+    #[test]
+    fn test_line_declares_custom_type_requires_keyword_boundary() {
+        // "typewriter" merely starts with the keyword "type" as a string prefix;
+        // it must not be mistaken for a declaration of the unrelated type "writer".
+        assert!(!TypeDefinitionProvider::line_declares_custom_type(
+            "typewriter => 'IBM',",
+            "writer"
+        ));
+        assert!(TypeDefinitionProvider::line_declares_custom_type("type Writer => ...", "Writer"));
+    }
+
+    #[test]
+    fn test_find_custom_type_definition_in_docs_does_not_leak_to_keyword_prefix() {
+        let provider = TypeDefinitionProvider::new();
+        let mut documents = HashMap::new();
+        documents.insert("file:///unrelated.pl".to_string(), "typewriter => 'IBM',\n".to_string());
+
+        let locations =
+            provider.find_custom_type_definition_in_docs("writer", "file:///origin.pl", &documents);
+        assert!(
+            locations.is_none(),
+            "a `typewriter` line must not resolve as the declaration of custom type `writer`"
+        );
     }
 }
