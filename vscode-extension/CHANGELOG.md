@@ -4,6 +4,28 @@ All notable changes to the Perl Language Server extension will be documented in 
 
 ## [Unreleased]
 
+### Changed
+
+- **Extension toolchain modernized to the Oxc / TypeScript 7 stack.** The
+  packaged VSIX shrank from **458 files / 1.25 MB to 33 files / 291 KB**
+  (~93% fewer files, ~77% smaller) — faster install and download for every
+  user. The full toolchain train, landed in sequence:
+  - **TypeScript 7** (`typescript@7.0.2`, no shim) is now the sole
+    type-checker (`tsc --noEmit`), unblocking a long-pending migration by
+    routing linting through Oxc's tsgo-based engine instead. (#3736)
+  - **Oxlint** (type-aware) replaced ESLint + `@typescript-eslint`, with a
+    committed floating-promise canary that fails the build if the
+    type-aware lint engine silently degrades to non-type-aware mode.
+    (#3690)
+  - **Oxfmt** is now the sole formatter; Prettier was not introduced.
+    (#3721)
+  - **Rolldown** is the production bundler: `src/extension.ts` compiles to
+    a single CommonJS `out/extension.js`, with `vscode` and Node builtins
+    kept external and TS7 remaining the type-checker (Rolldown only
+    emits, it does not type-check). (#3755)
+  - Jest was decoupled from `ts-jest` in favor of a compile-ahead test
+    runner, the prep step that unblocked the rest of the train. (#3645)
+
 ### Added
 
 - **First-run include-path discovery**: on activation the extension scans

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **VS Code extension toolchain modernized to TypeScript 7 / Oxc / Rolldown**,
+  shrinking the packaged VSIX by ~77% (1.25 MB to 291 KB). See
+  [vscode-extension/CHANGELOG.md](vscode-extension/CHANGELOG.md) for detail.
+  (#3645, #3690, #3721, #3736, #3755)
+
 ### Added
 
 - **Test2 framework awareness (reader/integration, not a Test2 runtime).**
