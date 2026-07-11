@@ -66,6 +66,28 @@ run_case "reviewer-deep: git diff allowed"         "reviewer-deep" "git diff ori
 run_case "reviewer-deep: gh pr view allowed"       "reviewer-deep" "gh pr view 42"             0
 run_case "reviewer-deep: gh pr comment allowed"    "reviewer-deep" "gh pr comment 42 --body hi" 0
 
+# --- global-option bypass forms (2026-07-11 deep-review finding on #3808):
+#     a leading git/gh global option must not hide the subcommand from the
+#     guard ---
+run_case "reviewer-deep: git -C <dir> push blocked"   "reviewer-deep" 'git -C /x push'          2
+run_case "reviewer-deep: git --no-pager push blocked" "reviewer-deep" 'git --no-pager push'     2
+run_case "diff-auditor: gh --repo pr merge blocked"   "diff-auditor"  'gh --repo o/n pr merge 5' 2
+
+# --- shell-separator / subshell-wrap bypass forms (same deep-review finding):
+#     a bare `([[:space:]]|$)` terminator let a trailing separator or a
+#     closing paren ride straight through "push" uncaught ---
+run_case "reviewer-deep: git push;echo blocked"    "reviewer-deep" 'git push;echo hi'          2
+run_case "reviewer-deep: git push&&x blocked"      "reviewer-deep" 'git push&&x'                2
+run_case "reviewer-deep: (git push) blocked"       "reviewer-deep" '(git push)'                 2
+
+# --- KNOWN LIMITATION, documented not hidden (see the hook's "Known,
+#     accepted limitations" comment): this guard is a regex over the literal
+#     command string. Shell indirection -- `sh -c "..."`, `eval`, a
+#     decode-and-pipe, or a script written to disk and executed separately --
+#     is NOT caught. This is an accepted gap, not a claim of adversarial
+#     sandboxing; expected result is ALLOW (exit 0), not a bug.
+run_case "KNOWN LIMITATION: sh -c 'git push' not caught" "reviewer-deep" 'sh -c "git push"'     0
+
 if [ "$FAIL" -eq 0 ]; then
   echo
   echo "All publish-boundary test cases passed."
