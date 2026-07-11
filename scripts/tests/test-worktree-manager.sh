@@ -103,6 +103,24 @@ if [[ "$ORIGIN_MAIN_TIP_SHA" == "$MAIN_A_SHA" ]]; then
   exit 1
 fi
 
+# A third existing-on-origin branch, used by Case 3 to prove that a fetch
+# failure fails closed instead of silently checking out a stale/unverified
+# ref. Its commit object is deliberately corrupted on origin below (Case 3
+# setup) so `ls-remote` (ref metadata only) still succeeds while the actual
+# `fetch` (needs the object) fails -- the exact scenario both review threads
+# on #3749 flagged: ls-remote confirming existence does not guarantee the
+# follow-up fetch lands the ref.
+AGENT_FOUR="${TMPDIR_BASE}/agent-four"
+git_q clone -q "$ORIGIN_BARE" "$AGENT_FOUR"
+(
+  cd "$AGENT_FOUR"
+  git checkout -b flaky/branch -q
+  echo "flaky branch work" >> file.txt
+  git -c user.name="Fixture" -c user.email="fixture@example.com" commit -q -am "flaky branch commit"
+  git push -q origin flaky/branch
+)
+FLAKY_BRANCH_SHA="$(git -C "$ORIGIN_BARE" rev-parse refs/heads/flaky/branch)"
+
 # Place the script under test where REPO_ROOT resolution expects it:
 # `<repo>/scripts/worktree-manager.py` inside agent-one's checkout.
 mkdir -p "${AGENT_ONE}/scripts"
@@ -124,6 +142,54 @@ run_manager() {
     python3 scripts/worktree-manager.py "$subcommand" --state-file "$STATE_FILE" --managed-root "$MANAGED_ROOT" "$@"
   )
 }
+
+# ── Case 3: a fetch failure while resolving an existing-on-origin branch
+#    must fail CLOSED — never silently check out a stale/unverified ref.
+#    (Review follow-up on #3749: `ls-remote` confirming existence does not
+#    guarantee the subsequent fetch actually landed the ref.)
+#
+# Reproduced by corrupting (deleting) the flaky/branch tip commit's loose
+# object on the bare origin repo: `ls-remote` only reads ref metadata (still
+# succeeds, still reports the SHA), but `fetch` needs the actual object and
+# fails -- an OS-independent stand-in for a dropped connection mid-transfer,
+# without relying on filesystem permissions or PATH-shimmed binaries (which
+# don't reproduce reliably across platforms for a Python-spawned `git`).
+#
+# MUST run before Case 1/2: Case 2's genuinely-new-branch path does a plain
+# `git fetch origin` (all branches, no refspec) in agent-one's own clone. If
+# that ran first, agent-one would already have flaky/branch's object cached
+# locally before we corrupt origin's copy, and the later "fetch" for Case 3
+# would silently succeed from agent-one's own object store instead of
+# hitting (and failing against) origin — masking the exact bug this case
+# exists to catch. ───────────────────────────────────────────────────────
+FLAKY_OBJ_PATH="${ORIGIN_BARE}/objects/${FLAKY_BRANCH_SHA:0:2}/${FLAKY_BRANCH_SHA:2}"
+if [[ ! -f "$FLAKY_OBJ_PATH" ]]; then
+  echo "ERROR: expected loose object for flaky/branch tip at ${FLAKY_OBJ_PATH} (got auto-packed?) — Case 3 fixture assumption broken"
+  exit 1
+fi
+# Back up rather than permanently destroy: a later plain `git fetch origin`
+# (Case 2's genuinely-new-branch fallback, which fetches ALL branches with no
+# refspec) would otherwise keep failing on this same still-missing object for
+# the rest of the suite, since git's default-refspec fetch can fail the whole
+# operation if any one ref can't be resolved.
+cp "$FLAKY_OBJ_PATH" "${FLAKY_OBJ_PATH}.bak"
+rm -f "$FLAKY_OBJ_PATH"
+
+CASE3_OUT=""
+CASE3_EXIT=0
+CASE3_OUT="$(run_manager allocate --slot slot-flaky --branch flaky/branch 2>&1)" || CASE3_EXIT=$?
+
+mv "${FLAKY_OBJ_PATH}.bak" "$FLAKY_OBJ_PATH"
+
+if [[ "$CASE3_EXIT" -eq 0 ]]; then
+  fail "allocate fails closed on fetch failure: manager exited 0 (expected non-zero); out=$CASE3_OUT"
+elif [[ -e "${MANAGED_ROOT}/slot-flaky" ]]; then
+  fail "allocate fails closed on fetch failure: a worktree was created at slot-flaky despite the fetch failure — stale-checkout risk"
+elif [[ "$CASE3_OUT" != *"3749"* ]]; then
+  fail "allocate fails closed on fetch failure: exited non-zero as expected, but error message doesn't cite the #3749 fail-closed rationale — out=$CASE3_OUT"
+else
+  pass "allocate fails closed (no worktree created) when the origin fetch fails after ls-remote confirms the branch exists"
+fi
 
 # ── Case 1: re-allocating a slot for a branch that exists on origin must
 #    check out THAT branch's content, not local/base main. ─────────────────
