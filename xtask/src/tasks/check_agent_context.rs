@@ -242,7 +242,9 @@ static DATE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b20\d\d-\d\d-\d\d\b").expect("static date regex is valid"));
 #[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
 static STATUS_WORD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:merged|deep-reviewed)\b|needs-[a-z]+|\bstatus:")
+    // `\b` before `needs-` so this only matches at a word boundary (e.g. not
+    // a false hit on a substring like "kneads-foo").
+    Regex::new(r"(?i)\b(?:merged|deep-reviewed)\b|\bneeds-[a-z]+|\bstatus:")
         .expect("static status-word regex is valid")
 });
 
@@ -767,6 +769,62 @@ mod tests {
         assert_eq!(
             classify_volatile_fact("This work was merged into main."),
             Some("status-or-label-word")
+        );
+    }
+
+    #[test]
+    fn classify_volatile_fact_detects_deep_reviewed_status_word() {
+        // The other half of the `merged|deep-reviewed` alternation -- only
+        // `merged` had a test above.
+        assert_eq!(
+            classify_volatile_fact("This PR is deep-reviewed and ready."),
+            Some("status-or-label-word")
+        );
+    }
+
+    #[test]
+    fn classify_volatile_fact_detects_needs_dash_label_word() {
+        // `needs-[a-z]+` branch had no test at all before this: a crate's
+        // CLAUDE.md describing its own pipeline label (e.g. `needs-deep-review`)
+        // is exactly the kind of point-in-time status this gate exists to catch.
+        assert_eq!(
+            classify_volatile_fact("Currently carries needs-deep-review."),
+            Some("status-or-label-word")
+        );
+    }
+
+    #[test]
+    fn classify_volatile_fact_ignores_needs_dash_glued_to_preceding_word() {
+        // Regression guard for the `\b` added before `needs-`: without it, a
+        // missing-space typo like "thisneeds-review" would false-positive on
+        // the `needs-review` substring it happens to contain, since the old
+        // pattern had no boundary requirement before `needs-`.
+        assert_eq!(
+            classify_volatile_fact("A typo like thisneeds-review should not misfire here."),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_volatile_fact_detects_status_colon() {
+        // `\bstatus:` branch had no test at all before this.
+        assert_eq!(
+            classify_volatile_fact("Status: blocked on upstream."),
+            Some("status-or-label-word")
+        );
+    }
+
+    #[test]
+    fn classify_volatile_fact_known_limitation_ipv4_octets_read_as_version() {
+        // Pins the documented, unfixed limitation from the module-level doc
+        // comment: the version pattern also matches the first three octets of
+        // an IPv4 address. This test exists so the limitation stays *visible*
+        // (a characterization test, not a correctness assertion) -- if this
+        // ever starts returning None, the module doc comment's claim is now
+        // false and must be updated alongside whatever fixed it.
+        assert_eq!(
+            classify_volatile_fact("The dev server listens on 127.0.0.1 by default."),
+            Some("release-version")
         );
     }
 
