@@ -108,6 +108,45 @@ fn render_json_error(err: &color_eyre::eyre::Report) -> String {
     })
 }
 
+/// `cargo xtask goals reconcile --json` output shape. Advisory/diagnostic —
+/// unlike [`GoalsNextOutput`] this never represents a selection decision,
+/// just a list of drift findings (#3696 item B).
+#[derive(Debug, Clone, Serialize)]
+pub struct GoalsReconcileOutput {
+    pub program: Option<String>,
+    pub finding_count: usize,
+    pub findings: Vec<select::ReconciliationFinding>,
+}
+
+/// Runs `goals reconcile` and returns the finding count. Callers (`main.rs`)
+/// decide the process exit code from this count — this module never calls
+/// `std::process::exit` itself (that lives only in `bin/`/CLI dispatch, per
+/// coding standards).
+pub fn reconcile(program: Option<String>, fixture: Option<PathBuf>, json: bool) -> Result<usize> {
+    let findings = snapshot::build_reconciliation_report(program.clone(), fixture)?;
+    let finding_count = findings.len();
+    let output = GoalsReconcileOutput { program, finding_count, findings };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        render_reconcile_human(&output);
+    }
+    Ok(finding_count)
+}
+
+fn render_reconcile_human(output: &GoalsReconcileOutput) {
+    println!("program: {}", output.program.as_deref().unwrap_or("<default>"));
+    if output.findings.is_empty() {
+        println!("reconcile: no findings");
+        return;
+    }
+    println!("reconcile: {} finding(s)", output.findings.len());
+    for finding in &output.findings {
+        println!("  - [{}] {}: {}", finding.kind, finding.milestone_id, finding.detail);
+    }
+}
+
 fn render_human(output: &GoalsNextOutput) -> String {
     let mut lines = vec![
         format!("repository: {}", output.repository),
