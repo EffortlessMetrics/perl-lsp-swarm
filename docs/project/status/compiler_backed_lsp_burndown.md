@@ -22,13 +22,22 @@ Inputs table below — not estimated. Where a total or remaining count is not
 enumerated anywhere in this file (`run`'s remaining `parse_recovery` files, P4's
 "broader runtime" scope), it is marked `?` rather than guessed.
 
+The P3 burn-down log's file count (38: 3 `base` + 17 `comp` + 18 `run`) is scoped
+to files that moved between compile buckets within that log. It does not include
+the six `base/*.t` files tracked separately as P2's selected execute-base
+(`if.t`, `cond.t`, `num.t`, `pat.t`, `translate.t`, `while.t`), which were already
+compile-clean before P3 started and are referenced elsewhere in this document —
+these two counts (38 vs. the 44 total distinct `base`/`comp`/`run` file
+references across the whole page) measure different scopes, not conflicting
+facts.
+
 **Phase 2 board status:** P0 ✅ &nbsp; P1 ✅ &nbsp; P2 ✅ &nbsp; P3 🟡 &nbsp; P4 🟡 &nbsp; P5 ✅ &nbsp; P6 ✅ &nbsp; P7 ✅ &nbsp; P8 ✅
 
 | Bucket | Cleared | Remaining | State |
 |---|---|---|---|
 | `base` parse/compile | 9/9 files compile-clean; 3 of these (`rs.t`, `term.t`, `lex.t`) are logged reaching compile pass in the P3 burn-down | 0 | ✅ Green |
-| `comp` parse/compile | `compile_effect` and `parse_recovery` both cleared (17 distinct files logged reaching compile pass in the P3 burn-down) | 0 known | ✅ Green |
-| `run` parse/compile | `compile_effect` cleared (18 distinct files logged reaching compile pass in the P3 burn-down) | `parse_recovery` remains on the rest of `run` | 🟡 remaining count `?` (selected slice only) |
+| `comp` parse/compile | `compile_effect` and `parse_recovery` both cleared: 16 files moved `compile_effect` → compile pass, plus 1 file (`comp/decl.t`) moved `parse_recovery` → compile pass directly (17 files reaching compile pass total in the P3 log) | 0 known | ✅ Green |
+| `run` parse/compile | `compile_effect` cleared: 17 files moved `compile_effect` → compile pass, plus 1 file (`run/script.t`) moved `parse_recovery` → compile pass directly (18 files reaching compile pass total in the P3 log) | `parse_recovery` remains on the rest of `run` (total bucket size not enumerated in this file) | 🟡 remaining count `?` |
 | `runtime_control_flow` (P4) | 1 selected-file burn-down (`base/while.t`) | broader bucket | 🟡 selected slice only |
 | `runtime_value_model` (P4) | 2 selected-file burn-downs (`base/num.t`, `base/translate.t`) | broader bucket | 🟡 selected slice only |
 | `runtime_regex` (P4) | 1 selected slice (`base/pat.t`) | broader bucket | 🟡 selected slice only |
