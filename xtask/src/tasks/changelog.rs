@@ -25,7 +25,7 @@ const PRODUCT_CHANGELOG: &str = "CHANGELOG.md";
 const VSCODE_CHANGELOG: &str = "vscode-extension/CHANGELOG.md";
 
 /// Parsed subset of `.changie.yaml` needed for validation.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ChangieConfig {
     #[serde(default)]
     projects: Vec<ChangieProject>,
@@ -339,40 +339,54 @@ fn render_project(root: &Path, project: &str) -> Option<String> {
 }
 
 /// Read the changed-files list, either from an explicit file or via git diff.
-fn read_changed_files(
-    root: &Path,
-    changed_files: Option<&Path>,
-    base: &str,
-) -> Result<Vec<String>> {
+///
+/// ADVISORY: never propagates an error. An unreadable `--changed-files` list,
+/// an unspawnable `git`, or a failing `git diff` all degrade to "no changed
+/// files resolved" plus a printed note, so the caller's exit code is
+/// unaffected by CI environment hiccups.
+fn read_changed_files(root: &Path, changed_files: Option<&Path>, base: &str) -> Vec<String> {
     if let Some(list) = changed_files {
-        let content = std::fs::read_to_string(list)
-            .map_err(|e| eyre!("failed to read changed-files list {}: {e}", list.display()))?;
-        return Ok(content
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect());
+        return match std::fs::read_to_string(list) {
+            Ok(content) => content
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect(),
+            Err(e) => {
+                eprintln!(
+                    "note: failed to read changed-files list {}: {e}; no changed files resolved",
+                    list.display()
+                );
+                Vec::new()
+            }
+        };
     }
-    let out = Command::new("git")
+    let out = match Command::new("git")
         .current_dir(root)
         .args(["diff", "--name-only", &format!("{base}...HEAD")])
         .output()
-        .map_err(|e| eyre!("failed to run git diff: {e}"))?;
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("note: failed to run git diff: {e}; no changed files resolved");
+            return Vec::new();
+        }
+    };
     if !out.status.success() {
         // Advisory: an unknown base ref should not abort the check.
         eprintln!(
             "note: `git diff {base}...HEAD` failed ({}); no changed files resolved",
             String::from_utf8_lossy(&out.stderr).trim()
         );
-        return Ok(Vec::new());
+        return Vec::new();
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
+    String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(str::to_string)
-        .collect())
+        .collect()
 }
 
 fn load_config(root: &Path) -> Result<ChangieConfig> {
@@ -448,7 +462,13 @@ pub fn check(
 
     println!("changelog check (ADVISORY — issue #3768; never blocks a PR)");
 
-    let cfg = load_config(&root)?;
+    // ADVISORY: a missing/malformed `.changie.yaml` must not fail the check —
+    // fall back to an empty config (every fragment will be flagged, but the
+    // process still exits 0) and surface the parse error as a warning.
+    let cfg = load_config(&root).unwrap_or_else(|e| {
+        eprintln!("note: {e}; falling back to an empty Changie config (advisory)");
+        ChangieConfig::default()
+    });
     // Surface the policy file / cutoff status for the reader.
     report_policy(&root);
 
@@ -461,7 +481,7 @@ pub fn check(
     }
 
     let base = base.unwrap_or_else(|| "origin/main".to_string());
-    let changed = read_changed_files(&root, changed_files.as_deref(), &base)?;
+    let changed = read_changed_files(&root, changed_files.as_deref(), &base);
     let pr_body = match pr_body_file {
         Some(p) => std::fs::read_to_string(&p).unwrap_or_default(),
         None => std::env::var("CHANGELOG_PR_BODY").unwrap_or_default(),
@@ -902,5 +922,37 @@ custom:
             Some("generated-status")
         );
         assert_eq!(exempt_category_for_path("CHANGELOG.md"), None);
+    }
+
+    #[test]
+    fn read_changed_files_missing_list_degrades_to_empty() {
+        // ADVISORY: an unreadable --changed-files path must never propagate an
+        // error — the caller (`check()`) relies on this to always exit 0.
+        let missing = std::env::temp_dir().join("perl-lsp-changelog-test-does-not-exist.txt");
+        let changed = read_changed_files(Path::new("."), Some(&missing), "origin/main");
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    #[test]
+    fn read_changed_files_unspawnable_git_degrades_to_empty() {
+        // A nonexistent repo root makes `git diff` fail non-zero (not found /
+        // not a git repo) rather than error to spawn on most platforms, but
+        // either way this must return an empty list, never panic or error.
+        let bogus_root = std::env::temp_dir().join("perl-lsp-changelog-test-not-a-repo");
+        let changed = read_changed_files(&bogus_root, None, "origin/main");
+        assert!(changed.is_empty(), "{changed:?}");
+    }
+
+    #[test]
+    fn load_config_missing_file_is_err_but_check_degrades() {
+        // load_config itself still surfaces the error (callers decide how to
+        // handle it) — `check()` is the one that must catch it and fall back
+        // to `ChangieConfig::default()` rather than propagating.
+        let bogus_root = std::env::temp_dir().join("perl-lsp-changelog-test-no-config");
+        assert!(load_config(&bogus_root).is_err());
+        // The fallback config still lets validate_fragment run without panicking.
+        let cfg = ChangieConfig::default();
+        let findings = validate_fragment(&good_fragment(), &cfg);
+        assert!(!findings.is_empty(), "empty config should flag an unknown project/kind");
     }
 }
