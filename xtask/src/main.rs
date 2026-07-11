@@ -2390,6 +2390,12 @@ enum MergeReadyCommand {
         /// Verify a fixture file instead of the default receipt path.
         #[arg(long)]
         fixture: Option<PathBuf>,
+        /// Path to a review receipt JSON file to bind against the current
+        /// head (repeatable). At least one with `instrument ==
+        /// independent_review` bound to the current head is required for
+        /// `valid`.
+        #[arg(long = "review-receipt")]
+        review_receipt: Vec<PathBuf>,
     },
     /// Reconcile merge-ready label state from receipts.
     Reconcile {
@@ -3906,7 +3912,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::MergeReady { command } => match command {
             MergeReadyCommand::Emit { pr, receipt } => merge_ready::emit(pr, receipt),
-            MergeReadyCommand::Verify { pr, fixture } => merge_ready::verify(pr, fixture),
+            MergeReadyCommand::Verify { pr, fixture, review_receipt } => {
+                merge_ready::verify(pr, fixture, review_receipt)
+            }
             MergeReadyCommand::Reconcile { apply, dry_run } => {
                 let run_dry = !apply || dry_run;
                 merge_ready::reconcile(run_dry)

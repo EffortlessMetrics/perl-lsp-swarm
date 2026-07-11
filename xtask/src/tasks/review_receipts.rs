@@ -1,13 +1,14 @@
 // Allow dead_code because this helper is currently exercised by tests and schema fixtures before CLI wiring lands.
 #![allow(dead_code)]
 
-use color_eyre::eyre::{Result, bail};
-use serde::Deserialize;
+use color_eyre::eyre::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::Path;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ReviewVerdict {
+pub(crate) enum ReviewVerdict {
     Clean,
     NeedsBuilderFix,
     NeedsDiffFix,
@@ -15,20 +16,50 @@ enum ReviewVerdict {
     BlockedUnknown,
 }
 
-#[derive(Debug, Deserialize)]
+/// What kind of pass produced this review receipt.
+///
+/// This is the invariant-#4 binding: a pass that ALSO mutated the branch
+/// (a fix-forward pass) is `FixResponder`, never `IndependentReview` — the
+/// merge-ready computation in `merge_ready.rs` treats these differently.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewInstrument {
+    /// An independent reviewer pass that did not mutate the branch.
+    #[default]
+    IndependentReview,
+    /// The same principal that reviewed also holds/held a writer-lease
+    /// mutation on this branch (fix-forward) — does NOT satisfy the
+    /// independent-review requirement for computed merge-ready.
+    FixResponder,
+    /// A standards/lint-only pass (fast first pass, not correctness review).
+    Standards,
+    /// A narrow verification/proof-running pass (build/test output only).
+    Verify,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ReviewReceipt {
-    kind: String,
-    producer: String,
-    pr: u64,
-    head_sha: String,
-    base_sha: String,
-    verdict: ReviewVerdict,
-    material_observations: Vec<String>,
-    negative_checks: Vec<String>,
-    blockers: Vec<String>,
-    next_routes: Vec<String>,
-    supersedes: Option<String>,
+pub struct ReviewReceipt {
+    pub kind: String,
+    pub producer: String,
+    pub pr: u64,
+    pub head_sha: String,
+    pub base_sha: String,
+    pub(crate) verdict: ReviewVerdict,
+    pub material_observations: Vec<String>,
+    pub negative_checks: Vec<String>,
+    pub blockers: Vec<String>,
+    pub next_routes: Vec<String>,
+    pub supersedes: Option<String>,
+    /// Which instrument produced this receipt. Defaults to `IndependentReview`
+    /// so existing serialized receipts (emitted before this field existed)
+    /// deserialize without panicking — back-compat is required.
+    #[serde(default)]
+    pub instrument: ReviewInstrument,
+    /// Free-text scope of what this review was bounded to verify. Defaults
+    /// to empty for back-compat with pre-existing receipts.
+    #[serde(default)]
+    pub claim_boundary: String,
 }
 
 /// Validate review receipt invariants that are easy to keep in sync with tests.
@@ -99,9 +130,25 @@ fn is_sha1_hex(value: &str) -> bool {
     value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
 }
 
+/// Load and validate a review receipt from a JSON file on disk.
+///
+/// Used by the merge-ready computation (`merge_ready.rs`) to bind computed
+/// merge-readiness to an actual, schema-valid review receipt rather than a
+/// bare label name.
+pub fn load_review_receipt(path: &Path) -> Result<ReviewReceipt> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read review receipt: {}", path.display()))?;
+    let value: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse review receipt JSON: {}", path.display()))?;
+    validate_review_receipt(&value)
+        .with_context(|| format!("review receipt failed validation: {}", path.display()))?;
+    serde_json::from_value(value)
+        .with_context(|| format!("failed to deserialize review receipt: {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::validate_review_receipt;
+    use super::{ReviewInstrument, load_review_receipt, validate_review_receipt};
     use color_eyre::eyre::{Result, eyre};
     use serde_json::Value;
     use std::fs;
@@ -150,6 +197,27 @@ mod tests {
         let message = err.to_string();
         if !message.contains("must not emit clean sign-off intent") {
             return Err(eyre!("expected signoff intent failure, got: {message}"));
+        }
+        Ok(())
+    }
+
+    /// Back-compat: a receipt serialized before `instrument`/`claim_boundary`
+    /// existed (the on-disk fixture predates this change) must still
+    /// deserialize via the serde defaults, not panic or error.
+    #[test]
+    fn receipt_without_instrument_field_deserializes_with_default() -> Result<()> {
+        let receipt = load_review_receipt(&fixture_path("clean-with-observations.json")?)?;
+        if receipt.instrument != ReviewInstrument::IndependentReview {
+            return Err(eyre!(
+                "expected default instrument IndependentReview, got {:?}",
+                receipt.instrument
+            ));
+        }
+        if !receipt.claim_boundary.is_empty() {
+            return Err(eyre!(
+                "expected default empty claim_boundary, got {:?}",
+                receipt.claim_boundary
+            ));
         }
         Ok(())
     }

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::tasks::review_receipts::{ReviewInstrument, ReviewReceipt, load_review_receipt};
 use crate::utils::project_root;
 use perl_lsp_rs_core::hashing::fnv1a64_hex;
 
@@ -36,6 +37,17 @@ pub enum VerifyStatus {
     StaleGateGraph,
     Blocked,
     Missing,
+    /// No review receipt was supplied at all — the label-name citation is no
+    /// longer sufficient; a receipt is required.
+    ReviewReceiptMissing,
+    /// A review receipt exists but none of the supplied receipts is bound to
+    /// the current head — the review is stale (the head moved after review).
+    ReviewReceiptStale,
+    /// Review receipts exist and are bound to the current head, but none of
+    /// them carries `instrument == IndependentReview` (e.g. only
+    /// `FixResponder` receipts are present) — a fix-forward pass does not
+    /// satisfy the independent-review requirement.
+    ReviewReceiptNotIndependent,
 }
 
 impl VerifyStatus {
@@ -47,6 +59,9 @@ impl VerifyStatus {
             Self::StaleGateGraph => "stale_gate_graph",
             Self::Blocked => "blocked",
             Self::Missing => "missing",
+            Self::ReviewReceiptMissing => "review_receipt_missing",
+            Self::ReviewReceiptStale => "review_receipt_stale",
+            Self::ReviewReceiptNotIndependent => "review_receipt_not_independent",
         }
     }
 }
@@ -83,7 +98,11 @@ pub fn emit(pr: u64, receipt_path: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-pub fn verify(pr: Option<u64>, fixture: Option<PathBuf>) -> Result<()> {
+pub fn verify(
+    pr: Option<u64>,
+    fixture: Option<PathBuf>,
+    review_receipt_paths: Vec<PathBuf>,
+) -> Result<()> {
     let root = project_root()?;
     let path = if let Some(fixture_path) = fixture {
         fixture_path
@@ -103,7 +122,18 @@ pub fn verify(pr: Option<u64>, fixture: Option<PathBuf>) -> Result<()> {
     let current_base = resolve_base_sha(&root)?;
     let current_gate_graph = compute_gate_graph_version(&root, &required_checks)?;
 
-    let status = evaluate_receipt(&receipt, &current_head, &current_base, &current_gate_graph);
+    let review_receipts = review_receipt_paths
+        .iter()
+        .map(|p| load_review_receipt(p))
+        .collect::<Result<Vec<ReviewReceipt>>>()?;
+
+    let status = evaluate_merge_readiness(
+        &receipt,
+        &review_receipts,
+        &current_head,
+        &current_base,
+        &current_gate_graph,
+    );
     println!("{}", status.as_str());
 
     if status == VerifyStatus::Valid {
@@ -173,6 +203,65 @@ fn evaluate_receipt(
     }
 
     VerifyStatus::Valid
+}
+
+/// Compute merge-readiness from the base receipt AND a head-bound,
+/// `IndependentReview`-instrumented review receipt — not a bare label name.
+///
+/// A PR is merge-ready only if:
+/// 1. The base `MergeReadinessReceipt` staleness/blocked checks pass
+///    (`evaluate_receipt`), AND
+/// 2. At least one supplied review receipt has `head_sha == current_head`
+///    and `instrument == ReviewInstrument::IndependentReview`.
+///
+/// A `FixResponder` receipt (the same principal that also mutated the
+/// branch) never satisfies (2), even if it is bound to the current head.
+/// This reuses the existing staleness pattern from `evaluate_receipt`
+/// (`merge_ready.rs`) and `agent_receipt.rs:66-67` — reject on head
+/// mismatch — applied to review receipts instead of the base receipt.
+pub fn evaluate_merge_readiness(
+    receipt: &MergeReadinessReceipt,
+    review_receipts: &[ReviewReceipt],
+    current_head: &str,
+    current_base: &str,
+    current_gate_graph: &str,
+) -> VerifyStatus {
+    let base_status = evaluate_receipt(receipt, current_head, current_base, current_gate_graph);
+    if base_status != VerifyStatus::Valid {
+        return base_status;
+    }
+
+    evaluate_independent_review(review_receipts, current_head)
+}
+
+/// Evaluate whether the supplied review receipts contain a valid,
+/// current-head-bound `IndependentReview` — the machine-readable
+/// replacement for citing a bare `deep-reviewed`-style label name.
+fn evaluate_independent_review(
+    review_receipts: &[ReviewReceipt],
+    current_head: &str,
+) -> VerifyStatus {
+    if review_receipts.is_empty() {
+        return VerifyStatus::ReviewReceiptMissing;
+    }
+
+    let independent = review_receipts
+        .iter()
+        .filter(|receipt| receipt.instrument == ReviewInstrument::IndependentReview);
+
+    let mut saw_independent = false;
+    for receipt in independent {
+        saw_independent = true;
+        if receipt.head_sha == current_head {
+            return VerifyStatus::Valid;
+        }
+    }
+
+    if saw_independent {
+        VerifyStatus::ReviewReceiptStale
+    } else {
+        VerifyStatus::ReviewReceiptNotIndependent
+    }
 }
 
 fn resolve_runtime_token(
@@ -341,6 +430,7 @@ fn is_required_workflow_candidate(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::review_receipts::ReviewVerdict;
     use perl_tdd_support::must;
 
     fn make_receipt(
@@ -366,11 +456,87 @@ mod tests {
         }
     }
 
+    fn make_review_receipt(head_sha: &str, instrument: ReviewInstrument) -> ReviewReceipt {
+        ReviewReceipt {
+            kind: "review".to_string(),
+            producer: "reviewer-deep".to_string(),
+            pr: 1,
+            head_sha: head_sha.to_string(),
+            base_sha: SHA_B.to_string(),
+            verdict: ReviewVerdict::Clean,
+            material_observations: vec!["observed diff".to_string()],
+            negative_checks: vec!["no label mutations".to_string()],
+            blockers: vec![],
+            next_routes: vec!["signoff_clean".to_string()],
+            supersedes: None,
+            instrument,
+            claim_boundary: "correctness of the diff".to_string(),
+        }
+    }
+
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const SHA_C: &str = "cccccccccccccccccccccccccccccccccccccccc";
     const GATE_V1: &str = "fnv1a64:0000000000000001";
     const GATE_V2: &str = "fnv1a64:0000000000000002";
+
+    // --- #3763 M4 increment 1: instrument-gated computed merge-ready ---
+
+    #[test]
+    fn test_evaluate_merge_readiness_valid_with_current_head_independent_review() {
+        // (b) current-head IndependentReview receipt -> merge-ready
+        let receipt = make_receipt(SHA_A, SHA_B, GATE_V1, "valid", true);
+        let review = make_review_receipt(SHA_A, ReviewInstrument::IndependentReview);
+        let status = evaluate_merge_readiness(&receipt, &[review], SHA_A, SHA_B, GATE_V1);
+        assert_eq!(status, VerifyStatus::Valid);
+    }
+
+    #[test]
+    fn test_evaluate_merge_readiness_stale_when_review_receipt_head_is_old() {
+        // (a) review receipt for an OLD head SHA -> NOT merge-ready (stale)
+        let receipt = make_receipt(SHA_A, SHA_B, GATE_V1, "valid", true);
+        // Review was performed against SHA_B, but the branch has since moved to SHA_A.
+        let review = make_review_receipt(SHA_B, ReviewInstrument::IndependentReview);
+        let status = evaluate_merge_readiness(&receipt, &[review], SHA_A, SHA_B, GATE_V1);
+        assert_eq!(status, VerifyStatus::ReviewReceiptStale);
+    }
+
+    #[test]
+    fn test_evaluate_merge_readiness_rejects_fix_responder_receipt() {
+        // (c) current-head FixResponder receipt -> NOT independent-review -> NOT merge-ready
+        let receipt = make_receipt(SHA_A, SHA_B, GATE_V1, "valid", true);
+        let review = make_review_receipt(SHA_A, ReviewInstrument::FixResponder);
+        let status = evaluate_merge_readiness(&receipt, &[review], SHA_A, SHA_B, GATE_V1);
+        assert_eq!(status, VerifyStatus::ReviewReceiptNotIndependent);
+    }
+
+    #[test]
+    fn test_evaluate_merge_readiness_missing_when_no_review_receipts_supplied() {
+        let receipt = make_receipt(SHA_A, SHA_B, GATE_V1, "valid", true);
+        let status = evaluate_merge_readiness(&receipt, &[], SHA_A, SHA_B, GATE_V1);
+        assert_eq!(status, VerifyStatus::ReviewReceiptMissing);
+    }
+
+    #[test]
+    fn test_evaluate_merge_readiness_checks_base_receipt_staleness_before_review() {
+        // Base receipt staleness (head moved) must short-circuit before the
+        // review-receipt check even when an otherwise-valid IndependentReview
+        // receipt is supplied.
+        let receipt = make_receipt(SHA_A, SHA_B, GATE_V1, "valid", true);
+        let review = make_review_receipt(SHA_C, ReviewInstrument::IndependentReview);
+        let status = evaluate_merge_readiness(&receipt, &[review], SHA_C, SHA_B, GATE_V1);
+        assert_eq!(status, VerifyStatus::StaleHead);
+    }
+
+    #[test]
+    fn test_evaluate_independent_review_prefers_independent_over_mixed_receipts() {
+        // A FixResponder and a current-head IndependentReview receipt together
+        // should still resolve to Valid: independent review evidence exists.
+        let fix = make_review_receipt(SHA_A, ReviewInstrument::FixResponder);
+        let independent = make_review_receipt(SHA_A, ReviewInstrument::IndependentReview);
+        let status = evaluate_independent_review(&[fix, independent], SHA_A);
+        assert_eq!(status, VerifyStatus::Valid);
+    }
 
     #[test]
     fn test_verify_returns_valid_for_current_receipt() {
@@ -428,7 +594,7 @@ mod tests {
         drop(tmp);
 
         // verify() should output "missing" and bail
-        let result = verify(None, Some(path));
+        let result = verify(None, Some(path), Vec::new());
         assert!(result.is_err(), "verify should return Err for missing receipt");
         Ok(())
     }
