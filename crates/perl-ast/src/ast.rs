@@ -2573,9 +2573,10 @@ impl NodeKind {
 
     /// Return the tree-sitter-style grammar kind without serializing the subtree.
     ///
-    /// Most variants use [`grammar_kind_name_static`](Self::grammar_kind_name_static)
-    /// and therefore require no allocation.  Only kinds whose S-expression
-    /// name is derived from runtime node data take the narrow dynamic path.
+    /// Most variants use [`grammar_kind_name_static`](Self::grammar_kind_name_static),
+    /// so lookup is O(1) and independent of subtree size. The returned `String`
+    /// may still allocate; the performance win is avoiding a full S-expression
+    /// traversal and allocation. Only runtime-derived names take the dynamic path.
     pub fn grammar_kind_name(&self) -> String {
         if let Some(name) = self.grammar_kind_name_static() {
             return name.to_string();
@@ -3315,7 +3316,7 @@ mod tests {
     /// Adding a recovery variant to `NodeKind` without updating `RECOVERY_KIND_NAMES`
     /// will cause `recovery_kind_names_is_consistent_with_kind_name` to fail.
     fn recovery_kind_names_from_variants() -> BTreeSet<&'static str> {
-        vec![
+        [
             NodeKind::Error {
                 message: String::new(),
                 expected: vec![],

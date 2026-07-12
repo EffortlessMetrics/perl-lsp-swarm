@@ -935,11 +935,16 @@ mod tests {
         // Test that grammar_kind() remains independent of the double-paren sexp form.
         // VariableWithAttributes produces ((variable $ foo) (attributes :lvalue))
         let mut p = Parser::new();
-        let tree = must_some(p.parse("my $x : lvalue = 42;"));
+        let tree = must_some(p.parse("my ($x : lvalue);"));
         let root = tree.root_node();
         let sexp = root.to_sexp();
-        // Verify the structure includes a my_declaration.
-        assert!(sexp.contains("my_declaration"), "sexp should include my_declaration");
+        assert!(sexp.contains("((variable"), "sexp should include the double-paren variable form");
+        let declaration =
+            must_some(root.children().find(|node| node.grammar_kind() == "my_declaration"));
+        let variable = must_some(
+            declaration.children().find(|node| node.grammar_kind() == "variable_with_attributes"),
+        );
+        assert_eq!(variable.grammar_kind(), "variable_with_attributes");
     }
 
     // Tests for PerlLanguage descriptor
