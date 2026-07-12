@@ -47,9 +47,11 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `Parser::parse(&mut self, source: &str) -> Option<Tree>` | Parse Perl source; `None` only on complete failure |
 | `Tree::root_node() -> Node<'_>` | Get the root of the syntax tree |
 | `Tree::source() -> &str` | Source text this tree was built from |
-| `Parser::parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree>` | Incremental re-parse; reuses unchanged regions of `old_tree` |
+| `Parser::parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree>` | Checkpoint-bounded token replay for one pending edit; safe full-parse fallback |
 | `Tree::walk() -> TreeCursor<'_>` | Returns a cursor for zero-allocation streaming traversal |
 | `Tree::edit(&mut self, edit: &InputEdit)` | Records a source edit; pass the updated tree to `parse_with_old_tree` |
+| `Tree::incremental_metrics() -> Option<&IncrementalMetrics>` | Reuse, re-lex, changed-range, and fallback measurements |
+| `Tree::changed_ranges() -> Vec<Range<usize>>` | Byte range reprocessed by the most recent parse |
 | `Tree::root_node() -> Node<'_>` | Get the root of the syntax tree |
 | `Tree::source() -> &str` | Source text this tree was built from |
 | `Node::kind() -> String` | Grammar-canonical node type name (e.g. `"source_file"`) matching tree-sitter output |
@@ -75,6 +77,7 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `PerlLanguage` / `language()` / `LANGUAGE` | Language descriptor for Rust-native tooling (not `tree_sitter::Language`) |
 | `FieldId` | Stable named-field identifier shared by the AST and facade |
 | `PerlNodeKind` | Re-export of `perl_ast::NodeKind` for pattern matching |
+| `FallbackReason` | Typed classification for incremental full-parse fallback |
 
 ## Error tolerance
 
@@ -87,6 +90,9 @@ This means you can pipe any Perl source through this parser and rely on getting 
 ## Known limitations (Phase 1)
 
 - `Node::children()` allocates a `Vec` internally on each call. Prefer iterating once over calling repeatedly.
+- Incremental replay currently reuses parser tokens, not AST subtrees. Format declarations,
+  oversized edits, and unsupported cache windows report a full-parse fallback through
+  `Tree::incremental_metrics()`.
 - `RecursionLimit` / `NestingTooDeep` parse errors produce `None` rather than a partial tree.
 - `Node::kind()` now returns grammar-canonical names (e.g. `"source_file"`) for tree-sitter compatibility. Use `Node::native_kind()` when you need the v3 internal PascalCase name.
 

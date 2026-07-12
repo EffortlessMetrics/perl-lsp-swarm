@@ -221,3 +221,32 @@ fn when_parse_with_old_tree_given_unchanged_source_but_pending_edits_then_tree_i
     );
     assert_eq!(reparsed.source(), "my $x = 1;");
 }
+
+#[test]
+fn when_a_local_edit_has_a_checkpoint_suffix_then_token_replay_is_measured() {
+    let source = "my $value = 1;\n".repeat(40);
+    let mut parser = Parser::new();
+    let old_tree = must_some(parser.parse(&source));
+    let start = must_some(source.find('1'));
+    let new_source = source.replacen('1', "22", 1);
+    let edit = Edit::new(
+        start,
+        start + 1,
+        start + 2,
+        Position::new(start, 0, start as u32),
+        Position::new(start + 1, 0, (start + 1) as u32),
+        Position::new(start + 2, 0, (start + 2) as u32),
+    );
+    let mut edited_tree = old_tree.clone();
+    edited_tree.edit(&edit);
+
+    let incremental = must_some(parser.parse_with_old_tree(&new_source, &edited_tree));
+    let metrics = must_some(incremental.incremental_metrics());
+    let fresh = must_some(parser.parse(&new_source));
+
+    assert_eq!(incremental.root_node().to_sexp(), fresh.root_node().to_sexp());
+    assert!(!metrics.full_parse);
+    assert!(metrics.tokens_reused > 0);
+    assert!(metrics.tokens_relexed > 0);
+    assert!(metrics.reparsed_bytes < new_source.len());
+}

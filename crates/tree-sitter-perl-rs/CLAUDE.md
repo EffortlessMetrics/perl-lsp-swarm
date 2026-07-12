@@ -32,6 +32,8 @@ impl Tree {
     pub fn source(&self) -> &str;
     pub fn walk(&self) -> TreeCursor<'_>;
     pub fn edit(&mut self, edit: &InputEdit);
+    pub fn incremental_metrics(&self) -> Option<&IncrementalMetrics>;
+    pub fn changed_ranges(&self) -> Vec<std::ops::Range<usize>>;
 }
 
 pub struct Node<'tree> { /* borrows from Tree */ }
@@ -69,6 +71,7 @@ pub fn language() -> PerlLanguage;
 pub static LANGUAGE: PerlLanguage;
 
 pub use perl_ast::NodeKind as PerlNodeKind;  // for pattern matching without perl-ast dep
+pub use perl_parser_core::incremental::FallbackReason;
 ```
 
 ## How it differs from `tree-sitter-perl-c`
@@ -99,3 +102,4 @@ cargo doc -p tree-sitter-perl-rs --open     # View documentation
 
 - Field-name accessors (named children by field name)
 - Predicate / query API
+- AST subtree reuse beyond the token-level incremental kernel

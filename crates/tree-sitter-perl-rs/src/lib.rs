@@ -51,7 +51,10 @@
 
 use perl_ast::{Node as AstNode, NodeKind};
 use perl_module::parse_module_import_head;
-use perl_parser_core::Parser as CoreParser;
+use perl_parser_core::{
+    Parser as CoreParser,
+    incremental::{IncrementalEdit, IncrementalState},
+};
 use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::semantic::SemanticModel;
 use std::ops::ControlFlow;
@@ -60,6 +63,7 @@ use std::ops::ControlFlow;
 ///
 /// Mirrors `tree_sitter::InputEdit` field layout for drop-in compatibility.
 pub use perl_parser_core::edit::Edit as InputEdit;
+pub use perl_parser_core::incremental::{FallbackReason, IncrementalMetrics};
 
 /// A tree-sitter-compatible source position.
 ///
@@ -117,17 +121,23 @@ impl Parser {
     pub fn parse(&mut self, source: &str) -> Option<Tree> {
         let mut core = CoreParser::new(source);
         match core.parse() {
-            Ok(root) => Some(Tree { root, source: source.to_string(), pending_edits: Vec::new() }),
+            Ok(root) => Some(Tree {
+                root,
+                source: source.to_string(),
+                pending_edits: Vec::new(),
+                incremental_state: Some(IncrementalState::new(source)),
+            }),
             Err(_) => None,
         }
     }
 
     /// Parse `source` using `old_tree` as a hint for incremental re-parsing.
     ///
-    /// In the current implementation this performs a full re-parse (equivalent
-    /// to [`parse`][Parser::parse]). The `old_tree` parameter is accepted for
-    /// API compatibility with `tree_sitter::Parser::parse_with_old_tree`; future
-    /// versions will use it to skip unchanged regions.
+    /// A single pending edit uses the lower-tier checkpoint-bounded token replay
+    /// kernel. Context-sensitive format declarations, oversized edits, and
+    /// unsupported cache windows use a safe full-parse fallback. The AST is
+    /// rebuilt from the assembled token stream; this API does not claim AST
+    /// subtree reuse.
     ///
     /// Returns `None` on complete parse failure (same semantics as `parse`).
     pub fn parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree> {
@@ -135,6 +145,26 @@ impl Parser {
         // instead of re-parsing. This mirrors tree-sitter's incremental no-op behavior.
         if source == old_tree.source() && old_tree.pending_edits.is_empty() {
             return Some(old_tree.clone());
+        }
+
+        if old_tree.pending_edits.len() == 1 {
+            let edit = &old_tree.pending_edits[0];
+            let Some(new_text) = source.get(edit.start_byte..edit.new_end_byte) else {
+                return self.parse(source);
+            };
+            let Some(mut state) = old_tree.incremental_state.clone() else {
+                return self.parse(source);
+            };
+            let incremental_edit =
+                IncrementalEdit::new(edit.start_byte, edit.old_end_byte, new_text);
+            if let Ok(root) = state.reparse(source, &incremental_edit) {
+                return Some(Tree {
+                    root,
+                    source: source.to_string(),
+                    pending_edits: Vec::new(),
+                    incremental_state: Some(state),
+                });
+            }
         }
 
         self.parse(source)
@@ -221,12 +251,21 @@ pub static LANGUAGE: PerlLanguage = PerlLanguage {
 /// The result of a successful parse: an owned syntax tree and the source text.
 ///
 /// Use [`root_node`][Tree::root_node] to begin traversal.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Tree {
     root: AstNode,
     source: String,
     /// Pending edits recorded via [`Tree::edit`].
     pending_edits: Vec<InputEdit>,
+    incremental_state: Option<IncrementalState>,
+}
+
+impl PartialEq for Tree {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root
+            && self.source == other.source
+            && self.pending_edits == other.pending_edits
+    }
 }
 
 /// Experimental semantic overlay query handle.
@@ -278,14 +317,29 @@ impl Tree {
         &self.source
     }
 
+    /// Returns measurements from the most recent parse represented by this tree.
+    pub fn incremental_metrics(&self) -> Option<&IncrementalMetrics> {
+        self.incremental_state.as_ref().map(IncrementalState::metrics)
+    }
+
+    /// Returns the byte range reprocessed by the most recent parse.
+    ///
+    /// A full parse reports the entire source range. An unchanged-tree fast path
+    /// has no incremental metrics and returns an empty vector.
+    pub fn changed_ranges(&self) -> Vec<std::ops::Range<usize>> {
+        self.incremental_metrics()
+            .map(|metrics| vec![metrics.changed_range.clone()])
+            .unwrap_or_default()
+    }
+
     /// Records a source edit on this tree, invalidating affected byte ranges.
     ///
     /// After calling `edit()`, pass this tree and the new source to
     /// [`Parser::parse_with_old_tree`] to re-parse efficiently.
     ///
-    /// In the current implementation this stores the edit for API compatibility;
-    /// true incremental re-parsing (skipping unchanged regions) is a planned
-    /// optimization.
+    /// The edit is consumed by the next parser parse_with_old_tree call. The
+    /// current lower-tier kernel supports one edit at a time; multiple pending
+    /// edits use a safe full-parse fallback.
     pub fn edit(&mut self, edit: &InputEdit) {
         self.pending_edits.push(edit.clone());
     }

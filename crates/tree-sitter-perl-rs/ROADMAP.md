@@ -8,7 +8,8 @@
 - `start_byte()`, `end_byte()`, `start_position()`, `end_position()`, `utf8_text()` — source location and extraction
 - `is_leaf()`, `inner()`, `tree_source()` — utility and escape hatch
 - `TreeCursor` — zero-allocation streaming traversal (`walk()`, `goto_first_child()`, `goto_next_sibling()`, `goto_parent()`)
-- `Tree::edit()` / `Parser::parse_with_old_tree()` / `InputEdit` — incremental re-parsing
+- `Tree::edit()` / `Parser::parse_with_old_tree()` / `InputEdit` — checkpoint-bounded token replay with measured fallback
+- `Tree::incremental_metrics()` / `Tree::changed_ranges()` — replay and changed-range observability
 - `PerlLanguage` descriptor, `language()` function, and `LANGUAGE` constant for Rust-native tooling
 - `PerlNodeKind` re-export for pattern matching without a direct `perl-ast` dependency
 - Snapshot tests for representative Perl constructs
@@ -28,8 +29,8 @@ tree-sitter query API.
 
 ## Known limitations
 
-- `end_byte()` may return `source.len() + 1` for the root node on some inputs. Callers should
-  clamp to `source.len()` when using it as a slice index.
+- Incremental replay currently reuses parser tokens, not AST subtrees. Format declarations,
+  oversized edits, and unsupported cache windows use a safe full-parse fallback.
 - `Node::children()` allocates a `Vec<&AstNode>` internally on each call. Avoid calling it
   in tight loops; iterate once and collect if you need random access.
 - `RecursionLimit` / `NestingTooDeep` parse errors from the v3 parser produce `None` from
