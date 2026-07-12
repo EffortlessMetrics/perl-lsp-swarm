@@ -54,6 +54,7 @@ use perl_module::parse_module_import_head;
 use perl_parser_core::Parser as CoreParser;
 use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::semantic::SemanticModel;
+use std::ops::ControlFlow;
 
 /// Re-export of Edit type for tree-sitter-compatible incremental parsing.
 ///
@@ -423,9 +424,12 @@ impl<'tree> Node<'tree> {
     pub fn child_by_field_name(&self, name: &str) -> Option<Node<'tree>> {
         let field = FieldId::from_name(name)?;
         let mut found = None;
-        self.inner.for_each_child_with_field(|candidate, child| {
-            if found.is_none() && candidate == Some(field) {
+        let _ = self.inner.try_for_each_child_with_field(|candidate, child| {
+            if candidate == Some(field) {
                 found = Some(Node { inner: child, tree_source: self.tree_source });
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
             }
         });
         found
@@ -658,11 +662,14 @@ fn ast_child_count(node: &AstNode) -> usize {
 fn ast_child_at(node: &AstNode, index: usize) -> Option<&AstNode> {
     let mut idx = 0usize;
     let mut found = None;
-    node.for_each_child(|child| {
-        if found.is_none() && idx == index {
+    let _ = node.try_for_each_child_with_field(|_, child| {
+        if idx == index {
             found = Some(child);
+            ControlFlow::Break(())
+        } else {
+            idx += 1;
+            ControlFlow::Continue(())
         }
-        idx += 1;
     });
     found
 }
@@ -671,11 +678,14 @@ fn ast_child_at(node: &AstNode, index: usize) -> Option<&AstNode> {
 fn ast_child_field(node: &AstNode, index: usize) -> Option<FieldId> {
     let mut idx = 0usize;
     let mut found = None;
-    node.for_each_child_with_field(|field, _| {
+    let _ = node.try_for_each_child_with_field(|field, _| {
         if idx == index {
             found = field;
+            ControlFlow::Break(())
+        } else {
+            idx += 1;
+            ControlFlow::Continue(())
         }
-        idx += 1;
     });
     found
 }
