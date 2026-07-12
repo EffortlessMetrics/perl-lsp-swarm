@@ -36,6 +36,7 @@ path = "src/bin/bench_facade.rs"
 
 [dependencies]
 perl-parser-core = { workspace = true }
+perl-position-tracking = { workspace = true }
 perl-ast = { workspace = true }
 perl-module = { workspace = true }
 perl-pragma = { workspace = true }
