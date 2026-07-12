@@ -321,3 +321,114 @@ fn if_condition_declaration_and_binds_whole_assignment() -> Result<(), String> {
 
     Ok(())
 }
+
+// -----------------------------------------------------------------------------
+// Sibling follow-up (factory-droid thread PRRT_kwDOSid81M6QKmjZ on PR #3908):
+// parse_condition_declaration (if/elsif/while/unless) got the parse_word_or_expr
+// continuation above, but parse_c_style_or_implicit_foreach's `my`-in-init
+// path (engine/parser/control_flow.rs) -- the C-style for-loop's ONE
+// remaining unpaired collect_comma_fat_arrow_continuation call site -- did
+// not, so the identical bug was still live there:
+// `for (my $i = 0 or die; $i < 10; $i++) {}` failed with
+// "expected expression, found 'or'".
+//
+// Ground truth (perl 5.42.2, `-MO=Deparse,-p`):
+//
+//   $ perl -MO=Deparse,-p -e 'for (my $i = 0 or die; $i < 10; $i++) {}'
+//   for (((my $i = 0) or die); ($i < 10); (++$i)) { ... }
+//
+// Fixed the same way: parse_word_or_expr is now applied to the for-init
+// declaration after its comma continuation.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn for_loop_init_declaration_or_die_binds_whole_assignment() -> Result<(), String> {
+    let source = "for (my $i = 0 or die; $i < 10; $i++) {}";
+    assert_clean_parse(source);
+
+    let ast = parse_program(source)?;
+    let statements = program_statements(&ast)?;
+    let top = statements.first().ok_or_else(|| "expected one top-level statement".to_string())?;
+
+    let init = match &top.kind {
+        NodeKind::For { init, .. } => {
+            init.as_ref().ok_or_else(|| "expected a for-loop init clause".to_string())?
+        }
+        other => return Err(format!("expected For statement, got {other:?}")),
+    };
+
+    match &init.kind {
+        NodeKind::Binary { op, left, right } => {
+            assert_eq!(op, "or", "init clause must be an `or` binary node, got op {op:?}");
+            match &left.kind {
+                NodeKind::VariableDeclaration { declarator, initializer, .. } => {
+                    assert_eq!(
+                        declarator, "my",
+                        "the `or`'s left operand must be the WHOLE `my $i = 0` declaration, \
+                         not just 0"
+                    );
+                    let decl_init = initializer
+                        .as_ref()
+                        .ok_or_else(|| "expected $i to have an initializer".to_string())?;
+                    if matches!(&decl_init.kind, NodeKind::Binary { op, .. } if op == "or") {
+                        return Err("or die must NOT be folded into $i's initializer".to_string());
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "expected the `or`'s left operand to be the my-declaration, got {other:?}"
+                    ));
+                }
+            }
+            let right_sexp = right.to_sexp();
+            assert!(
+                right_sexp.contains("die"),
+                "expected `die` as the `or`'s right operand, got {right_sexp}"
+            );
+        }
+        other => return Err(format!("expected a Binary `or` init clause, got {other:?}")),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn for_loop_init_declaration_without_or_still_parses_plainly() -> Result<(), String> {
+    // Guard: a for-init with no trailing word operator must NOT gain an
+    // extra Binary wrapper from the new parse_word_or_expr continuation --
+    // no over-consumption.
+    let source = "for (my $i = 0; $i < 10; $i++) {}";
+    assert_clean_parse(source);
+
+    let ast = parse_program(source)?;
+    let statements = program_statements(&ast)?;
+    let top = statements.first().ok_or_else(|| "expected one top-level statement".to_string())?;
+
+    let init = match &top.kind {
+        NodeKind::For { init, .. } => {
+            init.as_ref().ok_or_else(|| "expected a for-loop init clause".to_string())?
+        }
+        other => return Err(format!("expected For statement, got {other:?}")),
+    };
+
+    match &init.kind {
+        NodeKind::VariableDeclaration { declarator, initializer, .. } => {
+            assert_eq!(declarator, "my");
+            let decl_init = initializer
+                .as_ref()
+                .ok_or_else(|| "expected $i to have an initializer".to_string())?;
+            match &decl_init.kind {
+                NodeKind::Number { value } => assert_eq!(value, "0"),
+                other => return Err(format!("expected initializer 0, got {other:?}")),
+            }
+        }
+        other => {
+            return Err(format!(
+                "for-init without a trailing word operator must stay a plain \
+                 VariableDeclaration, got {other:?}"
+            ));
+        }
+    }
+
+    Ok(())
+}

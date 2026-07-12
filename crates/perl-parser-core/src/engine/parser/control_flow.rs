@@ -316,6 +316,14 @@ impl<'a> Parser<'a> {
             // sites do. `collect_comma_fat_arrow_continuation` stops at the
             // `;` that terminates the init clause.
             let decl = self.collect_comma_fat_arrow_continuation(decl)?;
+            // `and`/`or`/`xor` are lower precedence than `,` in Perl
+            // (perlop), so mirror parse_condition_declaration's word-operator
+            // continuation here too: `for (my $i = 0 or die; ...)` deparses
+            // as `for (((my $i = 0) or die); ...)` — `or` binds the WHOLE
+            // init declaration (including any comma-collected terms), not
+            // just its initializer RHS (#3908 follow-up: this was the one
+            // remaining unpaired collect_comma_fat_arrow_continuation site).
+            let decl = self.parse_word_or_expr(decl)?;
             // Variable declarations in for loops don't have trailing semicolons
             Some(Box::new(decl))
         } else {
