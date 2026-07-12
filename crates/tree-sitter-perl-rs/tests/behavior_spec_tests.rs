@@ -67,6 +67,20 @@ fn when_requesting_named_fields_then_structural_children_are_resolved() {
 }
 
 #[test]
+fn when_requesting_ternary_fields_then_false_expression_uses_else_expr() {
+    let tree = parse("my $x = $condition ? $then : $otherwise;");
+    let ternary =
+        must_some(tree.root_node().children().find(|node| node.kind() == "my_declaration"))
+            .children()
+            .find(|node| node.kind() == "ternary");
+    let ternary = must_some(ternary);
+
+    assert_eq!(must_some(ternary.child_by_field_name("then_expr")).kind(), "variable");
+    assert_eq!(must_some(ternary.child_by_field_name("else_expr")).kind(), "variable");
+    assert!(ternary.child_by_field_name("else_branch").is_none());
+}
+
+#[test]
 fn when_describing_language_fields_then_names_are_stable_and_resolvable() {
     let descriptor = language();
     assert!(descriptor.field_names().iter().any(|field| field.name() == "condition"));
