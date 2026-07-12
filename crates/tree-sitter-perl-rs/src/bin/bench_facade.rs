@@ -18,6 +18,7 @@
 //! ```text
 //! bench_facade <file>
 //! bench_facade <file> --incremental
+//! bench_facade <file> --profile
 //! ```
 // Benchmark binary — println!/eprintln! are used for structured output consumed by bench harness.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
@@ -37,6 +38,7 @@ fn main() {
     }
     let file_path = &args[1];
     let incremental_mode = args.get(2).is_some_and(|arg| arg == "--incremental");
+    let profile_mode = args.get(2).is_some_and(|arg| arg == "--profile");
     let code = fs::read_to_string(file_path).unwrap_or_else(|e| {
         eprintln!("Failed to read file: {}", e);
         std::process::exit(1);
@@ -50,6 +52,10 @@ fn main() {
 
     match result.tree {
         Some(mut old_tree) => {
+            if profile_mode {
+                profile_tree(&old_tree, &code, has_error, duration);
+                return;
+            }
             if !incremental_mode {
                 println!("status=success error={} duration_us={}", has_error, duration);
                 return;
@@ -91,6 +97,70 @@ fn main() {
             println!("status=failure error=true duration_us={}", duration);
             std::process::exit(1);
         }
+    }
+}
+
+fn profile_tree(tree: &tree_sitter_perl_rs::Tree, source: &str, has_error: bool, parse_us: u128) {
+    let traversal_start = Instant::now();
+    let mut node_count = 0usize;
+    visit_nodes(tree.root_node(), &mut |_node| {
+        node_count = node_count.saturating_add(1);
+    });
+    let traversal_us = traversal_start.elapsed().as_micros();
+
+    let kind_start = Instant::now();
+    let mut kind_bytes = 0usize;
+    visit_nodes(tree.root_node(), &mut |node| {
+        kind_bytes = kind_bytes.saturating_add(node.kind().len());
+    });
+    let kind_us = kind_start.elapsed().as_micros();
+
+    let position_start = Instant::now();
+    let mut position_sum = 0usize;
+    visit_nodes(tree.root_node(), &mut |node| {
+        let start = node.start_position();
+        let end = node.end_position();
+        position_sum = position_sum
+            .saturating_add(start.row)
+            .saturating_add(start.column)
+            .saturating_add(end.row)
+            .saturating_add(end.column);
+    });
+    let position_us = position_start.elapsed().as_micros();
+
+    let overlay_start = Instant::now();
+    let overlay = tree.semantic_overlay();
+    let mut overlay_queries = 0usize;
+    let offsets = [0, source.len() / 2, source.len()];
+    for offset in offsets {
+        let _ = std::hint::black_box(overlay.definition_at_offset(offset));
+        let _ = std::hint::black_box(overlay.visible_imports_at_offset(offset));
+        let _ = std::hint::black_box(overlay.pragma_state_at_offset(offset));
+        overlay_queries = overlay_queries.saturating_add(3);
+    }
+    let overlay_us = overlay_start.elapsed().as_micros();
+
+    println!(
+        "status=success error={} profile=true duration_us={} node_count={} traversal_duration_us={} kind_lookup_duration_us={} position_duration_us={} overlay_duration_us={} overlay_queries={} checksum={}",
+        has_error,
+        parse_us,
+        node_count,
+        traversal_us,
+        kind_us,
+        position_us,
+        overlay_us,
+        overlay_queries,
+        kind_bytes.saturating_add(position_sum),
+    );
+}
+
+fn visit_nodes(
+    node: tree_sitter_perl_rs::Node<'_>,
+    visit: &mut impl FnMut(tree_sitter_perl_rs::Node<'_>),
+) {
+    visit(node);
+    for child in node.children() {
+        visit_nodes(child, visit);
     }
 }
 
