@@ -97,9 +97,15 @@ fn build_scoped_body(
     ranges: &mut Vec<(Range<usize>, PragmaState)>,
 ) {
     let saved_state = current_state.clone();
+    let len_before = ranges.len();
     build_ranges(body, current_state, ranges);
     *current_state = saved_state;
-    ranges.push((body.location.end..body.location.end, current_state.clone()));
+    // Only emit a restore entry when the body produced at least one transition.
+    // Bodies with no pragma statements generate no transitions and need no restore marker,
+    // which avoids allocating redundant entries for the common case of empty or non-pragma scopes.
+    if ranges.len() > len_before {
+        ranges.push((body.location.end..body.location.end, current_state.clone()));
+    }
 }
 
 fn build_statement_block(
@@ -109,9 +115,12 @@ fn build_statement_block(
     ranges: &mut Vec<(Range<usize>, PragmaState)>,
 ) {
     let saved_state = current_state.clone();
+    let len_before = ranges.len();
     for stmt in statements {
         build_ranges(stmt, current_state, ranges);
     }
     *current_state = saved_state;
-    ranges.push((end..end, current_state.clone()));
+    if ranges.len() > len_before {
+        ranges.push((end..end, current_state.clone()));
+    }
 }

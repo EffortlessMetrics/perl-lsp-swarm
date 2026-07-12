@@ -1,7 +1,7 @@
 use crate::{
-    PragmaState, add_disabled_warning_category, apply_builtin_imports, apply_feature_state,
-    conditional_pragma_target, enable_effective_version_semantics, normalized_pragma_token,
-    parse_perl_version, pragma_arg_items, remove_builtin_imports,
+    PragmaState, apply_builtin_imports, apply_builtin_imports_if_changed, apply_feature_state,
+    conditional_pragma_target, disable_warning_category_if_new, enable_effective_version_semantics,
+    normalized_pragma_token, parse_perl_version, pragma_arg_items, remove_builtin_imports,
 };
 use std::ops::Range;
 
@@ -43,8 +43,9 @@ pub(super) fn apply_use_directive(
             }
         }
         "builtin" => {
-            apply_builtin_imports(state, args);
-            push_state(range, state, ranges);
+            if apply_builtin_imports_if_changed(state, args) {
+                push_state(range, state, ranges);
+            }
         }
         _ => {
             if let Some(version) = parse_perl_version(module) {
@@ -178,7 +179,9 @@ fn apply_conditional_no_target(
 ) {
     match module {
         "strict" => set_strict_categories(state, args, false),
-        "warnings" => disable_warnings_categories(args, state),
+        "warnings" => {
+            disable_warnings_categories(args, state);
+        }
         "utf8" => state.utf8 = false,
         "encoding" => state.encoding = None,
         "locale" => {
@@ -247,33 +250,32 @@ fn apply_no_warnings(
     state: &mut PragmaState,
     ranges: &mut Vec<(Range<usize>, PragmaState)>,
 ) {
-    let warnings_before = state.warnings;
-    let had_disabled_before = !state.disabled_warning_categories.is_empty();
-    let before = state.disabled_warning_categories.len();
-    disable_warnings_categories(args, state);
-
-    let changed = if args.is_empty() {
-        warnings_before || had_disabled_before
-    } else {
-        state.disabled_warning_categories.len() != before
-    };
-    if changed {
+    if disable_warnings_categories(args, state) {
         push_state(range, state, ranges);
     }
 }
 
-fn disable_warnings_categories(args: &[String], state: &mut PragmaState) {
+/// Applies `no warnings` semantics and returns `true` when the pragma state changed.
+///
+/// Bare `no warnings` (no args) clears the global warnings flag and all per-category
+/// overrides.  `no warnings 'CATEGORY'` adds the named category to the disabled set only
+/// when it was not already present — repeated disables of the same category are no-ops
+/// and do not produce redundant map entries.
+fn disable_warnings_categories(args: &[String], state: &mut PragmaState) -> bool {
     if args.is_empty() {
+        let changed = state.warnings || !state.disabled_warning_categories.is_empty();
         state.warnings = false;
         state.disabled_warning_categories.clear();
-        return;
+        return changed;
     }
 
+    let mut changed = false;
     for arg in args {
         for category in pragma_arg_items(arg) {
-            add_disabled_warning_category(state, &category);
+            changed |= disable_warning_category_if_new(state, &category);
         }
     }
+    changed
 }
 
 fn first_normalized_arg(args: &[String]) -> Option<String> {

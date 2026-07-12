@@ -13,35 +13,49 @@ pub(crate) fn builtin_import_names(arg: &str) -> Vec<String> {
 }
 
 pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
+    apply_builtin_imports_if_changed(state, args);
+}
+
+/// Like [`apply_builtin_imports`] but returns `true` when at least one new name was imported.
+///
+/// Used by the directive walker to suppress redundant pragma-map entries when a `use builtin`
+/// statement lists names that are already in scope.
+pub(crate) fn apply_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let mut changed = false;
     for arg in args {
         for name in builtin_import_names(arg) {
             if !state.builtin_imports.iter().any(|import| import == &name) {
                 state.builtin_imports.push(name);
+                changed = true;
             }
         }
     }
+    changed
 }
 
 /// Insert `category` into `state.disabled_warning_categories` if not already present and
 /// within the hard cap of [`MAX_DISABLED_WARNING_CATEGORIES`].
 ///
-/// Categories beyond the cap are silently dropped. In valid Perl code this is never reached
-/// (Perl's own warning hierarchy has ~30 leaf categories); the cap is a safety guard against
-/// pathological or adversarial AST input that would otherwise cause O(n²) clone cost.
-pub(crate) fn add_disabled_warning_category(state: &mut PragmaState, category: &str) {
+/// Returns `true` when the category was newly inserted; `false` when it was already present
+/// or the cap was reached.  Callers can use the return value to suppress redundant pragma-map
+/// entries. Categories beyond the cap are silently dropped — Perl's own warning hierarchy has
+/// ~30 leaf categories, so the cap is a safety guard against adversarial AST input that would
+/// otherwise cause O(n²) clone cost.
+pub(crate) fn disable_warning_category_if_new(state: &mut PragmaState, category: &str) -> bool {
     if category.is_empty() {
-        return;
+        return false;
     }
 
     if state.disabled_warning_categories.iter().any(|c| c == category) {
-        return;
+        return false;
     }
 
     if state.disabled_warning_categories.len() >= MAX_DISABLED_WARNING_CATEGORIES {
-        return;
+        return false;
     }
 
     state.disabled_warning_categories.push(category.to_string());
+    true
 }
 
 pub(crate) fn remove_builtin_imports(state: &mut PragmaState, args: &[String]) {

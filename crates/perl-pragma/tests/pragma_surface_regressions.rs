@@ -398,3 +398,98 @@ fn no_if_strict_qw_disables_only_requested_categories_conditionally()
     assert!(state.strict_refs, "refs was not in the qw list, must stay enabled");
     Ok(())
 }
+
+// --- Redundancy suppression regression tests ---
+//
+// These tests pin the map-entry count to ensure that no-op pragma repetitions
+// (same category already disabled, same builtin already imported) do not emit
+// extra transition entries, and that empty scoped bodies emit no restore entry.
+// A regression here means the walker is emitting spurious entries, increasing
+// build cost proportionally to the number of repeated pragma statements.
+
+fn sub_node(body: Node, start: usize, end: usize) -> Node {
+    Node {
+        kind: NodeKind::Subroutine {
+            name: Some("f".to_string()),
+            name_span: None,
+            declarator: None,
+            prototype: None,
+            signature: None,
+            attributes: vec![],
+            body: Box::new(body),
+        },
+        location: loc(start, end),
+    }
+}
+
+#[test]
+fn duplicate_no_warnings_category_does_not_create_redundant_map_entries() {
+    // Two consecutive `no warnings 'uninitialized'` statements: only the first changes
+    // state, so only one map entry should be emitted.
+    let ast = program(vec![
+        use_node("warnings", &[], 0, 16),
+        no_node("warnings", &["uninitialized"], 17, 47),
+        no_node("warnings", &["uninitialized"], 48, 78),
+    ]);
+    let map = PragmaTracker::build(&ast);
+
+    // entry 0: use warnings; entry 1: no warnings 'uninitialized' (first time)
+    // The second `no warnings 'uninitialized'` must not produce entry 2.
+    assert_eq!(map.len(), 2, "duplicate no-warnings disable must not emit a second entry");
+
+    let state = PragmaTracker::state_for_offset(&map, 60);
+    assert!(state.warnings);
+    assert!(!state.is_warning_active("uninitialized"));
+}
+
+#[test]
+fn duplicate_use_builtin_import_does_not_create_redundant_map_entries() {
+    // Two consecutive `use builtin 'true'` statements: only the first changes
+    // state, so only one map entry should be emitted.
+    let ast = program(vec![
+        use_node("builtin", &["'true'"], 0, 20),
+        use_node("builtin", &["'true'"], 21, 41),
+    ]);
+    let map = PragmaTracker::build(&ast);
+
+    // Only the first `use builtin 'true'` produces an entry; the second is a no-op.
+    assert_eq!(map.len(), 1, "duplicate use-builtin import must not emit a second entry");
+
+    let state = PragmaTracker::state_for_offset(&map, 30);
+    assert!(state.has_builtin_import("true"));
+}
+
+#[test]
+fn empty_scoped_body_emits_no_restore_entry() {
+    // A subroutine with no pragma statements inside its body must not emit any
+    // map entries — not even a restore marker.
+    let ast =
+        program(vec![use_node("strict", &[], 0, 12), sub_node(block(vec![], 14, 16), 13, 17)]);
+    let map = PragmaTracker::build(&ast);
+
+    // Only the `use strict` entry — the empty sub body emits nothing.
+    assert_eq!(map.len(), 1, "empty scoped body must not emit a restore entry");
+}
+
+#[test]
+fn scoped_body_with_pragma_still_emits_restore_entry() {
+    // A subroutine that contains a pragma change must still emit both the
+    // transition entry and a restore entry so state is correctly unwound after
+    // the scope closes.
+    let ast = program(vec![
+        use_node("strict", &[], 0, 12),
+        sub_node(block(vec![no_node("strict", &["refs"], 20, 36)], 18, 38), 13, 40),
+        use_node("warnings", &[], 41, 56),
+    ]);
+    let map = PragmaTracker::build(&ast);
+
+    // 1: use strict  2: no strict 'refs' inside sub  3: restore after sub  4: use warnings
+    assert!(map.len() >= 3, "scoped body with pragma must emit transition + restore entries");
+
+    let in_sub = PragmaTracker::state_for_offset(&map, 28);
+    assert!(!in_sub.strict_refs);
+
+    let after_sub = PragmaTracker::state_for_offset(&map, 50);
+    assert!(after_sub.strict_refs);
+    assert!(after_sub.warnings);
+}
