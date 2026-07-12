@@ -14,6 +14,10 @@
 #    NOT caught -- counts cannot distinguish it from a genuine pass. See the
 #    "DOCUMENTED GAP" case below and scripts/ci/check-receipt-instrument.sh's
 #    header comment for why.
+#  - NARROW SCOPE: a receipt where the test gate is clean but a SEPARATE
+#    tooling gate (fmt-shaped, exit_code=127) is failed/absent is ACCEPTED --
+#    this check only inspects test-metrics-bearing gates (see the
+#    "lightweight-advisory-runner shape" case below).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,6 +89,44 @@ write_receipt() {
     }' > "$path"
 }
 
+# write_receipt_with_tooling_failure: a receipt where the test-class gate
+# (tests_total/passed/skipped as given) is clean, but a SEPARATE tooling gate
+# (fmt-shaped: no metrics, status=fail, exit_code=127 -- "command not found")
+# is present and failed. Reproduces the lightweight-advisory-runner shape:
+# `just`/doc-check tooling isn't installed, so always-on gates like fmt
+# legitimately fail with exit 127, unrelated to whether the test instrument
+# ran for real.
+write_receipt_with_tooling_failure() {
+  local path="$1" sha="$2" ts="$3" total="$4" passed="$5" skipped="$6"
+  jq -n \
+    --arg sha "$sha" --arg ts "$ts" \
+    --argjson total "$total" --argjson passed "$passed" --argjson skipped "$skipped" \
+    '{
+      schema_version: "1.0.0",
+      metadata: {git_sha: $sha, timestamp: $ts},
+      gates: [
+        {
+          gate_name: "fmt",
+          tier: "pr_fast",
+          status: "fail",
+          duration_ms: 5,
+          command: "cargo xtask fmt --check",
+          exit_code: 127
+        },
+        {
+          gate_name: "unit_scoped",
+          tier: "pr_fast",
+          status: "pass",
+          duration_ms: 500,
+          command: "cargo test --locked --lib",
+          exit_code: 0,
+          metrics: {tests_total: $total, tests_passed: $passed, tests_skipped: $skipped}
+        }
+      ],
+      summary: {total_gates: 2, passed: 1, failed: 1, skipped: 0, total_duration_ms: 505, overall_status: "fail"}
+    }' > "$path"
+}
+
 echo "=== check-receipt-instrument test suite ==="
 echo ""
 
@@ -137,6 +179,18 @@ write_receipt "${THREE599_DIR}/receipt.json" "$SHA" "$(now_utc)" 1 1 0
 code=0
 bash "$CHECK_SCRIPT" "$SHA" "${THREE599_DIR}/receipt.json" > "${THREE599_DIR}/out.txt" 2>&1 || code=$?
 assert_exit_zero "DOCUMENTED GAP: the #3599 early-return-Ok shape (total=1,passed=1,skipped=0) is NOT caught by counts -- passes here by design" "$code"
+
+# ─── GREEN (lightweight-advisory-runner shape): a receipt where the
+# test-class gate is genuinely clean but a SEPARATE tooling gate (fmt-shaped,
+# exit_code=127, no metrics) is failed/absent must still be ACCEPTED -- this
+# check is scoped to test-metrics-bearing gates only and must not fail
+# because unrelated tooling wasn't installed in a lightweight CI runner.
+TOOLING_FAIL_DIR="${TMPDIR_BASE}/tooling-fail"
+mkdir -p "$TOOLING_FAIL_DIR"
+write_receipt_with_tooling_failure "${TOOLING_FAIL_DIR}/receipt.json" "$SHA" "$(now_utc)" 5 5 0
+code=0
+bash "$CHECK_SCRIPT" "$SHA" "${TOOLING_FAIL_DIR}/receipt.json" > "${TOOLING_FAIL_DIR}/out.txt" 2>&1 || code=$?
+assert_exit_zero "GREEN: a failed tooling gate (fmt, exit 127) alongside a clean test gate does NOT block this check" "$code"
 
 # ─── GREEN (stale head): a receipt bound to a DIFFERENT commit than expected
 # must be rejected, even though its own gate content is genuine/non-vacuous.

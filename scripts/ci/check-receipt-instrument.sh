@@ -8,18 +8,35 @@
 #      bound to the commit it claims to prove, not stale/reused.
 #   2. `metadata.timestamp` is a valid, non-future UTC timestamp less than
 #      RECEIPT_MAX_AGE_SECONDS (default 3600s) old.
-#   3. Every gate's `status` is pass/skip (fail/timeout/error rejects).
-#   4. For any gate reporting `metrics.tests_total`: tests_total > 0,
-#      tests_passed > 0, and tests_skipped < tests_total. This rejects a
-#      zero-selection / zero-test / all-skipped run (an empty ci-scope
-#      selection, a `--gate` that matched nothing, or a suite that reports
-#      every test skipped) from being trusted on a bare `exit_code: 0`.
-#   5. At least one gate across all receipts reports test metrics --
+#   3. For any gate reporting `metrics.tests_total` (i.e. a test-class
+#      gate): `status` is pass, tests_total > 0, tests_passed > 0, and
+#      tests_skipped < tests_total. This rejects a zero-selection /
+#      zero-test / all-skipped test run (an empty ci-scope selection, a
+#      `--gate` that matched nothing, or a suite that reports every test
+#      skipped) from being trusted on a bare `exit_code: 0`.
+#   4. At least one gate across all receipts reports test metrics --
 #      otherwise this check cannot confirm any test instrument ran at all.
+#
+# SCOPE, DELIBERATELY NARROW: gates that do NOT report `metrics.tests_total`
+# (fmt, release_history, compile_all_targets, clippy_full, and any other
+# tier gate) are IGNORED ENTIRELY here -- their status/exit_code is never
+# inspected, and their absence/failure/`exit 127` (e.g. missing tooling in a
+# lightweight advisory runner that only installs the Rust toolchain) does
+# NOT fail this check. Those gates are the required checks' job
+# (`pr-smoke`/merge-gate shards), not this one's. This check answers
+# exactly one question: did a real test instrument run, bound to this head,
+# without a vacuous zero-test/all-skipped result -- nothing broader.
 #
 # Canonical live producer: `cargo xtask gates --receipt` (what `just
 # pr-fast` runs), default path `target/receipts/receipt.json`; CI merge-gate
 # shards write `target/receipts/shards/<gate>.json` via --receipt-path.
+# Note: `cargo xtask gates` has no supported way to resolve ci-scope package
+# args for a single named `rust_scoped` gate in isolation -- `--gate` always
+# bypasses ci-scope planning (verified: `--tier pr-fast --gate unit_scoped`
+# still errors "unresolved {package_args} placeholder"). So a `--tier
+# pr-fast` run is the only way to get a real, ci-scope-resolved test-gate
+# receipt, and it necessarily runs every pr_fast-tagged gate, not just the
+# test ones -- hence the narrow scope above.
 #
 # HONEST SCOPE / WHAT THIS DOES NOT CATCH (important -- do not overclaim):
 # this check proves a test gate actually ran with a nonzero, non-fully-
@@ -119,37 +136,47 @@ for RECEIPT in "$@"; do
   fi
 
   while IFS= read -r GATE_JSON; do
+    # Filter FIRST on test-metrics presence. Gates without
+    # `metrics.tests_total` (fmt, release_history, compile_all_targets,
+    # clippy_full, ...) are out of scope for this check -- skip them
+    # entirely without inspecting status/exit_code at all. This is what
+    # keeps a lightweight advisory runner (Rust toolchain only, no `just`/
+    # doc-check tooling) from being falsely rejected for tooling gates it
+    # was never meant to run.
+    TESTS_TOTAL="$(jq -r '.metrics.tests_total // empty' <<<"${GATE_JSON}")"
+    if [[ -z "${TESTS_TOTAL}" ]]; then
+      continue
+    fi
+
+    TEST_METRICS_SEEN=1
     GATE_NAME="$(jq -r '.gate_name // "<unnamed>"' <<<"${GATE_JSON}")"
     GATE_STATUS="$(jq -r '.status // "<none>"' <<<"${GATE_JSON}")"
     GATE_EXIT="$(jq -r '.exit_code // empty' <<<"${GATE_JSON}")"
+    TESTS_PASSED="$(jq -r '.metrics.tests_passed // 0' <<<"${GATE_JSON}")"
+    TESTS_SKIPPED="$(jq -r '.metrics.tests_skipped // empty' <<<"${GATE_JSON}")"
 
     # Canonical statuses (xtask/src/tasks/gates.rs): pass|fail|skip|timeout|error.
     # Long forms accepted too (tolerance the repo's own CI scripts already use).
+    # A test-metrics-bearing gate reporting anything other than pass is a
+    # real failure (e.g. genuine test failures), not merely out of scope.
     case "${GATE_STATUS,,}" in
-      pass|passed|skip|skipped) : ;;
+      pass|passed) : ;;
       *)
         FAILED+=("${GATE_NAME} (status=${GATE_STATUS} exit=${GATE_EXIT:-n/a})")
         continue
         ;;
     esac
 
-    TESTS_TOTAL="$(jq -r '.metrics.tests_total // empty' <<<"${GATE_JSON}")"
-    if [[ -n "${TESTS_TOTAL}" ]]; then
-      TEST_METRICS_SEEN=1
-      TESTS_PASSED="$(jq -r '.metrics.tests_passed // 0' <<<"${GATE_JSON}")"
-      TESTS_SKIPPED="$(jq -r '.metrics.tests_skipped // empty' <<<"${GATE_JSON}")"
-
-      # Reject a zero-selection / zero-test / all-skipped shape here -- a
-      # gate that matched/ran nothing also exits 0. NOTE: this does NOT
-      # catch an early-return-Ok test body (counted as passed by cargo);
-      # see the module header for why that mode is out of scope for counts.
-      if [[ "${TESTS_TOTAL}" -eq 0 ]]; then
-        FAILED+=("${GATE_NAME} (vacuous: tests_total=0 -- instrument matched/ran nothing)")
-      elif [[ -n "${TESTS_SKIPPED}" && "${TESTS_SKIPPED}" -ge "${TESTS_TOTAL}" ]]; then
-        FAILED+=("${GATE_NAME} (vacuous: tests_skipped=${TESTS_SKIPPED} of tests_total=${TESTS_TOTAL})")
-      elif [[ "${TESTS_PASSED}" -eq 0 ]]; then
-        FAILED+=("${GATE_NAME} (vacuous: tests_passed=0 of tests_total=${TESTS_TOTAL})")
-      fi
+    # Reject a zero-selection / zero-test / all-skipped shape here -- a
+    # gate that matched/ran nothing also exits 0. NOTE: this does NOT
+    # catch an early-return-Ok test body (counted as passed by cargo);
+    # see the module header for why that mode is out of scope for counts.
+    if [[ "${TESTS_TOTAL}" -eq 0 ]]; then
+      FAILED+=("${GATE_NAME} (vacuous: tests_total=0 -- instrument matched/ran nothing)")
+    elif [[ -n "${TESTS_SKIPPED}" && "${TESTS_SKIPPED}" -ge "${TESTS_TOTAL}" ]]; then
+      FAILED+=("${GATE_NAME} (vacuous: tests_skipped=${TESTS_SKIPPED} of tests_total=${TESTS_TOTAL})")
+    elif [[ "${TESTS_PASSED}" -eq 0 ]]; then
+      FAILED+=("${GATE_NAME} (vacuous: tests_passed=0 of tests_total=${TESTS_TOTAL})")
     fi
   done < <(jq -c '.gates[]' "${RECEIPT}" 2>/dev/null)
 done

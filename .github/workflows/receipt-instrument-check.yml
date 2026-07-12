@@ -32,6 +32,18 @@ name: Receipt Instrument Check (Advisory)
 # the full explanation and `scripts/tests/test-check-receipt-instrument.sh`
 # for the fixture that documents this limitation explicitly.
 #
+# THIS JOB IS DELIBERATELY LIGHTWEIGHT: it installs only the Rust toolchain
+# (no `just`, no doc-check tooling), so several always-on pr_fast gates
+# (fmt, release_history, readme_heading_check, compile_all_targets, ...)
+# fail here with exit 127 (tooling not installed) -- that is EXPECTED and
+# is not what this check is asserting on (see check-receipt-instrument.sh's
+# "SCOPE, DELIBERATELY NARROW" note: it inspects only gates that report
+# `metrics.tests_total`, ignoring every other gate's status entirely). The
+# "Run the pr-fast tier" step is allowed to fail (`continue-on-error`) for
+# exactly this reason; the job's real pass/fail signal is the Assert step.
+# Those tooling gates are already covered by the required checks
+# (`pr-smoke`/merge-gate shards), not this one.
+#
 # ADVISORY: intentionally NOT listed in `.ci/policies/required-checks.toml`.
 # Per the M6 lesson, do not promote to required until this shows recurring
 # value catching a real zero-selection/zero-test incident.
@@ -99,6 +111,14 @@ jobs:
 
       - name: Run the pr-fast tier with a fresh receipt
         if: steps.diff.outputs.has_rust_diff == 'true'
+        # continue-on-error: this lightweight job doesn't install `just` or
+        # doc-check tooling, so non-test always-on gates (fmt,
+        # release_history, compile_all_targets, ...) legitimately fail here
+        # with exit 127 -- that's out of scope for what this check asserts
+        # (see the module header above and check-receipt-instrument.sh).
+        # The real pass/fail signal is the Assert step below, which only
+        # inspects test-metrics-bearing gates.
+        continue-on-error: true
         run: |
           mkdir -p target/receipts
           cargo xtask gates --tier pr-fast --receipt \
@@ -108,7 +128,8 @@ jobs:
         # always(): still inspect whatever receipt was written even if the
         # tier step itself already failed a required gate (write_receipt in
         # gates.rs runs before the bail! on blocking failures) -- gives a
-        # useful vacuous-run signal independent of other gate failures.
+        # useful vacuous-run signal independent of other gate failures. This
+        # step (not the tier step above) is the job's real pass/fail signal.
         if: always() && steps.diff.outputs.has_rust_diff == 'true'
         run: |
           bash scripts/ci/check-receipt-instrument.sh \
