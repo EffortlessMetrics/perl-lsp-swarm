@@ -13,6 +13,12 @@ pub(crate) fn builtin_import_names(arg: &str) -> Vec<String> {
 }
 
 pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
+    apply_builtin_imports_if_changed(state, args);
+}
+
+/// Like `apply_builtin_imports`, but returns `true` if any new import was added.
+pub(crate) fn apply_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before = state.builtin_imports.len();
     for arg in args {
         for name in builtin_import_names(arg) {
             if !state.builtin_imports.iter().any(|import| import == &name) {
@@ -20,6 +26,7 @@ pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
             }
         }
     }
+    state.builtin_imports.len() != before
 }
 
 /// Insert `category` into `state.disabled_warning_categories` if not already present and
@@ -45,14 +52,20 @@ pub(crate) fn add_disabled_warning_category(state: &mut PragmaState, category: &
 }
 
 pub(crate) fn remove_builtin_imports(state: &mut PragmaState, args: &[String]) {
+    remove_builtin_imports_if_changed(state, args);
+}
+
+/// Like `remove_builtin_imports`, but returns `true` if any import was removed.
+pub(crate) fn remove_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before = state.builtin_imports.len();
     if args.is_empty() {
         state.builtin_imports.clear();
-        return;
+    } else {
+        let names_to_remove: Vec<String> =
+            args.iter().flat_map(|arg| builtin_import_names(arg)).collect();
+        state.builtin_imports.retain(|import| !names_to_remove.iter().any(|name| name == import));
     }
-
-    let names_to_remove: Vec<String> =
-        args.iter().flat_map(|arg| builtin_import_names(arg)).collect();
-    state.builtin_imports.retain(|import| !names_to_remove.iter().any(|name| name == import));
+    state.builtin_imports.len() != before
 }
 
 pub(crate) fn pragma_arg_items(arg: &str) -> Vec<String> {
