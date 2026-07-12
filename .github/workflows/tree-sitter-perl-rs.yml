@@ -78,6 +78,13 @@ jobs:
             > "$CARGO_TARGET_DIR/incremental-bench.txt"
           grep -q 'ast_nodes_reused=[1-9]' "$CARGO_TARGET_DIR/incremental-bench.txt"
           grep -q 'tokens_reused=[1-9]' "$CARGO_TARGET_DIR/incremental-bench.txt"
+          cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- \
+            tree-sitter-perl/test/highlight/expressions.pm --profile \
+            > "$CARGO_TARGET_DIR/profile-bench.txt"
+          grep -q 'traversal_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
+          grep -q 'kind_lookup_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
+          grep -q 'position_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
+          grep -q 'overlay_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
           cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked
 
       - name: Write proof receipt
@@ -106,6 +113,7 @@ jobs:
                   "cargo run --locked -p xtask -- parser-corpus-sweep --manifest .ci/common-corpus-manifest.txt --enforce --receipt --profile tree-sitter-perl-rs",
                   "cargo run --locked -p perl-ci-hygiene -- quick-bench",
                   "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- incremental-smoke.pl --incremental",
+                  "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- tree-sitter-perl/test/highlight/expressions.pm --profile",
                   "cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked",
               ],
           }
@@ -125,5 +133,6 @@ jobs:
             ${{ runner.temp }}/tree-sitter-perl-rs-target/receipts-tree-sitter-perl-rs-corpus-sweep.json
             ${{ runner.temp }}/tree-sitter-perl-rs-target/quick-bench.txt
             ${{ runner.temp }}/tree-sitter-perl-rs-target/incremental-bench.txt
+            ${{ runner.temp }}/tree-sitter-perl-rs-target/profile-bench.txt
           if-no-files-found: warn
           retention-days: 14
