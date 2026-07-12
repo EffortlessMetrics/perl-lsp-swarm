@@ -9813,15 +9813,9 @@ mod reindex_workshape_measurement {
     /// (`docs/reference/1711-A-reextraction-workshape-receipt.md`) treats
     /// this snapshot as the source of truth for counts, not hand-transcribed
     /// numbers.
-    ///
-    /// `#[allow(dead_code)]`: every field is written by `build_receipt` and
-    /// read collectively by `#[derive(Debug)]` when `insta::assert_debug_snapshot!`
-    /// formats it, but rustc's `dead_code` lint only recognizes direct
-    /// per-field reads, not the derive-generated `Debug::fmt` body -- so it
-    /// flags each field as "never read" even though the snapshot output IS
-    /// the read. This is a `#[cfg(test)]`-only snapshot record; the allow
-    /// does not affect production code.
     #[derive(Debug, Clone)]
+    // snapshot record: fields are read collectively by derive(Debug) into the
+    // insta snapshot, which the dead_code lint does not count as per-field use
     #[allow(dead_code)]
     struct EditClassReceipt {
         base_sha: &'static str,
@@ -9954,7 +9948,7 @@ mod reindex_workshape_measurement {
 
     #[test]
     fn edit_class_1_comment_only_reextracts_unconditionally_despite_unchanged_categories()
-    -> Result<(), String> {
+    -> Result<(), Box<dyn std::error::Error>> {
         let (before, after, m1) = run_class_1_comment_only()?;
 
         assert_ne!(before.0, after.0, "content_hash must change -- real bytes were added");
@@ -10032,7 +10026,8 @@ mod reindex_workshape_measurement {
     /// WORK counts asserted in the sibling test above (and mechanically
     /// bound in `reextraction_workshape_receipt_snapshot`).
     #[test]
-    fn edit_class_1_repeated_comment_only_edits_timing_distribution() -> Result<(), String> {
+    fn edit_class_1_repeated_comment_only_edits_timing_distribution()
+    -> Result<(), Box<dyn std::error::Error>> {
         const ITERATIONS: usize = 15;
         let uri = "file:///big/comment_only_repeated.pm";
         let prefix = fixture_prefix(SUB_COUNT);
@@ -10140,7 +10135,7 @@ mod reindex_workshape_measurement {
 
     #[test]
     fn edit_class_2_reference_only_edit_changes_occurrences_and_reference_anchors()
-    -> Result<(), String> {
+    -> Result<(), Box<dyn std::error::Error>> {
         let (before, after, m1) = run_class_2_reference_only()?;
 
         assert_ne!(before.0, after.0, "content_hash must change");
@@ -10186,7 +10181,8 @@ mod reindex_workshape_measurement {
     }
 
     #[test]
-    fn edit_class_3_declaration_edit_changes_entities_and_anchors() -> Result<(), String> {
+    fn edit_class_3_declaration_edit_changes_entities_and_anchors()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (before, after, m1) = run_class_3_declaration_changing()?;
 
         assert_ne!(
@@ -10228,7 +10224,8 @@ mod reindex_workshape_measurement {
     }
 
     #[test]
-    fn edit_class_4_dynamic_eval_sub_edit_changes_synthetic_categories() -> Result<(), String> {
+    fn edit_class_4_dynamic_eval_sub_edit_changes_synthetic_categories()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (before, after, m1) = run_class_4_dynamic_fact()?;
 
         assert_ne!(
@@ -10277,7 +10274,8 @@ mod reindex_workshape_measurement {
     }
 
     #[test]
-    fn edit_class_5_revert_to_original_is_deterministic() -> Result<(), String> {
+    fn edit_class_5_revert_to_original_is_deterministic() -> Result<(), Box<dyn std::error::Error>>
+    {
         let (original, reverted, m2) = run_class_5_revert_to_original()?;
 
         assert_eq!(
@@ -10326,7 +10324,8 @@ mod reindex_workshape_measurement {
     }
 
     #[test]
-    fn edit_class_6_superseded_generation_never_publishes_stale_content() -> Result<(), String> {
+    fn edit_class_6_superseded_generation_never_publishes_stale_content()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (after_new, after_old_attempt, m_old) = run_class_6_superseded_generation()?;
 
         assert!(
@@ -10359,7 +10358,7 @@ mod reindex_workshape_measurement {
     /// from this snapshot -- see the module doc comment's measurement-
     /// discipline note.
     #[test]
-    fn reextraction_workshape_receipt_snapshot() -> Result<(), String> {
+    fn reextraction_workshape_receipt_snapshot() -> Result<(), Box<dyn std::error::Error>> {
         let (before, after, m) = run_class_1_comment_only()?;
         let comment_only = build_receipt("comment_only", before, after, &m);
 

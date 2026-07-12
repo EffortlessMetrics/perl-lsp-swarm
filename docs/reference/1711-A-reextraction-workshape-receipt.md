@@ -81,12 +81,20 @@ work. This is **not** a whole-workspace cache rebuild, and the counts are
 qualified/bare-name map -- the dual-indexing pattern
 (`perl-workspace/CLAUDE.md`, PR #122) may write each contributed symbol under
 up to two global keys, so the true global-map delta could be larger than the
-per-file contribution count quoted here. All work described in this section
-runs **off-lock**: parsing, `IndexVisitor::visit`, and every extractor call
-happen before `WorkspaceIndex::index_file_with_generation` ever acquires
-`self.files.write()` -- only the cache-churn step that follows is
-lock-held. So this finding is about avoidable **CPU cost**, not lock
-contention or freshness latency.
+per-file contribution count quoted here.
+
+**Lock structure (corrected):** `index_file_with_generation` acquires
+`self.files.write()` TWICE, not once. The initial generation/document-store
+check acquires it briefly (`workspace_index.rs:1899-1974`) to compare the
+content hash and monotonic-generation high-water mark and to update
+`document_store`, then RELEASES it. Parsing, `IndexVisitor::visit`, and every
+canonical/import extractor call (`workspace_index.rs:1976-2048`) then run
+with the document-map write lock RELEASED, before it is re-acquired
+(`workspace_index.rs:2053`) for the index-update block that does the
+per-file cache-contribution churn described above. So the duplicate
+extraction work is **off-lock CPU cost** -- it does not extend the time the
+document-map write lock is held; it just runs twice on the CPU regardless of
+whether the categories changed.
 
 ### Informational timing (NOT gated -- no hard-millisecond threshold anywhere in this PR)
 
@@ -118,10 +126,14 @@ Per the issue's own framing, this crosses from "bounded" to "material":
   "cheap relative to parse" -- the bounded-disposition criterion from the
   issue thread does not hold here).
 - **This is specifically an off-lock CPU-cost finding, not a
-  freshness-correctness or lock-latency failure.** Every wasted extraction
-  call happens BEFORE `self.files.write()` is acquired (see the "off-lock"
-  note above); the lock is only held for the (comparatively fast) cache-churn
-  step. Correctness is not at risk either way: class 6 confirms superseded
+  freshness-correctness or lock-latency failure.** As detailed in the
+  "Lock structure (corrected)" note above, `self.files.write()` is acquired
+  and released early for the generation/document-store check
+  (`workspace_index.rs:1899-1974`), then every wasted extraction call runs
+  with that lock RELEASED (`:1976-2048`), before it is re-acquired for the
+  cache-churn step (`:2053`). So the duplicate work does not extend the
+  document-map write-lock hold time -- it is pure off-lock CPU cost.
+  Correctness is not at risk either way: class 6 confirms superseded
   generations are rejected before publish (and before any extraction work at
   all, in the pre-parse case measured here); class 5 confirms determinism
   across revert.
