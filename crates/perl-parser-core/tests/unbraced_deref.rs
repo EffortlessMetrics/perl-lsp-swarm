@@ -385,3 +385,27 @@ fn braced_qualified_scalar_with_subscript_keeps_variable_operand() {
         "${{Foo::bar[0]}} must not fold Foo::bar into a bareword identifier, got {sexp}"
     );
 }
+
+#[test]
+fn braced_qualified_scalar_with_trailing_double_colon_reports_error() {
+    // ${Foo::} — a `::` with no identifier segment after it. The lexer's
+    // qualified_name_closes_brace_from_here() lookahead must NOT treat this
+    // as "the `::` chain leads directly to `}`" (it would if the "did we
+    // actually consume a segment" guard were dropped, since the next char
+    // after `::` really is `}`). Folding here would hand the parser a
+    // malformed single token instead of the clean, already-tested
+    // "Expected identifier after :: in package-qualified variable"
+    // diagnostic that the pre-existing bare $Foo:: handling produces.
+    // Verified against a clean origin/main checkout (pre-#3593, before any
+    // braced-qualified-scalar folding existed): this exact ERROR is the
+    // pre-existing baseline output for `${Foo::};`, so this test pins that
+    // the new lookahead doesn't regress this edge case, not a new parser
+    // behavior. (`${Foo::}` is itself rare/obscure Perl -- an empty-named
+    // variable in package Foo -- and the parser's ERROR-node response to
+    // it is a separate, pre-existing limitation unrelated to this fix.)
+    let sexp = first_expr_sexp("${Foo::};");
+    assert!(
+        sexp.contains("Expected identifier after :: in package-qualified variable"),
+        "${{Foo::}} must report the standard qualified-name error, got {sexp}"
+    );
+}
