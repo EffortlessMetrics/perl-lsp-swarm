@@ -76,6 +76,8 @@ jobs:
           cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- \
             "$CARGO_TARGET_DIR/incremental-smoke.pl" --incremental \
             > "$CARGO_TARGET_DIR/incremental-bench.txt"
+          grep -q 'equivalent=true' "$CARGO_TARGET_DIR/incremental-bench.txt"
+          grep -q 'fresh_edit_duration_us=[1-9]' "$CARGO_TARGET_DIR/incremental-bench.txt"
           grep -q 'ast_nodes_reused=[1-9]' "$CARGO_TARGET_DIR/incremental-bench.txt"
           grep -q 'tokens_reused=[1-9]' "$CARGO_TARGET_DIR/incremental-bench.txt"
           cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- \
@@ -121,6 +123,8 @@ jobs:
                   "cargo run --locked -p xtask -- parser-corpus-sweep --manifest .ci/common-corpus-manifest.txt --enforce --receipt --profile tree-sitter-perl-rs",
                   "cargo run --locked -p perl-ci-hygiene -- quick-bench",
                   "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- incremental-smoke.pl --incremental",
+                  "grep -q equivalent=true incremental-bench.txt",
+                  "grep -q fresh_edit_duration_us=[1-9] incremental-bench.txt",
                   "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- tree-sitter-perl/test/highlight/expressions.pm --profile",
                   "cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked",
               ],
