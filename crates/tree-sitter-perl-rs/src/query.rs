@@ -96,6 +96,7 @@ impl Error for QueryError {}
 
 /// A cursor that executes compiled queries over a native syntax tree.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct QueryCursor {
     byte_range: Option<Range<usize>>,
 }
@@ -130,6 +131,7 @@ impl QueryCursor {
 }
 
 /// Iterator returned by QueryCursor::matches.
+#[non_exhaustive]
 pub struct QueryMatches<'tree> {
     inner: std::vec::IntoIter<QueryMatch<'tree>>,
 }
@@ -256,7 +258,11 @@ fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
                         found: ch.to_string(),
                     });
                 }
-                if atom.starts_with('#') || atom.starts_with('"') || atom.starts_with('.') {
+                if atom.starts_with('#')
+                    || atom.starts_with('"')
+                    || atom.starts_with('.')
+                    || atom.chars().any(is_unsupported_metacharacter)
+                {
                     return Err(QueryError::UnsupportedSyntax { syntax: atom });
                 }
                 tokens.push(Token::Atom(atom));
@@ -265,6 +271,10 @@ fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
     }
 
     Ok(tokens)
+}
+
+fn is_unsupported_metacharacter(ch: char) -> bool {
+    matches!(ch, '#' | '"' | '.' | '*' | '+' | '?' | '|' | '!' | '&' | '[' | ']' | '{' | '}' | '=')
 }
 
 fn parse_node(tokens: &[Token], position: &mut usize) -> Result<NodePattern, QueryError> {
@@ -398,12 +408,14 @@ fn collect_matches<'tree>(
 ) {
     let overlaps_range = byte_range
         .is_none_or(|range| node.start_byte() < range.end && node.end_byte() > range.start);
-    if overlaps_range {
-        for (pattern_index, pattern) in query.patterns.iter().enumerate() {
-            let mut captures = Vec::new();
-            if matches_pattern(pattern, node, &mut captures) {
-                output.push(QueryMatch { pattern_index, captures });
-            }
+    if !overlaps_range {
+        return;
+    }
+
+    for (pattern_index, pattern) in query.patterns.iter().enumerate() {
+        let mut captures = Vec::new();
+        if matches_pattern(pattern, node, &mut captures) {
+            output.push(QueryMatch { pattern_index, captures });
         }
     }
 
@@ -425,9 +437,11 @@ fn matches_pattern<'tree>(
         return false;
     }
 
+    let mut last_child_index: Option<usize> = None;
     for child_pattern in &pattern.children {
         let mut child_match = false;
-        for index in 0..node.child_count() {
+        let first_index = last_child_index.map_or(0, |index| index.saturating_add(1));
+        for index in first_index..node.child_count() {
             let Some(child) = node.child(index) else {
                 continue;
             };
@@ -441,6 +455,7 @@ fn matches_pattern<'tree>(
             if matches_pattern(&child_pattern.pattern, child, &mut nested_captures) {
                 captures.extend(nested_captures);
                 child_match = true;
+                last_child_index = Some(index);
                 break;
             }
         }

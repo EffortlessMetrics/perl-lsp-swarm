@@ -85,3 +85,25 @@ fn rejects_predicates_in_phase_2a() {
 
     assert!(matches!(result, Err(QueryError::UnsupportedSyntax { .. })));
 }
+
+#[test]
+fn sibling_patterns_are_ordered_and_distinct() -> TestResult {
+    let tree = parse("sub one { 1 }\nif ($x) { $x; }\n");
+
+    let ordered = Query::new("(source_file (sub) (if))")?;
+    let mut cursor = QueryCursor::new();
+    assert_eq!(cursor.matches(&ordered, tree.root_node()).count(), 1);
+
+    let reversed = Query::new("(source_file (if) (sub))")?;
+    assert_eq!(cursor.matches(&reversed, tree.root_node()).count(), 0);
+
+    let reused = Query::new("(source_file (sub) (sub))")?;
+    assert_eq!(cursor.matches(&reused, tree.root_node()).count(), 0);
+    Ok(())
+}
+
+#[test]
+fn rejects_unsupported_metacharacters() {
+    assert!(matches!(Query::new("(sub|if)"), Err(QueryError::UnsupportedSyntax { .. })));
+    assert!(matches!(Query::new("(sub*)"), Err(QueryError::UnsupportedSyntax { .. })));
+}

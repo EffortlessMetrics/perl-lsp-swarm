@@ -62,12 +62,12 @@ pub use perl_parser_core::ParseError as ParseDiagnostic;
 #[cfg(feature = "queries")]
 mod query;
 
-#[cfg(feature = "queries")]
-pub use query::{Query, QueryCapture, QueryCursor, QueryError, QueryMatch, QueryMatches};
 /// Re-export of Edit type for tree-sitter-compatible incremental parsing.
 ///
 /// Mirrors `tree_sitter::InputEdit` field layout for drop-in compatibility.
 pub use perl_parser_core::edit::Edit as InputEdit;
+#[cfg(feature = "queries")]
+pub use query::{Query, QueryCapture, QueryCursor, QueryError, QueryMatch, QueryMatches};
 
 /// A tree-sitter-compatible source position.
 ///
