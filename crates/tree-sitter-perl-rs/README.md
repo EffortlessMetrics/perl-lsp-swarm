@@ -88,9 +88,9 @@ tree-sitter-perl-rs = { version = "...", features = ["queries"] }
 ```
 
 The supported subset includes node kinds, wildcards, nested children, named fields,
-captures, multiple top-level patterns, and byte-range restriction. Query predicates and
-other unsupported tree-sitter query syntax return a typed `QueryError`; they are not
-silently ignored.
+captures, `#eq?`, `#not-eq?`, `#match?`, `#not-match?`, multiple top-level patterns,
+and byte-range restriction. Other unsupported tree-sitter query syntax returns a typed
+`QueryError`; it is not silently ignored.
 | `ParseOutcome` / `ParseFailure` / `ParseDiagnostic` | Detailed recovery and catastrophic-failure reporting |
 
 ## Error tolerance

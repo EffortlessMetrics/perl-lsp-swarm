@@ -1,12 +1,13 @@
 //! Structural query matching for the native AST.
 //!
 //! This module intentionally implements the first bounded query subset only:
-//! node kinds, wildcards, nested children, named fields, captures, multiple
-//! top-level patterns, and byte-range restriction. Predicates and other
+//! node kinds, wildcards, nested children, named fields, captures, predicates,
+//! multiple top-level patterns, and byte-range restriction. Unsupported
 //! tree-sitter query language features return QueryError instead of being
 //! silently ignored.
 
 use crate::Node;
+use regex::Regex;
 use std::error::Error;
 use std::fmt;
 use std::ops::Range;
@@ -32,6 +33,7 @@ impl Query {
         while position < tokens.len() {
             patterns.push(parse_node(&tokens, &mut position)?);
         }
+        validate_predicates(&patterns)?;
 
         Ok(Self { source: source.to_owned(), patterns })
     }
@@ -72,6 +74,25 @@ pub enum QueryError {
         /// Invalid capture name.
         name: String,
     },
+    /// A supported predicate contained an invalid regular-expression pattern.
+    InvalidPredicatePattern {
+        /// Predicate name.
+        name: String,
+        /// Invalid regular-expression source.
+        pattern: String,
+    },
+    /// A predicate referred to a capture that is not produced by its pattern.
+    MissingPredicateCapture {
+        /// Predicate name.
+        name: String,
+        /// Missing capture name without its leading at-sign.
+        capture: String,
+    },
+    /// A predicate did not contain the required argument shape.
+    InvalidPredicateArguments {
+        /// Predicate name.
+        name: String,
+    },
 }
 
 impl fmt::Display for QueryError {
@@ -87,6 +108,15 @@ impl fmt::Display for QueryError {
             }
             Self::InvalidCaptureName { name } => {
                 write!(formatter, "invalid query capture name: {name:?}")
+            }
+            Self::InvalidPredicatePattern { name, pattern } => {
+                write!(formatter, "invalid {name} regular expression: {pattern:?}")
+            }
+            Self::MissingPredicateCapture { name, capture } => {
+                write!(formatter, "{name} refers to missing capture @{capture}")
+            }
+            Self::InvalidPredicateArguments { name } => {
+                write!(formatter, "invalid arguments for query predicate {name}")
             }
         }
     }
@@ -186,6 +216,8 @@ enum Token {
     Close,
     Atom(String),
     Capture(String),
+    Predicate(String),
+    String(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +225,7 @@ struct NodePattern {
     kind: NodeKindPattern,
     children: Vec<ChildPattern>,
     capture: Option<String>,
+    predicates: Vec<PredicatePattern>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +238,12 @@ struct ChildPattern {
 enum NodeKindPattern {
     Any,
     Named(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PredicatePattern {
+    Eq { capture: String, value: String, negated: bool },
+    Match { capture: String, pattern: String, negated: bool },
 }
 
 fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
@@ -241,6 +280,46 @@ fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
                 }
                 tokens.push(Token::Capture(name));
             }
+            '#' => {
+                let mut predicate = String::new();
+                while let Some(next) = chars.peek().copied() {
+                    if next.is_whitespace() || matches!(next, '(' | ')') {
+                        break;
+                    }
+                    predicate.push(next);
+                    chars.next();
+                }
+                tokens.push(Token::Predicate(predicate));
+            }
+            '"' => {
+                chars.next();
+                let mut value = String::new();
+                let mut closed = false;
+                while let Some(next) = chars.next() {
+                    match next {
+                        '"' => {
+                            closed = true;
+                            break;
+                        }
+                        '\\' => {
+                            let Some(escaped) = chars.next() else {
+                                return Err(QueryError::UnexpectedEnd);
+                            };
+                            value.push(match escaped {
+                                'n' => '\n',
+                                'r' => '\r',
+                                't' => '\t',
+                                other => other,
+                            });
+                        }
+                        other => value.push(other),
+                    }
+                }
+                if !closed {
+                    return Err(QueryError::UnexpectedEnd);
+                }
+                tokens.push(Token::String(value));
+            }
             _ => {
                 let mut atom = String::new();
                 while let Some(next) = chars.peek().copied() {
@@ -256,7 +335,7 @@ fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
                         found: ch.to_string(),
                     });
                 }
-                if atom.starts_with('#') || atom.starts_with('"') || atom.starts_with('.') {
+                if atom.starts_with('.') {
                     return Err(QueryError::UnsupportedSyntax { syntax: atom });
                 }
                 tokens.push(Token::Atom(atom));
@@ -311,6 +390,12 @@ fn parse_node(tokens: &[Token], position: &mut usize) -> Result<NodePattern, Que
                     found: "capture".to_string(),
                 });
             }
+            Some(Token::Predicate(_)) | Some(Token::String(_)) => {
+                return Err(QueryError::UnexpectedToken {
+                    expected: "child pattern or closing parenthesis".to_string(),
+                    found: "predicate or string".to_string(),
+                });
+            }
             Some(Token::Close) | None => None,
         };
 
@@ -330,7 +415,8 @@ fn parse_node(tokens: &[Token], position: &mut usize) -> Result<NodePattern, Que
 
     expect_token(tokens, position, Token::Close)?;
     let capture = take_capture(tokens, position)?;
-    Ok(NodePattern { kind, children, capture })
+    let predicates = take_predicates(tokens, position)?;
+    Ok(NodePattern { kind, children, capture, predicates })
 }
 
 fn parse_atom_pattern(tokens: &[Token], position: &mut usize) -> Result<NodePattern, QueryError> {
@@ -353,7 +439,85 @@ fn parse_atom_pattern(tokens: &[Token], position: &mut usize) -> Result<NodePatt
         None => return Err(QueryError::UnexpectedEnd),
     };
     let capture = take_capture(tokens, position)?;
-    Ok(NodePattern { kind, children: Vec::new(), capture })
+    let predicates = take_predicates(tokens, position)?;
+    Ok(NodePattern { kind, children: Vec::new(), capture, predicates })
+}
+
+fn take_predicates(
+    tokens: &[Token],
+    position: &mut usize,
+) -> Result<Vec<PredicatePattern>, QueryError> {
+    let mut predicates = Vec::new();
+    while matches!(tokens.get(*position), Some(Token::Open))
+        && matches!(tokens.get(position.saturating_add(1)), Some(Token::Predicate(_)))
+    {
+        *position += 1;
+        let Some(Token::Predicate(name)) = tokens.get(*position) else {
+            return Err(QueryError::UnexpectedEnd);
+        };
+        let name = name.clone();
+        *position += 1;
+        let capture = match tokens.get(*position) {
+            Some(Token::Capture(capture)) => {
+                *position += 1;
+                capture.clone()
+            }
+            _ => return Err(QueryError::InvalidPredicateArguments { name }),
+        };
+        let value = match tokens.get(*position) {
+            Some(Token::String(value)) => {
+                *position += 1;
+                value.clone()
+            }
+            _ => return Err(QueryError::InvalidPredicateArguments { name }),
+        };
+        expect_token(tokens, position, Token::Close)?;
+        let predicate = match name.as_str() {
+            "#eq?" => PredicatePattern::Eq { capture, value, negated: false },
+            "#not-eq?" => PredicatePattern::Eq { capture, value, negated: true },
+            "#match?" => PredicatePattern::Match { capture, pattern: value, negated: false },
+            "#not-match?" => PredicatePattern::Match { capture, pattern: value, negated: true },
+            _ => return Err(QueryError::UnsupportedSyntax { syntax: name }),
+        };
+        predicates.push(predicate);
+    }
+    Ok(predicates)
+}
+
+fn validate_predicates(patterns: &[NodePattern]) -> Result<(), QueryError> {
+    for pattern in patterns {
+        for predicate in &pattern.predicates {
+            let (name, capture, pattern_text) = match predicate {
+                PredicatePattern::Eq { capture, .. } => ("#eq?", capture, None),
+                PredicatePattern::Match { capture, pattern, negated } => {
+                    (if *negated { "#not-match?" } else { "#match?" }, capture, Some(pattern))
+                }
+            };
+            if !pattern_has_capture(pattern, capture) {
+                return Err(QueryError::MissingPredicateCapture {
+                    name: name.to_string(),
+                    capture: capture.clone(),
+                });
+            }
+            if let Some(pattern_text) = pattern_text {
+                if Regex::new(pattern_text).is_err() {
+                    return Err(QueryError::InvalidPredicatePattern {
+                        name: name.to_string(),
+                        pattern: pattern_text.clone(),
+                    });
+                }
+            }
+        }
+        for child in &pattern.children {
+            validate_predicates(std::slice::from_ref(&child.pattern))?;
+        }
+    }
+    Ok(())
+}
+
+fn pattern_has_capture(pattern: &NodePattern, capture: &str) -> bool {
+    pattern.capture.as_deref() == Some(capture)
+        || pattern.children.iter().any(|child| pattern_has_capture(&child.pattern, capture))
 }
 
 fn take_capture(tokens: &[Token], position: &mut usize) -> Result<Option<String>, QueryError> {
@@ -452,5 +616,31 @@ fn matches_pattern<'tree>(
     if let Some(name) = &pattern.capture {
         captures.push(QueryCapture { name: name.clone(), node });
     }
-    true
+
+    pattern.predicates.iter().all(|predicate| predicate_matches(predicate, captures))
+}
+
+fn predicate_matches(predicate: &PredicatePattern, captures: &[QueryCapture<'_>]) -> bool {
+    let (capture_name, negated) = match predicate {
+        PredicatePattern::Eq { capture, negated, .. }
+        | PredicatePattern::Match { capture, negated, .. } => (capture, *negated),
+    };
+    let Some(capture) = captures.iter().rev().find(|capture| capture.name == *capture_name) else {
+        return false;
+    };
+    let text = match capture.node.utf8_text(capture.node.tree_source().as_bytes()) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    let matches_value = match predicate {
+        PredicatePattern::Eq { value, .. } => text == value,
+        PredicatePattern::Match { pattern, .. } => {
+            Regex::new(pattern).is_ok_and(|regex| regex.is_match(text))
+        }
+    };
+    if negated {
+        !matches_value
+    } else {
+        matches_value
+    }
 }

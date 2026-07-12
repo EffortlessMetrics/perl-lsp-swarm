@@ -3282,6 +3282,7 @@ dependencies = [
  "perl-pragma",
  "perl-semantic-analyzer",
  "perl-tdd-support",
+ "regex",
 ]
 
 [[package]]

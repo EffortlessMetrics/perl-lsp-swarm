@@ -23,13 +23,14 @@
 ### Structural query subset (shipped behind `queries`)
 
 `Query` and `QueryCursor` support node kinds, wildcards, nested children, named fields,
-captures, multiple top-level patterns, and byte-range restriction. Unsupported syntax
+captures, `#eq?`, `#not-eq?`, `#match?`, `#not-match?`, multiple top-level patterns,
+and byte-range restriction. Unsupported syntax
 returns a typed `QueryError`.
 
-### Query predicates (planned)
+### Query predicates (shipped)
 
-Add predicates as required by real repository `.scm` fixtures, with explicit conformance
-coverage for every supported predicate.
+The initial predicate set compares captured source text or applies a regular expression.
+Additional predicates remain a follow-up when required by real repository `.scm` fixtures.
 
 ## Known limitations
 

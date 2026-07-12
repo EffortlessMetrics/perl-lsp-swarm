@@ -80,8 +80,41 @@ fn restricts_matches_to_the_requested_byte_range() -> TestResult {
 }
 
 #[test]
-fn rejects_predicates_in_phase_2a() {
-    let result = Query::new("(identifier) @name (#eq? @name \"foo\")");
+fn matches_eq_predicate_against_captured_source() -> TestResult {
+    let tree = parse("foo; bar;");
+    let query = Query::new("(identifier) @name (#eq? @name \"foo\")")?;
+    let mut cursor = QueryCursor::new();
 
-    assert!(matches!(result, Err(QueryError::UnsupportedSyntax { .. })));
+    let matches = cursor.matches(&query, tree.root_node()).collect::<Vec<_>>();
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].captures()[0].node().utf8_text(b"foo"), Ok("foo"));
+    Ok(())
+}
+
+#[test]
+fn matches_regex_and_negated_predicates() -> TestResult {
+    let tree = parse("foo; bar;");
+    let query = Query::new("(identifier) @name (#match? @name \"^b\")")?;
+    let mut cursor = QueryCursor::new();
+
+    let matches = cursor.matches(&query, tree.root_node()).collect::<Vec<_>>();
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].captures()[0].name(), "name");
+
+    let query = Query::new("(identifier) @name (#not-eq? @name \"foo\")")?;
+    let matches = cursor.matches(&query, tree.root_node()).collect::<Vec<_>>();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].captures()[0].name(), "name");
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_predicate_references_and_patterns() {
+    let missing = Query::new("(identifier) (#eq? @name \"foo\")");
+    assert!(matches!(missing, Err(QueryError::MissingPredicateCapture { .. })));
+
+    let invalid = Query::new("(identifier) @name (#match? @name \"[\")");
+    assert!(matches!(invalid, Err(QueryError::InvalidPredicatePattern { .. })));
 }
