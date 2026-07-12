@@ -842,6 +842,16 @@ const FACADE_BENCH_BIN: &str = "bench_facade";
 /// Number of timed samples collected per parser/file pair in quick-bench mode.
 const QUICK_BENCH_SAMPLES: usize = 3;
 
+/// Resolve the Cargo target directory used by the current invocation.
+///
+/// CI and worktree tooling commonly set `CARGO_TARGET_DIR` to keep builds out
+/// of the checkout. Bench binaries must be looked up in that same directory,
+/// otherwise the build succeeds and the timing phase reports a misleading
+/// "binary not found" failure.
+fn cargo_target_dir(repo_root: &Path) -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| repo_root.join("target"))
+}
+
 /// Build the quick-bench parser binaries ahead of timing.
 ///
 /// The C grammar bench is optional because it depends on libclang. Failures
@@ -901,7 +911,7 @@ fn run_bench_samples_us(repo_root: &Path, command: &Path, file: &Path) -> Result
 
 /// Run the v3 native Rust parser bench binary against `file`.
 fn run_rust_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
-    let binary = repo_root.join("target").join("release").join(RUST_BENCH_BIN);
+    let binary = cargo_target_dir(repo_root).join("release").join(RUST_BENCH_BIN);
     run_bench_samples_us(repo_root, &binary, file)
 }
 
@@ -917,12 +927,7 @@ fn run_rust_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
 /// libclang installed). Quick-bench treats `None` as N/A in the speedup
 /// column rather than failing the whole run.
 fn run_c_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
-    let binary = repo_root
-        .join("crates")
-        .join("tree-sitter-perl-c")
-        .join("target")
-        .join("release")
-        .join(C_BENCH_BIN);
+    let binary = cargo_target_dir(repo_root).join("release").join(C_BENCH_BIN);
     run_bench_samples_us(repo_root, &binary, file)
 }
 
@@ -932,7 +937,7 @@ fn run_c_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
 /// `-p` rather than `--manifest-path`. Returns wall-clock duration in
 /// microseconds, or `None` if the bench binary exits non-zero.
 fn run_facade_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
-    let binary = repo_root.join("target").join("release").join(FACADE_BENCH_BIN);
+    let binary = cargo_target_dir(repo_root).join("release").join(FACADE_BENCH_BIN);
     run_bench_samples_us(repo_root, &binary, file)
 }
 
