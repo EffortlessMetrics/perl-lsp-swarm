@@ -788,10 +788,7 @@ fn ast_child_field(node: &AstNode, index: usize) -> Option<FieldId> {
 }
 
 #[inline]
-fn ast_child_with_field<'a>(
-    node: &'a AstNode,
-    index: usize,
-) -> Option<(Option<FieldId>, &'a AstNode)> {
+fn ast_child_with_field(node: &AstNode, index: usize) -> Option<(Option<FieldId>, &AstNode)> {
     let mut idx = 0usize;
     let mut found = None;
     let _ = node.try_for_each_child_with_field(|field, child| {
