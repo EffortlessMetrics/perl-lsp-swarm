@@ -63,12 +63,12 @@ jobs:
           cargo clippy -p tree-sitter-perl-rs --all-targets --all-features --locked -- \
             -D warnings -A missing_docs
           cargo test -p perl-tree-sitter-compat --locked
-          cargo run -p xtask -- parser-corpus-sweep \
+          cargo run --locked -p xtask -- parser-corpus-sweep \
             --manifest .ci/common-corpus-manifest.txt \
             --enforce --receipt --profile tree-sitter-perl-rs
           cp target/receipts/tree-sitter-perl-rs-corpus-sweep.json \
             "$CARGO_TARGET_DIR/receipts-tree-sitter-perl-rs-corpus-sweep.json"
-          cargo run -p perl-ci-hygiene -- quick-bench \
+          cargo run --locked -p perl-ci-hygiene -- quick-bench \
             > "$CARGO_TARGET_DIR/quick-bench.txt"
           cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked
 
@@ -95,8 +95,8 @@ jobs:
                   "cargo test -p tree-sitter-perl-rs --doc --all-features --locked",
                   "cargo clippy -p tree-sitter-perl-rs --all-targets --all-features --locked -- -D warnings -A missing_docs",
                   "cargo test -p perl-tree-sitter-compat --locked",
-                  "cargo run -p xtask -- parser-corpus-sweep --manifest .ci/common-corpus-manifest.txt --enforce --receipt --profile tree-sitter-perl-rs",
-                  "cargo run -p perl-ci-hygiene -- quick-bench",
+                  "cargo run --locked -p xtask -- parser-corpus-sweep --manifest .ci/common-corpus-manifest.txt --enforce --receipt --profile tree-sitter-perl-rs",
+                  "cargo run --locked -p perl-ci-hygiene -- quick-bench",
                   "cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked",
               ],
           }
