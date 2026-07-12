@@ -100,6 +100,19 @@ fn when_parse_detailed_receives_clean_input_then_no_error_is_reported() {
 }
 
 #[test]
+fn when_parse_detailed_sees_an_advisory_then_valid_tree_is_not_marked_as_error() {
+    let mut parser = Parser::new();
+
+    let outcome = parser.parse_detailed("my $re = /(a+)+/;");
+
+    assert!(outcome.tree.is_some());
+    assert!(outcome.diagnostics.iter().any(|diagnostic| !diagnostic.blocks_clean_parse()));
+    assert!(!outcome.has_error());
+    assert!(!outcome.is_recovered());
+    assert!(!must_some(outcome.tree.as_ref()).has_error());
+}
+
+#[test]
 fn when_parse_detailed_recovers_then_tree_and_error_status_are_both_available() {
     let mut parser = Parser::new();
 

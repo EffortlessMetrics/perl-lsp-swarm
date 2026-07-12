@@ -136,8 +136,10 @@ impl Parser {
     /// [`parse`][Parser::parse].
     pub fn parse_detailed(&mut self, source: &str) -> ParseOutcome {
         let mut core = CoreParser::new(source);
-        let ParseOutput { ast, diagnostics, .. } = core.parse_with_recovery();
-        let failure = diagnostics.iter().find_map(ParseFailure::from_diagnostic);
+        let ParseOutput { ast, diagnostics, terminated_early, .. } = core.parse_with_recovery();
+        let failure = terminated_early
+            .then(|| diagnostics.iter().find_map(ParseFailure::from_diagnostic))
+            .flatten();
         let tree = failure.is_none().then(|| Tree {
             root: ast,
             source: source.to_string(),
@@ -257,7 +259,8 @@ pub struct ParseOutcome {
 impl ParseOutcome {
     /// Returns `true` when diagnostics or an explicit error node were observed.
     pub fn has_error(&self) -> bool {
-        !self.diagnostics.is_empty() || self.tree.as_ref().is_some_and(Tree::has_error)
+        self.diagnostics.iter().any(ParseDiagnostic::blocks_clean_parse)
+            || self.tree.as_ref().is_some_and(Tree::has_error)
     }
 
     /// Returns `true` when a tree was produced with recovery diagnostics.
@@ -296,7 +299,7 @@ impl ParseFailure {
                 Some(Self::NestingTooDeep { depth: *depth, max_depth: *max_depth })
             }
             ParseDiagnostic::Cancelled => Some(Self::Cancelled),
-            _ => None,
+            _ => Some(Self::Other { diagnostic: diagnostic.clone() }),
         }
     }
 }
@@ -357,7 +360,8 @@ impl Tree {
 
     /// Returns `true` when parsing produced diagnostics or an explicit error node.
     pub fn has_error(&self) -> bool {
-        !self.diagnostics.is_empty() || ast_has_error(&self.root)
+        self.diagnostics.iter().any(ParseDiagnostic::blocks_clean_parse)
+            || ast_has_error(&self.root)
     }
 
     /// Records a source edit on this tree, invalidating affected byte ranges.
@@ -505,7 +509,7 @@ impl<'tree> Node<'tree> {
 
     /// Returns `true` when this node or one of its descendants is an error node.
     pub fn has_error(&self) -> bool {
-        self.is_error() || ast_has_error(self.inner)
+        ast_has_error(self.inner)
     }
 
     /// Returns a tree-sitter-compatible S-expression for this node and its subtree.
@@ -736,13 +740,7 @@ fn ast_has_error(node: &AstNode) -> bool {
         return true;
     }
 
-    let mut found = false;
-    node.for_each_child(|child| {
-        if !found && ast_has_error(child) {
-            found = true;
-        }
-    });
-    found
+    node.children().iter().any(|child| ast_has_error(child))
 }
 
 #[inline]
