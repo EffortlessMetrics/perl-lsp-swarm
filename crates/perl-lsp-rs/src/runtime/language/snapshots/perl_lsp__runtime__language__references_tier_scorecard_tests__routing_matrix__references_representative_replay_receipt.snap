@@ -13,6 +13,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "cursor_site": "usage",
       "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
@@ -38,6 +39,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "cursor_site": "usage",
       "declaration_shape": "simple_init",
       "disposition": "policy_excluded_request_shape",
       "fact_class": "local_lexical",
@@ -63,6 +65,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 43,
+      "cursor_site": "usage",
       "declaration_shape": "destructuring",
       "disposition": "unsupported_declaration_shape",
       "fact_class": "local_lexical",
@@ -88,6 +91,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 11,
+      "cursor_site": "usage",
       "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
@@ -112,14 +116,15 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     },
     {
       "answering_tier": "workspace_mixed",
-      "character": 4,
+      "character": 11,
+      "cursor_site": "usage",
       "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "dynamic_ambiguous",
       "file": "lib/Mojolicious.pm",
       "include_declaration": true,
       "index_result_count": 6,
-      "line": 53,
+      "line": 66,
       "needle": "dispatch",
       "project": "mojolicious_skeleton",
       "receipt_confidence": "low",
@@ -137,14 +142,15 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     },
     {
       "answering_tier": "workspace_mixed",
-      "character": 4,
+      "character": 11,
+      "cursor_site": "usage",
       "declaration_shape": "not_applicable",
       "disposition": "unexercised",
       "fact_class": "package_sub_same_file",
       "file": "lib/Mojolicious.pm",
       "include_declaration": true,
       "index_result_count": 2,
-      "line": 93,
+      "line": 34,
       "needle": "startup",
       "project": "mojolicious_skeleton",
       "receipt_confidence": "low",
@@ -163,6 +169,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_text",
       "character": 4,
+      "cursor_site": "usage",
       "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "imported_symbol",
@@ -188,6 +195,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 53,
+      "cursor_site": "usage",
       "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
@@ -213,6 +221,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 27,
+      "cursor_site": "usage",
       "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
@@ -238,6 +247,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 37,
+      "cursor_site": "usage",
       "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
@@ -262,14 +272,15 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     },
     {
       "answering_tier": "workspace_mixed",
-      "character": 4,
+      "character": 32,
+      "cursor_site": "usage",
       "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "cross_file_sub",
-      "file": "lib/Dancer2/Core/App.pm",
+      "file": "lib/Dancer2/Core/Runner.pm",
       "include_declaration": true,
       "index_result_count": 2,
-      "line": 33,
+      "line": 31,
       "needle": "dispatch",
       "project": "dancer2_skeleton",
       "receipt_confidence": "low",
@@ -283,11 +294,12 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
       "scenario_rationale": "cross_file_caller_lives_outside_the_same_file_scope",
       "source_backed": false,
       "text_result_count": 2,
-      "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/App.pm"
+      "uri": "file:///real_projects/dancer2_skeleton/lib/Dancer2/Core/Runner.pm"
     },
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "cursor_site": "usage",
       "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "imported_symbol",
@@ -313,6 +325,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 52,
+      "cursor_site": "usage",
       "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
@@ -338,6 +351,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 21,
+      "cursor_site": "usage",
       "declaration_shape": "destructuring",
       "disposition": "unsupported_declaration_shape",
       "fact_class": "local_lexical",
@@ -362,14 +376,15 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     },
     {
       "answering_tier": "workspace_mixed",
-      "character": 4,
+      "character": 8,
+      "cursor_site": "usage",
       "declaration_shape": "not_applicable",
       "disposition": "coverage_gap",
       "fact_class": "package_sub_same_file",
       "file": "lib/Catalyst.pm",
       "include_declaration": true,
       "index_result_count": 7,
-      "line": 183,
+      "line": 179,
       "needle": "dispatch",
       "project": "catalyst_skeleton",
       "receipt_confidence": "low",
@@ -388,6 +403,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "cursor_site": "definition",
       "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "dynamic_ambiguous",
@@ -413,6 +429,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "cursor_site": "usage",
       "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "imported_symbol",
@@ -438,6 +455,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "empty",
       "character": 0,
+      "cursor_site": "not_applicable",
       "declaration_shape": "not_applicable",
       "disposition": "explicit_refusal_safe",
       "fact_class": "empty_position",
@@ -463,6 +481,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "empty",
       "character": 0,
+      "cursor_site": "not_applicable",
       "declaration_shape": "not_applicable",
       "disposition": "explicit_refusal_safe",
       "fact_class": "empty_position",
@@ -488,6 +507,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "empty",
       "character": 0,
+      "cursor_site": "not_applicable",
       "declaration_shape": "not_applicable",
       "disposition": "explicit_refusal_safe",
       "fact_class": "empty_position",

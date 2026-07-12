@@ -788,6 +788,75 @@ use warnings;
     // all — see the doc comments on `assert_single_file_positive_control` /
     // `assert_multi_file_positive_control`).
     //
+    // ## Revision note, round 5 (cursor-site confound)
+    //
+    // An independent deep-correctness review pass found a FIFTH confound,
+    // one level deeper than rounds 1-4: every subroutine-class replay row
+    // (`PackageSubSameFile`'s `startup` and `dispatch`@Catalyst.pm,
+    // `DynamicAmbiguous`'s `dispatch`@Mojolicious.pm and
+    // `dispatch`@Catalyst/Dispatcher.pm, `CrossFileSub`'s
+    // `dispatch`@Dancer2/Core/App.pm) placed its cursor on the subroutine's
+    // DEFINITION line, never a call/usage site — re-derived directly from the
+    // manifest's own doc comments (e.g. "call(35, occ0) + def(94, occ1)"
+    // followed by `cursor_occurrence: 1`, i.e. the def). This is the SAME
+    // shape the pre-existing, mechanically-enforced
+    // `references_routing_matrix::sub_calls` fixture + hard assertion H-3
+    // (untouched by this PR, ~line 543 / ~647-667) already proves is
+    // categorically excluded from `semantic_source_backed`: cursoring
+    // `sub calculate { ... }`'s declaration in a fully controlled, single-file
+    // scenario ALWAYS routes to `workspace_mixed`, independent of
+    // entity-linking quality. So the `Catalyst.pm dispatch` row's
+    // `coverage_gap` disposition was unproven — its non-activation was at
+    // least as plausibly a categorical cursor-site exclusion as a genuine
+    // entity-linking gap, and both subroutine positive controls this PR added
+    // (`SUBROUTINE_CONTROL_TEXT`) already cursor a CALL site (`target()` at
+    // line 7), never the declaration (`sub target {` at line 2) — the
+    // definition-cursored manifest rows never matched the shape of their own
+    // positive controls. This revision:
+    // - adds an explicit `CursorSite::{Definition, Usage, NotApplicable}`
+    //   dimension to every replay row (recorded in both the full receipt and
+    //   the durable snapshot) so the cursor-site distinction is durable and
+    //   can never be silently reintroduced;
+    // - re-points `startup` (Mojolicious.pm) from occ1 (def, line 94) to occ0
+    //   (the real call `$self->startup;`, line 35);
+    // - re-points `dispatch`/`DynamicAmbiguous` (Mojolicious.pm) from occ0
+    //   (def, line 54) to occ3 (the true self-call
+    //   `$self->dispatch($c);`, line 67 — the other two `dispatch` calls in
+    //   that file target a DIFFERENT class and remain in
+    //   `known_false_occurrences`);
+    // - re-points `dispatch`/`PackageSubSameFile` (Catalyst.pm) from occ1
+    //   (def, line 184) to occ0 (the real call `$c->dispatch;`, line 180 —
+    //   the deep reviewer's named call site);
+    // - re-points `dispatch`/`CrossFileSub` from App.pm's definition (line
+    //   34) to the actual cross-file call site in
+    //   `lib/Dancer2/Core/Runner.pm:32` (`$app->dispatch($env)`) — that file
+    //   is already part of the project's committed fixture tree and opened by
+    //   `open_project`'s whole-directory walk, so no new fixture is added;
+    // - leaves `dispatch`/`DynamicAmbiguous` (Catalyst/Dispatcher.pm)
+    //   deliberately on its definition (occ0, line 12) with an explicit
+    //   in-manifest comment: verified against the fixture corpus,
+    //   `Catalyst::Dispatcher::dispatch` has NO in-project call site at all
+    //   (Catalyst.pm's own `dispatch` stub does not delegate to
+    //   `$self->dispatcher->dispatch`, unlike `forward`/`detach`/`go`/`visit`,
+    //   which do call through `$self->dispatcher`), so there is no genuine
+    //   usage site in the corpus to re-point to. This does not resurrect the
+    //   H-3 confound for a `coverage_gap` claim: `classify_disposition`
+    //   structurally never returns `coverage_gap` for `DynamicAmbiguous` (only
+    //   `explicit_refusal_safe`/`unclassified`), so this row's forced
+    //   definition-cursoring cannot manufacture an unfalsifiable coverage gap.
+    //
+    // CORRECTED FINDING: after re-pointing the cursor, the previously-claimed
+    // `coverage_gap` disposition for the `Catalyst.pm dispatch`
+    // (`PackageSubSameFile`) row is INVALIDATED by this fix — see the
+    // checked-in snapshot and the disposition rollup printed by this test for
+    // the row's corrected, currently-observed disposition. The `startup` row
+    // (the other `PackageSubSameFile` row) is likewise re-measured, not
+    // assumed unchanged. This strengthens, not weakens, the conclusion that
+    // #1658 should stay open and bounded: the evidence for entity-linking
+    // coverage gaps in the subroutine classes is now LESS conclusive than
+    // previously claimed, not more — see the disposition table in the PR body
+    // for the corrected, honest before/after per row.
+    //
     // ## Selection rule (so the corpus composition is inspectable)
     //
     // For each project we name one-to-three files already committed as UX
@@ -903,6 +972,52 @@ use warnings;
         }
     }
 
+    /// Whether `cursor_occurrence` sits on the symbol's definition/declaration
+    /// line or on a genuine call/usage site distinct from it. Added in PR
+    /// #3998's fifth review round: an independent deep-correctness pass found
+    /// that every `PackageSubSameFile`/`DynamicAmbiguous`/`CrossFileSub` row
+    /// (the subroutine-class rows) cursored the subroutine's DEFINITION line,
+    /// never a call site — the opposite shape of the two subroutine positive
+    /// controls (`SUBROUTINE_CONTROL_TEXT` cursors `target()` at line 7, never
+    /// `sub target {` at line 2) and of the ALREADY-PRESENT, untouched
+    /// `references_routing_matrix::sub_calls` fixture + hard assertion H-3
+    /// (`position_of(SUB_TWO_CALLS, "calculate")` finds the FIRST occurrence,
+    /// which is `sub calculate {`, the declaration): that harness mechanically
+    /// proves cursor-on-DEFINITION for a subroutine categorically routes to
+    /// `workspace_mixed`, never `semantic_source_backed`, independent of
+    /// entity-linking quality. A definition-cursored subroutine row's
+    /// non-activation was therefore unfalsifiable evidence of a coverage gap —
+    /// same class of confound as rounds 1-4, one level deeper. This field
+    /// makes the cursor site explicit and durable in the receipt/snapshot so
+    /// the distinction can never be silently reintroduced.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CursorSite {
+        /// Cursor sits on the symbol's `sub name { ... }` definition/decl
+        /// line. Only used where the fixture corpus genuinely has no in-file
+        /// or in-project call site to cursor instead (documented per-row);
+        /// never used to justify a `coverage_gap` disposition (see
+        /// `classify_disposition`, which never returns `coverage_gap` for the
+        /// `DynamicAmbiguous`/`CrossFileSub` classes that use this variant).
+        Definition,
+        /// Cursor sits on a genuine call/usage site of the symbol, distinct
+        /// from its definition line — the shape both subroutine positive
+        /// controls and the pre-existing `sub_calls`/H-3 fixture use.
+        Usage,
+        /// No symbol is under the cursor at all (`EmptyPosition` rows, a
+        /// blank line) — the definition/usage distinction does not apply.
+        NotApplicable,
+    }
+
+    impl CursorSite {
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::Definition => "definition",
+                Self::Usage => "usage",
+                Self::NotApplicable => "not_applicable",
+            }
+        }
+    }
+
     /// One checked-in replay request. `cursor_occurrence` and the two
     /// occurrence-index sets refer to the boundary-safe, file-ordered
     /// occurrences of `needle` in `file` (see `ident_boundary_occurrences`).
@@ -924,6 +1039,8 @@ use warnings;
         /// See `DeclarationShape` doc comment. `NotApplicable` for every
         /// non-`LocalLexical` class.
         declaration_shape: DeclarationShape,
+        /// See `CursorSite` doc comment.
+        cursor_site: CursorSite,
         scenario_rationale: &'static str,
     }
 
@@ -968,6 +1085,7 @@ use warnings;
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0],
             declaration_shape: DeclarationShape::SimpleInit,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // Same `$plugins` symbol, `includeDeclaration: true` variant: cursor
@@ -981,6 +1099,7 @@ use warnings;
             expected_true_occurrences: &[0, 1, 2],
             known_false_occurrences: &[],
             declaration_shape: DeclarationShape::SimpleInit,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_lexical_usage_with_declaration_included",
         },
         // `$c` in `dispatch` (occ 0-6, occ0 = decl): must exclude the
@@ -999,6 +1118,7 @@ use warnings;
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 7, 8, 9, 10],
             declaration_shape: DeclarationShape::Destructuring,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$c` in `handler` (occ 7-10, occ7 = decl): the mirror-image request
@@ -1015,27 +1135,40 @@ use warnings;
             // occ7: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 1, 2, 3, 4, 5, 6, 7],
             declaration_shape: DeclarationShape::SimpleInit,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch`: def(54, occ0) + true call `$self->dispatch($c)`(67, occ3)
         // target `Mojolicious::dispatch`; `$self->static->dispatch($c)`(58,
         // occ1) and `$self->routes->dispatch($c)`(60, occ2) call DIFFERENT
         // classes' `dispatch` methods and must never appear in an exact result.
+        // PR #3998 fifth review round: cursor moved from occ0 (the
+        // DEFINITION, line 54) to occ3 (the true self-call, line 67) — a
+        // definition-cursored subroutine request is confounded by the
+        // pre-existing, untouched `references_routing_matrix` H-3 assertion
+        // (cursor-on-definition categorically routes to `workspace_mixed`,
+        // never `semantic_source_backed`, in a fully controlled single-file
+        // scenario). See the `CursorSite` doc comment.
         ReplayRequest {
             project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
             fact_class: FactClass::DynamicAmbiguous, needle: "dispatch",
-            cursor_occurrence: 0, include_declaration: true,
+            cursor_occurrence: 3, include_declaration: true,
             expected_true_occurrences: &[0, 3], known_false_occurrences: &[1, 2],
             declaration_shape: DeclarationShape::NotApplicable,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
         },
         // `startup`: call(35, occ0) + def(94, occ1), unambiguous same-file sub.
+        // PR #3998 fifth review round: cursor moved from occ1 (the
+        // DEFINITION, line 94) to occ0 (the true call, line 35) — same
+        // cursor-site confound as the `dispatch` row above; see `CursorSite`.
         ReplayRequest {
             project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
             fact_class: FactClass::PackageSubSameFile, needle: "startup",
-            cursor_occurrence: 1, include_declaration: true,
+            cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_subroutine_def_and_call",
         },
         // `croak`(73, occ1): Carp is not vendored in this fixture project, so
@@ -1046,6 +1179,7 @@ use warnings;
             cursor_occurrence: 1, include_declaration: false,
             expected_true_occurrences: &[], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
         // ---- Dancer2: lib/Dancer2/Core/App.pm ----
@@ -1061,6 +1195,7 @@ use warnings;
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 3, 4],
             declaration_shape: DeclarationShape::SimpleInit,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$method` scope pair, side A: `add_route` (occ0 = decl, occ1) vs
@@ -1075,6 +1210,7 @@ use warnings;
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 2, 3],
             declaration_shape: DeclarationShape::SimpleInit,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$method` scope pair, side B: the mirror-image request (occ2 = decl).
@@ -1089,17 +1225,30 @@ use warnings;
             // occ2: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 1, 2],
             declaration_shape: DeclarationShape::SimpleInit,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
-        // `dispatch`(34, occ0): defined here, the only call site is
-        // `Runner.pm:32` (`$app->dispatch($env)`) — a DIFFERENT file in the
-        // same project, outside the current same-file AST-indexed scope.
+        // `dispatch` is DEFINED at App.pm:34; its only in-project call site is
+        // `Runner.pm:32` (`$app->dispatch($env)`) — a DIFFERENT file, outside
+        // the current same-file AST-indexed scope. PR #3998 fifth review
+        // round: this row previously cursored the App.pm DEFINITION (occ0,
+        // line 34), which is the confounded shape (see `CursorSite`). Moved
+        // to cursor the actual call site in `Runner.pm` instead — the file
+        // is already opened as part of `open_project`'s whole-project walk,
+        // so no new fixture file is introduced. `needle: "dispatch"` has
+        // exactly ONE boundary-safe occurrence in `Runner.pm` (line 32,
+        // `if (my $res = $app->dispatch($env)) {`), so `cursor_occurrence: 0`
+        // is that call, not App.pm's definition. Not strictly checked
+        // (`CrossFileSub` is not in `FactClass::is_strictly_checked`), so
+        // `expected_true_occurrences`/`known_false_occurrences` are recorded
+        // for receipt completeness only, not asserted for exactness.
         ReplayRequest {
-            project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
+            project: "dancer2_skeleton", file: "lib/Dancer2/Core/Runner.pm",
             fact_class: FactClass::CrossFileSub, needle: "dispatch",
             cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "cross_file_caller_lives_outside_the_same_file_scope",
         },
         // `croak`(27, occ1): same out-of-fixture-declaration reasoning as Mojolicious.
@@ -1109,6 +1258,7 @@ use warnings;
             cursor_occurrence: 1, include_declaration: false,
             expected_true_occurrences: &[], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
         // ---- Catalyst: lib/Catalyst/Action.pm, lib/Catalyst.pm, lib/Catalyst/Dispatcher.pm ----
@@ -1125,6 +1275,7 @@ use warnings;
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0],
             declaration_shape: DeclarationShape::SimpleInit,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$c` in `dispatch` (occ0-4, occ0 = decl): must exclude `$c` in
@@ -1141,30 +1292,53 @@ use warnings;
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 5, 6, 7, 8, 9, 10],
             declaration_shape: DeclarationShape::Destructuring,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch` in Catalyst.pm: call `$c->dispatch;`(180,occ0) +
         // def(184,occ1) — unambiguous WITHIN this file even though `dispatch`
-        // is also independently defined in Action.pm and Dispatcher.pm.
+        // is also independently defined in Action.pm and Dispatcher.pm. PR
+        // #3998 fifth review round: cursor moved from occ1 (the DEFINITION,
+        // line 184) to occ0 (the true call, line 180 — the deep reviewer's
+        // named call site) — the confound this replaces is the same one H-3
+        // proves categorically in `references_routing_matrix`; see
+        // `CursorSite`.
         ReplayRequest {
             project: "catalyst_skeleton", file: "lib/Catalyst.pm",
             fact_class: FactClass::PackageSubSameFile, needle: "dispatch",
-            cursor_occurrence: 1, include_declaration: true,
+            cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "same_file_subroutine_def_and_call",
         },
         // `dispatch` in Dispatcher.pm: def(12,occ0); ALL THREE in-file calls
         // (`$action->dispatch`(22,occ1), `$action_or_url->dispatch`(28,occ2),
         // `$action->dispatch`(32,occ3)) target `Catalyst::Action::dispatch` on
         // a differently-named receiver, NOT a recursive self-call — none of
-        // them may appear in an exact result for `Dispatcher::dispatch`.
+        // them may appear in an exact result for `Dispatcher::dispatch`. PR
+        // #3998 fifth review round: unlike the other subroutine-class rows,
+        // this one is DELIBERATELY LEFT on the definition (occ0, line 12) —
+        // verified against the fixture corpus, `Catalyst::Dispatcher::dispatch`
+        // has NO in-project call site at all. Catalyst.pm's own `dispatch`
+        // stub (line 184-187) does not delegate to
+        // `$self->dispatcher->dispatch(...)` in this trimmed skeleton (unlike
+        // `forward`/`detach`/`go`/`visit`, which do call
+        // `$self->dispatcher->{forward,detach,go,visit}`), so there is no
+        // genuine usage site anywhere in the corpus to re-point to. This does
+        // NOT reintroduce the H-3 confound for a `coverage_gap` claim:
+        // `classify_disposition` structurally never returns `coverage_gap`
+        // for `DynamicAmbiguous` (only `explicit_refusal_safe`/`unclassified`
+        // — see the match arm below), so this row's forced
+        // definition-cursoring cannot manufacture an unfalsifiable coverage
+        // gap the way the four re-pointed rows could have.
         ReplayRequest {
             project: "catalyst_skeleton", file: "lib/Catalyst/Dispatcher.pm",
             fact_class: FactClass::DynamicAmbiguous, needle: "dispatch",
             cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0], known_false_occurrences: &[1, 2, 3],
             declaration_shape: DeclarationShape::NotApplicable,
+            cursor_site: CursorSite::Definition,
             scenario_rationale: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
         },
         // `croak`(31, occ1): same out-of-fixture-declaration reasoning as above.
@@ -1174,6 +1348,7 @@ use warnings;
             cursor_occurrence: 1, include_declaration: false,
             expected_true_occurrences: &[], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
+            cursor_site: CursorSite::Usage,
             scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
     ];
@@ -1228,6 +1403,8 @@ use warnings;
         receipt_source_backed_state: String,
         /// See `DeclarationShape` doc comment.
         declaration_shape: DeclarationShape,
+        /// See `CursorSite` doc comment.
+        cursor_site: CursorSite,
         scenario_rationale: &'static str,
         disposition: &'static str,
     }
@@ -1749,6 +1926,7 @@ use warnings;
             receipt_fact_source: evidence.fact_source,
             receipt_source_backed_state: evidence.source_backed_state,
             declaration_shape: request.declaration_shape,
+            cursor_site: request.cursor_site,
             scenario_rationale: request.scenario_rationale,
             disposition,
         })
@@ -1823,6 +2001,7 @@ use warnings;
             receipt_fact_source: evidence.fact_source,
             receipt_source_backed_state: evidence.source_backed_state,
             declaration_shape: DeclarationShape::NotApplicable,
+            cursor_site: CursorSite::NotApplicable,
             scenario_rationale: "no_symbol_under_cursor_correctly_empty",
             disposition: "explicit_refusal_safe",
         })
@@ -1854,6 +2033,7 @@ use warnings;
             "receipt_fact_source": row.receipt_fact_source,
             "receipt_source_backed_state": row.receipt_source_backed_state,
             "declaration_shape": row.declaration_shape.as_str(),
+            "cursor_site": row.cursor_site.as_str(),
             "scenario_rationale": row.scenario_rationale,
             "disposition": row.disposition,
         })
@@ -1886,6 +2066,7 @@ use warnings;
             "receipt_fact_source": row.receipt_fact_source,
             "receipt_source_backed_state": row.receipt_source_backed_state,
             "declaration_shape": row.declaration_shape.as_str(),
+            "cursor_site": row.cursor_site.as_str(),
             "scenario_rationale": row.scenario_rationale,
             "disposition": row.disposition,
         })
