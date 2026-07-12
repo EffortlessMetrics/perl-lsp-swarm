@@ -181,134 +181,68 @@ pub enum GotoTargetForm {
 #[non_exhaustive]
 pub struct FieldId(&'static str);
 
-impl FieldId {
-    pub const STATEMENTS: Self = Self("statements");
-    pub const EXPRESSION: Self = Self("expression");
-    pub const VARIABLE: Self = Self("variable");
-    pub const PACKAGE: Self = Self("package");
-    pub const STATEMENT: Self = Self("statement");
-    pub const INITIALIZER: Self = Self("initializer");
-    pub const ITEMS: Self = Self("items");
-    pub const LHS: Self = Self("lhs");
-    pub const RHS: Self = Self("rhs");
-    pub const LEFT: Self = Self("left");
-    pub const RIGHT: Self = Self("right");
-    pub const CONDITION: Self = Self("condition");
-    pub const THEN_BRANCH: Self = Self("then_branch");
-    pub const THEN_EXPR: Self = Self("then_expr");
-    pub const ELSE_EXPR: Self = Self("else_expr");
-    pub const ELSE_BRANCH: Self = Self("else_branch");
-    pub const OPERAND: Self = Self("operand");
-    pub const ELEMENTS: Self = Self("elements");
-    pub const KEY: Self = Self("key");
-    pub const VALUE: Self = Self("value");
-    pub const BLOCK: Self = Self("block");
-    pub const BODY: Self = Self("body");
-    pub const CATCH: Self = Self("catch");
-    pub const FINALLY: Self = Self("finally");
-    pub const CONTINUE_BLOCK: Self = Self("continue_block");
-    pub const INIT: Self = Self("init");
-    pub const UPDATE: Self = Self("update");
-    pub const LIST: Self = Self("list");
-    pub const EXPR: Self = Self("expr");
-    pub const PROTOTYPE: Self = Self("prototype");
-    pub const SIGNATURE: Self = Self("signature");
-    pub const PARAMETERS: Self = Self("parameters");
-    pub const DEFAULT_VALUE: Self = Self("default_value");
-    pub const TARGET: Self = Self("target");
-    pub const OBJECT: Self = Self("object");
-    pub const ARGS: Self = Self("args");
-    pub const PARTIAL: Self = Self("partial");
+macro_rules! define_field_ids {
+    ($(($constant:ident, $name:literal)),+ $(,)?) => {
+        impl FieldId {
+            $(pub const $constant: Self = Self($name);)+
 
-    /// All field identifiers emitted by [`Node::for_each_child_with_field`].
-    pub const ALL: &'static [Self] = &[
-        Self::STATEMENTS,
-        Self::EXPRESSION,
-        Self::VARIABLE,
-        Self::PACKAGE,
-        Self::STATEMENT,
-        Self::INITIALIZER,
-        Self::ITEMS,
-        Self::LHS,
-        Self::RHS,
-        Self::LEFT,
-        Self::RIGHT,
-        Self::CONDITION,
-        Self::THEN_BRANCH,
-        Self::THEN_EXPR,
-        Self::ELSE_EXPR,
-        Self::ELSE_BRANCH,
-        Self::OPERAND,
-        Self::ELEMENTS,
-        Self::KEY,
-        Self::VALUE,
-        Self::BLOCK,
-        Self::BODY,
-        Self::CATCH,
-        Self::FINALLY,
-        Self::CONTINUE_BLOCK,
-        Self::INIT,
-        Self::UPDATE,
-        Self::LIST,
-        Self::EXPR,
-        Self::PROTOTYPE,
-        Self::SIGNATURE,
-        Self::PARAMETERS,
-        Self::DEFAULT_VALUE,
-        Self::TARGET,
-        Self::OBJECT,
-        Self::ARGS,
-        Self::PARTIAL,
-    ];
+            /// All field identifiers emitted by [`Node::for_each_child_with_field`].
+            pub const ALL: &'static [Self] = &[$(Self::$constant),+];
 
-    /// Return the canonical external name for this field.
-    pub const fn name(self) -> &'static str {
-        self.0
-    }
+            /// Return the canonical external name for this field.
+            pub const fn name(self) -> &'static str {
+                self.0
+            }
 
-    /// Resolve a canonical field name without allocating.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "statements" => Some(Self::STATEMENTS),
-            "expression" => Some(Self::EXPRESSION),
-            "variable" => Some(Self::VARIABLE),
-            "package" => Some(Self::PACKAGE),
-            "statement" => Some(Self::STATEMENT),
-            "initializer" => Some(Self::INITIALIZER),
-            "items" => Some(Self::ITEMS),
-            "lhs" => Some(Self::LHS),
-            "rhs" => Some(Self::RHS),
-            "left" => Some(Self::LEFT),
-            "right" => Some(Self::RIGHT),
-            "condition" => Some(Self::CONDITION),
-            "then_branch" => Some(Self::THEN_BRANCH),
-            "then_expr" => Some(Self::THEN_EXPR),
-            "else_expr" => Some(Self::ELSE_EXPR),
-            "else_branch" => Some(Self::ELSE_BRANCH),
-            "operand" => Some(Self::OPERAND),
-            "elements" => Some(Self::ELEMENTS),
-            "key" => Some(Self::KEY),
-            "value" => Some(Self::VALUE),
-            "block" => Some(Self::BLOCK),
-            "body" => Some(Self::BODY),
-            "catch" => Some(Self::CATCH),
-            "finally" => Some(Self::FINALLY),
-            "continue_block" => Some(Self::CONTINUE_BLOCK),
-            "init" => Some(Self::INIT),
-            "update" => Some(Self::UPDATE),
-            "list" => Some(Self::LIST),
-            "expr" => Some(Self::EXPR),
-            "prototype" => Some(Self::PROTOTYPE),
-            "signature" => Some(Self::SIGNATURE),
-            "parameters" => Some(Self::PARAMETERS),
-            "default_value" => Some(Self::DEFAULT_VALUE),
-            "target" => Some(Self::TARGET),
-            "object" => Some(Self::OBJECT),
-            "args" => Some(Self::ARGS),
-            "partial" => Some(Self::PARTIAL),
-            _ => None,
+            /// Resolve a canonical field name without allocating.
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some(Self::$constant),)+
+                    _ => None,
+                }
+            }
         }
-    }
+    };
+}
+
+define_field_ids! {
+    (STATEMENTS, "statements"),
+    (EXPRESSION, "expression"),
+    (VARIABLE, "variable"),
+    (PACKAGE, "package"),
+    (STATEMENT, "statement"),
+    (INITIALIZER, "initializer"),
+    (ITEMS, "items"),
+    (LHS, "lhs"),
+    (RHS, "rhs"),
+    (LEFT, "left"),
+    (RIGHT, "right"),
+    (CONDITION, "condition"),
+    (THEN_BRANCH, "then_branch"),
+    (THEN_EXPR, "then_expr"),
+    (ELSE_EXPR, "else_expr"),
+    (ELSE_BRANCH, "else_branch"),
+    (OPERAND, "operand"),
+    (ELEMENTS, "elements"),
+    (KEY, "key"),
+    (VALUE, "value"),
+    (BLOCK, "block"),
+    (BODY, "body"),
+    (CATCH, "catch"),
+    (FINALLY, "finally"),
+    (CONTINUE_BLOCK, "continue_block"),
+    (INIT, "init"),
+    (UPDATE, "update"),
+    (LIST, "list"),
+    (EXPR, "expr"),
+    (PROTOTYPE, "prototype"),
+    (SIGNATURE, "signature"),
+    (PARAMETERS, "parameters"),
+    (DEFAULT_VALUE, "default_value"),
+    (TARGET, "target"),
+    (OBJECT, "object"),
+    (ARGS, "args"),
+    (PARTIAL, "partial"),
 }
 
 /// Core AST node representing any Perl language construct within parsing workflows.
@@ -1324,11 +1258,6 @@ impl Node {
         macro_rules! emit {
             ($field:expr, $child:expr) => {
                 if let ControlFlow::Break(b) = f(Some($field), $child) {
-                    return ControlFlow::Break(b);
-                }
-            };
-            ($child:expr) => {
-                if let ControlFlow::Break(b) = f(None, $child) {
                     return ControlFlow::Break(b);
                 }
             };

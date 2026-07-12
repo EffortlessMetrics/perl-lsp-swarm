@@ -779,27 +779,24 @@ fn ast_has_error(node: &AstNode) -> bool {
 
 #[inline]
 fn ast_child_at(node: &AstNode, index: usize) -> Option<&AstNode> {
-    let mut idx = 0usize;
-    let mut found = None;
-    let _ = node.try_for_each_child_with_field(|_, child| {
-        if idx == index {
-            found = Some(child);
-            ControlFlow::Break(())
-        } else {
-            idx += 1;
-            ControlFlow::Continue(())
-        }
-    });
-    found
+    ast_child_with_field(node, index).map(|(_, child)| child)
 }
 
 #[inline]
 fn ast_child_field(node: &AstNode, index: usize) -> Option<FieldId> {
+    ast_child_with_field(node, index).and_then(|(field, _)| field)
+}
+
+#[inline]
+fn ast_child_with_field<'a>(
+    node: &'a AstNode,
+    index: usize,
+) -> Option<(Option<FieldId>, &'a AstNode)> {
     let mut idx = 0usize;
     let mut found = None;
-    let _ = node.try_for_each_child_with_field(|field, _| {
+    let _ = node.try_for_each_child_with_field(|field, child| {
         if idx == index {
-            found = field;
+            found = Some((field, child));
             ControlFlow::Break(())
         } else {
             idx += 1;
