@@ -1491,6 +1491,18 @@ use warnings;
     ///   categorically rejects that shape regardless of entity-linking
     ///   correctness. Non-activation here is a recorded, expected blocker, not
     ///   a coverage gap.
+    /// - `policy_excluded_request_shape`: checked SECOND. A `LocalLexical`
+    ///   (variable/sigil) row sent with `include_declaration: true` is
+    ///   categorically outside the promoted lexical slice —
+    ///   `references.rs::may_use_source_backed_references` only allows
+    ///   variable symbols through when `include_declaration == false`
+    ///   (`!symbol_is_variable || (ENABLE_PIR_A_LEXICAL_REFERENCES_LIVE && !include_declaration)`).
+    ///   Non-activation for this request shape is a policy exclusion, not a
+    ///   gap — it says nothing about entity-linking or declaration-shape
+    ///   correctness. (Bareword/sub symbols are unaffected: `symbol_is_variable`
+    ///   is `false` for them, so the gate passes regardless of
+    ///   `include_declaration` — confirmed by
+    ///   `references.rs::handle_references_include_declaration_true_reaches_source_backed_tier_and_appends_declaration`.)
     /// - `index_parity_proven`: only from an observed exact match on a
     ///   `source_backed` row for a strictly-checked class.
     /// - `explicit_refusal_safe`: only from a genuinely EXERCISED refusal —
@@ -1498,28 +1510,37 @@ use warnings;
     ///   itself returned zero results. A noisy non-empty `workspace_mixed`
     ///   answer is NOT "safe" just because it avoided the known-false set —
     ///   that would only prove "not disproven", not "verified correct".
-    /// - `coverage_gap`: only for `LocalLexical`/`PackageSubSameFile` rows
-    ///   with a `SimpleInit` (or `NotApplicable`, for subs) declaration shape
-    ///   that failed to reach `source_backed`, AND ONLY when
-    ///   `positive_control_evidence` is `true` for that project (i.e. a
-    ///   control request in the identical multi-file server shape DID reach
-    ///   `semantic_source_backed`, ruling out a harness/shape confound).
-    ///   Without that evidence the class is `unexercised`, not `coverage_gap`.
+    /// - `coverage_gap`: only for an ELIGIBLE row (`SimpleInit`/`NotApplicable`
+    ///   declaration shape, and for `LocalLexical` also `include_declaration:
+    ///   false`) that failed to reach `source_backed`, AND ONLY when the
+    ///   MATCHING positive control has evidence for that project:
+    ///   `lexical_positive_control_evidence` for `LocalLexical`,
+    ///   `subroutine_positive_control_evidence` for `PackageSubSameFile`. A
+    ///   lexical-only control does NOT authorize `coverage_gap` for
+    ///   `PackageSubSameFile` — a subroutine-specific harness/entity-
+    ///   resolution boundary is a distinct possible confound. Without the
+    ///   matching evidence the class is `unexercised`, not `coverage_gap`.
     /// - `unclassified`: the default — including any `source_backed` row that
     ///   is NOT strictly checked, or a strictly-checked `source_backed` row
     ///   that (should never happen, since the hard assertion above would have
     ///   already failed the test) somehow reaches this classifier mismatched.
+    #[allow(clippy::too_many_arguments)]
     fn classify_disposition(
         fact_class: FactClass,
         declaration_shape: DeclarationShape,
+        include_declaration: bool,
         source_backed: bool,
         result_count: usize,
         result_locations: &[(String, u32, u32)],
         expected_keys: &[(String, u32, u32)],
-        positive_control_evidence: bool,
+        lexical_positive_control_evidence: bool,
+        subroutine_positive_control_evidence: bool,
     ) -> &'static str {
         if declaration_shape == DeclarationShape::Destructuring {
             return "unsupported_declaration_shape";
+        }
+        if fact_class == FactClass::LocalLexical && include_declaration {
+            return "policy_excluded_request_shape";
         }
         if source_backed {
             if fact_class.is_strictly_checked()
@@ -1531,8 +1552,15 @@ use warnings;
         }
         match fact_class {
             FactClass::EmptyPosition => "explicit_refusal_safe",
-            FactClass::LocalLexical | FactClass::PackageSubSameFile => {
-                if positive_control_evidence {
+            FactClass::LocalLexical => {
+                if lexical_positive_control_evidence {
+                    "coverage_gap"
+                } else {
+                    "unexercised"
+                }
+            }
+            FactClass::PackageSubSameFile => {
+                if subroutine_positive_control_evidence {
                     "coverage_gap"
                 } else {
                     "unexercised"
@@ -1553,7 +1581,8 @@ use warnings;
         server: &LspServer,
         request: &ReplayRequest,
         fixture_files: &[(String, String)],
-        positive_control_evidence: bool,
+        lexical_positive_control_evidence: bool,
+        subroutine_positive_control_evidence: bool,
     ) -> Result<ReplayRow, Box<dyn std::error::Error>> {
         let content = fixture_content(fixture_files, request.file)?;
         let uri = project_uri(request.project, request.file);
@@ -1664,14 +1693,37 @@ use warnings;
             .into());
         }
 
+        // Same mechanical proof for the policy-excluded request shape: a
+        // `LocalLexical` (variable) row sent with `include_declaration: true`
+        // must NEVER reach `semantic_source_backed`, since
+        // `references.rs::may_use_source_backed_references` only lets
+        // variable symbols through when `include_declaration == false`. If
+        // this ever fails, the promotion policy has changed and
+        // `classify_disposition` needs to be revisited, not silenced.
+        if request.fact_class == FactClass::LocalLexical
+            && request.include_declaration
+            && evidence.source_backed
+        {
+            return Err(format!(
+                "{}/{} needle={:?}: a LocalLexical row with include_declaration=true \
+                 unexpectedly reached semantic_source_backed -- \
+                 may_use_source_backed_references's policy gate may have changed; \
+                 classify_disposition needs to be revisited",
+                request.project, request.file, request.needle
+            )
+            .into());
+        }
+
         let disposition = classify_disposition(
             request.fact_class,
             request.declaration_shape,
+            request.include_declaration,
             evidence.source_backed,
             result_count,
             &result_locations,
             &expected_keys,
-            positive_control_evidence,
+            lexical_positive_control_evidence,
+            subroutine_positive_control_evidence,
         );
 
         Ok(ReplayRow {
@@ -1846,7 +1898,7 @@ use warnings;
     /// (this test file's helpers, not just production) can observe the
     /// source-backed tier before any conclusion is drawn about real project
     /// code.
-    fn assert_single_file_positive_control() -> Result<(), Box<dyn std::error::Error>> {
+    fn assert_single_file_lexical_positive_control() -> Result<(), Box<dyn std::error::Error>> {
         let server = create_server();
         let uri = "file:///control/single-file-scalar-no-decl.pl";
         let text = "my $value = 1;\nmy $other = $value;\n";
@@ -1873,25 +1925,36 @@ use warnings;
         // semantic_smoke_tests`; it never compiles or runs `--lib` unit tests
         // for this crate, so this evidence must be read from a local/manual
         // `cargo test -p perl-lsp-rs --lib --features workspace ...` run).
-        eprintln!("single_file_positive_control observed_tier={tier:?}");
+        eprintln!("single_file_lexical_positive_control observed_tier={tier:?}");
         assert_eq!(
             tier, "semantic_source_backed",
-            "single-file positive control must reach the source-backed tier (harness sanity)"
+            "single-file lexical positive control must reach the source-backed tier (harness sanity)"
         );
         Ok(())
     }
 
-    /// The SAME positive-control snippet, opened alongside a real, already-
-    /// opened multi-file project in the SAME server. If this still reaches
+    /// The SAME lexical positive-control snippet, opened alongside a real,
+    /// already-opened multi-file project in the SAME server. Returns whether
+    /// it reached `semantic_source_backed` (does NOT panic on failure — see
+    /// `observe_multi_file_subroutine_positive_control` for why: whether the
+    /// multi-file shape reproduces the tier is itself part of the evidence
+    /// this replay collects, not an assumed precondition). If this reaches
     /// `semantic_source_backed`, a zero-activation finding for the project's
-    /// OWN `LocalLexical`/`PackageSubSameFile` rows cannot be attributed to
-    /// "the multi-file replay-server shape itself breaks the tier" — the
-    /// shape is proven capable of activating it.
-    fn assert_multi_file_positive_control(
+    /// OWN `LocalLexical` rows cannot be attributed to "the multi-file
+    /// replay-server shape itself breaks the tier" — the shape is proven
+    /// capable of activating it. This control is LEXICAL-ONLY: per Defect 2
+    /// (PR #3998 fourth review round), it authorizes `coverage_gap` for
+    /// `LocalLexical` rows only, NOT `PackageSubSameFile` — a subroutine
+    /// reference goes through a different resolution path
+    /// (`symbol_is_variable == false`), so a lexical control cannot rule out
+    /// a subroutine-specific harness/entity-resolution boundary. See
+    /// `observe_multi_file_subroutine_positive_control` for the matching
+    /// subroutine-specific control.
+    fn observe_multi_file_lexical_positive_control(
         project: &str,
         server: &LspServer,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let control_uri = format!("file:///real_projects/{project}/__positive_control__.pl");
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let control_uri = format!("file:///real_projects/{project}/__lexical_control__.pl");
         let control_text = "my $value = 1;\nmy $other = $value;\n";
         open_document(server, &control_uri, control_text)?;
 
@@ -1909,25 +1972,110 @@ use warnings;
         let tier = receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("");
         // See the single-file control's comment above re: local-only CI
         // reachability (PR #3998 Defect C).
-        eprintln!("multi_file_positive_control project={project} observed_tier={tier:?}");
+        eprintln!("multi_file_lexical_positive_control project={project} observed_tier={tier:?}");
+        Ok(tier == "semantic_source_backed")
+    }
+
+    /// The known-good subroutine-reference fixture from
+    /// `references.rs::handle_references_include_declaration_true_reaches_source_backed_tier_and_appends_declaration`
+    /// (a package with a named sub definition plus two call sites — one bare,
+    /// one package-qualified), reproduced against a FRESH single-file server.
+    /// Proves the harness can observe `semantic_source_backed` for a
+    /// SUBROUTINE reference specifically — a lexical-variable control does
+    /// NOT prove this (bareword/sub symbols take a different
+    /// `symbol_is_variable == false` path through
+    /// `may_use_source_backed_references`/`live_source_backed_reference_locations`).
+    const SUBROUTINE_CONTROL_TEXT: &str = concat!(
+        "package InclDecl;\n",
+        "\n",
+        "sub target {\n", // line 2 — declaration site
+        "    return 1;\n",
+        "}\n",
+        "\n",
+        "sub caller {\n",
+        "    target();\n",           // line 7 — bare call site (cursor here)
+        "    InclDecl::target();\n", // line 8 — qualified call site
+        "}\n",
+        "\n",
+        "1;\n",
+    );
+
+    fn assert_single_file_subroutine_positive_control() -> Result<(), Box<dyn std::error::Error>> {
+        let server = create_server();
+        let uri = "file:///control/single-file-subroutine-incl-decl.pl";
+        open_document(&server, uri, SUBROUTINE_CONTROL_TEXT)?;
+
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 7, "character": 4},
+            "context": {"includeDeclaration": true}
+        });
+        server.test_handle_references(Some(params))?;
+        let explanation = explain_provider_decision(&server, "references")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing request_receipt")?;
+        let tier = receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("");
+        eprintln!("single_file_subroutine_positive_control observed_tier={tier:?}");
         assert_eq!(
             tier, "semantic_source_backed",
-            "positive control opened alongside the real {project} project must still reach the \
-             source-backed tier (rules out a harness/multi-file-shape confound)"
+            "single-file subroutine positive control must reach the source-backed tier (harness \
+             sanity)"
         );
         Ok(())
+    }
+
+    /// The SAME subroutine-reference control, opened alongside a real,
+    /// already-opened multi-file project in the SAME server. Returns whether
+    /// it reached `semantic_source_backed` — does NOT panic on failure.
+    /// Required (and must return `true`) before a project's
+    /// `PackageSubSameFile` rows may be classified `coverage_gap` — see
+    /// Defect 2 in the module doc comment above. This is deliberately
+    /// observational rather than a hard assertion: whether the multi-file
+    /// shape reproduces the SINGLE-file-proven subroutine tier is itself
+    /// evidence this replay collects (a `false` here is a genuine, reportable
+    /// finding — a multi-file-shape-specific subroutine confound — not a
+    /// harness bug to fail loudly on).
+    fn observe_multi_file_subroutine_positive_control(
+        project: &str,
+        server: &LspServer,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let control_uri = format!("file:///real_projects/{project}/__subroutine_control__.pl");
+        open_document(server, &control_uri, SUBROUTINE_CONTROL_TEXT)?;
+
+        let params = json!({
+            "textDocument": {"uri": control_uri},
+            "position": {"line": 7, "character": 4},
+            "context": {"includeDeclaration": true}
+        });
+        server.test_handle_references(Some(params))?;
+        let explanation = explain_provider_decision(server, "references")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing request_receipt")?;
+        let tier = receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("");
+        eprintln!(
+            "multi_file_subroutine_positive_control project={project} observed_tier={tier:?}"
+        );
+        Ok(tier == "semantic_source_backed")
     }
 
     /// Representative-workspace replay for #2674 PR-3 (references measurement,
     /// no live provider behavior change). Fires every request in
     /// `REPLAY_MANIFEST` + `EMPTY_POSITION_MANIFEST` against three real,
-    /// committed project fixtures, asserts an in-band positive control per
-    /// project (see `assert_multi_file_positive_control` — this call is
-    /// inline, not a separate skippable test, so removing it removes coverage
-    /// from THIS governing test), checks the 9 hard assertions described in
-    /// the module doc comment above, snapshots a durable receipt via `insta`,
-    /// and prints the full (latency-inclusive) receipt with a per-request
-    /// #1658 disposition.
+    /// committed project fixtures, observes an in-band LEXICAL and SUBROUTINE
+    /// positive control per project (see
+    /// `observe_multi_file_lexical_positive_control` /
+    /// `observe_multi_file_subroutine_positive_control` — these calls are
+    /// inline, not separate skippable tests, so removing either removes
+    /// coverage from THIS governing test; neither panics on a `false`
+    /// observation, since that is itself collected evidence, not an assumed
+    /// precondition — see Defect 2 in the module doc comment above), checks
+    /// the 9 hard assertions described in the module doc comment above,
+    /// snapshots a durable receipt via `insta`, and prints the full
+    /// (latency-inclusive) receipt with a per-request #1658 disposition.
     #[test]
     fn references_representative_workspace_replay() -> Result<(), Box<dyn std::error::Error>> {
         use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1935,19 +2083,32 @@ use warnings;
         let projects = ["mojolicious_skeleton", "dancer2_skeleton", "catalyst_skeleton"];
         let mut project_files: HashMap<&str, Vec<(String, String)>> = HashMap::new();
         let mut servers: HashMap<&str, LspServer> = HashMap::new();
-        let mut positive_control_evidence: HashMap<&str, bool> = HashMap::new();
+        let mut lexical_positive_control_evidence: HashMap<&str, bool> = HashMap::new();
+        let mut subroutine_positive_control_evidence: HashMap<&str, bool> = HashMap::new();
 
-        // Global (project-independent) sanity check first.
-        assert_single_file_positive_control()?;
+        // Global (project-independent) sanity checks first -- these DO panic
+        // on failure, since they establish the harness baseline: if a
+        // single-file server can't reach `semantic_source_backed` for either
+        // shape, nothing downstream in this replay is trustworthy.
+        assert_single_file_lexical_positive_control()?;
+        assert_single_file_subroutine_positive_control()?;
 
         for project in projects {
             let server = create_server();
             let files = open_project(&server, project)?;
-            // In-band multi-file-shape positive control: asserts inline, so a
-            // regression here fails THIS test, not a separate one that could
-            // silently bit-rot or be skipped.
-            assert_multi_file_positive_control(project, &server)?;
-            positive_control_evidence.insert(project, true);
+            // In-band multi-file-shape positive controls: observed inline, so
+            // a regression here is visible in THIS governing test's own
+            // receipt, not a separate test that could silently bit-rot or be
+            // skipped. Two SEPARATE controls (Defect 2, PR #3998 fourth
+            // review round): a lexical-only control does not authorize
+            // `coverage_gap` for `PackageSubSameFile` rows, since subroutine
+            // references go through a different (`symbol_is_variable ==
+            // false`) resolution path -- and empirically the two controls do
+            // NOT always agree (see the disposition rollup in the receipt).
+            let lexical_ok = observe_multi_file_lexical_positive_control(project, &server)?;
+            lexical_positive_control_evidence.insert(project, lexical_ok);
+            let subroutine_ok = observe_multi_file_subroutine_positive_control(project, &server)?;
+            subroutine_positive_control_evidence.insert(project, subroutine_ok);
             project_files.insert(project, files);
             servers.insert(project, server);
         }
@@ -1956,9 +2117,17 @@ use warnings;
         for request in REPLAY_MANIFEST {
             let server = servers.get(request.project).ok_or("missing server for project")?;
             let files = project_files.get(request.project).ok_or("missing files for project")?;
-            let control_evidence =
-                positive_control_evidence.get(request.project).copied().unwrap_or(false);
-            rows.push(fire_replay_request(server, request, files, control_evidence)?);
+            let lexical_evidence =
+                lexical_positive_control_evidence.get(request.project).copied().unwrap_or(false);
+            let subroutine_evidence =
+                subroutine_positive_control_evidence.get(request.project).copied().unwrap_or(false);
+            rows.push(fire_replay_request(
+                server,
+                request,
+                files,
+                lexical_evidence,
+                subroutine_evidence,
+            )?);
         }
         for (project, file, line0) in EMPTY_POSITION_MANIFEST.iter().copied() {
             let server = servers.get(project).ok_or("missing server for project")?;
@@ -2017,6 +2186,8 @@ use warnings;
                 unresolved coverage gap, or replaceable by explicit refusal. It does not alter \
                 live provider behavior or claim real user-traffic weighting.",
             "projects": projects,
+            "lexical_positive_control_evidence": lexical_positive_control_evidence,
+            "subroutine_positive_control_evidence": subroutine_positive_control_evidence,
             "request_count": rows.len(),
             "rows": rows.iter().map(row_to_json_full).collect::<Vec<_>>(),
         });
@@ -2272,9 +2443,9 @@ use warnings;
     }
 
     /// Revert-proves: removing an in-band positive control (i.e. its
-    /// evidence flag never gets set) must downgrade `LocalLexical` /
-    /// `PackageSubSameFile` dispositions to `unexercised`, not silently keep
-    /// reporting `coverage_gap` without justifying evidence.
+    /// evidence flag never gets set) must downgrade `LocalLexical`
+    /// dispositions to `unexercised`, not silently keep reporting
+    /// `coverage_gap` without justifying evidence.
     #[test]
     fn classify_disposition_requires_positive_control_evidence_for_coverage_gap() {
         let empty_locations: Vec<(String, u32, u32)> = Vec::new();
@@ -2282,9 +2453,11 @@ use warnings;
             FactClass::LocalLexical,
             DeclarationShape::SimpleInit,
             false,
+            false,
             8,
             &empty_locations,
             &empty_locations,
+            false,
             false,
         );
         assert_eq!(
@@ -2297,16 +2470,92 @@ use warnings;
             FactClass::LocalLexical,
             DeclarationShape::SimpleInit,
             false,
+            false,
             8,
             &empty_locations,
             &empty_locations,
             true,
+            false,
         );
         assert_eq!(
             with_control, "coverage_gap",
-            "with positive-control evidence, a non-source-backed SimpleInit LocalLexical row is \
-             `coverage_gap`"
+            "with lexical positive-control evidence, a non-source-backed SimpleInit \
+             include_declaration=false LocalLexical row is `coverage_gap`"
         );
+    }
+
+    /// Revert-proves Defect 2 (PR #3998 fourth review round): a LEXICAL-only
+    /// positive control must NOT authorize `coverage_gap` for
+    /// `PackageSubSameFile` rows -- subroutine references take a different
+    /// resolution path, so lexical evidence alone leaves package-sub rows
+    /// `unexercised` until a MATCHING subroutine control also passes.
+    #[test]
+    fn classify_disposition_requires_subroutine_specific_evidence_for_package_sub_coverage_gap() {
+        let empty_locations: Vec<(String, u32, u32)> = Vec::new();
+        let lexical_only = classify_disposition(
+            FactClass::PackageSubSameFile,
+            DeclarationShape::NotApplicable,
+            true,
+            false,
+            2,
+            &empty_locations,
+            &empty_locations,
+            true,
+            false,
+        );
+        assert_eq!(
+            lexical_only, "unexercised",
+            "lexical-only positive-control evidence must not authorize coverage_gap for \
+             PackageSubSameFile rows"
+        );
+
+        let with_subroutine_control = classify_disposition(
+            FactClass::PackageSubSameFile,
+            DeclarationShape::NotApplicable,
+            true,
+            false,
+            2,
+            &empty_locations,
+            &empty_locations,
+            true,
+            true,
+        );
+        assert_eq!(
+            with_subroutine_control, "coverage_gap",
+            "with matching subroutine positive-control evidence, a non-source-backed \
+             PackageSubSameFile row is coverage_gap"
+        );
+    }
+
+    /// Revert-proves Defect 1 (PR #3998 fourth review round): a `LocalLexical`
+    /// row sent with `include_declaration: true` must ALWAYS classify as
+    /// `policy_excluded_request_shape` -- never `coverage_gap` -- regardless
+    /// of positive-control evidence, because
+    /// `references.rs::may_use_source_backed_references` categorically
+    /// excludes variable requests with `include_declaration: true` from the
+    /// promoted slice.
+    #[test]
+    fn classify_disposition_include_declaration_true_lexical_row_is_never_coverage_gap() {
+        let empty_locations: Vec<(String, u32, u32)> = Vec::new();
+        for lexical_positive_control_evidence in [false, true] {
+            let disposition = classify_disposition(
+                FactClass::LocalLexical,
+                DeclarationShape::SimpleInit,
+                true,
+                false,
+                3,
+                &empty_locations,
+                &empty_locations,
+                lexical_positive_control_evidence,
+                false,
+            );
+            assert_eq!(
+                disposition, "policy_excluded_request_shape",
+                "an include_declaration=true LocalLexical row must be \
+                 policy_excluded_request_shape regardless of \
+                 lexical_positive_control_evidence={lexical_positive_control_evidence}"
+            );
+        }
     }
 
     /// Revert-proves: a noisy non-empty fallback answer for
@@ -2320,9 +2569,11 @@ use warnings;
             FactClass::DynamicAmbiguous,
             DeclarationShape::NotApplicable,
             false,
+            false,
             12,
             &empty_locations,
             &empty_locations,
+            false,
             false,
         );
         assert_eq!(
@@ -2334,9 +2585,11 @@ use warnings;
             FactClass::DynamicAmbiguous,
             DeclarationShape::NotApplicable,
             false,
+            false,
             0,
             &empty_locations,
             &empty_locations,
+            false,
             false,
         );
         assert_eq!(
@@ -2348,27 +2601,29 @@ use warnings;
     /// Revert-proves the Defect A repair (PR #3998 second review round): a
     /// `Destructuring` declaration shape must ALWAYS classify as
     /// `unsupported_declaration_shape` -- never `coverage_gap` -- regardless
-    /// of `source_backed`/`positive_control_evidence`, because non-activation
+    /// of `source_backed`/positive-control evidence, because non-activation
     /// for that shape is expected-by-design
     /// (`line_has_initialized_lexical_declaration` categorically rejects it),
     /// not an entity-linking gap.
     #[test]
     fn classify_disposition_destructuring_shape_is_never_coverage_gap() {
         let empty_locations: Vec<(String, u32, u32)> = Vec::new();
-        for positive_control_evidence in [false, true] {
+        for lexical_positive_control_evidence in [false, true] {
             let disposition = classify_disposition(
                 FactClass::LocalLexical,
                 DeclarationShape::Destructuring,
                 false,
+                false,
                 8,
                 &empty_locations,
                 &empty_locations,
-                positive_control_evidence,
+                lexical_positive_control_evidence,
+                false,
             );
             assert_eq!(
                 disposition, "unsupported_declaration_shape",
                 "a Destructuring LocalLexical row must be unsupported_declaration_shape \
-                 regardless of positive_control_evidence={positive_control_evidence}"
+                 regardless of lexical_positive_control_evidence={lexical_positive_control_evidence}"
             );
         }
     }
