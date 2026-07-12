@@ -93,6 +93,9 @@ pub use crate::workspace::monitoring::{
 };
 use perl_symbol::surface::decl::extract_symbol_decls;
 use perl_symbol::surface::facts::{symbol_decls_to_semantic_facts, symbol_refs_to_semantic_facts};
+// Only used by `build_canonical_fact_shard_for_ast`, which is now
+// `#[cfg(test)]`-gated (shadow/parity-harness-only as of the 1711-B cutover).
+#[cfg(test)]
 use perl_symbol::surface::r#ref::extract_symbol_refs;
 
 // Re-export URI utilities for backward compatibility
@@ -2927,7 +2930,9 @@ impl WorkspaceIndex {
     /// `extraction_bundle_shadow_compare` parity harness's `build_direct`/
     /// `FileExtractionBundle::build` reference point -- the pre-cutover
     /// dual-walk behavior this cutover's parity tests assert against.
-    #[allow(dead_code)]
+    /// Reachable only from `#[cfg(test)]` code (the shadow/parity harness);
+    /// gated accordingly rather than `#[allow(dead_code)]`.
+    #[cfg(test)]
     fn build_canonical_fact_shard_for_ast(
         uri: &str,
         content_hash: u64,
@@ -4184,8 +4189,10 @@ impl FileExtractionBundle {
     /// packages every result into a single bundle. Does not reduce the
     /// traversal count; not called by `index_file_with_generation`.
     // Shadow scaffold (see the struct-level justification above); the
-    // function itself is equally unused by the live path outside tests.
-    #[allow(dead_code)]
+    // function itself is equally unused by the live path outside tests --
+    // reachable only from `#[cfg(test)]` code (`extraction_bundle_shadow_compare`),
+    // so it is gated accordingly rather than `#[allow(dead_code)]`.
+    #[cfg(test)]
     pub(crate) fn build(
         ast: &Node,
         uri_str: &str,
@@ -5245,6 +5252,33 @@ impl IndexVisitor {
                 } else {
                     None
                 };
+
+                // Emit the canonical ref BEFORE recursing into `object` --
+                // this position must NOT move. `perl_symbol::surface::ref::walk`'s
+                // own `MethodCall` arm also pushes its `SymbolRef` before
+                // recursing into `object` (own-ref-before-child DFS order),
+                // so keeping `emit_canonical_ref` here preserves the
+                // byte-for-byte canonical parity `assert_unified_canonical_parity`
+                // enforces -- for a chained `$x->foo()->foo()`, the OUTER
+                // call's `SymbolRef` precedes the INNER call's in
+                // `symbol_refs`, matching production exactly.
+                Self::emit_canonical_ref(node, symbol_refs);
+
+                // Recurse into `object` BEFORE recording this call's own
+                // LEGACY `FileIndex` reference below -- mirrors
+                // `IndexVisitor::visit_node`'s legacy `MethodCall` arm order
+                // exactly (child-before-own-ref; see that arm a few hundred
+                // lines above, which visits `object` first and only then
+                // pushes its own reference). Without this, a chained
+                // same-named call like `$x->foo()->foo()` would invert the
+                // intra-key `file_index.references["foo"]` Vec order
+                // relative to legacy (no reference lost -- counts still
+                // match -- but the order silently changed). See
+                // `parity_method_call_chained_same_name_reference_order`,
+                // which locks this order with an exact Vec equality
+                // assertion against legacy's own output.
+                self.walk_unified(object, file_index, symbol_refs);
+
                 let location = self.node_to_range(node);
                 if let Some(qualified_method) = qualified_method.as_ref() {
                     file_index.references.entry(qualified_method.clone()).or_default().push(
@@ -5274,9 +5308,6 @@ impl IndexVisitor {
                     file_index.dependencies.insert(normalize_dependency_module_name(module_name));
                 }
 
-                Self::emit_canonical_ref(node, symbol_refs);
-
-                self.walk_unified(object, file_index, symbol_refs);
                 for arg in args {
                     self.walk_unified(arg, file_index, symbol_refs);
                 }
@@ -11373,7 +11404,7 @@ mod extraction_bundle_shadow_compare {
     #![allow(clippy::print_stderr)]
 
     use super::*;
-    use perl_tdd_support::must;
+    use perl_tdd_support::{must, must_some};
     use std::path::{Path, PathBuf};
     use walkdir::WalkDir;
 
@@ -11691,6 +11722,61 @@ sub bar { return $greeting; }
             unified.canonical_shard.occurrences.len(),
             "named_parameter_default: occurrence count must match production exactly -- a \
              named-param default must never contribute a canonical occurrence"
+        );
+    }
+
+    /// **Guards the `MethodCall` reference-order seam surfaced by
+    /// independent correctness review during 1711-B cutover hardening.**
+    ///
+    /// For a chained same-named call like `$x->foo()->foo()`,
+    /// `walk_unified`'s `MethodCall` arm now recurses into `object` BEFORE
+    /// recording this call's own legacy `FileIndex` reference -- exactly
+    /// mirroring `IndexVisitor::visit_node`'s legacy `MethodCall` arm order
+    /// (child-before-own-ref). Before this fix, the unified traversal
+    /// recorded its own reference BEFORE recursing into `object`, which
+    /// inverted the intra-key `file_index.references["foo"]` Vec order
+    /// relative to legacy for chained calls. No reference was ever lost --
+    /// `assert_unified_legacy_is_superset` passes on COUNTS either way --
+    /// but the exact order silently changed, which could ripple into
+    /// anything ordering-sensitive over `find_references("foo")` (e.g. a
+    /// "go to next reference" navigation feature).
+    ///
+    /// Canonical stays byte-identical regardless: `emit_canonical_ref` is
+    /// deliberately left in its ORIGINAL relative position (still called
+    /// before recursing into `object`), because
+    /// `perl_symbol::surface::ref::walk`'s own `MethodCall` arm ALSO pushes
+    /// its `SymbolRef` before recursing into `object` -- reordering that
+    /// too would have flipped canonical's `Vec<SymbolRef>` order for
+    /// chained calls and broken `assert_unified_canonical_parity`.
+    #[test]
+    fn parity_method_call_chained_same_name_reference_order() {
+        let text = "package Foo;\nsub bar { my $x = Foo->new; $x->foo()->foo(); }\n";
+        let uri = "file:///edge/method_call_chained_same_name.pl";
+        assert_parity("method_call_chained_same_name", uri, text);
+        assert_unified_canonical_parity("method_call_chained_same_name", uri, text);
+        assert_unified_legacy_is_superset("method_call_chained_same_name", uri, text);
+
+        // Explicit, mechanically-enforced order lock: unified's
+        // `file_index.references["foo"]` Vec must be in the SAME order as
+        // legacy's own (`IndexVisitor::visit_node`-derived) output for this
+        // exact chained-call shape, not merely the same COUNT.
+        let mut parser = Parser::new(text);
+        let ast = must(parser.parse());
+        let direct = build_direct(uri, text, &ast);
+        let unified = build_bundle_unified(uri, text, &ast);
+
+        let direct_foo_refs = must_some(direct.file_index.references.get("foo"));
+        let unified_foo_refs = must_some(unified.legacy_index.references.get("foo"));
+        assert_eq!(
+            direct_foo_refs.len(),
+            unified_foo_refs.len(),
+            "method_call_chained_same_name: reference count for `foo` must match legacy exactly"
+        );
+        assert_eq!(
+            direct_foo_refs, unified_foo_refs,
+            "method_call_chained_same_name: unified `foo` reference order diverged from legacy \
+             for a chained `$x->foo()->foo()` call -- MethodCall must recurse into `object` \
+             BEFORE recording its own legacy reference, matching IndexVisitor::visit_node exactly"
         );
     }
 
