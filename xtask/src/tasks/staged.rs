@@ -131,7 +131,12 @@ const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /// tree-oid-pinned diff still works on a brand-new repo with no commits yet
 /// (an unborn `HEAD`), matching what `git diff --cached` already handles
 /// implicitly for the live-index path.
-fn diff_base(root: &Path) -> Result<String> {
+///
+/// `pub(crate)`: also used directly by `commit_checks::whitespace_check_at`,
+/// which needs the same base to run `git diff <base> <oid> --check` against
+/// the pinned tree object instead of `git diff --cached --check` (the live
+/// index) — see that function's doc comment for the TOCTOU this closes.
+pub(crate) fn diff_base(root: &Path) -> Result<String> {
     let resolves = Command::new("git")
         .current_dir(root)
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
@@ -188,6 +193,24 @@ pub fn read_staged_path_text(
         bail!("failed to read staged content for {path}: {stderr}");
     }
     Ok(String::from_utf8(output.stdout).ok())
+}
+
+/// Whether `path` exists at all in the given staged tree object — for a
+/// caller like `commit_checks::rustfmt_staged_at` that needs the STAGED
+/// version of a config file (`rustfmt.toml`) which may or may not be part of
+/// the diff being committed (it might be untouched by this commit, or not
+/// tracked at all). [`read_staged_path_text`] deliberately treats "path
+/// isn't staged" as a real `Err` (its callers pass paths already known to be
+/// staged, from [`staged_diff_paths`]), so a caller that genuinely doesn't
+/// know whether an incidental path exists in the tree must check first
+/// rather than pattern-matching on `read_staged_path_text`'s error text.
+pub fn staged_path_exists(root: &Path, tree_oid: &str, path: &str) -> Result<bool> {
+    let status = Command::new("git")
+        .current_dir(root)
+        .args(["cat-file", "-e", &format!("{tree_oid}:{path}")])
+        .status()
+        .with_context(|| format!("failed to check whether {path} exists in tree {tree_oid}"))?;
+    Ok(status.success())
 }
 
 #[cfg(test)]

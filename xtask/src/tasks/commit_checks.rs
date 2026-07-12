@@ -46,12 +46,13 @@ use crate::tasks::ci_policy::{
 };
 use crate::tasks::staged;
 use crate::utils::project_root;
-use color_eyre::eyre::{Context, Result, bail};
+use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
+use std::sync::LazyLock;
 
 // =============================================================================
 // Posture + report shape (GUIDANCE_STYLE §4/§5)
@@ -189,7 +190,7 @@ pub fn run_named_check(name: &str, tree_oid: Option<&str>) -> Result<CommitCheck
     let root = project_root()?;
     match name {
         "staged_tree_identity" => staged_tree_identity_at(&root, tree_oid),
-        "whitespace_check" => whitespace_check_at(&root),
+        "whitespace_check" => whitespace_check_at(&root, tree_oid),
         "conflict_markers_staged" => conflict_markers_staged_at(&root, tree_oid),
         "staged_exec_mode_policy" => staged_exec_mode_policy_at(&root, tree_oid),
         "staged_config_syntax" => staged_config_syntax_at(&root, tree_oid),
@@ -260,22 +261,28 @@ fn staged_tree_identity_at(root: &Path, tree_oid: Option<&str>) -> Result<Commit
 }
 
 // =============================================================================
-// 1. git diff --cached --check (whitespace + git's own conflict-marker scan)
+// 1. git diff --check (whitespace + git's own conflict-marker scan)
 //
-// This one check is deliberately NOT tree-oid-pinned: `git diff --cached
-// --check` has no tree-object equivalent (it inspects the diff hunks
-// themselves, not two arbitrary trees), so it always reads the live index.
-// In practice this runs immediately after `plan_gates` captures the OID, in
-// the same synchronous dispatch, so the window for a concurrent `git add`
-// to matter here is the same as for `git write-tree` itself.
+// Tree-oid-pinned like the other 8: `git diff <base> <oid> --check` DOES
+// have a tree-object equivalent — `--check` inspects the diff hunks between
+// two trees, and `<base>` (`diff_base`, shared with `staged_diff_paths`)
+// vs `<oid>` (the pinned tree) is exactly such a pair. `git diff HEAD <oid>
+// --check` and `git diff --cached --check` produce byte-identical output
+// when the index hasn't moved since `<oid>` was captured — the bug this
+// closes is the window where it HAS moved: a `git add` between
+// `plan_gates` capturing the OID and this check dispatching would make
+// `--cached` silently disagree with `AgentReceipt.staged_tree_oid` about
+// what's actually being checked.
 // =============================================================================
 
-fn whitespace_check_at(root: &Path) -> Result<CommitCheckOutcome> {
+fn whitespace_check_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
+    let tree_oid = resolve_tree_oid(root, tree_oid)?;
+    let base = staged::diff_base(root)?;
     let output = Command::new("git")
         .current_dir(root)
-        .args(["diff", "--cached", "--check"])
+        .args(["diff", &base, &tree_oid, "--check"])
         .output()
-        .context("failed to run `git diff --cached --check`")?;
+        .context("failed to run `git diff <base> <oid> --check`")?;
     if output.status.success() {
         return Ok(CommitCheckOutcome::Pass(
             "no whitespace/conflict-marker issues in the staged diff".to_string(),
@@ -310,15 +317,19 @@ fn whitespace_check_at(root: &Path) -> Result<CommitCheckOutcome> {
 
 const CONFLICT_MARKER_PATTERN: &str = r"^(<{7} |={7}$|>{7} )";
 
+// AGENTS.md code-quality bar: regexes are `static LazyLock<Regex>`, never
+// `Regex::new()` per invocation — this check runs on every commit-tier gate
+// dispatch, not once per process.
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
+static CONFLICT_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(CONFLICT_MARKER_PATTERN).expect("CONFLICT_MARKER_PATTERN is a valid regex literal")
+});
+
 fn evaluate_conflict_markers<'a>(files: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<String> {
-    let re = match Regex::new(CONFLICT_MARKER_PATTERN) {
-        Ok(re) => re,
-        Err(_) => return Vec::new(),
-    };
     let mut affected = Vec::new();
     for (path, text) in files {
         for (idx, line) in text.lines().enumerate() {
-            if re.is_match(line) {
+            if CONFLICT_MARKER_RE.is_match(line) {
                 affected.push(format!("{path}:{}", idx + 1));
             }
         }
@@ -445,14 +456,21 @@ fn staged_config_syntax_at(root: &Path, tree_oid: Option<&str>) -> Result<Commit
     let paths = staged::staged_diff_paths(root, Some(&tree_oid))?;
     let mut affected = Vec::new();
     for path in &paths {
-        let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or_default();
-        if !matches!(ext, "json" | "yaml" | "yml" | "toml") {
+        // Case-insensitive extension match: `.YAML`/`.Json` are valid staged
+        // paths and shouldn't silently skip this check just because the
+        // extension isn't lowercase.
+        let ext = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(ext.as_str(), "json" | "yaml" | "yml" | "toml") {
             continue;
         }
         let Some(text) = staged::read_staged_path_text(root, path, Some(&tree_oid))? else {
             continue;
         };
-        if let Some(message) = config_syntax_error(ext, &text) {
+        if let Some(message) = config_syntax_error(&ext, &text) {
             affected.push(format!("{path}: {message}"));
         }
     }
@@ -485,6 +503,13 @@ const FORBIDDEN_PATH_SCAN_EXCLUDE_SUFFIXES: &[&str] = &[".md"];
 const FORBIDDEN_PATH_PATTERN: &str =
     r"([A-Za-z]:\\Users\\[^\\\s]+\\|/home/[A-Za-z0-9_.-]+/|/Users/[A-Za-z0-9_.-]+/)";
 
+// AGENTS.md code-quality bar: regexes are `static LazyLock<Regex>`, never
+// `Regex::new()` per invocation.
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
+static FORBIDDEN_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(FORBIDDEN_PATH_PATTERN).expect("FORBIDDEN_PATH_PATTERN is a valid regex literal")
+});
+
 fn is_forbidden_path_scan_excluded(path: &str) -> bool {
     FORBIDDEN_PATH_SCAN_EXCLUDE_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
         || FORBIDDEN_PATH_SCAN_EXCLUDE_SUFFIXES.iter().any(|suffix| path.ends_with(suffix))
@@ -510,7 +535,6 @@ fn evaluate_forbidden_paths<'a>(
 
 fn forbidden_machine_paths_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
-    let re = Regex::new(FORBIDDEN_PATH_PATTERN).context("invalid forbidden-path regex")?;
     let paths = staged::staged_diff_paths(root, Some(&tree_oid))?;
     let mut files = Vec::new();
     for path in &paths {
@@ -519,7 +543,7 @@ fn forbidden_machine_paths_at(root: &Path, tree_oid: Option<&str>) -> Result<Com
         }
     }
     let affected = evaluate_forbidden_paths(
-        &re,
+        &FORBIDDEN_PATH_RE,
         files.iter().map(|(path, text)| (path.as_str(), text.as_str())),
     );
 
@@ -629,7 +653,33 @@ fn staged_oversized_or_binary_at(
 
 fn is_fragment_path(path: &str) -> bool {
     let prefix = format!("{}/", changelog::UNRELEASED_DIR);
-    path.starts_with(&prefix) && (path.ends_with(".yaml") || path.ends_with(".yml"))
+    // Extension match is case-insensitive (`.YAML`/`.Yml` are valid on
+    // case-insensitive/case-preserving filesystems and git tracks them
+    // byte-for-byte) — only the directory prefix stays case-sensitive,
+    // matching how git itself treats POSIX paths.
+    let lower = path.to_ascii_lowercase();
+    path.starts_with(&prefix) && (lower.ends_with(".yaml") || lower.ends_with(".yml"))
+}
+
+/// Read and parse `.changie.yaml` from the pinned staged tree, not the
+/// working-tree filesystem. A staged fragment must be validated against the
+/// config that's actually part of THIS commit's snapshot — if `.changie.yaml`
+/// has unstaged edits (or a staged edit not yet reflected on disk in some
+/// other workflow), `changelog::load_config` reading straight off disk would
+/// validate staged fragment content against a config that isn't the one
+/// being committed, silently blocking a legitimately-valid staged fragment
+/// or passing an invalid one, depending on which way the unstaged edit
+/// drifted.
+fn load_staged_changie_config(root: &Path, tree_oid: &str) -> Result<changelog::ChangieConfig> {
+    let text = staged::read_staged_path_text(root, changelog::CHANGIE_CONFIG, Some(tree_oid))?
+        .with_context(|| {
+            format!(
+                "staged {} is not valid UTF-8 (or was not found in the staged tree)",
+                changelog::CHANGIE_CONFIG
+            )
+        })?;
+    changelog::parse_config(&text)
+        .with_context(|| format!("failed to parse staged {}", changelog::CHANGIE_CONFIG))
 }
 
 fn changie_fragment_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
@@ -641,7 +691,8 @@ fn changie_fragment_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<Com
         return Ok(CommitCheckOutcome::Pass("no staged Changie fragments".to_string()));
     }
 
-    let cfg = changelog::load_config(root).context("failed to load .changie.yaml")?;
+    let cfg = load_staged_changie_config(root, &tree_oid)
+        .context("failed to load staged .changie.yaml")?;
     let mut blocked = Vec::new();
     for path in &fragment_paths {
         let Some(text) = staged::read_staged_path_text(root, path, Some(&tree_oid))? else {
@@ -718,12 +769,17 @@ const RUSTFMT_CONFIG_FILE: &str = "rustfmt.toml";
 ///   exactly the given text and nothing else.
 /// - It also means no temp file/directory I/O at all for this check.
 ///
-/// `--config-path` points explicitly at the repo's own `rustfmt.toml`, when
-/// one exists there: stdin mode has no file location to search upward from
-/// for config discovery, so without this every staged file would be
-/// checked against rustfmt's *stock defaults* — which disagree with this
-/// repo's actual (non-default) settings and would false-positive-block
-/// every staged Rust file regardless of whether it's really formatted.
+/// `--config-path` points at a temp file holding the **staged**
+/// `rustfmt.toml` content (`config_text`), when the tree has one — never the
+/// working-tree `root.join("rustfmt.toml")` file. stdin mode has no file
+/// location to search upward from for config discovery, so a caller has to
+/// supply one explicitly; if it pointed at the working-tree file, a staged
+/// `rustfmt.toml` policy change with an unrelated unstaged edit sitting on
+/// top of it would check staged Rust blobs against a config that isn't the
+/// one actually being committed (the same class of drift the staged Changie
+/// config fix closes for `changie_fragment_staged_at`). `config_text: None`
+/// means the tree has no `rustfmt.toml` at all — falls back to rustfmt's
+/// stock defaults, same as the pre-fix behavior for a config-less repo.
 ///
 /// Deciding "would reformat" from **stdout content**, not the exit code:
 /// unlike file-path mode (`--check <path>` exits non-zero on a real diff),
@@ -733,17 +789,27 @@ const RUSTFMT_CONFIG_FILE: &str = "rustfmt.toml";
 /// `--config-path`, a syntax error in the staged content itself) writes to
 /// stderr and must surface as a real `Err` — the "error" gate status, not a
 /// silently-wrong "clean" or a misleading "needs reformatting".
-fn rustfmt_would_reformat(root: &Path, text: &str) -> Result<bool> {
-    use color_eyre::eyre::ContextCompat;
+fn rustfmt_would_reformat(config_text: Option<&str>, text: &str) -> Result<bool> {
     use std::io::Write;
     use std::process::Stdio;
 
-    let config_path = root.join(RUSTFMT_CONFIG_FILE);
     let mut command = Command::new("rustfmt");
     command.args(["--check", "--edition", RUSTFMT_EDITION]);
-    if config_path.is_file() {
-        command.arg("--config-path").arg(&config_path);
-    }
+
+    // Materialize the staged config to a temp file only for the duration of
+    // this call; keep the guard alive until the process finishes so the
+    // path `--config-path` points at doesn't get cleaned up mid-run.
+    let _config_guard = match config_text {
+        Some(content) => {
+            let mut file = tempfile::NamedTempFile::new()
+                .context("failed to create a temp file for the staged rustfmt.toml")?;
+            file.write_all(content.as_bytes())
+                .context("failed to write the staged rustfmt.toml to a temp file")?;
+            command.arg("--config-path").arg(file.path());
+            Some(file)
+        }
+        None => None,
+    };
 
     let mut child = command
         .stdin(Stdio::piped())
@@ -764,6 +830,17 @@ fn rustfmt_would_reformat(root: &Path, text: &str) -> Result<bool> {
         bail!("rustfmt reported a failure rather than a formatting diff: {stderr}");
     }
     Ok(!output.stdout.is_empty())
+}
+
+/// Read the staged `rustfmt.toml` content, or `None` if the tree has no such
+/// file. See [`rustfmt_would_reformat`]'s doc comment for why this must come
+/// from the pinned tree, not `std::fs::read_to_string` against the working
+/// copy.
+fn load_staged_rustfmt_config(root: &Path, tree_oid: &str) -> Result<Option<String>> {
+    if !staged::staged_path_exists(root, tree_oid, RUSTFMT_CONFIG_FILE)? {
+        return Ok(None);
+    }
+    staged::read_staged_path_text(root, RUSTFMT_CONFIG_FILE, Some(tree_oid))
 }
 
 fn rustfmt_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
@@ -792,12 +869,13 @@ fn rustfmt_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckO
         }));
     }
 
+    let config_text = load_staged_rustfmt_config(root, &tree_oid)?;
     let mut affected = Vec::new();
     for path in &paths {
         let Some(text) = staged::read_staged_path_text(root, path, Some(&tree_oid))? else {
             continue;
         };
-        if rustfmt_would_reformat(root, &text)? {
+        if rustfmt_would_reformat(config_text.as_deref(), &text)? {
             affected.push(path.clone());
         }
     }
@@ -831,11 +909,25 @@ fn rustfmt_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckO
 //    the working-tree `.ci/hooks/pre-commit` / check-from-raw.sh authority).
 // =============================================================================
 
+// AGENTS.md code-quality bar: regexes are `static LazyLock<Regex>`, never
+// `Regex::new()` per invocation. `FROM_RAW_PATTERN`/`ALLOWED_FROM_RAW_PATTERN`
+// are `ci_policy.rs` consts (shared with `check_from_raw`'s working-tree
+// authority); these statics are this module's own compiled instances, not
+// re-exports, so `from_raw_staged_at` doesn't recompile them on every
+// commit-tier dispatch.
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
+static DISALLOW_FROM_RAW_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(FROM_RAW_PATTERN).expect("FROM_RAW_PATTERN is a valid regex literal")
+});
+#[allow(clippy::expect_used, reason = "static LazyLock regex with known-good pattern")]
+static ALLOWED_FROM_RAW_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(ALLOWED_FROM_RAW_PATTERN).expect("ALLOWED_FROM_RAW_PATTERN is a valid regex literal")
+});
+
 fn from_raw_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheckOutcome> {
     let tree_oid = resolve_tree_oid(root, tree_oid)?;
-    let disallow_re = Regex::new(FROM_RAW_PATTERN).context("invalid from_raw pattern")?;
-    let allowed_re =
-        Regex::new(ALLOWED_FROM_RAW_PATTERN).context("invalid allowed from_raw pattern")?;
+    let disallow_re = &*DISALLOW_FROM_RAW_RE;
+    let allowed_re = &*ALLOWED_FROM_RAW_RE;
 
     let paths: Vec<String> = staged::staged_diff_paths(root, Some(&tree_oid))?
         .into_iter()
@@ -857,7 +949,7 @@ fn from_raw_staged_at(root: &Path, tree_oid: Option<&str>) -> Result<CommitCheck
         };
         for (idx, line) in text.lines().enumerate() {
             let candidate = format!("{path}:{}:{line}", idx + 1);
-            if is_disallowed_from_raw_line(&candidate, &disallow_re, &allowed_re) {
+            if is_disallowed_from_raw_line(&candidate, disallow_re, allowed_re) {
                 affected.push(candidate);
             }
         }
@@ -1295,6 +1387,39 @@ mod tests {
         Ok(())
     }
 
+    /// Regression for the deep-review send-back on PR #4020: extension
+    /// matching must be case-insensitive. An `unwrap_or_default()` `ext ==
+    /// "yaml"` comparison against a staged `.YAML` file would silently skip
+    /// it (no match arm hit -> `continue`), reporting a false Pass on
+    /// malformed content. A `.to_ascii_lowercase()` fix makes this test
+    /// pass; reverting it makes this test fail (the malformed `.YAML` file
+    /// would be skipped and the check would report Pass instead of
+    /// Flagged).
+    #[test]
+    fn staged_config_syntax_matches_extension_case_insensitively() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("bad.YAML", "kind: [unterminated\n")?;
+        repo.add("bad.YAML")?;
+
+        match staged_config_syntax_at(repo.root(), None)? {
+            CommitCheckOutcome::Flagged(report) => {
+                assert_eq!(report.posture, Posture::Blocked);
+                assert!(
+                    report.affected.iter().any(|a| a.starts_with("bad.YAML:")),
+                    "expected the uppercase-extension file to be checked: {:?}",
+                    report.affected
+                );
+            }
+            CommitCheckOutcome::Pass(summary) => {
+                bail!(
+                    "expected malformed content in a .YAML (uppercase extension) file to block, \
+                     not be silently skipped by a case-sensitive extension match: {summary}"
+                )
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn rustfmt_staged_flags_unformatted_staged_rust() -> Result<()> {
         let repo = TempRepo::init()?;
@@ -1354,13 +1479,21 @@ mod tests {
         // with this repo's actual (non-default) settings and would
         // false-positive-block every staged file regardless of whether
         // it's really formatted by this repo's own convention.
+        //
+        // `rustfmt.toml` is deliberately STAGED (`repo.add`), not just
+        // written to disk: the config is now read from the pinned tree, not
+        // the working-tree filesystem (see [`load_staged_rustfmt_config`]),
+        // so an unstaged config file wouldn't be picked up at all.
         let repo = TempRepo::init()?;
-        // A narrow max_width that stock defaults (100) would NOT require
-        // wrapping this line at, but this custom config WILL.
-        repo.write("rustfmt.toml", "max_width = 20\n")?;
-        let long_line =
-            "fn call() { long_named_function(argument_one, argument_two, argument_three); }\n";
-        repo.write("lib_like.rs", long_line)?;
+        // An extreme max_width that stock defaults would NOT require
+        // reformatting this already brace-styled fn body at, but this
+        // custom config WILL (verified directly: this exact fixture is
+        // `--check`-clean under stock rustfmt and flagged under
+        // max_width = 1).
+        repo.write("rustfmt.toml", "max_width = 1\n")?;
+        repo.add("rustfmt.toml")?;
+        let already_brace_styled = "fn call() {\n    long_named_function(argument_one, argument_two, argument_three);\n}\n";
+        repo.write("lib_like.rs", already_brace_styled)?;
         repo.add("lib_like.rs")?;
 
         match rustfmt_staged_at(repo.root(), None)? {
@@ -1368,14 +1501,54 @@ mod tests {
                 assert_eq!(report.posture, Posture::Blocked);
                 assert!(
                     report.affected.contains(&"lib_like.rs".to_string()),
-                    "expected the repo's own (narrow) rustfmt.toml to be honored, forcing a \
-                     reformat that stock defaults wouldn't require: {report:?}"
+                    "expected the repo's own (staged, extreme-width) rustfmt.toml to be \
+                     honored, forcing a reformat that stock defaults wouldn't require: {report:?}"
                 );
             }
             CommitCheckOutcome::Pass(summary) => {
                 bail!(
-                    "expected the repo's own rustfmt.toml (max_width = 20) to be honored via \
-                     --config-path, not silently ignored in favor of stock defaults: {summary}"
+                    "expected the repo's own STAGED rustfmt.toml (max_width = 1) to be honored \
+                     via --config-path, not silently ignored in favor of stock defaults: \
+                     {summary}"
+                )
+            }
+        }
+        Ok(())
+    }
+
+    /// Mutation-checked regression proof for the deep-review send-back on
+    /// PR #4020 (bot thread, P2): `rustfmt.toml` must be read from the
+    /// pinned STAGED tree, never `root.join("rustfmt.toml")` against the
+    /// working-tree filesystem. Stages a Rust file that's already clean
+    /// under stock defaults with NO `rustfmt.toml` staged at all, then
+    /// drops an unstaged (never `git add`ed) `rustfmt.toml` with an extreme
+    /// `max_width = 1` onto the working tree — a check reading the
+    /// filesystem directly would find that file and wrongly Block an
+    /// already-clean staged file; a check reading the pinned tree must
+    /// still see "no staged config" and Pass.
+    #[test]
+    fn rustfmt_staged_reads_the_staged_config_not_an_unstaged_working_tree_file() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write(
+            "lib_like.rs",
+            "fn call() {\n    long_named_function(argument_one, argument_two, argument_three);\n}\n",
+        )?;
+        repo.add("lib_like.rs")?;
+        // No rustfmt.toml staged at all -- the captured tree has none.
+        let captured_oid = staged::staged_tree_oid(repo.root())?;
+
+        // Drop an UNSTAGED rustfmt.toml with an extreme max_width onto the
+        // working tree -- never `git add`ed, so it's not part of the
+        // captured tree.
+        repo.write("rustfmt.toml", "max_width = 1\n")?;
+
+        match rustfmt_staged_at(repo.root(), Some(&captured_oid))? {
+            CommitCheckOutcome::Pass(_) => {}
+            CommitCheckOutcome::Flagged(report) => {
+                bail!(
+                    "expected the check to see NO staged rustfmt.toml (stock defaults, under \
+                     which lib_like.rs is already clean) and Pass, not be wrongly blocked by an \
+                     unstaged max_width=1 config sitting on the filesystem: {report:?}"
                 )
             }
         }
@@ -1429,13 +1602,67 @@ mod tests {
         repo.write("foo.rs", "fn main() {}   \n")?;
         repo.add("foo.rs")?;
 
-        match whitespace_check_at(repo.root())? {
+        match whitespace_check_at(repo.root(), None)? {
             CommitCheckOutcome::Flagged(report) => {
                 assert_eq!(report.posture, Posture::Blocked);
                 assert!(!report.affected.is_empty());
             }
             CommitCheckOutcome::Pass(summary) => {
                 bail!("expected trailing whitespace to block: {summary}")
+            }
+        }
+        Ok(())
+    }
+
+    /// Mutation-checked regression proof for the deep-review send-back on
+    /// PR #4020: `whitespace_check_at` MUST read the pinned tree OID, not
+    /// `git diff --cached --check` (the live index). Reverting the fix to
+    /// use `--cached` directly makes this test fail: capture an OID with a
+    /// staged whitespace issue, then `git add` a FIX to the working tree
+    /// (moving the live index past the captured snapshot) — a
+    /// `--cached`-based check would see the fix and pass; the pinned check
+    /// must still flag the captured (unfixed) content.
+    #[test]
+    fn whitespace_check_reads_the_pinned_oid_not_a_later_git_add() -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write("foo.rs", "fn main() {}\n")?;
+        repo.add("foo.rs")?;
+        repo.commit("initial")?;
+
+        // Stage a line with trailing whitespace and capture the tree OID —
+        // this is what plan_gates does once, up front.
+        repo.write("foo.rs", "fn main() {}   \n")?;
+        repo.add("foo.rs")?;
+        let captured_oid = staged::staged_tree_oid(repo.root())?;
+
+        // A concurrent `git add` FIXES the whitespace issue in the index
+        // AFTER the OID was captured — simulating another process staging
+        // a fix while this run's checks are still dispatching.
+        repo.write("foo.rs", "fn main() {}\n")?;
+        repo.add("foo.rs")?;
+
+        // A check pinned to the captured OID must still flag the captured
+        // (unfixed) content — not the live index, which has since moved on.
+        match whitespace_check_at(repo.root(), Some(&captured_oid))? {
+            CommitCheckOutcome::Flagged(report) => {
+                assert_eq!(report.posture, Posture::Blocked);
+                assert!(!report.affected.is_empty());
+            }
+            CommitCheckOutcome::Pass(summary) => {
+                bail!(
+                    "expected the pinned OID's staged whitespace issue to still block, even \
+                     though a later git add fixed it in the live index: {summary}"
+                )
+            }
+        }
+
+        // For contrast: an unpinned (None) read sees the live (now-fixed)
+        // index and passes — proving the difference is the tree-oid
+        // pinning, not some other accident of the test setup.
+        match whitespace_check_at(repo.root(), None)? {
+            CommitCheckOutcome::Pass(_) => {}
+            CommitCheckOutcome::Flagged(report) => {
+                bail!("expected the unpinned (live-index) read to see the fix and pass: {report:?}")
             }
         }
         Ok(())
@@ -1455,16 +1682,75 @@ mod tests {
             Ok(CommitCheckOutcome::Flagged(report)) => {
                 assert_eq!(report.posture, Posture::Blocked);
             }
-            // `.changie.yaml` doesn't exist in this bare temp repo, so
-            // `load_config` fails before it even gets to the malformed
-            // fragment — that's still a legitimate instrument-error Err,
-            // not a false pass, which is the property this test cares
-            // about (a real repo has `.changie.yaml`; see the staged-vs
-            // -working-tree tests above for that path being exercised via
-            // the real host repo through other checks).
+            // `.changie.yaml` doesn't exist in the staged tree of this bare
+            // temp repo, so `load_staged_changie_config` fails before it
+            // even gets to the malformed fragment — that's still a
+            // legitimate instrument-error Err, not a false pass, which is
+            // the property this test cares about (a real repo has
+            // `.changie.yaml` staged; see the next test for that path being
+            // exercised).
             Err(_) => {}
             Ok(CommitCheckOutcome::Pass(summary)) => {
                 bail!("expected malformed YAML to block or the config load to fail: {summary}")
+            }
+        }
+        Ok(())
+    }
+
+    /// Mutation-checked regression proof for the deep-review send-back on
+    /// PR #4020 (bot thread, P2): `.changie.yaml` must be read from the
+    /// pinned STAGED tree, never `std::fs::read_to_string` against the
+    /// working-tree file. This stages a fragment that's valid under the
+    /// committed (and still-staged) config, then dirties the WORKING TREE's
+    /// `.changie.yaml` (unstaged) to drop the very project/kind the
+    /// fragment relies on. A check reading the working-tree file would
+    /// wrongly Block a legitimately-valid staged fragment; a check reading
+    /// the pinned tree must still see the original config and report
+    /// NotProven (schema-valid, dry-render deferred), not Blocked.
+    #[test]
+    fn changie_fragment_staged_reads_the_staged_config_not_an_unstaged_working_tree_edit()
+    -> Result<()> {
+        let repo = TempRepo::init()?;
+        repo.write(
+            ".changie.yaml",
+            "projects:\n  - key: product\ncomponents: []\nkinds:\n  - label: Added\nbody:\n  minLength: 0\n",
+        )?;
+        repo.add(".changie.yaml")?;
+        repo.commit("initial")?;
+
+        // Stage a fragment valid under the committed (and still-staged)
+        // config: project "product" and kind "Added" both exist.
+        repo.write(
+            ".changes/unreleased/product-1-Added-000000.yaml",
+            "project: product\nkind: Added\nbody: something happened\ncustom:\n  PR: \"1\"\n",
+        )?;
+        repo.add(".changes/unreleased/product-1-Added-000000.yaml")?;
+        let captured_oid = staged::staged_tree_oid(repo.root())?;
+
+        // Dirty the WORKING TREE's .changie.yaml (unstaged) to drop both
+        // the "product" project and the "Added" kind entirely -- simulating
+        // an in-progress, not-yet-staged edit to the config sitting on top
+        // of the index at the moment this check dispatches.
+        repo.write(
+            ".changie.yaml",
+            "projects: []\ncomponents: []\nkinds: []\nbody:\n  minLength: 0\n",
+        )?;
+
+        match changie_fragment_staged_at(repo.root(), Some(&captured_oid))? {
+            CommitCheckOutcome::Flagged(report) => {
+                assert_eq!(
+                    report.posture,
+                    Posture::NotProven,
+                    "expected the staged fragment to validate against the STAGED config (which \
+                     still has the product project and Added kind), not be blocked by an \
+                     unstaged edit that hasn't been committed to the index yet: {report:?}"
+                );
+            }
+            CommitCheckOutcome::Pass(summary) => {
+                bail!(
+                    "changie_fragment_staged_at should Flag (NotProven) when fragments were \
+                     checked, never bare-Pass: {summary}"
+                )
             }
         }
         Ok(())
@@ -1477,5 +1763,21 @@ mod tests {
         assert!(!is_fragment_path(".changes/samples/product-1-Added-000000.yaml"));
         assert!(!is_fragment_path(".changes/unreleased/.gitkeep"));
         assert!(!is_fragment_path("crates/foo/src/lib.rs"));
+    }
+
+    /// Regression for the deep-review send-back on PR #4020: the extension
+    /// half of the match must be case-insensitive (the directory-prefix
+    /// half deliberately stays case-sensitive, matching git's own
+    /// treatment of POSIX paths). Reverting the `.to_ascii_lowercase()` fix
+    /// makes this test fail — `.YAML`/`.Yml` would no longer match
+    /// `.ends_with(".yaml")`/`.ends_with(".yml")`.
+    #[test]
+    fn is_fragment_path_matches_extension_case_insensitively() {
+        assert!(is_fragment_path(".changes/unreleased/product-1-Added-000000.YAML"));
+        assert!(is_fragment_path(".changes/unreleased/product-1-Added-000000.Yml"));
+        // The directory prefix stays case-sensitive: an uppercase
+        // "Unreleased" is a different (non-matching) path on a
+        // case-sensitive filesystem, same as git tracks it.
+        assert!(!is_fragment_path(".changes/Unreleased/product-1-Added-000000.yaml"));
     }
 }

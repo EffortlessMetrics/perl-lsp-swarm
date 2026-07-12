@@ -54,7 +54,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const CHANGIE_CONFIG: &str = ".changie.yaml";
+/// `pub(crate)`: also read by `commit_checks::changie_fragment_staged_at`,
+/// which needs the path (not the on-disk-reading [`load_config`]) so it can
+/// read the *staged* config via `staged::read_staged_path_text` instead —
+/// see [`parse_config`].
+pub(crate) const CHANGIE_CONFIG: &str = ".changie.yaml";
 const POLICY_FILE: &str = "policy/changelog.toml";
 pub(crate) const UNRELEASED_DIR: &str = ".changes/unreleased";
 const SAMPLES_DIR: &str = ".changes/samples";
@@ -526,7 +530,18 @@ pub(crate) fn load_config(root: &Path) -> Result<ChangieConfig> {
     let path = root.join(CHANGIE_CONFIG);
     let content = std::fs::read_to_string(&path)
         .map_err(|e| eyre!("failed to read {}: {e}", path.display()))?;
-    serde_yaml_ng::from_str(&content).map_err(|e| eyre!("failed to parse {}: {e}", path.display()))
+    parse_config(&content).map_err(|e| eyre!("failed to parse {}: {e}", path.display()))
+}
+
+/// Parse already-read `.changie.yaml` content. Split out from [`load_config`]
+/// so a caller that already has the config text from somewhere other than
+/// the working-tree filesystem — `commit_checks::changie_fragment_staged_at`
+/// reads it from the *staged* tree via `staged::read_staged_path_text`, not
+/// `std::fs` — doesn't have to duplicate the deserialization step (or worse,
+/// silently validate staged fragments against a stale/unstaged on-disk
+/// config).
+pub(crate) fn parse_config(text: &str) -> Result<ChangieConfig> {
+    serde_yaml_ng::from_str(text).map_err(|e| eyre!("failed to parse Changie config: {e}"))
 }
 
 fn load_policy(root: &Path) -> Result<ChangelogPolicy> {
