@@ -33,8 +33,9 @@ tree-sitter query API.
 
 - Incremental replay currently reuses parser tokens, not AST subtrees. Format declarations,
   oversized edits, and unsupported cache windows use a safe full-parse fallback.
-- `Node::children()` allocates a `Vec<&AstNode>` internally on each call. Avoid calling it
-  in tight loops; iterate once and collect if you need random access.
+- `Node::children()` uses borrowed slice iterators for list-shaped AST nodes. A small
+  indexed fallback remains for fixed-field variants; callers needing random access should
+  still collect explicitly.
 - `RecursionLimit` / `NestingTooDeep` parse errors from the v3 parser produce `None` from
   `Parser::parse()` and a typed failure from `Parser::parse_detailed()` rather than a partial
   tree. In practice this only affects pathologically deep nesting.

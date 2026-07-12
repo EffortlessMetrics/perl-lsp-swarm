@@ -97,7 +97,8 @@ catastrophic recursion or nesting failures have `tree == None` and a typed `Pars
 
 ## Known limitations (Phase 1)
 
-- `Node::children()` allocates a `Vec` internally on each call. Prefer iterating once over calling repeatedly.
+- `Node::children()` borrows list-shaped child storage directly; fixed-field variants use a
+  bounded indexed fallback. Prefer one traversal when random access is not needed.
 - Point conversion uses a per-tree byte line index, cursor movement caches its
   current node path, and semantic/pragma overlay models are lazily cached per
   immutable tree.
