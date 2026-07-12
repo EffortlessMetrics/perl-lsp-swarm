@@ -1309,6 +1309,23 @@ fn no_warnings_with_category_disables_only_that_category() -> Result<(), Box<dyn
 }
 
 #[test]
+fn duplicate_use_builtin_import_does_not_create_extra_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `use builtin 'func1'; use builtin 'func1'` — duplicate import must not add a
+    // redundant map entry (mirrors the parallel test for `no warnings` categories).
+    let ast = program(vec![
+        use_node("builtin", &["'func1'"], 0, 22),
+        use_node("builtin", &["'func1'"], 23, 45),
+    ]);
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 1, "duplicate builtin import should not add a redundant map entry");
+    let imports = &map[0].1.builtin_imports;
+    assert_eq!(imports.len(), 1, "func1 must appear exactly once");
+    assert_eq!(imports[0], "func1");
+    Ok(())
+}
+
+#[test]
 fn duplicate_no_warnings_category_does_not_create_extra_entry()
 -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
@@ -1319,6 +1336,18 @@ fn duplicate_no_warnings_category_does_not_create_extra_entry()
 
     let map = PragmaTracker::build(&ast);
     assert_eq!(map.len(), 2, "duplicate category disable should not add a redundant map entry");
+    Ok(())
+}
+
+#[test]
+fn scoped_body_with_no_pragma_changes_emits_no_restore_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A block that contains no pragma directives must not emit a restore entry.
+    // The map should only contain the top-level `use strict` entry.
+    let ast =
+        program(vec![use_node("strict", &[], 0, 12), block(vec![dummy_node(14, 25)], 13, 26)]);
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 1, "empty block must not emit a redundant restore entry");
     Ok(())
 }
 
