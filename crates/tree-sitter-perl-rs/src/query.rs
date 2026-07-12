@@ -31,7 +31,18 @@ impl Query {
         let mut position = 0;
         let mut patterns = Vec::new();
         while position < tokens.len() {
-            patterns.push(parse_node(&tokens, &mut position)?);
+            if matches!(tokens.get(position), Some(Token::Open))
+                && matches!(tokens.get(position + 1), Some(Token::Open))
+            {
+                // Upstream .scm files commonly wrap one node pattern in an
+                // additional list so captures and predicates attach to the
+                // complete pattern: `((comment) @content (#set! ...))`.
+                position += 1;
+                patterns.push(parse_node(&tokens, &mut position)?);
+                expect_token(&tokens, &mut position, Token::Close)?;
+            } else {
+                patterns.push(parse_node(&tokens, &mut position)?);
+            }
         }
         validate_predicates(&patterns)?;
 
@@ -274,6 +285,16 @@ fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
         }
 
         match ch {
+            ';' => {
+                // tree-sitter query files use semicolon line comments. The
+                // lexer has already distinguished quoted strings above, so
+                // this cannot discard a string value.
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        break;
+                    }
+                }
+            }
             '(' => {
                 chars.next();
                 tokens.push(Token::Open);

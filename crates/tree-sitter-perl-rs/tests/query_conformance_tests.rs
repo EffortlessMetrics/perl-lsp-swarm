@@ -67,3 +67,23 @@ fn upstream_injection_predicates_have_explicit_phase_2b_behavior() -> TestResult
     }
     Ok(())
 }
+
+#[test]
+fn executes_the_complete_upstream_injections_query() -> TestResult {
+    let upstream = include_str!("../../../tree-sitter-perl/queries/injections.scm");
+    let query = Query::new(upstream)?;
+    if query.pattern_count() != 5 {
+        return Err(
+            format!("expected five injection patterns, found {}", query.pattern_count()).into()
+        );
+    }
+
+    // The native AST intentionally omits trivia-only comment and POD nodes,
+    // so this fixture proves that the complete upstream file compiles and
+    // executes against the facade without pretending those patterns match.
+    let source = "my $value = 42;\n";
+    let tree = parse(source);
+    let mut cursor = QueryCursor::new();
+    let _executed_matches = cursor.matches(&query, tree.root_node()).count();
+    Ok(())
+}
