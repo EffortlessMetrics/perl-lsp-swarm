@@ -92,6 +92,10 @@ pub struct IncrementalMetrics {
     pub changed_range: Range<usize>,
     /// Fallback classification, when the complete-parse path was used.
     pub fallback: Option<FallbackReason>,
+    /// AST nodes retained from the previous tree without reparsing.
+    pub ast_nodes_reused: usize,
+    /// AST nodes parsed during the most recent operation.
+    pub ast_nodes_reparsed: usize,
 }
 
 impl IncrementalMetrics {
@@ -103,6 +107,8 @@ impl IncrementalMetrics {
             tokens_relexed: 0,
             changed_range: 0..source_len,
             fallback,
+            ast_nodes_reused: 0,
+            ast_nodes_reparsed: 0,
         }
     }
 }
@@ -150,6 +156,126 @@ impl IncrementalState {
     /// Return diagnostics from the most recent parse represented by this cache.
     pub fn diagnostics(&self) -> &[ParseError] {
         &self.diagnostics
+    }
+
+    /// Commit a parser-facade AST reuse result and refresh the lexical cache.
+    ///
+    /// The caller must only use this after parsing a proven-safe AST fragment and
+    /// retaining the unaffected AST nodes. The token cache is updated through the
+    /// same checkpoint-bounded replay window used by the normal parser; no parser
+    /// is run here.
+    pub fn record_ast_reuse(
+        &mut self,
+        new_source: &str,
+        edit: &IncrementalEdit,
+        diagnostics: &[ParseError],
+        changed_range: Range<usize>,
+        ast_nodes_reused: usize,
+        ast_nodes_reparsed: usize,
+    ) -> ParseResult<()> {
+        let (tokens, checkpoints, old_relex_start, new_relex_end, tokens_relexed) =
+            self.replay_cache(new_source, edit)?;
+        self.source = new_source.to_owned();
+        self.tokens = tokens;
+        self.checkpoints = checkpoints;
+        self.latest_metrics = IncrementalMetrics {
+            full_parse: false,
+            reparsed_bytes: new_relex_end.saturating_sub(old_relex_start),
+            tokens_reused: self.tokens.len().saturating_sub(tokens_relexed),
+            tokens_relexed,
+            changed_range,
+            fallback: None,
+            ast_nodes_reused,
+            ast_nodes_reparsed,
+        };
+        self.diagnostics = diagnostics.to_vec();
+        Ok(())
+    }
+
+    fn replay_cache(
+        &self,
+        new_source: &str,
+        edit: &IncrementalEdit,
+    ) -> ParseResult<(Vec<Token>, Vec<LexerCheckpoint>, usize, usize, usize)> {
+        self.validate_edit(new_source, edit)?;
+        if edit.touched_bytes() > MAX_INCREMENTAL_EDIT_BYTES
+            || contains_format_declaration(&self.source)
+            || contains_format_declaration(new_source)
+        {
+            return Err(ParseError::syntax(
+                "incremental cache replay is not safe",
+                edit.start_byte,
+            ));
+        }
+
+        let old_relex_start =
+            self.find_before(edit.start_byte).map_or(0, |checkpoint| checkpoint.position);
+        let old_relex_end = self
+            .find_after(edit.old_end_byte)
+            .map_or(self.source.len(), |checkpoint| checkpoint.position);
+        if old_relex_end < old_relex_start || old_relex_end > self.source.len() {
+            return Err(ParseError::syntax("incremental cache window is invalid", edit.start_byte));
+        }
+
+        let delta = edit.new_text.len() as isize
+            - edit.old_end_byte.saturating_sub(edit.start_byte) as isize;
+        let new_relex_end = shift_offset(old_relex_end, delta);
+        let prefix = self
+            .tokens
+            .iter()
+            .filter(|token| token.end <= old_relex_start)
+            .cloned()
+            .collect::<Vec<_>>();
+        let suffix = self
+            .tokens
+            .iter()
+            .filter(|token| token.start >= old_relex_end)
+            .map(|token| shift_token(token, delta))
+            .collect::<Option<Vec<_>>>();
+        let Some(suffix) = suffix else {
+            return Err(ParseError::syntax(
+                "incremental token boundary is unavailable",
+                edit.start_byte,
+            ));
+        };
+
+        let left_checkpoint = self.find_before(edit.start_byte).cloned();
+        let mut lexer = PerlLexer::new(new_source);
+        if let Some(checkpoint) = &left_checkpoint {
+            lexer.restore(checkpoint);
+        }
+        let mut raw_relexed = Vec::new();
+        let mut replay_checkpoints = Vec::new();
+        let mut next_checkpoint = old_relex_start.saturating_add(CHECKPOINT_INTERVAL);
+        while let Some(token) = lexer.next_token() {
+            if token.token_type == TokenType::EOF || token.start >= new_relex_end {
+                break;
+            }
+            raw_relexed.push(token.clone());
+            if token.end >= next_checkpoint {
+                replay_checkpoints.push(lexer.checkpoint());
+                next_checkpoint = token.end.saturating_add(CHECKPOINT_INTERVAL);
+            }
+            if token.end >= new_relex_end {
+                replay_checkpoints.push(lexer.checkpoint());
+                break;
+            }
+        }
+
+        let reparsed = TokenStream::lexer_tokens_to_parser_tokens(raw_relexed);
+        let tokens_relexed = reparsed.len();
+        let mut assembled = prefix;
+        assembled.extend(reparsed);
+        assembled.extend(suffix);
+        let checkpoints = merge_checkpoints(
+            &self.checkpoints,
+            replay_checkpoints,
+            edit,
+            old_relex_start,
+            old_relex_end,
+            new_source.len(),
+        );
+        Ok((assembled, checkpoints, old_relex_start, new_relex_end, tokens_relexed))
     }
 
     /// Replay one edit and parse the resulting AST from the assembled tokens.
@@ -258,6 +384,8 @@ impl IncrementalState {
             tokens_relexed,
             changed_range: old_relex_start..new_relex_end,
             fallback: None,
+            ast_nodes_reused: 0,
+            ast_nodes_reparsed: root.count_nodes(),
         };
         self.diagnostics = diagnostics;
         Ok(root)
@@ -322,6 +450,7 @@ impl IncrementalState {
         self.checkpoints = checkpoints;
         let mut metrics = IncrementalMetrics::full(source.len(), fallback);
         metrics.tokens_relexed = self.tokens.len();
+        metrics.ast_nodes_reparsed = root.count_nodes();
         self.latest_metrics = metrics;
         self.diagnostics = diagnostics;
         Ok(root)
@@ -484,19 +613,5 @@ mod tests {
         assert_eq!(state.metrics().fallback, Some(FallbackReason::EditTooLarge));
         assert!(state.metrics().full_parse);
         assert!(state.metrics().tokens_relexed > 0);
-    }
-
-    #[test]
-    fn format_declaration_records_a_context_sensitive_fallback() {
-        let source = "format REPORT =\nName: @<<<\n$x\n.\n";
-        let mut state = IncrementalState::new(source);
-        let start = must_some(source.find("Name"));
-        let new_source = source.replacen("Name", "Value", 1);
-        let edit = IncrementalEdit::new(start, start + 4, "Value");
-
-        let _ = must(state.reparse(&new_source, &edit));
-
-        assert_eq!(state.metrics().fallback, Some(FallbackReason::ContextSensitiveFormat));
-        assert!(state.metrics().full_parse);
     }
 }

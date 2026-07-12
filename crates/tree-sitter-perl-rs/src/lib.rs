@@ -58,7 +58,7 @@ use perl_parser_core::{
 use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::semantic::SemanticModel;
 use std::cell::OnceCell;
-use std::ops::ControlFlow;
+use std::sync::Arc;
 
 /// Re-export of Edit type for tree-sitter-compatible incremental parsing.
 ///
@@ -124,16 +124,23 @@ impl Parser {
     pub fn parse(&mut self, source: &str) -> Option<Tree> {
         let mut core = CoreParser::new(source);
         match core.parse() {
-            Ok(root) => Some(Tree {
-                root,
-                source: source.to_string(),
-                pending_edits: Vec::new(),
-                incremental_state: Some(IncrementalState::with_diagnostics(source, core.errors())),
-                line_index: ByteLineIndex::new(source),
-                semantic_model: OnceCell::new(),
-                pragma_map: OnceCell::new(),
-                diagnostics: core.errors().to_vec(),
-            }),
+            Ok(root) => {
+                let root = Arc::new(root);
+                Some(Tree {
+                    shared_root: SharedNode::from_root(root.clone()),
+                    root,
+                    source: source.to_string(),
+                    pending_edits: Vec::new(),
+                    incremental_state: Some(IncrementalState::with_diagnostics(
+                        source,
+                        core.errors(),
+                    )),
+                    line_index: ByteLineIndex::new(source),
+                    semantic_model: OnceCell::new(),
+                    pragma_map: OnceCell::new(),
+                    diagnostics: core.errors().to_vec(),
+                })
+            }
             Err(_) => None,
         }
     }
@@ -150,15 +157,19 @@ impl Parser {
         let failure = terminated_early
             .then(|| diagnostics.iter().find_map(ParseFailure::from_diagnostic))
             .flatten();
-        let tree = failure.is_none().then(|| Tree {
-            root: ast,
-            source: source.to_string(),
-            pending_edits: Vec::new(),
-            incremental_state: Some(IncrementalState::with_diagnostics(source, &diagnostics)),
-            line_index: ByteLineIndex::new(source),
-            semantic_model: OnceCell::new(),
-            pragma_map: OnceCell::new(),
-            diagnostics: diagnostics.clone(),
+        let tree = failure.is_none().then(|| {
+            let root = Arc::new(ast);
+            Tree {
+                shared_root: SharedNode::from_root(root.clone()),
+                root,
+                source: source.to_string(),
+                pending_edits: Vec::new(),
+                incremental_state: Some(IncrementalState::with_diagnostics(source, &diagnostics)),
+                line_index: ByteLineIndex::new(source),
+                semantic_model: OnceCell::new(),
+                pragma_map: OnceCell::new(),
+                diagnostics: diagnostics.clone(),
+            }
         });
 
         ParseOutcome { tree, diagnostics, failure }
@@ -166,11 +177,11 @@ impl Parser {
 
     /// Parse `source` using `old_tree` as a hint for incremental re-parsing.
     ///
-    /// A single pending edit uses the lower-tier checkpoint-bounded token replay
-    /// kernel. Context-sensitive format declarations, oversized edits, and
-    /// unsupported cache windows use a safe full-parse fallback. The AST is
-    /// rebuilt from the assembled token stream; this API does not claim AST
-    /// subtree reuse.
+    /// A single clean, equal-length edit inside one top-level statement parses
+    /// only that statement and retains unaffected AST subtrees. Structural,
+    /// length-changing, recovery-sensitive, format, oversized, and unsupported
+    /// edits use a safe full-parse fallback. Metrics distinguish AST reuse from
+    /// token-cache refresh work.
     ///
     /// Returns `None` on complete parse failure (same semantics as `parse`).
     pub fn parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree> {
@@ -185,6 +196,11 @@ impl Parser {
             let Some(new_text) = source.get(edit.start_byte..edit.new_end_byte) else {
                 return self.parse(source);
             };
+
+            if let Some(tree) = self.try_statement_reuse(source, old_tree, edit, new_text) {
+                return Some(tree);
+            }
+
             let Some(mut state) = old_tree.incremental_state.clone() else {
                 return self.parse(source);
             };
@@ -192,7 +208,9 @@ impl Parser {
                 IncrementalEdit::new(edit.start_byte, edit.old_end_byte, new_text);
             if let Ok(root) = state.reparse(source, &incremental_edit) {
                 let diagnostics = state.diagnostics().to_vec();
+                let root = Arc::new(root);
                 return Some(Tree {
+                    shared_root: SharedNode::from_root(root.clone()),
                     root,
                     source: source.to_string(),
                     pending_edits: Vec::new(),
@@ -206,6 +224,102 @@ impl Parser {
         }
 
         self.parse(source)
+    }
+
+    fn try_statement_reuse(
+        &mut self,
+        source: &str,
+        old_tree: &Tree,
+        edit: &InputEdit,
+        new_text: &str,
+    ) -> Option<Tree> {
+        if old_tree.has_error()
+            || new_text.len() != edit.old_end_byte.saturating_sub(edit.start_byte)
+        {
+            return None;
+        }
+
+        let NodeKind::Program { statements } = &old_tree.root.kind else {
+            return None;
+        };
+        let (statement_index, statement_start, statement_end) =
+            statements.iter().enumerate().find_map(|(index, statement)| {
+                let segment_end = statements
+                    .get(index + 1)
+                    .map_or(old_tree.source.len(), |next| next.location.start);
+                (statement.location.start <= edit.start_byte
+                    && edit.start_byte < segment_end
+                    && edit.old_end_byte <= segment_end)
+                    .then_some((index, statement.location.start, segment_end))
+            })?;
+        if old_tree.shared_root.children.len() != statements.len()
+            || statement_end > source.len()
+            || !source.is_char_boundary(statement_start)
+            || !source.is_char_boundary(statement_end)
+        {
+            return None;
+        }
+
+        let fragment = source.get(statement_start..statement_end)?;
+        let mut parser = CoreParser::new(fragment);
+        let fragment_root = parser.parse().ok()?;
+        if !parser.errors().is_empty() {
+            return None;
+        }
+        let NodeKind::Program { mut statements } = fragment_root.kind else {
+            return None;
+        };
+        if statements.len() != 1 {
+            return None;
+        }
+        let mut replacement = statements.pop()?;
+        shift_locations(&mut replacement, statement_start);
+
+        let mut new_root = old_tree.root.as_ref().clone();
+        let NodeKind::Program { statements } = &mut new_root.kind else {
+            return None;
+        };
+        let target = statements.get_mut(statement_index)?;
+        *target = replacement.clone();
+
+        let mut children = old_tree.shared_root.children.clone();
+        let old_reused = children
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != statement_index)
+            .map(|(_, child)| shared_node_count(&child.1))
+            .sum();
+        let replacement_shared = SharedNode::from_owned(replacement.clone());
+        let replacement_reparsed = shared_node_count(&replacement_shared);
+        let field = children.get(statement_index).and_then(|child| child.0);
+        *children.get_mut(statement_index)? = (field, replacement_shared);
+
+        let incremental_edit =
+            IncrementalEdit::new(edit.start_byte, edit.old_end_byte, new_text.to_owned());
+        let mut state = old_tree.incremental_state.clone()?;
+        state
+            .record_ast_reuse(
+                source,
+                &incremental_edit,
+                &[],
+                statement_start..statement_end,
+                old_reused,
+                replacement_reparsed.saturating_add(1),
+            )
+            .ok()?;
+
+        let root = Arc::new(new_root);
+        Some(Tree {
+            shared_root: SharedNode::with_children(root.clone(), children),
+            root,
+            source: source.to_string(),
+            pending_edits: Vec::new(),
+            incremental_state: Some(state),
+            line_index: ByteLineIndex::new(source),
+            semantic_model: OnceCell::new(),
+            pragma_map: OnceCell::new(),
+            diagnostics: Vec::new(),
+        })
     }
 }
 
@@ -309,12 +423,75 @@ impl ByteLineIndex {
     }
 }
 
+/// Persistent facade node storage used to retain proven unchanged subtrees.
+///
+/// The native AST remains available through `Node::inner`; the reference-counted
+/// child links let incremental trees share traversal nodes without cloning them.
+#[derive(Debug)]
+struct SharedNode {
+    source: Arc<AstNode>,
+    path: Vec<usize>,
+    children: Vec<(Option<FieldId>, Arc<SharedNode>)>,
+}
+
+impl SharedNode {
+    fn from_root(source: Arc<AstNode>) -> Arc<Self> {
+        Self::build(source, Vec::new())
+    }
+
+    fn from_owned(node: AstNode) -> Arc<Self> {
+        Self::from_root(Arc::new(node))
+    }
+
+    fn build(source: Arc<AstNode>, path: Vec<usize>) -> Arc<Self> {
+        let mut children = Vec::new();
+        Self::ast_at(&source, &path).for_each_child_with_field(|field, _| {
+            let index = children.len();
+            let mut child_path = path.clone();
+            child_path.push(index);
+            children.push((field, Self::build(source.clone(), child_path)));
+        });
+        Arc::new(Self { source, path, children })
+    }
+
+    fn with_children(
+        source: Arc<AstNode>,
+        children: Vec<(Option<FieldId>, Arc<SharedNode>)>,
+    ) -> Arc<Self> {
+        Arc::new(Self { source, path: Vec::new(), children })
+    }
+
+    fn ast(&self) -> &AstNode {
+        Self::ast_at(&self.source, &self.path)
+    }
+
+    fn ast_at<'a>(source: &'a AstNode, path: &[usize]) -> &'a AstNode {
+        let mut current = source;
+        for &index in path {
+            let mut child = None;
+            let mut current_index = 0;
+            current.for_each_child(|candidate| {
+                if current_index == index {
+                    child = Some(candidate);
+                }
+                current_index += 1;
+            });
+            let Some(next) = child else {
+                return source;
+            };
+            current = next;
+        }
+        current
+    }
+}
+
 /// The result of a successful parse: an owned syntax tree and the source text.
 ///
 /// Use [`root_node`][Tree::root_node] to begin traversal.
 #[derive(Debug)]
 pub struct Tree {
-    root: AstNode,
+    shared_root: Arc<SharedNode>,
+    root: Arc<AstNode>,
     source: String,
     /// Pending edits recorded via [`Tree::edit`].
     pending_edits: Vec<InputEdit>,
@@ -328,6 +505,7 @@ pub struct Tree {
 impl Clone for Tree {
     fn clone(&self) -> Self {
         Self {
+            shared_root: self.shared_root.clone(),
             root: self.root.clone(),
             source: self.source.clone(),
             pending_edits: self.pending_edits.clone(),
@@ -450,7 +628,7 @@ pub struct VisibleImport {
 impl Tree {
     /// Returns the root node of the syntax tree.
     pub fn root_node(&self) -> Node<'_> {
-        Node { inner: &self.root, tree_source: &self.source, line_index: &self.line_index }
+        Node { inner: &self.shared_root, tree_source: &self.source, line_index: &self.line_index }
     }
 
     /// Returns the source text this tree was built from.
@@ -481,7 +659,7 @@ impl Tree {
     /// Returns `true` when parsing produced diagnostics or an explicit error node.
     pub fn has_error(&self) -> bool {
         self.diagnostics.iter().any(ParseDiagnostic::blocks_clean_parse)
-            || ast_has_error(&self.root)
+            || shared_has_error(&self.shared_root)
     }
 
     /// Records a source edit on this tree, invalidating affected byte ranges.
@@ -566,7 +744,7 @@ impl<'tree> SemanticOverlay<'tree> {
 /// owning [`Tree`].
 #[derive(Clone, Copy)]
 pub struct Node<'tree> {
-    inner: &'tree AstNode,
+    inner: &'tree SharedNode,
     tree_source: &'tree str,
     line_index: &'tree ByteLineIndex,
 }
@@ -583,7 +761,7 @@ impl<'tree> Node<'tree> {
 
     /// Returns the v3 parser's internal node kind name (e.g. `"Program"`).
     pub fn native_kind(&self) -> &'static str {
-        self.inner.kind.kind_name()
+        self.inner.ast().kind.kind_name()
     }
 
     /// Returns the tree-sitter grammar-canonical node kind name.
@@ -611,17 +789,17 @@ impl<'tree> Node<'tree> {
     /// assert_eq!(tree.unwrap().root_node().grammar_kind(), "source_file");
     /// ```
     pub fn grammar_kind(&self) -> String {
-        self.inner.kind.grammar_kind_name()
+        self.inner.ast().kind.grammar_kind_name()
     }
 
     /// Returns `true` when this node is an explicit parser error node.
     pub fn is_error(&self) -> bool {
-        matches!(self.inner.kind, NodeKind::Error { .. })
+        matches!(self.inner.ast().kind, NodeKind::Error { .. })
     }
 
     /// Returns `true` when this node or one of its descendants is an error node.
     pub fn has_error(&self) -> bool {
-        ast_has_error(self.inner)
+        shared_has_error(self.inner)
     }
 
     /// Returns a tree-sitter-compatible S-expression for this node and its subtree.
@@ -629,17 +807,17 @@ impl<'tree> Node<'tree> {
     /// Delegates to `perl_ast::Node::to_sexp()`. Example output:
     /// `(source_file (my_declaration (variable $ x) (number 42)))`.
     pub fn to_sexp(&self) -> String {
-        self.inner.to_sexp()
+        self.inner.ast().to_sexp()
     }
 
     /// Returns the number of direct children.
     pub fn child_count(&self) -> usize {
-        ast_child_count(self.inner)
+        self.inner.children.len()
     }
 
     /// Returns the `i`-th direct child, or `None` if out of range.
     pub fn child(&self, i: usize) -> Option<Node<'tree>> {
-        ast_child_at(self.inner, i).map(|child| Node {
+        self.inner.children.get(i).map(|(_, child)| Node {
             inner: child,
             tree_source: self.tree_source,
             line_index: self.line_index,
@@ -651,20 +829,13 @@ impl<'tree> Node<'tree> {
     /// Unknown field names and fields absent from this node return `None`.
     pub fn child_by_field_name(&self, name: &str) -> Option<Node<'tree>> {
         let field = FieldId::from_name(name)?;
-        let mut found = None;
-        let _ = self.inner.try_for_each_child_with_field(|candidate, child| {
-            if candidate == Some(field) {
-                found = Some(Node {
-                    inner: child,
-                    tree_source: self.tree_source,
-                    line_index: self.line_index,
-                });
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        });
-        found
+        self.inner.children.iter().find_map(|(candidate, child)| {
+            (candidate == &Some(field)).then_some(Node {
+                inner: child,
+                tree_source: self.tree_source,
+                line_index: self.line_index,
+            })
+        })
     }
 
     /// Returns all direct children carrying the given named field, in source order.
@@ -672,22 +843,22 @@ impl<'tree> Node<'tree> {
         let field = FieldId::from_name(name);
         let mut children = Vec::new();
         if let Some(field) = field {
-            self.inner.for_each_child_with_field(|candidate, child| {
-                if candidate == Some(field) {
+            for (candidate, child) in &self.inner.children {
+                if *candidate == Some(field) {
                     children.push(Node {
                         inner: child,
                         tree_source: self.tree_source,
                         line_index: self.line_index,
                     });
                 }
-            });
+            }
         }
         children.into_iter()
     }
 
     /// Returns the named field associated with the `index`-th direct child.
     pub fn field_name_for_child(&self, index: usize) -> Option<&'static str> {
-        ast_child_field(self.inner, index).map(FieldId::name)
+        self.inner.children.get(index).and_then(|(field, _)| field.map(FieldId::name))
     }
 
     /// Returns an iterator over direct children.
@@ -695,7 +866,7 @@ impl<'tree> Node<'tree> {
     /// The iterator yields [`Node`] values sharing the same `'tree` lifetime as `self`.
     pub fn children(&self) -> impl Iterator<Item = Node<'tree>> + '_ {
         NodeChildren {
-            inner: AstChildren::new(self.inner),
+            inner: self.inner.children.iter(),
             tree_source: self.tree_source,
             line_index: self.line_index,
         }
@@ -703,12 +874,12 @@ impl<'tree> Node<'tree> {
 
     /// Returns the start byte offset in the source text (inclusive).
     pub fn start_byte(&self) -> usize {
-        self.inner.location.start
+        self.inner.ast().location.start
     }
 
     /// Returns the end byte offset in the source text (exclusive).
     pub fn end_byte(&self) -> usize {
-        self.inner.location.end.min(self.tree_source.len())
+        self.inner.ast().location.end.min(self.tree_source.len())
     }
 
     /// Returns the start position as a tree-sitter-compatible [`Point`].
@@ -734,14 +905,14 @@ impl<'tree> Node<'tree> {
     /// the available range rather than panicking. This can happen when `source` is a
     /// different buffer than the one used to build the tree.
     pub fn utf8_text<'a>(&self, source: &'a [u8]) -> Result<&'a str, std::str::Utf8Error> {
-        let start = self.inner.location.start.min(source.len());
-        let end = self.inner.location.end.min(source.len());
+        let start = self.inner.ast().location.start.min(source.len());
+        let end = self.inner.ast().location.end.min(source.len());
         std::str::from_utf8(&source[start..end])
     }
 
     /// Returns `true` if this node has no children (is a leaf node).
     pub fn is_leaf(&self) -> bool {
-        self.inner.first_child().is_none()
+        self.inner.children.is_empty()
     }
 
     /// Returns the source text that was provided when creating the owning [`Tree`].
@@ -754,7 +925,7 @@ impl<'tree> Node<'tree> {
     /// This escape hatch lets callers use capabilities that go beyond the tree-sitter
     /// surface (e.g., match on [`PerlNodeKind`] variants).
     pub fn inner(&self) -> &'tree AstNode {
-        self.inner
+        self.inner.ast()
     }
 
     /// Returns a cursor positioned at this node for stateful tree traversal.
@@ -782,12 +953,12 @@ pub use perl_ast::{FieldId, NodeKind as PerlNodeKind};
 /// Calling [`goto_parent`][TreeCursor::goto_parent] at the root returns `false`
 /// and keeps the cursor at the root.
 pub struct TreeCursor<'tree> {
-    root: &'tree AstNode,
+    root: &'tree SharedNode,
     tree_source: &'tree str,
     line_index: &'tree ByteLineIndex,
     /// Child indices from `root` to the current node.
     path: Vec<usize>,
-    nodes: Vec<&'tree AstNode>,
+    nodes: Vec<&'tree SharedNode>,
 }
 
 impl<'tree> TreeCursor<'tree> {
@@ -804,7 +975,8 @@ impl<'tree> TreeCursor<'tree> {
     ///
     /// Returns `true` when movement succeeds, `false` when the node has no children.
     pub fn goto_first_child(&mut self) -> bool {
-        let Some(child) = self.current_ast_node().first_child() else {
+        let Some(child) = self.current_ast_node().children.first().map(|(_, child)| child.as_ref())
+        else {
             return false;
         };
         self.path.push(0);
@@ -816,11 +988,10 @@ impl<'tree> TreeCursor<'tree> {
     ///
     /// Returns `true` when movement succeeds, `false` when the node has no children.
     pub fn goto_last_child(&mut self) -> bool {
-        let child_count = ast_child_count(self.current_ast_node());
-        let Some(child) = child_count
-            .checked_sub(1)
-            .and_then(|index| ast_child_at(self.current_ast_node(), index))
-        else {
+        let child_count = self.current_ast_node().children.len();
+        let Some(child) = child_count.checked_sub(1).and_then(|index| {
+            self.current_ast_node().children.get(index).map(|(_, child)| child.as_ref())
+        }) else {
             return false;
         };
         self.path.push(child_count - 1);
@@ -838,7 +1009,7 @@ impl<'tree> TreeCursor<'tree> {
         }
 
         let parent = self.current_parent_ast_node();
-        let sibling_count = ast_child_count(parent);
+        let sibling_count = parent.children.len();
         let current_index = self.path[self.path.len() - 1];
         let next = current_index + 1;
         if next >= sibling_count {
@@ -847,7 +1018,7 @@ impl<'tree> TreeCursor<'tree> {
 
         let last_pos = self.path.len() - 1;
         self.path[last_pos] = next;
-        let Some(sibling) = ast_child_at(parent, next) else {
+        let Some(sibling) = parent.children.get(next).map(|(_, child)| child.as_ref()) else {
             return false;
         };
         self.nodes[last_pos] = sibling;
@@ -871,7 +1042,8 @@ impl<'tree> TreeCursor<'tree> {
         let last_pos = self.path.len() - 1;
         self.path[last_pos] = current_index - 1;
         let parent = self.current_parent_ast_node();
-        let Some(sibling) = ast_child_at(parent, current_index - 1) else {
+        let Some(sibling) = parent.children.get(current_index - 1).map(|(_, child)| child.as_ref())
+        else {
             return false;
         };
         self.nodes[last_pos] = sibling;
@@ -896,11 +1068,11 @@ impl<'tree> TreeCursor<'tree> {
         self.nodes.clear();
     }
 
-    fn current_ast_node(&self) -> &'tree AstNode {
+    fn current_ast_node(&self) -> &'tree SharedNode {
         self.nodes.last().copied().unwrap_or(self.root)
     }
 
-    fn current_parent_ast_node(&self) -> &'tree AstNode {
+    fn current_parent_ast_node(&self) -> &'tree SharedNode {
         debug_assert!(!self.path.is_empty(), "current_parent_ast_node requires a non-root cursor");
         if self.path.len() == 1 {
             self.root
@@ -914,6 +1086,16 @@ impl<'tree> TreeCursor<'tree> {
 // Private helpers
 // ---------------------------------------------------------------------------
 
+fn shift_locations(node: &mut AstNode, offset: usize) {
+    node.location.start = node.location.start.saturating_add(offset);
+    node.location.end = node.location.end.saturating_add(offset);
+    node.for_each_child_mut(|child| shift_locations(child, offset));
+}
+
+fn shared_node_count(node: &SharedNode) -> usize {
+    1usize.saturating_add(node.children.iter().map(|(_, child)| shared_node_count(child)).sum())
+}
+
 /// Borrowed direct-child iterator used by the facade.
 ///
 /// List-shaped AST nodes use their backing slice iterator directly. The indexed
@@ -921,7 +1103,7 @@ impl<'tree> TreeCursor<'tree> {
 /// temporary allocation is more important than maintaining a second large match
 /// table in this facade.
 struct NodeChildren<'tree> {
-    inner: AstChildren<'tree>,
+    inner: std::slice::Iter<'tree, (Option<FieldId>, Arc<SharedNode>)>,
     tree_source: &'tree str,
     line_index: &'tree ByteLineIndex,
 }
@@ -930,125 +1112,19 @@ impl<'tree> Iterator for NodeChildren<'tree> {
     type Item = Node<'tree>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|inner| Node {
-            inner,
+        self.inner.next().map(|(_, inner)| Node {
+            inner: inner.as_ref(),
             tree_source: self.tree_source,
             line_index: self.line_index,
         })
     }
 }
-
-enum AstChildren<'tree> {
-    Slice(std::slice::Iter<'tree, AstNode>),
-    HashPairs {
-        pairs: std::slice::Iter<'tree, (AstNode, AstNode)>,
-        value_pending: Option<&'tree AstNode>,
-    },
-    Indexed {
-        node: &'tree AstNode,
-        index: usize,
-    },
-}
-
-impl<'tree> AstChildren<'tree> {
-    #[inline]
-    fn new(node: &'tree AstNode) -> Self {
-        match &node.kind {
-            NodeKind::Program { statements }
-            | NodeKind::VariableListDeclaration { variables: statements, .. }
-            | NodeKind::NestedVariableList { items: statements }
-            | NodeKind::ArrayLiteral { elements: statements }
-            | NodeKind::Block { statements }
-            | NodeKind::Signature { parameters: statements }
-            | NodeKind::FunctionCall { args: statements, .. }
-            | NodeKind::MethodCall { args: statements, .. }
-            | NodeKind::IndirectCall { args: statements, .. }
-            | NodeKind::Tie { args: statements, .. } => Self::Slice(statements.iter()),
-            NodeKind::HashLiteral { pairs } => {
-                Self::HashPairs { pairs: pairs.iter(), value_pending: None }
-            }
-            _ => Self::Indexed { node, index: 0 },
-        }
-    }
-}
-
-impl<'tree> Iterator for AstChildren<'tree> {
-    type Item = &'tree AstNode;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Slice(children) => children.next(),
-            Self::HashPairs { pairs, value_pending } => {
-                if let Some(value) = value_pending.take() {
-                    return Some(value);
-                }
-                let (key, value) = pairs.next()?;
-                *value_pending = Some(value);
-                Some(key)
-            }
-            Self::Indexed { node, index } => {
-                let child = ast_child_at(node, *index);
-                if child.is_some() {
-                    *index += 1;
-                }
-                child
-            }
-        }
-    }
-}
-
-#[inline]
-fn ast_child_count(node: &AstNode) -> usize {
-    let mut count = 0usize;
-    node.for_each_child(|_| count += 1);
-    count
-}
-
-fn ast_has_error(node: &AstNode) -> bool {
-    if matches!(node.kind, NodeKind::Error { .. }) {
+fn shared_has_error(node: &SharedNode) -> bool {
+    if matches!(node.ast().kind, NodeKind::Error { .. }) {
         return true;
     }
 
-    let mut found = false;
-    node.for_each_child(|child| {
-        if !found && ast_has_error(child) {
-            found = true;
-        }
-    });
-    found
-}
-
-#[inline]
-fn ast_child_at(node: &AstNode, index: usize) -> Option<&AstNode> {
-    let mut idx = 0usize;
-    let mut found = None;
-    let _ = node.try_for_each_child_with_field(|_, child| {
-        if idx == index {
-            found = Some(child);
-            ControlFlow::Break(())
-        } else {
-            idx += 1;
-            ControlFlow::Continue(())
-        }
-    });
-    found
-}
-
-#[inline]
-fn ast_child_field(node: &AstNode, index: usize) -> Option<FieldId> {
-    let mut idx = 0usize;
-    let mut found = None;
-    let _ = node.try_for_each_child_with_field(|field, _| {
-        if idx == index {
-            found = field;
-            ControlFlow::Break(())
-        } else {
-            idx += 1;
-            ControlFlow::Continue(())
-        }
-    });
-    found
+    node.children.iter().any(|(_, child)| shared_has_error(child))
 }
 
 fn collect_visible_use_imports(
@@ -1268,17 +1344,48 @@ mod tests {
             NodeKind::Program { statements: vec![first.clone(), second.clone()] },
             parent_loc,
         );
+        let program_shared = SharedNode::from_owned(program);
         let program_starts: Vec<_> =
-            AstChildren::new(&program).map(|node| node.location.start).collect();
+            program_shared.children.iter().map(|(_, node)| node.ast().location.start).collect();
         assert_eq!(program_starts, vec![0, 1]);
 
-        let hash = AstNode::new(
-            NodeKind::HashLiteral { pairs: vec![(first, second)] },
-            parent_loc,
-        );
+        let hash = AstNode::new(NodeKind::HashLiteral { pairs: vec![(first, second)] }, parent_loc);
+        let hash_shared = SharedNode::from_owned(hash);
         let hash_kinds: Vec<_> =
-            AstChildren::new(&hash).map(|node| node.kind.kind_name()).collect();
+            hash_shared.children.iter().map(|(_, node)| node.ast().kind.kind_name()).collect();
         assert_eq!(hash_kinds, vec!["Identifier", "Number"]);
+    }
+
+    #[test]
+    fn test_equal_length_statement_edit_reuses_unaffected_shared_subtree() {
+        let source = "my $x = 1;\nmy $y = 2;";
+        let new_source = source.replace("$y", "$z");
+        let start = must_some(source.find("$y")) + 1;
+        let edit = perl_parser_core::edit::Edit::new(
+            start,
+            start + 1,
+            start + 1,
+            perl_position_tracking::Position::new(start, 1, (start - 11) as u32),
+            perl_position_tracking::Position::new(start + 1, 1, (start - 10) as u32),
+            perl_position_tracking::Position::new(start + 1, 1, (start - 10) as u32),
+        );
+        let mut parser = Parser::new();
+        let old_tree = must_some(parser.parse(source));
+        assert!(!old_tree.has_error());
+        let old_child = old_tree.shared_root.children.first().map(|(_, child)| child.clone());
+        let mut edited_tree = old_tree.clone();
+        edited_tree.edit(&edit);
+        let new_tree = must_some(parser.parse_with_old_tree(&new_source, &edited_tree));
+        let new_child = new_tree.shared_root.children.first().map(|(_, child)| child.clone());
+
+        assert!(old_child.is_some() && new_child.is_some());
+        assert!(
+            Arc::ptr_eq(&must_some(old_child), &must_some(new_child)),
+            "AST reuse did not trigger: metrics={:?}, edit={start}, old_children={}, new_children={}",
+            new_tree.incremental_metrics(),
+            old_tree.shared_root.children.len(),
+            new_tree.shared_root.children.len(),
+        );
     }
 
     #[test]

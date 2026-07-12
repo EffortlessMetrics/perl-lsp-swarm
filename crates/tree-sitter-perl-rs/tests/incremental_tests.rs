@@ -250,3 +250,58 @@ fn when_a_local_edit_has_a_checkpoint_suffix_then_token_replay_is_measured() {
     assert!(metrics.tokens_relexed > 0);
     assert!(metrics.reparsed_bytes < new_source.len());
 }
+
+#[test]
+fn when_a_clean_statement_has_an_equal_length_edit_then_ast_subtrees_are_reused() {
+    let source = "my $x = 1;\nmy $y = 2;";
+    let new_source = source.replace("$y", "$z");
+    let start = must_some(source.find("$y")) + 1;
+    let edit = Edit::new(
+        start,
+        start + 1,
+        start + 1,
+        Position::new(start, 1, (start - 11) as u32),
+        Position::new(start + 1, 1, (start - 10) as u32),
+        Position::new(start + 1, 1, (start - 10) as u32),
+    );
+    let mut parser = Parser::new();
+    let mut old_tree = must_some(parser.parse(source));
+    old_tree.edit(&edit);
+
+    let incremental = must_some(parser.parse_with_old_tree(&new_source, &old_tree));
+    let fresh = must_some(parser.parse(&new_source));
+    let metrics = must_some(incremental.incremental_metrics());
+
+    assert_eq!(incremental.root_node().to_sexp(), fresh.root_node().to_sexp());
+    assert!(!metrics.full_parse);
+    assert!(metrics.ast_nodes_reused > 0);
+    assert!(metrics.ast_nodes_reparsed < incremental.root_node().child_count() + 3);
+}
+
+#[test]
+fn when_a_large_clean_file_changes_near_the_end_then_ast_and_tokens_are_reused() {
+    let source = "my $value = 1;\n".repeat(40);
+    let start = must_some(source.rfind("$value")) + 1;
+    let new_source = source[..start].to_owned() + "other" + &source[start + 5..];
+    let edit = Edit::new(
+        start,
+        start + 5,
+        start + 5,
+        Position::new(start, 39, 4),
+        Position::new(start + 5, 39, 9),
+        Position::new(start + 5, 39, 9),
+    );
+    let mut parser = Parser::new();
+    let mut old_tree = must_some(parser.parse(&source));
+    old_tree.edit(&edit);
+
+    let incremental = must_some(parser.parse_with_old_tree(&new_source, &old_tree));
+    let fresh = must_some(parser.parse(&new_source));
+    let metrics = must_some(incremental.incremental_metrics());
+
+    assert_eq!(incremental.root_node().to_sexp(), fresh.root_node().to_sexp());
+    assert!(!metrics.full_parse);
+    assert!(metrics.ast_nodes_reused > 0);
+    assert!(metrics.tokens_reused > 0);
+    assert!(metrics.reparsed_bytes < new_source.len());
+}

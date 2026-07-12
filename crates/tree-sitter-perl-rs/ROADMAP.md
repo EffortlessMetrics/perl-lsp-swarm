@@ -8,7 +8,7 @@
 - `start_byte()`, `end_byte()`, `start_position()`, `end_position()`, `utf8_text()` — source location and extraction
 - `is_leaf()`, `inner()`, `tree_source()` — utility and escape hatch
 - `TreeCursor` — zero-allocation streaming traversal (`walk()`, `goto_first_child()`, `goto_next_sibling()`, `goto_parent()`)
-- `Tree::edit()` / `Parser::parse_with_old_tree()` / `InputEdit` — checkpoint-bounded token replay with measured fallback
+- `Tree::edit()` / `Parser::parse_with_old_tree()` / `InputEdit` — conservative statement-level AST reuse with measured fallback
 - `Tree::incremental_metrics()` / `Tree::changed_ranges()` — replay and changed-range observability
 - `Parser::parse_detailed()` / `Tree::diagnostics()` / `Tree::has_error()` / `Node::is_error()` /
   `Node::has_error()` — recovery and catastrophic-failure observability
