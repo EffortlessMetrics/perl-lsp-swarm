@@ -50,6 +50,8 @@ use planning_types::{GatePlan, PackageTargetIndex, PlannedGate, SkippedGate};
 /// Gate tier for filtering
 #[derive(Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum GateTier {
+    /// Sub-30s staged-tree hygiene checks, run before commit (issue #3786)
+    Commit,
     /// Fast checks for every PR iteration (~1-2 min)
     PrFast,
     /// Full verification before merge (~3-8 min)
@@ -63,6 +65,7 @@ pub enum GateTier {
 impl std::fmt::Display for GateTier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            GateTier::Commit => write!(f, "commit"),
             GateTier::PrFast => write!(f, "pr_fast"),
             GateTier::MergeGate => write!(f, "merge_gate"),
             GateTier::Nightly => write!(f, "nightly"),
@@ -269,6 +272,36 @@ pub struct AgentReceipt {
     pub suggested_next_actions: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<AgentPlanReceipt>,
+    /// `git write-tree` OID of the staged tree this run inspected. Only
+    /// populated for `GateTier::Commit` runs (issue #3786) — the action
+    /// packet's proof that every check keyed off the exact staged artifact,
+    /// not the working tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_tree_oid: Option<String>,
+    /// Non-blocking commit-tier findings (`ADVISORY` / `CLASSIFICATION
+    /// REQUIRED` / `NOT PROVEN` — see `commit_checks::Posture`). Blocking
+    /// findings stay in `failures` above; this list is always empty for
+    /// non-commit tiers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisories: Vec<AgentAdvisory>,
+}
+
+/// One non-blocking commit-tier finding, following the same result/why
+/// /affected/fix/rerun/what-remains shape as a blocking [`AgentFailure`]
+/// (`docs/reference/GUIDANCE_STYLE.md` §4/§5).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AgentAdvisory {
+    pub lane: String,
+    /// `"CLASSIFICATION REQUIRED"` | `"ADVISORY"` | `"NOT PROVEN"` — never
+    /// `"BLOCKED"` (those are [`AgentFailure`]s instead).
+    pub posture: String,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
+    pub rerun: String,
+    pub what_remains: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -323,6 +356,25 @@ pub struct AgentFailure {
     pub lane: String,
     pub summary: String,
     pub repro: String,
+    /// `"BLOCKED"` for every non-commit-tier failure (the only posture that
+    /// path could ever mean); a commit-tier failure carries whatever
+    /// `commit_checks::Posture` it was flagged with (always `"BLOCKED"` in
+    /// V1 — only `Posture::Blocked` fails a commit-tier gate).
+    #[serde(default = "default_blocked_posture")]
+    pub posture: String,
+    /// Affected files/packages, when the check identified them (commit-tier
+    /// only; empty for the generic pr_fast/merge_gate path).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected: Vec<String>,
+    /// A single mechanical fix command, when the repair is unambiguous
+    /// (commit-tier only; `repro` above remains the generic rerun command
+    /// for every tier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
+}
+
+fn default_blocked_posture() -> String {
+    "BLOCKED".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -553,6 +605,12 @@ pub struct GateRunnerConfig {
     #[allow(dead_code)]
     pub parallel: bool,
     pub verbose: bool,
+    /// Explicit opt-in that this run inspects the STAGED tree (`git
+    /// write-tree`), never the working tree (issue #3786). Required for
+    /// `GateTier::Commit` — see `run()`'s early validation — so an agent
+    /// that forgets the flag gets a guided error instead of silently
+    /// checking the wrong artifact.
+    pub staged: bool,
 }
 
 impl Default for GateRunnerConfig {
@@ -569,6 +627,7 @@ impl Default for GateRunnerConfig {
             fail_fast: false,
             parallel: false,
             verbose: false,
+            staged: false,
         }
     }
 }
@@ -577,6 +636,19 @@ impl Default for GateRunnerConfig {
 pub fn run(config: GateRunnerConfig) -> Result<()> {
     let root = project_root()?;
     std::env::set_current_dir(&root).context("Failed to change to project root")?;
+
+    // Commit-tier checks are only correct against the exact staged tree
+    // (`git write-tree`) — never the working tree (issue #3786). Require the
+    // flag explicitly rather than silently defaulting it, so an agent that
+    // forgets `--staged` gets a guided error instead of a run that looks
+    // like it checked something it didn't.
+    if config.tier == GateTier::Commit && !config.staged && !config.list_only {
+        bail!(
+            "GateTier::Commit requires --staged: commit-tier checks inspect the staged tree \
+             (`git write-tree`), never the working tree. Run: \
+             `cargo xtask gates --tier commit --staged`."
+        );
+    }
 
     // Load gate policy
     let policy_path = root.join(".ci/gate-policy.yaml");
@@ -649,6 +721,9 @@ fn filter_gates(policy: &GatePolicy, config: &GateRunnerConfig) -> Result<Vec<Ga
 
     // Filter by tier
     match config.tier {
+        GateTier::Commit => {
+            gates.retain(|g| g.tier == "commit");
+        }
         GateTier::PrFast => {
             gates.retain(|g| g.tier == "pr_fast");
         }
@@ -665,26 +740,51 @@ fn filter_gates(policy: &GatePolicy, config: &GateRunnerConfig) -> Result<Vec<Ga
         }
     }
 
-    // Sort by tier priority (pr_fast first, then merge_gate, then nightly)
+    // Sort by tier priority (commit first — earliest boundary — then
+    // pr_fast, then merge_gate, then nightly)
     gates.sort_by_key(|g| match g.tier.as_str() {
-        "pr_fast" => 0,
-        "merge_gate" => 1,
-        "nightly" => 2,
-        "release" => 3,
-        _ => 4,
+        "commit" => 0,
+        "pr_fast" => 1,
+        "merge_gate" => 2,
+        "nightly" => 3,
+        "release" => 4,
+        _ => 5,
     });
 
     Ok(gates)
 }
 
+/// `git write-tree` OID for the current index, when the run was invoked with
+/// `--staged` (issue #3786). Failing to resolve it (e.g. an unmerged index)
+/// surfaces as a real error rather than silently omitting the identity a
+/// commit-tier receipt is supposed to be keyed on.
+fn resolve_staged_tree_oid(root: &Path, config: &GateRunnerConfig) -> Result<Option<String>> {
+    if !config.staged {
+        return Ok(None);
+    }
+    Ok(Some(super::staged::staged_tree_oid(root)?))
+}
+
 fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Result<GatePlan> {
     let base = config.base_ref.clone().unwrap_or_else(|| select_scope_base(root));
+    let staged_tree_oid = resolve_staged_tree_oid(root, config)?;
 
     if config.gate_filter.is_some() {
-        return Ok(static_gate_plan(config.tier.clone(), base, filter_gates(policy, config)?));
+        return Ok(static_gate_plan(
+            config.tier.clone(),
+            base,
+            filter_gates(policy, config)?,
+            staged_tree_oid,
+        ));
     }
 
     match config.tier {
+        GateTier::Commit => Ok(static_gate_plan(
+            GateTier::Commit,
+            base,
+            gates_for_tier(policy, "commit"),
+            staged_tree_oid,
+        )),
         GateTier::PrFast => plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base),
         GateTier::MergeGate => {
             let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
@@ -707,7 +807,12 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
     }
 }
 
-fn static_gate_plan(tier: GateTier, base: String, gates: Vec<GateDefinition>) -> GatePlan {
+fn static_gate_plan(
+    tier: GateTier,
+    base: String,
+    gates: Vec<GateDefinition>,
+    staged_tree_oid: Option<String>,
+) -> GatePlan {
     let selected = gates.into_iter().map(static_gate).collect();
 
     GatePlan {
@@ -720,6 +825,7 @@ fn static_gate_plan(tier: GateTier, base: String, gates: Vec<GateDefinition>) ->
         package_args: Vec::new(),
         selected,
         skipped: Vec::new(),
+        staged_tree_oid,
     }
 }
 
@@ -969,6 +1075,9 @@ fn build_pr_fast_plan_from_scope_with_targets(
         package_args,
         selected,
         skipped,
+        // pr_fast/merge_gate/nightly/all planning never runs against a
+        // staged tree — that identity is commit-tier-only (issue #3786).
+        staged_tree_oid: None,
     })
 }
 
@@ -1338,6 +1447,7 @@ fn build_agent_receipt(root: &Path, results: &[GateResult], plan: &GatePlan) -> 
         })
         .unwrap_or_default();
     let (failures, next_actions) = failure_guidance(results);
+    let advisories = commit_advisories(results);
     let sha = git_stdout_with_worktree_fallback(root, &["rev-parse", "HEAD"]).unwrap_or_default();
     let is_latest = is_latest_commit(root);
 
@@ -1366,7 +1476,37 @@ fn build_agent_receipt(root: &Path, results: &[GateResult], plan: &GatePlan) -> 
         failures,
         suggested_next_actions: next_actions,
         plan: Some(agent_plan_receipt(plan)),
+        staged_tree_oid: plan.staged_tree_oid.clone(),
+        advisories,
     }
+}
+
+/// Non-blocking commit-tier findings (`CLASSIFICATION REQUIRED` / `ADVISORY`
+/// / `NOT PROVEN`) recovered from `GateResult.output_summary` via
+/// [`super::commit_checks::parse_report`]. Blocking findings are already
+/// covered by `failure_guidance` above — this only picks up the postures
+/// that passed the gate but still have something worth surfacing.
+fn commit_advisories(results: &[GateResult]) -> Vec<AgentAdvisory> {
+    results
+        .iter()
+        .filter(|result| result.tier == "commit")
+        .filter_map(|result| {
+            let report =
+                result.output_summary.as_deref().and_then(super::commit_checks::parse_report)?;
+            if report.posture.is_blocking() {
+                return None;
+            }
+            Some(AgentAdvisory {
+                lane: result.gate_name.clone(),
+                posture: report.posture.label().to_string(),
+                summary: report.result,
+                affected: report.affected,
+                fix: report.fix,
+                rerun: report.rerun,
+                what_remains: report.what_remains,
+            })
+        })
+        .collect()
 }
 
 fn agent_plan_receipt(plan: &GatePlan) -> AgentPlanReceipt {
@@ -1422,10 +1562,28 @@ fn failure_guidance(results: &[GateResult]) -> (Vec<AgentFailure>, Vec<String>) 
                 }
                 None => base_summary,
             };
+
+            // Commit-tier gates carry a structured CheckReport behind a
+            // marker line in output_summary (see commit_checks::CheckReport
+            // ::render) — recover it to enrich the failure with posture,
+            // affected files, and a mechanical fix when one exists. Every
+            // other gate simply has no marker, so `report` is `None` and
+            // this falls back to the generic summary/posture unchanged.
+            let report =
+                result.output_summary.as_deref().and_then(super::commit_checks::parse_report);
             AgentFailure {
                 lane: result.gate_name.clone(),
-                summary,
+                summary: match &report {
+                    Some(r) => format!("{} — {}", r.result, r.why),
+                    None => summary,
+                },
                 repro: format!("{} # gate={}", result.command, result.gate_name),
+                posture: report
+                    .as_ref()
+                    .map(|r| r.posture.label().to_string())
+                    .unwrap_or_else(default_blocked_posture),
+                affected: report.as_ref().map(|r| r.affected.clone()).unwrap_or_default(),
+                fix: report.and_then(|r| r.fix),
             }
         })
         .collect();
@@ -1632,6 +1790,17 @@ fn run_single_gate(
             super::inline_completion_quality::run(PathBuf::from(
                 "target/receipts/inline-completion-quality.json",
             ))
+        });
+    }
+
+    // Commit-tier staged checks (issue #3786): `.ci/gate-policy.yaml` names
+    // each one `cargo xtask commit-check <name>`. Dispatched in-process
+    // (like the internal gates above) rather than shelled out, so the
+    // 9-check tier stays well inside its sub-30s budget.
+    if let Some(check_name) = command.strip_prefix("cargo xtask commit-check ") {
+        let check_name = check_name.trim().to_string();
+        return run_internal_commit_check(gate, &log_path, command, start, || {
+            super::commit_checks::run_named_check(&check_name)
         });
     }
 
@@ -1874,6 +2043,55 @@ fn run_internal_xtask_gate(
     let (status, output_summary) = match result {
         Ok(()) => ("pass".to_string(), "Executed internally via xtask task dispatch".to_string()),
         Err(err) => ("fail".to_string(), format!("Internal xtask execution failed: {err:#}")),
+    };
+
+    if let Err(err) = fs::write(log_path, output_summary.as_bytes()) {
+        eprintln!("Warning: Failed to write log file: {}", err);
+    }
+
+    Ok(GateResult {
+        gate_name: gate.name.clone(),
+        tier: gate.tier.clone(),
+        status,
+        required: Some(gate.required),
+        duration_ms,
+        command: command.to_string(),
+        exit_code: None,
+        output_summary: Some(output_summary),
+        log_path: Some(format!("logs/{}.log", gate.name)),
+        metrics: None,
+        artifacts: if gate.artifacts.is_empty() { None } else { Some(gate.artifacts.clone()) },
+        first_failure: None,
+    })
+}
+
+/// Like [`run_internal_xtask_gate`], but for a commit-tier check that
+/// returns a [`super::commit_checks::CommitCheckOutcome`] instead of a bare
+/// `Result<()>`. Only `Posture::Blocked` fails the gate (V1 is
+/// advisory-first — see `commit_checks` module docs); every other posture
+/// still records its full [`super::commit_checks::CheckReport`] in
+/// `output_summary` (human text + a `COMMIT_CHECK_REPORT_JSON:` marker line)
+/// so `build_agent_receipt` can recover it for the action packet without a
+/// second execution path.
+fn run_internal_commit_check(
+    gate: &GateDefinition,
+    log_path: &std::path::Path,
+    command: &str,
+    start: Instant,
+    f: impl FnOnce() -> Result<super::commit_checks::CommitCheckOutcome>,
+) -> Result<GateResult> {
+    use super::commit_checks::CommitCheckOutcome;
+
+    let outcome = f();
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    let (status, output_summary) = match outcome {
+        Ok(CommitCheckOutcome::Pass(summary)) => ("pass".to_string(), summary),
+        Ok(CommitCheckOutcome::Flagged(report)) => {
+            let status = if report.posture.is_blocking() { "fail" } else { "pass" };
+            (status.to_string(), report.render())
+        }
+        Err(err) => ("error".to_string(), format!("Internal xtask execution failed: {err:#}")),
     };
 
     if let Err(err) = fs::write(log_path, output_summary.as_bytes()) {
