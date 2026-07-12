@@ -901,7 +901,7 @@ fn run_bench_samples_us(repo_root: &Path, command: &Path, file: &Path) -> Result
 
 /// Run the v3 native Rust parser bench binary against `file`.
 fn run_rust_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
-    let binary = repo_root.join("target").join("release").join(RUST_BENCH_BIN);
+    let binary = cargo_target_dir(repo_root).join("release").join(RUST_BENCH_BIN);
     run_bench_samples_us(repo_root, &binary, file)
 }
 
@@ -917,12 +917,7 @@ fn run_rust_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
 /// libclang installed). Quick-bench treats `None` as N/A in the speedup
 /// column rather than failing the whole run.
 fn run_c_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
-    let binary = repo_root
-        .join("crates")
-        .join("tree-sitter-perl-c")
-        .join("target")
-        .join("release")
-        .join(C_BENCH_BIN);
+    let binary = cargo_target_dir(repo_root).join("release").join(C_BENCH_BIN);
     run_bench_samples_us(repo_root, &binary, file)
 }
 
@@ -932,8 +927,18 @@ fn run_c_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
 /// `-p` rather than `--manifest-path`. Returns wall-clock duration in
 /// microseconds, or `None` if the bench binary exits non-zero.
 fn run_facade_bench_us(repo_root: &Path, file: &Path) -> Result<Option<f64>> {
-    let binary = repo_root.join("target").join("release").join(FACADE_BENCH_BIN);
+    let binary = cargo_target_dir(repo_root).join("release").join(FACADE_BENCH_BIN);
     run_bench_samples_us(repo_root, &binary, file)
+}
+
+fn cargo_target_dir(repo_root: &Path) -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || repo_root.join("target"),
+        |value| {
+            let path = PathBuf::from(value);
+            if path.is_absolute() { path } else { repo_root.join(path) }
+        },
+    )
 }
 
 fn timed_file_run_ms(repo_root: &Path, parser: &Path, file: &Path) -> Result<f64> {
