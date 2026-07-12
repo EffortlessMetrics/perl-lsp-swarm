@@ -113,6 +113,29 @@ fn when_edit_is_applied_then_tree_source_unchanged() {
 }
 
 #[test]
+fn when_edit_is_recorded_then_node_ranges_project_into_new_source_coordinates() {
+    let old_source = "my $x = 1;\nmy $y = 2;";
+    let new_source = "my $x = 42;\nmy $y = 2;";
+    let mut tree = parse(old_source);
+    let edit = Edit::new(
+        8,
+        9,
+        10,
+        Position::new(8, 0, 8),
+        Position::new(9, 0, 9),
+        Position::new(10, 0, 10),
+    );
+    tree.edit(&edit);
+
+    let second = must_some(tree.root_node().child(1));
+    assert_eq!(second.start_byte(), 12);
+    assert_eq!(second.start_position().row, 1);
+    assert_eq!(second.start_position().column, 0);
+    assert_eq!(second.utf8_text(new_source.as_bytes()), Ok("my $y"));
+    assert_eq!(tree.root_node().end_byte(), new_source.len());
+}
+
+#[test]
 fn when_parse_with_old_tree_given_empty_new_source_then_tree_is_returned() {
     // Deleting the entire file content is a valid LSP edit: new source is empty string.
     let mut parser = Parser::new();
