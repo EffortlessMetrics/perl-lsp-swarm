@@ -60,7 +60,8 @@ tiers:
   #   cloud CI. Answers exactly one question: is the staged artifact
   #   structurally sound? Never compiles the workspace (that's pre-push).
   # Enforcement: local only — not a CI-required tier. `xtask gates --tier
-  #   commit --staged` (alias: `xtask precommit --staged`) is invoked by an
+  #   commit --staged` (alias: `xtask precommit` — no `--staged` flag on the
+  #   alias; the subcommand is staged by definition) is invoked by an
   #   agent/developer or a future prek hook, never by a GitHub Actions job.
   #   Individual checks are advisory-first in V1: only a deterministic
   #   BLOCKED posture fails the run; CLASSIFICATION REQUIRED/ADVISORY/NOT

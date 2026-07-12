@@ -120,9 +120,17 @@ pub fn blob_size(root: &Path, oid: &str) -> Result<u64> {
 /// Read a staged path's content by asking git for the blob at `:path` in the
 /// index directly — works even when the working tree doesn't match (a
 /// partially-staged edit), because it never touches the filesystem outside
-/// git's object database. Returns `None` if the path isn't currently staged
-/// or isn't valid UTF-8 (treated as binary and skipped by text-oriented
-/// checks).
+/// git's object database.
+///
+/// `Ok(None)` means exactly one thing: `git show` succeeded and the content
+/// isn't valid UTF-8 (a legitimate binary file, skipped by text-oriented
+/// checks). Any other failure — the path genuinely isn't staged, a
+/// corrupted object database, a permissions problem, git itself missing —
+/// is a real `Err`, not `Ok(None)`. Conflating the two would make a check
+/// silently skip staged content on a git failure instead of surfacing it;
+/// callers of this function pass paths from [`staged_diff_paths`], which by
+/// construction *are* staged, so an unexpected failure here is worth
+/// knowing about, not swallowing.
 ///
 /// `#[allow(dead_code)]`: every #3786-B check reads staged content through
 /// this function; #3786-A proves it correct (see the staged-vs-working-tree
@@ -135,7 +143,8 @@ pub fn read_staged_path_text(root: &Path, path: &str) -> Result<Option<String>> 
         .output()
         .with_context(|| format!("failed to read staged content for {path}"))?;
     if !output.status.success() {
-        return Ok(None);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("failed to read staged content for {path}: {stderr}");
     }
     Ok(String::from_utf8(output.stdout).ok())
 }
@@ -298,6 +307,39 @@ mod tests {
             staged_text, "fn main() { /* staged edit */ }\n",
             "read_staged_path_text must return the STAGED blob even though the working tree \
              was reverted underneath it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_staged_path_text_errors_rather_than_silently_skipping_an_unreadable_path()
+    -> Result<()> {
+        // A `git show :path` failure — the path genuinely isn't staged, a
+        // corrupted object, a permissions problem — must be a real `Err`,
+        // never `Ok(None)`. `Ok(None)` is reserved for the one legitimate
+        // case: git succeeded and the content just isn't valid UTF-8.
+        // Conflating "git failed" with "nothing to see here" would make a
+        // text check silently skip staged content instead of surfacing the
+        // failure — the same class of bug as a broken grep quietly
+        // returning zero matches instead of erroring.
+        let repo = TempRepo::init()?;
+        repo.write("foo.rs", "fn main() {}\n")?;
+        repo.add("foo.rs")?;
+        repo.commit("initial")?;
+
+        let result = read_staged_path_text(repo.root(), "never-staged.rs");
+
+        let err = match result {
+            Err(err) => err,
+            Ok(value) => bail!(
+                "expected an error for a path that was never staged, got Ok({value:?}) instead \
+                 of a surfaced failure"
+            ),
+        };
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("never-staged.rs"),
+            "error should name the path that failed: {message}"
         );
         Ok(())
     }

@@ -591,7 +591,7 @@
     "agent_advisory": {
       "type": "object",
       "description": "One non-blocking commit-tier finding (issue #3786), following the same result/why/affected/fix/rerun/what-remains shape as agent_failure.",
-      "required": ["lane", "posture", "summary", "rerun", "what_remains"],
+      "required": ["lane", "posture", "summary", "why", "rerun", "what_remains"],
       "additionalProperties": false,
       "properties": {
         "lane": { "type": "string" },
@@ -602,6 +602,10 @@
           "examples": ["ADVISORY"]
         },
         "summary": { "type": "string" },
+        "why": {
+          "type": "string",
+          "description": "Why this finding matters — the reasoning half of the result/why shape (CheckReport.why)."
+        },
         "affected": {
           "type": "array",
           "items": { "type": "string" }
