@@ -94,6 +94,39 @@ why>]. Next step: re-run plan-review on the current revision before any
 worktree is created.
 ```
 
+## Step 4b: Advisory issue-plan audit
+
+`xtask issue-plan audit` (`xtask/src/tasks/issue_plan.rs`, recovered in #3973)
+is a report-only audit of issue-plan quality: missing builder-ready work-order
+sections, `builder-ready` surviving on a closed issue, stale
+`needs-plan-review`/sign-off label contradictions, and `#0000` placeholder
+references. It has no dedicated single-issue flag — only `--fixture <path>`
+(an offline JSON array of issues) or `--repo`/`--label` (a live, whole-set
+query). Every check it runs is purely per-issue (no cross-issue
+correlation), so a one-issue fixture built from `gh issue view` is a complete
+target:
+
+```bash
+FIXTURE="$(mktemp --suffix=.json)"
+gh issue view <issue#> --repo EffortlessMetrics/perl-lsp-swarm \
+  --json number,title,body,state,labels | jq -s . > "$FIXTURE"
+cargo xtask issue-plan audit --fixture "$FIXTURE" --dry-run --format json
+rm -f "$FIXTURE"
+```
+
+This is advisory signal only — it does **not** add a second gate alongside
+`builder-ready`/the BUILD verdict from Steps 3-4, and a non-empty `findings`
+array never stops the handoff. Surface findings as a note, not a stop:
+
+```
+Note: issue-plan audit flags <n> finding(s) for #<issue#> (e.g.
+"builder-ready but body is missing a 'non-goals' section") — consider
+addressing before building; proceeding is not blocked on this.
+```
+
+Skipped under `--mechanical`, alongside Steps 3-4 — mechanical work has no
+planning-readiness decision for this audit to check.
+
 ## Step 5: Collision check — is someone already writing this?
 
 Fetch remote branches **first** — `git branch -a` only shows remote-tracking
@@ -183,9 +216,9 @@ Still run **Step 2** (confirm the issue exists and is `OPEN`), **Step 5**
 (collision check), and **Step 6** (fresh `origin/main`) — none of those are
 planning-decision gates, they're basic write-safety (there must be a real,
 open, uncontested issue to attach the mechanical change to). Only Steps 3-4
-(`builder-ready` label / matching BUILD verdict) are skipped — those are the
-planning-readiness gate, which mechanical work has no planning decision to
-clear.
+(`builder-ready` label / matching BUILD verdict) and **Step 4b** (issue-plan
+audit) are skipped — those are the planning-readiness gate (and its advisory
+companion), which mechanical work has no planning decision to clear or audit.
 
 Before proceeding, record and print all five fields — do not create the
 worktree until every field is filled in:
