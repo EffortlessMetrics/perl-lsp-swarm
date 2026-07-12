@@ -80,6 +80,7 @@ use perl_workspace::semantic_shadow_compare::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use tree_sitter_perl_rs::{ParseFailure, Parser as FacadeParser};
 
 /// LSP WorkspaceSymbol representing a symbol found in the workspace.
 ///
@@ -213,10 +214,73 @@ pub struct WorkspaceSymbolShadowResult {
     pub receipt: SemanticShadowCompareReceipt,
 }
 
+/// Source selected for a workspace-symbol document index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum WorkspaceSymbolIndexSource {
+    /// The Rust-native tree-sitter-style facade produced the index.
+    Facade,
+    /// The established parser AST produced the index after a facade mismatch.
+    NativeFallback,
+}
+
+/// Typed catastrophic failure category observed while trying the facade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum WorkspaceSymbolFacadeFailure {
+    /// The parser recursion budget was exceeded.
+    #[error("parser recursion limit exceeded")]
+    RecursionLimit,
+    /// The parser structural nesting budget was exceeded.
+    #[error("parser nesting limit exceeded")]
+    NestingTooDeep,
+    /// Parsing was cancelled.
+    #[error("parser cancelled")]
+    Cancelled,
+    /// A failure not yet classified by the facade.
+    #[error("unclassified facade parse failure")]
+    Other,
+}
+
+impl From<&ParseFailure> for WorkspaceSymbolFacadeFailure {
+    fn from(failure: &ParseFailure) -> Self {
+        match failure {
+            ParseFailure::RecursionLimit => Self::RecursionLimit,
+            ParseFailure::NestingTooDeep { .. } => Self::NestingTooDeep,
+            ParseFailure::Cancelled => Self::Cancelled,
+            ParseFailure::Other { .. } => Self::Other,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// A parse failure that caused workspace-symbol indexing to use its fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+#[error("facade parse failed: {reason}")]
+pub struct WorkspaceSymbolFacadeError {
+    /// Classified reason for the fallback.
+    pub reason: WorkspaceSymbolFacadeFailure,
+}
+
+/// Receipt for one document's facade-first workspace-symbol indexing attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct WorkspaceSymbolIndexReceipt {
+    /// Parser source ultimately used for the indexed symbols.
+    pub source: WorkspaceSymbolIndexSource,
+    /// Whether a native AST was available for shadow comparison.
+    pub compared_with_native: bool,
+    /// Whether the two symbol sets matched when comparison was possible.
+    pub equivalent: Option<bool>,
+    /// Whether the facade returned a recovered tree with errors.
+    pub recovered: bool,
+}
+
 /// Internal symbol information used for indexing.
 ///
 /// Stores symbol metadata extracted from parsed Perl source files.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SymbolInfo {
     /// Symbol name (bare, unqualified).
     name: String,
@@ -257,14 +321,58 @@ impl WorkspaceSymbolsProvider {
     /// Extracts symbols from the AST and stores them for later search queries.
     /// Replaces any previously indexed symbols for the same URI.
     pub fn index_document(&mut self, uri: &str, ast: &Node, source: &str) {
-        self.remove_document(uri);
+        let symbols = Self::extract_symbols(ast, source);
+        self.replace_document(uri, symbols);
+    }
 
+    /// Index a document from the facade, comparing against the established AST when present.
+    ///
+    /// A recovered facade tree is accepted and reported in the receipt. If the facade and
+    /// native AST produce different symbol sets, the native result remains the live answer.
+    /// Catastrophic facade failures are returned so the caller can use its existing fallback.
+    pub fn index_document_with_facade(
+        &mut self,
+        uri: &str,
+        source: &str,
+        native_ast: Option<&Node>,
+    ) -> Result<WorkspaceSymbolIndexReceipt, WorkspaceSymbolFacadeError> {
+        let mut parser = FacadeParser::new();
+        let outcome = parser.parse_detailed(source);
+        let Some(tree) = outcome.tree else {
+            let reason = outcome
+                .failure
+                .as_ref()
+                .map(WorkspaceSymbolFacadeFailure::from)
+                .unwrap_or(WorkspaceSymbolFacadeFailure::Other);
+            return Err(WorkspaceSymbolFacadeError { reason });
+        };
+
+        let facade_symbols = Self::extract_symbols(tree.root_node().inner(), source);
+        let native_symbols = native_ast.map(|ast| Self::extract_symbols(ast, source));
+        let equivalent = native_symbols
+            .as_ref()
+            .map(|symbols| Self::equivalent_symbols(symbols, &facade_symbols));
+        let (source_used, symbols) = match native_symbols {
+            Some(native_symbols) if equivalent == Some(false) => {
+                (WorkspaceSymbolIndexSource::NativeFallback, native_symbols)
+            }
+            _ => (WorkspaceSymbolIndexSource::Facade, facade_symbols),
+        };
+
+        self.replace_document(uri, symbols);
+        Ok(WorkspaceSymbolIndexReceipt {
+            source: source_used,
+            compared_with_native: native_ast.is_some(),
+            equivalent,
+            recovered: outcome.is_recovered(),
+        })
+    }
+
+    fn extract_symbols(ast: &Node, source: &str) -> Vec<SymbolInfo> {
         let extractor = SymbolExtractor::new_with_source(source);
         let table = extractor.extract(ast);
-
         let mut symbols = Vec::new();
 
-        // Extract symbols from the symbol table
         for (name, symbol_list) in &table.symbols {
             for symbol in symbol_list {
                 let container = container_name(&symbol.qualified_name).map(str::to_string);
@@ -278,13 +386,37 @@ impl WorkspaceSymbolsProvider {
             }
         }
 
+        symbols
+    }
+
+    fn equivalent_symbols(left: &[SymbolInfo], right: &[SymbolInfo]) -> bool {
+        if left.len() != right.len() {
+            return false;
+        }
+
+        let mut left = left.to_vec();
+        let mut right = right.to_vec();
+        let by_symbol = |a: &SymbolInfo, b: &SymbolInfo| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.location.start.cmp(&b.location.start))
+                .then_with(|| a.location.end.cmp(&b.location.end))
+                .then_with(|| a.container.cmp(&b.container))
+                .then_with(|| format!("{:?}", a.kind).cmp(&format!("{:?}", b.kind)))
+        };
+        left.sort_by(by_symbol);
+        right.sort_by(by_symbol);
+        left == right
+    }
+
+    fn replace_document(&mut self, uri: &str, symbols: Vec<SymbolInfo>) {
+        self.remove_document(uri);
         for symbol in &symbols {
             self.symbols_by_name
                 .entry(symbol.name.clone())
                 .or_default()
                 .push((uri.to_string(), symbol.clone()));
         }
-
         self.documents.insert(uri.to_string(), symbols);
     }
 
@@ -628,6 +760,63 @@ sub baz {
         let results = provider.search("fb", &source_map);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "foobar");
+    }
+
+    #[test]
+    fn facade_first_indexing_records_equivalent_receipt() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "package Facade;\nsub facade_symbol { 1 }\n";
+        let mut native_parser = Parser::new(source);
+        let native_ast = must(native_parser.parse());
+        let mut provider = WorkspaceSymbolsProvider::new();
+
+        let receipt =
+            provider.index_document_with_facade("file:///facade.pm", source, Some(&native_ast))?;
+
+        if receipt.source != WorkspaceSymbolIndexSource::Facade {
+            return Err("equivalent facade parse should remain the live source".into());
+        }
+        if receipt.equivalent != Some(true) || !receipt.compared_with_native {
+            return Err("facade receipt did not record native equivalence".into());
+        }
+
+        let mut source_map = HashMap::new();
+        source_map.insert("file:///facade.pm".to_string(), source.to_string());
+        let results = provider.search("facade_symbol", &source_map);
+        if results.iter().all(|symbol| symbol.name != "facade_symbol") {
+            return Err("facade-indexed symbol was not searchable".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn facade_symbol_mismatch_keeps_native_fallback_live() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "sub facade_symbol { 1 }\n";
+        let native_source = "sub native_symbol { 1 }\n";
+        let mut native_parser = Parser::new(native_source);
+        let native_ast = must(native_parser.parse());
+        let mut provider = WorkspaceSymbolsProvider::new();
+
+        let receipt = provider.index_document_with_facade(
+            "file:///mismatch.pm",
+            source,
+            Some(&native_ast),
+        )?;
+
+        if receipt.source != WorkspaceSymbolIndexSource::NativeFallback
+            || receipt.equivalent != Some(false)
+        {
+            return Err("facade mismatch did not select the native fallback".into());
+        }
+
+        let mut source_map = HashMap::new();
+        source_map.insert("file:///mismatch.pm".to_string(), source.to_string());
+        let results = provider.search("native_symbol", &source_map);
+        if results.iter().all(|symbol| symbol.name != "native_symbol") {
+            return Err("native fallback symbols were not indexed".into());
+        }
+        Ok(())
     }
 
     #[test]

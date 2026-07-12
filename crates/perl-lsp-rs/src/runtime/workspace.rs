@@ -452,18 +452,49 @@ impl LspServer {
             perl_lsp_rs_core::providers::workspace_symbols::WorkspaceSymbolsProvider::new();
         let mut source_map = std::collections::HashMap::new();
         let mut text_fallback_symbols = Vec::new();
+        let mut facade_documents = 0usize;
+        let mut recovered_documents = 0usize;
+        let mut native_fallback_documents = 0usize;
+        let mut facade_failures = 0usize;
 
         for (i, (uri, text, ast)) in docs_snapshot.iter().enumerate() {
             if i & 0x7 == 0 {
                 std::thread::yield_now();
             }
             source_map.insert(uri.clone(), text.clone());
-            if let Some(ast) = ast {
-                provider.index_document(uri, ast, text);
-            } else {
-                text_fallback_symbols.extend(self.extract_text_based_symbols(text, uri, query));
+            match provider.index_document_with_facade(uri, text, ast.as_deref()) {
+                Ok(receipt) => {
+                    facade_documents += 1;
+                    recovered_documents += usize::from(receipt.recovered);
+                    native_fallback_documents += usize::from(
+                        receipt.source
+                            == perl_lsp_rs_core::providers::workspace_symbols::WorkspaceSymbolIndexSource::NativeFallback,
+                    );
+                }
+                Err(error) => {
+                    facade_failures += 1;
+                    tracing::debug!(
+                        uri,
+                        reason = ?error.reason,
+                        "workspace-symbol facade parse fell back to the established AST/text path"
+                    );
+                    if let Some(ast) = ast {
+                        provider.index_document(uri, ast, text);
+                    } else {
+                        text_fallback_symbols
+                            .extend(self.extract_text_based_symbols(text, uri, query));
+                    }
+                }
             }
         }
+
+        tracing::debug!(
+            facade_documents,
+            recovered_documents,
+            native_fallback_documents,
+            facade_failures,
+            "workspace-symbol facade adoption receipt"
+        );
 
         let mut candidates = self.symbol_index.lock().search_prefix(query);
         if candidates.is_empty() && !query.is_empty() {
@@ -787,12 +818,42 @@ impl LspServer {
         let mut provider =
             perl_lsp_rs_core::providers::workspace_symbols::WorkspaceSymbolsProvider::new();
         let mut source_map = std::collections::HashMap::new();
+        let mut facade_documents = 0usize;
+        let mut recovered_documents = 0usize;
+        let mut native_fallback_documents = 0usize;
+        let mut facade_failures = 0usize;
         for (uri, text, ast) in docs_snapshot.iter() {
-            if let Some(ast) = ast {
-                provider.index_document(uri, ast, text);
+            match provider.index_document_with_facade(uri, text, ast.as_deref()) {
+                Ok(receipt) => {
+                    facade_documents += 1;
+                    recovered_documents += usize::from(receipt.recovered);
+                    native_fallback_documents += usize::from(
+                        receipt.source
+                            == perl_lsp_rs_core::providers::workspace_symbols::WorkspaceSymbolIndexSource::NativeFallback,
+                    );
+                }
+                Err(error) => {
+                    facade_failures += 1;
+                    tracing::debug!(
+                        uri,
+                        reason = ?error.reason,
+                        "workspace-symbol facade parse fell back to the established AST path"
+                    );
+                    if let Some(ast) = ast {
+                        provider.index_document(uri, ast, text);
+                    }
+                }
             }
             source_map.insert(uri.clone(), text.clone());
         }
+
+        tracing::debug!(
+            facade_documents,
+            recovered_documents,
+            native_fallback_documents,
+            facade_failures,
+            "workspace-symbol facade adoption receipt"
+        );
 
         let mut candidates = self.symbol_index.lock().search_prefix(query);
         if candidates.is_empty() && !query.is_empty() {

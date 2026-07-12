@@ -52,6 +52,7 @@ perl-workspace.workspace = true
 perl-pragma.workspace = true
 perl-symbol.workspace = true
 perl-parser.workspace = true
+tree-sitter-perl-rs.workspace = true
 rustc-hash = "2.1.2"
 thiserror.workspace = true
 toml = "1.1.2"
