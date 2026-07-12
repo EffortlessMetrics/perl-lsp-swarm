@@ -582,7 +582,9 @@ fn test_rename_gold_corpus() -> TestResult {
                 server.get_rename(&uri, assertion.line, assertion.character, &assertion.new_name);
 
             let ok = match &assertion.kind {
-                RenameAssertionKind::RenameSucceeds => !rename_is_null(&resp),
+                RenameAssertionKind::RenameSucceeds => {
+                    !rename_is_null(&resp) && rename_total_edit_count(&resp) >= 1
+                }
                 RenameAssertionKind::RenameNull => rename_is_null(&resp),
                 RenameAssertionKind::RenameEditCountAtLeast { min } => {
                     rename_total_edit_count(&resp) >= *min
