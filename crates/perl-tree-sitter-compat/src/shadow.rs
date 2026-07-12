@@ -70,12 +70,8 @@ pub(crate) fn compare(source: &str, native_root: &Node) -> ShadowComparison {
         && root.end_byte() == native_root.location.end.min(source.len());
     let node_count_match = count_facade_nodes(root) == native_root.count_nodes();
     let sexp_match = root.to_sexp() == native_root.to_sexp();
-    let comparison = ShadowComparison {
-        facade_tree: true,
-        root_span_match,
-        node_count_match,
-        sexp_match,
-    };
+    let comparison =
+        ShadowComparison { facade_tree: true, root_span_match, node_count_match, sexp_match };
     if !comparison.root_span_match || !comparison.node_count_match || !comparison.sexp_match {
         FALLBACKS.fetch_add(1, Ordering::Relaxed);
     } else {
