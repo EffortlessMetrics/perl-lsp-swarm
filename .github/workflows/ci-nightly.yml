@@ -198,6 +198,15 @@ jobs:
         # representative benchmark per declared target above, proving that
         # *specific* target actually executed rather than merely that
         # *something* did.
+        #
+        # Verified against a real run (29186609858): "cpan/moose_oo_class" is
+        # a *direct* `c.bench_function("cpan/moose_oo_class", ...)` call, not
+        # an explicit `benchmark_group`. Criterion sanitizes the literal "/"
+        # in a direct id into "_" and writes a single flat directory
+        # (target/criterion/cpan_moose_oo_class/new/...), unlike a real
+        # group/name pair (e.g. "document_insertions/rope_insertion" below),
+        # which genuinely nests. The id here must match what's actually on
+        # disk, not the source-code string passed to bench_function.
         python3 ./benchmarks/scripts/extract-criterion.py \
           --output benchmarks/results/latest.json \
           --strict \
@@ -208,7 +217,7 @@ jobs:
           --expect-id "parse_simple_script" \
           --expect-id "incremental small edit" \
           --expect-id "scope_analysis_many_vars" \
-          --expect-id "cpan/moose_oo_class" \
+          --expect-id "cpan_moose_oo_class" \
           --expect-id "document_insertions/rope_insertion" \
           --expect-id "simple_tokens" \
           --expect-id "configuration_validation/launch_config_validation"

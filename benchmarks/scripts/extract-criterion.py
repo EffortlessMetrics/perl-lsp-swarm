@@ -11,8 +11,13 @@ Usage:
 
 Criterion on-disk layout (both are real and both must parse correctly):
     target/criterion/<name>/new/estimates.json               (direct `c.bench_function(name, ...)`)
-    target/criterion/<group>/<name>/new/estimates.json       (`group.bench_function(name, ...)`,
-                                                               or a direct name containing "/")
+    target/criterion/<group>/<name>/new/estimates.json       (`group.bench_function(name, ...)`)
+A direct `c.bench_function(name, ...)` whose `name` contains a literal "/"
+does NOT nest -- Criterion sanitizes the "/" to "_" and still writes a single
+flat directory (verified against a real run: `c.bench_function("cpan/moose_oo_class",
+...)` produced `target/criterion/cpan_moose_oo_class/new/...`, not a nested
+`cpan/moose_oo_class/`). Only an explicit `group.bench_function(name, ...)`
+pair produces a true nested `<group>/<name>` directory.
 Only the "new" (current-run) estimate is read; "base"/"change" directories hold
 Criterion's own prior-run bookkeeping and must never be mistaken for this run's
 result (see benchmarks/scripts/test_extract_criterion.py for fixture coverage).
@@ -80,14 +85,18 @@ def parse_estimates_path(rel_path_parts: tuple) -> "tuple[str, str] | None":
 
     A 3-part path (`<name>/new/estimates.json`) is a direct, ungrouped
     `c.bench_function(name, ...)` call -- there is no group, so `name` alone
-    is the identifier. A 4+-part path (`<group>/<name>/new/estimates.json`)
-    is either an explicit `group.bench_function(name, ...)` call, or a direct
-    call whose `name` contained a literal "/" (Criterion treats both
-    identically on disk -- it splits on "/" to build the report directory
-    tree regardless of source-code style). The previous version of this
-    parser assumed every path was (at least) 3 parts and always took
-    parts[0]/parts[1] as group/name, which silently mis-parsed every direct
-    benchmark as group=<name>, name="new" (#3979).
+    is the identifier. This is also what a direct call's `name` looks like on
+    disk even when the *source* string contains a literal "/" (e.g.
+    `c.bench_function("cpan/moose_oo_class", ...)`) -- Criterion sanitizes
+    that "/" to "_" for the directory name rather than nesting, so it never
+    produces more than 3 parts on its own.
+
+    A 4+-part path (`<group>/<name>/new/estimates.json`) is an explicit
+    `group.bench_function(name, ...)` call -- the only case that genuinely
+    nests. The previous version of this parser assumed every path was (at
+    least) 3 parts and always took parts[0]/parts[1] as group/name, which
+    silently mis-parsed every direct benchmark as group=<name>, name="new"
+    (#3979).
     """
     if len(rel_path_parts) < 3 or rel_path_parts[-2] != "new":
         return None

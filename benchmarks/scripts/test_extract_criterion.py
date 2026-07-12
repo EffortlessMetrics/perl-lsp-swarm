@@ -59,14 +59,21 @@ class ParseEstimatesPathTests(unittest.TestCase):
         )
         self.assertEqual(parsed, ("document_insertions", "rope_insertion"))
 
-    def test_direct_benchmark_name_containing_slash(self) -> None:
-        # `c.bench_function("cpan/moose_oo_class", ...)` -- Criterion splits
-        # on "/" the same way it splits an explicit group, so this must
-        # parse identically to an explicit group.
+    def test_direct_benchmark_name_containing_slash_does_not_nest(self) -> None:
+        # `c.bench_function("cpan/moose_oo_class", ...)` is a DIRECT call
+        # (no `benchmark_group`) whose id string happens to contain a
+        # literal "/". Verified against a real run (29186609858): Criterion
+        # sanitizes that "/" to "_" and writes a single flat directory,
+        # `target/criterion/cpan_moose_oo_class/new/estimates.json` -- it
+        # does NOT nest like an explicit group would. An earlier version of
+        # this test asserted the opposite (that it parses identically to an
+        # explicit group) and was wrong; --expect-id in ci-nightly.yml made
+        # the same mistake and had to be corrected to the flattened name
+        # (#3979).
         parsed = extract_criterion.parse_estimates_path(
-            ("cpan", "moose_oo_class", "new", "estimates.json")
+            ("cpan_moose_oo_class", "new", "estimates.json")
         )
-        self.assertEqual(parsed, ("cpan", "moose_oo_class"))
+        self.assertEqual(parsed, ("other", "cpan_moose_oo_class"))
 
     def test_stale_base_directory_is_rejected(self) -> None:
         # Criterion keeps a "base" (previous run) directory alongside "new"
