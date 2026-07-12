@@ -716,6 +716,52 @@ use warnings;
     // `explainProviderDecision` receipt path as `references_routing_matrix`
     // above, and does not change any provider behavior.
     //
+    // ## Revision note (post-review repair)
+    //
+    // An independent maintainer review (PR #3998) found the first version of
+    // this replay confounded: every `LocalLexical` request placed the cursor
+    // on the `my` DECLARATION while sending `includeDeclaration: false` — the
+    // opposite shape of the already-proven-in-production positive control
+    // (`references.rs::handle_references_lexical_variable_without_declaration_uses_source_backed_tier`,
+    // which cursors a USAGE). That made the "0 real-project activations"
+    // finding unfalsifiable: even a correctly-working tier would have to
+    // *refuse* the declaration-shaped request, and the manifest's own
+    // expected set demanded the declaration back — the oracle would have
+    // rejected correct behavior. This revision:
+    // - moves every `LocalLexical` cursor onto a usage occurrence and adds one
+    //   `includeDeclaration: true` variant so both directions are exercised;
+    // - adds an in-band positive control (single-file, and the SAME control
+    //   opened alongside each real project in the identical multi-file server
+    //   shape) so "the tier never activates on real code" cannot be confused
+    //   with "the harness/shape itself is broken";
+    // - replaces the exact-match / known-false / producer assertions'
+    //   *purely author-supplied* evidence with fields read from the LIVE
+    //   `explainProviderDecision` receipt, validated by
+    //   `validate_receipt_has_required_fields`;
+    // - replaces the `Building`-coordinator stale-index stand-in (kept below
+    //   as a separate, still-valid STRUCTURAL proof) with a GENUINE
+    //   stale-generation reproduction using the same
+    //   `test_index_file_in_building_state` / `test_simulate_indexing_complete`
+    //   / `test_replace_document_without_index` sequence already proven in
+    //   `references.rs::make_document_index_stale`;
+    // - derives `#1658` dispositions from observed EVIDENCE rather than from
+    //   `FactClass` alone (see `classify_disposition`), defaulting to
+    //   `unclassified` unless a positive control or a genuine, exercised
+    //   refusal justifies otherwise;
+    // - adds mutation-style unit tests (`exact_match_check`/`forbidden_check`/
+    //   `validate_receipt_has_required_fields`) that prove the comparison
+    //   logic itself is discriminating, independent of whether any live
+    //   request currently reaches the source-backed tier;
+    // - writes the receipt as an `insta` snapshot (checked into git under
+    //   `snapshots/`) instead of only `eprintln!`, so it is a durable
+    //   artifact validated by every test run, not just visible under
+    //   `--nocapture`.
+    //
+    // The tier this replay measures is the AST-indexed
+    // `semantic_source_backed_ast_index` tier (`ReferencesAnsweringTier::SemanticSourceBacked`
+    // in `references.rs`) — this replay does not use and is not about PIR-A or
+    // any compiler-backed substrate (that distinction is #3046's).
+    //
     // ## Selection rule (so the corpus composition is inspectable)
     //
     // For each project we name one-to-three files already committed as UX
@@ -740,11 +786,12 @@ use warnings;
     // `semantic_source_backed` (source-backed exactness), the actual result
     // set is asserted to equal the curated expected set exactly and to never
     // contain a known-false location. Cross-file and imported-symbol classes
-    // are intentionally out of the current same-file PIR-A slice; they are
-    // recorded (tier, counts, fallback reason) without a strict equality
-    // assertion, and are still checked against `known_false_occurrences`
-    // (empty for both here, i.e. trivially satisfied) so a future promotion
-    // that DOES claim exactness for them would be caught by this same guard.
+    // are intentionally out of the current same-file AST-indexed slice; they
+    // are recorded (tier, counts, live receipt reason/fallback-state) without
+    // a strict equality assertion, and are still checked against
+    // `known_false_occurrences` (empty for both here, i.e. trivially
+    // satisfied) so a future promotion that DOES claim exactness for them
+    // would be caught by this same guard.
     // ─────────────────────────────────────────────────────────────────────────
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -754,7 +801,7 @@ use warnings;
         /// Subroutine defined and called within the same file, unambiguous name.
         PackageSubSameFile,
         /// Subroutine defined in one file, called from a different file in the
-        /// same project — outside the current same-file PIR-A scope.
+        /// same project — outside the current same-file AST-indexed scope.
         CrossFileSub,
         /// Symbol imported from a module outside the fixture project (e.g.
         /// `Carp::croak`) — declaration is not resolvable in-workspace.
@@ -790,6 +837,11 @@ use warnings;
     /// One checked-in replay request. `cursor_occurrence` and the two
     /// occurrence-index sets refer to the boundary-safe, file-ordered
     /// occurrences of `needle` in `file` (see `ident_boundary_occurrences`).
+    ///
+    /// `scenario_rationale` is AUTHOR-SUPPLIED documentation only (why this
+    /// request was selected) — it is never treated as live evidence. Live
+    /// evidence (the provider's actual `reason`/`fallback_state`/etc.) is read
+    /// from the receipt in `fire_replay_request` and stored on `ReplayRow`.
     #[derive(Debug, Clone, Copy)]
     struct ReplayRequest {
         project: &'static str,
@@ -800,45 +852,85 @@ use warnings;
         include_declaration: bool,
         expected_true_occurrences: &'static [usize],
         known_false_occurrences: &'static [usize],
-        fallback_reason: &'static str,
+        scenario_rationale: &'static str,
     }
 
     /// Checked-in request manifest. See the module doc comment above for the
     /// selection rule. Occurrence indices were confirmed against source with a
     /// boundary-match dump before authoring (each request's file/needle pair
     /// is independently re-verifiable by grepping the named fixture file).
+    ///
+    /// ## `include_declaration` <-> cursor-position <-> declaration-inclusion rule
+    ///
+    /// This is the rule the post-review repair fixed (see the revision note
+    /// in the module doc comment above) — get it backwards and the oracle
+    /// rejects correct provider behavior instead of proving anything:
+    ///
+    /// - When a `LocalLexical` row sends `include_declaration: false`, the
+    ///   cursor MUST be placed on a USAGE occurrence (never the declaration),
+    ///   matching the shape of the already-proven-in-production positive
+    ///   control (`references.rs::handle_references_lexical_variable_without_declaration_uses_source_backed_tier`,
+    ///   which cursors `$value`'s usage, not its `my` declaration). The
+    ///   declaration occurrence MUST NOT appear in `expected_true_occurrences`
+    ///   — it belongs in `known_false_occurrences` instead (labeled below as
+    ///   "declaration, excluded because includeDeclaration:false").
+    /// - Rows that send `include_declaration: true` (the bareword sub/package
+    ///   rows below, plus the one `$plugins` includeDeclaration:true variant)
+    ///   MAY list their declaration/definition occurrence in
+    ///   `expected_true_occurrences`, and the cursor may sit on either the
+    ///   declaration or a usage.
     #[rustfmt::skip]
     const REPLAY_MANIFEST: &[ReplayRequest] = &[
         // ---- Mojolicious: lib/Mojolicious.pm ----
-        // `$plugins` in `dispatch`: decl(56) + 2 same-scope uses(57,59). No
-        // other `$plugins` in the file — single, unambiguous scope.
+        // `$plugins` in `dispatch`: decl(56, occ0) + 2 same-scope uses(57,occ1;
+        // 59,occ2). No other `$plugins` in the file — single, unambiguous
+        // scope. Cursor on occ1 (a USAGE); `include_declaration: false`, so
+        // occ0 (the declaration) is excluded from the expected-true set.
         ReplayRequest {
             project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
             fact_class: FactClass::LocalLexical, needle: "$plugins",
-            cursor_occurrence: 0, include_declaration: false,
-            expected_true_occurrences: &[0, 1, 2], known_false_occurrences: &[],
-            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+            cursor_occurrence: 1, include_declaration: false,
+            expected_true_occurrences: &[1, 2],
+            // occ0: declaration, excluded because includeDeclaration:false.
+            known_false_occurrences: &[0],
+            scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
-        // `$c` in `dispatch` (occ 0-6): must exclude the unrelated `$c` in
-        // `handler` (occ 7-10) — direct scope-shadow analog of the existing
-        // F1 curated corpus fixture, on real code.
+        // Same `$plugins` symbol, `includeDeclaration: true` variant: cursor
+        // still on occ1, but now the declaration IS expected in the result.
+        // Exercises the opposite direction of the rule above on the same
+        // fixture, per the review's "add both =false and =true cases" ask.
+        ReplayRequest {
+            project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
+            fact_class: FactClass::LocalLexical, needle: "$plugins",
+            cursor_occurrence: 1, include_declaration: true,
+            expected_true_occurrences: &[0, 1, 2],
+            known_false_occurrences: &[],
+            scenario_rationale: "same_file_lexical_usage_with_declaration_included",
+        },
+        // `$c` in `dispatch` (occ 0-6, occ0 = decl): must exclude the
+        // unrelated `$c` in `handler` (occ 7-10) — direct scope-shadow analog
+        // of the existing F1 curated corpus fixture, on real code. Cursor on
+        // occ1 (a USAGE); `include_declaration: false`, so occ0 is excluded.
         ReplayRequest {
             project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
             fact_class: FactClass::LocalLexical, needle: "$c",
-            cursor_occurrence: 0, include_declaration: false,
-            expected_true_occurrences: &[0, 1, 2, 3, 4, 5, 6],
-            known_false_occurrences: &[7, 8, 9, 10],
-            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+            cursor_occurrence: 1, include_declaration: false,
+            expected_true_occurrences: &[1, 2, 3, 4, 5, 6],
+            // occ0: declaration, excluded because includeDeclaration:false.
+            known_false_occurrences: &[0, 7, 8, 9, 10],
+            scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
-        // `$c` in `handler` (occ 7-10): the mirror-image request from the
-        // opposite scope.
+        // `$c` in `handler` (occ 7-10, occ7 = decl): the mirror-image request
+        // from the opposite scope. Cursor on occ8 (a USAGE);
+        // `include_declaration: false`, so occ7 is excluded.
         ReplayRequest {
             project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
             fact_class: FactClass::LocalLexical, needle: "$c",
-            cursor_occurrence: 7, include_declaration: false,
-            expected_true_occurrences: &[7, 8, 9, 10],
-            known_false_occurrences: &[0, 1, 2, 3, 4, 5, 6],
-            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+            cursor_occurrence: 8, include_declaration: false,
+            expected_true_occurrences: &[8, 9, 10],
+            // occ7: declaration, excluded because includeDeclaration:false.
+            known_false_occurrences: &[0, 1, 2, 3, 4, 5, 6, 7],
+            scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch`: def(54, occ0) + true call `$self->dispatch($c)`(67, occ3)
         // target `Mojolicious::dispatch`; `$self->static->dispatch($c)`(58,
@@ -849,7 +941,7 @@ use warnings;
             fact_class: FactClass::DynamicAmbiguous, needle: "dispatch",
             cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0, 3], known_false_occurrences: &[1, 2],
-            fallback_reason: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
+            scenario_rationale: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
         },
         // `startup`: call(35, occ0) + def(94, occ1), unambiguous same-file sub.
         ReplayRequest {
@@ -857,7 +949,7 @@ use warnings;
             fact_class: FactClass::PackageSubSameFile, needle: "startup",
             cursor_occurrence: 1, include_declaration: true,
             expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
-            fallback_reason: "same_file_subroutine_did_not_reach_semantic_source_backed_tier",
+            scenario_rationale: "same_file_subroutine_def_and_call",
         },
         // `croak`(73, occ1): Carp is not vendored in this fixture project, so
         // no same-file declaration exists to prove exactness against.
@@ -866,44 +958,53 @@ use warnings;
             fact_class: FactClass::ImportedSymbol, needle: "croak",
             cursor_occurrence: 1, include_declaration: false,
             expected_true_occurrences: &[], known_false_occurrences: &[],
-            fallback_reason: "carp_croak_declared_outside_the_fixture_project",
+            scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
         // ---- Dancer2: lib/Dancer2/Core/App.pm ----
         // `$code` in `add_route`: decl(26,occ0) + uses(27,occ1; 30,occ2); the
         // unrelated `$code` in `add_hook` (occ3,occ4) must be excluded.
+        // Cursor on occ1 (a USAGE); `include_declaration: false`.
         ReplayRequest {
             project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
             fact_class: FactClass::LocalLexical, needle: "$code",
-            cursor_occurrence: 0, include_declaration: false,
-            expected_true_occurrences: &[0, 1, 2], known_false_occurrences: &[3, 4],
-            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+            cursor_occurrence: 1, include_declaration: false,
+            expected_true_occurrences: &[1, 2],
+            // occ0: declaration, excluded because includeDeclaration:false.
+            known_false_occurrences: &[0, 3, 4],
+            scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
-        // `$method` scope pair, side A: `add_route` (occ0,occ1) vs `dispatch`
-        // (occ2,occ3) — same bare name, non-overlapping scopes.
+        // `$method` scope pair, side A: `add_route` (occ0 = decl, occ1) vs
+        // `dispatch` (occ2,occ3) — same bare name, non-overlapping scopes.
+        // Cursor on occ1 (a USAGE); `include_declaration: false`.
         ReplayRequest {
             project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
             fact_class: FactClass::LocalLexical, needle: "$method",
-            cursor_occurrence: 0, include_declaration: false,
-            expected_true_occurrences: &[0, 1], known_false_occurrences: &[2, 3],
-            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+            cursor_occurrence: 1, include_declaration: false,
+            expected_true_occurrences: &[1],
+            // occ0: declaration, excluded because includeDeclaration:false.
+            known_false_occurrences: &[0, 2, 3],
+            scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
-        // `$method` scope pair, side B: the mirror-image request.
+        // `$method` scope pair, side B: the mirror-image request (occ2 = decl).
+        // Cursor on occ3 (a USAGE); `include_declaration: false`.
         ReplayRequest {
             project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
             fact_class: FactClass::LocalLexical, needle: "$method",
-            cursor_occurrence: 2, include_declaration: false,
-            expected_true_occurrences: &[2, 3], known_false_occurrences: &[0, 1],
-            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+            cursor_occurrence: 3, include_declaration: false,
+            expected_true_occurrences: &[3],
+            // occ2: declaration, excluded because includeDeclaration:false.
+            known_false_occurrences: &[0, 1, 2],
+            scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch`(34, occ0): defined here, the only call site is
         // `Runner.pm:32` (`$app->dispatch($env)`) — a DIFFERENT file in the
-        // same project, outside the current same-file PIR-A scope.
+        // same project, outside the current same-file AST-indexed scope.
         ReplayRequest {
             project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
             fact_class: FactClass::CrossFileSub, needle: "dispatch",
             cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0], known_false_occurrences: &[],
-            fallback_reason: "cross_file_caller_lives_outside_the_same_file_pir_a_scope",
+            scenario_rationale: "cross_file_caller_lives_outside_the_same_file_scope",
         },
         // `croak`(27, occ1): same out-of-fixture-declaration reasoning as Mojolicious.
         ReplayRequest {
@@ -911,27 +1012,33 @@ use warnings;
             fact_class: FactClass::ImportedSymbol, needle: "croak",
             cursor_occurrence: 1, include_declaration: false,
             expected_true_occurrences: &[], known_false_occurrences: &[],
-            fallback_reason: "carp_croak_declared_outside_the_fixture_project",
+            scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
         // ---- Catalyst: lib/Catalyst/Action.pm, lib/Catalyst.pm, lib/Catalyst/Dispatcher.pm ----
         // `$controller` in `dispatch`: decl(23,occ0) + uses(24,occ1; 26,occ2),
         // single unambiguous scope, no other `$controller` in the file.
+        // Cursor on occ1 (a USAGE); `include_declaration: false`.
         ReplayRequest {
             project: "catalyst_skeleton", file: "lib/Catalyst/Action.pm",
             fact_class: FactClass::LocalLexical, needle: "$controller",
-            cursor_occurrence: 0, include_declaration: false,
-            expected_true_occurrences: &[0, 1, 2], known_false_occurrences: &[],
-            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+            cursor_occurrence: 1, include_declaration: false,
+            expected_true_occurrences: &[1, 2],
+            // occ0: declaration, excluded because includeDeclaration:false.
+            known_false_occurrences: &[0],
+            scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
-        // `$c` in `dispatch` (occ0-4): must exclude `$c` in `execute`, `match`,
-        // and `match_captures` (occ5-10) — three OTHER scopes share the name.
+        // `$c` in `dispatch` (occ0-4, occ0 = decl): must exclude `$c` in
+        // `execute`, `match`, and `match_captures` (occ5-10) — three OTHER
+        // scopes share the name. Cursor on occ1 (a USAGE);
+        // `include_declaration: false`.
         ReplayRequest {
             project: "catalyst_skeleton", file: "lib/Catalyst/Action.pm",
             fact_class: FactClass::LocalLexical, needle: "$c",
-            cursor_occurrence: 0, include_declaration: false,
-            expected_true_occurrences: &[0, 1, 2, 3, 4],
-            known_false_occurrences: &[5, 6, 7, 8, 9, 10],
-            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+            cursor_occurrence: 1, include_declaration: false,
+            expected_true_occurrences: &[1, 2, 3, 4],
+            // occ0: declaration, excluded because includeDeclaration:false.
+            known_false_occurrences: &[0, 5, 6, 7, 8, 9, 10],
+            scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch` in Catalyst.pm: call `$c->dispatch;`(180,occ0) +
         // def(184,occ1) — unambiguous WITHIN this file even though `dispatch`
@@ -941,7 +1048,7 @@ use warnings;
             fact_class: FactClass::PackageSubSameFile, needle: "dispatch",
             cursor_occurrence: 1, include_declaration: true,
             expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
-            fallback_reason: "same_file_subroutine_did_not_reach_semantic_source_backed_tier",
+            scenario_rationale: "same_file_subroutine_def_and_call",
         },
         // `dispatch` in Dispatcher.pm: def(12,occ0); ALL THREE in-file calls
         // (`$action->dispatch`(22,occ1), `$action_or_url->dispatch`(28,occ2),
@@ -953,7 +1060,7 @@ use warnings;
             fact_class: FactClass::DynamicAmbiguous, needle: "dispatch",
             cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0], known_false_occurrences: &[1, 2, 3],
-            fallback_reason: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
+            scenario_rationale: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
         },
         // `croak`(31, occ1): same out-of-fixture-declaration reasoning as above.
         ReplayRequest {
@@ -961,7 +1068,7 @@ use warnings;
             fact_class: FactClass::ImportedSymbol, needle: "croak",
             cursor_occurrence: 1, include_declaration: false,
             expected_true_occurrences: &[], known_false_occurrences: &[],
-            fallback_reason: "carp_croak_declared_outside_the_fixture_project",
+            scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
     ];
 
@@ -972,6 +1079,11 @@ use warnings;
         ("catalyst_skeleton", "lib/Catalyst/Action.pm", 7),
     ];
 
+    /// One observed row. Fields prefixed `receipt_*` are read LIVE from the
+    /// `explainProviderDecision` receipt (never author-supplied) — this is
+    /// the evidence assertions #4/#5/#6 are checked against.
+    /// `scenario_rationale` is the manifest author's documentation string,
+    /// kept separately so it is never mistaken for provider evidence.
     #[derive(Debug)]
     struct ReplayRow {
         project: &'static str,
@@ -988,7 +1100,27 @@ use warnings;
         index_result_count: usize,
         text_result_count: usize,
         latency_us: u64,
-        fallback_reason: &'static str,
+        /// Live receipt `reason` (e.g. `"live_provider_result"`, `"no_result"`).
+        receipt_reason: String,
+        /// Live receipt `decision` (e.g. `"acted"`, `"fallback"`).
+        receipt_decision: String,
+        /// Live receipt `fallback_state` (e.g. `"live_provider"`, `"legacy_provider"`, `"no_result"`).
+        receipt_fallback_state: String,
+        /// Live receipt `confidence` (`"high"` | `"low"`).
+        receipt_confidence: String,
+        /// Live receipt `freshness`. NOTE: production currently hardcodes this
+        /// to the constant `"fresh"` regardless of real document/index
+        /// generation state (see `references.rs::record_references_provider_decision_trace`)
+        /// — this replay reports the field as-is and does not claim it tracks
+        /// genuine staleness; see `references_representative_replay_genuine_stale_generation_downgrades_index_state`
+        /// for the real staleness proof, which uses `index_state` instead.
+        receipt_freshness: String,
+        /// Live receipt `fact_source` (producer, e.g. `"semantic_fact"`, `"fallback"`).
+        receipt_fact_source: String,
+        /// Live receipt `source_backed_state` (proof class, e.g.
+        /// `"semantic_source_backed_ast_index"`).
+        receipt_source_backed_state: String,
+        scenario_rationale: &'static str,
         disposition: &'static str,
     }
 
@@ -1122,36 +1254,177 @@ use warnings;
             .collect()
     }
 
-    /// Roll an observed row up into a #1658 disposition bucket. See the
-    /// module doc comment above for what each bucket means; this function is
-    /// purely a classifier over already-asserted-safe observations (the hard
-    /// assertions in `fire_replay_request` run first and would fail the test
-    /// before a false-exact row ever reaches this classifier).
+    /// Returns `Ok(())` when `actual` (any order) is exactly equal to
+    /// `expected` (any order) as sets; otherwise a diagnostic `Err`.
+    ///
+    /// Extracted as a pure function — independent of any live server or the
+    /// `semantic_source_backed` tier ever firing — so its discriminating
+    /// power can be unit-tested directly with synthetic inputs. See
+    /// `exact_match_check_rejects_declaration_reintroduced_into_expected`
+    /// below: this is the mutation test that "revert-proves" the fix for the
+    /// PR #3998 review's decisive finding (a declaration wrongly present in a
+    /// decl-excluding expected set).
+    fn exact_match_check(
+        actual: &[(String, u32, u32)],
+        expected: &[(String, u32, u32)],
+    ) -> Result<(), String> {
+        let mut actual_sorted = actual.to_vec();
+        actual_sorted.sort();
+        let mut expected_sorted = expected.to_vec();
+        expected_sorted.sort();
+        if actual_sorted == expected_sorted {
+            Ok(())
+        } else {
+            Err(format!("expected {expected_sorted:?}, got {actual_sorted:?}"))
+        }
+    }
+
+    /// Returns `Ok(())` when none of `forbidden` appears in `actual`;
+    /// otherwise a diagnostic `Err`. Extracted as a pure function for the same
+    /// mutation-testing reason as `exact_match_check`.
+    fn forbidden_check(
+        actual: &[(String, u32, u32)],
+        forbidden: &[(String, u32, u32)],
+    ) -> Result<(), String> {
+        for location in forbidden {
+            if actual.contains(location) {
+                return Err(format!("actual result contains known-false location {location:?}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Live-receipt completeness check: every field the replay treats as
+    /// evidence (not author-supplied) must be present and non-empty. Extracted
+    /// as a pure function over a parsed JSON object so it can be unit-tested
+    /// directly with a synthetic incomplete receipt.
+    fn validate_receipt_has_required_fields(
+        receipt: &serde_json::Map<String, Value>,
+    ) -> Result<(), String> {
+        const REQUIRED_STRING_FIELDS: &[&str] = &[
+            "decision",
+            "reason",
+            "fallback_state",
+            "confidence",
+            "freshness",
+            "fact_source",
+            "source_backed_state",
+            "answering_tier",
+            "index_state",
+        ];
+        for field in REQUIRED_STRING_FIELDS {
+            let is_present_and_non_empty =
+                receipt.get(*field).and_then(Value::as_str).is_some_and(|value| !value.is_empty());
+            if !is_present_and_non_empty {
+                return Err(format!("receipt missing or empty required field `{field}`"));
+            }
+        }
+        if receipt.get("latency_us").and_then(Value::as_u64).is_none() {
+            return Err("receipt missing required numeric field `latency_us`".to_string());
+        }
+        Ok(())
+    }
+
+    /// Live-receipt fields read directly off a parsed `request_receipt`
+    /// object — never author-supplied. Bundled so `fire_replay_request` and
+    /// `fire_empty_request` can extract them identically.
+    struct LiveReceiptEvidence {
+        answering_tier: String,
+        source_backed: bool,
+        index_result_count: usize,
+        text_result_count: usize,
+        latency_us: u64,
+        reason: String,
+        decision: String,
+        fallback_state: String,
+        confidence: String,
+        freshness: String,
+        fact_source: String,
+        source_backed_state: String,
+    }
+
+    fn read_live_receipt_evidence(
+        receipt: &serde_json::Map<String, Value>,
+        wall_us: u64,
+    ) -> Result<LiveReceiptEvidence, Box<dyn std::error::Error>> {
+        validate_receipt_has_required_fields(receipt)?;
+        let str_field = |name: &str| -> String {
+            receipt.get(name).and_then(Value::as_str).unwrap_or("").to_string()
+        };
+        Ok(LiveReceiptEvidence {
+            answering_tier: str_field("answering_tier"),
+            source_backed: receipt.get("source_backed").and_then(Value::as_bool).unwrap_or(false),
+            index_result_count: usize::try_from(
+                receipt.get("index_result_count").and_then(Value::as_u64).unwrap_or(0),
+            )
+            .unwrap_or(usize::MAX),
+            text_result_count: usize::try_from(
+                receipt.get("text_result_count").and_then(Value::as_u64).unwrap_or(0),
+            )
+            .unwrap_or(usize::MAX),
+            latency_us: receipt.get("latency_us").and_then(Value::as_u64).unwrap_or(wall_us),
+            reason: str_field("reason"),
+            decision: str_field("decision"),
+            fallback_state: str_field("fallback_state"),
+            confidence: str_field("confidence"),
+            freshness: str_field("freshness"),
+            fact_source: str_field("fact_source"),
+            source_backed_state: str_field("source_backed_state"),
+        })
+    }
+
+    /// Roll an observed row up into a #1658 disposition bucket, driven by
+    /// EVIDENCE rather than `FactClass` alone (per the PR #3998 review):
+    ///
+    /// - `index_parity_proven`: only from an observed exact match on a
+    ///   `source_backed` row for a strictly-checked class.
+    /// - `explicit_refusal_safe`: only from a genuinely EXERCISED refusal —
+    ///   `EmptyPosition` (asserted empty) or a non-source-backed row that
+    ///   itself returned zero results. A noisy non-empty `workspace_mixed`
+    ///   answer is NOT "safe" just because it avoided the known-false set —
+    ///   that would only prove "not disproven", not "verified correct".
+    /// - `coverage_gap`: only for `LocalLexical`/`PackageSubSameFile` rows
+    ///   that failed to reach `source_backed`, AND ONLY when
+    ///   `positive_control_evidence` is `true` for that project (i.e. a
+    ///   control request in the identical multi-file server shape DID reach
+    ///   `semantic_source_backed`, ruling out a harness/shape confound).
+    ///   Without that evidence the class is `unexercised`, not `coverage_gap`.
+    /// - `unclassified`: the default — including any `source_backed` row that
+    ///   is NOT strictly checked, or a strictly-checked `source_backed` row
+    ///   that (should never happen, since the hard assertion above would have
+    ///   already failed the test) somehow reaches this classifier mismatched.
     fn classify_disposition(
         fact_class: FactClass,
         source_backed: bool,
+        result_count: usize,
         result_locations: &[(String, u32, u32)],
         expected_keys: &[(String, u32, u32)],
+        positive_control_evidence: bool,
     ) -> &'static str {
         if source_backed {
-            if fact_class.is_strictly_checked() {
-                let mut actual_sorted = result_locations.to_vec();
-                actual_sorted.sort();
-                let mut expected_sorted = expected_keys.to_vec();
-                expected_sorted.sort();
-                if actual_sorted == expected_sorted {
-                    return "index_parity_proven";
-                }
-                return "unclassified";
+            if fact_class.is_strictly_checked()
+                && exact_match_check(result_locations, expected_keys).is_ok()
+            {
+                return "index_parity_proven";
             }
-            return "coverage_gap";
+            return "unclassified";
         }
         match fact_class {
-            FactClass::CrossFileSub | FactClass::ImportedSymbol | FactClass::DynamicAmbiguous => {
-                "explicit_refusal_safe"
-            }
             FactClass::EmptyPosition => "explicit_refusal_safe",
-            FactClass::LocalLexical | FactClass::PackageSubSameFile => "coverage_gap",
+            FactClass::LocalLexical | FactClass::PackageSubSameFile => {
+                if positive_control_evidence {
+                    "coverage_gap"
+                } else {
+                    "unexercised"
+                }
+            }
+            FactClass::CrossFileSub | FactClass::ImportedSymbol | FactClass::DynamicAmbiguous => {
+                if result_count == 0 {
+                    "explicit_refusal_safe"
+                } else {
+                    "unclassified"
+                }
+            }
         }
     }
 
@@ -1160,6 +1433,7 @@ use warnings;
         server: &LspServer,
         request: &ReplayRequest,
         fixture_files: &[(String, String)],
+        positive_control_evidence: bool,
     ) -> Result<ReplayRow, Box<dyn std::error::Error>> {
         let content = fixture_content(fixture_files, request.file)?;
         let uri = project_uri(request.project, request.file);
@@ -1208,38 +1482,12 @@ use warnings;
             request.needle
         );
 
-        let answering_tier =
-            receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("unknown").to_string();
-        let source_backed = receipt.get("source_backed").and_then(Value::as_bool).unwrap_or(false);
-        let index_result_count =
-            usize::try_from(receipt.get("index_result_count").and_then(Value::as_u64).unwrap_or(0))
-                .unwrap_or(usize::MAX);
-        let text_result_count =
-            usize::try_from(receipt.get("text_result_count").and_then(Value::as_u64).unwrap_or(0))
-                .unwrap_or(usize::MAX);
-        let latency_us = receipt.get("latency_us").and_then(Value::as_u64).unwrap_or(wall_us);
-        let fact_source = receipt.get("fact_source").and_then(Value::as_str).unwrap_or("");
-        let source_backed_state =
-            receipt.get("source_backed_state").and_then(Value::as_str).unwrap_or("");
-
-        // Hard assertion #6: every source-backed claim reports both a proof
-        // class (`source_backed_state`) and a producer (`fact_source`).
-        if source_backed {
-            assert!(
-                !fact_source.is_empty(),
-                "source-backed row missing fact_source (producer) for {}/{} needle={:?}",
-                request.project,
-                request.file,
-                request.needle
-            );
-            assert!(
-                !source_backed_state.is_empty(),
-                "source-backed row missing source_backed_state (proof class) for {}/{} needle={:?}",
-                request.project,
-                request.file,
-                request.needle
-            );
-        }
+        // Hard assertions #4/#5/#6 (evidence completeness): every receipt
+        // must carry live reason/fallback_state/confidence/freshness/
+        // fact_source/source_backed_state/latency, not just an author string.
+        let evidence = read_live_receipt_evidence(receipt, wall_us).map_err(|e| {
+            format!("{}/{} needle={:?}: {e}", request.project, request.file, request.needle)
+        })?;
 
         let results = result.as_ref().and_then(Value::as_array).cloned().unwrap_or_default();
         let result_locations = location_keys(&results);
@@ -1258,52 +1506,35 @@ use warnings;
 
         // Hard assertions #1/#2/#3: whenever the tier claims source-backed
         // exactness, it must never surface a known-false location (this is
-        // where the ambiguous/dynamic and (via the sibling stale-index test
+        // where the ambiguous/dynamic and (via the sibling stale-index tests
         // below) stale-generation invariants are actually enforced), and for
         // strictly-checked classes the result must equal the curated expected
-        // set exactly.
-        if source_backed {
-            for forbidden in &forbidden_keys {
-                assert!(
-                    !result_locations.contains(forbidden),
-                    "false-exact: {}/{} needle={:?} (fact_class={:?}) claimed source-backed \
-                     exact but returned known-false location {forbidden:?}",
-                    request.project,
-                    request.file,
-                    request.needle,
-                    request.fact_class
-                );
-            }
-            if request.fact_class.is_strictly_checked() {
-                let mut actual_sorted = result_locations.clone();
-                actual_sorted.sort();
-                let mut expected_sorted = expected_keys.clone();
-                expected_sorted.sort();
-                assert_eq!(
-                    actual_sorted, expected_sorted,
-                    "exact-range mismatch for {}/{} needle={:?} (fact_class={:?}): \
-                     expected {expected_sorted:?}, got {actual_sorted:?}",
+        // set exactly. Both checks go through the same pure functions unit-
+        // tested below with synthetic inputs.
+        if evidence.source_backed {
+            forbidden_check(&result_locations, &forbidden_keys).map_err(|e| {
+                format!(
+                    "false-exact: {}/{} needle={:?} (fact_class={:?}): {e}",
                     request.project, request.file, request.needle, request.fact_class
-                );
+                )
+            })?;
+            if request.fact_class.is_strictly_checked() {
+                exact_match_check(&result_locations, &expected_keys).map_err(|e| {
+                    format!(
+                        "exact-range mismatch for {}/{} needle={:?} (fact_class={:?}): {e}",
+                        request.project, request.file, request.needle, request.fact_class
+                    )
+                })?;
             }
-        }
-
-        // Hard assertion #5: every fallback is named by tier + reason.
-        if !source_backed {
-            assert!(
-                !request.fallback_reason.is_empty(),
-                "fallback row for {}/{} needle={:?} missing a named reason",
-                request.project,
-                request.file,
-                request.needle
-            );
         }
 
         let disposition = classify_disposition(
             request.fact_class,
-            source_backed,
+            evidence.source_backed,
+            result_count,
             &result_locations,
             &expected_keys,
+            positive_control_evidence,
         );
 
         Ok(ReplayRow {
@@ -1315,13 +1546,20 @@ use warnings;
             uri,
             line,
             character,
-            answering_tier,
-            source_backed,
+            answering_tier: evidence.answering_tier,
+            source_backed: evidence.source_backed,
             result_count,
-            index_result_count,
-            text_result_count,
-            latency_us,
-            fallback_reason: request.fallback_reason,
+            index_result_count: evidence.index_result_count,
+            text_result_count: evidence.text_result_count,
+            latency_us: evidence.latency_us,
+            receipt_reason: evidence.reason,
+            receipt_decision: evidence.decision,
+            receipt_fallback_state: evidence.fallback_state,
+            receipt_confidence: evidence.confidence,
+            receipt_freshness: evidence.freshness,
+            receipt_fact_source: evidence.fact_source,
+            receipt_source_backed_state: evidence.source_backed_state,
+            scenario_rationale: request.scenario_rationale,
             disposition,
         })
     }
@@ -1358,21 +1596,14 @@ use warnings;
             "receipt line mismatch for empty position {project}/{file}"
         );
 
-        let answering_tier =
-            receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("unknown").to_string();
+        let evidence = read_live_receipt_evidence(receipt, wall_us)
+            .map_err(|e| format!("empty position {project}/{file}: {e}"))?;
         assert_eq!(
-            answering_tier, "empty",
-            "no-symbol position must yield `empty` tier for {project}/{file}, got {answering_tier}"
+            evidence.answering_tier, "empty",
+            "no-symbol position must yield `empty` tier for {project}/{file}, got {}",
+            evidence.answering_tier
         );
 
-        let source_backed = receipt.get("source_backed").and_then(Value::as_bool).unwrap_or(false);
-        let index_result_count =
-            usize::try_from(receipt.get("index_result_count").and_then(Value::as_u64).unwrap_or(0))
-                .unwrap_or(usize::MAX);
-        let text_result_count =
-            usize::try_from(receipt.get("text_result_count").and_then(Value::as_u64).unwrap_or(0))
-                .unwrap_or(usize::MAX);
-        let latency_us = receipt.get("latency_us").and_then(Value::as_u64).unwrap_or(wall_us);
         let result_count = result.as_ref().and_then(Value::as_array).map(Vec::len).unwrap_or(0);
         assert_eq!(
             result_count, 0,
@@ -1388,18 +1619,27 @@ use warnings;
             uri: uri.to_string(),
             line: u32::try_from(line0)?,
             character: 0,
-            answering_tier,
-            source_backed,
+            answering_tier: evidence.answering_tier,
+            source_backed: evidence.source_backed,
             result_count,
-            index_result_count,
-            text_result_count,
-            latency_us,
-            fallback_reason: "no_symbol_under_cursor_correctly_empty",
+            index_result_count: evidence.index_result_count,
+            text_result_count: evidence.text_result_count,
+            latency_us: evidence.latency_us,
+            receipt_reason: evidence.reason,
+            receipt_decision: evidence.decision,
+            receipt_fallback_state: evidence.fallback_state,
+            receipt_confidence: evidence.confidence,
+            receipt_freshness: evidence.freshness,
+            receipt_fact_source: evidence.fact_source,
+            receipt_source_backed_state: evidence.source_backed_state,
+            scenario_rationale: "no_symbol_under_cursor_correctly_empty",
             disposition: "explicit_refusal_safe",
         })
     }
 
-    fn row_to_json(row: &ReplayRow) -> Value {
+    /// Full row detail, including latency (non-deterministic — informational
+    /// only). Printed to the test log for humans; NOT the durable artifact.
+    fn row_to_json_full(row: &ReplayRow) -> Value {
         json!({
             "project": row.project,
             "file": row.file,
@@ -1415,17 +1655,125 @@ use warnings;
             "index_result_count": row.index_result_count,
             "text_result_count": row.text_result_count,
             "latency_us": row.latency_us,
-            "fallback_reason": row.fallback_reason,
+            "receipt_reason": row.receipt_reason,
+            "receipt_decision": row.receipt_decision,
+            "receipt_fallback_state": row.receipt_fallback_state,
+            "receipt_confidence": row.receipt_confidence,
+            "receipt_freshness": row.receipt_freshness,
+            "receipt_fact_source": row.receipt_fact_source,
+            "receipt_source_backed_state": row.receipt_source_backed_state,
+            "scenario_rationale": row.scenario_rationale,
             "disposition": row.disposition,
         })
+    }
+
+    /// Deterministic row detail for the checked-in snapshot: everything
+    /// EXCEPT `latency_us` (wall-clock, varies run to run — the module doc
+    /// comment at the top of this file already establishes latency here is
+    /// informational only, never a performance gate).
+    fn row_to_json_snapshot(row: &ReplayRow) -> Value {
+        json!({
+            "project": row.project,
+            "file": row.file,
+            "fact_class": row.fact_class.as_str(),
+            "needle": row.needle,
+            "include_declaration": row.include_declaration,
+            "uri": row.uri,
+            "line": row.line,
+            "character": row.character,
+            "answering_tier": row.answering_tier,
+            "source_backed": row.source_backed,
+            "result_count": row.result_count,
+            "index_result_count": row.index_result_count,
+            "text_result_count": row.text_result_count,
+            "receipt_reason": row.receipt_reason,
+            "receipt_decision": row.receipt_decision,
+            "receipt_fallback_state": row.receipt_fallback_state,
+            "receipt_confidence": row.receipt_confidence,
+            "receipt_freshness": row.receipt_freshness,
+            "receipt_fact_source": row.receipt_fact_source,
+            "receipt_source_backed_state": row.receipt_source_backed_state,
+            "scenario_rationale": row.scenario_rationale,
+            "disposition": row.disposition,
+        })
+    }
+
+    /// Reproduces the already-proven-in-production positive control
+    /// (`references.rs::handle_references_lexical_variable_without_declaration_uses_source_backed_tier`)
+    /// against a FRESH single-file server: cursor on a USAGE, not the
+    /// declaration, `includeDeclaration: false`. Proves the harness itself
+    /// (this test file's helpers, not just production) can observe the
+    /// source-backed tier before any conclusion is drawn about real project
+    /// code.
+    fn assert_single_file_positive_control() -> Result<(), Box<dyn std::error::Error>> {
+        let server = create_server();
+        let uri = "file:///control/single-file-scalar-no-decl.pl";
+        let text = "my $value = 1;\nmy $other = $value;\n";
+        open_document(&server, uri, text)?;
+
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 1, "character": 12},
+            "context": {"includeDeclaration": false}
+        });
+        server.test_handle_references(Some(params))?;
+        let explanation = explain_provider_decision(&server, "references")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing request_receipt")?;
+        let tier = receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("");
+        assert_eq!(
+            tier, "semantic_source_backed",
+            "single-file positive control must reach the source-backed tier (harness sanity)"
+        );
+        Ok(())
+    }
+
+    /// The SAME positive-control snippet, opened alongside a real, already-
+    /// opened multi-file project in the SAME server. If this still reaches
+    /// `semantic_source_backed`, a zero-activation finding for the project's
+    /// OWN `LocalLexical`/`PackageSubSameFile` rows cannot be attributed to
+    /// "the multi-file replay-server shape itself breaks the tier" — the
+    /// shape is proven capable of activating it.
+    fn assert_multi_file_positive_control(
+        project: &str,
+        server: &LspServer,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let control_uri = format!("file:///real_projects/{project}/__positive_control__.pl");
+        let control_text = "my $value = 1;\nmy $other = $value;\n";
+        open_document(server, &control_uri, control_text)?;
+
+        let params = json!({
+            "textDocument": {"uri": control_uri},
+            "position": {"line": 1, "character": 12},
+            "context": {"includeDeclaration": false}
+        });
+        server.test_handle_references(Some(params))?;
+        let explanation = explain_provider_decision(server, "references")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing request_receipt")?;
+        let tier = receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("");
+        assert_eq!(
+            tier, "semantic_source_backed",
+            "positive control opened alongside the real {project} project must still reach the \
+             source-backed tier (rules out a harness/multi-file-shape confound)"
+        );
+        Ok(())
     }
 
     /// Representative-workspace replay for #2674 PR-3 (references measurement,
     /// no live provider behavior change). Fires every request in
     /// `REPLAY_MANIFEST` + `EMPTY_POSITION_MANIFEST` against three real,
-    /// committed project fixtures, then checks the 9 hard assertions described
-    /// in the module doc comment above and prints a durable JSON receipt with
-    /// a per-request #1658 disposition.
+    /// committed project fixtures, asserts an in-band positive control per
+    /// project (see `assert_multi_file_positive_control` — this call is
+    /// inline, not a separate skippable test, so removing it removes coverage
+    /// from THIS governing test), checks the 9 hard assertions described in
+    /// the module doc comment above, snapshots a durable receipt via `insta`,
+    /// and prints the full (latency-inclusive) receipt with a per-request
+    /// #1658 disposition.
     #[test]
     fn references_representative_workspace_replay() -> Result<(), Box<dyn std::error::Error>> {
         use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -1433,9 +1781,19 @@ use warnings;
         let projects = ["mojolicious_skeleton", "dancer2_skeleton", "catalyst_skeleton"];
         let mut project_files: HashMap<&str, Vec<(String, String)>> = HashMap::new();
         let mut servers: HashMap<&str, LspServer> = HashMap::new();
+        let mut positive_control_evidence: HashMap<&str, bool> = HashMap::new();
+
+        // Global (project-independent) sanity check first.
+        assert_single_file_positive_control()?;
+
         for project in projects {
             let server = create_server();
             let files = open_project(&server, project)?;
+            // In-band multi-file-shape positive control: asserts inline, so a
+            // regression here fails THIS test, not a separate one that could
+            // silently bit-rot or be skipped.
+            assert_multi_file_positive_control(project, &server)?;
+            positive_control_evidence.insert(project, true);
             project_files.insert(project, files);
             servers.insert(project, server);
         }
@@ -1444,7 +1802,9 @@ use warnings;
         for request in REPLAY_MANIFEST {
             let server = servers.get(request.project).ok_or("missing server for project")?;
             let files = project_files.get(request.project).ok_or("missing files for project")?;
-            rows.push(fire_replay_request(server, request, files)?);
+            let control_evidence =
+                positive_control_evidence.get(request.project).copied().unwrap_or(false);
+            rows.push(fire_replay_request(server, request, files, control_evidence)?);
         }
         for (project, file, line0) in EMPTY_POSITION_MANIFEST.iter().copied() {
             let server = servers.get(project).ok_or("missing server for project")?;
@@ -1477,11 +1837,14 @@ use warnings;
         );
 
         // Hard assertion #4: every empty success is proven correct (`empty`
-        // tier) or carries an explicit fallback-reason explanation.
+        // tier) or carries a live, non-empty receipt reason/fallback_state
+        // (already enforced per-row by `validate_receipt_has_required_fields`
+        // inside `fire_replay_request`/`fire_empty_request`; re-asserted here
+        // over the aggregated rows for a single top-level failure message).
         for row in &rows {
             if row.result_count == 0 {
                 assert!(
-                    row.answering_tier == "empty" || !row.fallback_reason.is_empty(),
+                    row.answering_tier == "empty" || !row.receipt_reason.is_empty(),
                     "unexplained empty result for {}/{} needle={:?}",
                     row.project,
                     row.file,
@@ -1490,8 +1853,10 @@ use warnings;
             }
         }
 
-        let receipt = json!({
-            "schema_version": 1,
+        // Full (latency-inclusive) receipt: printed for humans, not the
+        // durable artifact.
+        let full_receipt = json!({
+            "schema_version": 2,
             "claim_boundary": "This PR measures current references behavior across a declared \
                 representative workspace corpus, verifies exactness and honest degradation, and \
                 identifies where the request-time text scan is removable, required by an \
@@ -1499,11 +1864,11 @@ use warnings;
                 live provider behavior or claim real user-traffic weighting.",
             "projects": projects,
             "request_count": rows.len(),
-            "rows": rows.iter().map(row_to_json).collect::<Vec<_>>(),
+            "rows": rows.iter().map(row_to_json_full).collect::<Vec<_>>(),
         });
         eprintln!(
             "references_representative_replay_receipt={}",
-            serde_json::to_string_pretty(&receipt)?
+            serde_json::to_string_pretty(&full_receipt)?
         );
 
         let mut by_class: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -1515,18 +1880,39 @@ use warnings;
             eprintln!("  {class:<24} {dispositions:?}");
         }
 
+        // Durable receipt: a deterministic (latency-excluded) snapshot,
+        // checked into git under `snapshots/`, validated by every test run —
+        // not just visible under `--nocapture`. Any drift (a new project, a
+        // changed disposition, a newly-reached source-backed row) fails this
+        // test until the snapshot is reviewed and re-accepted.
+        let snapshot_receipt = json!({
+            "schema_version": 2,
+            "projects": projects,
+            "request_count": rows.len(),
+            "rows": rows.iter().map(row_to_json_snapshot).collect::<Vec<_>>(),
+        });
+        insta::assert_snapshot!(
+            "references_representative_replay_receipt",
+            serde_json::to_string_pretty(&snapshot_receipt)?
+        );
+
         Ok(())
     }
 
-    /// Hard assertion #2 (stale-generation requests produce ZERO false-exact
-    /// answers), proven mechanically rather than merely observed: the
-    /// `semantic_source_backed` tier is only reachable inside the
-    /// `IndexAccessMode::Full(coordinator)` branch of `handle_references_inner`
-    /// (see `crates/perl-lsp-rs/src/runtime/language/references.rs`). A
+    /// Hard assertion #2, STRUCTURAL half (stale-generation requests produce
+    /// ZERO false-exact answers), proven mechanically rather than merely
+    /// observed: the `semantic_source_backed` tier is only reachable inside
+    /// the `IndexAccessMode::Full(coordinator)` branch of
+    /// `handle_references_inner` (see
+    /// `crates/perl-lsp-rs/src/runtime/language/references.rs`). A
     /// Building/partial-index coordinator — the same stand-in the routing
-    /// matrix above uses for a stale/not-yet-caught-up index — makes that
+    /// matrix above uses for an index that has not caught up — makes that
     /// whole branch structurally unreachable, so it can never emit a
-    /// false-exact answer regardless of what the request would otherwise find.
+    /// false-exact answer regardless of what the request would otherwise
+    /// find. This does NOT reproduce a genuine stale-generation window (an
+    /// open document newer than its own index entry); see
+    /// `references_representative_replay_genuine_stale_generation_downgrades_index_state`
+    /// below for that.
     #[test]
     fn references_representative_replay_stale_index_never_source_backed(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1536,7 +1922,7 @@ use warnings;
 
         let content = fixture_content(&files, "lib/Mojolicious.pm")?;
         let uri = project_uri("mojolicious_skeleton", "lib/Mojolicious.pm");
-        let (line, character) = occurrence_position(content, "$plugins", 0)?;
+        let (line, character) = occurrence_position(content, "$plugins", 1)?;
         let params = json!({
             "textDocument": {"uri": uri},
             "position": {"line": line, "character": character},
@@ -1555,10 +1941,248 @@ use warnings;
 
         assert_ne!(
             answering_tier, "semantic_source_backed",
-            "a stale/partial index state must not reach the source-backed tier"
+            "a partial-index (Building) state must not reach the source-backed tier"
         );
-        assert!(!source_backed, "a stale/partial index state must not report source_backed=true");
+        assert!(
+            !source_backed,
+            "a partial-index (Building) state must not report source_backed=true"
+        );
 
         Ok(())
+    }
+
+    /// Hard assertion #2, GENUINE half: reproduces an actual stale-generation
+    /// window — the open document's generation is newer than the workspace
+    /// index's recorded generation for that same document — using the exact
+    /// helper sequence already proven in
+    /// `references.rs::make_document_index_stale`
+    /// (`test_index_file_in_building_state` -> `test_simulate_indexing_complete`
+    /// -> `test_replace_document_without_index`), applied to real project
+    /// content instead of a synthetic snippet. Confirms the live downgrade via
+    /// `index_state` (the receipt's `freshness` field is currently a
+    /// hardcoded `"fresh"` constant in production and does not vary with
+    /// staleness — see the `ReplayRow::receipt_freshness` doc comment; this
+    /// replay cannot and does not assert a freshness *value* change, only the
+    /// `index_state` downgrade and the resulting inability to reach
+    /// `semantic_source_backed`).
+    #[test]
+    fn references_representative_replay_genuine_stale_generation_downgrades_index_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let server = create_server();
+        let files = open_project(&server, "mojolicious_skeleton")?;
+        let content = fixture_content(&files, "lib/Mojolicious.pm")?;
+        let uri = project_uri("mojolicious_skeleton", "lib/Mojolicious.pm");
+
+        server.test_index_file_in_building_state(&uri, content).map_err(|e| e.to_string())?;
+        server.test_simulate_indexing_complete();
+        server.test_replace_document_without_index(&uri, content, 2).map_err(|e| e.to_string())?;
+        assert!(
+            server.workspace_index_stale_for_document(&uri),
+            "test setup must leave the open document newer than its workspace index generation"
+        );
+
+        let (line, character) = occurrence_position(content, "$plugins", 1)?;
+        let params = json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "position": {"line": line, "character": character},
+            "context": {"includeDeclaration": false}
+        });
+        server.test_handle_references(Some(params))?;
+
+        let explanation = explain_provider_decision(&server, "references")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing request_receipt")?;
+
+        assert_eq!(
+            receipt.get("index_state").and_then(Value::as_str),
+            Some("none"),
+            "a genuinely stale open-document generation must downgrade references index access"
+        );
+        assert_eq!(
+            receipt.get("source_backed").and_then(Value::as_bool),
+            Some(false),
+            "a genuinely stale open-document generation must not report source_backed=true"
+        );
+        assert_ne!(
+            receipt.get("answering_tier").and_then(Value::as_str),
+            Some("semantic_source_backed"),
+            "a genuinely stale open-document generation must not reach the source-backed tier"
+        );
+
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Mutation tests: prove the comparison/validation logic above is
+    // discriminating, independent of whether any live request currently
+    // reaches the `semantic_source_backed` tier. Each of these directly
+    // "revert-proves" one of the PR #3998 review's repair requirements.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn exact_match_check_accepts_correct_set_regardless_of_order(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let key = |line: u32, character: u32| ("file:///t.pl".to_string(), line, character);
+        let actual = vec![key(1, 12), key(2, 5)];
+        let expected = vec![key(2, 5), key(1, 12)];
+        exact_match_check(&actual, &expected).map_err(|e| e.into())
+    }
+
+    /// Revert-proves the PR #3998 review's decisive finding: if a declaration
+    /// occurrence were reintroduced into a decl-excluding expected set, this
+    /// comparison MUST reject it as a mismatch.
+    #[test]
+    fn exact_match_check_rejects_declaration_reintroduced_into_expected(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let key = |line: u32, character: u32| ("file:///t.pl".to_string(), line, character);
+        // `actual` = a correct includeDeclaration:false result (usage only).
+        let actual = vec![key(1, 12)];
+        // `expected` mistakenly includes the declaration back in.
+        let expected = vec![key(0, 3), key(1, 12)];
+        let result = exact_match_check(&actual, &expected);
+        if result.is_ok() {
+            return Err("reintroducing a declaration into expected must be caught".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forbidden_check_accepts_clean_result() -> Result<(), Box<dyn std::error::Error>> {
+        let key = |line: u32, character: u32| ("file:///t.pl".to_string(), line, character);
+        let actual = vec![key(1, 12)];
+        let forbidden = vec![key(5, 0)];
+        forbidden_check(&actual, &forbidden).map_err(|e| e.into())
+    }
+
+    /// Revert-proves: adding a known-false location into the actual result
+    /// (e.g. an over-broad index hit) must prevent parity.
+    #[test]
+    fn forbidden_check_rejects_known_false_location_present(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let key = |line: u32, character: u32| ("file:///t.pl".to_string(), line, character);
+        let actual = vec![key(1, 12), key(5, 0)];
+        let forbidden = vec![key(5, 0)];
+        let result = forbidden_check(&actual, &forbidden);
+        if result.is_ok() {
+            return Err(
+                "a known-false location present in the actual result must be rejected".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn validate_receipt_has_required_fields_accepts_complete_receipt(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let receipt = json!({
+            "decision": "acted",
+            "reason": "live_provider_result",
+            "fallback_state": "live_provider",
+            "confidence": "high",
+            "freshness": "fresh",
+            "fact_source": "semantic_fact",
+            "source_backed_state": "semantic_source_backed_ast_index",
+            "answering_tier": "semantic_source_backed",
+            "index_state": "full",
+            "latency_us": 42,
+        });
+        let object = receipt.as_object().ok_or("receipt must be an object literal")?;
+        validate_receipt_has_required_fields(object).map_err(|e| e.into())
+    }
+
+    /// Revert-proves: a receipt missing its live `reason` field must fail
+    /// validation rather than silently passing with an author-supplied
+    /// stand-in.
+    #[test]
+    fn validate_receipt_has_required_fields_rejects_missing_reason(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let receipt = json!({
+            "decision": "acted",
+            "fallback_state": "live_provider",
+            "confidence": "high",
+            "freshness": "fresh",
+            "fact_source": "semantic_fact",
+            "source_backed_state": "semantic_source_backed_ast_index",
+            "answering_tier": "semantic_source_backed",
+            "index_state": "full",
+            "latency_us": 42,
+        });
+        let object = receipt.as_object().ok_or("receipt must be an object literal")?;
+        let result = validate_receipt_has_required_fields(object);
+        if result.is_ok() {
+            return Err("a receipt missing `reason` must be rejected".into());
+        }
+        Ok(())
+    }
+
+    /// Revert-proves: removing an in-band positive control (i.e. its
+    /// evidence flag never gets set) must downgrade `LocalLexical` /
+    /// `PackageSubSameFile` dispositions to `unexercised`, not silently keep
+    /// reporting `coverage_gap` without justifying evidence.
+    #[test]
+    fn classify_disposition_requires_positive_control_evidence_for_coverage_gap() {
+        let empty_locations: Vec<(String, u32, u32)> = Vec::new();
+        let without_control = classify_disposition(
+            FactClass::LocalLexical,
+            false,
+            8,
+            &empty_locations,
+            &empty_locations,
+            false,
+        );
+        assert_eq!(
+            without_control, "unexercised",
+            "without positive-control evidence, a non-source-backed LocalLexical row must be \
+             `unexercised`, not `coverage_gap`"
+        );
+
+        let with_control = classify_disposition(
+            FactClass::LocalLexical,
+            false,
+            8,
+            &empty_locations,
+            &empty_locations,
+            true,
+        );
+        assert_eq!(
+            with_control, "coverage_gap",
+            "with positive-control evidence, a non-source-backed LocalLexical row is `coverage_gap`"
+        );
+    }
+
+    /// Revert-proves: a noisy non-empty fallback answer for
+    /// cross-file/imported/ambiguous classes must NOT be called
+    /// `explicit_refusal_safe` — only a genuinely empty (exercised refusal)
+    /// result qualifies.
+    #[test]
+    fn classify_disposition_rejects_noisy_fallback_as_refusal_safe() {
+        let empty_locations: Vec<(String, u32, u32)> = Vec::new();
+        let noisy = classify_disposition(
+            FactClass::DynamicAmbiguous,
+            false,
+            12,
+            &empty_locations,
+            &empty_locations,
+            false,
+        );
+        assert_eq!(
+            noisy, "unclassified",
+            "a non-empty (noisy) fallback answer must not be called explicit_refusal_safe"
+        );
+
+        let genuinely_empty = classify_disposition(
+            FactClass::DynamicAmbiguous,
+            false,
+            0,
+            &empty_locations,
+            &empty_locations,
+            false,
+        );
+        assert_eq!(
+            genuinely_empty, "explicit_refusal_safe",
+            "a genuinely empty (exercised refusal) fallback answer is explicit_refusal_safe"
+        );
     }
 }
