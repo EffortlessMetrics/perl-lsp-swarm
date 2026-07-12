@@ -532,10 +532,6 @@ fn test_document_symbols_gold_corpus() -> TestResult {
 // Rename correctness test
 // ---------------------------------------------------------------------------
 
-fn rename_edit_count(resp: &Value, uri: &str) -> usize {
-    resp["result"]["changes"][uri].as_array().map_or(0, |edits| edits.len())
-}
-
 fn rename_total_edit_count(resp: &Value) -> usize {
     resp["result"]["changes"]
         .as_object()
@@ -544,6 +540,14 @@ fn rename_total_edit_count(resp: &Value) -> usize {
 
 fn rename_is_null(resp: &Value) -> bool {
     resp["result"].is_null() || resp.get("error").is_some()
+}
+
+/// Extract the JSON-RPC error message from a rename response, if any, for
+/// failure diagnostics. Without this, a failed assertion only reports "0
+/// edits" — indistinguishable from a request that legitimately found
+/// nothing to rename — hiding the actual server error.
+fn rename_error_message(resp: &Value) -> Option<&str> {
+    resp.get("error").and_then(|error| error["message"].as_str())
 }
 
 /// Run all rename gold fixtures and assert every assertion passes.
@@ -589,13 +593,14 @@ fn test_rename_gold_corpus() -> TestResult {
                 passed += 1;
             } else {
                 failures.push(format!(
-                    "  FAIL [{}] {:?} at line:{} char:{} new_name:{:?} — edits: {}",
+                    "  FAIL [{}] {:?} at line:{} char:{} new_name:{:?} — edits: {}, error: {}",
                     fixture.name,
                     assertion.kind,
                     assertion.line,
                     assertion.character,
                     assertion.new_name,
                     rename_total_edit_count(&resp),
+                    rename_error_message(&resp).unwrap_or("<none>"),
                 ));
             }
         }

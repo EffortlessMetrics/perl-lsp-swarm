@@ -34,7 +34,16 @@ Fixtures live under `test_corpus/gold/`. Each fixture directory contains:
   `expected_symbols.json`, `expected_rename.json` — per-kind assertion sidecars
 
 Add new fixtures here to expand scenario coverage. Current coverage:
-9 of 22 declared scenarios (41%); expansion tracked by child issue #1426.
+33 fixture directories spanning hover, goto-definition, completion,
+document symbols, rename, diagnostics, `@INC`/`use lib` resolution, and
+parse-error recovery (verify with `find test_corpus/gold -mindepth 1
+-maxdepth 1 -type d | wc -l`).
+
+(This is a separate metric from `editor_ux.md`'s own "N of 22 declared"
+scenario count, which measures a different subsystem —
+`crates/perl-lsp-ux-tests`'s `ux_scenario_*.rs` files against
+`editor_ux_fixture_matrix.json`, tracked by #1426 — not the
+`test_corpus/gold/` fixtures described in this section.)
 
 ## Verify
 
