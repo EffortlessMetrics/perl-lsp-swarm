@@ -140,6 +140,12 @@ def main():
                         help="Output JSON file")
     parser.add_argument("--base-path", "-b", default=".",
                         help="Repository base path")
+    parser.add_argument("--strict", action="store_true",
+                        help="Exit non-zero when zero benchmarks were extracted. "
+                             "A benchmark job that ran zero benchmarks is a vacuous "
+                             "pass, not a real result (see #3979) — use this flag in "
+                             "CI so that condition fails the job instead of silently "
+                             "reporting 'Total benchmarks: 0'.")
     args = parser.parse_args()
 
     base_path = Path(args.base_path)
@@ -189,6 +195,14 @@ def main():
     for category, benchmarks in results.items():
         count = len([k for k in benchmarks if not k.startswith("_")])
         print(f"  {category}: {count}")
+
+    if args.strict and total == 0:
+        print(
+            "Error: 0 benchmarks extracted — this is a vacuous pass, not a real "
+            "benchmark run. Failing closed (--strict).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

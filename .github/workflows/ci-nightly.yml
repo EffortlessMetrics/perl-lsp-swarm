@@ -137,11 +137,16 @@ jobs:
 
     - name: Run benchmarks
       run: |
-        # Run full benchmark suite
-        cargo bench --workspace --locked -- --noplot 2>&1 | tee benchmarks/results/raw-output.txt || true
+        # Run full benchmark suite. Do NOT mask failures with `|| true`: a bench
+        # crate that fails to compile or panics at runtime must fail this job,
+        # not silently produce a vacuous "Total benchmarks: 0" pass (#3979).
+        cargo bench --workspace --locked -- --noplot 2>&1 | tee benchmarks/results/raw-output.txt
 
-        # Extract structured results from Criterion
-        python3 ./benchmarks/scripts/extract-criterion.py --output benchmarks/results/latest.json
+        # Extract structured results from Criterion. --strict fails closed when
+        # target/criterion/ has no results at all — zero benchmarks executed is
+        # not a pass, even if the `cargo bench` step above exited 0 (e.g. every
+        # bench target silently skipped via required-features gating).
+        python3 ./benchmarks/scripts/extract-criterion.py --output benchmarks/results/latest.json --strict
 
     - name: Real-repo first-diagnostics perf gate (Catalyst 5000+ lines)
       run: |
@@ -210,6 +215,7 @@ jobs:
           }
 
     - name: Upload benchmark artifacts
+      if: always()
       uses: actions/upload-artifact@v7
       with:
         name: benchmark-results-${{ github.sha }}
@@ -221,6 +227,7 @@ jobs:
           benchmark_report.md
           comparison.txt
           alert.md
+        if-no-files-found: warn
         retention-days: 30
 
   real-repo-latency:
