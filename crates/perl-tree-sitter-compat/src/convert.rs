@@ -1,8 +1,10 @@
 //! Convert a native parse into a tree-sitter-compatible [`TsNode`] tree.
 
-use perl_parser_core::{Node, Parser};
+use perl_parser_core::{Node, Parser as NativeParser};
 use perl_workspace_core::Utf8LineIndex;
+use tree_sitter_perl_rs::{Node as FacadeNode, Parser as FacadeParser};
 
+use crate::dogfood;
 use crate::node::{TsNode, TsPoint, pascal_to_snake};
 
 /// A failure to produce a tree.
@@ -27,8 +29,17 @@ impl std::error::Error for TreeError {}
 /// # Errors
 /// Returns [`TreeError::ParseFailed`] when the parser cannot produce a tree.
 pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
+    let mut facade_parser = FacadeParser::new();
+    let outcome = facade_parser.parse_detailed(source);
+    let recovered = outcome.is_recovered();
+    if let Some(tree) = outcome.tree {
+        dogfood::record_facade_tree(recovered);
+        return Ok(to_ts_node_facade(tree.root_node()));
+    }
+
+    dogfood::record_native_fallback();
     let ast = {
-        let mut parser = Parser::new(source);
+        let mut parser = NativeParser::new(source);
         parser.parse().map_err(|_| TreeError::ParseFailed)?
     };
     let line_index = Utf8LineIndex::new(source);
@@ -57,29 +68,56 @@ pub fn to_ts_node(node: &Node, line_index: &Utf8LineIndex) -> TsNode {
     }
 }
 
+/// Convert a node from the Rust-native tree-sitter facade.
+///
+/// The facade is authoritative for normal and recovered parses. The native
+/// AST conversion above remains available as a narrow catastrophic-failure
+/// fallback, keeping this adapter's public output stable during adoption.
+#[must_use]
+pub fn to_ts_node_facade(node: FacadeNode<'_>) -> TsNode {
+    TsNode {
+        kind: pascal_to_snake(node.native_kind()),
+        named: true,
+        start_byte: u32::try_from(node.start_byte()).unwrap_or(u32::MAX),
+        end_byte: u32::try_from(node.end_byte()).unwrap_or(u32::MAX),
+        start_point: facade_point(node.start_position()),
+        end_point: facade_point(node.end_position()),
+        children: node.children().map(to_ts_node_facade).collect(),
+    }
+}
+
+fn facade_point(point: tree_sitter_perl_rs::Point) -> TsPoint {
+    TsPoint {
+        row: u32::try_from(point.row).unwrap_or(u32::MAX),
+        column: u32::try_from(point.column).unwrap_or(u32::MAX),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_a_package_to_a_tree() {
-        let tree = parse_to_tree("package App;\nsub run { 1 }\n1;\n").unwrap();
+    fn parses_a_package_to_a_tree() -> Result<(), TreeError> {
+        let tree = parse_to_tree("package App;\nsub run { 1 }\n1;\n")?;
         assert_eq!(tree.kind, "program");
         assert!(tree.named);
         // The program spans the whole file.
         assert_eq!(tree.start_byte, 0);
         assert!(tree.descendant_count() > 1, "tree has nested nodes");
+        Ok(())
     }
 
     #[test]
-    fn points_are_zero_based_and_track_lines() {
-        let tree = parse_to_tree("package App;\nsub run { 1 }\n").unwrap();
+    fn points_are_zero_based_and_track_lines() -> Result<(), TreeError> {
+        let tree = parse_to_tree("package App;\nsub run { 1 }\n")?;
         assert_eq!(tree.start_point, TsPoint { row: 0, column: 0 });
         // Find a node that starts on line 1 (the sub).
         assert!(
             has_node_starting_on_row(&tree, 1),
             "some node starts on row 1 (the sub on the second line)"
         );
+        Ok(())
     }
 
     #[test]
@@ -92,6 +130,42 @@ mod tests {
     #[test]
     fn tree_error_displays_readably() {
         assert_eq!(TreeError::ParseFailed.to_string(), "could not parse source as Perl");
+    }
+
+    #[test]
+    fn normal_parse_uses_the_facade_as_primary_source() -> Result<(), TreeError> {
+        let before = crate::adoption_stats();
+        let tree = parse_to_tree("my $value = 42;\n")?;
+        let after = crate::adoption_stats();
+        assert_eq!(tree.kind, "program");
+        assert!(after.facade_trees > before.facade_trees);
+        assert_eq!(after.native_fallbacks, before.native_fallbacks);
+        Ok(())
+    }
+
+    #[test]
+    fn facade_conversion_preserves_the_established_native_shape() -> Result<(), TreeError> {
+        let source = "package App;\nsub run { 1 }\nmy $value = 42;\n";
+        let native = {
+            let mut parser = NativeParser::new(source);
+            parser.parse().map_err(|_| TreeError::ParseFailed)?
+        };
+        let mut facade_parser = FacadeParser::new();
+        let facade_tree = facade_parser.parse(source).ok_or(TreeError::ParseFailed)?;
+        let facade = facade_tree.root_node();
+        assert_eq!(to_ts_node(&native, &Utf8LineIndex::new(source)), to_ts_node_facade(facade));
+        Ok(())
+    }
+
+    #[test]
+    fn recovered_facade_trees_are_counted_without_fallback() -> Result<(), TreeError> {
+        let before = crate::adoption_stats();
+        let tree = parse_to_tree("if (")?;
+        let after = crate::adoption_stats();
+        assert_eq!(tree.kind, "program");
+        assert!(after.recovered_trees > before.recovered_trees);
+        assert_eq!(after.native_fallbacks, before.native_fallbacks);
+        Ok(())
     }
 
     fn has_node_starting_on_row(node: &TsNode, row: u32) -> bool {

@@ -36,11 +36,13 @@
 #![warn(missing_docs)]
 
 pub mod convert;
+pub mod dogfood;
 pub mod highlight;
 pub mod node;
 pub mod sexp;
 
 pub use convert::{TreeError, parse_to_tree, to_ts_node};
+pub use dogfood::{AdoptionStats, adoption_stats};
 pub use highlight::{Highlight, capture_for, highlights};
 pub use node::{TsNode, TsPoint, pascal_to_snake};
 pub use sexp::{to_sexp, to_sexp_pretty};
