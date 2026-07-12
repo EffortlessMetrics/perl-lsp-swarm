@@ -15,25 +15,37 @@ pub struct IncrementalState {
     pub ast: Node,
     pub tokens: Vec<Token>,
     pub source: String,
+    /// Shared lower-tier replay state used by normal single-edit operations.
+    ///
+    /// The legacy fields remain public for downstream compatibility and for
+    /// the older fallback helpers, but the core-backed state is the source of
+    /// truth for the incremental path whenever it can be initialized safely.
+    pub(crate) core_state: Option<crate::incremental_core::CoreIncrementalState>,
 }
 
 impl IncrementalState {
     pub fn new(source: String) -> Self {
+        let core_state = crate::incremental_core::CoreIncrementalState::new(&source).ok();
         let rope = Rope::from_str(&source);
         let line_index = LineIndex::new(&source);
-        let mut parser = Parser::new(&source);
-        let ast = match parser.parse() {
-            Ok(ast) => ast,
-            Err(e) => Node::new(
-                NodeKind::Error {
-                    message: e.to_string(),
-                    expected: vec![],
-                    found: None,
-                    partial: None,
-                },
-                SourceLocation { start: 0, end: source.len() },
-            ),
-        };
+        let ast = core_state.as_ref().map_or_else(
+            || {
+                let mut parser = Parser::new(&source);
+                match parser.parse() {
+                    Ok(ast) => ast,
+                    Err(e) => Node::new(
+                        NodeKind::Error {
+                            message: e.to_string(),
+                            expected: vec![],
+                            found: None,
+                            partial: None,
+                        },
+                        SourceLocation { start: 0, end: source.len() },
+                    ),
+                }
+            },
+            |state| state.ast().clone(),
+        );
         let mut lexer = PerlLexer::new(&source);
         let mut tokens = Vec::new();
         while let Some(token) = lexer.next_token() {
@@ -44,7 +56,37 @@ impl IncrementalState {
         }
         let lex_checkpoints = create_lex_checkpoints(&tokens, &line_index);
         let parse_checkpoints = Self::create_parse_checkpoints(&ast);
-        Self { rope, line_index, lex_checkpoints, parse_checkpoints, ast, tokens, source }
+        Self {
+            rope,
+            line_index,
+            lex_checkpoints,
+            parse_checkpoints,
+            ast,
+            tokens,
+            source,
+            core_state,
+        }
+    }
+
+    /// Refresh compatibility caches after a core-backed operation or fallback.
+    pub(crate) fn refresh_derived_state(&mut self) {
+        self.rope = Rope::from_str(&self.source);
+        self.line_index = LineIndex::new(&self.source);
+        let mut lexer = PerlLexer::new(&self.source);
+        self.tokens.clear();
+        while let Some(token) = lexer.next_token() {
+            if token.token_type == TokenType::EOF {
+                break;
+            }
+            self.tokens.push(token);
+        }
+        self.lex_checkpoints = create_lex_checkpoints(&self.tokens, &self.line_index);
+        self.parse_checkpoints = Self::create_parse_checkpoints(&self.ast);
+    }
+
+    /// Recreate the shared kernel after a legacy fallback path changes source.
+    pub(crate) fn rebuild_core_state(&mut self) {
+        self.core_state = crate::incremental_core::CoreIncrementalState::new(&self.source).ok();
     }
     pub fn find_lex_checkpoint(&self, byte: usize) -> Option<&LexCheckpoint> {
         self.lex_checkpoints.iter().rev().find(|cp| cp.byte <= byte)

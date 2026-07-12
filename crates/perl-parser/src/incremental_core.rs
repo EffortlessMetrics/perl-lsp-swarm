@@ -1,9 +1,11 @@
 //! Compatibility adapter over the lower-tier incremental parser kernel.
 //!
 //! The long-standing [`crate::incremental::IncrementalState`] remains
-//! available for downstream compatibility. New consumers should prefer this
-//! adapter when they need the shared `perl-parser-core` token-replay engine;
-//! the tree-sitter facade uses the same kernel directly.
+//! available for downstream compatibility and delegates safe single edits to
+//! this same kernel while retaining its historical public caches. New
+//! consumers can use this explicit adapter when they need the shared
+//! `perl-parser-core` token-replay engine; the tree-sitter facade uses the
+//! kernel directly.
 
 use perl_ast::Node;
 use perl_parser_core::{ParseError, Parser, incremental};

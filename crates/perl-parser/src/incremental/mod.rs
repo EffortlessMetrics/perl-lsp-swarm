@@ -32,6 +32,56 @@ pub mod incremental_integration;
 pub mod incremental_simple;
 pub mod incremental_v2;
 
+/// Apply one edit through the shared lower-tier kernel when the legacy state
+/// can be initialized safely.
+///
+/// The public `IncrementalState` still carries its historical caches, but
+/// those caches are refreshed after the core operation so downstream callers
+/// observing the old fields continue to see the current document.
+fn try_apply_core_edit(state: &mut IncrementalState, edit: &Edit) -> Result<Option<ReparseResult>> {
+    let start = edit.start_byte;
+    let old_end = edit.old_end_byte;
+    if start > old_end
+        || old_end > state.source.len()
+        || !state.source.is_char_boundary(start)
+        || !state.source.is_char_boundary(old_end)
+    {
+        return Ok(None);
+    }
+
+    let remaining = state.source.len().checked_sub(old_end - start);
+    let Some(capacity) = remaining.and_then(|value| value.checked_add(edit.new_text.len())) else {
+        return Ok(None);
+    };
+    let mut new_source = String::with_capacity(capacity);
+    new_source.push_str(&state.source[..start]);
+    new_source.push_str(&edit.new_text);
+    new_source.push_str(&state.source[old_end..]);
+
+    let core_edit = crate::incremental_core::IncrementalEdit::new(start, old_end, &edit.new_text);
+    let result = {
+        let Some(core_state) = state.core_state.as_mut() else {
+            return Ok(None);
+        };
+        match core_state.apply_edit(&new_source, &core_edit) {
+            Ok(result) => result,
+            Err(_) => return Ok(None),
+        }
+    };
+
+    state.source = new_source;
+    state.ast = result.ast;
+    state.refresh_derived_state();
+
+    Ok(Some(ReparseResult {
+        changed_ranges: vec![result.metrics.changed_range],
+        diagnostics: Vec::new(),
+        reparsed_bytes: result.metrics.reparsed_bytes,
+        reused_tokens: result.metrics.tokens_reused,
+        token_count: state.tokens.len(),
+    }))
+}
+
 /// Apply edits incrementally
 pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<ReparseResult> {
     let mut sorted_edits = edits.to_vec();
@@ -40,39 +90,46 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
 
     let total_changed = sorted_edits.iter().map(Edit::touched_bytes).sum::<usize>();
 
-    if total_changed > MAX_EDIT_SIZE {
-        return full_reparse(state);
+    if sorted_edits.len() == 1 {
+        if let Some(result) = try_apply_core_edit(state, &sorted_edits[0])? {
+            return Ok(result);
+        }
     }
 
-    if sorted_edits.len() == 1 {
+    let result = if total_changed > MAX_EDIT_SIZE {
+        full_reparse(state)?
+    } else if sorted_edits.len() == 1 {
         let edit = &sorted_edits[0];
 
         if edit.touched_bytes() > 1024 || edit.new_text.matches('\n').count() > 10 {
             apply_text_edit_to_state(state, edit)?;
-            return full_reparse(state);
+            full_reparse(state)?
+        } else {
+            match apply_single_edit(state, edit) {
+                Ok(reparse) => {
+                    let reparsed_bytes = reparse.range.end - reparse.range.start;
+                    ReparseResult {
+                        changed_ranges: vec![reparse.range],
+                        diagnostics: vec![],
+                        reparsed_bytes,
+                        reused_tokens: reparse.reused_tokens,
+                        token_count: reparse.token_count,
+                    }
+                }
+                Err(_) => full_reparse(state)?,
+            }
         }
-
-        let reparse = match apply_single_edit(state, edit) {
-            Ok(reparse) => reparse,
-            Err(_) => return full_reparse(state),
-        };
-        let reparsed_bytes = reparse.range.end - reparse.range.start;
-
-        Ok(ReparseResult {
-            changed_ranges: vec![reparse.range],
-            diagnostics: vec![],
-            reparsed_bytes,
-            reused_tokens: reparse.reused_tokens,
-            token_count: reparse.token_count,
-        })
     } else {
         for edit in sorted_edits {
             if apply_single_edit(state, &edit).is_err() {
-                return full_reparse(state);
+                break;
             }
         }
-        full_reparse(state)
-    }
+        full_reparse(state)?
+    };
+
+    state.rebuild_core_state();
+    Ok(result)
 }
 
 #[cfg(test)]

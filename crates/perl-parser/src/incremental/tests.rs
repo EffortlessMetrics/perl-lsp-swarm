@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::Result;
+use perl_parser_core::parser::Parser;
 use proptest::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -33,6 +34,41 @@ fn test_incremental_state_small_edit_uses_checkpoint() -> Result<()> {
     assert!(result.token_count > 0);
     assert!(result.reused_tokens > 0);
     assert!(result.reused_tokens <= result.token_count);
+    Ok(())
+}
+
+#[test]
+fn safe_single_edits_use_the_shared_core_kernel() -> Result<()> {
+    let source = "my $value = 1;\n".repeat(80);
+    let start = source
+        .find('1')
+        .ok_or_else(|| anyhow::anyhow!("test source is missing the edit target"))?;
+    let new_source = source.replacen('1', "22", 1);
+    let edit = Edit {
+        start_byte: start,
+        old_end_byte: start + 1,
+        new_end_byte: start + 2,
+        new_text: "22".to_owned(),
+    };
+
+    let mut state = IncrementalState::new(source);
+    let result = apply_edits(&mut state, &[edit])?;
+    let mut fresh_parser = Parser::new(&new_source);
+    let fresh =
+        fresh_parser.parse().map_err(|error| anyhow::anyhow!("fresh parse failed: {error}"))?;
+
+    if state.core_state.is_none() {
+        return Err(anyhow::anyhow!("safe edit did not retain the shared core state"));
+    }
+    if result.reused_tokens == 0 {
+        return Err(anyhow::anyhow!("safe edit reported no reused tokens"));
+    }
+    if result.reparsed_bytes >= new_source.len() {
+        return Err(anyhow::anyhow!("safe edit reparsed the complete source"));
+    }
+    if state.ast.to_sexp() != fresh.to_sexp() {
+        return Err(anyhow::anyhow!("core-backed AST differs from a fresh parse"));
+    }
     Ok(())
 }
 
