@@ -1,7 +1,7 @@
-# ub-review - unsafe/native-boundary advisory review
+# ub-review - current-head PR review and required gate
 #
-# Builds a UB/native-boundary evidence packet for every same-repo PR and posts
-# one grouped advisory Pull Request Review (continue-on-error; never blocks CI).
+# Runs the released ub-review binary for every same-repo PR and posts one
+# grouped Pull Request Review plus the required current-head gate result.
 #
 # Security posture:
 #   - Same-repo PRs only. Fork PRs get a skipped-by-policy metadata job — never
@@ -13,19 +13,16 @@
 # Runner routing: mirrors ripr.yml — CX53 primary, CX43 secondary, ubuntu-24.04
 # GitHub-hosted fallback. Each target gets its own job so runs-on is static.
 #
-# Advisory status: continue-on-error on every work job. Not a required check.
-# See policy/ci-lane-whitelist.toml entry `ub_review_advisory` and
-# docs/ci/review-gates.md.
+# The owner should require the resulting `ub-review/gate` check after this
+# pilot has a green release-installed run. Branch protection is not changed by
+# this workflow PR.
 #
-# Install note: EffortlessMetrics/ub-review has no public release asset yet.
-# install-mode=auto in the action falls back to a source build. The Cargo cache
-# can be warmed by Swatinem/rust-cache if needed (PR 2 scope).
+# Install note: this pilot intentionally uses the authorized v0.1.0 release
+# asset and fails closed if that asset or checksum is unavailable. It does not
+# fall back to a source build, so the install proof is visible.
 #
-# Action pin:
-#   EffortlessMetrics/ub-review@f70be0eae480456bad208a1a565e483bdadf4e3c
-#   README-documented known-good SHA; verified by EffortlessSteven/bun#49
-#   (successful evidence packet, terminal state `sufficient`, verifier pass).
-#   Update only after ub-review's own verifier passes on a downstream consumer.
+# Action pin: EffortlessMetrics/ub-review@v0.1.0. The tag and release asset
+# must exist before this pilot can be merged or treated as a green gate.
 
 name: UB Review
 
@@ -158,22 +155,16 @@ jobs:
             ' "$response"
           }
 
-          # TEMPORARY: CX self-hosted runners are Docker-only — they have no
-          # host-level Rust toolchain. The ub-review action's install-mode=auto
-          # falls back to a cargo source-build when no release artifact exists
-          # (upstream EffortlessMetrics/ub-review#343), but cargo is unavailable
-          # on CX hosts outside a Docker container. The composite action cannot
-          # be trivially Docker-wrapped (it uses actions/checkout, node steps,
-          # and artifact uploads internally).
+          # TEMPORARY: keep the GitHub-hosted route for this first release
+          # install pilot. The release-only action path removes the source-build
+          # dependency, but self-hosted compatibility still needs its own smoke
+          # receipt before routing is widened.
           #
-          # Evidence: PR #1218 run 27086277244 — CX53 job failed at "Build UB
-          # review packet" with "cargo is unavailable and rustup is not installed"
-          # (~07:44). Adoption datum #3.
+          # The prior source-build failure was recorded in adoption datum #3.
           #
-          # Workaround: always prefer GitHub-hosted until upstream ships a
-          # release artifact. Revert by deleting these 5 lines and restoring
-          # the cx53/cx43 emit calls below.
-          emit "github" "pending_upstream_artifact_ub_review_343" "true"
+          # Workaround: always prefer GitHub-hosted until a self-hosted
+          # release-install smoke receipt exists.
+          emit "github" "release_install_pilot_github_hosted" "true"
           exit 0
 
           # --- BEGIN temporarily dead code (preserved for easy revert) ---
@@ -196,7 +187,7 @@ jobs:
   # 2a. UB review on CX53 (primary self-hosted).
   # ---------------------------------------------------------------------------
   ub-review-cx53:
-    name: UB Review Advisory on CX53
+    name: UB Review Gate on CX53
     needs: route-ub-review
     if: >-
       needs.route-ub-review.result == 'success' &&
@@ -205,8 +196,6 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx53, rust-small, trusted-pr]
     timeout-minutes: 45
-    # Advisory: do not block PR merge signal on ub-review failures.
-    continue-on-error: true
     permissions:
       contents: read
       pull-requests: write
@@ -265,10 +254,12 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@f70be0eae480456bad208a1a565e483bdadf4e3c
+        uses: EffortlessMetrics/ub-review@v0.1.0
         with:
           config: policy/ub-review.toml
           profile: gh-runner
+          install-mode: release
+          release-version: v0.1.0
           root: .
           base: origin/${{ github.base_ref }}
           head: HEAD
@@ -277,6 +268,7 @@ jobs:
           tool-bundle: core
           posting: review
           mode: intelligent-ci
+          review-mode: gate
           fail-on-gate: 'true'
           fail-on-post-error: 'false'
           allow-heavy: 'false'
@@ -284,7 +276,7 @@ jobs:
           minimax-api-key: ${{ secrets.MINIMAX_API_KEY }}
           minimax-provider-kind: anthropic
           model-mode: auto
-          provider-policy: minimax-only
+          provider-policy: primary-with-fallback
           opencode-api-key: ${{ secrets.OPENCODE }}
           lane-width: '6'
           model-timeout-sec: '300'
@@ -305,7 +297,7 @@ jobs:
   # 2b. UB review on CX43 (secondary self-hosted).
   # ---------------------------------------------------------------------------
   ub-review-cx43:
-    name: UB Review Advisory on CX43
+    name: UB Review Gate on CX43
     needs: route-ub-review
     if: >-
       needs.route-ub-review.result == 'success' &&
@@ -314,7 +306,6 @@ jobs:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
     timeout-minutes: 45
-    continue-on-error: true
     permissions:
       contents: read
       pull-requests: write
@@ -367,10 +358,12 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@f70be0eae480456bad208a1a565e483bdadf4e3c
+        uses: EffortlessMetrics/ub-review@v0.1.0
         with:
           config: policy/ub-review.toml
           profile: gh-runner
+          install-mode: release
+          release-version: v0.1.0
           root: .
           base: origin/${{ github.base_ref }}
           head: HEAD
@@ -379,6 +372,7 @@ jobs:
           tool-bundle: core
           posting: review
           mode: intelligent-ci
+          review-mode: gate
           fail-on-gate: 'true'
           fail-on-post-error: 'false'
           allow-heavy: 'false'
@@ -386,7 +380,7 @@ jobs:
           minimax-api-key: ${{ secrets.MINIMAX_API_KEY }}
           minimax-provider-kind: anthropic
           model-mode: auto
-          provider-policy: minimax-only
+          provider-policy: primary-with-fallback
           opencode-api-key: ${{ secrets.OPENCODE }}
           lane-width: '6'
           model-timeout-sec: '300'
@@ -408,7 +402,7 @@ jobs:
   #    Used for: no idle self-hosted runner, bot PRs, runner token missing.
   # ---------------------------------------------------------------------------
   ub-review-github:
-    name: UB Review Advisory on GitHub Hosted
+    name: UB Review Gate on GitHub Hosted
     needs: route-ub-review
     if: >-
       needs.route-ub-review.result == 'success' &&
@@ -416,7 +410,6 @@ jobs:
       needs.route-ub-review.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    continue-on-error: true
     permissions:
       contents: read
       pull-requests: write
@@ -454,10 +447,12 @@ jobs:
           fi
       - name: Build UB review packet
         id: ub-review
-        uses: EffortlessMetrics/ub-review@f70be0eae480456bad208a1a565e483bdadf4e3c
+        uses: EffortlessMetrics/ub-review@v0.1.0
         with:
           config: policy/ub-review.toml
           profile: gh-runner
+          install-mode: release
+          release-version: v0.1.0
           root: .
           base: origin/${{ github.base_ref }}
           head: HEAD
@@ -466,6 +461,7 @@ jobs:
           tool-bundle: core
           posting: review
           mode: intelligent-ci
+          review-mode: gate
           fail-on-gate: 'true'
           fail-on-post-error: 'false'
           allow-heavy: 'false'
@@ -473,7 +469,7 @@ jobs:
           minimax-api-key: ${{ secrets.MINIMAX_API_KEY }}
           minimax-provider-kind: anthropic
           model-mode: auto
-          provider-policy: minimax-only
+          provider-policy: primary-with-fallback
           opencode-api-key: ${{ secrets.OPENCODE }}
           lane-width: '6'
           model-timeout-sec: '300'
