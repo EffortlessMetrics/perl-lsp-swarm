@@ -637,22 +637,17 @@ pub fn run(config: GateRunnerConfig) -> Result<()> {
     let root = project_root()?;
     std::env::set_current_dir(&root).context("Failed to change to project root")?;
 
-    // Commit-tier checks are only correct against the exact staged tree
-    // (`git write-tree`) — never the working tree (issue #3786). Require the
-    // flag explicitly rather than silently defaulting it, so an agent that
-    // forgets `--staged` gets a guided error instead of a run that looks
-    // like it checked something it didn't.
-    if config.tier == GateTier::Commit && !config.staged && !config.list_only {
-        bail!(
-            "GateTier::Commit requires --staged: commit-tier checks inspect the staged tree \
-             (`git write-tree`), never the working tree. Run: \
-             `cargo xtask gates --tier commit --staged`."
-        );
-    }
-
     // Load gate policy
     let policy_path = root.join(".ci/gate-policy.yaml");
     let policy = load_policy_for_inspection(&policy_path)?;
+
+    // Commit-tier checks are only correct against the exact staged tree
+    // (`git write-tree`) — never the working tree (issue #3786). See
+    // `staged_guard_violation`'s doc comment for exactly which paths this
+    // catches (it's more than just `--tier commit`).
+    if let Some(message) = staged_guard_violation(&policy, &config)? {
+        bail!(message);
+    }
 
     // Handle list mode against the static policy catalog. Dynamic PR-fast scope
     // planning is run only for actual execution/diff receipts.
@@ -752,6 +747,55 @@ fn filter_gates(policy: &GatePolicy, config: &GateRunnerConfig) -> Result<Vec<Ga
     });
 
     Ok(gates)
+}
+
+/// Would this run's gate selection (as `filter_gates` would compute it —
+/// `--gate <name>` takes priority over `--tier`, exactly as the real
+/// selection does) include a commit-tier gate? Used by the `--staged` guard
+/// in [`run`] so the requirement fires on every path that can reach a
+/// commit-tier gate, not only `--tier commit` — including `--gate
+/// <commit-tier-gate-name>` and any tier (`nightly`, `all`) whose selection
+/// transitively includes every gate regardless of tier.
+fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> Result<bool> {
+    let gates = filter_gates(policy, config)?;
+    Ok(gates.iter().any(|gate| gate.tier == "commit"))
+}
+
+/// The `--staged` guard's decision, factored out of [`run`] as a pure
+/// function (no filesystem/cwd side effects) so it's directly testable —
+/// `run()` itself has real side effects (`std::env::set_current_dir`, a real
+/// policy-file read) that no other test in this module calls end-to-end for
+/// exactly that reason.
+///
+/// Returns `Some(error message)` when this config would select a
+/// commit-tier gate without `--staged`: by `--tier commit`, by naming a
+/// commit-tier gate directly via `--gate <name>` (`filter_gates`'s gate-name
+/// path ignores `--tier` entirely — a bare `--gate staged_tree_identity`
+/// must be caught the same way as `--tier commit`), or by any tier whose
+/// selection transitively includes commit-tier gates (`nightly`/`all` keep
+/// every gate regardless of tier). `--list` is exempt: it never executes a
+/// gate. `None` means the run may proceed.
+fn staged_guard_violation(
+    policy: &GatePolicy,
+    config: &GateRunnerConfig,
+) -> Result<Option<String>> {
+    if config.staged || config.list_only {
+        return Ok(None);
+    }
+    if !selects_commit_tier_gate(policy, config)? {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "commit-tier gates require --staged: they inspect the staged tree (`git write-tree`), \
+         never the working tree. Run: `cargo xtask gates --tier commit --staged`{}.",
+        config
+            .gate_filter
+            .as_deref()
+            .map(|name| format!(
+                " (or, to run just that gate, `cargo xtask gates --gate {name} --staged`)"
+            ))
+            .unwrap_or_default()
+    )))
 }
 
 /// `git write-tree` OID for the current index, when the run was invoked with
@@ -2735,17 +2779,20 @@ mod tests {
         GatePlanningRole, GatePolicy, GateResult, GateRunnerConfig, GateTier, GlobalSettings,
         MAX_GATE_OUTPUT_BYTES, MetricChange, OutputFormat, PackageTargetIndex, Receipt,
         blocking_failure_gate_names, build_agent_receipt, build_pr_fast_plan_from_scope,
-        build_pr_fast_plan_from_scope_with_targets, compare_receipts, determine_overall_status,
-        extend_plan_with_non_pr_fast_static_gates, extend_plan_with_static_tiers,
-        extract_output_summary, failure_guidance, filter_gates, is_blocking_gate_status,
-        is_cargo_test_command, is_latest_commit, load_policy_for_inspection, load_receipt,
-        output_diff, parse_first_failure, parse_test_metrics, plan_gates, read_gate_output,
-        run_shell_command_with_timeout, run_single_gate, write_receipt,
+        build_pr_fast_plan_from_scope_with_targets, commit_advisories, compare_receipts,
+        determine_overall_status, extend_plan_with_non_pr_fast_static_gates,
+        extend_plan_with_static_tiers, extract_output_summary, failure_guidance, filter_gates,
+        is_blocking_gate_status, is_cargo_test_command, is_latest_commit,
+        load_policy_for_inspection, load_receipt, output_diff, parse_first_failure,
+        parse_test_metrics, plan_gates, read_gate_output, run_internal_commit_check,
+        run_shell_command_with_timeout, run_single_gate, selects_commit_tier_gate,
+        staged_guard_violation, static_gate_plan, write_receipt,
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
         RevDepCrate, ScopeOutput,
     };
+    use crate::tasks::commit_checks::{CheckReport, CommitCheckOutcome, Posture};
 
     fn gate_result(name: &str, status: &str, required: bool) -> GateResult {
         GateResult {
@@ -2947,6 +2994,138 @@ mod tests {
             nightly_gates.iter().map(|gate| gate.name.as_str()).collect::<Vec<_>>(),
             vec!["fmt", "merge", "nightly", "release", "unknown"]
         );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // staged_guard_violation / selects_commit_tier_gate (issue #3786):
+    // the --staged requirement must fire on every path that can reach a
+    // commit-tier gate, not only `--tier commit`.
+    // -----------------------------------------------------------------
+
+    fn policy_with_commit_and_pr_fast_gates() -> GatePolicy {
+        policy_with_gates(vec![
+            tier_gate("staged_tree_identity", "commit", "cargo xtask commit-check x"),
+            tier_gate("fmt", "pr_fast", "true"),
+        ])
+    }
+
+    #[test]
+    fn staged_guard_violation_fires_for_tier_commit_without_staged() -> color_eyre::eyre::Result<()>
+    {
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig { tier: GateTier::Commit, ..GateRunnerConfig::default() };
+
+        let violation = staged_guard_violation(&policy, &config)?;
+
+        let message =
+            violation.ok_or_else(|| color_eyre::eyre::eyre!("expected a --staged violation"))?;
+        assert!(message.contains("--staged"));
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_fires_for_gate_name_selecting_a_commit_tier_gate()
+    -> color_eyre::eyre::Result<()> {
+        // The exact bypass a reviewer confirmed: `--gate <commit-tier-gate>`
+        // with the default tier and no `--staged` must be caught the same
+        // way as `--tier commit` is, because `filter_gates`'s gate-name
+        // path ignores `--tier` entirely.
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig {
+            tier: GateTier::MergeGate, // default-ish tier, deliberately not Commit
+            gate_filter: Some("staged_tree_identity".to_string()),
+            ..GateRunnerConfig::default()
+        };
+
+        let violation = staged_guard_violation(&policy, &config)?;
+
+        let message = violation.ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "expected --gate staged_tree_identity (without --staged) to violate the guard"
+            )
+        })?;
+        assert!(message.contains("--staged"));
+        assert!(
+            message.contains("--gate staged_tree_identity"),
+            "message should name the targeted rerun for this specific gate: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_allows_gate_name_selecting_a_non_commit_gate()
+    -> color_eyre::eyre::Result<()> {
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig {
+            gate_filter: Some("fmt".to_string()),
+            ..GateRunnerConfig::default()
+        };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_none_when_staged_flag_is_set() -> color_eyre::eyre::Result<()> {
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig {
+            tier: GateTier::Commit,
+            staged: true,
+            ..GateRunnerConfig::default()
+        };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_none_in_list_only_mode() -> color_eyre::eyre::Result<()> {
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig {
+            tier: GateTier::Commit,
+            list_only: true,
+            ..GateRunnerConfig::default()
+        };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_fires_for_nightly_tier_which_includes_commit_gates()
+    -> color_eyre::eyre::Result<()> {
+        // `GateTier::Nightly`/`GateTier::All` keep every gate regardless of
+        // tier (see `filter_gates`), so they transitively select
+        // commit-tier gates too — the guard must catch this path as well,
+        // not just an explicit `--tier commit`.
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig { tier: GateTier::Nightly, ..GateRunnerConfig::default() };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_guard_violation_none_for_a_tier_without_any_commit_gate()
+    -> color_eyre::eyre::Result<()> {
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let config = GateRunnerConfig { tier: GateTier::PrFast, ..GateRunnerConfig::default() };
+
+        assert!(staged_guard_violation(&policy, &config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn selects_commit_tier_gate_matches_filter_gates_selection() -> color_eyre::eyre::Result<()> {
+        let policy = policy_with_commit_and_pr_fast_gates();
+        let commit_config =
+            GateRunnerConfig { tier: GateTier::Commit, ..GateRunnerConfig::default() };
+        let pr_fast_config =
+            GateRunnerConfig { tier: GateTier::PrFast, ..GateRunnerConfig::default() };
+
+        assert!(selects_commit_tier_gate(&policy, &commit_config)?);
+        assert!(!selects_commit_tier_gate(&policy, &pr_fast_config)?);
         Ok(())
     }
 
@@ -4011,6 +4190,226 @@ gates:
         );
     }
 
+    fn commit_tier_gate_result(name: &str, status: &str, report: &CheckReport) -> GateResult {
+        GateResult {
+            gate_name: name.to_string(),
+            tier: "commit".to_string(),
+            status: status.to_string(),
+            required: Some(true),
+            duration_ms: 1,
+            command: format!("cargo xtask commit-check {name}"),
+            exit_code: None,
+            output_summary: Some(report.render()),
+            log_path: None,
+            metrics: None,
+            artifacts: None,
+            first_failure: None,
+        }
+    }
+
+    #[test]
+    fn failure_guidance_enriches_commit_tier_blocked_gate_with_report_fields() {
+        let report = CheckReport {
+            check: "conflict_markers_staged".to_string(),
+            posture: Posture::Blocked,
+            result: "1 staged line looks like a conflict marker".to_string(),
+            why: "a committed conflict marker breaks compilation".to_string(),
+            affected: vec!["foo.rs:2".to_string()],
+            fix: Some("resolve the conflict, then re-stage".to_string()),
+            rerun: "cargo xtask gates --tier commit --staged --gate conflict_markers_staged"
+                .to_string(),
+            what_remains: "none".to_string(),
+        };
+        let results = vec![commit_tier_gate_result("conflict_markers_staged", "fail", &report)];
+
+        let (failures, _next_actions) = failure_guidance(&results);
+
+        assert_eq!(failures.len(), 1);
+        let failure = &failures[0];
+        assert_eq!(failure.lane, "conflict_markers_staged");
+        assert_eq!(failure.posture, "BLOCKED");
+        assert_eq!(failure.affected, vec!["foo.rs:2".to_string()]);
+        assert_eq!(failure.fix.as_deref(), Some("resolve the conflict, then re-stage"));
+        assert!(failure.summary.contains("1 staged line looks like a conflict marker"));
+        assert!(failure.summary.contains("a committed conflict marker breaks compilation"));
+    }
+
+    #[test]
+    fn failure_guidance_defaults_posture_to_blocked_for_non_commit_gates() {
+        // A generic pr_fast/merge_gate failure has no CheckReport marker in
+        // output_summary — posture must still default sanely rather than
+        // leaving the new field ambiguous.
+        let results = vec![gate_result("clippy", "fail", true)];
+
+        let (failures, _next_actions) = failure_guidance(&results);
+
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].posture, "BLOCKED");
+        assert!(failures[0].affected.is_empty());
+        assert!(failures[0].fix.is_none());
+    }
+
+    #[test]
+    fn commit_advisories_recovers_non_blocking_reports_from_commit_tier_gates() {
+        let advisory_report = CheckReport {
+            check: "staged_tree_identity".to_string(),
+            posture: Posture::Advisory,
+            result: "staged tree abc123 — 2 file(s) staged".to_string(),
+            why: "wiring proof".to_string(),
+            affected: vec!["a.rs".to_string(), "b.rs".to_string()],
+            fix: None,
+            rerun: "cargo xtask gates --tier commit --staged --gate staged_tree_identity"
+                .to_string(),
+            what_remains: "the real checks are #3786-B".to_string(),
+        };
+        let blocked_report = CheckReport {
+            check: "conflict_markers_staged".to_string(),
+            posture: Posture::Blocked,
+            result: "1 conflict marker".to_string(),
+            why: "test".to_string(),
+            affected: vec!["c.rs:1".to_string()],
+            fix: Some("fix it".to_string()),
+            rerun: "cargo xtask gates --tier commit --staged --gate conflict_markers_staged"
+                .to_string(),
+            what_remains: "none".to_string(),
+        };
+        let results = vec![
+            commit_tier_gate_result("staged_tree_identity", "pass", &advisory_report),
+            commit_tier_gate_result("conflict_markers_staged", "fail", &blocked_report),
+            gate_result("fmt", "pass", true), // non-commit gate, no marker at all
+        ];
+
+        let advisories = commit_advisories(&results);
+
+        assert_eq!(
+            advisories.len(),
+            1,
+            "the BLOCKED report must not double-appear as an advisory — it's already in \
+             failures: {advisories:?}"
+        );
+        assert_eq!(advisories[0].lane, "staged_tree_identity");
+        assert_eq!(advisories[0].posture, "ADVISORY");
+        assert_eq!(advisories[0].affected, vec!["a.rs".to_string(), "b.rs".to_string()]);
+        assert_eq!(advisories[0].what_remains, "the real checks are #3786-B");
+    }
+
+    #[test]
+    fn commit_advisories_ignores_gates_outside_the_commit_tier() {
+        let report = CheckReport {
+            check: "not_actually_commit_tier".to_string(),
+            posture: Posture::Advisory,
+            result: "should never surface".to_string(),
+            why: "test".to_string(),
+            affected: Vec::new(),
+            fix: None,
+            rerun: "n/a".to_string(),
+            what_remains: "n/a".to_string(),
+        };
+        // Same marker-bearing output_summary, but tagged with a non-commit
+        // tier — commit_advisories must be tier-scoped, not just marker-scoped.
+        let mut result = commit_tier_gate_result("not_actually_commit_tier", "pass", &report);
+        result.tier = "pr_fast".to_string();
+
+        assert!(commit_advisories(&[result]).is_empty());
+    }
+
+    #[test]
+    fn run_internal_commit_check_maps_blocked_posture_to_fail_status()
+    -> color_eyre::eyre::Result<()> {
+        let gate = tier_gate(
+            "conflict_markers_staged",
+            "commit",
+            "cargo xtask commit-check conflict_markers_staged",
+        );
+        let tmp = tempdir()?;
+        let log_path = tmp.path().join("conflict_markers_staged.log");
+        let report = CheckReport {
+            check: "conflict_markers_staged".to_string(),
+            posture: Posture::Blocked,
+            result: "1 conflict marker".to_string(),
+            why: "test".to_string(),
+            affected: vec!["foo.rs:2".to_string()],
+            fix: Some("fix it".to_string()),
+            rerun: "cargo xtask gates --tier commit --staged --gate conflict_markers_staged"
+                .to_string(),
+            what_remains: "none".to_string(),
+        };
+
+        let result = run_internal_commit_check(
+            &gate,
+            &log_path,
+            "cargo xtask commit-check conflict_markers_staged",
+            std::time::Instant::now(),
+            || Ok(CommitCheckOutcome::Flagged(report)),
+        )?;
+
+        assert_eq!(result.status, "fail", "Posture::Blocked must map to a failing gate status");
+        assert!(log_path.exists(), "the rendered report should be written to the log");
+        let logged = fs::read_to_string(&log_path)?;
+        assert!(logged.contains("BLOCKED"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_internal_commit_check_maps_advisory_posture_to_pass_status()
+    -> color_eyre::eyre::Result<()> {
+        let gate = tier_gate(
+            "staged_tree_identity",
+            "commit",
+            "cargo xtask commit-check staged_tree_identity",
+        );
+        let tmp = tempdir()?;
+        let log_path = tmp.path().join("staged_tree_identity.log");
+        let report = CheckReport {
+            check: "staged_tree_identity".to_string(),
+            posture: Posture::Advisory,
+            result: "staged tree abc123 — 1 file staged".to_string(),
+            why: "wiring proof".to_string(),
+            affected: vec!["a.rs".to_string()],
+            fix: None,
+            rerun: "cargo xtask gates --tier commit --staged --gate staged_tree_identity"
+                .to_string(),
+            what_remains: "the real checks are #3786-B".to_string(),
+        };
+
+        let result = run_internal_commit_check(
+            &gate,
+            &log_path,
+            "cargo xtask commit-check staged_tree_identity",
+            std::time::Instant::now(),
+            || Ok(CommitCheckOutcome::Flagged(report)),
+        )?;
+
+        assert_eq!(
+            result.status, "pass",
+            "V1 is advisory-first — only Posture::Blocked may fail a commit-tier gate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn run_internal_commit_check_maps_clean_pass_to_pass_status() -> color_eyre::eyre::Result<()> {
+        let gate = tier_gate(
+            "staged_tree_identity",
+            "commit",
+            "cargo xtask commit-check staged_tree_identity",
+        );
+        let tmp = tempdir()?;
+        let log_path = tmp.path().join("clean_pass.log");
+
+        let result = run_internal_commit_check(
+            &gate,
+            &log_path,
+            "cargo xtask commit-check staged_tree_identity",
+            std::time::Instant::now(),
+            || Ok(CommitCheckOutcome::Pass("nothing staged".to_string())),
+        )?;
+
+        assert_eq!(result.status, "pass");
+        assert_eq!(result.output_summary.as_deref(), Some("nothing staged"));
+        Ok(())
+    }
+
     #[test]
     fn agent_receipt_builder_preserves_scope_status_and_plan_contract()
     -> color_eyre::eyre::Result<()> {
@@ -4091,6 +4490,45 @@ gates:
         assert_eq!(agent_plan.skipped.len(), 1);
         assert_eq!(agent_plan.skipped[0].name, "clippy_core");
         assert_eq!(agent_plan.skipped[0].reason, "rust scoped plan selected");
+        Ok(())
+    }
+
+    #[test]
+    fn static_gate_plan_threads_staged_tree_oid_into_agent_receipt() -> color_eyre::eyre::Result<()>
+    {
+        // The identity every commit-tier receipt is supposed to be keyed
+        // on: git write-tree's OID, carried from `plan_gates` /
+        // `static_gate_plan` all the way to `AgentReceipt.staged_tree_oid`
+        // without being lost or overwritten along the way.
+        let gate = tier_gate(
+            "staged_tree_identity",
+            "commit",
+            "cargo xtask commit-check staged_tree_identity",
+        );
+        let plan = static_gate_plan(
+            GateTier::Commit,
+            "HEAD".to_string(),
+            vec![gate],
+            Some("deadbeefcafef00d".to_string()),
+        );
+        let root = crate::utils::project_root()?;
+
+        let receipt = build_agent_receipt(&root, &[], &plan);
+
+        assert_eq!(receipt.tier, "commit");
+        assert_eq!(receipt.staged_tree_oid.as_deref(), Some("deadbeefcafef00d"));
+        Ok(())
+    }
+
+    #[test]
+    fn static_gate_plan_leaves_staged_tree_oid_none_when_not_staged() -> color_eyre::eyre::Result<()>
+    {
+        let plan = static_gate_plan(GateTier::PrFast, "HEAD".to_string(), Vec::new(), None);
+        let root = crate::utils::project_root()?;
+
+        let receipt = build_agent_receipt(&root, &[], &plan);
+
+        assert!(receipt.staged_tree_oid.is_none());
         Ok(())
     }
 

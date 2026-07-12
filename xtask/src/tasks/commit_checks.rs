@@ -203,7 +203,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn check_report_render_embeds_parseable_json_marker() {
+    fn check_report_render_embeds_parseable_json_marker() -> Result<()> {
         let report = CheckReport {
             check: "staged_tree_identity".to_string(),
             posture: Posture::Advisory,
@@ -219,10 +219,12 @@ mod tests {
         assert!(rendered.contains("ADVISORY: 1 file staged"));
         assert!(rendered.contains("why: test"));
 
-        let parsed = parse_report(&rendered).expect("marker line should round-trip");
+        let parsed = parse_report(&rendered)
+            .ok_or_else(|| color_eyre::eyre::eyre!("marker line should round-trip"))?;
         assert_eq!(parsed.check, "staged_tree_identity");
         assert_eq!(parsed.posture, Posture::Advisory);
         assert_eq!(parsed.affected, vec!["a.rs".to_string()]);
+        Ok(())
     }
 
     #[test]

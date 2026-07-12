@@ -147,7 +147,11 @@ mod tests {
     #[test]
     fn list_staged_entries_parses_ls_tree_records() -> Result<()> {
         // Synthetic ls-tree -z record shape (mode SP type SP oid TAB path NUL).
-        let raw = "100644 blob abc123\tfoo.rs\0100755 blob def456\tscripts/run.sh\0";
+        // `\x00` (not `\0`) for the NUL separator: `\0` immediately followed
+        // by digits reads as an octal escape to a human (and to clippy's
+        // octal_escapes lint), even though Rust has no octal escapes and
+        // parses it correctly either way.
+        let raw = "100644 blob abc123\tfoo.rs\x00100755 blob def456\tscripts/run.sh\x00";
         let mut entries = Vec::new();
         for record in raw.split('\0') {
             if record.is_empty() {
