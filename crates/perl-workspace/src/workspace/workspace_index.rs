@@ -1034,7 +1034,10 @@ pub struct CrossFileReferenceQueryResult {
     pub references: Vec<Location>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// `PartialEq` added for 1711-B shadow-compare parity assertions (see
+// `FileExtractionBundle` / `extraction_bundle_shadow_compare`) -- every field
+// type already derives `PartialEq`, so this is purely additive.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// A symbol in the workspace for Index/Navigate workflows.
 pub struct WorkspaceSymbol {
     /// Symbol name without package qualification
@@ -1075,7 +1078,9 @@ fn default_has_body() -> bool {
 /// Symbol kind enums used during Index/Analyze workflows.
 pub use perl_symbol::{SymbolKind, VarKind};
 
-#[derive(Debug, Clone)]
+// `PartialEq` added for 1711-B shadow-compare parity assertions -- `Range`
+// and `ReferenceKind` already derive `PartialEq`, so this is purely additive.
+#[derive(Debug, Clone, PartialEq)]
 /// Reference to a symbol for Navigate/Analyze workflows.
 pub struct SymbolReference {
     /// File URI where the reference occurs
@@ -1235,7 +1240,12 @@ impl Drop for ReservationGuard<'_> {
 /// Derives `Serialize, Deserialize` (Campaign 31 PR 5, perl-lsp-swarm#2592)
 /// so the `perllsp ripr-facts` exporter can serialize the shard into the
 /// `ripr-perl-facts-v1` packet. Previously derived only `Clone, Debug`.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+///
+/// Derives `PartialEq` (1711-B shadow-compare parity assertions, see
+/// `FileExtractionBundle` / `extraction_bundle_shadow_compare`) -- every
+/// field type (`AnchorFact`, `EntityFact`, `OccurrenceFact`, `EdgeFact`,
+/// `FileId`, etc.) already derives `PartialEq`, so this is purely additive.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FileFactShard {
     /// Canonical file URI for this shard.
     pub source_uri: String,
@@ -4040,6 +4050,94 @@ impl WorkspaceIndex {
         });
 
         all_refs
+    }
+}
+
+/// **SHADOW-ONLY (1711-B, tracked on #1711).** One coordinated inventory pass
+/// over a file's AST whose output can feed BOTH projections that
+/// `index_file_with_generation` builds today by calling extractors
+/// separately: the legacy `IndexVisitor` / [`FileIndex`] walk, and the
+/// canonical [`FileFactShard`] built by
+/// `WorkspaceIndex::build_canonical_fact_shard_for_ast`.
+///
+/// # Parity contract
+///
+/// | Output | Legacy (`IndexVisitor` / [`FileIndex`]) | Canonical ([`FileFactShard`]) |
+/// |---|---|---|
+/// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by `IndexVisitor::project_symbol_declarations`, which calls `extract_symbol_decls(ast, Some("main"))` | [`EntityFact`] + [`AnchorFact`] via `extract_symbol_decls(ast, None)` -> `symbol_decls_to_semantic_facts` |
+/// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `extract_symbol_refs(ast)` -> `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
+/// | Dynamic / generated facts | not modeled in `FileIndex` | `extract_eval_sub_boundaries` + `extract_generated_member_facts`, merged into `FileFactShard.{entities,anchors,occurrences}` |
+/// | Imports | `ReferenceKind::Import` entries in `FileIndex.references`, plus `FileIndex.dependencies: HashSet<String>` | `extract_import_specs` / `extract_use_lib_facts`, written to `ImportExportIndex` -- **not** part of `FileFactShard` (see `build_canonical_fact_shard_for_ast`'s always-empty `imports: &[]` argument) |
+/// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
+///
+/// This struct is **not wired into the production `index_file_with_generation`
+/// path** -- it exists to prove, via the `extraction_bundle_shadow_compare`
+/// test module below, that ONE inventory pass can feed both projections with
+/// byte-for-byte parity, ahead of any future cutover (1711-B phase 2, gated
+/// on this parity proof + review per #1711). Building it runs the SAME
+/// extractor calls `index_file_with_generation` runs today (one
+/// `IndexVisitor::visit`, one each of `extract_symbol_decls`/
+/// `extract_symbol_refs`/eval-sub/generated-member/import/use-lib) -- it does
+/// not yet reduce the traversal count. That reduction (e.g. unifying the two
+/// independent `extract_symbol_decls` calls, or merging `visit_node` with
+/// `extract_symbol_refs`) is deliberately deferred to a later phase: the
+/// 1711-A receipt found that `anchors_hash` conflates declaration- and
+/// reference-anchors, so a naive preview/skip design is unproven, and this
+/// PR's job is only to prove the bundle shape + parity, not to redesign the
+/// walkers themselves.
+// Shadow producer: intentionally unused by the live `index_file_with_generation`
+// path until a future 1711-B phase-2 cutover proves out and lands (see the
+// parity contract doc comment above and #1711) -- kept as a genuine additive
+// production type rather than `#[cfg(test)]`-gated, per the 1711-B
+// shadow-phase directive.
+#[allow(dead_code)]
+pub(crate) struct FileExtractionBundle {
+    /// The legacy `IndexVisitor` projection, produced by one `visit()` call.
+    pub(crate) legacy_index: FileIndex,
+    /// The canonical fact shard, produced by one
+    /// `build_canonical_fact_shard_for_ast` call.
+    pub(crate) canonical_shard: FileFactShard,
+    /// Import specifications from one `extract_import_specs` call. Not part
+    /// of `canonical_shard` (see the parity contract table above).
+    pub(crate) import_specs: Vec<perl_semantic_facts::ImportSpec>,
+    /// `use lib`/`no lib` facts from one `extract_use_lib_facts` call. Not
+    /// part of `canonical_shard` (see the parity contract table above).
+    pub(crate) use_lib_facts: Vec<perl_semantic_facts::UseLibFact>,
+}
+
+impl FileExtractionBundle {
+    /// Run one coordinated inventory pass over `ast` and package every
+    /// extractor's output into a single bundle. See the parity contract on
+    /// [`FileExtractionBundle`] for what each field feeds.
+    // Shadow producer (see the struct-level justification above); the
+    // function itself is equally unused by the live path outside tests.
+    #[allow(dead_code)]
+    pub(crate) fn build(
+        ast: &Node,
+        uri_str: &str,
+        content_hash: u64,
+        doc: &mut Document,
+        folder_uri: Option<String>,
+    ) -> Self {
+        let mut file_index = FileIndex {
+            source_uri: uri_str.to_string(),
+            content_hash,
+            folder_uri: folder_uri.clone(),
+            ..Default::default()
+        };
+        let mut visitor = IndexVisitor::new(doc, uri_str.to_string(), folder_uri);
+        visitor.visit(ast, &mut file_index);
+
+        let canonical_shard =
+            WorkspaceIndex::build_canonical_fact_shard_for_ast(uri_str, content_hash, ast);
+
+        let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
+        let import_specs =
+            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+        let use_lib_facts =
+            crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
+
+        Self { legacy_index: file_index, canonical_shard, import_specs, use_lib_facts }
     }
 }
 
@@ -10388,5 +10486,267 @@ mod reindex_workshape_measurement {
 
         insta::assert_debug_snapshot!("reindex_workshape_receipt", receipts);
         Ok(())
+    }
+}
+
+/// **SHADOW-ONLY (1711-B, tracked on #1711).** Proves that
+/// `FileExtractionBundle::build` -- ONE inventory pass -- produces
+/// byte-for-byte identical output to calling today's production extractors
+/// separately (one `IndexVisitor::visit`, one
+/// `build_canonical_fact_shard_for_ast`, plus separate import/use-lib
+/// extractor calls), across the Perl corpus fixtures (`test_corpus/gold`),
+/// the mojolicious/dancer2/catalyst real-project skeletons
+/// (`test_corpus/real_projects`), and targeted edge cases (comment-only,
+/// reference-only, declaration, generated/dynamic, imports,
+/// heredocs/POD/interpolated-strings). See the parity contract on
+/// `FileExtractionBundle` for what each field maps to.
+///
+/// This module proves parity only -- it does not change production
+/// behavior. `FileExtractionBundle` is not called from
+/// `index_file_with_generation` (see its doc comment); cutover is a
+/// separate, later PR (1711-B phase 2).
+#[cfg(test)]
+mod extraction_bundle_shadow_compare {
+    // A skipped-fixture diagnostic is only useful if a human can see it
+    // (`cargo test -- --nocapture`), same rationale/pattern as
+    // `reindex_workshape_measurement` above.
+    #![allow(clippy::print_stderr)]
+
+    use super::*;
+    use perl_tdd_support::must;
+    use std::path::{Path, PathBuf};
+    use walkdir::WalkDir;
+
+    /// Both projections for one fixture, built the way production does
+    /// today: independent extraction call sites instead of one bundle.
+    struct DirectProjections {
+        file_index: FileIndex,
+        shard: FileFactShard,
+        import_specs: Vec<perl_semantic_facts::ImportSpec>,
+        use_lib_facts: Vec<perl_semantic_facts::UseLibFact>,
+    }
+
+    fn content_hash_of(text: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        text.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn build_direct(uri: &str, text: &str, ast: &Node) -> DirectProjections {
+        let content_hash = content_hash_of(text);
+        let mut doc = Document::new(uri.to_string(), 1, text.to_string());
+        let mut file_index =
+            FileIndex { source_uri: uri.to_string(), content_hash, ..Default::default() };
+        let mut visitor = IndexVisitor::new(&mut doc, uri.to_string(), None);
+        visitor.visit(ast, &mut file_index);
+
+        let shard = WorkspaceIndex::build_canonical_fact_shard_for_ast(uri, content_hash, ast);
+
+        let file_id = WorkspaceIndex::hash_uri_to_file_id(uri);
+        let import_specs =
+            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+        let use_lib_facts =
+            crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
+
+        DirectProjections { file_index, shard, import_specs, use_lib_facts }
+    }
+
+    fn build_bundle(uri: &str, text: &str, ast: &Node) -> FileExtractionBundle {
+        let content_hash = content_hash_of(text);
+        let mut doc = Document::new(uri.to_string(), 1, text.to_string());
+        FileExtractionBundle::build(ast, uri, content_hash, &mut doc, None)
+    }
+
+    /// Assert full structural parity between the two independently-computed
+    /// projections and the bundle-derived ones, for one fixture. There must
+    /// be NO delta -- `FileExtractionBundle::build` runs the identical
+    /// extractor calls production does today -- so any assertion failure
+    /// here is a genuine bug in the bundle wiring, not an expected/documented
+    /// difference.
+    fn assert_parity(label: &str, uri: &str, text: &str) {
+        let mut parser = Parser::new(text);
+        let ast = match parser.parse() {
+            Ok(ast) => ast,
+            Err(e) => {
+                // Some corpus/real-project fixtures may be partial snippets
+                // (gold/ fixtures in particular are sometimes deliberately
+                // minimal) rather than full compilation units. Parity is
+                // meaningless without a successful parse -- skip rather than
+                // fail, same discipline as
+                // `semantic_real_workspace_baseline`'s corpus sweep.
+                eprintln!("skip {label} ({uri}): parse error: {e}");
+                return;
+            }
+        };
+
+        let direct = build_direct(uri, text, &ast);
+        let bundle = build_bundle(uri, text, &ast);
+
+        assert_eq!(
+            direct.file_index.symbols, bundle.legacy_index.symbols,
+            "{label}: legacy WorkspaceSymbol list diverged between direct and bundle-derived extraction"
+        );
+        assert_eq!(
+            direct.file_index.references, bundle.legacy_index.references,
+            "{label}: legacy references map diverged between direct and bundle-derived extraction"
+        );
+        assert_eq!(
+            direct.file_index.dependencies, bundle.legacy_index.dependencies,
+            "{label}: legacy dependencies set diverged between direct and bundle-derived extraction"
+        );
+        assert_eq!(
+            direct.shard, bundle.canonical_shard,
+            "{label}: canonical FileFactShard diverged between direct and bundle-derived extraction"
+        );
+        assert_eq!(
+            direct.import_specs, bundle.import_specs,
+            "{label}: import specs diverged between direct and bundle-derived extraction"
+        );
+        assert_eq!(
+            direct.use_lib_facts, bundle.use_lib_facts,
+            "{label}: use-lib facts diverged between direct and bundle-derived extraction"
+        );
+    }
+
+    // ── Targeted edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn parity_comment_only() {
+        let text = "package Foo;\nsub bar { return 1; }\n# just a comment, nothing else\n";
+        assert_parity("comment_only", "file:///edge/comment_only.pl", text);
+    }
+
+    #[test]
+    fn parity_reference_only() {
+        let text = "package Foo;\nsub bar { return 1; }\nsub baz { return bar() + Foo::bar(); }\n";
+        assert_parity("reference_only", "file:///edge/reference_only.pl", text);
+    }
+
+    #[test]
+    fn parity_declaration() {
+        let text = "package Foo;\nour $count = 0;\nmy $local = 1;\nsub bar { my ($x, $y) = @_; return $x + $y; }\n";
+        assert_parity("declaration", "file:///edge/declaration.pl", text);
+    }
+
+    #[test]
+    fn parity_generated_dynamic() {
+        let text = r#"
+package Foo;
+use Moo;
+has 'name' => (is => 'rw');
+eval "sub greet { return 'hi'; }";
+"#;
+        assert_parity("generated_dynamic", "file:///edge/generated_dynamic.pl", text);
+    }
+
+    #[test]
+    fn parity_imports() {
+        let text = r#"
+package Foo;
+use strict;
+use warnings;
+use lib '../lib';
+use List::Util qw(first sum);
+require Carp;
+"#;
+        assert_parity("imports", "file:///edge/imports.pl", text);
+    }
+
+    #[test]
+    fn parity_heredoc_pod_and_interpolated_strings() {
+        let text = r#"
+package Foo;
+
+=pod
+
+=head1 NAME
+
+Foo - an example module
+
+=cut
+
+my $name = "world";
+my $greeting = "Hello, $name!";
+my $block = <<"END";
+Greetings, $name.
+END
+
+sub bar { return $greeting; }
+"#;
+        assert_parity("heredoc_pod_strings", "file:///edge/heredoc_pod.pl", text);
+    }
+
+    // ── Perl corpus + real-project fixtures ───────────────────────────────
+
+    /// Resolves a path relative to the repo root. `perl-workspace`'s manifest
+    /// dir is `crates/perl-workspace`, so `../..` reaches the repo root where
+    /// `test_corpus/` lives.
+    fn corpus_root(rel: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join(rel)
+    }
+
+    fn perl_files(root: &Path) -> Vec<PathBuf> {
+        if !root.is_dir() {
+            return Vec::new();
+        }
+        let mut files: Vec<_> = WalkDir::new(root)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "pl" || ext == "pm"))
+            .map(|entry| entry.into_path())
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn assert_parity_over_corpus(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let files = perl_files(root);
+        assert!(
+            !files.is_empty(),
+            "expected at least one .pl/.pm fixture under {}; corpus layout may have moved",
+            root.display()
+        );
+        for path in &files {
+            let text = std::fs::read_to_string(path)?;
+            let uri =
+                must(url::Url::from_file_path(path).map_err(|()| {
+                    format!("fixture path cannot become file URI: {}", path.display())
+                }));
+            assert_parity(&path.display().to_string(), uri.as_str(), &text);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parity_over_gold_corpus_fixtures() -> Result<(), Box<dyn std::error::Error>> {
+        assert_parity_over_corpus(&corpus_root("test_corpus/gold"))
+    }
+
+    #[test]
+    fn parity_over_real_project_skeletons() -> Result<(), Box<dyn std::error::Error>> {
+        assert_parity_over_corpus(&corpus_root("test_corpus/real_projects"))
+    }
+
+    /// Sanity check that the real-project sweep actually covers all three
+    /// named skeletons (mojolicious/dancer2/catalyst), not just whichever
+    /// happened to exist -- guards against a silent corpus-layout drift
+    /// quietly shrinking coverage to zero for one framework.
+    #[test]
+    fn real_project_skeletons_cover_all_three_frameworks() {
+        let root = corpus_root("test_corpus/real_projects");
+        for expected in ["mojolicious_skeleton", "dancer2_skeleton", "catalyst_skeleton"] {
+            let dir = root.join(expected);
+            assert!(
+                dir.is_dir(),
+                "expected real-project skeleton directory {expected} under {}",
+                root.display()
+            );
+            assert!(
+                !perl_files(&dir).is_empty(),
+                "expected at least one .pm/.pl file under {}",
+                dir.display()
+            );
+        }
     }
 }
