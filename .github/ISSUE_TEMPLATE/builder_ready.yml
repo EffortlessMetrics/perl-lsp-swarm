@@ -17,7 +17,7 @@ body:
         CI policy, or workflow routing). `builder-ready` means builder-ready.
 
         Answer every section — even if the answer is "none" or "not applicable."
-        See [ISSUE_PLAN_DOCTRINE.md](https://github.com/EffortlessMetrics/perl-lsp/blob/main/docs/reference/ISSUE_PLAN_DOCTRINE.md).
+        See [ISSUE_PLAN_DOCTRINE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ISSUE_PLAN_DOCTRINE.md).
 
   - type: textarea
     id: problem

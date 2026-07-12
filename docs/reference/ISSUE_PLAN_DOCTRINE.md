@@ -96,9 +96,9 @@ candidate     → a raw finding, not yet verified
 researched    → claims grounded against source
 filed         → exists as a GitHub issue
 needs-plan-review → in the verification + plan-review pipeline
-plan-reviewed → spec refined and approved
+plan-reviewed → spec refined and approved (PIPELINE_GATES.md's Gate-2 exit label)
 architecture-reviewed → structural fit confirmed (when relevant)
-builder-ready → all Gate-2 exit conditions met
+builder-ready → desk-level issue-quality marker; see reconciliation note below
 in-build      → builder working (PR exists)
 implemented   → PR merged
 superseded    → replaced by other work
@@ -106,6 +106,16 @@ duplicate     → folded into another issue
 stale         → invalidated by main moving
 blocked       → waiting on a dependency or authority
 ```
+
+**Reconciliation note (Gate-2 exit label):** [PIPELINE_GATES.md](./PIPELINE_GATES.md)
+defines Gate 2's exit condition as the `plan-reviewed` label — spec-planner (which
+creates the impl branch and `.spec/` checklist) runs *within* Gate 2, after
+plan-review, so Gate 2 can close out on `plan-reviewed` alone. This desk additionally
+tracks `builder-ready` as a supplementary issue-quality marker (all ten work-order
+sections answered and reviewed) for issues that flow through the lighter
+`research_finding.yml` intake rather than spec-planner's impl-branch path. Treat
+`plan-reviewed` as authoritative for the Gate 2 → Gate 3 transition; `builder-ready`
+is advisory quality signal, not a second required gate.
 
 ### Label reconciliation (existing vs proposed)
 
@@ -115,7 +125,7 @@ exists** and treats the rest as proposals:
 
 | Desk concept | Existing label to use now | Proposed refinement (not yet created) |
 |--------------|---------------------------|----------------------------------------|
-| Raw finding needs triage | `swarm-discovered` + `needs-triage` | `needs-research` |
+| Raw finding needs triage | `swarm-discovered` | `needs-triage`, `needs-research` |
 | In verification + plan-review | `needs-plan-review` | — |
 | Spec approved | `plan-reviewed` | — |
 | Structural fit confirmed | `architecture-reviewed` | `needs-architecture-review` (routing flag) |

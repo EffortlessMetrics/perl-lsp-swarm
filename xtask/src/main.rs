@@ -3045,7 +3045,6 @@ enum PrSubcommand {
 }
 
 #[derive(Subcommand)]
-<<<<<<< HEAD
 enum PrLedgerCommand {
     /// Generate skeleton reconciliation ledger rows from open GitHub PRs.
     ///
@@ -3062,7 +3061,10 @@ enum PrLedgerCommand {
         /// Optional fixture JSON (for testing without live gh).
         #[arg(long)]
         fixture: Option<PathBuf>,
-=======
+    },
+}
+
+#[derive(Subcommand)]
 enum IssuePlanSubcommand {
     /// Report-only audit of issue-plan quality (builder-ready completeness,
     /// label drift, `#0000` placeholder references). Always exits 0.
@@ -3090,7 +3092,6 @@ enum IssuePlanSubcommand {
         /// Output format.
         #[arg(long, value_enum, default_value = "human")]
         format: IssuePlanOutputFormat,
->>>>>>> d6d79fbb5 (feat(xtask): add report-only `issue-plan audit` for the plan-review desk)
     },
 }
 

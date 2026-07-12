@@ -1,6 +1,6 @@
 name: Research Finding
 description: A raw observation or hypothesis to verify and dedupe before it enters plan review
-labels: ["swarm-discovered", "needs-triage"]
+labels: ["swarm-discovered"]
 body:
   - type: markdown
     attributes:
@@ -11,14 +11,16 @@ body:
         `candidate`/`researched` stage: something you observed that may or may
         not be a real, distinct, current problem.
 
-        This template enters at `needs-triage`. The desk's source-grounding and
-        dedupe pass promotes a distinct, verified finding to `needs-plan-review`
-        (or closes/links it if it turns out to be a duplicate, stale, or a wrong
+        This template enters with only `swarm-discovered` applied (`needs-triage`
+        is a proposed label, not yet created — see ISSUE_PLAN_DOCTRINE.md's label
+        reconciliation table). The desk's source-grounding and dedupe pass
+        promotes a distinct, verified finding to `needs-plan-review` (or
+        closes/links it if it turns out to be a duplicate, stale, or a wrong
         premise). Findings are **not** builder-ready and do not get that label.
 
         If you already have a verified root cause, a decided fix plan, and
         acceptance tests, use the **Builder-Ready Plan** template instead. See
-        [ISSUE_PLAN_DOCTRINE.md](https://github.com/EffortlessMetrics/perl-lsp/blob/main/docs/reference/ISSUE_PLAN_DOCTRINE.md).
+        [ISSUE_PLAN_DOCTRINE.md](https://github.com/EffortlessMetrics/perl-lsp-swarm/blob/main/docs/reference/ISSUE_PLAN_DOCTRINE.md).
 
   - type: input
     id: source
