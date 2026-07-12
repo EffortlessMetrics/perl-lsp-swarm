@@ -258,11 +258,7 @@ fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
                         found: ch.to_string(),
                     });
                 }
-                if atom.starts_with('#')
-                    || atom.starts_with('"')
-                    || atom.starts_with('.')
-                    || atom.chars().any(is_unsupported_metacharacter)
-                {
+                if !is_supported_atom(&atom) {
                     return Err(QueryError::UnsupportedSyntax { syntax: atom });
                 }
                 tokens.push(Token::Atom(atom));
@@ -275,6 +271,15 @@ fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
 
 fn is_unsupported_metacharacter(ch: char) -> bool {
     matches!(ch, '#' | '"' | '.' | '*' | '+' | '?' | '|' | '!' | '&' | '[' | ']' | '{' | '}' | '=')
+}
+
+fn is_supported_atom(atom: &str) -> bool {
+    if atom.is_empty() || atom.starts_with('#') || atom.starts_with('"') || atom.starts_with('.') {
+        return false;
+    }
+
+    let is_operator_kind = atom.starts_with("binary_") || atom.starts_with("unary_");
+    is_operator_kind || !atom.chars().any(is_unsupported_metacharacter)
 }
 
 fn parse_node(tokens: &[Token], position: &mut usize) -> Result<NodePattern, QueryError> {

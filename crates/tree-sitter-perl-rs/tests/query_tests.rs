@@ -107,3 +107,16 @@ fn rejects_unsupported_metacharacters() {
     assert!(matches!(Query::new("(sub|if)"), Err(QueryError::UnsupportedSyntax { .. })));
     assert!(matches!(Query::new("(sub*)"), Err(QueryError::UnsupportedSyntax { .. })));
 }
+
+#[test]
+fn accepts_operator_derived_kind_names() -> TestResult {
+    let tree = parse("1 + 2;\n");
+    let query = Query::new("(binary_+) @operator")?;
+    let mut cursor = QueryCursor::new();
+
+    let matches = cursor.matches(&query, tree.root_node()).collect::<Vec<_>>();
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(must_some(matches[0].captures().first()).node().kind(), "binary_+");
+    Ok(())
+}
