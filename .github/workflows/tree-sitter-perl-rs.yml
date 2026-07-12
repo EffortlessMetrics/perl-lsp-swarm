@@ -28,8 +28,6 @@ jobs:
     name: facade deterministic proof
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/tree-sitter-perl-rs-target
     steps:
       - uses: actions/checkout@v7
         with:
@@ -50,6 +48,7 @@ jobs:
       - name: Run deterministic facade proof
         run: |
           set -euo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/tree-sitter-perl-rs-target"
           mkdir -p "$CARGO_TARGET_DIR"
           cargo metadata --locked --no-deps --format-version 1 >/dev/null
           cargo fmt \
@@ -70,6 +69,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/tree-sitter-perl-rs-target"
           mkdir -p "$CARGO_TARGET_DIR/receipts"
           python3 - <<'PY'
           import json
