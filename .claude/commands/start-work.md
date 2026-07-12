@@ -96,7 +96,13 @@ worktree is created.
 
 ## Step 5: Collision check — is someone already writing this?
 
+Fetch remote branches **first** — `git branch -a` only shows remote-tracking
+refs that have already been fetched into this checkout. A stale checkout
+would silently miss a branch another agent just pushed, defeating the
+collision check:
+
 ```bash
+git fetch origin "+refs/heads/impl/*:refs/remotes/origin/impl/*"
 gh pr list --search "#<issue#>" --state open
 git branch -a --list "impl/<issue#>-*" "*/impl/<issue#>-*"
 git worktree list
@@ -145,12 +151,21 @@ the existing entry point:
   `.spec/<issue#>-<slug>/{checklist,acceptance,context}.md` per its own todo
   list.
 - **Direct/non-pipeline work** (no spec-builder workflow needed): use the
-  `worktree-manager` skill to allocate a slot, then follow
-  [WORKTREE_PROTOCOL.md §Fresh branch (new work)](../../docs/reference/WORKTREE_PROTOCOL.md):
+  `worktree-manager` skill's `allocate` command. **`allocate` already creates
+  the git worktree itself** — it runs `git worktree add -B <branch> <path>
+  <base>` for a new slot, or `git -C <path> checkout -B <branch> <base>` when
+  reusing an idle slot (verified in `scripts/worktree-manager.py`). Do
+  **not** follow it with a separate `git worktree add` — that would try to
+  create a second worktree for the same branch at a different path and
+  fail, or silently diverge from the one `allocate` already set up:
   ```bash
   python3 scripts/worktree-manager.py allocate --slot issue-<issue#> --branch impl/<issue#>-<slug> --owner <agent-id>
-  git worktree add -b impl/<issue#>-<slug> <worktree-path> origin/main
   ```
+  The command's own stdout (`allocated slot=... path=... branch=... ref=...`)
+  names the worktree path already created — `cd` into that path directly.
+  [WORKTREE_PROTOCOL.md §Fresh branch (new work)](../../docs/reference/WORKTREE_PROTOCOL.md)
+  documents the equivalent raw-`git worktree add` form for when the
+  worktree-manager isn't in use; don't run both forms for the same slot.
 
 Report which path was used and the resulting branch/worktree location.
 
