@@ -309,8 +309,9 @@ fn test_deep_nesting_stack_overflow() {
     // Issue #423: Deep nesting stack overflow
     // Nested if statements
     let mut code = String::new();
-    // The structural block limit is currently 512; exceed it without relying
-    // on the older recursion-limit value so the test exercises the active guard.
+    // The fixture exceeds both active limits: the recursion limit is 128 and
+    // the structural block limit is 512. The recursion guard fires first, but
+    // either guard must remain observable as a nesting error.
     for _ in 0..600 {
         code.push_str("if ($a) { ");
     }
@@ -323,7 +324,7 @@ fn test_deep_nesting_stack_overflow() {
     let result = parser.parse();
 
     // It might fail with a nesting limit, or pass if the limit is raised in the future.
-    // 600 levels should trigger the current structural block limit.
+    // 600 levels should trigger the current nesting guards.
     if let Err(e) = result {
         assert!(e.to_string().contains("Nesting depth limit exceeded"), "Error was: {}", e);
     } else {
