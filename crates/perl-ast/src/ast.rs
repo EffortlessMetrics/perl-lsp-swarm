@@ -3401,6 +3401,82 @@ mod tests {
     }
 
     #[test]
+    fn field_aware_metadata_covers_declarations_calls_signatures_and_recovery() {
+        let loc = SourceLocation { start: 0, end: 1 };
+        let leaf = || Node::new(NodeKind::Number { value: "1".into() }, loc);
+        let names = |node: &Node| {
+            let mut names = Vec::new();
+            node.for_each_child_with_field(|field, _| names.push(field.map(FieldId::name)));
+            names
+        };
+
+        let declaration = Node::new(
+            NodeKind::VariableDeclaration {
+                declarator: "my".into(),
+                variable: Box::new(leaf()),
+                attributes: vec!["lvalue".into()],
+                initializer: Some(Box::new(leaf())),
+            },
+            loc,
+        );
+        assert_eq!(names(&declaration), vec![Some("variable"), Some("initializer")]);
+
+        let binary = Node::new(
+            NodeKind::Binary { op: "+".into(), left: Box::new(leaf()), right: Box::new(leaf()) },
+            loc,
+        );
+        assert_eq!(names(&binary), vec![Some("left"), Some("right")]);
+
+        let call = Node::new(
+            NodeKind::MethodCall {
+                object: Box::new(leaf()),
+                method: "run".into(),
+                args: vec![leaf(), leaf()],
+            },
+            loc,
+        );
+        assert_eq!(names(&call), vec![Some("object"), Some("args"), Some("args")]);
+
+        let subroutine = Node::new(
+            NodeKind::Subroutine {
+                name: Some("run".into()),
+                name_span: None,
+                declarator: None,
+                prototype: Some(Box::new(leaf())),
+                signature: Some(Box::new(leaf())),
+                attributes: vec![],
+                body: Box::new(leaf()),
+            },
+            loc,
+        );
+        assert_eq!(names(&subroutine), vec![Some("prototype"), Some("signature"), Some("body")]);
+
+        let recovery = Node::new(
+            NodeKind::Error {
+                message: "bad".into(),
+                expected: vec![],
+                found: None,
+                partial: Some(Box::new(leaf())),
+            },
+            loc,
+        );
+        assert_eq!(names(&recovery), vec![Some("partial")]);
+
+        let heredoc = Node::new(
+            NodeKind::Heredoc {
+                delimiter: "END".into(),
+                content: "body".into(),
+                interpolated: true,
+                indented: false,
+                command: false,
+                body_span: None,
+            },
+            loc,
+        );
+        assert!(names(&heredoc).is_empty());
+    }
+
+    #[test]
     fn all_kind_names_is_consistent_with_kind_name() {
         let from_enum = all_kind_names_from_variants();
         let from_const: BTreeSet<&str> = NodeKind::ALL_KIND_NAMES.iter().copied().collect();
