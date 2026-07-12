@@ -439,7 +439,9 @@ impl<'a> Parser<'a> {
             }
         };
 
-        ParseOutput::finish(ast, self.errors.clone(), BudgetTracker::new(), terminated_early)
+        let mut budget_usage = BudgetTracker::new();
+        budget_usage.errors_emitted = self.errors.len();
+        ParseOutput::finish(ast, self.errors.clone(), budget_usage, terminated_early)
     }
 }
 
