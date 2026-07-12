@@ -48,8 +48,9 @@ already places in the label into an explicit pre-check.
 #<issue#> is not builder-ready. Read-only investigation may continue, but no
 writer worktree may be created. Next step: route through plan-review
 (/plan-review-read, /plan-review-verify, /plan-review-stress,
-/plan-review-improve) to reach a BUILD verdict, or use /prepare-work if this
-is a new concern that hasn't been scoped yet.
+/plan-review-improve) to reach a BUILD verdict. If this is a new concern that
+hasn't been scoped yet, file or reconcile the controlling issue first — there
+is no dedicated intake command for that step yet.
 ```
 
 ## Step 4: Confirm the latest plan revision has a matching BUILD verdict

@@ -45,10 +45,10 @@ not an obstacle to route around.
 
 Before creating a writer worktree, branch, or production edit for substantive work,
 establish or reconcile one controlling issue whose latest plan revision carries a
-`BUILD` verdict. Read-only investigation may precede `builder-ready`. Use
-`/prepare-work` for a new concern; run `/start-work <issue>` before taking write
-ownership — it is an advisory pre-mutation guard, not a required check. Comments
-carry evidence; labels are navigation, not authorization. Full model:
+`BUILD` verdict (research → synthesize plan → independent verdict). Read-only
+investigation may precede `builder-ready`. Run `/start-work <issue>` before taking
+write ownership — it is an advisory pre-mutation guard, not a required check.
+Comments carry evidence; labels are navigation, not authorization. Full model:
 [#3971](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3971) /
 [#3807](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3807).
 
