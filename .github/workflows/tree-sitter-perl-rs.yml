@@ -85,7 +85,11 @@ jobs:
           grep -q 'kind_lookup_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
           grep -q 'position_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
           grep -q 'overlay_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
-          cargo package -p tree-sitter-perl-rs --locked
+          # The facade depends on coordinated, not-yet-published workspace
+          # crates. `cargo package` can validate the package contents here,
+          # but verification would resolve older crates.io APIs and fail before
+          # the stack is publishable as a unit.
+          cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked
 
       - name: Write proof receipt
         if: always()
@@ -102,6 +106,10 @@ jobs:
               "workflow": "tree-sitter-perl-rs proof",
               "sha": os.environ["GITHUB_SHA"],
               "target": os.environ["CARGO_TARGET_DIR"],
+              "package_verification": {
+                  "status": "skipped",
+                  "reason": "workspace dependencies are coordinated unpublished crates; cargo package verification resolves stale crates.io APIs",
+              },
               "commands": [
                   "cargo metadata --locked --no-deps --format-version 1",
                   "cargo fmt -p perl-ast -p perl-parser-core -p perl-tree-sitter-compat -p tree-sitter-perl-rs --check",
@@ -114,7 +122,7 @@ jobs:
                   "cargo run --locked -p perl-ci-hygiene -- quick-bench",
                   "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- incremental-smoke.pl --incremental",
                   "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- tree-sitter-perl/test/highlight/expressions.pm --profile",
-                  "cargo package -p tree-sitter-perl-rs --locked",
+                  "cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked",
               ],
           }
           Path(os.environ["CARGO_TARGET_DIR"], "receipts", "tree-sitter-perl-rs.json").write_text(
