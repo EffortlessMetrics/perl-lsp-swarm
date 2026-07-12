@@ -47,7 +47,7 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `Parser::parse(&mut self, source: &str) -> Option<Tree>` | Parse Perl source; `None` only on complete failure |
 | `Tree::root_node() -> Node<'_>` | Get the root of the syntax tree |
 | `Tree::source() -> &str` | Source text this tree was built from |
-| `Parser::parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree>` | Incremental re-parse; reuses unchanged regions of `old_tree` |
+| `Parser::parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree>` | Re-parses changed source; byte-identical source uses the unchanged-tree fast path |
 | `Tree::walk() -> TreeCursor<'_>` | Returns a cursor for zero-allocation streaming traversal |
 | `Tree::edit(&mut self, edit: &InputEdit)` | Records a source edit; pass the updated tree to `parse_with_old_tree` |
 | `Tree::root_node() -> Node<'_>` | Get the root of the syntax tree |
@@ -75,6 +75,20 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `PerlLanguage` / `language()` / `LANGUAGE` | Language descriptor for Rust-native tooling (not `tree_sitter::Language`) |
 | `FieldId` | Stable named-field identifier shared by the AST and facade |
 | `PerlNodeKind` | Re-export of `perl_ast::NodeKind` for pattern matching |
+| `Query` / `QueryCursor` | Structural AST matching when the `queries` feature is enabled |
+
+### Structural queries
+
+Enable the optional `queries` feature for Phase 2a query support:
+
+```toml
+tree-sitter-perl-rs = { version = "...", features = ["queries"] }
+```
+
+The supported subset includes node kinds, wildcards, nested children, named fields,
+captures, multiple top-level patterns, and byte-range restriction. Query predicates and
+other unsupported tree-sitter query syntax return a typed `QueryError`; they are not
+silently ignored.
 
 ## Error tolerance
 
@@ -89,12 +103,6 @@ This means you can pipe any Perl source through this parser and rely on getting 
 - `Node::children()` allocates a `Vec` internally on each call. Prefer iterating once over calling repeatedly.
 - `RecursionLimit` / `NestingTooDeep` parse errors produce `None` rather than a partial tree.
 - `Node::kind()` now returns grammar-canonical names (e.g. `"source_file"`) for tree-sitter compatibility. Use `Node::native_kind()` when you need the v3 internal PascalCase name.
-
-## Backlog roadmap
-
-The following APIs are not yet implemented and remain on the backlog:
-
-- Predicate / query API (pattern matching over the AST)
 
 ## License
 

@@ -56,6 +56,12 @@ use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::semantic::SemanticModel;
 use std::ops::ControlFlow;
 
+#[cfg(feature = "queries")]
+mod query;
+
+#[cfg(feature = "queries")]
+pub use query::{Query, QueryCapture, QueryCursor, QueryError, QueryMatch, QueryMatches};
+
 /// Re-export of Edit type for tree-sitter-compatible incremental parsing.
 ///
 /// Mirrors `tree_sitter::InputEdit` field layout for drop-in compatibility.
@@ -351,6 +357,7 @@ impl<'tree> SemanticOverlay<'tree> {
 ///
 /// Mirrors the tree-sitter `Node` API surface. Lifetime `'tree` is tied to the
 /// owning [`Tree`].
+#[derive(Clone, Copy)]
 pub struct Node<'tree> {
     inner: &'tree AstNode,
     tree_source: &'tree str,

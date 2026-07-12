@@ -11,25 +11,25 @@
 - `Tree::edit()` / `Parser::parse_with_old_tree()` / `InputEdit` — incremental re-parsing
 - `PerlLanguage` descriptor, `language()` function, and `LANGUAGE` constant for Rust-native tooling
 - `PerlNodeKind` re-export for pattern matching without a direct `perl-ast` dependency
+- Canonical named-field access through `child_by_field_name()`,
+  `children_by_field_name()`, and `field_name_for_child()`
 - Snapshot tests for representative Perl constructs
 
-## Phase 2 (planned)
+## Phase 2
 
-### Field-name accessors
+### Structural query subset (shipped behind `queries`)
 
-`Node::child_by_field_name(name: &str) -> Option<Node>` and
-`Node::children_by_field_name(name: &str) -> impl Iterator<Item = Node>` to address named
-child slots (e.g. `"body"`, `"condition"`, `"name"`).
+`Query` and `QueryCursor` support node kinds, wildcards, nested children, named fields,
+captures, multiple top-level patterns, and byte-range restriction. Unsupported syntax
+returns a typed `QueryError`.
 
-### Predicate / query API
+### Query predicates (planned)
 
-`Query` and `QueryCursor` types for pattern matching over the AST, analogous to the
-tree-sitter query API.
+Add predicates as required by real repository `.scm` fixtures, with explicit conformance
+coverage for every supported predicate.
 
 ## Known limitations
 
-- `end_byte()` may return `source.len() + 1` for the root node on some inputs. Callers should
-  clamp to `source.len()` when using it as a slice index.
 - `Node::children()` allocates a `Vec<&AstNode>` internally on each call. Avoid calling it
   in tight loops; iterate once and collect if you need random access.
 - `RecursionLimit` / `NestingTooDeep` parse errors from the v3 parser produce `None` from
