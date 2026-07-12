@@ -2,21 +2,44 @@
 
 **Controlling issue:** [#1711](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/1711)
 (LSP-freshness reliability lane). **Related:** #3396, #4013 (1711-A measurement),
-#4018 (1711-B shadow -- parity harness + this unified traversal).
+#4018 (1711-B shadow -- parity harness + this unified traversal), 1711-B cutover
+PR (production wiring, see `docs/reference/1711-A-reextraction-workshape-receipt.md`'s
+cutover remeasurement addendum).
 
-This is a **shadow-only** characterization. No production behavior has
-changed: `WorkspaceIndex::index_file_with_generation` is byte-for-byte
-unchanged and still calls the existing dual walk
+**Update (1711-B cutover): this is no longer shadow-only.**
+`WorkspaceIndex::index_file_with_generation` now calls
+`FileExtractionBundle::build_unified` /`IndexVisitor::visit_unified` in
+production, retiring the old dual walk (`IndexVisitor::visit` +
+`extract_symbol_refs`) this document originally characterized as shadow-only.
+Every coverage-delta case below is therefore now a **shipped, live**
+`FileIndex` coverage improvement, not a hypothetical one -- the legacy
+`FileIndex` reference projection genuinely gains the coverage described below
+in production. The narrative below is left as originally written (describing
+the shadow-phase characterization work) since the underlying technical
+analysis is unchanged; only the "unused by the live path" framing is stale.
+The mechanically-enforced tests (`extraction_bundle_shadow_compare::coverage_delta_*`
+and `assert_unified_legacy_is_superset`, in
+`crates/perl-workspace/src/workspace/workspace_index.rs`) remain the source of
+truth for the exact cases and counts.
+
+<details>
+<summary>Original shadow-phase framing (superseded by the cutover, kept for history)</summary>
+
+This was a **shadow-only** characterization. No production behavior had
+changed: `WorkspaceIndex::index_file_with_generation` was byte-for-byte
+unchanged and still called the existing dual walk
 (`IndexVisitor::visit` + `extract_symbol_refs`). The unified traversal
 described here (`IndexVisitor::visit_unified` /
 `FileExtractionBundle::build_unified`, in
-`crates/perl-workspace/src/workspace/workspace_index.rs`) is additive,
+`crates/perl-workspace/src/workspace/workspace_index.rs`) was additive,
 `#[allow(dead_code)]`-justified, and unused by the live path. This document
-is the durable, narrative record of what the
+was the durable, narrative record of what the
 `extraction_bundle_shadow_compare::coverage_delta_*` tests in that file
 mechanically enforce -- **those tests are the source of truth**; if this
 document and the tests ever disagree, the tests win and this document is
 stale.
+
+</details>
 
 ## What changed structurally
 

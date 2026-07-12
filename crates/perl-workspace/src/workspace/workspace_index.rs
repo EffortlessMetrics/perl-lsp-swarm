@@ -2008,54 +2008,51 @@ impl WorkspaceIndex {
         // Determine workspace folder URI from the file URI
         let folder_uri = self.determine_folder_uri(&uri_str);
 
-        // Extract symbols and references
-        let mut file_index = FileIndex {
-            source_uri: uri_str.clone(),
-            content_hash,
-            generation,
-            folder_uri: folder_uri.clone(),
-            ..Default::default()
-        };
-        let mut visitor = IndexVisitor::new(&mut doc, uri_str.clone(), folder_uri);
-        #[cfg(test)]
-        let visit_start = Instant::now();
-        visitor.visit(&ast, &mut file_index);
-        #[cfg(test)]
-        reindex_metrics::record_visit(visit_start.elapsed());
+        // Extract symbols and references via the unified single-traversal
+        // extraction bundle (perl-lsp-swarm#1711-B cutover). One AST walk
+        // (`IndexVisitor::visit_unified`, run inside
+        // `FileExtractionBundle::build_unified`) now produces BOTH the
+        // legacy `FileIndex` reference/dependency projection AND the
+        // canonical `Vec<SymbolRef>` projection, replacing the two
+        // independent full-AST reference walks (`IndexVisitor::visit` +
+        // `extract_symbol_refs`) this path ran before. Declaration
+        // extraction, eval-sub boundary facts, generated-member facts, and
+        // import/use-lib extraction are UNCHANGED by this cutover -- only
+        // the reference walk is unified (declarations are a separable
+        // follow-up; see `FileExtractionBundle::build_unified`'s doc
+        // comment).
+        let mut bundle =
+            FileExtractionBundle::build_unified(&ast, &uri_str, content_hash, &mut doc, folder_uri);
+        // `build_unified` builds its own `FileIndex` (it has no notion of
+        // this call's `generation` parameter) -- restore it here, exactly
+        // as the pre-cutover `FileIndex { ..., generation, ... }` literal
+        // did.
+        bundle.legacy_index.generation = generation;
+        let file_index = bundle.legacy_index;
 
-        let canonical_shard =
-            Self::build_canonical_fact_shard_for_ast(&uri_str, content_hash, &ast);
-        let fact_shard = if canonical_shard.anchors.is_empty()
-            && canonical_shard.entities.is_empty()
-            && canonical_shard.occurrences.is_empty()
-            && canonical_shard.edges.is_empty()
+        let fact_shard = if bundle.canonical_shard.anchors.is_empty()
+            && bundle.canonical_shard.entities.is_empty()
+            && bundle.canonical_shard.occurrences.is_empty()
+            && bundle.canonical_shard.edges.is_empty()
         {
             Self::build_fact_shard(&uri_str, content_hash, &file_index)
         } else {
-            canonical_shard
+            bundle.canonical_shard
         };
 
-        // Extract import specs from the AST — populates ImportExportIndex so
-        // that `Foo->import(@names)` dynamic-import suppression is live in
-        // production.  This runs outside the write lock to avoid holding it
-        // longer than necessary.
+        // Update the import/export index with the import specs and use-lib
+        // facts the unified extraction bundle above already produced
+        // (`extract_import_specs`/`extract_use_lib_facts`, unchanged by
+        // this cutover) -- populates ImportExportIndex so that
+        // `Foo->import(@names)` dynamic-import suppression is live in
+        // production.
         //
         // Lock ordering note: `semantic_import_export_index` is acquired write
         // separately from (and after) `files`/`symbols`/`global_references` to
         // match the consistent lock-order used throughout this file.
         let file_id = Self::hash_uri_to_file_id(&uri_str);
-        #[cfg(test)]
-        let import_start = Instant::now();
-        let import_specs =
-            crate::semantic::workspace_import_extractor::extract_import_specs(&ast, file_id);
-        #[cfg(test)]
-        reindex_metrics::record_import_extract(import_start.elapsed());
-        #[cfg(test)]
-        let use_lib_start = Instant::now();
-        let use_lib_facts =
-            crate::semantic::workspace_import_extractor::extract_use_lib_facts(&ast, file_id);
-        #[cfg(test)]
-        reindex_metrics::record_use_lib_extract(use_lib_start.elapsed());
+        let import_specs = bundle.import_specs;
+        let use_lib_facts = bundle.use_lib_facts;
 
         // Update the index, refresh the global symbol cache, and replace this file's
         // contribution in the global reference index.
@@ -2920,12 +2917,17 @@ impl WorkspaceIndex {
     }
 
     /// Build a canonical [`FileFactShard`] from the AST using the semantic
-    /// fact adapters in `perl-symbol`.
+    /// fact adapters in `perl-symbol`, calling `extract_symbol_refs(ast)`
+    /// itself (a second, independent full-AST reference walk).
     ///
-    /// This is the canonical population path that produces facts with real
-    /// byte spans, `ExactAst` provenance, and per-category hashes. It runs
-    /// alongside the legacy `build_fact_shard` path during the migration
-    /// period.
+    /// **Superseded in production by [`Self::build_canonical_fact_shard_from_symbol_refs`]
+    /// as of the 1711-B cutover** (`index_file_with_generation` now derives its
+    /// canonical `Vec<SymbolRef>` from the unified `visit_unified` walk instead
+    /// of calling `extract_symbol_refs` a second time). Kept as the
+    /// `extraction_bundle_shadow_compare` parity harness's `build_direct`/
+    /// `FileExtractionBundle::build` reference point -- the pre-cutover
+    /// dual-walk behavior this cutover's parity tests assert against.
+    #[allow(dead_code)]
     fn build_canonical_fact_shard_for_ast(
         uri: &str,
         content_hash: u64,
@@ -3012,7 +3014,8 @@ impl WorkspaceIndex {
         )
     }
 
-    /// **SHADOW-ONLY (1711-B phase 2, tracked on #1711).** Identical to
+    /// **Production canonical builder for the unified reference traversal
+    /// (perl-lsp-swarm#1711-B cutover).** Identical to
     /// [`Self::build_canonical_fact_shard_for_ast`] except it takes an
     /// ALREADY-COMPUTED `refs: &[SymbolRef]` instead of calling
     /// `extract_symbol_refs(ast)` itself -- this is what lets
@@ -3021,11 +3024,12 @@ impl WorkspaceIndex {
     /// of running a second, independent `extract_symbol_refs` walk. Every
     /// other extractor call (`extract_symbol_decls` for declarations,
     /// eval-sub, generated-member) is UNCHANGED and unaffected -- only the
-    /// reference walk is unified in this phase (see the #1711 feasibility
-    /// comment for why declarations are a separable follow-up).
-    // Shadow scaffold, not called by the live `index_file_with_generation`
-    // path -- see `FileExtractionBundle::build_unified`.
-    #[allow(dead_code)]
+    /// reference walk is unified (see the #1711 feasibility comment for why
+    /// declarations are a separable follow-up). Called by
+    /// `index_file_with_generation` via `FileExtractionBundle::build_unified`;
+    /// `build_canonical_fact_shard_for_ast` above remains live only for the
+    /// `extraction_bundle_shadow_compare` parity harness's `build_direct`
+    /// reference path, not for production.
     fn build_canonical_fact_shard_from_symbol_refs(
         uri: &str,
         content_hash: u64,
@@ -3034,21 +3038,33 @@ impl WorkspaceIndex {
     ) -> FileFactShard {
         let file_id = Self::hash_uri_to_file_id(uri);
 
+        #[cfg(test)]
+        let decl_start = Instant::now();
         let decls = extract_symbol_decls(ast, None);
+        #[cfg(test)]
+        reindex_metrics::record_decl_extract(decl_start.elapsed());
         let decl_facts = symbol_decls_to_semantic_facts(&decls, file_id);
 
         let entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
             decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
         let ref_facts = symbol_refs_to_semantic_facts(refs, file_id, &entity_ids_by_name);
 
+        #[cfg(test)]
+        let eval_sub_start = Instant::now();
         let eval_sub_triples =
             crate::semantic::eval_sub_extractor::extract_eval_sub_boundaries(ast, file_id);
+        #[cfg(test)]
+        reindex_metrics::record_eval_sub(eval_sub_start.elapsed());
         let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
             eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        #[cfg(test)]
+        let generated_member_start = Instant::now();
         let generated_member_facts =
             crate::semantic::generated_member_extractor::extract_generated_member_facts(
                 ast, file_id,
             );
+        #[cfg(test)]
+        reindex_metrics::record_generated_member(generated_member_start.elapsed());
 
         let synthetic_entities_from_eval: Vec<perl_semantic_facts::EntityFact> =
             eval_sub_triples.iter().map(|(entity, _, _)| entity.clone()).collect();
@@ -4117,53 +4133,35 @@ impl WorkspaceIndex {
     }
 }
 
-/// **SHADOW-ONLY (1711-B, tracked on #1711). NOT a consolidation.** This is
-/// a parity-harness scaffold, not a single traversal: `build()` below still
-/// runs the SAME MULTIPLE separate AST walks `index_file_with_generation`
-/// runs today (one `IndexVisitor::visit`, one
-/// `build_canonical_fact_shard_for_ast` -- which itself internally calls
+/// **`build_unified` is the production extraction path (perl-lsp-swarm#1711-B
+/// cutover); `build` below remains a shadow/parity-harness-only twin.**
+/// `build()` runs the OLD, pre-cutover MULTIPLE separate AST walks (one
+/// `IndexVisitor::visit`, one `build_canonical_fact_shard_for_ast` -- which
+/// itself internally calls
 /// `extract_symbol_decls`/`extract_symbol_refs`/eval-sub/generated-member --
 /// plus one `extract_import_specs` and one `extract_use_lib_facts`), and just
-/// packages their outputs into one struct. **It does NOT eliminate the
-/// duplicate extraction #1711 is about, and does not reduce the AST-traversal
-/// count at all.** Its only purpose is to give the
-/// `extraction_bundle_shadow_compare` test module below a single call site to
-/// assert parity against, so that a REAL future unification (replacing these
-/// separate calls with one traversal) has a byte-for-byte regression gate to
-/// build against.
+/// packages their outputs into one struct; it is kept ONLY as the
+/// `extraction_bundle_shadow_compare` test module's `build_direct`-equivalent
+/// reference point, not called by `index_file_with_generation` anymore.
+/// `build_unified()` is what production actually calls: it runs ONE reference
+/// walk (`IndexVisitor::visit_unified`) that produces both projections,
+/// eliminating the duplicate `extract_symbol_refs` walk `build()`/pre-cutover
+/// production used to run.
 ///
 /// # Parity contract
 ///
 /// | Output | Legacy (`IndexVisitor` / [`FileIndex`]) | Canonical ([`FileFactShard`]) |
 /// |---|---|---|
 /// | Declarations | [`WorkspaceSymbol`] (name, kind, range, qualified_name, container_name, is_lexical) built by `IndexVisitor::project_symbol_declarations`, which calls `extract_symbol_decls(ast, Some("main"))` | [`EntityFact`] + [`AnchorFact`] via `extract_symbol_decls(ast, None)` -> `symbol_decls_to_semantic_facts` |
-/// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `extract_symbol_refs(ast)` -> `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
+/// | References | [`SymbolReference`] with `ReferenceKind::{Read,Write,Usage,Import,Definition}`, produced by the hand-rolled `IndexVisitor::visit_node`/`visit_unified` walk (dual bare+qualified indexing for calls, dependency tracking for `use`/`extends`/`with`/`require`, interpolated-string variable scanning) | `OccurrenceFact` + `EdgeFact` via `symbol_refs_to_semantic_facts` (`Call`/`MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`/`Read` only -- no `Write`, no dependency tracking, no interpolated strings) |
 /// | Dynamic / generated facts | not modeled in `FileIndex` | `extract_eval_sub_boundaries` + `extract_generated_member_facts`, merged into `FileFactShard.{entities,anchors,occurrences}` |
 /// | Imports | `ReferenceKind::Import` entries in `FileIndex.references`, plus `FileIndex.dependencies: HashSet<String>` | `extract_import_specs` / `extract_use_lib_facts`, written to `ImportExportIndex` -- **not** part of `FileFactShard` (see `build_canonical_fact_shard_for_ast`'s always-empty `imports: &[]` argument) |
 /// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
 ///
-/// This struct is **not wired into the production `index_file_with_generation`
-/// path**. The real open problem for a genuine single-traversal unification is
-/// NOT modeled or solved here: `IndexVisitor::visit_node` and
-/// `extract_symbol_refs` are two independently hand-written AST walkers with
-/// non-identical node-kind coverage and non-overlapping capabilities (legacy
-/// has Write-detection, `use`/`extends`/`with`/`require` dependency tracking,
-/// and interpolated-string scanning that canonical lacks; canonical has
-/// `MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`
-/// classification and resolved entity IDs that legacy lacks -- legacy has no
-/// `NodeKind::Typeglob` arm at all, a pre-existing coverage gap, not a
-/// consolidation side effect). Whether and how those two walkers can be
-/// merged into one is answered by the feasibility investigation posted to
-/// #1711 (see the PR description), not by this struct. Do not read the
-/// "parity: clean, zero deltas" result of the tests below as evidence that
-/// unification is easy or already done -- it only proves this packaging
-/// step didn't introduce a NEW discrepancy, since it calls the exact same
-/// functions production already calls.
-// Shadow scaffold: intentionally unused by the live `index_file_with_generation`
-// path (see the doc comment above and #1711) -- kept as a genuine additive
-// production type rather than `#[cfg(test)]`-gated, per the 1711-B
-// shadow-phase directive.
-#[allow(dead_code)]
+/// Declaration extraction is intentionally still NOT unified (`extract_symbol_decls`
+/// is called once per projection, in both `build()` and `build_unified()`) --
+/// a separable follow-up tracked on #1711 (see the feasibility comment, item
+/// 3). Only the reference walk is unified by this cutover.
 pub(crate) struct FileExtractionBundle {
     /// The legacy `IndexVisitor` projection, produced by one `visit()` call.
     pub(crate) legacy_index: FileIndex,
@@ -4179,11 +4177,12 @@ pub(crate) struct FileExtractionBundle {
 }
 
 impl FileExtractionBundle {
-    /// Run the SAME MULTIPLE separate extractor calls production runs today
-    /// (still several distinct AST walks -- see the struct-level doc comment)
-    /// and package every result into a single bundle. Does not reduce the
-    /// traversal count. See the parity contract on [`FileExtractionBundle`]
-    /// for what each field feeds.
+    /// **Shadow/parity-harness-only twin of [`Self::build_unified`] (kept for
+    /// the `extraction_bundle_shadow_compare` regression harness).** Runs the
+    /// OLD, pre-1711-B-cutover MULTIPLE separate extractor calls (still
+    /// several distinct AST walks -- see the struct-level doc comment) and
+    /// packages every result into a single bundle. Does not reduce the
+    /// traversal count; not called by `index_file_with_generation`.
     // Shadow scaffold (see the struct-level justification above); the
     // function itself is equally unused by the live path outside tests.
     #[allow(dead_code)]
@@ -4215,15 +4214,15 @@ impl FileExtractionBundle {
         Self { legacy_index: file_index, canonical_shard, import_specs, use_lib_facts }
     }
 
-    /// **SHADOW-ONLY (1711-B phase 2, tracked on #1711).** The REAL unified
-    /// traversal: runs ONE reference walk (`IndexVisitor::visit_unified`)
-    /// that produces BOTH the legacy [`FileIndex`] reference/dependency
-    /// projection AND the canonical `Vec<SymbolRef>` projection, then feeds
-    /// that single `Vec<SymbolRef>` into
-    /// `WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs` instead
-    /// of calling `extract_symbol_refs(ast)` a second time. This genuinely
-    /// eliminates one of the two full-AST reference walks
-    /// `index_file_with_generation` runs today.
+    /// **Production extraction path (perl-lsp-swarm#1711-B cutover).** The
+    /// REAL unified traversal: runs ONE reference walk
+    /// (`IndexVisitor::visit_unified`) that produces BOTH the legacy
+    /// [`FileIndex`] reference/dependency projection AND the canonical
+    /// `Vec<SymbolRef>` projection, then feeds that single `Vec<SymbolRef>`
+    /// into `WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs`
+    /// instead of calling `extract_symbol_refs(ast)` a second time. This is
+    /// what eliminates one of the two full-AST reference walks
+    /// `index_file_with_generation` used to run.
     ///
     /// Declaration extraction is UNCHANGED: `extract_symbol_decls` is still
     /// called twice (once per projection, with the existing
@@ -4236,11 +4235,13 @@ impl FileExtractionBundle {
     /// closes several PRE-EXISTING legacy `FileIndex` coverage gaps not
     /// introduced by this change -- see
     /// `docs/reference/1711-B-coverage-delta.md` for the full,
-    /// fixture-backed list. **NOT wired into the production
-    /// `index_file_with_generation` path** -- this is the shadow proof the
-    /// maintainer's cutover decision is gated on.
-    // Shadow scaffold: intentionally unused by the live path.
-    #[allow(dead_code)]
+    /// fixture-backed list; this is the intentional, monotonic legacy
+    /// `FileIndex` coverage improvement this cutover ships. Called by
+    /// `WorkspaceIndex::index_file_with_generation` -- this IS the
+    /// production path now (was shadow-only prior to the 1711-B cutover;
+    /// `FileExtractionBundle::build` above remains the shadow/parity-only
+    /// non-unified twin, used only by the `extraction_bundle_shadow_compare`
+    /// harness).
     pub(crate) fn build_unified(
         ast: &Node,
         uri_str: &str,
@@ -4256,7 +4257,11 @@ impl FileExtractionBundle {
         };
         let mut symbol_refs = Vec::new();
         let mut visitor = IndexVisitor::new(doc, uri_str.to_string(), folder_uri);
+        #[cfg(test)]
+        let visit_start = Instant::now();
         visitor.visit_unified(ast, &mut file_index, &mut symbol_refs);
+        #[cfg(test)]
+        reindex_metrics::record_visit(visit_start.elapsed());
 
         let canonical_shard = WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs(
             uri_str,
@@ -4266,10 +4271,18 @@ impl FileExtractionBundle {
         );
 
         let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
+        #[cfg(test)]
+        let import_start = Instant::now();
         let import_specs =
             crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+        #[cfg(test)]
+        reindex_metrics::record_import_extract(import_start.elapsed());
+        #[cfg(test)]
+        let use_lib_start = Instant::now();
         let use_lib_facts =
             crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
+        #[cfg(test)]
+        reindex_metrics::record_use_lib_extract(use_lib_start.elapsed());
 
         Self { legacy_index: file_index, canonical_shard, import_specs, use_lib_facts }
     }
@@ -4873,12 +4886,13 @@ impl IndexVisitor {
         }
     }
 
-    /// **SHADOW-ONLY (1711-B phase 2, tracked on #1711).** Unified reference
-    /// walk: produces BOTH the legacy [`FileIndex`] reference/dependency
-    /// projection AND the canonical `Vec<SymbolRef>` projection (the input
-    /// `symbol_refs_to_semantic_facts` expects) from ONE recursive descent --
-    /// replacing what production runs today as TWO separate full-AST walks
-    /// (`IndexVisitor::visit` + `extract_symbol_refs`). Declaration
+    /// **Production reference walk (perl-lsp-swarm#1711-B cutover).**
+    /// Unified reference walk: produces BOTH the legacy [`FileIndex`]
+    /// reference/dependency projection AND the canonical `Vec<SymbolRef>`
+    /// projection (the input `symbol_refs_to_semantic_facts` expects) from
+    /// ONE recursive descent -- replacing what production used to run as
+    /// TWO separate full-AST walks (`IndexVisitor::visit` +
+    /// `extract_symbol_refs`). Declaration
     /// extraction is UNCHANGED and NOT unified here (`project_symbol_declarations`
     /// still calls `extract_symbol_decls(ast, Some("main"))` exactly as
     /// `visit()` does today) -- see the #1711 feasibility comment, item 3,
@@ -4896,8 +4910,10 @@ impl IndexVisitor {
     /// `Typeglob`, `Tie`, `Goto` coderef targets, regex-bind expressions
     /// (`Match`/`Substitution`/`Transliteration`), `IndirectCall` arguments,
     /// `Subroutine` signature default-value expressions, and non-`Variable`
-    /// assignment/increment targets are also unreached by legacy today.
-    /// NOT called by production -- see `FileExtractionBundle::build_unified`.
+    /// assignment/increment targets are also unreached by legacy today (that
+    /// coverage gain is intentional and shipped by the 1711-B cutover -- see
+    /// `assert_unified_legacy_is_superset` in `extraction_bundle_shadow_compare`
+    /// below). Called by production via `FileExtractionBundle::build_unified`.
     fn visit_unified(
         &mut self,
         node: &Node,
@@ -5426,7 +5442,7 @@ impl IndexVisitor {
     }
 }
 
-/// SHADOW-ONLY (1711-B phase 2): canonical [`SymbolRef`] classification for
+/// **Production (1711-B cutover).** Canonical [`SymbolRef`] classification for
 /// a single node, duplicated from `perl_symbol::surface::ref`'s private
 /// `walk` match arms for `Variable`/`Typeglob`/`FunctionCall`/`MethodCall`
 /// (the node kinds `IndexVisitor::walk_unified` also classifies for the
@@ -5513,7 +5529,7 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
     }
 }
 
-/// SHADOW-ONLY (1711-B phase 2): coderef-target classification for
+/// **Production (1711-B cutover).** Coderef-target classification for
 /// `Goto`/backslash-`Unary` nodes, duplicated from
 /// `perl_symbol::surface::ref`'s private `coderef_target_name`/
 /// `push_coderef_target`. See [`canonical_ref_for_node`]'s doc comment for
@@ -5546,7 +5562,7 @@ fn canonical_coderef_target_ref(
     })
 }
 
-/// SHADOW-ONLY (1711-B phase 2): duplicated from
+/// **Production (1711-B cutover).** Duplicated from
 /// `perl_symbol::surface::ref::split_qualified_name` (private to that
 /// crate). See [`canonical_ref_for_node`]'s doc comment for the
 /// parity-enforcement rationale.
@@ -10890,9 +10906,25 @@ mod reindex_workshape_measurement {
         // THE KEY MEASUREMENT: despite zero category change, every canonical
         // extractor still runs exactly once -- this is the avoidable work
         // #1711 asks about.
+        //
+        // **1711-B cutover remeasurement**: `ref_extract_calls` is now 0, not
+        // 1. Pre-cutover, this edit class ran TWO full-AST reference walks
+        // (`IndexVisitor::visit` -- counted by `visit_calls` -- plus a
+        // second, independent `extract_symbol_refs(ast)` walk -- counted by
+        // `ref_extract_calls`). Post-cutover, `visit_calls` still counts 1
+        // (now `IndexVisitor::visit_unified`, which derives BOTH the legacy
+        // and canonical reference projections from that single walk), and
+        // `ref_extract_calls` drops to 0 because `extract_symbol_refs` is no
+        // longer called on this path at all -- see
+        // `docs/reference/1711-A-reextraction-workshape-receipt.md`'s
+        // 1711-B remeasurement addendum for the full before/after tally.
         assert_eq!(m1.visit_calls, 1);
         assert_eq!(m1.decl_extract_calls, 1);
-        assert_eq!(m1.ref_extract_calls, 1);
+        assert_eq!(
+            m1.ref_extract_calls, 0,
+            "1711-B cutover: extract_symbol_refs must no longer run as a separate walk -- \
+             visit_unified already produced the canonical Vec<SymbolRef>"
+        );
         assert_eq!(m1.eval_sub_calls, 1);
         assert_eq!(m1.generated_member_calls, 1);
         assert_eq!(m1.import_extract_calls, 1);
@@ -11067,7 +11099,9 @@ mod reindex_workshape_measurement {
             "occurrences_hash must change -- a new call-site reference was added"
         );
         assert_eq!(m1.decl_extract_calls, 1);
-        assert_eq!(m1.ref_extract_calls, 1);
+        // 1711-B cutover: see the remeasurement note on edit class 1 above --
+        // `extract_symbol_refs` no longer runs as an independent second walk.
+        assert_eq!(m1.ref_extract_calls, 0);
 
         eprintln!(
             "[1711-A receipt] reference-only edit: extraction_total={:?}",
