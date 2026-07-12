@@ -345,8 +345,43 @@ fn braced_hash_qualified_deref_still_a_dereference() {
     // %{Foo::bar} must remain a hash dereference (not affected by the
     // scalar-only qualified-name fold).
     let sexp = first_expr_sexp("%{Foo::bar};");
+    assert!(sexp.contains("unary_%{}"), "%{{Foo::bar}} must remain a hash dereference, got {sexp}");
+}
+
+// ---------------------------------------------------------------------------
+// Regression guards: partial-deref/postfix-chain cases must NOT lose the
+// qualified name as a variable operand (issue #3939 — the lexer's `::`
+// folding above must not swallow `::` when a postfix operator follows the
+// qualified name inside the braces, before the closing `}`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn braced_qualified_scalar_with_arrow_hash_deref_keeps_variable_operand() {
+    // ${Foo::bar->{baz}} must keep `Foo::bar` as a `(variable $ Foo::bar)`
+    // operand of the arrow-hash-deref postfix, not lose it to a bareword
+    // `(identifier Foo::bar)`.
+    let sexp = first_expr_sexp("${Foo::bar->{baz}};");
     assert!(
-        sexp.contains("unary_%{}"),
-        "%{{Foo::bar}} must remain a hash dereference, got {sexp}"
+        sexp.contains("(variable $ Foo::bar)"),
+        "${{Foo::bar->{{baz}}}} must keep Foo::bar as a variable operand, got {sexp}"
+    );
+    assert!(
+        !sexp.contains("(identifier Foo::bar)"),
+        "${{Foo::bar->{{baz}}}} must not fold Foo::bar into a bareword identifier, got {sexp}"
+    );
+}
+
+#[test]
+fn braced_qualified_scalar_with_subscript_keeps_variable_operand() {
+    // ${Foo::bar[0]} — same partial-deref concern via a bare `[...]`
+    // subscript (no `->`) instead of an arrow.
+    let sexp = first_expr_sexp("${Foo::bar[0]};");
+    assert!(
+        sexp.contains("(variable $ Foo::bar)"),
+        "${{Foo::bar[0]}} must keep Foo::bar as a variable operand, got {sexp}"
+    );
+    assert!(
+        !sexp.contains("(identifier Foo::bar)"),
+        "${{Foo::bar[0]}} must not fold Foo::bar into a bareword identifier, got {sexp}"
     );
 }
