@@ -4,7 +4,7 @@
 //! parser ergonomics, traversal, source extraction, and resilience on malformed input.
 
 use perl_tdd_support::{must, must_some};
-use tree_sitter_perl_rs::{language, ParseFailure, Parser};
+use tree_sitter_perl_rs::{ParseFailure, Parser, language};
 
 fn parse(source: &str) -> tree_sitter_perl_rs::Tree {
     let mut parser = Parser::new();
