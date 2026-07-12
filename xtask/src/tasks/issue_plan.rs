@@ -241,12 +241,21 @@ fn load_issues(config: &AuditConfig) -> Result<Vec<Issue>> {
     load_issues_from_gh(config)
 }
 
-fn load_issues_from_gh(config: &AuditConfig) -> Result<Vec<Issue>> {
+/// Build the `gh issue list` argv for the live loader.
+///
+/// `--state all` is required, not `open`: the `builder-ready-on-closed` drift
+/// check (see `check_builder_ready`) exists specifically to catch closed
+/// issues that still carry the `builder-ready` label. A `--state open` filter
+/// would never retrieve a closed issue, so that check would be dead code in
+/// live mode — it would only ever fire against fixture-injected test data.
+/// The `--label` filter (when configured) already scopes the query to a
+/// small, builder-ready-labeled set, so widening `--state` here stays bounded.
+fn build_gh_issue_list_args(config: &AuditConfig) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "issue".to_string(),
         "list".to_string(),
         "--state".to_string(),
-        "open".to_string(),
+        "all".to_string(),
         "--limit".to_string(),
         "500".to_string(),
         "--json".to_string(),
@@ -260,6 +269,11 @@ fn load_issues_from_gh(config: &AuditConfig) -> Result<Vec<Issue>> {
         args.push("--label".to_string());
         args.push(label.clone());
     }
+    args
+}
+
+fn load_issues_from_gh(config: &AuditConfig) -> Result<Vec<Issue>> {
+    let args = build_gh_issue_list_args(config);
 
     let output = std::process::Command::new("gh")
         .args(&args)
@@ -379,6 +393,45 @@ mod tests {
             }),
             "expected a missing-acceptance finding: {findings:?}"
         );
+    }
+
+    #[test]
+    fn live_loader_args_request_all_states_not_just_open() {
+        // Fix-proving test (mutation-check discipline): the fixture-based
+        // integration tests bypass `load_issues_from_gh` entirely, so they
+        // never catch a `--state open` regression here. This test pins the
+        // actual argv the live loader sends to `gh issue list`.
+        //
+        // Without the fix (state hardcoded to "open"), this assertion fails:
+        // args contains "open", not "all" — the `builder-ready-on-closed`
+        // check (see `closed_builder_ready_is_flagged` above) would never
+        // see a closed issue in production, because `gh issue list --state
+        // open` never returns one.
+        let config = AuditConfig {
+            fixture: None,
+            repo: Some("EffortlessMetrics/perl-lsp-swarm".to_string()),
+            labels: vec!["builder-ready".to_string()],
+            receipt: PathBuf::from("/tmp/unused-receipt.json"),
+            dry_run: true,
+            format: IssuePlanOutputFormat::Json,
+        };
+        let args = build_gh_issue_list_args(&config);
+
+        let state_idx = args.iter().position(|arg| arg == "--state").expect(
+            "gh issue list args must include --state \
+             (test assertion, not a banned prod pattern)",
+        );
+        let state_value = args.get(state_idx + 1).map(String::as_str);
+        assert_eq!(
+            state_value,
+            Some("all"),
+            "live loader must request --state all so closed issues (and the \
+             builder-ready-on-closed drift check) are reachable in \
+             production, not just via --fixture; got args: {args:?}"
+        );
+
+        // The --label filter still scopes the (now-broader) query.
+        assert!(args.windows(2).any(|w| w[0] == "--label" && w[1] == "builder-ready"));
     }
 
     #[test]
