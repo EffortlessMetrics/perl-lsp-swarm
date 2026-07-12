@@ -89,6 +89,16 @@ mod tests {
     }
 
     #[test]
+    fn snake_cases_consecutive_uppercase_and_empty_input() {
+        // Regression guard (M7, #3849 receipt-instrument proof commit):
+        // pascal_to_snake inserts an underscore before every uppercase char
+        // after the first -- including consecutive-uppercase runs (no
+        // acronym-boundary detection) -- and must not panic on empty input.
+        assert_eq!(pascal_to_snake("IOError"), "i_o_error");
+        assert_eq!(pascal_to_snake(""), "");
+    }
+
+    #[test]
     fn descendant_count_walks_the_subtree() {
         let leaf = TsNode {
             kind: "number".into(),

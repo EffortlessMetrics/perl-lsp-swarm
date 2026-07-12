@@ -9,13 +9,21 @@ name: Receipt Instrument Check (Advisory)
 # for "a real test gate ran, bound to this head" belongs here instead -- a
 # head-bound, actor-agnostic GitHub check.
 #
-# This workflow runs ONE narrow, real gate (`unit_scoped`: scope-aware
-# library tests for ci-scope-selected crates) to produce a genuine
-# `target/receipts/receipt.json` (schema: `xtask/src/tasks/gates.rs`
-# `Receipt`), then asserts on it via `scripts/ci/check-receipt-instrument.sh`.
-# It intentionally does NOT re-run the whole pr-fast tier (that's
-# `pr-smoke`'s job already) -- just enough of a real instrument to prove a
-# test gate ran with a nonzero, non-fully-skipped test count for this head.
+# DESIGN NOTE (corrected after local verification): the `unit_scoped` gate
+# has `planning.role = rust_scoped`, and `cargo xtask gates` refuses to run
+# a rust_scoped gate standalone via `--gate <name>` -- its command template
+# has an unresolved `{package_args}` placeholder that only ci-scope's
+# `--tier` planning fills in (verified locally: `--gate unit_scoped` alone
+# errors loudly rather than silently running with zero tests -- xtask has
+# its own version of this same guard). So this workflow runs the full
+# `--tier pr-fast` plan (the SAME command `pr-smoke` in `ci.yml` already
+# runs) to get a genuine, ci-scope-resolved `target/receipts/receipt.json`
+# (schema: `xtask/src/tasks/gates.rs` `Receipt`), then asserts on it via
+# `scripts/ci/check-receipt-instrument.sh`. This DOES duplicate pr-smoke's
+# work for now (see the PR's "design wrinkles" -- consuming pr-smoke's
+# already-uploaded `pr-fast-receipt-<sha>` artifact via a `workflow_run`
+# trigger would avoid the duplication, but that adds run-id-correlation
+# complexity not justified for an advisory-first check).
 #
 # HONEST SCOPE: this catches a zero-selection / zero-test / all-skipped
 # gate run (ci-scope selected no crates, or every test reported skipped) --
@@ -86,18 +94,22 @@ jobs:
             echo "has_rust_diff=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_rust_diff=false" >> "$GITHUB_OUTPUT"
-            echo "No .rs files in this diff vs origin/main -- nothing for unit_scoped to run; skipping the instrument check (nothing to prove)."
+            echo "No .rs files in this diff vs origin/main -- ci-scope would select no crates; skipping the instrument check (nothing to prove)."
           fi
 
-      - name: Run unit_scoped gate with a fresh receipt
+      - name: Run the pr-fast tier with a fresh receipt
         if: steps.diff.outputs.has_rust_diff == 'true'
         run: |
           mkdir -p target/receipts
-          cargo xtask gates --gate unit_scoped --receipt \
+          cargo xtask gates --tier pr-fast --receipt \
             --receipt-path target/receipts/receipt.json --base origin/main
 
       - name: Assert the instrument actually ran (zero-selection/zero-test guard)
-        if: steps.diff.outputs.has_rust_diff == 'true'
+        # always(): still inspect whatever receipt was written even if the
+        # tier step itself already failed a required gate (write_receipt in
+        # gates.rs runs before the bail! on blocking failures) -- gives a
+        # useful vacuous-run signal independent of other gate failures.
+        if: always() && steps.diff.outputs.has_rust_diff == 'true'
         run: |
           bash scripts/ci/check-receipt-instrument.sh \
             "${{ github.event.pull_request.head.sha || github.sha }}" \
