@@ -177,11 +177,11 @@ impl Parser {
 
     /// Parse `source` using `old_tree` as a hint for incremental re-parsing.
     ///
-    /// A single clean, equal-length edit inside one top-level statement parses
-    /// only that statement and retains unaffected AST subtrees. Structural,
-    /// length-changing, recovery-sensitive, format, oversized, and unsupported
-    /// edits use a safe full-parse fallback. Metrics distinguish AST reuse from
-    /// token-cache refresh work.
+    /// A single clean edit inside one top-level statement parses only that
+    /// statement and retains unaffected AST subtrees. Length-changing edits are
+    /// supported when no downstream statement must shift; structural,
+    /// recovery-sensitive, format, oversized, and unsupported edits use a safe
+    /// full-parse fallback. Metrics distinguish AST reuse from token-cache work.
     ///
     /// Returns `None` on complete parse failure (same semantics as `parse`).
     pub fn parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree> {
@@ -233,9 +233,7 @@ impl Parser {
         edit: &InputEdit,
         new_text: &str,
     ) -> Option<Tree> {
-        if old_tree.has_error()
-            || new_text.len() != edit.old_end_byte.saturating_sub(edit.start_byte)
-        {
+        if old_tree.has_error() {
             return None;
         }
 
@@ -252,15 +250,21 @@ impl Parser {
                     && edit.old_end_byte <= segment_end)
                     .then_some((index, statement.location.start, segment_end))
             })?;
+        let delta =
+            new_text.len() as isize - edit.old_end_byte.saturating_sub(edit.start_byte) as isize;
+        if delta != 0 && statement_index + 1 != statements.len() {
+            return None;
+        }
+        let new_statement_end = (statement_end as isize).saturating_add(delta).max(0) as usize;
         if old_tree.shared_root.children.len() != statements.len()
-            || statement_end > source.len()
+            || new_statement_end > source.len()
             || !source.is_char_boundary(statement_start)
-            || !source.is_char_boundary(statement_end)
+            || !source.is_char_boundary(new_statement_end)
         {
             return None;
         }
 
-        let fragment = source.get(statement_start..statement_end)?;
+        let fragment = source.get(statement_start..new_statement_end)?;
         let mut parser = CoreParser::new(fragment);
         let fragment_root = parser.parse().ok()?;
         if !parser.errors().is_empty() {
@@ -281,6 +285,9 @@ impl Parser {
         };
         let target = statements.get_mut(statement_index)?;
         *target = replacement.clone();
+        if delta != 0 {
+            new_root.location.end = source.trim_end().len();
+        }
 
         let mut children = old_tree.shared_root.children.clone();
         let old_reused = children
@@ -302,7 +309,7 @@ impl Parser {
                 source,
                 &incremental_edit,
                 &[],
-                statement_start..statement_end,
+                statement_start..new_statement_end,
                 old_reused,
                 replacement_reparsed.saturating_add(1),
             )

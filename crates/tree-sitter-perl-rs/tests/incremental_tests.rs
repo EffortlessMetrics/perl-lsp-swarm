@@ -305,3 +305,29 @@ fn when_a_large_clean_file_changes_near_the_end_then_ast_and_tokens_are_reused()
     assert!(metrics.tokens_reused > 0);
     assert!(metrics.reparsed_bytes < new_source.len());
 }
+
+#[test]
+fn when_the_last_statement_changes_length_then_the_prefix_is_reused() {
+    let source = "my $x = 1;\nmy $y = 2;";
+    let start = must_some(source.find('2'));
+    let new_source = source.replace('2', "22");
+    let edit = Edit::new(
+        start,
+        start + 1,
+        start + 2,
+        Position::new(start, 1, 8),
+        Position::new(start + 1, 1, 9),
+        Position::new(start + 2, 1, 10),
+    );
+    let mut parser = Parser::new();
+    let mut old_tree = must_some(parser.parse(source));
+    old_tree.edit(&edit);
+
+    let incremental = must_some(parser.parse_with_old_tree(&new_source, &old_tree));
+    let fresh = must_some(parser.parse(&new_source));
+    let metrics = must_some(incremental.incremental_metrics());
+
+    assert_eq!(incremental.root_node().to_sexp(), fresh.root_node().to_sexp());
+    assert!(!metrics.full_parse);
+    assert!(metrics.ast_nodes_reused > 0);
+}

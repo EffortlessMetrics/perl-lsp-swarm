@@ -47,7 +47,7 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `Parser::parse(&mut self, source: &str) -> Option<Tree>` | Parse Perl source; `None` only on complete failure |
 | `Tree::root_node() -> Node<'_>` | Get the root of the syntax tree |
 | `Tree::source() -> &str` | Source text this tree was built from |
-| `Parser::parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree>` | Conservative statement-level AST reuse for safe edits; token replay and safe full-parse fallbacks |
+| `Parser::parse_with_old_tree(&mut self, source: &str, old_tree: &Tree) -> Option<Tree>` | Conservative statement-level AST reuse for safe edits, including last-statement length changes; token replay and safe full-parse fallbacks |
 | `Tree::walk() -> TreeCursor<'_>` | Returns a cursor for zero-allocation streaming traversal |
 | `Tree::edit(&mut self, edit: &InputEdit)` | Records a source edit; pass the updated tree to `parse_with_old_tree` |
 | `Tree::incremental_metrics() -> Option<&IncrementalMetrics>` | Reuse, re-lex, changed-range, and fallback measurements |
