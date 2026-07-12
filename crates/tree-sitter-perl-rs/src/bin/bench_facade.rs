@@ -18,11 +18,13 @@
 //! ```text
 //! bench_facade <file>
 //! bench_facade <file> --incremental
+//! bench_facade <file> --incremental-suite
 //! bench_facade <file> --profile
 //! ```
 // Benchmark binary — println!/eprintln! are used for structured output consumed by bench harness.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::time::Instant;
@@ -38,6 +40,7 @@ fn main() {
     }
     let file_path = &args[1];
     let incremental_mode = args.get(2).is_some_and(|arg| arg == "--incremental");
+    let incremental_suite_mode = args.get(2).is_some_and(|arg| arg == "--incremental-suite");
     let profile_mode = args.get(2).is_some_and(|arg| arg == "--profile");
     let code = fs::read_to_string(file_path).unwrap_or_else(|e| {
         eprintln!("Failed to read file: {}", e);
@@ -54,6 +57,10 @@ fn main() {
         Some(mut old_tree) => {
             if profile_mode {
                 profile_tree(&old_tree, &code, has_error, duration);
+                return;
+            }
+            if incremental_suite_mode {
+                incremental_suite(&code, has_error);
                 return;
             }
             if !incremental_mode {
@@ -125,6 +132,115 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+const INCREMENTAL_SUITE_SAMPLES: usize = 7;
+
+#[derive(Debug)]
+struct IncrementalSample {
+    incremental_us: u128,
+    fresh_us: u128,
+    full_parse: bool,
+    fallback: Option<String>,
+    ast_nodes_reused: usize,
+    tokens_reused: usize,
+}
+
+fn run_incremental_sample(source: &str) -> Result<IncrementalSample, String> {
+    let mut parser = Parser::new();
+    let Some(mut old_tree) = parser.parse(source) else {
+        return Err("initial parse failed".to_owned());
+    };
+    let Some((new_source, edit)) = benchmark_edit(source) else {
+        return Err("benchmark source has no editable variable".to_owned());
+    };
+    old_tree.edit(&edit);
+
+    let incremental_start = Instant::now();
+    let Some(incremental) = parser.parse_with_old_tree(&new_source, &old_tree) else {
+        return Err("incremental parse failed".to_owned());
+    };
+    let incremental_us = incremental_start.elapsed().as_micros();
+
+    let fresh_start = Instant::now();
+    let mut fresh_parser = Parser::new();
+    let Some(fresh_tree) = fresh_parser.parse(&new_source) else {
+        return Err("fresh parse failed".to_owned());
+    };
+    let fresh_us = fresh_start.elapsed().as_micros();
+    if incremental.root_node().to_sexp() != fresh_tree.root_node().to_sexp() {
+        return Err("incremental result differs from fresh parse".to_owned());
+    }
+
+    let Some(metrics) = incremental.incremental_metrics() else {
+        return Err("incremental metrics unavailable".to_owned());
+    };
+    Ok(IncrementalSample {
+        incremental_us,
+        fresh_us,
+        full_parse: metrics.full_parse,
+        fallback: metrics.fallback.map(|reason| reason.to_string()),
+        ast_nodes_reused: metrics.ast_nodes_reused,
+        tokens_reused: metrics.tokens_reused,
+    })
+}
+
+fn incremental_suite(source: &str, has_error: bool) {
+    let mut samples = Vec::with_capacity(INCREMENTAL_SUITE_SAMPLES);
+    for _ in 0..INCREMENTAL_SUITE_SAMPLES {
+        match run_incremental_sample(source) {
+            Ok(sample) => samples.push(sample),
+            Err(reason) => {
+                println!("status=failure error=true incremental_suite=true reason={reason}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let incremental_values = samples.iter().map(|sample| sample.incremental_us).collect::<Vec<_>>();
+    let fresh_values = samples.iter().map(|sample| sample.fresh_us).collect::<Vec<_>>();
+    let fallback_reasons =
+        samples.iter().filter_map(|sample| sample.fallback.clone()).collect::<BTreeSet<_>>();
+    let fallback_count = samples.iter().filter(|sample| sample.fallback.is_some()).count();
+    let fallback_rate_ppm =
+        fallback_count.saturating_mul(1_000_000).checked_div(samples.len()).map_or(0, |rate| rate);
+    let incremental_p50 = percentile(&incremental_values, 50);
+    let incremental_p95 = percentile(&incremental_values, 95);
+    let fresh_p50 = percentile(&fresh_values, 50);
+    let fresh_p95 = percentile(&fresh_values, 95);
+    let fallback_text = if fallback_reasons.is_empty() {
+        "none".to_owned()
+    } else {
+        fallback_reasons.into_iter().collect::<Vec<_>>().join("|")
+    };
+    let ast_nodes_reused_min =
+        samples.iter().map(|sample| sample.ast_nodes_reused).min().unwrap_or(0);
+    let tokens_reused_min = samples.iter().map(|sample| sample.tokens_reused).min().unwrap_or(0);
+    let all_replayed = samples.iter().all(|sample| !sample.full_parse);
+
+    println!(
+        "status=success error={} incremental_suite=true samples={} equivalent=true all_replayed={} fallback_count={} fallback_rate_ppm={} fallback_reasons={} incremental_p50_us={} incremental_p95_us={} fresh_p50_us={} fresh_p95_us={} p95_incremental_faster={} ast_nodes_reused_min={} tokens_reused_min={}",
+        has_error,
+        samples.len(),
+        all_replayed,
+        fallback_count,
+        fallback_rate_ppm,
+        fallback_text,
+        incremental_p50,
+        incremental_p95,
+        fresh_p50,
+        fresh_p95,
+        incremental_p95 < fresh_p95,
+        ast_nodes_reused_min,
+        tokens_reused_min,
+    );
+}
+
+fn percentile(values: &[u128], percentile: usize) -> u128 {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let rank = sorted.len().saturating_mul(percentile).saturating_add(99) / 100;
+    sorted.get(rank.saturating_sub(1)).copied().unwrap_or(0)
 }
 
 fn profile_tree(tree: &tree_sitter_perl_rs::Tree, source: &str, has_error: bool, parse_us: u128) {
