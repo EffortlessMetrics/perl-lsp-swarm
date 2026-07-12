@@ -107,8 +107,9 @@ fn main() {
                 );
                 std::process::exit(1);
             };
-            let fallback =
-                metrics.fallback.map_or_else(|| "none".to_owned(), |reason| reason.to_string());
+            let fallback = metrics
+                .fallback
+                .map_or_else(|| "none".to_owned(), |reason| reason.to_string().replace(' ', "_"));
             println!(
                 "status=success error={} duration_us={} incremental_duration_us={} fresh_edit_duration_us={} incremental_faster={} equivalent=true full_parse={} fallback={} reparsed_bytes={} changed_range_start={} changed_range_end={} ast_nodes_reused={} ast_nodes_reparsed={} tokens_reused={} tokens_relexed={}",
                 has_error,
@@ -179,7 +180,7 @@ fn run_incremental_sample(source: &str) -> Result<IncrementalSample, String> {
         incremental_us,
         fresh_us,
         full_parse: metrics.full_parse,
-        fallback: metrics.fallback.map(|reason| reason.to_string()),
+        fallback: metrics.fallback.map(|reason| reason.to_string().replace(' ', "_")),
         ast_nodes_reused: metrics.ast_nodes_reused,
         tokens_reused: metrics.tokens_reused,
     })
