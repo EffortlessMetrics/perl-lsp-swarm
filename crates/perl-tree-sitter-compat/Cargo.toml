@@ -8,10 +8,11 @@ repository = "https://github.com/effortlessmetrics/perl-lsp-swarm"
 publish = false
 
 [dependencies]
-# An adapter over the native parser + the LSP-free substrate's line index.
+# The native parser remains the catastrophic-failure fallback; the facade is
+# the primary production tree source.
 perl-parser-core = { workspace = true }
-tree-sitter-perl-rs = { workspace = true }
 perl-workspace-core = { workspace = true }
+tree-sitter-perl-rs = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
