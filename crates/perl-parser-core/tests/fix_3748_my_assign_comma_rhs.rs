@@ -151,3 +151,173 @@ fn parenthesized_rhs_keeps_list_as_initializer() -> Result<(), String> {
 
     Ok(())
 }
+
+// -----------------------------------------------------------------------------
+// P1 regression caught by review (factory-droid + codex threads on PR #3908):
+// switching the declaration-initializer RHS from parse_expression (comma
+// precedence) to parse_assignment (assignment precedence) fixed #3748, but
+// broke the low-precedence WORD operators (`or`/`and`) that commonly follow
+// a `my`-in-condition idiom -- `if (my $x = foo() or die)`,
+// `while (my $x = next_row() or last)`.
+//
+// Before #3748's fix, parse_variable_declaration's initializer parse used
+// parse_expression, which internally descends through comma AND word-operator
+// precedence (see parse_comma / parse_word_or_expr in
+// engine/parser/expressions/precedence.rs) -- so it silently absorbed a
+// trailing `or die` into $x's initializer itself: `my $x = (foo() or die)`.
+// That's WRONG per perlop (`or`/`and` are lower precedence than `=`, so they
+// must bind the whole assignment, not just its RHS) but it didn't error.
+//
+// After #3748's fix correctly stopped the initializer at assignment
+// precedence, parse_condition_declaration (engine/parser/control_flow.rs)
+// had no step that continued parsing a trailing `or`/`and` with the whole
+// declaration as the left operand, so the trailing word operator was left
+// unconsumed and the `)` expectation failed with a hard parse ERROR.
+//
+// Ground truth (perl 5.42.2, `-MO=Deparse,-p`):
+//
+//   $ perl -MO=Deparse,-p -e 'if (my $x = foo() or die) {}'
+//   if (((my $x = foo()) or die)) { ... }
+//
+//   $ perl -MO=Deparse,-p -e 'while (my $x = next_row() or last) {}'
+//   while (((my $x = next_row()) or (last))) { ... }
+//
+//   $ perl -MO=Deparse,-p -e 'if (my $y = g() and $y > 0) {}'
+//   if (((my $y = g()) and ($y > 0))) { ... }
+//
+// Fixed in parse_condition_declaration by applying parse_word_or_expr (the
+// same word-operator continuation the ordinary expression path already uses)
+// to the whole declaration + comma-continuation, after the comma
+// continuation and after the `&&`/`||`/ternary continuation -- matching
+// perlop's `, ` > `and` > `or`/`xor` precedence ladder.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn if_condition_declaration_or_die_binds_whole_assignment() -> Result<(), String> {
+    let source = "if (my $x = foo() or die) {}";
+    assert_clean_parse(source);
+
+    let ast = parse_program(source)?;
+    let statements = program_statements(&ast)?;
+    let top = statements.first().ok_or_else(|| "expected one top-level statement".to_string())?;
+
+    let condition = match &top.kind {
+        NodeKind::If { condition, .. } => condition.as_ref(),
+        other => return Err(format!("expected If statement, got {other:?}")),
+    };
+
+    match &condition.kind {
+        NodeKind::Binary { op, left, right } => {
+            assert_eq!(op, "or", "condition must be an `or` binary node, got op {op:?}");
+            match &left.kind {
+                NodeKind::VariableDeclaration { declarator, initializer, .. } => {
+                    assert_eq!(
+                        declarator, "my",
+                        "the `or`'s left operand must be the WHOLE `my $x = foo()` \
+                         declaration, not just foo()"
+                    );
+                    let init = initializer
+                        .as_ref()
+                        .ok_or_else(|| "expected $x to have an initializer".to_string())?;
+                    if matches!(&init.kind, NodeKind::Binary { op, .. } if op == "or") {
+                        return Err("or die must NOT be folded into $x's initializer".to_string());
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "expected the `or`'s left operand to be the my-declaration, got {other:?}"
+                    ));
+                }
+            }
+            let right_sexp = right.to_sexp();
+            assert!(
+                right_sexp.contains("die"),
+                "expected `die` as the `or`'s right operand, got {right_sexp}"
+            );
+        }
+        other => return Err(format!("expected a Binary `or` condition node, got {other:?}")),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn while_condition_declaration_or_last_binds_whole_assignment() -> Result<(), String> {
+    let source = "while (my $x = next_row() or last) {}";
+    assert_clean_parse(source);
+
+    let ast = parse_program(source)?;
+    let statements = program_statements(&ast)?;
+    let top = statements.first().ok_or_else(|| "expected one top-level statement".to_string())?;
+
+    let condition = match &top.kind {
+        NodeKind::While { condition, .. } => condition.as_ref(),
+        other => return Err(format!("expected While statement, got {other:?}")),
+    };
+
+    match &condition.kind {
+        NodeKind::Binary { op, left, .. } => {
+            assert_eq!(op, "or", "condition must be an `or` binary node, got op {op:?}");
+            match &left.kind {
+                NodeKind::VariableDeclaration { declarator, .. } => {
+                    assert_eq!(
+                        declarator, "my",
+                        "the `or`'s left operand must be the WHOLE `my $x = next_row()` \
+                         declaration"
+                    );
+                }
+                other => {
+                    return Err(format!(
+                        "expected the `or`'s left operand to be the my-declaration, got {other:?}"
+                    ));
+                }
+            }
+        }
+        other => return Err(format!("expected a Binary `or` condition node, got {other:?}")),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn if_condition_declaration_and_binds_whole_assignment() -> Result<(), String> {
+    let source = "if (my $y = g() and $y > 0) {}";
+    assert_clean_parse(source);
+
+    let ast = parse_program(source)?;
+    let statements = program_statements(&ast)?;
+    let top = statements.first().ok_or_else(|| "expected one top-level statement".to_string())?;
+
+    let condition = match &top.kind {
+        NodeKind::If { condition, .. } => condition.as_ref(),
+        other => return Err(format!("expected If statement, got {other:?}")),
+    };
+
+    match &condition.kind {
+        NodeKind::Binary { op, left, right } => {
+            assert_eq!(op, "and", "condition must be an `and` binary node, got op {op:?}");
+            match &left.kind {
+                NodeKind::VariableDeclaration { declarator, .. } => {
+                    assert_eq!(
+                        declarator, "my",
+                        "the `and`'s left operand must be the WHOLE `my $y = g()` declaration"
+                    );
+                }
+                other => {
+                    return Err(format!(
+                        "expected the `and`'s left operand to be the my-declaration, got {other:?}"
+                    ));
+                }
+            }
+            match &right.kind {
+                NodeKind::Binary { op, .. } => {
+                    assert_eq!(op, ">", "right operand must be `$y > 0`, got op {op:?}");
+                }
+                other => return Err(format!("expected `$y > 0` as right operand, got {other:?}")),
+            }
+        }
+        other => return Err(format!("expected a Binary `and` condition node, got {other:?}")),
+    }
+
+    Ok(())
+}
