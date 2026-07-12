@@ -439,11 +439,7 @@ impl Node {
                 let type_str = if *command {
                     "heredoc_command"
                 } else if *indented {
-                    if *interpolated {
-                        "heredoc_indented_interpolated"
-                    } else {
-                        "heredoc_indented"
-                    }
+                    if *interpolated { "heredoc_indented_interpolated" } else { "heredoc_indented" }
                 } else if *interpolated {
                     "heredoc_interpolated"
                 } else {
@@ -2602,11 +2598,7 @@ impl NodeKind {
                 let name = if *command {
                     "heredoc_command"
                 } else if *indented {
-                    if *interpolated {
-                        "heredoc_indented_interpolated"
-                    } else {
-                        "heredoc_indented"
-                    }
+                    if *interpolated { "heredoc_indented_interpolated" } else { "heredoc_indented" }
                 } else if *interpolated {
                     "heredoc_interpolated"
                 } else {
