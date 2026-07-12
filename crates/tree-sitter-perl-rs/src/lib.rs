@@ -680,7 +680,8 @@ impl Tree {
             || shared_has_error(&self.shared_root)
     }
 
-    /// Records a source edit on this tree, invalidating affected byte ranges.
+    /// Records a source edit and projects node byte/point/text accessors into
+    /// the edited source coordinates.
     ///
     /// After calling `edit()`, pass this tree and the new source to
     /// [`Parser::parse_with_old_tree`] to re-parse efficiently.
