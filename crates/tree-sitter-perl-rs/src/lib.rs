@@ -55,6 +55,7 @@ use perl_parser_core::{
     ParseOutput, Parser as CoreParser,
     incremental::{IncrementalEdit, IncrementalState},
 };
+use perl_position_tracking::Position;
 use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::semantic::SemanticModel;
 use std::cell::OnceCell;
@@ -640,7 +641,12 @@ pub struct VisibleImport {
 impl Tree {
     /// Returns the root node of the syntax tree.
     pub fn root_node(&self) -> Node<'_> {
-        Node { inner: &self.shared_root, tree_source: &self.source, line_index: &self.line_index }
+        Node {
+            inner: &self.shared_root,
+            tree_source: &self.source,
+            line_index: &self.line_index,
+            edits: &self.pending_edits,
+        }
     }
 
     /// Returns the source text this tree was built from.
@@ -759,6 +765,7 @@ pub struct Node<'tree> {
     inner: &'tree SharedNode,
     tree_source: &'tree str,
     line_index: &'tree ByteLineIndex,
+    edits: &'tree [InputEdit],
 }
 
 impl<'tree> Node<'tree> {
@@ -833,6 +840,7 @@ impl<'tree> Node<'tree> {
             inner: child,
             tree_source: self.tree_source,
             line_index: self.line_index,
+            edits: self.edits,
         })
     }
 
@@ -846,6 +854,7 @@ impl<'tree> Node<'tree> {
                 inner: child,
                 tree_source: self.tree_source,
                 line_index: self.line_index,
+                edits: self.edits,
             })
         })
     }
@@ -861,6 +870,7 @@ impl<'tree> Node<'tree> {
                         inner: child,
                         tree_source: self.tree_source,
                         line_index: self.line_index,
+                        edits: self.edits,
                     });
                 }
             }
@@ -881,31 +891,32 @@ impl<'tree> Node<'tree> {
             inner: self.inner.children.iter(),
             tree_source: self.tree_source,
             line_index: self.line_index,
+            edits: self.edits,
         }
     }
 
     /// Returns the start byte offset in the source text (inclusive).
     pub fn start_byte(&self) -> usize {
-        self.inner.ast().location.start
+        self.edited_byte(self.inner.ast().location.start, false)
     }
 
     /// Returns the end byte offset in the source text (exclusive).
     pub fn end_byte(&self) -> usize {
-        self.inner.ast().location.end.min(self.tree_source.len())
+        self.edited_byte(self.inner.ast().location.end, true)
     }
 
     /// Returns the start position as a tree-sitter-compatible [`Point`].
     ///
     /// `row`/`column` are zero-based and `column` is measured in bytes.
     pub fn start_position(&self) -> Point {
-        self.line_index.point(self.tree_source.len(), self.start_byte())
+        self.edited_position(self.inner.ast().location.start, false)
     }
 
     /// Returns the end position as a tree-sitter-compatible [`Point`].
     ///
     /// `row`/`column` are zero-based and `column` is measured in bytes.
     pub fn end_position(&self) -> Point {
-        self.line_index.point(self.tree_source.len(), self.end_byte())
+        self.edited_position(self.inner.ast().location.end, true)
     }
 
     /// Extracts the source text slice covered by this node.
@@ -917,8 +928,8 @@ impl<'tree> Node<'tree> {
     /// the available range rather than panicking. This can happen when `source` is a
     /// different buffer than the one used to build the tree.
     pub fn utf8_text<'a>(&self, source: &'a [u8]) -> Result<&'a str, std::str::Utf8Error> {
-        let start = self.inner.ast().location.start.min(source.len());
-        let end = self.inner.ast().location.end.min(source.len());
+        let start = self.start_byte().min(source.len());
+        let end = self.end_byte().min(source.len());
         std::str::from_utf8(&source[start..end])
     }
 
@@ -930,6 +941,35 @@ impl<'tree> Node<'tree> {
     /// Returns the source text that was provided when creating the owning [`Tree`].
     pub fn tree_source(&self) -> &'tree str {
         self.tree_source
+    }
+
+    fn edited_byte(&self, byte: usize, end: bool) -> usize {
+        let mut position = Position::new(byte, 0, 0);
+        for edit in self.edits {
+            position = edit.apply_to_position(position).unwrap_or(if end {
+                edit.new_end_position
+            } else {
+                edit.start_position
+            });
+        }
+        position.byte
+    }
+
+    fn edited_position(&self, byte: usize, end: bool) -> Point {
+        let original = self.line_index.point(self.tree_source.len(), byte);
+        let mut position = Position::new(
+            byte,
+            u32::try_from(original.row).unwrap_or(u32::MAX),
+            u32::try_from(original.column).unwrap_or(u32::MAX),
+        );
+        for edit in self.edits {
+            position = edit.apply_to_position(position).unwrap_or(if end {
+                edit.new_end_position
+            } else {
+                edit.start_position
+            });
+        }
+        Point { row: position.line as usize, column: position.column as usize }
     }
 
     /// Returns the inner `perl_ast::Node` for direct access to the v3 AST.
@@ -949,6 +989,7 @@ impl<'tree> Node<'tree> {
             root: self.inner,
             tree_source: self.tree_source,
             line_index: self.line_index,
+            edits: self.edits,
             path: Vec::new(),
             nodes: Vec::new(),
         }
@@ -968,6 +1009,7 @@ pub struct TreeCursor<'tree> {
     root: &'tree SharedNode,
     tree_source: &'tree str,
     line_index: &'tree ByteLineIndex,
+    edits: &'tree [InputEdit],
     /// Child indices from `root` to the current node.
     path: Vec<usize>,
     nodes: Vec<&'tree SharedNode>,
@@ -980,6 +1022,7 @@ impl<'tree> TreeCursor<'tree> {
             inner: self.nodes.last().copied().unwrap_or(self.root),
             tree_source: self.tree_source,
             line_index: self.line_index,
+            edits: self.edits,
         }
     }
 
@@ -1114,6 +1157,7 @@ struct NodeChildren<'tree> {
     inner: std::slice::Iter<'tree, (Option<FieldId>, Arc<SharedNode>)>,
     tree_source: &'tree str,
     line_index: &'tree ByteLineIndex,
+    edits: &'tree [InputEdit],
 }
 
 impl<'tree> Iterator for NodeChildren<'tree> {
@@ -1124,6 +1168,7 @@ impl<'tree> Iterator for NodeChildren<'tree> {
             inner: inner.as_ref(),
             tree_source: self.tree_source,
             line_index: self.line_index,
+            edits: self.edits,
         })
     }
 }
