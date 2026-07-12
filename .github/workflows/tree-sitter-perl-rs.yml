@@ -2,7 +2,6 @@ name: tree-sitter-perl-rs proof
 
 on:
   pull_request:
-    branches: [main, master]
     paths:
       - Cargo.lock
       - crates/perl-ast/**
