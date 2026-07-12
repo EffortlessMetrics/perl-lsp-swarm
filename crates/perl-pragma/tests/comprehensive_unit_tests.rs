@@ -2147,3 +2147,118 @@ fn no_feature_default_disables_only_default_features() -> Result<(), Box<dyn std
     assert!(state.has_feature("module_true"));
     Ok(())
 }
+
+// ===========================================================================
+// Redundant-map-entry regression tests (issue #2241)
+// ===========================================================================
+
+/// `use builtin qw(true false)` followed by the same statement should not
+/// produce a second map entry because no new import names are added.
+#[test]
+fn duplicate_use_builtin_imports_does_not_create_redundant_map_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![
+        use_node("builtin", &["qw(true false)"], 0, 25),
+        use_node("builtin", &["qw(true false)"], 26, 51),
+    ]);
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(
+        map.len(),
+        1,
+        "second `use builtin` with already-imported names must not produce a redundant map entry"
+    );
+    let state = &map[0].1;
+    assert!(state.has_builtin_import("true"), "builtin 'true' must be recorded");
+    assert!(state.has_builtin_import("false"), "builtin 'false' must be recorded");
+    Ok(())
+}
+
+/// Partially overlapping `use builtin` — only the new name (ceil) should cause
+/// a second map entry; the re-listed names (true, false) are already present.
+#[test]
+fn partially_new_use_builtin_creates_entry_for_new_names_only()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![
+        use_node("builtin", &["qw(true false)"], 0, 25),
+        use_node("builtin", &["qw(true false ceil)"], 26, 52),
+    ]);
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 2, "second `use builtin` that adds 'ceil' must produce a new map entry");
+    let state = &map[1].1;
+    assert!(state.has_builtin_import("true"));
+    assert!(state.has_builtin_import("false"));
+    assert!(state.has_builtin_import("ceil"));
+    Ok(())
+}
+
+/// `no builtin qw(true)` when no builtins have been imported is a no-op and
+/// must not produce a map entry.
+#[test]
+fn no_builtin_with_no_prior_imports_does_not_create_map_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![no_node("builtin", &["qw(true)"], 0, 20)]);
+    let map = PragmaTracker::build(&ast);
+    assert!(
+        map.is_empty(),
+        "`no builtin` against an empty import set must not produce a map entry"
+    );
+    Ok(())
+}
+
+/// A scoped block that contains no pragma statements must not emit a restore
+/// entry, keeping the pragma map lean.
+#[test]
+fn empty_block_scope_does_not_emit_restore_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![use_node("strict", &[], 0, 12), block(vec![], 13, 20)]);
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(
+        map.len(),
+        1,
+        "an empty block produces no transitions; the restore entry must be omitted"
+    );
+    Ok(())
+}
+
+/// A subroutine body that contains no pragma statements must not emit a restore
+/// entry from `build_scoped_body`.
+#[test]
+fn pragma_free_sub_body_does_not_emit_restore_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let sub_body = block(vec![], 20, 40);
+    let sub_node = Node {
+        kind: NodeKind::Subroutine {
+            name: Some("no_op".to_string()),
+            name_span: None,
+            declarator: None,
+            prototype: None,
+            signature: None,
+            attributes: vec![],
+            body: Box::new(sub_body),
+        },
+        location: loc(15, 42),
+    };
+    let ast = program(vec![use_node("strict", &[], 0, 12), sub_node]);
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 1, "a pragma-free subroutine body must not emit a scope-restore entry");
+    Ok(())
+}
+
+/// State-query correctness after the empty-scope optimisation: querying inside
+/// and after a pragma-free block must both return the enclosing pragma state.
+#[test]
+fn state_query_correct_across_pragma_free_block() -> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![
+        use_node("strict", &[], 0, 12),
+        block(vec![], 13, 25),
+        use_node("warnings", &[], 26, 40),
+    ]);
+    let map = PragmaTracker::build(&ast);
+
+    let inside_block = PragmaTracker::state_for_offset(&map, 18);
+    assert!(inside_block.strict_vars, "strict must be visible inside the pragma-free block");
+    assert!(!inside_block.warnings);
+
+    let after_block = PragmaTracker::state_for_offset(&map, 30);
+    assert!(after_block.strict_vars, "strict must be visible after the pragma-free block");
+    assert!(after_block.warnings, "warnings must be visible after `use warnings`");
+    Ok(())
+}

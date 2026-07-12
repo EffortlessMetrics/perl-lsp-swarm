@@ -97,9 +97,16 @@ fn build_scoped_body(
     ranges: &mut Vec<(Range<usize>, PragmaState)>,
 ) {
     let saved_state = current_state.clone();
+    let count_before = ranges.len();
     build_ranges(body, current_state, ranges);
     *current_state = saved_state;
-    ranges.push((body.location.end..body.location.end, current_state.clone()));
+    // Only emit the scope-close restore entry when the body produced at least
+    // one transition.  A scope with no pragma statements leaves the state
+    // unchanged, so no restore marker is needed — the preceding entry already
+    // represents the correct state for any position past the scope boundary.
+    if ranges.len() > count_before {
+        ranges.push((body.location.end..body.location.end, current_state.clone()));
+    }
 }
 
 fn build_statement_block(
@@ -109,9 +116,12 @@ fn build_statement_block(
     ranges: &mut Vec<(Range<usize>, PragmaState)>,
 ) {
     let saved_state = current_state.clone();
+    let count_before = ranges.len();
     for stmt in statements {
         build_ranges(stmt, current_state, ranges);
     }
     *current_state = saved_state;
-    ranges.push((end..end, current_state.clone()));
+    if ranges.len() > count_before {
+        ranges.push((end..end, current_state.clone()));
+    }
 }

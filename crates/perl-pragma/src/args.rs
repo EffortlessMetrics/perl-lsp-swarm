@@ -22,6 +22,16 @@ pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
     }
 }
 
+/// Like [`apply_builtin_imports`] but returns `true` only when at least one new
+/// import name was actually added to the state.  Used by the walker to suppress
+/// redundant map entries when a `use builtin` pragma lists names that are already
+/// lexically imported.
+pub(crate) fn apply_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before = state.builtin_imports.len();
+    apply_builtin_imports(state, args);
+    state.builtin_imports.len() != before
+}
+
 /// Insert `category` into `state.disabled_warning_categories` if not already present and
 /// within the hard cap of [`MAX_DISABLED_WARNING_CATEGORIES`].
 ///
@@ -53,6 +63,16 @@ pub(crate) fn remove_builtin_imports(state: &mut PragmaState, args: &[String]) {
     let names_to_remove: Vec<String> =
         args.iter().flat_map(|arg| builtin_import_names(arg)).collect();
     state.builtin_imports.retain(|import| !names_to_remove.iter().any(|name| name == import));
+}
+
+/// Like [`remove_builtin_imports`] but returns `true` only when the operation
+/// actually removed at least one import (or cleared a non-empty list).  Used by
+/// the walker to suppress redundant map entries when a `no builtin` pragma lists
+/// names that were never imported in the first place.
+pub(crate) fn remove_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before = state.builtin_imports.len();
+    remove_builtin_imports(state, args);
+    state.builtin_imports.len() != before
 }
 
 pub(crate) fn pragma_arg_items(arg: &str) -> Vec<String> {
