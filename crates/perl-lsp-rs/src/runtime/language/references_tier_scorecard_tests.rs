@@ -762,6 +762,32 @@ use warnings;
     // in `references.rs`) — this replay does not use and is not about PIR-A or
     // any compiler-backed substrate (that distinction is #3046's).
     //
+    // ## Revision note, round 2 (destructuring-declaration confound)
+    //
+    // A second maintainer review pass found that `coverage_gap` had been
+    // applied uniformly to every non-activating `LocalLexical` row, but some
+    // of those rows' declarations are `my (..., $name, ...) = @_` — a
+    // DESTRUCTURING form. `references.rs::line_has_initialized_lexical_declaration`
+    // (the gate `live_source_backed_reference_locations` applies to sigil
+    // symbols) does a literal `"my {sigil}{name}"` substring search on the
+    // declaration line; that substring never occurs in a destructuring line
+    // (e.g. `"my $c"` is not a substring of `"my ($self, $c) = @_;"`), so
+    // these rows are REJECTED BY DESIGN, independent of entity-linking
+    // correctness. `DeclarationShape` records this per-row (verified against
+    // the fixture source), `classify_disposition` now checks it FIRST and
+    // reports `unsupported_declaration_shape` for `Destructuring` rows, and
+    // `fire_replay_request` adds a mechanical assertion that a `Destructuring`
+    // row can never be `source_backed` (if it ever is, the recognizer changed
+    // and this classification needs revisiting). Only `SimpleInit`
+    // `LocalLexical` rows are genuine `coverage_gap` candidates. This review
+    // pass also flagged that #4002's title asserted a specific root cause as
+    // fact; it has been retitled to a provisional "candidate gap" pending
+    // first-failure instrumentation, and that the in-band positive controls
+    // are only attested by local runs (the required `Perl LSP Rust Small
+    // Result` check does not compile or run `--lib` tests for this crate at
+    // all — see the doc comments on `assert_single_file_positive_control` /
+    // `assert_multi_file_positive_control`).
+    //
     // ## Selection rule (so the corpus composition is inspectable)
     //
     // For each project we name one-to-three files already committed as UX
@@ -834,6 +860,49 @@ use warnings;
         }
     }
 
+    /// The shape of a `LocalLexical` row's declaration statement, verified
+    /// against the fixture source at manifest-authoring time. This exists
+    /// because of a maintainer-review-caught confound (PR #3998): the live
+    /// `semantic_source_backed` variable tier gates on
+    /// `references.rs::line_has_initialized_lexical_declaration`, which does a
+    /// literal `"my {sigil}{name}"` / `"state {sigil}{name}"` substring search
+    /// on the declaration line. Confirmed by reading that function: it finds
+    /// `my $plugins` in `"my $plugins = ...;"` (a `SimpleInit` line), but does
+    /// NOT find `my $c` anywhere in `"my ($self, $c) = @_;"` — the substring
+    /// `"my $c"` never occurs there (`"my "` is followed by `"("`, not `"$c"`)
+    /// — so destructuring declarations are REJECTED by this gate regardless of
+    /// whether entity/anchor resolution upstream would otherwise have
+    /// succeeded. A `LocalLexical` row whose declaration is a `Destructuring`
+    /// form is therefore expected-by-design to never reach the tier; failing
+    /// to activate is NOT evidence of an entity-linking coverage gap for that
+    /// row, and `classify_disposition` short-circuits it to
+    /// `"unsupported_declaration_shape"` rather than `"coverage_gap"`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum DeclarationShape {
+        /// `my $name = ...` / `state $name = ...` — the only shape
+        /// `line_has_initialized_lexical_declaration` recognizes.
+        SimpleInit,
+        /// `my (..., $name, ...) = @_` (or any parenthesized list form) — NOT
+        /// recognized by the literal substring gate; out of the promoted
+        /// slice by construction, independent of entity-linking correctness.
+        Destructuring,
+        /// Not a variable declaration (bareword sub/package rows, cross-file,
+        /// imported-symbol, and empty-position requests never go through
+        /// `line_has_initialized_lexical_declaration` at all, since that gate
+        /// only runs `if let Some(sigil) = sigil`).
+        NotApplicable,
+    }
+
+    impl DeclarationShape {
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::SimpleInit => "simple_init",
+                Self::Destructuring => "destructuring",
+                Self::NotApplicable => "not_applicable",
+            }
+        }
+    }
+
     /// One checked-in replay request. `cursor_occurrence` and the two
     /// occurrence-index sets refer to the boundary-safe, file-ordered
     /// occurrences of `needle` in `file` (see `ident_boundary_occurrences`).
@@ -852,6 +921,9 @@ use warnings;
         include_declaration: bool,
         expected_true_occurrences: &'static [usize],
         known_false_occurrences: &'static [usize],
+        /// See `DeclarationShape` doc comment. `NotApplicable` for every
+        /// non-`LocalLexical` class.
+        declaration_shape: DeclarationShape,
         scenario_rationale: &'static str,
     }
 
@@ -886,6 +958,8 @@ use warnings;
         // 59,occ2). No other `$plugins` in the file — single, unambiguous
         // scope. Cursor on occ1 (a USAGE); `include_declaration: false`, so
         // occ0 (the declaration) is excluded from the expected-true set.
+        // Declaration `my $plugins = $self->plugins;` (line 56) is a
+        // SimpleInit form: recognized by `line_has_initialized_lexical_declaration`.
         ReplayRequest {
             project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
             fact_class: FactClass::LocalLexical, needle: "$plugins",
@@ -893,6 +967,7 @@ use warnings;
             expected_true_occurrences: &[1, 2],
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0],
+            declaration_shape: DeclarationShape::SimpleInit,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // Same `$plugins` symbol, `includeDeclaration: true` variant: cursor
@@ -905,12 +980,17 @@ use warnings;
             cursor_occurrence: 1, include_declaration: true,
             expected_true_occurrences: &[0, 1, 2],
             known_false_occurrences: &[],
+            declaration_shape: DeclarationShape::SimpleInit,
             scenario_rationale: "same_file_lexical_usage_with_declaration_included",
         },
         // `$c` in `dispatch` (occ 0-6, occ0 = decl): must exclude the
         // unrelated `$c` in `handler` (occ 7-10) — direct scope-shadow analog
         // of the existing F1 curated corpus fixture, on real code. Cursor on
         // occ1 (a USAGE); `include_declaration: false`, so occ0 is excluded.
+        // Declaration `my ($self, $c) = @_;` (line 55) is a Destructuring
+        // form: `line_has_initialized_lexical_declaration` never finds the
+        // literal substring `"my $c"` in it, so this row is expected-by-design
+        // to never reach `semantic_source_backed` regardless of entity-linking.
         ReplayRequest {
             project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
             fact_class: FactClass::LocalLexical, needle: "$c",
@@ -918,11 +998,15 @@ use warnings;
             expected_true_occurrences: &[1, 2, 3, 4, 5, 6],
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 7, 8, 9, 10],
+            declaration_shape: DeclarationShape::Destructuring,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$c` in `handler` (occ 7-10, occ7 = decl): the mirror-image request
         // from the opposite scope. Cursor on occ8 (a USAGE);
-        // `include_declaration: false`, so occ7 is excluded.
+        // `include_declaration: false`, so occ7 is excluded. Declaration
+        // `my $c = $self->build_controller($tx);` (line 65) is a SimpleInit
+        // form (only `$self`/`$tx` in the ENCLOSING sub signature are
+        // destructured; `$c` itself is a plain `my $c = ...`).
         ReplayRequest {
             project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
             fact_class: FactClass::LocalLexical, needle: "$c",
@@ -930,6 +1014,7 @@ use warnings;
             expected_true_occurrences: &[8, 9, 10],
             // occ7: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 1, 2, 3, 4, 5, 6, 7],
+            declaration_shape: DeclarationShape::SimpleInit,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch`: def(54, occ0) + true call `$self->dispatch($c)`(67, occ3)
@@ -941,6 +1026,7 @@ use warnings;
             fact_class: FactClass::DynamicAmbiguous, needle: "dispatch",
             cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0, 3], known_false_occurrences: &[1, 2],
+            declaration_shape: DeclarationShape::NotApplicable,
             scenario_rationale: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
         },
         // `startup`: call(35, occ0) + def(94, occ1), unambiguous same-file sub.
@@ -949,6 +1035,7 @@ use warnings;
             fact_class: FactClass::PackageSubSameFile, needle: "startup",
             cursor_occurrence: 1, include_declaration: true,
             expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
+            declaration_shape: DeclarationShape::NotApplicable,
             scenario_rationale: "same_file_subroutine_def_and_call",
         },
         // `croak`(73, occ1): Carp is not vendored in this fixture project, so
@@ -958,12 +1045,14 @@ use warnings;
             fact_class: FactClass::ImportedSymbol, needle: "croak",
             cursor_occurrence: 1, include_declaration: false,
             expected_true_occurrences: &[], known_false_occurrences: &[],
+            declaration_shape: DeclarationShape::NotApplicable,
             scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
         // ---- Dancer2: lib/Dancer2/Core/App.pm ----
         // `$code` in `add_route`: decl(26,occ0) + uses(27,occ1; 30,occ2); the
         // unrelated `$code` in `add_hook` (occ3,occ4) must be excluded.
-        // Cursor on occ1 (a USAGE); `include_declaration: false`.
+        // Cursor on occ1 (a USAGE); `include_declaration: false`. Declaration
+        // `my $code = $args{code};` (line 26) is a SimpleInit form.
         ReplayRequest {
             project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
             fact_class: FactClass::LocalLexical, needle: "$code",
@@ -971,11 +1060,13 @@ use warnings;
             expected_true_occurrences: &[1, 2],
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 3, 4],
+            declaration_shape: DeclarationShape::SimpleInit,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$method` scope pair, side A: `add_route` (occ0 = decl, occ1) vs
         // `dispatch` (occ2,occ3) — same bare name, non-overlapping scopes.
-        // Cursor on occ1 (a USAGE); `include_declaration: false`.
+        // Cursor on occ1 (a USAGE); `include_declaration: false`. Declaration
+        // `my $method = lc $args{method};` (line 24) is a SimpleInit form.
         ReplayRequest {
             project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
             fact_class: FactClass::LocalLexical, needle: "$method",
@@ -983,10 +1074,13 @@ use warnings;
             expected_true_occurrences: &[1],
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 2, 3],
+            declaration_shape: DeclarationShape::SimpleInit,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$method` scope pair, side B: the mirror-image request (occ2 = decl).
-        // Cursor on occ3 (a USAGE); `include_declaration: false`.
+        // Cursor on occ3 (a USAGE); `include_declaration: false`. Declaration
+        // `my $method = lc $env->{REQUEST_METHOD};` (line 36) is a SimpleInit
+        // form.
         ReplayRequest {
             project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
             fact_class: FactClass::LocalLexical, needle: "$method",
@@ -994,6 +1088,7 @@ use warnings;
             expected_true_occurrences: &[3],
             // occ2: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 1, 2],
+            declaration_shape: DeclarationShape::SimpleInit,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch`(34, occ0): defined here, the only call site is
@@ -1004,6 +1099,7 @@ use warnings;
             fact_class: FactClass::CrossFileSub, needle: "dispatch",
             cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0], known_false_occurrences: &[],
+            declaration_shape: DeclarationShape::NotApplicable,
             scenario_rationale: "cross_file_caller_lives_outside_the_same_file_scope",
         },
         // `croak`(27, occ1): same out-of-fixture-declaration reasoning as Mojolicious.
@@ -1012,12 +1108,15 @@ use warnings;
             fact_class: FactClass::ImportedSymbol, needle: "croak",
             cursor_occurrence: 1, include_declaration: false,
             expected_true_occurrences: &[], known_false_occurrences: &[],
+            declaration_shape: DeclarationShape::NotApplicable,
             scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
         // ---- Catalyst: lib/Catalyst/Action.pm, lib/Catalyst.pm, lib/Catalyst/Dispatcher.pm ----
         // `$controller` in `dispatch`: decl(23,occ0) + uses(24,occ1; 26,occ2),
         // single unambiguous scope, no other `$controller` in the file.
-        // Cursor on occ1 (a USAGE); `include_declaration: false`.
+        // Cursor on occ1 (a USAGE); `include_declaration: false`. Declaration
+        // `my $controller = $c->component($class);` (line 23) is a SimpleInit
+        // form.
         ReplayRequest {
             project: "catalyst_skeleton", file: "lib/Catalyst/Action.pm",
             fact_class: FactClass::LocalLexical, needle: "$controller",
@@ -1025,12 +1124,15 @@ use warnings;
             expected_true_occurrences: &[1, 2],
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0],
+            declaration_shape: DeclarationShape::SimpleInit,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$c` in `dispatch` (occ0-4, occ0 = decl): must exclude `$c` in
         // `execute`, `match`, and `match_captures` (occ5-10) — three OTHER
         // scopes share the name. Cursor on occ1 (a USAGE);
-        // `include_declaration: false`.
+        // `include_declaration: false`. Declaration `my ($self, $c) = @_;`
+        // (line 21) is a Destructuring form — same shape gate as the
+        // Mojolicious `$c`-in-`dispatch` row above.
         ReplayRequest {
             project: "catalyst_skeleton", file: "lib/Catalyst/Action.pm",
             fact_class: FactClass::LocalLexical, needle: "$c",
@@ -1038,6 +1140,7 @@ use warnings;
             expected_true_occurrences: &[1, 2, 3, 4],
             // occ0: declaration, excluded because includeDeclaration:false.
             known_false_occurrences: &[0, 5, 6, 7, 8, 9, 10],
+            declaration_shape: DeclarationShape::Destructuring,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch` in Catalyst.pm: call `$c->dispatch;`(180,occ0) +
@@ -1048,6 +1151,7 @@ use warnings;
             fact_class: FactClass::PackageSubSameFile, needle: "dispatch",
             cursor_occurrence: 1, include_declaration: true,
             expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
+            declaration_shape: DeclarationShape::NotApplicable,
             scenario_rationale: "same_file_subroutine_def_and_call",
         },
         // `dispatch` in Dispatcher.pm: def(12,occ0); ALL THREE in-file calls
@@ -1060,6 +1164,7 @@ use warnings;
             fact_class: FactClass::DynamicAmbiguous, needle: "dispatch",
             cursor_occurrence: 0, include_declaration: true,
             expected_true_occurrences: &[0], known_false_occurrences: &[1, 2, 3],
+            declaration_shape: DeclarationShape::NotApplicable,
             scenario_rationale: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
         },
         // `croak`(31, occ1): same out-of-fixture-declaration reasoning as above.
@@ -1068,6 +1173,7 @@ use warnings;
             fact_class: FactClass::ImportedSymbol, needle: "croak",
             cursor_occurrence: 1, include_declaration: false,
             expected_true_occurrences: &[], known_false_occurrences: &[],
+            declaration_shape: DeclarationShape::NotApplicable,
             scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
     ];
@@ -1120,6 +1226,8 @@ use warnings;
         /// Live receipt `source_backed_state` (proof class, e.g.
         /// `"semantic_source_backed_ast_index"`).
         receipt_source_backed_state: String,
+        /// See `DeclarationShape` doc comment.
+        declaration_shape: DeclarationShape,
         scenario_rationale: &'static str,
         disposition: &'static str,
     }
@@ -1376,6 +1484,13 @@ use warnings;
     /// Roll an observed row up into a #1658 disposition bucket, driven by
     /// EVIDENCE rather than `FactClass` alone (per the PR #3998 review):
     ///
+    /// - `unsupported_declaration_shape`: checked FIRST, before anything else.
+    ///   A `LocalLexical` row whose declaration is a `Destructuring` form
+    ///   (`my (..., $name, ...) = @_`) is expected-by-design to never reach
+    ///   `semantic_source_backed` — `references.rs::line_has_initialized_lexical_declaration`
+    ///   categorically rejects that shape regardless of entity-linking
+    ///   correctness. Non-activation here is a recorded, expected blocker, not
+    ///   a coverage gap.
     /// - `index_parity_proven`: only from an observed exact match on a
     ///   `source_backed` row for a strictly-checked class.
     /// - `explicit_refusal_safe`: only from a genuinely EXERCISED refusal —
@@ -1384,6 +1499,7 @@ use warnings;
     ///   answer is NOT "safe" just because it avoided the known-false set —
     ///   that would only prove "not disproven", not "verified correct".
     /// - `coverage_gap`: only for `LocalLexical`/`PackageSubSameFile` rows
+    ///   with a `SimpleInit` (or `NotApplicable`, for subs) declaration shape
     ///   that failed to reach `source_backed`, AND ONLY when
     ///   `positive_control_evidence` is `true` for that project (i.e. a
     ///   control request in the identical multi-file server shape DID reach
@@ -1395,12 +1511,16 @@ use warnings;
     ///   already failed the test) somehow reaches this classifier mismatched.
     fn classify_disposition(
         fact_class: FactClass,
+        declaration_shape: DeclarationShape,
         source_backed: bool,
         result_count: usize,
         result_locations: &[(String, u32, u32)],
         expected_keys: &[(String, u32, u32)],
         positive_control_evidence: bool,
     ) -> &'static str {
+        if declaration_shape == DeclarationShape::Destructuring {
+            return "unsupported_declaration_shape";
+        }
         if source_backed {
             if fact_class.is_strictly_checked()
                 && exact_match_check(result_locations, expected_keys).is_ok()
@@ -1528,8 +1648,25 @@ use warnings;
             }
         }
 
+        // Mechanical proof (not just observation) of the `DeclarationShape`
+        // rationale: a `Destructuring` declaration must NEVER reach
+        // `semantic_source_backed`, since `line_has_initialized_lexical_declaration`
+        // categorically rejects that line shape. If this ever fails, the
+        // production recognizer has changed and `DeclarationShape` /
+        // `classify_disposition` need to be revisited, not silenced.
+        if request.declaration_shape == DeclarationShape::Destructuring && evidence.source_backed {
+            return Err(format!(
+                "{}/{} needle={:?}: a Destructuring declaration unexpectedly reached \
+                 semantic_source_backed -- line_has_initialized_lexical_declaration's shape \
+                 gate may have changed; DeclarationShape needs to be revisited",
+                request.project, request.file, request.needle
+            )
+            .into());
+        }
+
         let disposition = classify_disposition(
             request.fact_class,
+            request.declaration_shape,
             evidence.source_backed,
             result_count,
             &result_locations,
@@ -1559,6 +1696,7 @@ use warnings;
             receipt_freshness: evidence.freshness,
             receipt_fact_source: evidence.fact_source,
             receipt_source_backed_state: evidence.source_backed_state,
+            declaration_shape: request.declaration_shape,
             scenario_rationale: request.scenario_rationale,
             disposition,
         })
@@ -1632,6 +1770,7 @@ use warnings;
             receipt_freshness: evidence.freshness,
             receipt_fact_source: evidence.fact_source,
             receipt_source_backed_state: evidence.source_backed_state,
+            declaration_shape: DeclarationShape::NotApplicable,
             scenario_rationale: "no_symbol_under_cursor_correctly_empty",
             disposition: "explicit_refusal_safe",
         })
@@ -1662,6 +1801,7 @@ use warnings;
             "receipt_freshness": row.receipt_freshness,
             "receipt_fact_source": row.receipt_fact_source,
             "receipt_source_backed_state": row.receipt_source_backed_state,
+            "declaration_shape": row.declaration_shape.as_str(),
             "scenario_rationale": row.scenario_rationale,
             "disposition": row.disposition,
         })
@@ -1693,6 +1833,7 @@ use warnings;
             "receipt_freshness": row.receipt_freshness,
             "receipt_fact_source": row.receipt_fact_source,
             "receipt_source_backed_state": row.receipt_source_backed_state,
+            "declaration_shape": row.declaration_shape.as_str(),
             "scenario_rationale": row.scenario_rationale,
             "disposition": row.disposition,
         })
@@ -1723,6 +1864,16 @@ use warnings;
             .and_then(Value::as_object)
             .ok_or("missing request_receipt")?;
         let tier = receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("");
+        // Printed (not just asserted) so the observed tier is visible evidence
+        // in the test log, not only an implicit pass/fail -- see PR #3998
+        // Defect C: this test's own CI reachability is local-only until a
+        // `--lib --features workspace` lane exists (the required
+        // `Perl LSP Rust Small Result` check only runs two named integration
+        // tests, `--test lsp_smoke` and `-p perl-parser --test
+        // semantic_smoke_tests`; it never compiles or runs `--lib` unit tests
+        // for this crate, so this evidence must be read from a local/manual
+        // `cargo test -p perl-lsp-rs --lib --features workspace ...` run).
+        eprintln!("single_file_positive_control observed_tier={tier:?}");
         assert_eq!(
             tier, "semantic_source_backed",
             "single-file positive control must reach the source-backed tier (harness sanity)"
@@ -1756,6 +1907,9 @@ use warnings;
             .and_then(Value::as_object)
             .ok_or("missing request_receipt")?;
         let tier = receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("");
+        // See the single-file control's comment above re: local-only CI
+        // reachability (PR #3998 Defect C).
+        eprintln!("multi_file_positive_control project={project} observed_tier={tier:?}");
         assert_eq!(
             tier, "semantic_source_backed",
             "positive control opened alongside the real {project} project must still reach the \
@@ -2126,6 +2280,7 @@ use warnings;
         let empty_locations: Vec<(String, u32, u32)> = Vec::new();
         let without_control = classify_disposition(
             FactClass::LocalLexical,
+            DeclarationShape::SimpleInit,
             false,
             8,
             &empty_locations,
@@ -2140,6 +2295,7 @@ use warnings;
 
         let with_control = classify_disposition(
             FactClass::LocalLexical,
+            DeclarationShape::SimpleInit,
             false,
             8,
             &empty_locations,
@@ -2148,7 +2304,8 @@ use warnings;
         );
         assert_eq!(
             with_control, "coverage_gap",
-            "with positive-control evidence, a non-source-backed LocalLexical row is `coverage_gap`"
+            "with positive-control evidence, a non-source-backed SimpleInit LocalLexical row is \
+             `coverage_gap`"
         );
     }
 
@@ -2161,6 +2318,7 @@ use warnings;
         let empty_locations: Vec<(String, u32, u32)> = Vec::new();
         let noisy = classify_disposition(
             FactClass::DynamicAmbiguous,
+            DeclarationShape::NotApplicable,
             false,
             12,
             &empty_locations,
@@ -2174,6 +2332,7 @@ use warnings;
 
         let genuinely_empty = classify_disposition(
             FactClass::DynamicAmbiguous,
+            DeclarationShape::NotApplicable,
             false,
             0,
             &empty_locations,
@@ -2184,5 +2343,33 @@ use warnings;
             genuinely_empty, "explicit_refusal_safe",
             "a genuinely empty (exercised refusal) fallback answer is explicit_refusal_safe"
         );
+    }
+
+    /// Revert-proves the Defect A repair (PR #3998 second review round): a
+    /// `Destructuring` declaration shape must ALWAYS classify as
+    /// `unsupported_declaration_shape` -- never `coverage_gap` -- regardless
+    /// of `source_backed`/`positive_control_evidence`, because non-activation
+    /// for that shape is expected-by-design
+    /// (`line_has_initialized_lexical_declaration` categorically rejects it),
+    /// not an entity-linking gap.
+    #[test]
+    fn classify_disposition_destructuring_shape_is_never_coverage_gap() {
+        let empty_locations: Vec<(String, u32, u32)> = Vec::new();
+        for positive_control_evidence in [false, true] {
+            let disposition = classify_disposition(
+                FactClass::LocalLexical,
+                DeclarationShape::Destructuring,
+                false,
+                8,
+                &empty_locations,
+                &empty_locations,
+                positive_control_evidence,
+            );
+            assert_eq!(
+                disposition, "unsupported_declaration_shape",
+                "a Destructuring LocalLexical row must be unsupported_declaration_shape \
+                 regardless of positive_control_evidence={positive_control_evidence}"
+            );
+        }
     }
 }

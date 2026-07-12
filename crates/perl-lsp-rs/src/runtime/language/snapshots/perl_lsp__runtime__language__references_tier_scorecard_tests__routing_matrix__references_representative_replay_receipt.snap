@@ -13,6 +13,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
       "file": "lib/Mojolicious.pm",
@@ -37,6 +38,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
       "file": "lib/Mojolicious.pm",
@@ -61,7 +63,8 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 43,
-      "disposition": "coverage_gap",
+      "declaration_shape": "destructuring",
+      "disposition": "unsupported_declaration_shape",
       "fact_class": "local_lexical",
       "file": "lib/Mojolicious.pm",
       "include_declaration": false,
@@ -85,6 +88,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 11,
+      "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
       "file": "lib/Mojolicious.pm",
@@ -109,6 +113,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "dynamic_ambiguous",
       "file": "lib/Mojolicious.pm",
@@ -133,6 +138,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "declaration_shape": "not_applicable",
       "disposition": "coverage_gap",
       "fact_class": "package_sub_same_file",
       "file": "lib/Mojolicious.pm",
@@ -157,6 +163,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_text",
       "character": 4,
+      "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "imported_symbol",
       "file": "lib/Mojolicious.pm",
@@ -181,6 +188,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 53,
+      "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
       "file": "lib/Dancer2/Core/App.pm",
@@ -205,6 +213,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 27,
+      "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
       "file": "lib/Dancer2/Core/App.pm",
@@ -229,6 +238,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 37,
+      "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
       "file": "lib/Dancer2/Core/App.pm",
@@ -253,6 +263,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "cross_file_sub",
       "file": "lib/Dancer2/Core/App.pm",
@@ -277,6 +288,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "imported_symbol",
       "file": "lib/Dancer2/Core/App.pm",
@@ -301,6 +313,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 52,
+      "declaration_shape": "simple_init",
       "disposition": "coverage_gap",
       "fact_class": "local_lexical",
       "file": "lib/Catalyst/Action.pm",
@@ -325,7 +338,8 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 21,
-      "disposition": "coverage_gap",
+      "declaration_shape": "destructuring",
+      "disposition": "unsupported_declaration_shape",
       "fact_class": "local_lexical",
       "file": "lib/Catalyst/Action.pm",
       "include_declaration": false,
@@ -349,6 +363,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "declaration_shape": "not_applicable",
       "disposition": "coverage_gap",
       "fact_class": "package_sub_same_file",
       "file": "lib/Catalyst.pm",
@@ -373,6 +388,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "dynamic_ambiguous",
       "file": "lib/Catalyst/Dispatcher.pm",
@@ -397,6 +413,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "workspace_mixed",
       "character": 4,
+      "declaration_shape": "not_applicable",
       "disposition": "unclassified",
       "fact_class": "imported_symbol",
       "file": "lib/Catalyst/Dispatcher.pm",
@@ -421,6 +438,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "empty",
       "character": 0,
+      "declaration_shape": "not_applicable",
       "disposition": "explicit_refusal_safe",
       "fact_class": "empty_position",
       "file": "lib/Mojolicious.pm",
@@ -445,6 +463,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "empty",
       "character": 0,
+      "declaration_shape": "not_applicable",
       "disposition": "explicit_refusal_safe",
       "fact_class": "empty_position",
       "file": "lib/Dancer2/Core/App.pm",
@@ -469,6 +488,7 @@ expression: "serde_json::to_string_pretty(&snapshot_receipt)?"
     {
       "answering_tier": "empty",
       "character": 0,
+      "declaration_shape": "not_applicable",
       "disposition": "explicit_refusal_safe",
       "fact_class": "empty_position",
       "file": "lib/Catalyst/Action.pm",
