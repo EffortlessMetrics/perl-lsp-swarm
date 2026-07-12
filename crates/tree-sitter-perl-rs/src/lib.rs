@@ -902,11 +902,7 @@ impl<'tree> TreeCursor<'tree> {
 
     fn current_parent_ast_node(&self) -> &'tree AstNode {
         debug_assert!(!self.path.is_empty(), "current_parent_ast_node requires a non-root cursor");
-        if self.path.len() == 1 {
-            self.root
-        } else {
-            self.nodes[self.nodes.len() - 2]
-        }
+        if self.path.len() == 1 { self.root } else { self.nodes[self.nodes.len() - 2] }
     }
 }
 
