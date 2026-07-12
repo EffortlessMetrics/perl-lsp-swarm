@@ -35,7 +35,12 @@ pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
     let recovered = outcome.is_recovered();
     if let Some(tree) = outcome.tree {
         dogfood::record_facade_tree(recovered);
-        return Ok(to_ts_node_facade(tree.root_node()));
+        let projected = to_ts_node_facade(tree.root_node());
+        let mut native_parser = NativeParser::new(source);
+        if let Ok(native_root) = native_parser.parse() {
+            let _comparison = shadow::compare_projected(source, &native_root, &projected);
+        }
+        return Ok(projected);
     }
 
     dogfood::record_native_fallback();
@@ -137,11 +142,23 @@ mod tests {
     #[test]
     fn normal_parse_uses_the_facade_as_primary_source() -> Result<(), TreeError> {
         let before = crate::adoption_stats();
-        let tree = parse_to_tree("my $value = 42;\n")?;
+        let shadow_before = crate::shadow::shadow_stats();
+        let source = "my $value = 42;\n";
+        let tree = parse_to_tree(source)?;
         let after = crate::adoption_stats();
+        let shadow_after = crate::shadow::shadow_stats();
+        let mut native_parser = NativeParser::new(source);
+        let native = native_parser.parse().map_err(|_| TreeError::ParseFailed)?;
+        assert_eq!(tree, to_ts_node(&native, &Utf8LineIndex::new(source)));
+        let comparison = crate::shadow::compare_projected(source, &native, &tree);
+        assert!(comparison.root_span_match, "shadow root span mismatch: {comparison:?}");
+        assert!(comparison.node_count_match, "shadow node count mismatch: {comparison:?}");
+        assert!(comparison.sexp_match, "shadow S-expression mismatch: {comparison:?}");
         assert_eq!(tree.kind, "program");
         assert!(after.facade_trees > before.facade_trees);
         assert_eq!(after.native_fallbacks, before.native_fallbacks);
+        assert!(shadow_after.runs > shadow_before.runs);
+        assert!(shadow_after.matches > shadow_before.matches);
         Ok(())
     }
 

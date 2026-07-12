@@ -1,8 +1,11 @@
 //! Best-effort shadow comparison against the Rust-native tree-sitter facade.
 
 use perl_parser_core::Node;
+use perl_workspace_core::Utf8LineIndex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tree_sitter_perl_rs::Parser;
+
+use crate::node::TsNode;
 
 static RUNS: AtomicU64 = AtomicU64::new(0);
 static FACADE_TREES: AtomicU64 = AtomicU64::new(0);
@@ -76,6 +79,33 @@ pub(crate) fn compare(source: &str, native_root: &Node) -> ShadowComparison {
         FALLBACKS.fetch_add(1, Ordering::Relaxed);
     } else {
         MATCHES.fetch_add(1, Ordering::Relaxed);
+    }
+    comparison
+}
+
+/// Compare an already-produced facade projection with the established AST.
+///
+/// This is the adoption-path comparison: the facade remains authoritative for
+/// the caller while the established parser supplies an independent receipt.
+pub(crate) fn compare_projected(
+    source: &str,
+    native_root: &Node,
+    facade_root: &TsNode,
+) -> ShadowComparison {
+    RUNS.fetch_add(1, Ordering::Relaxed);
+    FACADE_TREES.fetch_add(1, Ordering::Relaxed);
+    let native_projected = crate::convert::to_ts_node(native_root, &Utf8LineIndex::new(source));
+    let comparison = ShadowComparison {
+        facade_tree: true,
+        root_span_match: facade_root.start_byte == native_projected.start_byte
+            && facade_root.end_byte == native_projected.end_byte,
+        node_count_match: facade_root.descendant_count() == native_projected.descendant_count(),
+        sexp_match: crate::sexp::to_sexp(facade_root) == crate::sexp::to_sexp(&native_projected),
+    };
+    if comparison.root_span_match && comparison.node_count_match && comparison.sexp_match {
+        MATCHES.fetch_add(1, Ordering::Relaxed);
+    } else {
+        FALLBACKS.fetch_add(1, Ordering::Relaxed);
     }
     comparison
 }
