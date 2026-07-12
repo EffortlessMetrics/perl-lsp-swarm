@@ -4053,12 +4053,20 @@ impl WorkspaceIndex {
     }
 }
 
-/// **SHADOW-ONLY (1711-B, tracked on #1711).** One coordinated inventory pass
-/// over a file's AST whose output can feed BOTH projections that
-/// `index_file_with_generation` builds today by calling extractors
-/// separately: the legacy `IndexVisitor` / [`FileIndex`] walk, and the
-/// canonical [`FileFactShard`] built by
-/// `WorkspaceIndex::build_canonical_fact_shard_for_ast`.
+/// **SHADOW-ONLY (1711-B, tracked on #1711). NOT a consolidation.** This is
+/// a parity-harness scaffold, not a single traversal: `build()` below still
+/// runs the SAME MULTIPLE separate AST walks `index_file_with_generation`
+/// runs today (one `IndexVisitor::visit`, one
+/// `build_canonical_fact_shard_for_ast` -- which itself internally calls
+/// `extract_symbol_decls`/`extract_symbol_refs`/eval-sub/generated-member --
+/// plus one `extract_import_specs` and one `extract_use_lib_facts`), and just
+/// packages their outputs into one struct. **It does NOT eliminate the
+/// duplicate extraction #1711 is about, and does not reduce the AST-traversal
+/// count at all.** Its only purpose is to give the
+/// `extraction_bundle_shadow_compare` test module below a single call site to
+/// assert parity against, so that a REAL future unification (replacing these
+/// separate calls with one traversal) has a byte-for-byte regression gate to
+/// build against.
 ///
 /// # Parity contract
 ///
@@ -4071,23 +4079,24 @@ impl WorkspaceIndex {
 /// | Identity / ordering | `WorkspaceSymbol`/`SymbolReference` carry no stable ID; `FileIndex.references` is a `HashMap` (unordered by name, but each name's `Vec` preserves visit order) | `AnchorId`/`EntityId`/`OccurrenceId`/`EdgeId` are content-derived stable hashes (`stable_id`); `Vec` fields preserve extraction order |
 ///
 /// This struct is **not wired into the production `index_file_with_generation`
-/// path** -- it exists to prove, via the `extraction_bundle_shadow_compare`
-/// test module below, that ONE inventory pass can feed both projections with
-/// byte-for-byte parity, ahead of any future cutover (1711-B phase 2, gated
-/// on this parity proof + review per #1711). Building it runs the SAME
-/// extractor calls `index_file_with_generation` runs today (one
-/// `IndexVisitor::visit`, one each of `extract_symbol_decls`/
-/// `extract_symbol_refs`/eval-sub/generated-member/import/use-lib) -- it does
-/// not yet reduce the traversal count. That reduction (e.g. unifying the two
-/// independent `extract_symbol_decls` calls, or merging `visit_node` with
-/// `extract_symbol_refs`) is deliberately deferred to a later phase: the
-/// 1711-A receipt found that `anchors_hash` conflates declaration- and
-/// reference-anchors, so a naive preview/skip design is unproven, and this
-/// PR's job is only to prove the bundle shape + parity, not to redesign the
-/// walkers themselves.
-// Shadow producer: intentionally unused by the live `index_file_with_generation`
-// path until a future 1711-B phase-2 cutover proves out and lands (see the
-// parity contract doc comment above and #1711) -- kept as a genuine additive
+/// path**. The real open problem for a genuine single-traversal unification is
+/// NOT modeled or solved here: `IndexVisitor::visit_node` and
+/// `extract_symbol_refs` are two independently hand-written AST walkers with
+/// non-identical node-kind coverage and non-overlapping capabilities (legacy
+/// has Write-detection, `use`/`extends`/`with`/`require` dependency tracking,
+/// and interpolated-string scanning that canonical lacks; canonical has
+/// `MethodCall`/`StaticMethodCall`/`CoderefReference`/`TypeglobReference`
+/// classification and resolved entity IDs that legacy lacks -- legacy has no
+/// `NodeKind::Typeglob` arm at all, a pre-existing coverage gap, not a
+/// consolidation side effect). Whether and how those two walkers can be
+/// merged into one is answered by the feasibility investigation posted to
+/// #1711 (see the PR description), not by this struct. Do not read the
+/// "parity: clean, zero deltas" result of the tests below as evidence that
+/// unification is easy or already done -- it only proves this packaging
+/// step didn't introduce a NEW discrepancy, since it calls the exact same
+/// functions production already calls.
+// Shadow scaffold: intentionally unused by the live `index_file_with_generation`
+// path (see the doc comment above and #1711) -- kept as a genuine additive
 // production type rather than `#[cfg(test)]`-gated, per the 1711-B
 // shadow-phase directive.
 #[allow(dead_code)]
@@ -4106,10 +4115,12 @@ pub(crate) struct FileExtractionBundle {
 }
 
 impl FileExtractionBundle {
-    /// Run one coordinated inventory pass over `ast` and package every
-    /// extractor's output into a single bundle. See the parity contract on
-    /// [`FileExtractionBundle`] for what each field feeds.
-    // Shadow producer (see the struct-level justification above); the
+    /// Run the SAME MULTIPLE separate extractor calls production runs today
+    /// (still several distinct AST walks -- see the struct-level doc comment)
+    /// and package every result into a single bundle. Does not reduce the
+    /// traversal count. See the parity contract on [`FileExtractionBundle`]
+    /// for what each field feeds.
+    // Shadow scaffold (see the struct-level justification above); the
     // function itself is equally unused by the live path outside tests.
     #[allow(dead_code)]
     pub(crate) fn build(
@@ -10490,21 +10501,27 @@ mod reindex_workshape_measurement {
 }
 
 /// **SHADOW-ONLY (1711-B, tracked on #1711).** Proves that
-/// `FileExtractionBundle::build` -- ONE inventory pass -- produces
-/// byte-for-byte identical output to calling today's production extractors
-/// separately (one `IndexVisitor::visit`, one
-/// `build_canonical_fact_shard_for_ast`, plus separate import/use-lib
-/// extractor calls), across the Perl corpus fixtures (`test_corpus/gold`),
-/// the mojolicious/dancer2/catalyst real-project skeletons
-/// (`test_corpus/real_projects`), and targeted edge cases (comment-only,
-/// reference-only, declaration, generated/dynamic, imports,
+/// `FileExtractionBundle::build` -- which still runs the SAME MULTIPLE
+/// separate extractor calls production runs today, just packaged into one
+/// struct -- produces byte-for-byte identical output to calling those same
+/// extractors directly (`build_direct`), across the Perl corpus fixtures
+/// (`test_corpus/gold`), the mojolicious/dancer2/catalyst real-project
+/// skeletons (`test_corpus/real_projects`), and targeted edge cases
+/// (comment-only, reference-only, declaration, generated/dynamic, imports,
 /// heredocs/POD/interpolated-strings). See the parity contract on
 /// `FileExtractionBundle` for what each field maps to.
 ///
-/// This module proves parity only -- it does not change production
-/// behavior. `FileExtractionBundle` is not called from
-/// `index_file_with_generation` (see its doc comment); cutover is a
-/// separate, later PR (1711-B phase 2).
+/// **This "clean parity, zero deltas" result is expected and does NOT prove
+/// consolidation.** `FileExtractionBundle::build` calls the identical
+/// functions `build_direct` calls, just through one struct instead of two
+/// call sites -- a real discrepancy here would mean a bug in the packaging,
+/// not evidence that the underlying duplicate walks have been reduced to
+/// one. These tests are the useful, durable part of this PR: once a REAL
+/// single-traversal unification is designed (see the feasibility
+/// investigation posted to #1711), this same harness becomes the
+/// byte-for-byte regression gate for that change. This module proves parity
+/// only -- it does not change production behavior, and `FileExtractionBundle`
+/// is not called from `index_file_with_generation` (see its doc comment).
 #[cfg(test)]
 mod extraction_bundle_shadow_compare {
     // A skipped-fixture diagnostic is only useful if a human can see it
