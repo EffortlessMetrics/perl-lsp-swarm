@@ -38,10 +38,8 @@ fn position(source: &str, byte: usize) -> Position {
 }
 
 fn replace_range(source: &str, start: usize, end: usize, replacement: &str) -> String {
-    let mut result = String::with_capacity(source.len() + replacement.len());
-    result.push_str(&source[..start]);
-    result.push_str(replacement);
-    result.push_str(&source[end..]);
+    let mut result = source.to_owned();
+    result.replace_range(start..end, replacement);
     result
 }
 
@@ -184,7 +182,7 @@ fn seeded_edit_sequences_match_fresh_parse() -> TestResult {
         "my $x = 1;\nmy $y = 2;\n",
         &[
             EditSpec { needle: "\n", replacement: "\r\n" },
-            EditSpec { needle: "\n", replacement: "\r\n" },
+            EditSpec { needle: "my $y = 2;\n", replacement: "my $y = 2;\r\n" },
         ],
     )
 }
