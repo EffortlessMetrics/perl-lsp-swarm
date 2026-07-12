@@ -829,23 +829,35 @@ fn plan_gates(root: &Path, policy: &GatePolicy, config: &GateRunnerConfig) -> Re
             gates_for_tier(policy, "commit"),
             staged_tree_oid,
         )),
-        GateTier::PrFast => plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base),
+        GateTier::PrFast => {
+            let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
+            // `plan_pr_fast_gates` always returns `staged_tree_oid: None` (it
+            // has no reason to know about `--staged` on its own) — every
+            // arm here must re-thread it, otherwise `--tier nightly
+            // --staged`/`--tier all --staged` silently drop the identity a
+            // transitively-selected commit-tier gate actually ran against.
+            plan.staged_tree_oid = staged_tree_oid;
+            Ok(plan)
+        }
         GateTier::MergeGate => {
             let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
             plan.tier = GateTier::MergeGate;
             extend_plan_with_static_tiers(&mut plan, policy, &["merge_gate"]);
+            plan.staged_tree_oid = staged_tree_oid;
             Ok(plan)
         }
         GateTier::Nightly => {
             let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
             plan.tier = GateTier::Nightly;
             extend_plan_with_static_tiers(&mut plan, policy, &["merge_gate", "nightly"]);
+            plan.staged_tree_oid = staged_tree_oid;
             Ok(plan)
         }
         GateTier::All => {
             let mut plan = plan_pr_fast_gates(root, gates_for_tier(policy, "pr_fast"), base)?;
             plan.tier = GateTier::All;
             extend_plan_with_non_pr_fast_static_gates(&mut plan, policy);
+            plan.staged_tree_oid = staged_tree_oid;
             Ok(plan)
         }
     }
@@ -3460,6 +3472,42 @@ gates:
         assert_eq!(selected_gate_names(&plan), vec!["clippy_full"]);
         assert_eq!(plan.selected[0].role, GatePlanningRole::Static);
         assert_eq!(plan.selected[0].reason, "selected by static policy filter");
+        Ok(())
+    }
+
+    #[test]
+    fn plan_gates_threads_staged_tree_oid_into_non_commit_tiers() -> color_eyre::eyre::Result<()> {
+        // Regression for a deep-review P1 on PR #4016: `plan_pr_fast_gates`
+        // always returns `staged_tree_oid: None` on its own (it has no
+        // reason to know about `--staged`), so `--tier merge_gate/nightly
+        // /all --staged` must re-thread the resolved OID after calling it —
+        // otherwise a transitively-selected commit-tier gate (`nightly`/
+        // `all` keep every gate regardless of tier) runs against the exact
+        // staged tree, but the receipt's `staged_tree_oid` silently stays
+        // `None`, losing the very identity `--staged` was supposed to prove.
+        let policy = policy_with_gates(vec![
+            pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
+            tier_gate(
+                "staged_tree_identity",
+                "commit",
+                "cargo xtask commit-check staged_tree_identity",
+            ),
+        ]);
+        let config = GateRunnerConfig {
+            tier: GateTier::All,
+            base_ref: Some("origin/main".to_string()),
+            staged: true,
+            ..GateRunnerConfig::default()
+        };
+        let root = crate::utils::project_root()?;
+
+        let plan = plan_gates(&root, &policy, &config)?;
+
+        assert!(
+            plan.staged_tree_oid.is_some(),
+            "--staged must thread the tree OID into the plan for --tier all, not only \
+             --tier commit"
+        );
         Ok(())
     }
 

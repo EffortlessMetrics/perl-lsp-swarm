@@ -1718,18 +1718,15 @@ enum Commands {
 
     /// Ergonomic alias for `gates --tier commit --staged` (issue #3786).
     ///
-    /// Commit-tier checks always inspect the staged tree — this alias exists
-    /// so the feedback-ladder command an agent types before `git commit` is
-    /// short and self-explanatory. Calls the exact same implementation as
-    /// `gates --tier commit --staged`; there is one policy authority.
+    /// Commit-tier checks always inspect the staged tree — this subcommand
+    /// exists so the feedback-ladder command an agent types before `git
+    /// commit` is short and self-explanatory. There is no `--staged` flag
+    /// here (unlike `gates`): "precommit" already means staged by
+    /// definition, and a presence-only clap bool flag can't express "the
+    /// user explicitly opted out" anyway. Calls the exact same
+    /// implementation as `gates --tier commit --staged`; there is one
+    /// policy authority.
     Precommit {
-        /// Present for symmetry with `gates --tier commit --staged`. Commit
-        /// -tier checks always run against the staged tree regardless of
-        /// this flag's value — it documents intent at the call site rather
-        /// than gating behavior.
-        #[arg(long)]
-        staged: bool,
-
         /// Output format (default: human)
         #[arg(long, short, value_enum, default_value = "human")]
         format: GatesOutputFormat,
@@ -4253,7 +4250,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             verbose,
             staged,
         }),
-        Commands::Precommit { staged: _, format, receipt } => gates::run(gates::GateRunnerConfig {
+        Commands::Precommit { format, receipt } => gates::run(gates::GateRunnerConfig {
             tier: GateTier::Commit,
             output_format: format,
             emit_receipt: receipt,
