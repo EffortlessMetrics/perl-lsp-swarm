@@ -107,6 +107,7 @@ pub use perl_position_tracking::SourceLocation;
 pub use perl_token::{Token, TokenKind};
 use std::cell::Cell;
 use std::fmt;
+use std::ops::ControlFlow;
 use strum::VariantNames as _;
 
 /// Maximum AST traversal depth for recursive operations.
@@ -195,6 +196,7 @@ impl FieldId {
     pub const CONDITION: Self = Self("condition");
     pub const THEN_BRANCH: Self = Self("then_branch");
     pub const THEN_EXPR: Self = Self("then_expr");
+    pub const ELSE_EXPR: Self = Self("else_expr");
     pub const ELSE_BRANCH: Self = Self("else_branch");
     pub const OPERAND: Self = Self("operand");
     pub const ELEMENTS: Self = Self("elements");
@@ -234,6 +236,7 @@ impl FieldId {
         Self::CONDITION,
         Self::THEN_BRANCH,
         Self::THEN_EXPR,
+        Self::ELSE_EXPR,
         Self::ELSE_BRANCH,
         Self::OPERAND,
         Self::ELEMENTS,
@@ -280,6 +283,7 @@ impl FieldId {
             "condition" => Some(Self::CONDITION),
             "then_branch" => Some(Self::THEN_BRANCH),
             "then_expr" => Some(Self::THEN_EXPR),
+            "else_expr" => Some(Self::ELSE_EXPR),
             "else_branch" => Some(Self::ELSE_BRANCH),
             "operand" => Some(Self::OPERAND),
             "elements" => Some(Self::ELEMENTS),
@@ -1308,18 +1312,25 @@ impl Node {
         }
     }
 
-    /// Call a function on every direct child, preserving its structural field.
+    /// Visit direct children with short-circuiting and preserve their structural fields.
     ///
     /// `None` identifies an intentionally unnamed child. Repeated children in
     /// list-like fields use the same [`FieldId`] for each element.
     #[inline]
-    pub fn for_each_child_with_field<'a, F: FnMut(Option<FieldId>, &'a Node)>(&'a self, mut f: F) {
+    pub fn try_for_each_child_with_field<'a, F, B>(&'a self, mut f: F) -> ControlFlow<B>
+    where
+        F: FnMut(Option<FieldId>, &'a Node) -> ControlFlow<B>,
+    {
         macro_rules! emit {
             ($field:expr, $child:expr) => {
-                f(Some($field), $child)
+                if let ControlFlow::Break(b) = f(Some($field), $child) {
+                    return ControlFlow::Break(b);
+                }
             };
             ($child:expr) => {
-                f(None, $child)
+                if let ControlFlow::Break(b) = f(None, $child) {
+                    return ControlFlow::Break(b);
+                }
             };
         }
 
@@ -1373,7 +1384,7 @@ impl Node {
             NodeKind::Ternary { condition, then_expr, else_expr } => {
                 emit!(FieldId::CONDITION, condition);
                 emit!(FieldId::THEN_EXPR, then_expr);
-                emit!(FieldId::ELSE_BRANCH, else_expr);
+                emit!(FieldId::ELSE_EXPR, else_expr);
             }
             NodeKind::Unary { operand, .. } => emit!(FieldId::OPERAND, operand),
             NodeKind::Assignment { lhs, rhs, .. } => {
@@ -1576,6 +1587,17 @@ impl Node {
             | NodeKind::MissingBlock
             | NodeKind::UnknownRest => {}
         }
+
+        ControlFlow::Continue(())
+    }
+
+    /// Call a function on every direct child, preserving its structural field.
+    #[inline]
+    pub fn for_each_child_with_field<'a, F: FnMut(Option<FieldId>, &'a Node)>(&'a self, mut f: F) {
+        let _ = self.try_for_each_child_with_field(|field, child| {
+            f(field, child);
+            ControlFlow::<()>::Continue(())
+        });
     }
 
     /// Call a function on every direct child without field metadata.
