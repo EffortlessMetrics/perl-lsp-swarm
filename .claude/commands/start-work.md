@@ -24,8 +24,10 @@ issue number is given, stop and ask for one — this command never guesses a
 target.
 
 If `--mechanical` is present, skip to **Mechanical fast path** below instead
-of the build-readiness check. The flag must be passed explicitly; never infer
-it from the issue body or title.
+of the build-readiness check (Steps 3-4 only) — the issue-open check (Step 2),
+collision check (Step 5), and fresh-`origin/main` fetch (Step 6) still apply.
+The flag must be passed explicitly; never infer it from the issue body or
+title.
 
 ## Step 2: Read the issue
 
@@ -62,9 +64,15 @@ revision: N ... -->` and `<!-- implementation-plan-review:v1 plan_revision: N
 
 1. Find the **highest** `revision` number among `implementation-plan:v1`
    comments — this is the latest plan revision.
-2. Find an `implementation-plan-review:v1` comment whose `plan_revision`
+2. Find every `implementation-plan-review:v1` comment whose `plan_revision`
    equals that number, posted **after** the plan comment it reviews.
-3. Confirm that review's verdict is `BUILD` (not `SPLIT`, `REVISE`, or
+   **Latest-wins:** if the latest plan revision has more than one review
+   (e.g. an initial `REVISE`, then a later `BUILD` after the plan was
+   patched in place, or vice versa), only the **chronologically last**
+   review of that revision is authoritative. A stale `REVISE` followed by a
+   later `BUILD` does NOT block; a stale `BUILD` followed by a later
+   `REVISE`/`SPLIT` DOES block, even if an earlier review said `BUILD`.
+3. Confirm that latest review's verdict is `BUILD` (not `SPLIT`, `REVISE`, or
    `REJECT`).
 4. Check every comment posted **after** that review for language that
    materially invalidates it (a later `REVISE`/`SPLIT` verdict, a
@@ -90,10 +98,20 @@ worktree is created.
 
 ```bash
 gh pr list --search "#<issue#>" --state open
-git branch -a --list "*<issue#>*"
+git branch -a --list "impl/<issue#>-*" "*/impl/<issue#>-*"
 git worktree list
 python3 scripts/worktree-manager.py query
 ```
+
+Use the precise `impl/<issue#>-<slug>` branch-name convention spec-planner and
+`WORKTREE_PROTOCOL.md` already use — **not** a bare `*<issue#>*` substring
+glob. A bare substring glob false-matches on shared digit sequences (e.g.
+searching `39` also matches `392`, `3971`, `4390`), producing phantom
+collisions or masking real ones. Same care applies to the PR search: after
+`gh pr list --search "#<issue#>"` returns hits, confirm the match is this
+issue and not a substring/false hit — e.g. cross-check
+`closingIssuesReferences` or the PR title/body for the exact `#<issue#>`
+token, not just "the search returned something."
 
 Look for: an open PR referencing the issue, a local or remote branch matching
 `impl/<issue#>-*`, a live worktree on such a branch, or a worktree-manager
@@ -146,9 +164,13 @@ concurrency, security, public LSP/DAP behavior, CI authority, merge policy,
 and control-plane behavior always take the full path above, even with the
 flag.
 
-Still run **Step 5** (collision check) and **Step 6** (fresh `origin/main`) —
-those aren't planning-decision gates, they're basic write-safety. Skip Steps
-3–4 (`builder-ready` / BUILD verdict).
+Still run **Step 2** (confirm the issue exists and is `OPEN`), **Step 5**
+(collision check), and **Step 6** (fresh `origin/main`) — none of those are
+planning-decision gates, they're basic write-safety (there must be a real,
+open, uncontested issue to attach the mechanical change to). Only Steps 3-4
+(`builder-ready` label / matching BUILD verdict) are skipped — those are the
+planning-readiness gate, which mechanical work has no planning decision to
+clear.
 
 Before proceeding, record and print all five fields — do not create the
 worktree until every field is filled in:
