@@ -3,12 +3,17 @@
 # (M7, #3849 / #3947).
 #
 # Proves the exit criterion concretely:
-#  - a vacuous-skip receipt (exit_code:0, but tests_skipped>=tests_total or
-#    tests_passed==0) is REJECTED (the #3599 lesson: a bare exit_code:0
-#    does not prove the instrument exercised anything)
+#  - a zero-selection/zero-test receipt (exit_code:0, but
+#    tests_skipped>=tests_total or tests_passed==0) is REJECTED (a bare
+#    exit_code:0 does not prove any test actually ran)
 #  - a genuine receipt (tests_passed>0, tests_skipped==0) bound to the
 #    expected head SHA is ACCEPTED
 #  - a receipt bound to a different (stale) head SHA is REJECTED
+#  - HONEST LIMITATION, documented not "fixed": a receipt shaped like the
+#    actual #3599 early-return-Ok mode (total=1, passed=1, skipped=0) is
+#    NOT caught -- counts cannot distinguish it from a genuine pass. See the
+#    "DOCUMENTED GAP" case below and scripts/ci/check-receipt-instrument.sh's
+#    header comment for why.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,8 +97,9 @@ TMPDIR_BASE="$(mktemp -d)"
 SHA="0123456789abcdef0123456789abcdef01234567"
 OTHER_SHA="fedcba9876543210fedcba9876543210fedcba98"
 
-# ─── RED: vacuous receipt (exit_code:0 but tests_skipped>=tests_total, and
-# separately tests_passed==0) must be rejected, not trusted on exit_code alone.
+# ─── RED: zero-selection/zero-test receipt (exit_code:0 but
+# tests_skipped>=tests_total, and separately tests_passed==0) must be
+# rejected, not trusted on exit_code alone.
 VACUOUS_DIR="${TMPDIR_BASE}/vacuous"
 mkdir -p "$VACUOUS_DIR"
 write_receipt "${VACUOUS_DIR}/receipt.json" "$SHA" "$(now_utc)" 5 0 5
@@ -114,6 +120,23 @@ write_receipt "${GENUINE_DIR}/receipt.json" "$SHA" "$(now_utc)" 5 5 0
 code=0
 bash "$CHECK_SCRIPT" "$SHA" "${GENUINE_DIR}/receipt.json" > "${GENUINE_DIR}/out.txt" 2>&1 || code=$?
 assert_exit_zero "GREEN: accepts genuine receipt (tests_passed>0, tests_skipped==0)" "$code"
+
+# ─── HONEST LIMITATION (documents, does not "fix"): the actual #3599 shape
+# -- a test function that does an early `return Ok(())` / `return;` before
+# its real assertions -- is counted by cargo as PASSED. tests_total=1,
+# tests_passed=1, tests_skipped absent/0. This is indistinguishable from a
+# genuine pass at the count level, so this check CANNOT catch it and is not
+# claimed to. This fixture exists so no future reader assumes counts close
+# the #3599 hole: #3599's own fix used a fail-loud, per-suite `assert!()`
+# inside the test harness itself (the only place that can tell "ran its
+# content" from "silently no-op'd while still returning Ok"), and that
+# per-suite pattern remains the actual mitigation for this mode.
+THREE599_DIR="${TMPDIR_BASE}/3599-shape"
+mkdir -p "$THREE599_DIR"
+write_receipt "${THREE599_DIR}/receipt.json" "$SHA" "$(now_utc)" 1 1 0
+code=0
+bash "$CHECK_SCRIPT" "$SHA" "${THREE599_DIR}/receipt.json" > "${THREE599_DIR}/out.txt" 2>&1 || code=$?
+assert_exit_zero "DOCUMENTED GAP: the #3599 early-return-Ok shape (total=1,passed=1,skipped=0) is NOT caught by counts -- passes here by design" "$code"
 
 # ─── GREEN (stale head): a receipt bound to a DIFFERENT commit than expected
 # must be rejected, even though its own gate content is genuine/non-vacuous.

@@ -1,30 +1,32 @@
 name: Receipt Instrument Check (Advisory)
 
 # M7 (#3849) / #3947: the completion-claim receipt gate previously lived in
-# `.claude/hooks/task-completed.sh` -- a local agent-runtime hook that (a)
-# read a path (`receipts/{verify-build,clippy,test}.<hash>`) nothing in the
-# repo ever wrote, and (b) even if populated, trusted a bare `exit_code: 0`,
-# which cannot distinguish a genuine pass from a silently-vacuous instrument
-# that exercises nothing (the #3599 lesson). That hook logic has been
-# REMOVED, not repointed: a local hook is an agent-runtime event with no
-# guarantee it fires for every completion path, and it is invisible to
-# reviewers/branch-protection. The authority for "the intended instrument
-# ran, bound to this head" belongs here instead -- a head-bound,
-# actor-agnostic GitHub check.
+# `.claude/hooks/task-completed.sh` -- a local agent-runtime hook that read a
+# path (`receipts/{verify-build,clippy,test}.<hash>`) nothing in the repo
+# ever wrote. That hook logic has been REMOVED, not repointed: a local hook
+# is an agent-runtime event with no guarantee it fires for every completion
+# path, and it is invisible to reviewers/branch-protection. The authority
+# for "a real test gate ran, bound to this head" belongs here instead -- a
+# head-bound, actor-agnostic GitHub check.
 #
 # This workflow runs ONE narrow, real gate (`unit_scoped`: scope-aware
 # library tests for ci-scope-selected crates) to produce a genuine
 # `target/receipts/receipt.json` (schema: `xtask/src/tasks/gates.rs`
-# `Receipt`), then asserts on it via `scripts/ci/check-receipt-instrument.sh`
-# -- the same schema and vacuous-skip guard exercised by
-# `scripts/tests/test-check-receipt-instrument.sh`. It intentionally does
-# NOT re-run the whole pr-fast tier (that's `pr-smoke`'s job already) --
-# just enough of a real instrument to prove the "ran, not vacuous" claim
-# for this head.
+# `Receipt`), then asserts on it via `scripts/ci/check-receipt-instrument.sh`.
+# It intentionally does NOT re-run the whole pr-fast tier (that's
+# `pr-smoke`'s job already) -- just enough of a real instrument to prove a
+# test gate ran with a nonzero, non-fully-skipped test count for this head.
+#
+# HONEST SCOPE: this catches a zero-selection / zero-test / all-skipped
+# gate run (ci-scope selected no crates, or every test reported skipped) --
+# it does NOT and cannot catch an early-return-Ok test body (cargo counts
+# that as passed). See `scripts/ci/check-receipt-instrument.sh`'s header for
+# the full explanation and `scripts/tests/test-check-receipt-instrument.sh`
+# for the fixture that documents this limitation explicitly.
 #
 # ADVISORY: intentionally NOT listed in `.ci/policies/required-checks.toml`.
 # Per the M6 lesson, do not promote to required until this shows recurring
-# value catching a real vacuous-skip incident.
+# value catching a real zero-selection/zero-test incident.
 
 on:
   pull_request:
@@ -57,6 +59,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
+          # Check out the real PR head, not the synthetic merge commit --
+          # otherwise `git rev-parse HEAD` (collect_metadata() in gates.rs)
+          # stamps the receipt with the merge SHA, and the receipt would
+          # never match the PR head this check is meant to bind to
+          # (established pattern: .github/workflows/ci.yml).
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
+          # Fetch full history so ci-scope can diff against origin/main.
           fetch-depth: 0
 
       - name: Install Rust toolchain
@@ -87,7 +96,7 @@ jobs:
           cargo xtask gates --gate unit_scoped --receipt \
             --receipt-path target/receipts/receipt.json --base origin/main
 
-      - name: Assert the instrument actually ran (the #3599 vacuous-skip guard)
+      - name: Assert the instrument actually ran (zero-selection/zero-test guard)
         if: steps.diff.outputs.has_rust_diff == 'true'
         run: |
           bash scripts/ci/check-receipt-instrument.sh \

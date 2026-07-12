@@ -10,10 +10,10 @@
 #      RECEIPT_MAX_AGE_SECONDS (default 3600s) old.
 #   3. Every gate's `status` is pass/skip (fail/timeout/error rejects).
 #   4. For any gate reporting `metrics.tests_total`: tests_total > 0,
-#      tests_passed > 0, and tests_skipped < tests_total. This is the #3599
-#      lesson made concrete: a bare `exit_code: 0` does not prove the
-#      instrument exercised anything -- a silently-vacuous test run (matches
-#      zero tests, or reports it "skipped" everything) also exits 0.
+#      tests_passed > 0, and tests_skipped < tests_total. This rejects a
+#      zero-selection / zero-test / all-skipped run (an empty ci-scope
+#      selection, a `--gate` that matched nothing, or a suite that reports
+#      every test skipped) from being trusted on a bare `exit_code: 0`.
 #   5. At least one gate across all receipts reports test metrics --
 #      otherwise this check cannot confirm any test instrument ran at all.
 #
@@ -21,11 +21,31 @@
 # pr-fast` runs), default path `target/receipts/receipt.json`; CI merge-gate
 # shards write `target/receipts/shards/<gate>.json` via --receipt-path.
 #
+# HONEST SCOPE / WHAT THIS DOES NOT CATCH (important -- do not overclaim):
+# this check proves a test gate actually ran with a nonzero, non-fully-
+# skipped test count, bound to the expected head. It does NOT, and cannot,
+# catch the #3599 shape itself: a test function that does an early
+# `return Ok(())` (or an early `return;`) before its real assertions. Cargo
+# counts that function as PASSED -- `tests_total=1, tests_passed=1`,
+# `tests_skipped` absent/0 -- indistinguishable at the count level from a
+# genuine pass. That mode is NOT addressable by counts at all; #3599's own
+# fix used a fail-loud, per-suite `assert!()`/env-gated precondition inside
+# the test harness itself (e.g. `PERL_LSP_UX_REQUIRE_BINARY`), because only
+# code inside the test body can tell "ran its content" from "silently
+# no-op'd while still returning Ok". See
+# scripts/tests/test-check-receipt-instrument.sh's
+# "documents the #3599 shape is NOT caught by counts" case for a fixture
+# that demonstrates this passes here by design, not by oversight.
+#
+# What this check DOES catch: a gate that matched/ran zero tests at all
+# (ci-scope selected no crates, a `--gate` name matched nothing, or every
+# test reported as skipped), and a receipt bound to the wrong commit.
+#
 # Note: the live `parse_test_metrics` in gates.rs does not currently
 # populate `tests_skipped` from `cargo test` output (only
 # tests_passed/tests_failed/tests_ignored) -- rule 4's tests_skipped check
 # is kept for forward-compat with producers that do populate it, but today
-# the operative discriminator is tests_total == 0 / tests_passed == 0.
+# the operative discriminator is tests_total == 0.
 #
 # Usage: check-receipt-instrument.sh <expected-git-sha> <receipt.json> [...]
 # Exit 0 = every receipt verified; Exit 2 = rejected (reason printed).
@@ -119,8 +139,10 @@ for RECEIPT in "$@"; do
       TESTS_PASSED="$(jq -r '.metrics.tests_passed // 0' <<<"${GATE_JSON}")"
       TESTS_SKIPPED="$(jq -r '.metrics.tests_skipped // empty' <<<"${GATE_JSON}")"
 
-      # The #3599 lesson: don't trust exit_code:0 alone -- a vacuous,
-      # nothing-ran instrument also exits 0. Reject that shape here.
+      # Reject a zero-selection / zero-test / all-skipped shape here -- a
+      # gate that matched/ran nothing also exits 0. NOTE: this does NOT
+      # catch an early-return-Ok test body (counted as passed by cargo);
+      # see the module header for why that mode is out of scope for counts.
       if [[ "${TESTS_TOTAL}" -eq 0 ]]; then
         FAILED+=("${GATE_NAME} (vacuous: tests_total=0 -- instrument matched/ran nothing)")
       elif [[ -n "${TESTS_SKIPPED}" && "${TESTS_SKIPPED}" -ge "${TESTS_TOTAL}" ]]; then

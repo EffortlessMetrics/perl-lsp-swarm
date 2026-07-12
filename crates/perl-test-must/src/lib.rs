@@ -111,6 +111,14 @@ mod tests {
     }
 
     #[test]
+    fn must_some_unwraps_falsy_zero_value() {
+        // Regression guard (M7, #3849 receipt-instrument proof commit):
+        // must_some must extract Some(0) as 0, not treat a falsy-looking
+        // inner value as if it were None.
+        assert_eq!(must_some(Some(0)), 0);
+    }
+
+    #[test]
     #[should_panic(expected = "expected Err")]
     fn must_err_panics_on_ok() {
         let result: Result<i32, &str> = Ok(1);
