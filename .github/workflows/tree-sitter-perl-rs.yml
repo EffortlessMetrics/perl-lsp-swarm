@@ -1,0 +1,129 @@
+name: tree-sitter-perl-rs proof
+
+on:
+  pull_request:
+    paths:
+      - Cargo.lock
+      - crates/perl-ast/**
+      - crates/perl-parser-core/**
+      - crates/perl-tree-sitter-compat/**
+      - crates/tree-sitter-perl-rs/**
+      - tree-sitter-perl/queries/**
+      - .github/workflows/tree-sitter-perl-rs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tree-sitter-perl-rs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  facade-proof:
+    name: facade deterministic proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+          shared-key: tree-sitter-perl-rs-${{ hashFiles('Cargo.lock') }}
+
+      - name: Run deterministic facade proof
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/tree-sitter-perl-rs-target"
+          mkdir -p "$CARGO_TARGET_DIR"
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
+          cargo fmt \
+            -p perl-ast \
+            -p perl-parser-core \
+            -p perl-tree-sitter-compat \
+            -p tree-sitter-perl-rs \
+            --check
+          cargo test -p tree-sitter-perl-rs --all-features --locked
+          cargo test -p tree-sitter-perl-rs --no-default-features --locked
+          cargo test -p tree-sitter-perl-rs --doc --all-features --locked
+          cargo clippy -p tree-sitter-perl-rs --all-targets --all-features --locked -- \
+            -D warnings -A missing_docs
+          cargo test -p perl-tree-sitter-compat --locked
+          cargo run --locked -p xtask -- parser-corpus-sweep \
+            --manifest .ci/common-corpus-manifest.txt \
+            --enforce --receipt --profile tree-sitter-perl-rs
+          cp target/receipts/tree-sitter-perl-rs-corpus-sweep.json \
+            "$CARGO_TARGET_DIR/receipts-tree-sitter-perl-rs-corpus-sweep.json"
+          cargo run --locked -p perl-ci-hygiene -- quick-bench \
+            > "$CARGO_TARGET_DIR/quick-bench.txt"
+          for _ in $(seq 1 40); do
+            printf 'my $first = 1;\n'
+          done > "$CARGO_TARGET_DIR/incremental-smoke.pl"
+          cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- \
+            "$CARGO_TARGET_DIR/incremental-smoke.pl" --incremental \
+            > "$CARGO_TARGET_DIR/incremental-bench.txt"
+          grep -q 'ast_nodes_reused=[1-9]' "$CARGO_TARGET_DIR/incremental-bench.txt"
+          grep -q 'tokens_reused=[1-9]' "$CARGO_TARGET_DIR/incremental-bench.txt"
+          cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked
+
+      - name: Write proof receipt
+        if: always()
+        run: |
+          set -euo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/tree-sitter-perl-rs-target"
+          mkdir -p "$CARGO_TARGET_DIR/receipts"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          receipt = {
+              "workflow": "tree-sitter-perl-rs proof",
+              "sha": os.environ["GITHUB_SHA"],
+              "target": os.environ["CARGO_TARGET_DIR"],
+              "commands": [
+                  "cargo metadata --locked --no-deps --format-version 1",
+                  "cargo fmt -p perl-ast -p perl-parser-core -p perl-tree-sitter-compat -p tree-sitter-perl-rs --check",
+                  "cargo test -p tree-sitter-perl-rs --all-features --locked",
+                  "cargo test -p tree-sitter-perl-rs --no-default-features --locked",
+                  "cargo test -p tree-sitter-perl-rs --doc --all-features --locked",
+                  "cargo clippy -p tree-sitter-perl-rs --all-targets --all-features --locked -- -D warnings -A missing_docs",
+                  "cargo test -p perl-tree-sitter-compat --locked",
+                  "cargo run --locked -p xtask -- parser-corpus-sweep --manifest .ci/common-corpus-manifest.txt --enforce --receipt --profile tree-sitter-perl-rs",
+                  "cargo run --locked -p perl-ci-hygiene -- quick-bench",
+                  "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- incremental-smoke.pl --incremental",
+                  "cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked",
+              ],
+          }
+          Path(os.environ["CARGO_TARGET_DIR"], "receipts", "tree-sitter-perl-rs.json").write_text(
+              json.dumps(receipt, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload proof receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tree-sitter-perl-rs-proof-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/tree-sitter-perl-rs-target/receipts/tree-sitter-perl-rs.json
+            ${{ runner.temp }}/tree-sitter-perl-rs-target/receipts-tree-sitter-perl-rs-corpus-sweep.json
+            ${{ runner.temp }}/tree-sitter-perl-rs-target/quick-bench.txt
+            ${{ runner.temp }}/tree-sitter-perl-rs-target/incremental-bench.txt
+          if-no-files-found: warn
+          retention-days: 14
