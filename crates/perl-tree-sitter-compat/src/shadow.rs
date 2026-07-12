@@ -11,6 +11,7 @@ static RUNS: AtomicU64 = AtomicU64::new(0);
 static FACADE_TREES: AtomicU64 = AtomicU64::new(0);
 static MATCHES: AtomicU64 = AtomicU64::new(0);
 static FALLBACKS: AtomicU64 = AtomicU64::new(0);
+static DURATION_US: AtomicU64 = AtomicU64::new(0);
 
 /// Result of one non-authoritative facade shadow comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,8 @@ pub struct ShadowStats {
     /// Number of times the established path was retained because the facade
     /// did not produce a matching result.
     pub fallbacks: u64,
+    /// Aggregate native shadow parse/projection/comparison time in microseconds.
+    pub duration_us: u64,
 }
 
 /// Return aggregate shadow-run counters.
@@ -49,7 +52,12 @@ pub fn shadow_stats() -> ShadowStats {
         facade_trees: FACADE_TREES.load(Ordering::Relaxed),
         matches: MATCHES.load(Ordering::Relaxed),
         fallbacks: FALLBACKS.load(Ordering::Relaxed),
+        duration_us: DURATION_US.load(Ordering::Relaxed),
     }
+}
+
+pub(crate) fn record_duration(duration_us: u64) {
+    DURATION_US.fetch_add(duration_us, Ordering::Relaxed);
 }
 
 /// Compare the established AST with the facade without changing the caller's

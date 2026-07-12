@@ -2,6 +2,7 @@
 
 use perl_parser_core::{Node, Parser as NativeParser};
 use perl_workspace_core::Utf8LineIndex;
+use std::time::Instant;
 use tree_sitter_perl_rs::{Node as FacadeNode, Parser as FacadeParser};
 
 use crate::dogfood;
@@ -39,15 +40,18 @@ impl std::error::Error for TreeError {}
 /// Returns [`TreeError::ParseFailed`] when the parser cannot produce a tree.
 pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
     let mut facade_parser = FacadeParser::new();
+    let facade_started = Instant::now();
     let outcome = facade_parser.parse_detailed(source);
     let recovered = outcome.is_recovered();
     if let Some(tree) = outcome.tree {
-        dogfood::record_facade_tree(recovered);
         let projected = to_ts_node_facade(tree.root_node())?;
+        dogfood::record_facade_tree(recovered, dogfood::elapsed_us(facade_started));
+        let shadow_started = Instant::now();
         let mut native_parser = NativeParser::new(source);
         if let Ok(native_root) = native_parser.parse() {
             let _comparison = shadow::compare_projected(source, &native_root, &projected);
         }
+        shadow::record_duration(dogfood::elapsed_us(shadow_started));
         return Ok(projected);
     }
 
@@ -56,7 +60,9 @@ pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
         let mut parser = NativeParser::new(source);
         parser.parse().map_err(|_| TreeError::ParseFailed)?
     };
+    let shadow_started = Instant::now();
     let _shadow = shadow::compare(source, &ast);
+    shadow::record_duration(dogfood::elapsed_us(shadow_started));
     let line_index = Utf8LineIndex::new(source);
     try_to_ts_node(&ast, &line_index)
 }
@@ -234,8 +240,10 @@ mod tests {
         assert_eq!(tree.kind, "program");
         assert!(after.facade_trees > before.facade_trees);
         assert_eq!(after.native_fallbacks, before.native_fallbacks);
+        assert!(after.facade_duration_us >= before.facade_duration_us);
         assert!(shadow_after.runs > shadow_before.runs);
         assert!(shadow_after.matches > shadow_before.matches);
+        assert!(shadow_after.duration_us >= shadow_before.duration_us);
         Ok(())
     }
 

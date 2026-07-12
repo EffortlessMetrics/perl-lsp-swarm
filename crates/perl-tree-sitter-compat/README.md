@@ -43,7 +43,9 @@ for clean and recovered trees. It projects the established native AST in paralle
 for root-span, node-count, and named-node S-expression receipts. A catastrophic
 facade failure retains the native parser as an observable fallback. Aggregate
 adoption counters are available through `adoption_stats()` and comparison counters
-through `shadow_stats()`.
+through `shadow_stats()`. Both receipts include aggregate monotonic microsecond totals
+for the facade parse/projection and native shadow path; they are process-local
+measurements, not a fixed release performance budget.
 
 ## Layering
 
