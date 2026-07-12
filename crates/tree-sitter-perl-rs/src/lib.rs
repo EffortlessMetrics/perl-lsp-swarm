@@ -155,6 +155,9 @@ impl Parser {
             source: source.to_string(),
             pending_edits: Vec::new(),
             incremental_state: Some(IncrementalState::with_diagnostics(source, &diagnostics)),
+            line_index: ByteLineIndex::new(source),
+            semantic_model: OnceCell::new(),
+            pragma_map: OnceCell::new(),
             diagnostics: diagnostics.clone(),
         });
 
