@@ -457,6 +457,9 @@ fn take_predicates(
         };
         let name = name.clone();
         *position += 1;
+        if !matches!(name.as_str(), "#eq?" | "#not-eq?" | "#match?" | "#not-match?") {
+            return Err(QueryError::UnsupportedSyntax { syntax: name });
+        }
         let capture = match tokens.get(*position) {
             Some(Token::Capture(capture)) => {
                 *position += 1;
@@ -638,9 +641,5 @@ fn predicate_matches(predicate: &PredicatePattern, captures: &[QueryCapture<'_>]
             Regex::new(pattern).is_ok_and(|regex| regex.is_match(text))
         }
     };
-    if negated {
-        !matches_value
-    } else {
-        matches_value
-    }
+    if negated { !matches_value } else { matches_value }
 }
