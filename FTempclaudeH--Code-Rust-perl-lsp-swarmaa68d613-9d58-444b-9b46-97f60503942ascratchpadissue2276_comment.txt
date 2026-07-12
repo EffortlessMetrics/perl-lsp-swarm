@@ -1,0 +1,49 @@
+<!-- research-triage-pass run_id:2026-07-11-research-verifier issue:2276 -->
+
+## Current state
+
+**Verified against origin/main (commit 3db15993c)**
+
+**PIR representation**: Implementation status DIFFERS from issue body. 
+- `crates/perl-parser-core/src/pir/model.rs` (957 lines) — PirNode, PirId, PirContext, PirOperation, PirCallee, PirReceiver, PirMethod, PirSourceAnchor, PirEdge, PirReceipt types ALL EXIST with PartialEq/Eq/Hash/Debug derives.
+- `crates/perl-parser-core/src/pir/lower.rs` (1359 lines) — Lowering implementation exists and is mature.
+- Both PLSP-SPEC-0025 and PLSP-SPEC-0026 specs exist on main.
+
+**What's missing**:
+- No `Serialize`/`Deserialize` derives on PIR types (verified: grep "Serialize|serde" returns zero matches in pir/*)
+- No `PirSnapshot` wrapper type
+- No `assert_deterministic_snapshot()` macro or testing infrastructure
+- No serde dependency in `crates/perl-parser-core/Cargo.toml` (verified)
+- No `check-pir-snapshot` xtask command
+- Lowering uses `HashMap` (not `BTreeMap`), which is non-deterministic for iteration order
+
+## Claim check
+
+| Claim | Status | Evidence |
+|-------|--------|----------|
+| PIR model is spec-only, no code | REFUTED | pir/model.rs + pir/lower.rs exist; model fully implemented (commit 3db15993c) |
+| Specs PLSP-SPEC-0025 and PLSP-SPEC-0026 exist | CONFIRMED | Both specs present in docs/specs/ on main |
+| No deterministic serialization infrastructure | CONFIRMED | Zero matches for Serialize\|serde in pir/; no PirSnapshot type found |
+| Phase 1 (serde derives) is needed | CONFIRMED | PIR types lack serde support; HashMap used instead of BTreeMap |
+| Phase 2-4 (snapshot tests, schema, validator) needed | CONFIRMED | No snapshot tests, no schema file, no xtask command on main |
+
+## Scope update
+
+**Issue body "Current state" section is stale** — written before PIR implementation landed. The actual scope (Phase 1-4) remains valid but target is: adding serialization/snapshot infrastructure to ALREADY-EXISTING PIR model, not implementing the model itself.
+
+**Phase 1 work is unblocked**: PIR types exist; only serde derives + deterministic ordering (BTreeMap) needed.
+
+**Dependencies clarified**:
+- Does NOT depend on #2194 (PIR core model) — that merged 2026-06-20 (PR #1900)
+- Related to #2559 (compiler roadmap), sequenced under Gate 2
+
+## Verdict
+
+**CONFIRMED with STALE-CLAIM**: Issue is well-scoped for deterministic serialization work, but the "Current state" section incorrectly states PIR model doesn't exist in code. The PIR model IS implemented on main; Phase 1-4 work adds the serialization layer on top of it.
+
+**Recommendation**: 
+- Update issue "Current state" section to note PIR model exists; Phase 1-4 is serialization + testing, not modeling
+- Issue is ready for builder work once current-state is corrected
+- No blocking dependencies
+
+**Next action**: builder-ready (pending issue body update to fix stale Current state claim)

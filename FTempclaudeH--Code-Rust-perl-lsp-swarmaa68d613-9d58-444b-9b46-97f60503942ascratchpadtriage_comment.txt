@@ -1,0 +1,20 @@
+## Research verification (2026-07-11)
+
+### Current state
+**Not implemented; duplicate of #2909.** No `.ci/budget.json` file exists on origin/main. Budget configurations exist only in `.ci/gate-policy.yaml` as timeout/quarantine limits. The persistent consumption-tracking file has not been built.
+
+### Claim verification
+- **Parent issue #2918:** CLOSED (ci: evolve PR merge-gate...). Not a blocker.
+- **Duplicate check:** Issue #2909 exists, is OPEN, and carries identical title: "ci: expose session/weekly budget consumption in .ci/budget.json for orchestrator self-throttle".
+- **Implementation status:** `.ci/budget.json` does not exist on origin/main (verified via `git ls-tree`).
+
+### Scope & plan
+**Exact issue:** Identical twin of #2909 (lower-numbered canonical). Both request the same feature: a periodic CI budget report file for orchestrator self-throttling.
+
+**Non-goal:** This is not a configuration change to existing gate-policy budgets — this is a new persistent advisory file tracking consumption over time.
+
+### Triage verdict
+**Close #2339 as duplicate of #2909** (the canonical lower-numbered issue). All future work should consolidate on #2909 to avoid split tracking.
+
+---
+_Verified against origin/main (post-fetch). No external factual claims to refute._

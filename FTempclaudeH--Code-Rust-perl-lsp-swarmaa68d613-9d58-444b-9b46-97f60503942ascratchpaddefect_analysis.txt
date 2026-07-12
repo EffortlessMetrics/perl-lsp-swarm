@@ -1,0 +1,69 @@
+DEFECT CANDIDATE 1: Interpolated string semantic tokens - cursor position tracking failure
+
+FILE: crates/perl-lsp-rs-core/src/providers/semantic_tokens/semantic_tokens.rs
+LINES: 576-628 (InterpolatedString handling in collect_semantic_tokens)
+
+ISSUE:
+When processing InterpolatedString tokens, the code maintains a `cursor` position that tracks 
+the current byte offset within the token text. For each StringPart (Literal or Variable), the 
+code uses `find_bytes_at()` to locate the part in the token text.
+
+CRITICAL BUG:
+If `find_bytes_at()` returns None for ANY StringPart, the cursor is NOT updated. This means:
+1. All subsequent StringParts are searched from the wrong cursor position
+2. Parts may be found at wrong locations (finding earlier duplicates)
+3. Parts may not be found at all
+4. Emitted semantic tokens have incorrect source positions
+5. This breaks syntax highlighting for the rest of the interpolated string
+
+CODE LOCATION (lines 581-619):
+```rust
+match part {
+    StringPart::Literal(lit) => {
+        if let Some(rel) = find_bytes_at(text_bytes, cursor, lit.as_bytes()) {
+            // ... emit token ...
+            cursor = rel + lit.len();
+        }
+        // BUG: if find_bytes_at() returns None, cursor is NOT updated
+        // All subsequent iterations search from wrong position
+    }
+    StringPart::Variable(var) => {
+        if let Some(rel) = find_bytes_at(text_bytes, cursor, var.as_bytes()) {
+            // ... emit token ...
+            cursor = rel + var.len();
+        }
+        // BUG: same issue
+    }
+}
+```
+
+REPRODUCTION:
+The bug is triggered when:
+1. Lexer emits StringPart that the parser extracted from source
+2. The exact bytes of that part are not found in the token text
+   (e.g., due to escape sequence differences, encoding issues, or lexer-to-parser mismatch)
+3. Subsequent parts in the same string are painted at wrong positions
+
+Example Perl code that would expose this:
+```perl
+my $x = 5;
+print "value: $x end";  # If the lexer reports $x but it's not found, 
+                         # "end" will be searched from wrong cursor
+```
+
+IMPACT:
+- Semantic token positions are incorrect when parts fail to find
+- Syntax highlighting is misaligned for interpolated strings
+- Variable highlighting and hover information become unreliable
+- Can affect document-highlight feature if it relies on semantic token positions
+
+FIX OPTIONS:
+1. Update cursor even if part is not found (assume part length and advance)
+2. Skip the part and warn if not found
+3. Use lexer-provided offsets instead of searching
+4. Add a fallback/recovery mechanism
+
+CONFIDENCE: HIGH
+- Code clearly shows the cursor update is only inside the `if let Some` block
+- This is a correctness issue, not just performance
+- The bug affects all interpolated strings if any part fails to find

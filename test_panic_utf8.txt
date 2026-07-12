@@ -1,0 +1,27 @@
+Test case to reproduce panic in normalize_path with UTF-8 drive letter:
+
+1. Platform: Linux
+2. Input path: /mnt/é/file.pl (where é is UTF-8 encoded as bytes E9 00 in Latin-1 or C3 A9 in UTF-8)
+3. The path bytes are: 
+   - "/" (0x2F) = 1 byte
+   - "m" (0x6D) = 1 byte
+   - "n" (0x6E) = 1 byte
+   - "t" (0x74) = 1 byte
+   - "/" (0x2F) = 1 byte
+   - "é" (0xC3 0xA9) = 2 bytes
+   - "/" (0x2F) = 1 byte
+   Total: 11 bytes
+
+4. The buggy code:
+   ```rust
+   if path_str.starts_with("/mnt/") && path_str.len() > 6 {
+       let drive_letter = &path_str[5..6];  // PANIC! Tries to slice in middle of UTF-8 char
+   ```
+
+5. Since path_str.len() == 11, the condition > 6 is true.
+6. path_str[5] is the first byte of "é" (0xC3)
+7. path_str[6] is the second byte of "é" (0xA9)
+8. Slicing [5..6] tries to create a string from just 0xC3, which is an invalid UTF-8 sequence
+9. Rust panics with: "end byte index 6 is not a char boundary; it is inside 'é' (bytes 5..7)"
+
+This is a concrete, reproducible panic in production code path (the normalize_path function is public API).

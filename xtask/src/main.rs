@@ -1341,12 +1341,6 @@ enum Commands {
         /// Write receipt JSON to target/receipts/corpus-sweep.json
         #[arg(long)]
         receipt: bool,
-
-        /// Prefix for the generated receipt file target/receipts/<profile>-corpus-sweep.json
-        /// (must be a relative slug — no `/`, `\`, `..`, or other path
-        /// characters; see `profile_slug_parser`).
-        #[arg(long, value_parser = profile_slug_parser)]
-        profile: Option<String>,
     },
 
     /// Run upstream Perl core test harness against perl-lsp compiler modes.
@@ -1715,18 +1709,6 @@ enum Commands {
     Changelog {
         #[command(subcommand)]
         command: ChangelogCommand,
-    },
-
-    /// Workflow Contracts checks — actionlint + zizmor + native contract
-    /// checks (issue #3788, parent #3785).
-    ///
-    /// FOUNDATION / ADVISORY-UNARMED: prints findings and always exits 0 in
-    /// this PR (the advisory boundary itself is not yet armed); never blocks
-    /// a PR. Does not prove repo-specific merge semantics — see
-    /// `xtask/src/tasks/workflows.rs` module docs for the boundary.
-    Workflows {
-        #[command(subcommand)]
-        command: WorkflowsCommand,
     },
 
     /// Detect contradictory PR label states and emit a methodology receipt.
@@ -2407,34 +2389,6 @@ enum ChangelogCommand {
         /// instead of checking a PR's changed files.
         #[arg(long)]
         self_test: bool,
-
-        /// Override the repository root. Testing seam; unused in CI.
-        #[arg(long, hide = true)]
-        root: Option<PathBuf>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum WorkflowsCommand {
-    /// Advisory check of `.github/workflows/*.yml` against the Workflow
-    /// Contracts policy: actionlint + zizmor + native local-ref/permissions/
-    /// pinning checks.
-    Check {
-        /// Base ref to resolve the policy boundary against (default:
-        /// `origin/main`).
-        #[arg(long)]
-        base: Option<String>,
-
-        /// Skip actionlint/zizmor if not installed locally (degrades to an
-        /// INFO skip instead of an instrument failure); still runs all
-        /// native checks against the real tree. For local dev; CI always
-        /// installs both tools first and omits this flag.
-        #[arg(long)]
-        self_test: bool,
-
-        /// Write a JSON findings receipt to this path.
-        #[arg(long)]
-        receipt: Option<PathBuf>,
 
         /// Override the repository root. Testing seam; unused in CI.
         #[arg(long, hide = true)]
@@ -3835,10 +3789,22 @@ fn run_cli(cli: Cli) -> Result<()> {
             enforce,
             verbose,
             receipt,
-            profile,
-        } => parser_corpus_sweep::run(build_parser_corpus_sweep_config(
-            roots, manifest, output, baseline, enforce, verbose, receipt, profile,
-        )),
+        } => {
+            let base_roots = roots.unwrap_or_else(parser_corpus_sweep::default_base_roots);
+            let corpus_roots = parser_corpus_sweep::resolve_corpus_roots(&base_roots);
+            parser_corpus_sweep::run(parser_corpus_sweep::SweepConfig {
+                corpus_profile: None,
+                base_roots,
+                corpus_roots,
+                manifest_path: manifest,
+                manifest_perl5lib: Vec::new(),
+                output_path: output,
+                baseline_path: baseline,
+                enforce,
+                verbose,
+                receipt,
+            })
+        }
         Commands::PerlCoreHarness { command } => match command {
             PerlCoreHarnessCommand::Prepare { perl_ref, output_dir } => {
                 perl_core_harness::prepare(perl_core_harness::PrepareConfig {
@@ -4212,30 +4178,6 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
         },
-        Commands::Workflows { command } => match command {
-            WorkflowsCommand::Check { base, self_test, receipt, root } => {
-                // Same three-outcome contract as `Commands::Changelog` above
-                // (see xtask/src/tasks/workflows.rs docs):
-                //   Ok(PolicySatisfied | AdvisoryFinding) => exit 0.
-                //   Ok(BlockingViolation)                 => exit 1 (unreachable
-                //     until policy/workflow-contracts.toml's clocks are armed).
-                //   Err(instrument/config failure)         => exit 2.
-                match tasks::workflows::check(base, self_test, receipt, root) {
-                    Ok(
-                        tasks::workflows::CheckOutcome::PolicySatisfied
-                        | tasks::workflows::CheckOutcome::AdvisoryFinding,
-                    ) => Ok(()),
-                    Ok(tasks::workflows::CheckOutcome::BlockingViolation) => {
-                        eprintln!("workflows check: blocking policy violation");
-                        std::process::exit(1);
-                    }
-                    Err(e) => {
-                        eprintln!("workflows check: instrument failure: {e}");
-                        std::process::exit(2);
-                    }
-                }
-            }
-        },
         Commands::GateReceipts { command } => match command {
             GateReceiptsCommand::List { format } => {
                 gate_receipts::list(convert_gate_receipts_format(format))
@@ -4416,65 +4358,6 @@ fn print_top_level_commands() {
     }
 }
 
-/// Validates a `--profile` value before it flows into
-/// `parser_corpus_sweep::receipt_path_for_profile`, which interpolates the
-/// value verbatim into `target/receipts/<profile>-corpus-sweep.json`
-/// (xtask/src/tasks/parser_corpus_sweep.rs). Without this guard, a value
-/// containing `..` or a path separator (`--profile "../foo"`,
-/// `--profile "foo/bar"`) would let the receipt escape `target/receipts/`
-/// or create an unexpected subdirectory (#3929 review finding). Real
-/// profile names are short slugs (`"system"`, `"cpan"`, `"cpan-common"` —
-/// see `default_corpus_profile` and the existing receipt-path tests below),
-/// so an ASCII alphanumeric/`-`/`_` allowlist covers every legitimate case
-/// with no breaking change.
-fn profile_slug_parser(value: &str) -> Result<String, String> {
-    let is_valid_slug = !value.is_empty()
-        && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if is_valid_slug {
-        Ok(value.to_string())
-    } else {
-        Err(format!(
-            "invalid --profile value {value:?}: must be a non-empty slug of ASCII letters, \
-             digits, `-`, or `_` (no `/`, `\\`, `..`, or other path characters)"
-        ))
-    }
-}
-
-/// Build the `SweepConfig` for the `parser-corpus-sweep` command, resolving
-/// `roots` to concrete corpus directories and threading `profile` through to
-/// `SweepConfig.corpus_profile` (used for report/receipt naming).
-//
-// Each parameter mirrors a ParserCorpusSweep CLI field one-to-one, so
-// reshaping into a struct would just re-create the same argument list at
-// the call site without clarifying anything; the lint is suppressed rather
-// than fixed for that reason (AGENTS.md code-quality bar).
-#[allow(clippy::too_many_arguments)]
-fn build_parser_corpus_sweep_config(
-    roots: Option<Vec<PathBuf>>,
-    manifest: Option<PathBuf>,
-    output: Option<PathBuf>,
-    baseline: Option<PathBuf>,
-    enforce: bool,
-    verbose: bool,
-    receipt: bool,
-    profile: Option<String>,
-) -> parser_corpus_sweep::SweepConfig {
-    let base_roots = roots.unwrap_or_else(parser_corpus_sweep::default_base_roots);
-    let corpus_roots = parser_corpus_sweep::resolve_corpus_roots(&base_roots);
-    parser_corpus_sweep::SweepConfig {
-        corpus_profile: profile,
-        base_roots,
-        corpus_roots,
-        manifest_path: manifest,
-        manifest_perl5lib: Vec::new(),
-        output_path: output,
-        baseline_path: baseline,
-        enforce,
-        verbose,
-        receipt,
-    }
-}
-
 fn convert_gate_receipts_format(format: GateReceiptsFormat) -> gate_receipts::OutputFormat {
     match format {
         GateReceiptsFormat::Human => gate_receipts::OutputFormat::Human,
@@ -4523,93 +4406,6 @@ mod tests {
             DevexCommand::Plan { base } => assert_eq!(base, "HEAD~1"),
             _ => return Err(std::io::Error::other("expected devex plan command").into()),
         }
-
-        Ok(())
-    }
-
-    #[test]
-    fn parser_corpus_sweep_accepts_profile_flag() -> TestResult {
-        match Cli::try_parse_from(["xtask", "parser-corpus-sweep", "--profile", "cpan"])?.command {
-            Commands::ParserCorpusSweep { profile, .. } => {
-                assert_eq!(profile.as_deref(), Some("cpan"));
-            }
-            _ => return Err(std::io::Error::other("expected parser-corpus-sweep command").into()),
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn parser_corpus_sweep_profile_defaults_to_none() -> TestResult {
-        match Cli::try_parse_from(["xtask", "parser-corpus-sweep"])?.command {
-            Commands::ParserCorpusSweep { profile, .. } => {
-                assert_eq!(profile, None);
-            }
-            _ => return Err(std::io::Error::other("expected parser-corpus-sweep command").into()),
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn parser_corpus_sweep_profile_rejects_path_traversal_and_separators() -> TestResult {
-        // #3929 review finding: --profile flows verbatim into
-        // target/receipts/<profile>-corpus-sweep.json, so a value containing
-        // `..` or a path separator must be rejected before it ever reaches
-        // that interpolation, not just documented as trusted input.
-        for bad_profile in ["../foo", "foo/bar", "foo\\bar", "..", ""] {
-            let result =
-                Cli::try_parse_from(["xtask", "parser-corpus-sweep", "--profile", bad_profile]);
-            assert!(
-                result.is_err(),
-                "--profile {bad_profile:?} must be rejected by profile_slug_parser"
-            );
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn parser_corpus_sweep_profile_accepts_known_slugs() -> TestResult {
-        // Real callers use short slugs (see default_corpus_profile and
-        // receipt_path_for_profile's own tests in parser_corpus_sweep.rs);
-        // confirm the allowlist doesn't regress any of them.
-        for good_profile in ["system", "cpan", "cpan-common", "profile_1"] {
-            match Cli::try_parse_from(["xtask", "parser-corpus-sweep", "--profile", good_profile])?
-                .command
-            {
-                Commands::ParserCorpusSweep { profile, .. } => {
-                    assert_eq!(profile.as_deref(), Some(good_profile));
-                }
-                _ => {
-                    return Err(
-                        std::io::Error::other("expected parser-corpus-sweep command").into()
-                    );
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn parser_corpus_sweep_threads_profile_into_sweep_config() -> TestResult {
-        let config = build_parser_corpus_sweep_config(
-            Some(Vec::new()),
-            None,
-            None,
-            None,
-            false,
-            false,
-            false,
-            Some("cpan".to_string()),
-        );
-
-        assert_eq!(
-            config.corpus_profile.as_deref(),
-            Some("cpan"),
-            "--profile should flow through to SweepConfig.corpus_profile"
-        );
 
         Ok(())
     }

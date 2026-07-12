@@ -1,0 +1,40 @@
+## Finding
+`docs/project/status/index.md` and `docs/project/status/release.md` contain stale version references that contradict workspace reality. Both files claim outdated versions (0.16.0, 0.15.0) while Cargo.toml workspace.package.version is 0.17.0 and 0.17.0 was released 2026-06-28.
+
+## Evidence
+- **Source of truth**: `Cargo.toml` line 216: `version = "0.17.0"`; features.toml line 6: `version = "0.17.0"`
+- **Release receipt**: `RELEASE_HISTORY.md` line 17 shows v0.17.0 released 2026-06-28, published to GitHub and VS Code Marketplace
+- **Stale claims**:
+  - `index.md` line 8: "Release posture: `v0.16.0` is the current workspace version"
+  - `index.md` line 43: "Now (active milestone: v0.16.0 release pending)"
+  - `release.md` line 9: "Workspace version line: `v0.15.0` (Cargo.toml workspace.package.version)"
+  - `release.md` line 11: "Release target: `v0.16.0` is the next planned train"
+- **Last Updated**: `index.md` line 83: "2026-06-05 (narrative sections only)" — 40+ days stale as of 2026-07-11
+- **File headers explicitly mark these as human-owned**: "Human-owned. Edit this file to update release narrative and project state."
+
+## Impact
+Users consulting the status overview for current project state will find outdated information. The contradiction between workspace version and documented version creates confusion about whether development has progressed or the docs have been neglected.
+
+## Minimal reproduction / sequence
+1. Run: `grep version Cargo.toml | grep workspace`
+2. Output: `version = "0.17.0"`
+3. Read: `docs/project/status/index.md` line 8
+4. Observe: Claims "v0.16.0 is the current workspace version"
+5. Defect: Mismatch is clear and unambiguous
+
+## Suspected root area
+- File: `docs/project/status/index.md` (lines 8, 43, 50)
+- File: `docs/project/status/release.md` (lines 8-12)
+- Cause: Last manual update was 2026-06-05, before the 0.17.0 release on 2026-06-28; PR #3165 (docs(release): update version-referencing docs) intentionally excluded status/ files, treating them as auto-generated when they're actually narrative
+
+## Why this is not already covered
+- Issue #3164 / PR #3165 covered general version-ref updates but explicitly skipped status/ files with comment "auto-generated"
+- Issue #3415 covers features.toml specifically (now appears to be already at 0.17.0)
+- Issue #3023 was filed at v0.12.2 era and is itself now stale by the same mechanism
+- No open issue specifically calls out status/index.md + status/release.md version staleness
+
+## Suggested next workflow
+needs-plan-review
+
+## Confidence
+high
