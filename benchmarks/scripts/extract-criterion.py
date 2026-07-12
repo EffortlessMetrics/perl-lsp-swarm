@@ -4,13 +4,25 @@
 Usage:
     ./extract-criterion.py                    # Extract to latest.json
     ./extract-criterion.py --output out.json  # Specify output file
+    ./extract-criterion.py --strict --expect-id "workspace_index/incremental update single file"
+                                               # Fail closed unless every --expect-id
+                                               # (and at least one benchmark overall)
+                                               # was actually extracted (see #3979).
+
+Criterion on-disk layout (both are real and both must parse correctly):
+    target/criterion/<name>/new/estimates.json               (direct `c.bench_function(name, ...)`)
+    target/criterion/<group>/<name>/new/estimates.json       (`group.bench_function(name, ...)`,
+                                                               or a direct name containing "/")
+Only the "new" (current-run) estimate is read; "base"/"change" directories hold
+Criterion's own prior-run bookkeeping and must never be mistaken for this run's
+result (see benchmarks/scripts/test_extract_criterion.py for fixture coverage).
 """
 
 import json
 import os
 import sys
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
 
@@ -49,72 +61,113 @@ def get_rust_version():
         return "unknown"
 
 
+def benchmark_id(group: str, bench_name: str) -> str:
+    """Build the canonical, unambiguous identifier used for --expect-id matching."""
+    if group == "other":
+        return bench_name
+    return f"{group}/{bench_name}"
+
+
+def parse_estimates_path(rel_path_parts: tuple) -> "tuple[str, str] | None":
+    """Derive (group, bench_name) from an estimates.json path, relative to
+    target/criterion/.
+
+    Only accepts paths whose second-to-last component is "new" (the current
+    run's sample). Criterion also writes "base"/"change" directories holding
+    the *previous* run's data once a benchmark has run twice; treating those
+    as valid would let a stale estimate from an earlier run satisfy a fresh
+    "did this run produce results" check.
+
+    A 3-part path (`<name>/new/estimates.json`) is a direct, ungrouped
+    `c.bench_function(name, ...)` call -- there is no group, so `name` alone
+    is the identifier. A 4+-part path (`<group>/<name>/new/estimates.json`)
+    is either an explicit `group.bench_function(name, ...)` call, or a direct
+    call whose `name` contained a literal "/" (Criterion treats both
+    identically on disk -- it splits on "/" to build the report directory
+    tree regardless of source-code style). The previous version of this
+    parser assumed every path was (at least) 3 parts and always took
+    parts[0]/parts[1] as group/name, which silently mis-parsed every direct
+    benchmark as group=<name>, name="new" (#3979).
+    """
+    if len(rel_path_parts) < 3 or rel_path_parts[-2] != "new":
+        return None
+
+    if len(rel_path_parts) == 3:
+        return "other", rel_path_parts[0]
+
+    group = rel_path_parts[0]
+    bench_name = "/".join(rel_path_parts[1:-2])
+    return group, bench_name
+
+
 def find_criterion_results(base_path: Path) -> dict:
-    """Find and parse Criterion benchmark results."""
+    """Find and parse Criterion benchmark results.
+
+    Returns a dict of category -> {bench_name: {...}} plus a top-level
+    "_ids" key containing the set of canonical benchmark_id() strings that
+    were found, for --expect-id matching.
+    """
     results = {}
+    ids = set()
 
     criterion_path = base_path / "target" / "criterion"
     if not criterion_path.exists():
-        return results
+        return results, ids
 
     # Walk through criterion output looking for estimates.json files
-    for root, dirs, files in os.walk(criterion_path):
-        if "estimates.json" in files:
-            estimates_path = Path(root) / "estimates.json"
-            try:
-                with open(estimates_path) as f:
-                    estimates = json.load(f)
+    for root, _dirs, files in os.walk(criterion_path):
+        if "estimates.json" not in files:
+            continue
 
-                # Extract benchmark name from path
-                # Path structure: target/criterion/<group>/<bench_name>/new/estimates.json
-                rel_path = estimates_path.relative_to(criterion_path)
-                parts = rel_path.parts
+        estimates_path = Path(root) / "estimates.json"
+        rel_path = estimates_path.relative_to(criterion_path)
+        parsed = parse_estimates_path(rel_path.parts)
+        if parsed is None:
+            continue
+        group, bench_name = parsed
 
-                if len(parts) >= 3:
-                    group = parts[0]
-                    bench_name = parts[1]
+        try:
+            with open(estimates_path) as f:
+                estimates = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: Could not parse {estimates_path}: {e}", file=sys.stderr)
+            continue
 
-                    # Get mean value
-                    mean = estimates.get("mean", {})
-                    mean_ns = int(mean.get("point_estimate", 0))
+        # Get mean value
+        mean = estimates.get("mean", {})
+        mean_ns = int(mean.get("point_estimate", 0))
 
-                    # Get confidence interval
-                    low_ns = int(mean.get("confidence_interval", {}).get("lower_bound", mean_ns))
-                    high_ns = int(mean.get("confidence_interval", {}).get("upper_bound", mean_ns))
+        # Get confidence interval
+        low_ns = int(mean.get("confidence_interval", {}).get("lower_bound", mean_ns))
+        high_ns = int(mean.get("confidence_interval", {}).get("upper_bound", mean_ns))
 
-                    # Determine display unit
-                    if mean_ns < 1000:
-                        unit = "ns"
-                        display = f"{mean_ns} ns"
-                    elif mean_ns < 1_000_000:
-                        unit = "us"
-                        display = f"{mean_ns / 1000:.1f} us"
-                    elif mean_ns < 1_000_000_000:
-                        unit = "ms"
-                        display = f"{mean_ns / 1_000_000:.1f} ms"
-                    else:
-                        unit = "s"
-                        display = f"{mean_ns / 1_000_000_000:.2f} s"
+        # Determine display unit
+        if mean_ns < 1000:
+            unit = "ns"
+            display = f"{mean_ns} ns"
+        elif mean_ns < 1_000_000:
+            unit = "us"
+            display = f"{mean_ns / 1000:.1f} us"
+        elif mean_ns < 1_000_000_000:
+            unit = "ms"
+            display = f"{mean_ns / 1_000_000:.1f} ms"
+        else:
+            unit = "s"
+            display = f"{mean_ns / 1_000_000_000:.2f} s"
 
-                    # Categorize by group name
-                    category = categorize_benchmark(group, bench_name)
+        # Categorize by group name
+        category = categorize_benchmark(group, bench_name)
 
-                    if category not in results:
-                        results[category] = {}
+        results.setdefault(category, {})[bench_name] = {
+            "mean_ns": mean_ns,
+            "low_ns": low_ns,
+            "high_ns": high_ns,
+            "unit": unit,
+            "display": display,
+        }
+        ids.add(benchmark_id(group, bench_name))
 
-                    results[category][bench_name] = {
-                        "mean_ns": mean_ns,
-                        "low_ns": low_ns,
-                        "high_ns": high_ns,
-                        "unit": unit,
-                        "display": display
-                    }
-
-            except (json.JSONDecodeError, KeyError) as e:
-                print(f"Warning: Could not parse {estimates_path}: {e}", file=sys.stderr)
-                continue
-
-    return results
+    return results, ids
 
 
 def categorize_benchmark(group: str, bench_name: str) -> str:
@@ -141,11 +194,19 @@ def main():
     parser.add_argument("--base-path", "-b", default=".",
                         help="Repository base path")
     parser.add_argument("--strict", action="store_true",
-                        help="Exit non-zero when zero benchmarks were extracted. "
-                             "A benchmark job that ran zero benchmarks is a vacuous "
-                             "pass, not a real result (see #3979) — use this flag in "
-                             "CI so that condition fails the job instead of silently "
-                             "reporting 'Total benchmarks: 0'.")
+                        help="Exit non-zero when zero benchmarks were extracted, or "
+                             "when any --expect-id was not found. A benchmark job "
+                             "that ran zero benchmarks is a vacuous pass, not a real "
+                             "result (see #3979) — use this flag in CI so that "
+                             "condition fails the job instead of silently reporting "
+                             "'Total benchmarks: 0'.")
+    parser.add_argument("--expect-id", action="append", default=[],
+                        metavar="ID",
+                        help="A benchmark_id() (e.g. 'workspace_index/incremental "
+                             "update single file', or a bare name when ungrouped) "
+                             "that must be present for --strict to pass. May be "
+                             "repeated. Proves specific declared Criterion targets "
+                             "actually executed, not just that *something* did.")
     args = parser.parse_args()
 
     base_path = Path(args.base_path)
@@ -159,7 +220,7 @@ def main():
     rust_version = get_rust_version()
 
     # Extract results
-    results = find_criterion_results(base_path)
+    results, ids = find_criterion_results(base_path)
 
     if not results:
         print("Warning: No Criterion results found in target/criterion/", file=sys.stderr)
@@ -172,7 +233,7 @@ def main():
     # Build output structure
     output = {
         "version": "0.9.0",
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "git_sha": git_sha,
         "git_dirty": git_dirty,
         "environment": {
@@ -196,12 +257,25 @@ def main():
         count = len([k for k in benchmarks if not k.startswith("_")])
         print(f"  {category}: {count}")
 
-    if args.strict and total == 0:
-        print(
-            "Error: 0 benchmarks extracted — this is a vacuous pass, not a real "
-            "benchmark run. Failing closed (--strict).",
-            file=sys.stderr,
-        )
+    missing_ids = [expected for expected in args.expect_id if expected not in ids]
+    if missing_ids:
+        print("Missing expected benchmark IDs:", file=sys.stderr)
+        for expected in missing_ids:
+            print(f"  - {expected}", file=sys.stderr)
+
+    if args.strict and (total == 0 or missing_ids):
+        if total == 0:
+            print(
+                "Error: 0 benchmarks extracted — this is a vacuous pass, not a real "
+                "benchmark run. Failing closed (--strict).",
+                file=sys.stderr,
+            )
+        if missing_ids:
+            print(
+                "Error: one or more --expect-id benchmarks did not run. Failing "
+                "closed (--strict).",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
 
