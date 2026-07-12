@@ -18,6 +18,11 @@
 #    tooling gate (fmt-shaped, exit_code=127) is failed/absent is ACCEPTED --
 #    this check only inspects test-metrics-bearing gates (see the
 #    "lightweight-advisory-runner shape" case below).
+#  - REAL ZERO-TEST DETECTION: a scoped `cargo test` gate that matched/ran
+#    ZERO tests (metrics entirely absent -- parse_test_metrics never
+#    populates `metrics` for a zero-test run) must be REJECTED even when a
+#    separate always-on test gate in the same receipt has good metrics
+#    (see the "vacuous scoped test-command gate" case below).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -127,6 +132,46 @@ write_receipt_with_tooling_failure() {
     }' > "$path"
 }
 
+# write_receipt_with_vacuous_scoped_test: reproduces the REAL zero-test
+# shape that the earlier "skip gates without metrics" logic missed. A
+# scoped `cargo test` gate (unit_scoped) matched/ran ZERO tests -- it
+# exits 0 and status=pass, but `parse_test_metrics` (gates.rs) never emits
+# a `metrics` object when it finds no "test result:" line, so `metrics` is
+# entirely ABSENT from this gate's entry. A SEPARATE always-on test gate
+# (perl_token_leaf_contract-shaped) in the same tier DOES carry good
+# metrics. The check must still FAIL overall, because the scoped test
+# instrument this PR actually cares about ran vacuously -- another gate's
+# good metrics must not paper over that.
+write_receipt_with_vacuous_scoped_test() {
+  local path="$1" sha="$2" ts="$3"
+  jq -n \
+    --arg sha "$sha" --arg ts "$ts" \
+    '{
+      schema_version: "1.0.0",
+      metadata: {git_sha: $sha, timestamp: $ts},
+      gates: [
+        {
+          gate_name: "unit_scoped",
+          tier: "pr_fast",
+          status: "pass",
+          duration_ms: 50,
+          command: "cargo test --locked --lib -p some-crate-with-no-tests",
+          exit_code: 0
+        },
+        {
+          gate_name: "perl_token_leaf_contract",
+          tier: "pr_fast",
+          status: "pass",
+          duration_ms: 400,
+          command: "cargo test -p perl-token --test conformance_guards --locked",
+          exit_code: 0,
+          metrics: {tests_total: 5, tests_passed: 5, tests_skipped: 0}
+        }
+      ],
+      summary: {total_gates: 2, passed: 2, failed: 0, skipped: 0, total_duration_ms: 450, overall_status: "pass"}
+    }' > "$path"
+}
+
 echo "=== check-receipt-instrument test suite ==="
 echo ""
 
@@ -191,6 +236,25 @@ write_receipt_with_tooling_failure "${TOOLING_FAIL_DIR}/receipt.json" "$SHA" "$(
 code=0
 bash "$CHECK_SCRIPT" "$SHA" "${TOOLING_FAIL_DIR}/receipt.json" > "${TOOLING_FAIL_DIR}/out.txt" 2>&1 || code=$?
 assert_exit_zero "GREEN: a failed tooling gate (fmt, exit 127) alongside a clean test gate does NOT block this check" "$code"
+
+# ─── RED (the empirical proof for the codex P2 finding): a scoped
+# `cargo test` gate that matched/ran ZERO tests (metrics entirely absent,
+# status=pass, exit_code=0) must FAIL this check, even though a SEPARATE
+# always-on test gate in the same receipt carries genuine, good metrics.
+# This is the exact scenario the old "skip gates without metrics" logic let
+# through: TEST_METRICS_SEEN was satisfied by the other gate, papering over
+# the vacuous scoped-test gate.
+VACUOUS_SCOPED_DIR="${TMPDIR_BASE}/vacuous-scoped-test"
+mkdir -p "$VACUOUS_SCOPED_DIR"
+write_receipt_with_vacuous_scoped_test "${VACUOUS_SCOPED_DIR}/receipt.json" "$SHA" "$(now_utc)"
+code=0
+OUT="$(bash "$CHECK_SCRIPT" "$SHA" "${VACUOUS_SCOPED_DIR}/receipt.json" 2>&1)" || code=$?
+assert_exit_nonzero "RED: rejects a vacuous scoped test-command gate (no metrics) even though another gate has good metrics" "$code"
+if printf '%s' "$OUT" | grep -q "unit_scoped"; then
+  pass "RED: rejection message names the vacuous test-command gate (unit_scoped)"
+else
+  fail "RED: rejection message names the vacuous test-command gate (output: ${OUT})"
+fi
 
 # ─── GREEN (stale head): a receipt bound to a DIFFERENT commit than expected
 # must be rejected, even though its own gate content is genuine/non-vacuous.

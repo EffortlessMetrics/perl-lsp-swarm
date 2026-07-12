@@ -37,8 +37,10 @@ name: Receipt Instrument Check (Advisory)
 # (fmt, release_history, readme_heading_check, compile_all_targets, ...)
 # fail here with exit 127 (tooling not installed) -- that is EXPECTED and
 # is not what this check is asserting on (see check-receipt-instrument.sh's
-# "SCOPE, DELIBERATELY NARROW" note: it inspects only gates that report
-# `metrics.tests_total`, ignoring every other gate's status entirely). The
+# "SCOPE, DELIBERATELY NARROW" note: it inspects only TEST-COMMAND gates --
+# identified by their `command` field containing `cargo test`/`cargo
+# nextest` -- and requires every such gate to carry real, nonzero metrics;
+# every other gate's status/exit_code is ignored entirely). The
 # "Run the pr-fast tier" step is allowed to fail (`continue-on-error`) for
 # exactly this reason; the job's real pass/fail signal is the Assert step.
 # Those tooling gates are already covered by the required checks
@@ -99,18 +101,33 @@ jobs:
           cache-on-failure: true
           shared-key: receipt-instrument-check-${{ hashFiles('Cargo.lock') }}
 
-      - name: Detect a Rust-relevant diff
+      - name: Detect a diff relevant to this check's live-run path
         id: diff
+        # Mirrors the `on.pull_request.paths` trigger list above (not just
+        # `.rs` files): a PR that changes ONLY .ci/gate-policy.yaml, this
+        # check's own assertion script, or this workflow file still needs a
+        # LIVE receipt to validate the receipt-producing machinery itself
+        # -- not just the fixture self-test. `perl_token_leaf_contract`
+        # (planning.role = always_on, .ci/gate-policy.yaml) always runs
+        # `cargo test -p perl-token --test conformance_guards` regardless
+        # of ci-scope's diff-based crate selection, so it doubles as a
+        # sentinel: the live tier run always produces at least one real,
+        # non-scoped test-metrics gate even for a diff with zero `.rs`
+        # files, so no separate sentinel-crate trick is needed.
         run: |
-          if git diff --name-only origin/main...HEAD -- 'crates/**/*.rs' 'xtask/**/*.rs' | grep -q .; then
-            echo "has_rust_diff=true" >> "$GITHUB_OUTPUT"
+          if git diff --name-only origin/main...HEAD -- \
+              'crates/**/*.rs' 'xtask/**/*.rs' '.ci/gate-policy.yaml' \
+              'scripts/ci/check-receipt-instrument.sh' \
+              '.github/workflows/receipt-instrument-check.yml' \
+              | grep -q .; then
+            echo "needs_live_run=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_rust_diff=false" >> "$GITHUB_OUTPUT"
-            echo "No .rs files in this diff vs origin/main -- ci-scope would select no crates; skipping the instrument check (nothing to prove)."
+            echo "needs_live_run=false" >> "$GITHUB_OUTPUT"
+            echo "No changes relevant to this check's live-run path vs origin/main -- skipping the live gate run (nothing to prove)."
           fi
 
       - name: Run the pr-fast tier with a fresh receipt
-        if: steps.diff.outputs.has_rust_diff == 'true'
+        if: steps.diff.outputs.needs_live_run == 'true'
         # continue-on-error: this lightweight job doesn't install `just` or
         # doc-check tooling, so non-test always-on gates (fmt,
         # release_history, compile_all_targets, ...) legitimately fail here
@@ -130,7 +147,7 @@ jobs:
         # gates.rs runs before the bail! on blocking failures) -- gives a
         # useful vacuous-run signal independent of other gate failures. This
         # step (not the tier step above) is the job's real pass/fail signal.
-        if: always() && steps.diff.outputs.has_rust_diff == 'true'
+        if: always() && steps.diff.outputs.needs_live_run == 'true'
         run: |
           bash scripts/ci/check-receipt-instrument.sh \
             "${{ github.event.pull_request.head.sha || github.sha }}" \
@@ -140,7 +157,7 @@ jobs:
         run: bash scripts/tests/test-check-receipt-instrument.sh
 
       - name: Upload receipt
-        if: always() && steps.diff.outputs.has_rust_diff == 'true'
+        if: always() && steps.diff.outputs.needs_live_run == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: receipt-instrument-check-${{ github.sha }}

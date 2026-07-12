@@ -8,18 +8,32 @@
 #      bound to the commit it claims to prove, not stale/reused.
 #   2. `metadata.timestamp` is a valid, non-future UTC timestamp less than
 #      RECEIPT_MAX_AGE_SECONDS (default 3600s) old.
-#   3. For any gate reporting `metrics.tests_total` (i.e. a test-class
-#      gate): `status` is pass, tests_total > 0, tests_passed > 0, and
-#      tests_skipped < tests_total. This rejects a zero-selection /
-#      zero-test / all-skipped test run (an empty ci-scope selection, a
-#      `--gate` that matched nothing, or a suite that reports every test
-#      skipped) from being trusted on a bare `exit_code: 0`.
+#   3. Any gate identified as a TEST-COMMAND gate (its `command` field
+#      contains `cargo test` or `cargo nextest`) MUST carry real metrics:
+#      `status` is pass, tests_total > 0, tests_passed > 0, and
+#      tests_skipped < tests_total. A test-command gate with metrics
+#      MISSING entirely is a FAILURE, not something to skip -- see "why
+#      metrics can be absent" below.
 #   4. At least one gate across all receipts reports test metrics --
 #      otherwise this check cannot confirm any test instrument ran at all.
 #
-# SCOPE, DELIBERATELY NARROW: gates that do NOT report `metrics.tests_total`
-# (fmt, release_history, compile_all_targets, clippy_full, and any other
-# tier gate) are IGNORED ENTIRELY here -- their status/exit_code is never
+# WHY METRICS CAN BE ABSENT EVEN FOR A PASSED TEST-COMMAND GATE: the live
+# `parse_test_metrics` (gates.rs) only returns a `metrics` object when it
+# finds a "test result: ... passed; ... failed; ... ignored" line AND the
+# computed total > 0. A scoped `cargo test` invocation whose package/filter
+# args match ZERO tests still exits 0 (status=pass) but produces no such
+# line -- so `metrics` is entirely absent from that gate's receipt entry.
+# Treating "no metrics" as "out of scope" (this check's earlier behavior)
+# let that exact zero-test shape slip through, because a DIFFERENT
+# always-on test gate in the same `pr-fast` tier (e.g.
+# `perl_token_leaf_contract`) still carries real metrics and satisfied
+# TEST_METRICS_SEEN. So: identify test-command gates by their `command`
+# field FIRST, independent of metrics presence -- a test-command gate
+# missing metrics is always a rejection, never a skip.
+#
+# SCOPE, DELIBERATELY NARROW: gates that are NOT test-command gates (fmt,
+# release_history, compile_all_targets, clippy_full, and any other tier
+# gate) are IGNORED ENTIRELY here -- their status/exit_code is never
 # inspected, and their absence/failure/`exit 127` (e.g. missing tooling in a
 # lightweight advisory runner that only installs the Rust toolchain) does
 # NOT fail this check. Those gates are the required checks' job
@@ -136,22 +150,44 @@ for RECEIPT in "$@"; do
   fi
 
   while IFS= read -r GATE_JSON; do
-    # Filter FIRST on test-metrics presence. Gates without
-    # `metrics.tests_total` (fmt, release_history, compile_all_targets,
-    # clippy_full, ...) are out of scope for this check -- skip them
-    # entirely without inspecting status/exit_code at all. This is what
-    # keeps a lightweight advisory runner (Rust toolchain only, no `just`/
-    # doc-check tooling) from being falsely rejected for tooling gates it
-    # was never meant to run.
+    GATE_NAME="$(jq -r '.gate_name // "<unnamed>"' <<<"${GATE_JSON}")"
+    GATE_STATUS="$(jq -r '.status // "<none>"' <<<"${GATE_JSON}")"
+    GATE_EXIT="$(jq -r '.exit_code // empty' <<<"${GATE_JSON}")"
+    GATE_COMMAND="$(jq -r '.command // empty' <<<"${GATE_JSON}")"
     TESTS_TOTAL="$(jq -r '.metrics.tests_total // empty' <<<"${GATE_JSON}")"
+
+    # Identify test-command gates by their `command` field (cargo test /
+    # cargo nextest run), independent of whether metrics.tests_total ended
+    # up populated. This matters because `parse_test_metrics` (gates.rs)
+    # only emits a `metrics` object when it finds a "test result:" line AND
+    # total > 0 -- a scoped `cargo test` invocation that matches/runs ZERO
+    # tests still exits 0 and status=pass, but `metrics` is entirely absent
+    # from the receipt. Skipping gates with no metrics (as this check used
+    # to do) would let such a gate slip through as "out of scope" while a
+    # DIFFERENT always-on test gate in the same tier satisfies
+    # TEST_METRICS_SEEN -- exactly the zero-test scenario this check exists
+    # to block. So: a test-command gate is ALWAYS in scope, metrics present
+    # or not; only non-test-command gates without metrics are ignored.
+    case "${GATE_COMMAND}" in
+      *"cargo test"*|*"cargo nextest"*) IS_TEST_COMMAND=1 ;;
+      *) IS_TEST_COMMAND=0 ;;
+    esac
+
     if [[ -z "${TESTS_TOTAL}" ]]; then
+      if [[ "${IS_TEST_COMMAND}" -eq 1 ]]; then
+        TEST_METRICS_SEEN=1
+        FAILED+=("${GATE_NAME} (vacuous: test-command gate '${GATE_COMMAND}' reports no metrics -- likely matched/ran zero tests, status=${GATE_STATUS} exit=${GATE_EXIT:-n/a})")
+      fi
+      # Non-test-command gates without metrics (fmt, release_history,
+      # compile_all_targets, clippy_full, ...) are out of scope -- their
+      # status/exit_code is never inspected. This is what keeps a
+      # lightweight advisory runner (Rust toolchain only, no `just`/
+      # doc-check tooling) from being falsely rejected for tooling gates it
+      # was never meant to run.
       continue
     fi
 
     TEST_METRICS_SEEN=1
-    GATE_NAME="$(jq -r '.gate_name // "<unnamed>"' <<<"${GATE_JSON}")"
-    GATE_STATUS="$(jq -r '.status // "<none>"' <<<"${GATE_JSON}")"
-    GATE_EXIT="$(jq -r '.exit_code // empty' <<<"${GATE_JSON}")"
     TESTS_PASSED="$(jq -r '.metrics.tests_passed // 0' <<<"${GATE_JSON}")"
     TESTS_SKIPPED="$(jq -r '.metrics.tests_skipped // empty' <<<"${GATE_JSON}")"
 
