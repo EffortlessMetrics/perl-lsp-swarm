@@ -13,12 +13,20 @@ use crate::shadow;
 pub enum TreeError {
     /// The source could not be parsed as Perl.
     ParseFailed,
+    /// A source range or point cannot be represented by tree-sitter's `u32` offsets.
+    CoordinateOverflow {
+        /// The byte or point coordinate that exceeded the representable range.
+        value: usize,
+    },
 }
 
 impl std::fmt::Display for TreeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ParseFailed => write!(f, "could not parse source as Perl"),
+            Self::CoordinateOverflow { value } => {
+                write!(f, "tree-sitter coordinate exceeds u32 range: {value}")
+            }
         }
     }
 }
@@ -35,7 +43,7 @@ pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
     let recovered = outcome.is_recovered();
     if let Some(tree) = outcome.tree {
         dogfood::record_facade_tree(recovered);
-        let projected = to_ts_node_facade(tree.root_node());
+        let projected = to_ts_node_facade(tree.root_node())?;
         let mut native_parser = NativeParser::new(source);
         if let Ok(native_root) = native_parser.parse() {
             let _comparison = shadow::compare_projected(source, &native_root, &projected);
@@ -60,10 +68,22 @@ pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
 /// byte offsets within the row, matching tree-sitter's `Point`.
 #[must_use]
 pub fn to_ts_node(node: &Node, line_index: &Utf8LineIndex) -> TsNode {
+    to_ts_node_at_depth(node, line_index, 0)
+}
+
+fn to_ts_node_at_depth(node: &Node, line_index: &Utf8LineIndex, depth: usize) -> TsNode {
     let start_byte = u32::try_from(node.location.start).unwrap_or(u32::MAX);
     let end_byte = u32::try_from(node.location.end).unwrap_or(u32::MAX);
     let (start_row, start_column) = line_index.line_col(start_byte);
     let (end_row, end_column) = line_index.line_col(end_byte);
+    let children = if depth >= MAX_PROJECTION_DEPTH {
+        Vec::new()
+    } else {
+        node.children()
+            .iter()
+            .map(|child| to_ts_node_at_depth(child, line_index, depth + 1))
+            .collect()
+    };
     TsNode {
         kind: pascal_to_snake(node.kind.kind_name()),
         named: true,
@@ -71,7 +91,7 @@ pub fn to_ts_node(node: &Node, line_index: &Utf8LineIndex) -> TsNode {
         end_byte,
         start_point: TsPoint { row: start_row, column: start_column },
         end_point: TsPoint { row: end_row, column: end_column },
-        children: node.children().iter().map(|child| to_ts_node(child, line_index)).collect(),
+        children,
     }
 }
 
@@ -80,24 +100,42 @@ pub fn to_ts_node(node: &Node, line_index: &Utf8LineIndex) -> TsNode {
 /// The facade is authoritative for normal and recovered parses. The native
 /// AST conversion above remains available as a narrow catastrophic-failure
 /// fallback, keeping this adapter's public output stable during adoption.
-#[must_use]
-pub fn to_ts_node_facade(node: FacadeNode<'_>) -> TsNode {
-    TsNode {
-        kind: pascal_to_snake(node.native_kind()),
-        named: true,
-        start_byte: u32::try_from(node.start_byte()).unwrap_or(u32::MAX),
-        end_byte: u32::try_from(node.end_byte()).unwrap_or(u32::MAX),
-        start_point: facade_point(node.start_position()),
-        end_point: facade_point(node.end_position()),
-        children: node.children().map(to_ts_node_facade).collect(),
-    }
+pub fn to_ts_node_facade(node: FacadeNode<'_>) -> Result<TsNode, TreeError> {
+    to_ts_node_facade_at_depth(node, 0)
 }
 
-fn facade_point(point: tree_sitter_perl_rs::Point) -> TsPoint {
-    TsPoint {
-        row: u32::try_from(point.row).unwrap_or(u32::MAX),
-        column: u32::try_from(point.column).unwrap_or(u32::MAX),
-    }
+const MAX_PROJECTION_DEPTH: usize = 512;
+
+fn to_ts_node_facade_at_depth(node: FacadeNode<'_>, depth: usize) -> Result<TsNode, TreeError> {
+    let start_byte = u32::try_from(node.start_byte())
+        .map_err(|_| TreeError::CoordinateOverflow { value: node.start_byte() })?;
+    let end_byte = u32::try_from(node.end_byte())
+        .map_err(|_| TreeError::CoordinateOverflow { value: node.end_byte() })?;
+    let children = if depth >= MAX_PROJECTION_DEPTH {
+        Vec::new()
+    } else {
+        node.children()
+            .map(|child| to_ts_node_facade_at_depth(child, depth + 1))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    Ok(TsNode {
+        kind: pascal_to_snake(node.native_kind()),
+        named: true,
+        start_byte,
+        end_byte,
+        start_point: facade_point(node.start_position())?,
+        end_point: facade_point(node.end_position())?,
+        children,
+    })
+}
+
+fn facade_point(point: tree_sitter_perl_rs::Point) -> Result<TsPoint, TreeError> {
+    Ok(TsPoint {
+        row: u32::try_from(point.row)
+            .map_err(|_| TreeError::CoordinateOverflow { value: point.row })?,
+        column: u32::try_from(point.column)
+            .map_err(|_| TreeError::CoordinateOverflow { value: point.column })?,
+    })
 }
 
 #[cfg(test)]
@@ -172,7 +210,7 @@ mod tests {
         let mut facade_parser = FacadeParser::new();
         let facade_tree = facade_parser.parse(source).ok_or(TreeError::ParseFailed)?;
         let facade = facade_tree.root_node();
-        assert_eq!(to_ts_node(&native, &Utf8LineIndex::new(source)), to_ts_node_facade(facade));
+        assert_eq!(to_ts_node(&native, &Utf8LineIndex::new(source)), to_ts_node_facade(facade)?);
         Ok(())
     }
 
