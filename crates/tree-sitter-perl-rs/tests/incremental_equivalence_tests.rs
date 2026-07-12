@@ -8,7 +8,7 @@
 use std::error::Error;
 
 use perl_position_tracking::Position;
-use tree_sitter_perl_rs::{InputEdit, Node, Parser, Tree};
+use tree_sitter_perl_rs::{InputEdit, Node, OverlayDefinition, Parser, Tree, VisibleImport};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -21,6 +21,7 @@ struct EditSpec {
 #[derive(Debug, PartialEq, Eq)]
 struct NodeSnapshot {
     kind: String,
+    is_error: bool,
     field_name: Option<String>,
     start_byte: usize,
     end_byte: usize,
@@ -28,6 +29,13 @@ struct NodeSnapshot {
     end_position: (usize, usize),
     text: String,
     children: Vec<NodeSnapshot>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SemanticSnapshot {
+    definition: Option<OverlayDefinition>,
+    imports: Vec<VisibleImport>,
+    pragma: String,
 }
 
 fn position(source: &str, byte: usize) -> Position {
@@ -55,6 +63,7 @@ fn snapshot(node: Node<'_>, source: &str, field_name: Option<String>) -> TestRes
     let end_position = node.end_position();
     Ok(NodeSnapshot {
         kind: node.kind(),
+        is_error: node.is_error(),
         field_name,
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
@@ -65,6 +74,22 @@ fn snapshot(node: Node<'_>, source: &str, field_name: Option<String>) -> TestRes
     })
 }
 
+fn semantic_snapshot(tree: &Tree, source: &str) -> Vec<SemanticSnapshot> {
+    let overlay = tree.semantic_overlay();
+    let mut offsets = source.char_indices().map(|(byte, _)| byte).take(8).collect::<Vec<_>>();
+    offsets.push(source.len());
+    offsets.sort_unstable();
+    offsets.dedup();
+    offsets
+        .into_iter()
+        .map(|offset| SemanticSnapshot {
+            definition: overlay.definition_at_offset(offset),
+            imports: overlay.visible_imports_at_offset(offset),
+            pragma: format!("{:?}", overlay.pragma_state_at_offset(offset)),
+        })
+        .collect()
+}
+
 fn equivalent(incremental: &Tree, fresh: &Tree, source: &str) -> TestResult {
     assert_eq!(incremental.root_node().to_sexp(), fresh.root_node().to_sexp());
     assert_eq!(incremental.diagnostics(), fresh.diagnostics(), "incremental diagnostics diverged");
@@ -73,6 +98,11 @@ fn equivalent(incremental: &Tree, fresh: &Tree, source: &str) -> TestResult {
         snapshot(incremental.root_node(), source, None)?,
         snapshot(fresh.root_node(), source, None)?,
         "incremental tree diverged from fresh parse"
+    );
+    assert_eq!(
+        semantic_snapshot(incremental, source),
+        semantic_snapshot(fresh, source),
+        "incremental semantic overlay diverged from fresh parse"
     );
     Ok(())
 }
@@ -203,6 +233,46 @@ fn deterministic_seeded_insertions_remain_fresh_equivalent() -> TestResult {
         let start = boundaries[(seed as usize) % boundaries.len()];
         let insertion = if seed & 1 == 0 { " " } else { "\n# seeded edit\n" };
         apply_and_compare(&mut parser, &mut tree, &mut source, start, start, insertion)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn deterministic_mixed_editor_edits_remain_fresh_equivalent() -> TestResult {
+    let seeds = [
+        "my $value = $left / 2;\nmy $regex = qr/foo/;\n",
+        "my $doc = <<'END';\nbody\nEND\nsub nested { my $x = 1; }\n",
+        "use strict;\nmy $special = $!;\nmy $hash = { key => 1 };\n",
+    ];
+
+    for initial in seeds {
+        let mut parser = Parser::new();
+        let mut source = initial.to_owned();
+        let mut tree = parser.parse(&source).ok_or("initial parse returned None")?;
+        let mut seed = source.len() as u64 ^ 0xA11C_E5E1;
+
+        for _ in 0..24 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let mut boundaries = source.char_indices().map(|(byte, _)| byte).collect::<Vec<_>>();
+            boundaries.push(source.len());
+            let start = boundaries
+                .get((seed as usize) % boundaries.len())
+                .copied()
+                .ok_or("editor boundary selection failed")?;
+            let operation = seed % 3;
+            let (old_end, replacement) = match operation {
+                0 => (start, if seed & 1 == 0 { " " } else { "\n# edit\n" }),
+                1 if start < source.len() => {
+                    let end = source[start..]
+                        .char_indices()
+                        .nth(1)
+                        .map_or(source.len(), |(offset, _)| start + offset);
+                    (end, "")
+                }
+                _ => (start, if seed & 1 == 0 { "x" } else { "42" }),
+            };
+            apply_and_compare(&mut parser, &mut tree, &mut source, start, old_end, replacement)?;
+        }
     }
     Ok(())
 }

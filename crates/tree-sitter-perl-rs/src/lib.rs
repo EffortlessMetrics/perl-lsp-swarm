@@ -270,6 +270,8 @@ impl Parser {
         if !parser.errors().is_empty() {
             return None;
         }
+        let fragment_root_end =
+            statement_start.saturating_add(fragment_root.location.end).min(source.len());
         let NodeKind::Program { mut statements } = fragment_root.kind else {
             return None;
         };
@@ -286,7 +288,10 @@ impl Parser {
         let target = statements.get_mut(statement_index)?;
         *target = replacement.clone();
         if delta != 0 {
-            new_root.location.end = source.trim_end().len();
+            // The parser's Program span excludes trailing comments or
+            // whitespace. Reuse the fragment Program end so incremental and
+            // fresh root spans stay equivalent.
+            new_root.location.end = fragment_root_end;
         }
 
         let mut children = old_tree.shared_root.children.clone();
