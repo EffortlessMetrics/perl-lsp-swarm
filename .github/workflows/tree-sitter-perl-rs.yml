@@ -85,7 +85,7 @@ jobs:
           grep -q 'kind_lookup_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
           grep -q 'position_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
           grep -q 'overlay_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
-          cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked
+          cargo package -p tree-sitter-perl-rs --locked
 
       - name: Write proof receipt
         if: always()
@@ -114,7 +114,7 @@ jobs:
                   "cargo run --locked -p perl-ci-hygiene -- quick-bench",
                   "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- incremental-smoke.pl --incremental",
                   "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- tree-sitter-perl/test/highlight/expressions.pm --profile",
-                  "cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked",
+                  "cargo package -p tree-sitter-perl-rs --locked",
               ],
           }
           Path(os.environ["CARGO_TARGET_DIR"], "receipts", "tree-sitter-perl-rs.json").write_text(
