@@ -661,9 +661,17 @@ impl Tree {
 
     /// Returns the byte range reprocessed by the most recent parse.
     ///
-    /// A full parse reports the entire source range. An unchanged-tree fast path
-    /// has no incremental metrics and returns an empty vector.
+    /// Before the pending edit is reparsed, this returns the edit's new-source
+    /// ranges. A full parse reports the entire source range. An unchanged-tree
+    /// fast path has no incremental metrics and returns an empty vector.
     pub fn changed_ranges(&self) -> Vec<std::ops::Range<usize>> {
+        if !self.pending_edits.is_empty() {
+            return self
+                .pending_edits
+                .iter()
+                .map(|edit| edit.start_byte..edit.new_end_byte)
+                .collect();
+        }
         self.incremental_metrics()
             .map(|metrics| vec![metrics.changed_range.clone()])
             .unwrap_or_default()

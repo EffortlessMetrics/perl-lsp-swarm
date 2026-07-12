@@ -127,6 +127,7 @@ fn when_edit_is_recorded_then_node_ranges_project_into_new_source_coordinates() 
     );
     tree.edit(&edit);
 
+    assert_eq!(tree.changed_ranges(), vec![8..10]);
     let second = must_some(tree.root_node().child(1));
     assert_eq!(second.start_byte(), 12);
     assert_eq!(second.start_position().row, 1);
