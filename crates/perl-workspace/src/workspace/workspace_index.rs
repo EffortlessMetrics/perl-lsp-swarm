@@ -3012,6 +3012,70 @@ impl WorkspaceIndex {
         )
     }
 
+    /// **SHADOW-ONLY (1711-B phase 2, tracked on #1711).** Identical to
+    /// [`Self::build_canonical_fact_shard_for_ast`] except it takes an
+    /// ALREADY-COMPUTED `refs: &[SymbolRef]` instead of calling
+    /// `extract_symbol_refs(ast)` itself -- this is what lets
+    /// `FileExtractionBundle::build_unified` feed it the `Vec<SymbolRef>`
+    /// produced by `IndexVisitor::visit_unified`'s single traversal, instead
+    /// of running a second, independent `extract_symbol_refs` walk. Every
+    /// other extractor call (`extract_symbol_decls` for declarations,
+    /// eval-sub, generated-member) is UNCHANGED and unaffected -- only the
+    /// reference walk is unified in this phase (see the #1711 feasibility
+    /// comment for why declarations are a separable follow-up).
+    // Shadow scaffold, not called by the live `index_file_with_generation`
+    // path -- see `FileExtractionBundle::build_unified`.
+    #[allow(dead_code)]
+    fn build_canonical_fact_shard_from_symbol_refs(
+        uri: &str,
+        content_hash: u64,
+        ast: &Node,
+        refs: &[perl_symbol::surface::r#ref::SymbolRef],
+    ) -> FileFactShard {
+        let file_id = Self::hash_uri_to_file_id(uri);
+
+        let decls = extract_symbol_decls(ast, None);
+        let decl_facts = symbol_decls_to_semantic_facts(&decls, file_id);
+
+        let entity_ids_by_name: std::collections::BTreeMap<String, EntityId> =
+            decl_facts.entities.iter().map(|e| (e.canonical_name.clone(), e.id)).collect();
+        let ref_facts = symbol_refs_to_semantic_facts(refs, file_id, &entity_ids_by_name);
+
+        let eval_sub_triples =
+            crate::semantic::eval_sub_extractor::extract_eval_sub_boundaries(ast, file_id);
+        let dynamic_boundaries: Vec<perl_semantic_facts::OccurrenceFact> =
+            eval_sub_triples.iter().map(|(_, _, occ)| occ.clone()).collect();
+        let generated_member_facts =
+            crate::semantic::generated_member_extractor::extract_generated_member_facts(
+                ast, file_id,
+            );
+
+        let synthetic_entities_from_eval: Vec<perl_semantic_facts::EntityFact> =
+            eval_sub_triples.iter().map(|(entity, _, _)| entity.clone()).collect();
+        let synthetic_anchors_from_eval: Vec<perl_semantic_facts::AnchorFact> =
+            eval_sub_triples.iter().map(|(_, anchor, _)| anchor.clone()).collect();
+        let synthetic_entities_from_generated: Vec<perl_semantic_facts::EntityFact> =
+            generated_member_facts.iter().map(|f| f.entity.clone()).collect();
+        let synthetic_anchors_from_generated: Vec<perl_semantic_facts::AnchorFact> =
+            generated_member_facts.iter().map(|f| f.anchor.clone()).collect();
+
+        let mut all_synthetic_entities = synthetic_entities_from_eval;
+        all_synthetic_entities.extend(synthetic_entities_from_generated);
+        let mut all_synthetic_anchors = synthetic_anchors_from_eval;
+        all_synthetic_anchors.extend(synthetic_anchors_from_generated);
+
+        crate::semantic::facts::build_canonical_fact_shard(
+            uri,
+            content_hash,
+            &decl_facts,
+            &ref_facts,
+            &[],
+            &dynamic_boundaries,
+            &all_synthetic_entities,
+            &all_synthetic_anchors,
+        )
+    }
+
     /// Replace a [`FileFactShard`] with per-category incremental invalidation.
     ///
     /// Compares the whole-file `content_hash` first; when unchanged the
@@ -4150,6 +4214,65 @@ impl FileExtractionBundle {
 
         Self { legacy_index: file_index, canonical_shard, import_specs, use_lib_facts }
     }
+
+    /// **SHADOW-ONLY (1711-B phase 2, tracked on #1711).** The REAL unified
+    /// traversal: runs ONE reference walk (`IndexVisitor::visit_unified`)
+    /// that produces BOTH the legacy [`FileIndex`] reference/dependency
+    /// projection AND the canonical `Vec<SymbolRef>` projection, then feeds
+    /// that single `Vec<SymbolRef>` into
+    /// `WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs` instead
+    /// of calling `extract_symbol_refs(ast)` a second time. This genuinely
+    /// eliminates one of the two full-AST reference walks
+    /// `index_file_with_generation` runs today.
+    ///
+    /// Declaration extraction is UNCHANGED: `extract_symbol_decls` is still
+    /// called twice (once per projection, with the existing
+    /// `Some("main")`/`None` package-context seeds) -- unifying declarations
+    /// is a separable follow-up (see the #1711 feasibility comment, item 3).
+    /// Import/use-lib extraction is also unchanged.
+    ///
+    /// Uses [`Node::for_each_child`] as the unified walk's recursion
+    /// fallback (see `IndexVisitor::walk_unified`'s doc comment), which
+    /// closes several PRE-EXISTING legacy `FileIndex` coverage gaps not
+    /// introduced by this change -- see
+    /// `docs/reference/1711-B-coverage-delta.md` for the full,
+    /// fixture-backed list. **NOT wired into the production
+    /// `index_file_with_generation` path** -- this is the shadow proof the
+    /// maintainer's cutover decision is gated on.
+    // Shadow scaffold: intentionally unused by the live path.
+    #[allow(dead_code)]
+    pub(crate) fn build_unified(
+        ast: &Node,
+        uri_str: &str,
+        content_hash: u64,
+        doc: &mut Document,
+        folder_uri: Option<String>,
+    ) -> Self {
+        let mut file_index = FileIndex {
+            source_uri: uri_str.to_string(),
+            content_hash,
+            folder_uri: folder_uri.clone(),
+            ..Default::default()
+        };
+        let mut symbol_refs = Vec::new();
+        let mut visitor = IndexVisitor::new(doc, uri_str.to_string(), folder_uri);
+        visitor.visit_unified(ast, &mut file_index, &mut symbol_refs);
+
+        let canonical_shard = WorkspaceIndex::build_canonical_fact_shard_from_symbol_refs(
+            uri_str,
+            content_hash,
+            ast,
+            &symbol_refs,
+        );
+
+        let file_id = WorkspaceIndex::hash_uri_to_file_id(uri_str);
+        let import_specs =
+            crate::semantic::workspace_import_extractor::extract_import_specs(ast, file_id);
+        let use_lib_facts =
+            crate::semantic::workspace_import_extractor::extract_use_lib_facts(ast, file_id);
+
+        Self { legacy_index: file_index, canonical_shard, import_specs, use_lib_facts }
+    }
 }
 
 /// AST visitor for extracting symbols and references
@@ -4749,6 +4872,668 @@ impl IndexVisitor {
             end: Position { byte: node.location.end, line: end_line, column: end_col },
         }
     }
+
+    /// **SHADOW-ONLY (1711-B phase 2, tracked on #1711).** Unified reference
+    /// walk: produces BOTH the legacy [`FileIndex`] reference/dependency
+    /// projection AND the canonical `Vec<SymbolRef>` projection (the input
+    /// `symbol_refs_to_semantic_facts` expects) from ONE recursive descent --
+    /// replacing what production runs today as TWO separate full-AST walks
+    /// (`IndexVisitor::visit` + `extract_symbol_refs`). Declaration
+    /// extraction is UNCHANGED and NOT unified here (`project_symbol_declarations`
+    /// still calls `extract_symbol_decls(ast, Some("main"))` exactly as
+    /// `visit()` does today) -- see the #1711 feasibility comment, item 3,
+    /// a separable follow-up.
+    ///
+    /// Uses [`Node::for_each_child`] as its recursion fallback (the
+    /// complete, compiler-exhaustive dispatcher) instead of
+    /// `IndexVisitor::visit_children`'s hand-maintained allowlist. This
+    /// closes several PRE-EXISTING legacy coverage gaps, empirically
+    /// verified against current `origin/main` and characterized in
+    /// `docs/reference/1711-B-coverage-delta.md`: block-form
+    /// `package Foo { ... }` / `class Foo { ... }` bodies are never walked
+    /// for references by `IndexVisitor::visit_node` today (only their
+    /// declarations are seen, via the separate `extract_symbol_decls` walk);
+    /// `Typeglob`, `Tie`, `Goto` coderef targets, regex-bind expressions
+    /// (`Match`/`Substitution`/`Transliteration`), `IndirectCall` arguments,
+    /// `Subroutine` signature default-value expressions, and non-`Variable`
+    /// assignment/increment targets are also unreached by legacy today.
+    /// NOT called by production -- see `FileExtractionBundle::build_unified`.
+    fn visit_unified(
+        &mut self,
+        node: &Node,
+        file_index: &mut FileIndex,
+        symbol_refs: &mut Vec<perl_symbol::surface::r#ref::SymbolRef>,
+    ) {
+        self.project_symbol_declarations(node, file_index);
+        self.walk_unified(node, file_index, symbol_refs);
+    }
+
+    /// Emit this node's own canonical [`SymbolRef`] (if any) without
+    /// recursing into its children -- the caller controls recursion order
+    /// (needed so `Assignment`/increment targets that legacy already
+    /// special-cases don't ALSO get a second, generic recursion pass that
+    /// would double-count the legacy side).
+    fn emit_canonical_ref(
+        node: &Node,
+        symbol_refs: &mut Vec<perl_symbol::surface::r#ref::SymbolRef>,
+    ) {
+        if let Some(symbol_ref) = canonical_ref_for_node(node) {
+            symbol_refs.push(symbol_ref);
+        }
+    }
+
+    fn walk_unified(
+        &mut self,
+        node: &Node,
+        file_index: &mut FileIndex,
+        symbol_refs: &mut Vec<perl_symbol::surface::r#ref::SymbolRef>,
+    ) {
+        match &node.kind {
+            NodeKind::Package { name, block, .. } => {
+                self.current_package = Some(name.clone());
+                // NEW COVERAGE: `IndexVisitor::visit_node` never recurses
+                // into `block` for references today (only
+                // `project_symbol_declarations`/`extract_symbol_decls` sees
+                // it, for declarations). Recursing here closes that gap --
+                // see `docs/reference/1711-B-coverage-delta.md` case 1.
+                if let Some(b) = block {
+                    self.walk_unified(b, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Class { name, body, .. } => {
+                self.current_package = Some(name.clone());
+                // NEW COVERAGE: same gap as `Package` above, for Perl
+                // 5.38+ `class Foo { ... }` bodies -- see coverage-delta
+                // case 2.
+                self.walk_unified(body, file_index, symbol_refs);
+            }
+
+            NodeKind::Subroutine { body, prototype, signature, .. } => {
+                // NEW COVERAGE: legacy's `visit_node` only visits `body`,
+                // never `prototype`/`signature` -- a signature's
+                // default-value expressions (`sub greet($name =
+                // default_name())`) are invisible today. `Method` (below)
+                // already visits `signature` correctly; `Subroutine` did
+                // not -- see coverage-delta case 8.
+                if let Some(proto) = prototype {
+                    self.walk_unified(proto, file_index, symbol_refs);
+                }
+                if let Some(sig) = signature {
+                    self.walk_unified(sig, file_index, symbol_refs);
+                }
+                self.walk_unified(body, file_index, symbol_refs);
+            }
+
+            NodeKind::Method { body, signature, .. } => {
+                if let Some(sig) = signature {
+                    if let NodeKind::Signature { parameters } = &sig.kind {
+                        for param in parameters {
+                            self.walk_unified(param, file_index, symbol_refs);
+                        }
+                    }
+                }
+                self.walk_unified(body, file_index, symbol_refs);
+            }
+
+            // Signature parameter nodes bind a DECLARATION-site variable --
+            // must NOT be walked as a reference. Mirrors
+            // `extract_symbol_refs`'s explicit skip exactly (ref.rs: "the
+            // bound variable is a declaration, not a ref"). Without this
+            // arm, the generic `Node::for_each_child` fallback below would
+            // visit `variable` too (it has no such declaration/reference
+            // distinction), incorrectly emitting a plain `Read`/`SymbolRef`
+            // for e.g. a signature's `$name` binding.
+            NodeKind::MandatoryParameter { .. } | NodeKind::SlurpyParameter { .. } => {
+                // Nothing to walk: the bound variable is a declaration.
+            }
+            NodeKind::OptionalParameter { default_value, .. } => {
+                // Only the default-value expression may reference other
+                // symbols (it's evaluated in the caller's scope) -- the
+                // bound variable itself is skipped, matching ref.rs.
+                self.walk_unified(default_value, file_index, symbol_refs);
+            }
+            NodeKind::NamedParameter { default_value, .. } => {
+                if let Some(default) = default_value {
+                    self.walk_unified(default, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::VariableDeclaration { initializer, .. }
+            | NodeKind::VariableListDeclaration { initializer, .. } => {
+                if let Some(init) = initializer {
+                    self.walk_unified(init, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Variable { sigil, name } => {
+                let var_name = format!("{sigil}{name}");
+                file_index.references.entry(var_name).or_default().push(SymbolReference {
+                    uri: self.uri.clone(),
+                    range: self.node_to_range(node),
+                    kind: ReferenceKind::Read,
+                });
+                Self::emit_canonical_ref(node, symbol_refs);
+            }
+
+            NodeKind::Typeglob { .. } => {
+                // NEW COVERAGE: legacy has no `Typeglob` arm at all today
+                // (`*foo`, `*alias = ...` aliasing references are silently
+                // dropped) -- see coverage-delta case 3. Canonical already
+                // handled this (dynamic `*{$expr}` forms are filtered by
+                // `canonical_ref_for_node`, matching `extract_symbol_refs`).
+                if let Some(symbol_ref) = canonical_ref_for_node(node) {
+                    // Project a legacy-shaped entry too, using the same
+                    // sigil+bare-name key convention as the `Variable` arm
+                    // above, so the unified traversal's two output shapes
+                    // stay internally consistent.
+                    let var_name = format!("*{}", symbol_ref.name);
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(node),
+                        kind: ReferenceKind::Usage,
+                    });
+                    symbol_refs.push(symbol_ref);
+                }
+            }
+
+            NodeKind::FunctionCall { name, args, .. } => {
+                let func_name = name.clone();
+                let location = self.node_to_range(node);
+
+                let (pkg, bare_name) = if let Some(idx) = func_name.rfind("::") {
+                    (&func_name[..idx], &func_name[idx + 2..])
+                } else {
+                    (self.current_package.as_deref().unwrap_or("main"), func_name.as_str())
+                };
+                let qualified = format!("{pkg}::{bare_name}");
+
+                file_index.references.entry(bare_name.to_string()).or_default().push(
+                    SymbolReference {
+                        uri: self.uri.clone(),
+                        range: location,
+                        kind: ReferenceKind::Usage,
+                    },
+                );
+                file_index.references.entry(qualified).or_default().push(SymbolReference {
+                    uri: self.uri.clone(),
+                    range: location,
+                    kind: ReferenceKind::Usage,
+                });
+
+                if name == "extends" || name == "with" {
+                    for module_name in extract_module_names_from_call_args(args) {
+                        file_index
+                            .dependencies
+                            .insert(normalize_dependency_module_name(&module_name));
+                    }
+                } else if name == "require"
+                    && let Some(module_name) = extract_module_name_from_require_args(args)
+                {
+                    file_index.dependencies.insert(normalize_dependency_module_name(&module_name));
+                }
+
+                Self::emit_canonical_ref(node, symbol_refs);
+
+                for arg in args {
+                    self.walk_unified(arg, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Use { module, args, .. } => {
+                let module_name = normalize_dependency_module_name(module);
+                file_index.dependencies.insert(module_name.clone());
+                if module == "parent" || module == "base" {
+                    for name in extract_module_names_from_use_args(args) {
+                        file_index.dependencies.insert(normalize_dependency_module_name(&name));
+                    }
+                }
+                file_index.references.entry(module_name).or_default().push(SymbolReference {
+                    uri: self.uri.clone(),
+                    range: self.node_to_range(node),
+                    kind: ReferenceKind::Import,
+                });
+                // No canonical equivalent and no recursion into `args` --
+                // matches BOTH legacy's current behavior and
+                // `Node::for_each_child`'s (`Use` is a declared leaf there).
+            }
+
+            NodeKind::Assignment { lhs, rhs, op } => {
+                let is_compound = op != "=";
+                if let NodeKind::Variable { sigil, name } = &lhs.kind {
+                    let var_name = format!("{sigil}{name}");
+                    if is_compound {
+                        file_index.references.entry(var_name.clone()).or_default().push(
+                            SymbolReference {
+                                uri: self.uri.clone(),
+                                range: self.node_to_range(lhs),
+                                kind: ReferenceKind::Read,
+                            },
+                        );
+                    }
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(lhs),
+                        kind: ReferenceKind::Write,
+                    });
+                    // Canonical (today, via generic recursion + the
+                    // `Variable` arm) classifies an assignment target as a
+                    // plain `Read` occurrence -- emit that directly here
+                    // instead of ALSO generically recursing into `lhs`
+                    // (which would double-count the legacy side above).
+                    Self::emit_canonical_ref(lhs, symbol_refs);
+                } else {
+                    // NEW COVERAGE: legacy's current `Assignment` arm does
+                    // NOTHING for a non-`Variable` lhs (e.g. `$h{compute_key()}
+                    // = 1`) -- no recursion, so nested references inside an
+                    // indexed/complex assignment target are invisible today.
+                    // Canonical already reaches this via generic recursion.
+                    // See coverage-delta case 9.
+                    self.walk_unified(lhs, file_index, symbol_refs);
+                }
+                self.walk_unified(rhs, file_index, symbol_refs);
+            }
+
+            NodeKind::Block { statements } => {
+                for stmt in statements {
+                    self.walk_unified(stmt, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
+                self.walk_unified(condition, file_index, symbol_refs);
+                self.walk_unified(then_branch, file_index, symbol_refs);
+                for (cond, branch) in elsif_branches {
+                    self.walk_unified(cond, file_index, symbol_refs);
+                    self.walk_unified(branch, file_index, symbol_refs);
+                }
+                if let Some(else_br) = else_branch {
+                    self.walk_unified(else_br, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::While { condition, body, continue_block, .. } => {
+                self.walk_unified(condition, file_index, symbol_refs);
+                self.walk_unified(body, file_index, symbol_refs);
+                if let Some(cont) = continue_block {
+                    self.walk_unified(cont, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::For { init, condition, update, body, continue_block } => {
+                if let Some(i) = init {
+                    self.walk_unified(i, file_index, symbol_refs);
+                }
+                if let Some(c) = condition {
+                    self.walk_unified(c, file_index, symbol_refs);
+                }
+                if let Some(u) = update {
+                    self.walk_unified(u, file_index, symbol_refs);
+                }
+                self.walk_unified(body, file_index, symbol_refs);
+                if let Some(cont) = continue_block {
+                    self.walk_unified(cont, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Foreach { variable, list, body, continue_block } => {
+                if let Some(cb) = continue_block {
+                    self.walk_unified(cb, file_index, symbol_refs);
+                }
+                if let NodeKind::Variable { sigil, name } = &variable.kind {
+                    let var_name = format!("{sigil}{name}");
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(variable),
+                        kind: ReferenceKind::Write,
+                    });
+                }
+                // Matches legacy's EXISTING (quirky but unchanged) behavior:
+                // `variable` is recursed into unconditionally after the
+                // write-classification above, so a `Variable` loop target
+                // gets BOTH a `Write` entry (from this arm) and a `Read`
+                // entry (from the generic `Variable` arm below) today --
+                // preserved here for parity, not introduced by unification.
+                self.walk_unified(variable, file_index, symbol_refs);
+                self.walk_unified(list, file_index, symbol_refs);
+                self.walk_unified(body, file_index, symbol_refs);
+            }
+
+            NodeKind::MethodCall { object, method, args } => {
+                let qualified_method = if let NodeKind::Identifier { name } = &object.kind {
+                    Some(format!("{name}::{method}"))
+                } else {
+                    None
+                };
+                let location = self.node_to_range(node);
+                if let Some(qualified_method) = qualified_method.as_ref() {
+                    file_index.references.entry(qualified_method.clone()).or_default().push(
+                        SymbolReference {
+                            uri: self.uri.clone(),
+                            range: location,
+                            kind: ReferenceKind::Usage,
+                        },
+                    );
+                }
+                file_index.references.entry(method.clone()).or_default().push(SymbolReference {
+                    uri: self.uri.clone(),
+                    range: location,
+                    kind: ReferenceKind::Usage,
+                });
+
+                if method == "import"
+                    && let NodeKind::Identifier { name: module_name } = &object.kind
+                {
+                    for symbol in extract_manual_import_symbols(args) {
+                        file_index.references.entry(symbol).or_default().push(SymbolReference {
+                            uri: self.uri.clone(),
+                            range: self.node_to_range(node),
+                            kind: ReferenceKind::Import,
+                        });
+                    }
+                    file_index.dependencies.insert(normalize_dependency_module_name(module_name));
+                }
+
+                Self::emit_canonical_ref(node, symbol_refs);
+
+                self.walk_unified(object, file_index, symbol_refs);
+                for arg in args {
+                    self.walk_unified(arg, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::No { module, .. } => {
+                let module_name = normalize_dependency_module_name(module);
+                file_index.dependencies.insert(module_name);
+            }
+
+            NodeKind::String { value, interpolated } => {
+                if *interpolated {
+                    let range = self.node_to_range(node);
+                    self.record_interpolated_variable_references(value, range, file_index);
+                }
+            }
+
+            NodeKind::Heredoc { content, interpolated, .. } => {
+                if *interpolated {
+                    let range = self.node_to_range(node);
+                    self.record_interpolated_variable_references(content, range, file_index);
+                }
+            }
+
+            NodeKind::Unary { op, operand } if op == "++" || op == "--" => {
+                if let NodeKind::Variable { sigil, name } = &operand.kind {
+                    let var_name = format!("{sigil}{name}");
+                    file_index.references.entry(var_name.clone()).or_default().push(
+                        SymbolReference {
+                            uri: self.uri.clone(),
+                            range: self.node_to_range(operand),
+                            kind: ReferenceKind::Read,
+                        },
+                    );
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(operand),
+                        kind: ReferenceKind::Write,
+                    });
+                    // Mirrors the `Assignment` arm above: canonical (today,
+                    // via generic recursion) classifies an increment target
+                    // as a plain `Read` -- emit directly, no double recurse.
+                    Self::emit_canonical_ref(operand, symbol_refs);
+                } else {
+                    // NEW COVERAGE: legacy's current `++`/`--` arm does
+                    // NOTHING for a non-`Variable` operand (e.g.
+                    // `$h{compute_key()}++`) -- see coverage-delta case 9
+                    // (same class as the `Assignment` gap above).
+                    self.walk_unified(operand, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Goto { target, .. } => {
+                // NEW COVERAGE: legacy has no `Goto` arm at all today --
+                // `goto &handler` / `goto LABEL` coderef targets are
+                // invisible. See coverage-delta case 4.
+                if let Some(symbol_ref) =
+                    canonical_coderef_target_ref(target, (node.location.start, node.location.end))
+                {
+                    let var_name = format!("&{}", symbol_ref.name);
+                    file_index.references.entry(var_name).or_default().push(SymbolReference {
+                        uri: self.uri.clone(),
+                        range: self.node_to_range(node),
+                        kind: ReferenceKind::Usage,
+                    });
+                    symbol_refs.push(symbol_ref);
+                } else {
+                    self.walk_unified(target, file_index, symbol_refs);
+                }
+            }
+
+            NodeKind::Unary { op, operand } if op == "\\" => {
+                // Unlike `Goto` (which legacy never handles at all today),
+                // legacy's CURRENT `visit_node` already has default behavior
+                // here: general `Unary` falls through to `visit_children`'s
+                // arm, which ALWAYS recurses into `operand` unconditionally,
+                // regardless of shape. That must be preserved exactly even
+                // when `operand` is coderef-target-shaped for CANONICAL
+                // purposes (e.g. `\&attr` parses as a zero-arg synthetic
+                // `FunctionCall`, and legacy's generic recursion into it
+                // hits the ordinary `FunctionCall` arm -- dual
+                // bare+qualified `Usage` entries, the SAME thing legacy has
+                // always produced for it).
+                match canonical_coderef_target_ref(
+                    operand,
+                    (node.location.start, node.location.end),
+                ) {
+                    Some(symbol_ref) => {
+                        symbol_refs.push(symbol_ref);
+                        // `operand` is guaranteed (by
+                        // `canonical_coderef_target_ref`'s own match) to be
+                        // either a bare `&name` `Variable` or a zero-arg
+                        // synthetic `FunctionCall` -- both leaves, nothing
+                        // to recurse into. Replicate legacy's per-kind
+                        // classification directly (NOT a second canonical
+                        // emission via `walk_unified`, which would
+                        // double-count against the `symbol_ref` just
+                        // pushed above).
+                        match &operand.kind {
+                            NodeKind::Variable { sigil, name } => {
+                                let var_name = format!("{sigil}{name}");
+                                file_index.references.entry(var_name).or_default().push(
+                                    SymbolReference {
+                                        uri: self.uri.clone(),
+                                        range: self.node_to_range(operand),
+                                        kind: ReferenceKind::Read,
+                                    },
+                                );
+                            }
+                            NodeKind::FunctionCall { name, .. } => {
+                                let location = self.node_to_range(operand);
+                                let (pkg, bare_name) = if let Some(idx) = name.rfind("::") {
+                                    (&name[..idx], &name[idx + 2..])
+                                } else {
+                                    (
+                                        self.current_package.as_deref().unwrap_or("main"),
+                                        name.as_str(),
+                                    )
+                                };
+                                let qualified = format!("{pkg}::{bare_name}");
+                                file_index
+                                    .references
+                                    .entry(bare_name.to_string())
+                                    .or_default()
+                                    .push(SymbolReference {
+                                        uri: self.uri.clone(),
+                                        range: location,
+                                        kind: ReferenceKind::Usage,
+                                    });
+                                file_index.references.entry(qualified).or_default().push(
+                                    SymbolReference {
+                                        uri: self.uri.clone(),
+                                        range: location,
+                                        kind: ReferenceKind::Usage,
+                                    },
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                    None => {
+                        // Not coderef-target-shaped -- BOTH today's
+                        // canonical (`push_coderef_target` returned false,
+                        // so it recurses) and today's legacy (which always
+                        // recurses here) want ordinary full recursion.
+                        self.walk_unified(operand, file_index, symbol_refs);
+                    }
+                }
+            }
+
+            // Everything else: no legacy-specific classification, and
+            // recurse via `Node::for_each_child` -- the complete,
+            // compiler-exhaustive dispatcher (replaces
+            // `IndexVisitor::visit_children`'s hand-maintained allowlist).
+            // This is what closes the remaining coverage-delta cases
+            // (`Tie`/`Untie`, `Match`/`Substitution`/`Transliteration`
+            // regex-bind expressions, `IndirectCall`, and anything else
+            // legacy's allowlist silently stopped at) for free.
+            _ => {
+                node.for_each_child(|child| self.walk_unified(child, file_index, symbol_refs));
+            }
+        }
+    }
+}
+
+/// SHADOW-ONLY (1711-B phase 2): canonical [`SymbolRef`] classification for
+/// a single node, duplicated from `perl_symbol::surface::ref`'s private
+/// `walk` match arms for `Variable`/`Typeglob`/`FunctionCall`/`MethodCall`
+/// (the node kinds `IndexVisitor::walk_unified` also classifies for the
+/// legacy projection). Byte-for-byte parity with `extract_symbol_refs`'s
+/// own output is mechanically enforced by
+/// `extraction_bundle_shadow_compare`'s canonical-side parity tests -- any
+/// drift between this copy and `perl-symbol`'s private walker fails a test
+/// immediately, not silently. Returns `None` for node kinds this function
+/// does not classify, for a dynamic typeglob (`*{$expr}`), or for a parser
+/// sentinel `FunctionCall` name (`"->()"`, `"&{}"`, `"field"`).
+fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::SymbolRef> {
+    use perl_symbol::surface::r#ref::{SymbolRef, SymbolRefKind};
+
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => {
+            let kind = match sigil.as_str() {
+                "&" => SymbolRefKind::CoderefReference,
+                "*" => SymbolRefKind::TypeglobReference,
+                "$" | "$#" => SymbolRefKind::Variable(VarKind::Scalar),
+                "@" => SymbolRefKind::Variable(VarKind::Array),
+                "%" => SymbolRefKind::Variable(VarKind::Hash),
+                _ => return None,
+            };
+            let (package_qualifier, bare_name, qualified_name) = split_qualified_name_dup(name);
+            Some(SymbolRef {
+                kind,
+                name: bare_name,
+                qualified_name,
+                sigil: Some(sigil.clone()),
+                package_qualifier,
+                full_span: (node.location.start, node.location.end),
+                anchor_span: Some((node.location.start, node.location.end)),
+            })
+        }
+        NodeKind::Typeglob { name } => {
+            if name.starts_with('{') {
+                return None;
+            }
+            let (package_qualifier, bare_name, qualified_name) = split_qualified_name_dup(name);
+            Some(SymbolRef {
+                kind: SymbolRefKind::TypeglobReference,
+                name: bare_name,
+                qualified_name,
+                sigil: Some("*".to_string()),
+                package_qualifier,
+                full_span: (node.location.start, node.location.end),
+                anchor_span: Some((node.location.start, node.location.end)),
+            })
+        }
+        NodeKind::FunctionCall { name, .. } => {
+            if matches!(name.as_str(), "->()" | "&{}" | "field") {
+                return None;
+            }
+            let (package_qualifier, bare_name, qualified_name) = split_qualified_name_dup(name);
+            Some(SymbolRef {
+                kind: SymbolRefKind::SubroutineCall,
+                name: bare_name,
+                qualified_name,
+                sigil: None,
+                package_qualifier,
+                full_span: (node.location.start, node.location.end),
+                anchor_span: Some((node.location.start, node.location.end)),
+            })
+        }
+        NodeKind::MethodCall { object, method, .. } => {
+            let (package_qualifier, qualified_name, kind) = if let NodeKind::Identifier { name } =
+                &object.kind
+            {
+                (Some(name.clone()), format!("{name}::{method}"), SymbolRefKind::StaticMethodCall)
+            } else {
+                (None, method.clone(), SymbolRefKind::MethodCall)
+            };
+            Some(SymbolRef {
+                kind,
+                name: method.clone(),
+                qualified_name,
+                sigil: None,
+                package_qualifier,
+                full_span: (node.location.start, node.location.end),
+                anchor_span: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// SHADOW-ONLY (1711-B phase 2): coderef-target classification for
+/// `Goto`/backslash-`Unary` nodes, duplicated from
+/// `perl_symbol::surface::ref`'s private `coderef_target_name`/
+/// `push_coderef_target`. See [`canonical_ref_for_node`]'s doc comment for
+/// the parity-enforcement rationale.
+fn canonical_coderef_target_ref(
+    node: &Node,
+    full_span: (usize, usize),
+) -> Option<perl_symbol::surface::r#ref::SymbolRef> {
+    use perl_symbol::surface::r#ref::{SymbolRef, SymbolRefKind};
+
+    let name = match &node.kind {
+        NodeKind::Variable { sigil, name } if sigil == "&" => name.as_str(),
+        NodeKind::FunctionCall { name, args }
+            if args.is_empty()
+                && node.location.end.saturating_sub(node.location.start) == name.len() + 1 =>
+        {
+            name.as_str()
+        }
+        _ => return None,
+    };
+    let (package_qualifier, bare_name, qualified_name) = split_qualified_name_dup(name);
+    Some(SymbolRef {
+        kind: SymbolRefKind::CoderefReference,
+        name: bare_name,
+        qualified_name,
+        sigil: Some("&".to_string()),
+        package_qualifier,
+        full_span,
+        anchor_span: Some((node.location.start, node.location.end)),
+    })
+}
+
+/// SHADOW-ONLY (1711-B phase 2): duplicated from
+/// `perl_symbol::surface::ref::split_qualified_name` (private to that
+/// crate). See [`canonical_ref_for_node`]'s doc comment for the
+/// parity-enforcement rationale.
+fn split_qualified_name_dup(name: &str) -> (Option<String>, String, String) {
+    if let Some((package, bare)) = name.rsplit_once("::")
+        && !package.is_empty()
+        && !bare.is_empty()
+    {
+        return (Some(package.to_owned()), bare.to_owned(), name.to_owned());
+    }
+    (None, name.to_owned(), name.to_owned())
 }
 
 fn symbol_decl_name(kind: &SymbolKind, name: &str) -> String {
@@ -10574,6 +11359,15 @@ mod extraction_bundle_shadow_compare {
         FileExtractionBundle::build(ast, uri, content_hash, &mut doc, None)
     }
 
+    /// The REAL unified traversal (1711-B phase 2): one reference walk
+    /// feeding both projections. See `FileExtractionBundle::build_unified`'s
+    /// doc comment.
+    fn build_bundle_unified(uri: &str, text: &str, ast: &Node) -> FileExtractionBundle {
+        let content_hash = content_hash_of(text);
+        let mut doc = Document::new(uri.to_string(), 1, text.to_string());
+        FileExtractionBundle::build_unified(ast, uri, content_hash, &mut doc, None)
+    }
+
     /// Assert full structural parity between the two independently-computed
     /// projections and the bundle-derived ones, for one fixture. There must
     /// be NO delta -- `FileExtractionBundle::build` runs the identical
@@ -10625,24 +11419,116 @@ mod extraction_bundle_shadow_compare {
         );
     }
 
+    /// **1711-B phase 2: canonical-side parity for the REAL unified
+    /// traversal.** Asserts the unified walk's canonical `FileFactShard`
+    /// (built from `IndexVisitor::visit_unified`'s `Vec<SymbolRef>`, via
+    /// `build_canonical_fact_shard_from_symbol_refs`) is BYTE-FOR-BYTE
+    /// IDENTICAL to production's own canonical output
+    /// (`build_canonical_fact_shard_for_ast`, via `extract_symbol_refs`).
+    ///
+    /// This MUST hold with zero deltas everywhere, including fixtures that
+    /// exercise the coverage-delta constructs (block-form packages/classes,
+    /// Typeglob, Goto, regex-binds, etc.) -- canonical's `extract_symbol_refs`
+    /// already reaches all of those today via its own complete
+    /// `Node::for_each_child`-based fallback (verified empirically; see
+    /// `docs/reference/1711-B-coverage-delta.md`). Only the LEGACY
+    /// `FileIndex` projection gains new coverage under unification (see
+    /// `assert_unified_legacy_is_superset` below) -- canonical does not
+    /// change at all.
+    fn assert_unified_canonical_parity(label: &str, uri: &str, text: &str) {
+        let mut parser = Parser::new(text);
+        let ast = match parser.parse() {
+            Ok(ast) => ast,
+            Err(e) => {
+                eprintln!("skip {label} ({uri}): parse error: {e}");
+                return;
+            }
+        };
+
+        let direct = build_direct(uri, text, &ast);
+        let unified = build_bundle_unified(uri, text, &ast);
+
+        assert_eq!(
+            direct.shard, unified.canonical_shard,
+            "{label}: canonical FileFactShard diverged between production's dual-walk output \
+             and the unified traversal -- canonical coverage must NOT change under unification"
+        );
+    }
+
+    /// **1711-B phase 2: legacy-side monotonic-superset check.** Unlike
+    /// canonical (which must be byte-identical), the legacy `FileIndex`
+    /// projection is EXPECTED to gain entries under the unified traversal
+    /// (see `docs/reference/1711-B-coverage-delta.md`) -- so this asserts
+    /// every reference-map key present under the OLD dual walk is STILL
+    /// present, with AT LEAST as many entries, under the unified walk
+    /// (never a loss), and reports the per-fixture growth for visibility.
+    /// It does not assert exact equality, and does not fail merely because
+    /// new keys appear.
+    fn assert_unified_legacy_is_superset(label: &str, uri: &str, text: &str) {
+        let mut parser = Parser::new(text);
+        let ast = match parser.parse() {
+            Ok(ast) => ast,
+            Err(e) => {
+                eprintln!("skip {label} ({uri}): parse error: {e}");
+                return;
+            }
+        };
+
+        let direct = build_direct(uri, text, &ast);
+        let unified = build_bundle_unified(uri, text, &ast);
+
+        for (name, old_refs) in &direct.file_index.references {
+            let new_count = unified.legacy_index.references.get(name).map_or(0, Vec::len);
+            assert!(
+                new_count >= old_refs.len(),
+                "{label}: unified legacy walk LOST references for `{name}` -- \
+                 had {}, now {new_count}. Unification must never be a regression.",
+                old_refs.len()
+            );
+        }
+
+        let old_total: usize = direct.file_index.references.values().map(Vec::len).sum();
+        let new_total: usize = unified.legacy_index.references.values().map(Vec::len).sum();
+        assert!(
+            new_total >= old_total,
+            "{label}: unified legacy walk's total reference count dropped ({old_total} -> {new_total})"
+        );
+        if new_total > old_total {
+            eprintln!(
+                "{label}: legacy reference count grew under unification: {old_total} -> {new_total} \
+                 (+{})",
+                new_total - old_total
+            );
+        }
+    }
+
     // ── Targeted edge cases ──────────────────────────────────────────────
 
     #[test]
     fn parity_comment_only() {
         let text = "package Foo;\nsub bar { return 1; }\n# just a comment, nothing else\n";
-        assert_parity("comment_only", "file:///edge/comment_only.pl", text);
+        let uri = "file:///edge/comment_only.pl";
+        assert_parity("comment_only", uri, text);
+        assert_unified_canonical_parity("comment_only", uri, text);
+        assert_unified_legacy_is_superset("comment_only", uri, text);
     }
 
     #[test]
     fn parity_reference_only() {
         let text = "package Foo;\nsub bar { return 1; }\nsub baz { return bar() + Foo::bar(); }\n";
-        assert_parity("reference_only", "file:///edge/reference_only.pl", text);
+        let uri = "file:///edge/reference_only.pl";
+        assert_parity("reference_only", uri, text);
+        assert_unified_canonical_parity("reference_only", uri, text);
+        assert_unified_legacy_is_superset("reference_only", uri, text);
     }
 
     #[test]
     fn parity_declaration() {
         let text = "package Foo;\nour $count = 0;\nmy $local = 1;\nsub bar { my ($x, $y) = @_; return $x + $y; }\n";
-        assert_parity("declaration", "file:///edge/declaration.pl", text);
+        let uri = "file:///edge/declaration.pl";
+        assert_parity("declaration", uri, text);
+        assert_unified_canonical_parity("declaration", uri, text);
+        assert_unified_legacy_is_superset("declaration", uri, text);
     }
 
     #[test]
@@ -10653,7 +11539,10 @@ use Moo;
 has 'name' => (is => 'rw');
 eval "sub greet { return 'hi'; }";
 "#;
-        assert_parity("generated_dynamic", "file:///edge/generated_dynamic.pl", text);
+        let uri = "file:///edge/generated_dynamic.pl";
+        assert_parity("generated_dynamic", uri, text);
+        assert_unified_canonical_parity("generated_dynamic", uri, text);
+        assert_unified_legacy_is_superset("generated_dynamic", uri, text);
     }
 
     #[test]
@@ -10666,7 +11555,10 @@ use lib '../lib';
 use List::Util qw(first sum);
 require Carp;
 "#;
-        assert_parity("imports", "file:///edge/imports.pl", text);
+        let uri = "file:///edge/imports.pl";
+        assert_parity("imports", uri, text);
+        assert_unified_canonical_parity("imports", uri, text);
+        assert_unified_legacy_is_superset("imports", uri, text);
     }
 
     #[test]
@@ -10690,7 +11582,10 @@ END
 
 sub bar { return $greeting; }
 "#;
-        assert_parity("heredoc_pod_strings", "file:///edge/heredoc_pod.pl", text);
+        let uri = "file:///edge/heredoc_pod.pl";
+        assert_parity("heredoc_pod_strings", uri, text);
+        assert_unified_canonical_parity("heredoc_pod_strings", uri, text);
+        assert_unified_legacy_is_superset("heredoc_pod_strings", uri, text);
     }
 
     // ── Perl corpus + real-project fixtures ───────────────────────────────
@@ -10730,7 +11625,14 @@ sub bar { return $greeting; }
                 must(url::Url::from_file_path(path).map_err(|()| {
                     format!("fixture path cannot become file URI: {}", path.display())
                 }));
-            assert_parity(&path.display().to_string(), uri.as_str(), &text);
+            let label = path.display().to_string();
+            assert_parity(&label, uri.as_str(), &text);
+            // 1711-B phase 2: canonical must stay byte-identical under the
+            // real unified traversal, and legacy must never LOSE coverage,
+            // across the full corpus sweep -- not just the targeted edge
+            // cases above.
+            assert_unified_canonical_parity(&label, uri.as_str(), &text);
+            assert_unified_legacy_is_superset(&label, uri.as_str(), &text);
         }
         Ok(())
     }
@@ -10765,5 +11667,196 @@ sub bar { return $greeting; }
                 dir.display()
             );
         }
+    }
+
+    // ── Coverage-delta characterization (1711-B phase 2) ──────────────────
+    //
+    // Each case below is a MINIMAL, checked-in, fixture-backed reproduction
+    // of one construct where `IndexVisitor::visit_node` (production, today)
+    // silently drops recursion -- verified empirically against current
+    // `origin/main` before this traversal was written -- while
+    // `extract_symbol_refs` (production's canonical path, also today)
+    // ALREADY reaches it via its own complete `Node::for_each_child`-based
+    // fallback. The unified traversal (`visit_unified`) closes each gap by
+    // adopting that same complete fallback for the legacy projection too.
+    // See `docs/reference/1711-B-coverage-delta.md` for the durable,
+    // narrative version of this same list (this test module is the
+    // mechanically-enforced source of truth; that doc must not drift from
+    // it).
+    //
+    // Each case asserts, for the SAME source text:
+    //   1. OLD (today's production dual-walk, `build_direct`): legacy has
+    //      ZERO entries for the key under test (the pre-existing gap).
+    //   2. NEW (`build_bundle_unified`): legacy GAINS at least one entry for
+    //      that key (the fix).
+    //   3. Canonical stays BYTE-IDENTICAL between old and new (canonical
+    //      already had this coverage -- unification must not also change
+    //      canonical's output).
+
+    /// Asserts case (1)-(3) above for one coverage-delta fixture.
+    fn assert_coverage_delta_case(label: &str, uri: &str, text: &str, new_reference_key: &str) {
+        let mut parser = Parser::new(text);
+        let ast = must(parser.parse());
+
+        let direct = build_direct(uri, text, &ast);
+        let unified = build_bundle_unified(uri, text, &ast);
+
+        let old_count = direct.file_index.references.get(new_reference_key).map_or(0, Vec::len);
+        let new_count = unified.legacy_index.references.get(new_reference_key).map_or(0, Vec::len);
+
+        assert_eq!(
+            old_count, 0,
+            "{label}: expected today's production dual walk to have ZERO `{new_reference_key}` \
+             legacy entries (the documented pre-existing gap) -- got {old_count}. Has this gap \
+             already been fixed elsewhere? If so, this characterization is stale and should be \
+             updated/removed, not silently left failing."
+        );
+        assert!(
+            new_count >= 1,
+            "{label}: expected the unified traversal to gain at least one `{new_reference_key}` \
+             legacy entry -- got {new_count}. The coverage-delta fix did not take effect for \
+             this construct."
+        );
+        assert_eq!(
+            direct.shard, unified.canonical_shard,
+            "{label}: canonical FileFactShard must stay IDENTICAL -- canonical already had this \
+             coverage before unification; only the legacy projection should gain anything here"
+        );
+    }
+
+    /// Case 1: block-form `package Foo { ... }` bodies are never walked for
+    /// REFERENCES by `IndexVisitor::visit_node` today (only their
+    /// declarations are seen, via the separate `extract_symbol_decls` walk
+    /// inside `project_symbol_declarations`) -- `baz()` inside the block is
+    /// invisible to `find_references("baz")` on current `origin/main`.
+    #[test]
+    fn coverage_delta_package_block_form() {
+        let text = "package Foo { sub bar { baz(); } }\n";
+        assert_coverage_delta_case(
+            "package_block_form",
+            "file:///edge/coverage_delta_package_block.pl",
+            text,
+            "baz",
+        );
+    }
+
+    /// Case 2: same gap as case 1, for Perl 5.38+ `class Foo { ... }`
+    /// bodies (`NodeKind::Class`'s `body` is never recursed into either).
+    #[test]
+    fn coverage_delta_class_body_form() {
+        let text = "use feature 'class';\nclass Foo { method bar { baz(); } }\n";
+        assert_coverage_delta_case(
+            "class_body_form",
+            "file:///edge/coverage_delta_class_body.pl",
+            text,
+            "baz",
+        );
+    }
+
+    /// Case 3: `NodeKind::Typeglob` has no arm in `visit_node`/`visit_children`
+    /// at all -- typeglob aliasing (`*alias = \&original;`) is completely
+    /// invisible to the legacy `FileIndex` today, for any Perl file that
+    /// uses it.
+    #[test]
+    fn coverage_delta_typeglob_alias() {
+        let text = "package Foo;\nsub original { 1 }\n*alias = \\&original;\n";
+        assert_coverage_delta_case(
+            "typeglob_alias",
+            "file:///edge/coverage_delta_typeglob.pl",
+            text,
+            "*alias",
+        );
+    }
+
+    /// Case 4: `NodeKind::Goto` has no arm in `visit_node`/`visit_children`
+    /// at all -- a `goto &handler` coderef target is invisible to the
+    /// legacy `FileIndex` today.
+    #[test]
+    fn coverage_delta_goto_coderef_target() {
+        let text = "package Foo;\nsub dispatch { goto &handler; }\n";
+        assert_coverage_delta_case(
+            "goto_coderef_target",
+            "file:///edge/coverage_delta_goto.pl",
+            text,
+            "&handler",
+        );
+    }
+
+    /// Case 5: regex-bind expressions (`Match`/`Substitution`/
+    /// `Transliteration`) are not in `visit_node`/`visit_children`'s
+    /// coverage at all -- a function call inside the bind target
+    /// (`compute() =~ /x/`) is invisible to the legacy `FileIndex` today,
+    /// despite being an extremely common Perl idiom.
+    #[test]
+    fn coverage_delta_regex_bind_nested_call() {
+        let text = "package Foo;\nsub bar { return compute() =~ /x/; }\n";
+        assert_coverage_delta_case(
+            "regex_bind_nested_call",
+            "file:///edge/coverage_delta_regex_bind.pl",
+            text,
+            "compute",
+        );
+    }
+
+    /// Case 6: `NodeKind::Tie` has no arm in `visit_node`/`visit_children`
+    /// at all -- a call in `tie`'s argument list (`tie my %h, 'Helper',
+    /// extra_arg();`) is invisible to the legacy `FileIndex` today.
+    #[test]
+    fn coverage_delta_tie_args() {
+        let text = "package Foo;\nsub bar { tie my %h, 'Helper', extra_arg(); }\n";
+        assert_coverage_delta_case(
+            "tie_args",
+            "file:///edge/coverage_delta_tie.pl",
+            text,
+            "extra_arg",
+        );
+    }
+
+    /// Case 7: `NodeKind::IndirectCall` (indirect-object syntax, `new Class
+    /// @args`) has no arm in `visit_node`/`visit_children` at all -- a call
+    /// nested in its argument list (`new Foo(make_arg())`) is invisible to
+    /// the legacy `FileIndex` today.
+    #[test]
+    fn coverage_delta_indirect_call_args() {
+        let text = "package Foo;\nsub bar { my $obj = new Foo(make_arg()); }\n";
+        assert_coverage_delta_case(
+            "indirect_call_args",
+            "file:///edge/coverage_delta_indirect_call.pl",
+            text,
+            "make_arg",
+        );
+    }
+
+    /// Case 8: `IndexVisitor::visit_node`'s `Subroutine` arm only visits
+    /// `body`, never `prototype`/`signature` -- a default-value expression
+    /// in a `sub`'s signature (`sub greet($name = default_name())`) is
+    /// invisible to the legacy `FileIndex` today. (`Method`'s arm already
+    /// visits `signature` correctly -- this gap is `Subroutine`-specific.)
+    #[test]
+    fn coverage_delta_subroutine_signature_default() {
+        let text = "package Foo;\nsub greet($name = default_name()) { return $name; }\n";
+        assert_coverage_delta_case(
+            "subroutine_signature_default",
+            "file:///edge/coverage_delta_sig_default.pl",
+            text,
+            "default_name",
+        );
+    }
+
+    /// Case 9: `IndexVisitor::visit_node`'s `Assignment` arm does NOTHING
+    /// for a non-`Variable` lhs (e.g. an indexed/complex assignment target
+    /// like `$h{compute_key()} = 1`) -- no recursion at all, so a nested
+    /// call inside the index expression is invisible to the legacy
+    /// `FileIndex` today. (The same class of gap applies to `++`/`--` on a
+    /// non-`Variable` operand.)
+    #[test]
+    fn coverage_delta_assignment_indexed_target() {
+        let text = "package Foo;\nsub bar { my %h; $h{compute_key()} = 1; }\n";
+        assert_coverage_delta_case(
+            "assignment_indexed_target",
+            "file:///edge/coverage_delta_indexed_assignment.pl",
+            text,
+            "compute_key",
+        );
     }
 }
