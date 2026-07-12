@@ -58,6 +58,8 @@ pub enum FallbackReason {
     /// Format declarations require lexer/parser state that token replay cannot
     /// currently preserve safely.
     ContextSensitiveFormat,
+    /// Replayed recovery diagnostics were not safe to preserve with shifted tokens.
+    RecoveryDiagnosticsUnstable,
 }
 
 impl fmt::Display for FallbackReason {
@@ -68,6 +70,7 @@ impl fmt::Display for FallbackReason {
             Self::CacheBoundaryUnavailable => "cache boundary unavailable",
             Self::TokenReplayFailed => "token replay failed",
             Self::ContextSensitiveFormat => "context-sensitive format declaration",
+            Self::RecoveryDiagnosticsUnstable => "replayed recovery diagnostics unstable",
         };
         formatter.write_str(description)
     }
@@ -111,6 +114,7 @@ pub struct IncrementalState {
     tokens: Vec<Token>,
     checkpoints: Vec<LexerCheckpoint>,
     latest_metrics: IncrementalMetrics,
+    diagnostics: Vec<ParseError>,
 }
 
 impl IncrementalState {
@@ -122,7 +126,15 @@ impl IncrementalState {
             tokens,
             checkpoints,
             latest_metrics: IncrementalMetrics::full(source.len(), None),
+            diagnostics: Vec::new(),
         }
+    }
+
+    /// Build a token cache with diagnostics from the parse that produced it.
+    pub fn with_diagnostics(source: &str, diagnostics: &[ParseError]) -> Self {
+        let mut state = Self::new(source);
+        state.diagnostics = diagnostics.to_vec();
+        state
     }
 
     /// Return the source represented by this cache.
@@ -133,6 +145,11 @@ impl IncrementalState {
     /// Return measurements for the most recent operation.
     pub fn metrics(&self) -> &IncrementalMetrics {
         &self.latest_metrics
+    }
+
+    /// Return diagnostics from the most recent parse represented by this cache.
+    pub fn diagnostics(&self) -> &[ParseError] {
+        &self.diagnostics
     }
 
     /// Replay one edit and parse the resulting AST from the assembled tokens.
@@ -218,6 +235,11 @@ impl IncrementalState {
                 return self.full_reparse(new_source, Some(FallbackReason::TokenReplayFailed));
             }
         };
+        let diagnostics = parser.errors().to_vec();
+        if !diagnostics.is_empty() {
+            return self
+                .full_reparse(new_source, Some(FallbackReason::RecoveryDiagnosticsUnstable));
+        }
 
         self.source = new_source.to_owned();
         self.tokens = assembled;
@@ -237,6 +259,7 @@ impl IncrementalState {
             changed_range: old_relex_start..new_relex_end,
             fallback: None,
         };
+        self.diagnostics = diagnostics;
         Ok(root)
     }
 
@@ -292,6 +315,7 @@ impl IncrementalState {
     ) -> ParseResult<Node> {
         let mut parser = Parser::new(source);
         let root = parser.parse()?;
+        let diagnostics = parser.errors().to_vec();
         let (tokens, checkpoints) = lex_full(source);
         self.source = source.to_owned();
         self.tokens = tokens;
@@ -299,6 +323,7 @@ impl IncrementalState {
         let mut metrics = IncrementalMetrics::full(source.len(), fallback);
         metrics.tokens_relexed = self.tokens.len();
         self.latest_metrics = metrics;
+        self.diagnostics = diagnostics;
         Ok(root)
     }
 
@@ -415,6 +440,35 @@ mod tests {
         let fresh = must(fresh_parser.parse());
 
         assert_eq!(incremental.to_sexp(), fresh.to_sexp());
+    }
+
+    #[test]
+    fn replay_preserves_parser_diagnostics() {
+        let source = "my $value = 1;\n".to_owned();
+        let mut state = IncrementalState::new(&source);
+        let start = must_some(source.find("1"));
+        let new_source = source.replacen("1", "", 1);
+        let edit = IncrementalEdit::new(start, start + 1, "");
+
+        let _ = must(state.reparse(&new_source, &edit));
+
+        assert!(!state.diagnostics().is_empty());
+        assert_eq!(state.metrics().fallback, Some(FallbackReason::RecoveryDiagnosticsUnstable));
+        assert!(state.metrics().full_parse);
+    }
+
+    #[test]
+    fn format_declaration_records_a_context_sensitive_fallback() {
+        let source = "format REPORT =\nName: @<<<\n$x\n.\n";
+        let mut state = IncrementalState::new(source);
+        let start = must_some(source.find("Name"));
+        let new_source = source.replacen("Name", "Value", 1);
+        let edit = IncrementalEdit::new(start, start + 4, "Value");
+
+        let _ = must(state.reparse(&new_source, &edit));
+
+        assert_eq!(state.metrics().fallback, Some(FallbackReason::ContextSensitiveFormat));
+        assert!(state.metrics().full_parse);
     }
 
     #[test]
