@@ -49,10 +49,13 @@
 #[cfg(all(test, feature = "workspace"))]
 mod routing_matrix {
     use crate::runtime::LspServer;
+    use crate::util::is_word_boundary;
     use parking_lot::Mutex;
     use perl_parser::workspace_index::IndexCoordinator;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
+    use std::fs;
     use std::io::Cursor;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -696,6 +699,865 @@ use warnings;
         // without going through any newly added pub method.  If a pub method were added
         // it would appear in this file.  Reviewers: `grep 'pub fn test_set_index'
         // test_api.rs` should return no results.
+
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Representative-workspace replay (#2674 PR-3)
+    //
+    // Extends the controlled routing-matrix harness above with a checked-in,
+    // deterministic request manifest replayed against three real, committed
+    // project fixtures under `test_corpus/real_projects/` (Mojolicious,
+    // Dancer2, Catalyst — the same skeletons already used by
+    // `perl-lsp-ux-tests` UX scenarios and the real-workspace latency
+    // baselines). This is a MEASUREMENT extension: it fires real
+    // `textDocument/references` requests through the same `LspServer` +
+    // `explainProviderDecision` receipt path as `references_routing_matrix`
+    // above, and does not change any provider behavior.
+    //
+    // ## Selection rule (so the corpus composition is inspectable)
+    //
+    // For each project we name one-to-three files already committed as UX
+    // fixtures. Within those named files we hand-select EVERY same-file
+    // lexical variable, same-file subroutine, cross-file subroutine,
+    // imported-symbol call site, cross-class method-name collision, and
+    // no-symbol position needed to populate every `FactClass` bucket below at
+    // least once across the three projects. This is not a random sample of
+    // "real user traffic" — see the module doc comment at the top of this
+    // file for that disclaimer, which applies equally here. The manifest is
+    // `REPLAY_MANIFEST` + `EMPTY_POSITION_MANIFEST` below; every entry's
+    // `expected_true_occurrences` / `known_false_occurrences` was verified
+    // against the fixture source (occurrence order confirmed via a boundary
+    // match dump before this manifest was written — see the file/needle pairs
+    // below for the exact source lines each index maps to).
+    //
+    // ## What is asserted vs. recorded
+    //
+    // `FactClass::is_strictly_checked()` classes (`LocalLexical`,
+    // `PackageSubSameFile`, `DynamicAmbiguous`) are same-file-scoped by
+    // construction, so whenever the observed answering tier claims
+    // `semantic_source_backed` (source-backed exactness), the actual result
+    // set is asserted to equal the curated expected set exactly and to never
+    // contain a known-false location. Cross-file and imported-symbol classes
+    // are intentionally out of the current same-file PIR-A slice; they are
+    // recorded (tier, counts, fallback reason) without a strict equality
+    // assertion, and are still checked against `known_false_occurrences`
+    // (empty for both here, i.e. trivially satisfied) so a future promotion
+    // that DOES claim exactness for them would be caught by this same guard.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FactClass {
+        /// Same-file lexical scalar variable with >=2 same-scope occurrences.
+        LocalLexical,
+        /// Subroutine defined and called within the same file, unambiguous name.
+        PackageSubSameFile,
+        /// Subroutine defined in one file, called from a different file in the
+        /// same project — outside the current same-file PIR-A scope.
+        CrossFileSub,
+        /// Symbol imported from a module outside the fixture project (e.g.
+        /// `Carp::croak`) — declaration is not resolvable in-workspace.
+        ImportedSymbol,
+        /// Bareword name that collides across multiple classes/files, where a
+        /// naive same-identifier text scan would find call sites that target a
+        /// DIFFERENT class's method of the same name.
+        DynamicAmbiguous,
+        /// Cursor on a blank/no-symbol line — must yield the `empty` tier.
+        EmptyPosition,
+    }
+
+    impl FactClass {
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::LocalLexical => "local_lexical",
+                Self::PackageSubSameFile => "package_sub_same_file",
+                Self::CrossFileSub => "cross_file_sub",
+                Self::ImportedSymbol => "imported_symbol",
+                Self::DynamicAmbiguous => "dynamic_ambiguous",
+                Self::EmptyPosition => "empty_position",
+            }
+        }
+
+        /// Whether a `semantic_source_backed` answer for this class is checked
+        /// for exact equality against the curated expected set. See the module
+        /// doc comment above for the rationale.
+        fn is_strictly_checked(self) -> bool {
+            matches!(self, Self::LocalLexical | Self::PackageSubSameFile | Self::DynamicAmbiguous)
+        }
+    }
+
+    /// One checked-in replay request. `cursor_occurrence` and the two
+    /// occurrence-index sets refer to the boundary-safe, file-ordered
+    /// occurrences of `needle` in `file` (see `ident_boundary_occurrences`).
+    #[derive(Debug, Clone, Copy)]
+    struct ReplayRequest {
+        project: &'static str,
+        file: &'static str,
+        fact_class: FactClass,
+        needle: &'static str,
+        cursor_occurrence: usize,
+        include_declaration: bool,
+        expected_true_occurrences: &'static [usize],
+        known_false_occurrences: &'static [usize],
+        fallback_reason: &'static str,
+    }
+
+    /// Checked-in request manifest. See the module doc comment above for the
+    /// selection rule. Occurrence indices were confirmed against source with a
+    /// boundary-match dump before authoring (each request's file/needle pair
+    /// is independently re-verifiable by grepping the named fixture file).
+    #[rustfmt::skip]
+    const REPLAY_MANIFEST: &[ReplayRequest] = &[
+        // ---- Mojolicious: lib/Mojolicious.pm ----
+        // `$plugins` in `dispatch`: decl(56) + 2 same-scope uses(57,59). No
+        // other `$plugins` in the file — single, unambiguous scope.
+        ReplayRequest {
+            project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
+            fact_class: FactClass::LocalLexical, needle: "$plugins",
+            cursor_occurrence: 0, include_declaration: false,
+            expected_true_occurrences: &[0, 1, 2], known_false_occurrences: &[],
+            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+        },
+        // `$c` in `dispatch` (occ 0-6): must exclude the unrelated `$c` in
+        // `handler` (occ 7-10) — direct scope-shadow analog of the existing
+        // F1 curated corpus fixture, on real code.
+        ReplayRequest {
+            project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
+            fact_class: FactClass::LocalLexical, needle: "$c",
+            cursor_occurrence: 0, include_declaration: false,
+            expected_true_occurrences: &[0, 1, 2, 3, 4, 5, 6],
+            known_false_occurrences: &[7, 8, 9, 10],
+            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+        },
+        // `$c` in `handler` (occ 7-10): the mirror-image request from the
+        // opposite scope.
+        ReplayRequest {
+            project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
+            fact_class: FactClass::LocalLexical, needle: "$c",
+            cursor_occurrence: 7, include_declaration: false,
+            expected_true_occurrences: &[7, 8, 9, 10],
+            known_false_occurrences: &[0, 1, 2, 3, 4, 5, 6],
+            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+        },
+        // `dispatch`: def(54, occ0) + true call `$self->dispatch($c)`(67, occ3)
+        // target `Mojolicious::dispatch`; `$self->static->dispatch($c)`(58,
+        // occ1) and `$self->routes->dispatch($c)`(60, occ2) call DIFFERENT
+        // classes' `dispatch` methods and must never appear in an exact result.
+        ReplayRequest {
+            project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
+            fact_class: FactClass::DynamicAmbiguous, needle: "dispatch",
+            cursor_occurrence: 0, include_declaration: true,
+            expected_true_occurrences: &[0, 3], known_false_occurrences: &[1, 2],
+            fallback_reason: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
+        },
+        // `startup`: call(35, occ0) + def(94, occ1), unambiguous same-file sub.
+        ReplayRequest {
+            project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
+            fact_class: FactClass::PackageSubSameFile, needle: "startup",
+            cursor_occurrence: 1, include_declaration: true,
+            expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
+            fallback_reason: "same_file_subroutine_did_not_reach_semantic_source_backed_tier",
+        },
+        // `croak`(73, occ1): Carp is not vendored in this fixture project, so
+        // no same-file declaration exists to prove exactness against.
+        ReplayRequest {
+            project: "mojolicious_skeleton", file: "lib/Mojolicious.pm",
+            fact_class: FactClass::ImportedSymbol, needle: "croak",
+            cursor_occurrence: 1, include_declaration: false,
+            expected_true_occurrences: &[], known_false_occurrences: &[],
+            fallback_reason: "carp_croak_declared_outside_the_fixture_project",
+        },
+        // ---- Dancer2: lib/Dancer2/Core/App.pm ----
+        // `$code` in `add_route`: decl(26,occ0) + uses(27,occ1; 30,occ2); the
+        // unrelated `$code` in `add_hook` (occ3,occ4) must be excluded.
+        ReplayRequest {
+            project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
+            fact_class: FactClass::LocalLexical, needle: "$code",
+            cursor_occurrence: 0, include_declaration: false,
+            expected_true_occurrences: &[0, 1, 2], known_false_occurrences: &[3, 4],
+            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+        },
+        // `$method` scope pair, side A: `add_route` (occ0,occ1) vs `dispatch`
+        // (occ2,occ3) — same bare name, non-overlapping scopes.
+        ReplayRequest {
+            project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
+            fact_class: FactClass::LocalLexical, needle: "$method",
+            cursor_occurrence: 0, include_declaration: false,
+            expected_true_occurrences: &[0, 1], known_false_occurrences: &[2, 3],
+            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+        },
+        // `$method` scope pair, side B: the mirror-image request.
+        ReplayRequest {
+            project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
+            fact_class: FactClass::LocalLexical, needle: "$method",
+            cursor_occurrence: 2, include_declaration: false,
+            expected_true_occurrences: &[2, 3], known_false_occurrences: &[0, 1],
+            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+        },
+        // `dispatch`(34, occ0): defined here, the only call site is
+        // `Runner.pm:32` (`$app->dispatch($env)`) — a DIFFERENT file in the
+        // same project, outside the current same-file PIR-A scope.
+        ReplayRequest {
+            project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
+            fact_class: FactClass::CrossFileSub, needle: "dispatch",
+            cursor_occurrence: 0, include_declaration: true,
+            expected_true_occurrences: &[0], known_false_occurrences: &[],
+            fallback_reason: "cross_file_caller_lives_outside_the_same_file_pir_a_scope",
+        },
+        // `croak`(27, occ1): same out-of-fixture-declaration reasoning as Mojolicious.
+        ReplayRequest {
+            project: "dancer2_skeleton", file: "lib/Dancer2/Core/App.pm",
+            fact_class: FactClass::ImportedSymbol, needle: "croak",
+            cursor_occurrence: 1, include_declaration: false,
+            expected_true_occurrences: &[], known_false_occurrences: &[],
+            fallback_reason: "carp_croak_declared_outside_the_fixture_project",
+        },
+        // ---- Catalyst: lib/Catalyst/Action.pm, lib/Catalyst.pm, lib/Catalyst/Dispatcher.pm ----
+        // `$controller` in `dispatch`: decl(23,occ0) + uses(24,occ1; 26,occ2),
+        // single unambiguous scope, no other `$controller` in the file.
+        ReplayRequest {
+            project: "catalyst_skeleton", file: "lib/Catalyst/Action.pm",
+            fact_class: FactClass::LocalLexical, needle: "$controller",
+            cursor_occurrence: 0, include_declaration: false,
+            expected_true_occurrences: &[0, 1, 2], known_false_occurrences: &[],
+            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+        },
+        // `$c` in `dispatch` (occ0-4): must exclude `$c` in `execute`, `match`,
+        // and `match_captures` (occ5-10) — three OTHER scopes share the name.
+        ReplayRequest {
+            project: "catalyst_skeleton", file: "lib/Catalyst/Action.pm",
+            fact_class: FactClass::LocalLexical, needle: "$c",
+            cursor_occurrence: 0, include_declaration: false,
+            expected_true_occurrences: &[0, 1, 2, 3, 4],
+            known_false_occurrences: &[5, 6, 7, 8, 9, 10],
+            fallback_reason: "same_file_lexical_did_not_reach_semantic_source_backed_tier",
+        },
+        // `dispatch` in Catalyst.pm: call `$c->dispatch;`(180,occ0) +
+        // def(184,occ1) — unambiguous WITHIN this file even though `dispatch`
+        // is also independently defined in Action.pm and Dispatcher.pm.
+        ReplayRequest {
+            project: "catalyst_skeleton", file: "lib/Catalyst.pm",
+            fact_class: FactClass::PackageSubSameFile, needle: "dispatch",
+            cursor_occurrence: 1, include_declaration: true,
+            expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
+            fallback_reason: "same_file_subroutine_did_not_reach_semantic_source_backed_tier",
+        },
+        // `dispatch` in Dispatcher.pm: def(12,occ0); ALL THREE in-file calls
+        // (`$action->dispatch`(22,occ1), `$action_or_url->dispatch`(28,occ2),
+        // `$action->dispatch`(32,occ3)) target `Catalyst::Action::dispatch` on
+        // a differently-named receiver, NOT a recursive self-call — none of
+        // them may appear in an exact result for `Dispatcher::dispatch`.
+        ReplayRequest {
+            project: "catalyst_skeleton", file: "lib/Catalyst/Dispatcher.pm",
+            fact_class: FactClass::DynamicAmbiguous, needle: "dispatch",
+            cursor_occurrence: 0, include_declaration: true,
+            expected_true_occurrences: &[0], known_false_occurrences: &[1, 2, 3],
+            fallback_reason: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
+        },
+        // `croak`(31, occ1): same out-of-fixture-declaration reasoning as above.
+        ReplayRequest {
+            project: "catalyst_skeleton", file: "lib/Catalyst/Dispatcher.pm",
+            fact_class: FactClass::ImportedSymbol, needle: "croak",
+            cursor_occurrence: 1, include_declaration: false,
+            expected_true_occurrences: &[], known_false_occurrences: &[],
+            fallback_reason: "carp_croak_declared_outside_the_fixture_project",
+        },
+    ];
+
+    /// No-symbol cursor positions (blank lines), one per project, 0-based line.
+    const EMPTY_POSITION_MANIFEST: &[(&str, &str, usize)] = &[
+        ("mojolicious_skeleton", "lib/Mojolicious.pm", 17),
+        ("dancer2_skeleton", "lib/Dancer2/Core/App.pm", 7),
+        ("catalyst_skeleton", "lib/Catalyst/Action.pm", 7),
+    ];
+
+    #[derive(Debug)]
+    struct ReplayRow {
+        project: &'static str,
+        file: &'static str,
+        fact_class: FactClass,
+        needle: &'static str,
+        include_declaration: bool,
+        uri: String,
+        line: u32,
+        character: u32,
+        answering_tier: String,
+        source_backed: bool,
+        result_count: usize,
+        index_result_count: usize,
+        text_result_count: usize,
+        latency_us: u64,
+        fallback_reason: &'static str,
+        disposition: &'static str,
+    }
+
+    fn real_project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join("test_corpus/real_projects"))
+            .ok_or_else(|| "CARGO_MANIFEST_DIR must be nested under the workspace root".into())
+    }
+
+    fn collect_project_files(
+        project: &str,
+    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+        fn walk(
+            root: &Path,
+            dir: &Path,
+            out: &mut Vec<(String, String)>,
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(root, &path, out)?;
+                } else if matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("pm" | "pl" | "t")
+                ) {
+                    let rel = path.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+                    let content = fs::read_to_string(&path)
+                        .map_err(|e| format!("reading {}: {e}", path.display()))?;
+                    out.push((rel, content));
+                }
+            }
+            Ok(())
+        }
+
+        let root = real_project_root()?.join(project);
+        let mut files = Vec::new();
+        walk(&root, &root, &mut files)?;
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(files)
+    }
+
+    fn project_uri(project: &str, relative_path: &str) -> String {
+        format!("file:///real_projects/{project}/{relative_path}")
+    }
+
+    fn open_project(
+        server: &LspServer,
+        project: &str,
+    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+        let files = collect_project_files(project)?;
+        for (relative_path, content) in &files {
+            let uri = project_uri(project, relative_path);
+            open_document(server, &uri, content)?;
+        }
+        Ok(files)
+    }
+
+    fn fixture_content<'a>(
+        files: &'a [(String, String)],
+        relative_path: &str,
+    ) -> Result<&'a str, Box<dyn std::error::Error>> {
+        files
+            .iter()
+            .find(|(path, _)| path == relative_path)
+            .map(|(_, content)| content.as_str())
+            .ok_or_else(|| format!("missing fixture file {relative_path}").into())
+    }
+
+    /// Boundary-safe occurrences of `needle` in `content`, in file order, as
+    /// `(line0, byte_col)`. Reuses the same word-boundary semantics as the
+    /// production text-search fallback (`crate::util::is_word_boundary`) —
+    /// this is purely the oracle's tokenizer, not the routing/scope logic
+    /// under test.
+    fn ident_boundary_occurrences(content: &str, needle: &str) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for (line0, line) in content.lines().enumerate() {
+            let bytes = line.as_bytes();
+            let mut start = 0usize;
+            while let Some(idx) = line[start..].find(needle) {
+                let byte_pos = start + idx;
+                if is_word_boundary(bytes, byte_pos, needle.len()) {
+                    out.push((line0, byte_pos));
+                }
+                start = byte_pos + needle.len();
+            }
+        }
+        out
+    }
+
+    fn occurrence_position(
+        content: &str,
+        needle: &str,
+        occurrence: usize,
+    ) -> Result<(u32, u32), Box<dyn std::error::Error>> {
+        let occurrences = ident_boundary_occurrences(content, needle);
+        let (line0, byte_col) = occurrences
+            .get(occurrence)
+            .copied()
+            .ok_or_else(|| format!("occurrence {occurrence} of `{needle}` not found"))?;
+        let line_text = content.lines().nth(line0).unwrap_or("");
+        let character = crate::util::byte_to_utf16_col(line_text, byte_col);
+        Ok((u32::try_from(line0)?, u32::try_from(character)?))
+    }
+
+    fn occurrence_location_key(
+        uri: &str,
+        content: &str,
+        needle: &str,
+        occurrence: usize,
+    ) -> Result<(String, u32, u32), Box<dyn std::error::Error>> {
+        let (line, character) = occurrence_position(content, needle, occurrence)?;
+        Ok((uri.to_string(), line, character))
+    }
+
+    /// Extract `(uri, line, character)` keys from an array of LSP
+    /// `Location`/`LocationLink` values, using the start position.
+    fn location_keys(results: &[Value]) -> Vec<(String, u32, u32)> {
+        results
+            .iter()
+            .filter_map(|entry| {
+                let uri =
+                    entry.get("uri").or_else(|| entry.get("targetUri"))?.as_str()?.to_string();
+                let range = entry.get("range").or_else(|| entry.get("targetRange"))?;
+                let line = range.get("start")?.get("line")?.as_u64()?;
+                let character = range.get("start")?.get("character")?.as_u64()?;
+                Some((uri, u32::try_from(line).ok()?, u32::try_from(character).ok()?))
+            })
+            .collect()
+    }
+
+    /// Roll an observed row up into a #1658 disposition bucket. See the
+    /// module doc comment above for what each bucket means; this function is
+    /// purely a classifier over already-asserted-safe observations (the hard
+    /// assertions in `fire_replay_request` run first and would fail the test
+    /// before a false-exact row ever reaches this classifier).
+    fn classify_disposition(
+        fact_class: FactClass,
+        source_backed: bool,
+        result_locations: &[(String, u32, u32)],
+        expected_keys: &[(String, u32, u32)],
+    ) -> &'static str {
+        if source_backed {
+            if fact_class.is_strictly_checked() {
+                let mut actual_sorted = result_locations.to_vec();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_keys.to_vec();
+                expected_sorted.sort();
+                if actual_sorted == expected_sorted {
+                    return "index_parity_proven";
+                }
+                return "unclassified";
+            }
+            return "coverage_gap";
+        }
+        match fact_class {
+            FactClass::CrossFileSub | FactClass::ImportedSymbol | FactClass::DynamicAmbiguous => {
+                "explicit_refusal_safe"
+            }
+            FactClass::EmptyPosition => "explicit_refusal_safe",
+            FactClass::LocalLexical | FactClass::PackageSubSameFile => "coverage_gap",
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fire_replay_request(
+        server: &LspServer,
+        request: &ReplayRequest,
+        fixture_files: &[(String, String)],
+    ) -> Result<ReplayRow, Box<dyn std::error::Error>> {
+        let content = fixture_content(fixture_files, request.file)?;
+        let uri = project_uri(request.project, request.file);
+        let (line, character) =
+            occurrence_position(content, request.needle, request.cursor_occurrence)?;
+
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "context": {"includeDeclaration": request.include_declaration}
+        });
+
+        let t0 = Instant::now();
+        let result = server.test_handle_references(Some(params))?;
+        let wall_us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+        let explanation = explain_provider_decision(server, "references")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing request_receipt")?;
+
+        // Hard assertion #7: the receipt is bound to THIS request.
+        let receipt_uri = receipt.get("uri").and_then(Value::as_str).unwrap_or("");
+        assert_eq!(
+            receipt_uri, uri,
+            "receipt URI mismatch for {}/{} needle={:?}",
+            request.project, request.file, request.needle
+        );
+        let receipt_line = receipt.get("line").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        assert_eq!(
+            receipt_line,
+            u64::from(line),
+            "receipt line mismatch for {}/{} needle={:?}",
+            request.project,
+            request.file,
+            request.needle
+        );
+        let receipt_char = receipt.get("character").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        assert_eq!(
+            receipt_char,
+            u64::from(character),
+            "receipt character mismatch for {}/{} needle={:?}",
+            request.project,
+            request.file,
+            request.needle
+        );
+
+        let answering_tier =
+            receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("unknown").to_string();
+        let source_backed = receipt.get("source_backed").and_then(Value::as_bool).unwrap_or(false);
+        let index_result_count =
+            usize::try_from(receipt.get("index_result_count").and_then(Value::as_u64).unwrap_or(0))
+                .unwrap_or(usize::MAX);
+        let text_result_count =
+            usize::try_from(receipt.get("text_result_count").and_then(Value::as_u64).unwrap_or(0))
+                .unwrap_or(usize::MAX);
+        let latency_us = receipt.get("latency_us").and_then(Value::as_u64).unwrap_or(wall_us);
+        let fact_source = receipt.get("fact_source").and_then(Value::as_str).unwrap_or("");
+        let source_backed_state =
+            receipt.get("source_backed_state").and_then(Value::as_str).unwrap_or("");
+
+        // Hard assertion #6: every source-backed claim reports both a proof
+        // class (`source_backed_state`) and a producer (`fact_source`).
+        if source_backed {
+            assert!(
+                !fact_source.is_empty(),
+                "source-backed row missing fact_source (producer) for {}/{} needle={:?}",
+                request.project,
+                request.file,
+                request.needle
+            );
+            assert!(
+                !source_backed_state.is_empty(),
+                "source-backed row missing source_backed_state (proof class) for {}/{} needle={:?}",
+                request.project,
+                request.file,
+                request.needle
+            );
+        }
+
+        let results = result.as_ref().and_then(Value::as_array).cloned().unwrap_or_default();
+        let result_locations = location_keys(&results);
+        let result_count = results.len();
+
+        let expected_keys: Vec<(String, u32, u32)> = request
+            .expected_true_occurrences
+            .iter()
+            .map(|occ| occurrence_location_key(&uri, content, request.needle, *occ))
+            .collect::<Result<_, _>>()?;
+        let forbidden_keys: Vec<(String, u32, u32)> = request
+            .known_false_occurrences
+            .iter()
+            .map(|occ| occurrence_location_key(&uri, content, request.needle, *occ))
+            .collect::<Result<_, _>>()?;
+
+        // Hard assertions #1/#2/#3: whenever the tier claims source-backed
+        // exactness, it must never surface a known-false location (this is
+        // where the ambiguous/dynamic and (via the sibling stale-index test
+        // below) stale-generation invariants are actually enforced), and for
+        // strictly-checked classes the result must equal the curated expected
+        // set exactly.
+        if source_backed {
+            for forbidden in &forbidden_keys {
+                assert!(
+                    !result_locations.contains(forbidden),
+                    "false-exact: {}/{} needle={:?} (fact_class={:?}) claimed source-backed \
+                     exact but returned known-false location {forbidden:?}",
+                    request.project,
+                    request.file,
+                    request.needle,
+                    request.fact_class
+                );
+            }
+            if request.fact_class.is_strictly_checked() {
+                let mut actual_sorted = result_locations.clone();
+                actual_sorted.sort();
+                let mut expected_sorted = expected_keys.clone();
+                expected_sorted.sort();
+                assert_eq!(
+                    actual_sorted, expected_sorted,
+                    "exact-range mismatch for {}/{} needle={:?} (fact_class={:?}): \
+                     expected {expected_sorted:?}, got {actual_sorted:?}",
+                    request.project, request.file, request.needle, request.fact_class
+                );
+            }
+        }
+
+        // Hard assertion #5: every fallback is named by tier + reason.
+        if !source_backed {
+            assert!(
+                !request.fallback_reason.is_empty(),
+                "fallback row for {}/{} needle={:?} missing a named reason",
+                request.project,
+                request.file,
+                request.needle
+            );
+        }
+
+        let disposition = classify_disposition(
+            request.fact_class,
+            source_backed,
+            &result_locations,
+            &expected_keys,
+        );
+
+        Ok(ReplayRow {
+            project: request.project,
+            file: request.file,
+            fact_class: request.fact_class,
+            needle: request.needle,
+            include_declaration: request.include_declaration,
+            uri,
+            line,
+            character,
+            answering_tier,
+            source_backed,
+            result_count,
+            index_result_count,
+            text_result_count,
+            latency_us,
+            fallback_reason: request.fallback_reason,
+            disposition,
+        })
+    }
+
+    fn fire_empty_request(
+        server: &LspServer,
+        project: &'static str,
+        file: &'static str,
+        uri: &str,
+        line0: usize,
+    ) -> Result<ReplayRow, Box<dyn std::error::Error>> {
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line0, "character": 0},
+            "context": {"includeDeclaration": false}
+        });
+
+        let t0 = Instant::now();
+        let result = server.test_handle_references(Some(params))?;
+        let wall_us = u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+        let explanation = explain_provider_decision(server, "references")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing request_receipt")?;
+
+        let receipt_uri = receipt.get("uri").and_then(Value::as_str).unwrap_or("");
+        assert_eq!(receipt_uri, uri, "receipt URI mismatch for empty position {project}/{file}");
+        let receipt_line = receipt.get("line").and_then(Value::as_u64).unwrap_or(u64::MAX);
+        assert_eq!(
+            receipt_line,
+            u64::try_from(line0)?,
+            "receipt line mismatch for empty position {project}/{file}"
+        );
+
+        let answering_tier =
+            receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("unknown").to_string();
+        assert_eq!(
+            answering_tier, "empty",
+            "no-symbol position must yield `empty` tier for {project}/{file}, got {answering_tier}"
+        );
+
+        let source_backed = receipt.get("source_backed").and_then(Value::as_bool).unwrap_or(false);
+        let index_result_count =
+            usize::try_from(receipt.get("index_result_count").and_then(Value::as_u64).unwrap_or(0))
+                .unwrap_or(usize::MAX);
+        let text_result_count =
+            usize::try_from(receipt.get("text_result_count").and_then(Value::as_u64).unwrap_or(0))
+                .unwrap_or(usize::MAX);
+        let latency_us = receipt.get("latency_us").and_then(Value::as_u64).unwrap_or(wall_us);
+        let result_count = result.as_ref().and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+        assert_eq!(
+            result_count, 0,
+            "empty position must produce zero results for {project}/{file}"
+        );
+
+        Ok(ReplayRow {
+            project,
+            file,
+            fact_class: FactClass::EmptyPosition,
+            needle: "",
+            include_declaration: false,
+            uri: uri.to_string(),
+            line: u32::try_from(line0)?,
+            character: 0,
+            answering_tier,
+            source_backed,
+            result_count,
+            index_result_count,
+            text_result_count,
+            latency_us,
+            fallback_reason: "no_symbol_under_cursor_correctly_empty",
+            disposition: "explicit_refusal_safe",
+        })
+    }
+
+    fn row_to_json(row: &ReplayRow) -> Value {
+        json!({
+            "project": row.project,
+            "file": row.file,
+            "fact_class": row.fact_class.as_str(),
+            "needle": row.needle,
+            "include_declaration": row.include_declaration,
+            "uri": row.uri,
+            "line": row.line,
+            "character": row.character,
+            "answering_tier": row.answering_tier,
+            "source_backed": row.source_backed,
+            "result_count": row.result_count,
+            "index_result_count": row.index_result_count,
+            "text_result_count": row.text_result_count,
+            "latency_us": row.latency_us,
+            "fallback_reason": row.fallback_reason,
+            "disposition": row.disposition,
+        })
+    }
+
+    /// Representative-workspace replay for #2674 PR-3 (references measurement,
+    /// no live provider behavior change). Fires every request in
+    /// `REPLAY_MANIFEST` + `EMPTY_POSITION_MANIFEST` against three real,
+    /// committed project fixtures, then checks the 9 hard assertions described
+    /// in the module doc comment above and prints a durable JSON receipt with
+    /// a per-request #1658 disposition.
+    #[test]
+    fn references_representative_workspace_replay() -> Result<(), Box<dyn std::error::Error>> {
+        use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+        let projects = ["mojolicious_skeleton", "dancer2_skeleton", "catalyst_skeleton"];
+        let mut project_files: HashMap<&str, Vec<(String, String)>> = HashMap::new();
+        let mut servers: HashMap<&str, LspServer> = HashMap::new();
+        for project in projects {
+            let server = create_server();
+            let files = open_project(&server, project)?;
+            project_files.insert(project, files);
+            servers.insert(project, server);
+        }
+
+        let mut rows: Vec<ReplayRow> = Vec::new();
+        for request in REPLAY_MANIFEST {
+            let server = servers.get(request.project).ok_or("missing server for project")?;
+            let files = project_files.get(request.project).ok_or("missing files for project")?;
+            rows.push(fire_replay_request(server, request, files)?);
+        }
+        for (project, file, line0) in EMPTY_POSITION_MANIFEST.iter().copied() {
+            let server = servers.get(project).ok_or("missing server for project")?;
+            let uri = project_uri(project, file);
+            rows.push(fire_empty_request(server, project, file, &uri, line0)?);
+        }
+
+        // Hard assertion #9: the replay emits a non-empty durable receipt.
+        assert!(!rows.is_empty(), "replay must emit at least one row");
+
+        // Hard assertion #8: every declared project and fact-class bucket appears.
+        let projects_seen: BTreeSet<&str> = rows.iter().map(|r| r.project).collect();
+        assert_eq!(
+            projects_seen,
+            BTreeSet::from(["mojolicious_skeleton", "dancer2_skeleton", "catalyst_skeleton"]),
+            "replay must cover every declared project"
+        );
+        let classes_seen: BTreeSet<&str> = rows.iter().map(|r| r.fact_class.as_str()).collect();
+        assert_eq!(
+            classes_seen,
+            BTreeSet::from([
+                "local_lexical",
+                "package_sub_same_file",
+                "cross_file_sub",
+                "imported_symbol",
+                "dynamic_ambiguous",
+                "empty_position",
+            ]),
+            "replay must cover every declared fact-class bucket"
+        );
+
+        // Hard assertion #4: every empty success is proven correct (`empty`
+        // tier) or carries an explicit fallback-reason explanation.
+        for row in &rows {
+            if row.result_count == 0 {
+                assert!(
+                    row.answering_tier == "empty" || !row.fallback_reason.is_empty(),
+                    "unexplained empty result for {}/{} needle={:?}",
+                    row.project,
+                    row.file,
+                    row.needle
+                );
+            }
+        }
+
+        let receipt = json!({
+            "schema_version": 1,
+            "claim_boundary": "This PR measures current references behavior across a declared \
+                representative workspace corpus, verifies exactness and honest degradation, and \
+                identifies where the request-time text scan is removable, required by an \
+                unresolved coverage gap, or replaceable by explicit refusal. It does not alter \
+                live provider behavior or claim real user-traffic weighting.",
+            "projects": projects,
+            "request_count": rows.len(),
+            "rows": rows.iter().map(row_to_json).collect::<Vec<_>>(),
+        });
+        eprintln!(
+            "references_representative_replay_receipt={}",
+            serde_json::to_string_pretty(&receipt)?
+        );
+
+        let mut by_class: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for row in &rows {
+            by_class.entry(row.fact_class.as_str()).or_default().push(row.disposition);
+        }
+        eprintln!("--- #1658 disposition rollup by fact-class bucket ---");
+        for (class, dispositions) in &by_class {
+            eprintln!("  {class:<24} {dispositions:?}");
+        }
+
+        Ok(())
+    }
+
+    /// Hard assertion #2 (stale-generation requests produce ZERO false-exact
+    /// answers), proven mechanically rather than merely observed: the
+    /// `semantic_source_backed` tier is only reachable inside the
+    /// `IndexAccessMode::Full(coordinator)` branch of `handle_references_inner`
+    /// (see `crates/perl-lsp-rs/src/runtime/language/references.rs`). A
+    /// Building/partial-index coordinator — the same stand-in the routing
+    /// matrix above uses for a stale/not-yet-caught-up index — makes that
+    /// whole branch structurally unreachable, so it can never emit a
+    /// false-exact answer regardless of what the request would otherwise find.
+    #[test]
+    fn references_representative_replay_stale_index_never_source_backed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut server = create_server();
+        let files = open_project(&server, "mojolicious_skeleton")?;
+        set_index_building(&mut server);
+
+        let content = fixture_content(&files, "lib/Mojolicious.pm")?;
+        let uri = project_uri("mojolicious_skeleton", "lib/Mojolicious.pm");
+        let (line, character) = occurrence_position(content, "$plugins", 0)?;
+        let params = json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "context": {"includeDeclaration": false}
+        });
+        server.test_handle_references(Some(params))?;
+
+        let explanation = explain_provider_decision(&server, "references")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing request_receipt")?;
+        let answering_tier =
+            receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("unknown");
+        let source_backed = receipt.get("source_backed").and_then(Value::as_bool).unwrap_or(false);
+
+        assert_ne!(
+            answering_tier, "semantic_source_backed",
+            "a stale/partial index state must not reach the source-backed tier"
+        );
+        assert!(!source_backed, "a stale/partial index state must not report source_backed=true");
 
         Ok(())
     }
