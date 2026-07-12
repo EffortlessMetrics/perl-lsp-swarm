@@ -10,23 +10,35 @@ module) is compiled ONLY under `#[cfg(test)]` -- verified by `cargo check -p
 perl-workspace` and `cargo check -p perl-lsp-rs` (no `--tests`) producing an
 identical build before and after this change.
 
+**Source of truth for the structural counts below:** the checked-in `insta`
+snapshot
+`crates/perl-workspace/src/workspace/snapshots/perl_workspace__workspace__workspace_index__reindex_workshape_measurement__reindex_workshape_receipt.snap`,
+produced by `reextraction_workshape_receipt_snapshot`. Every count, call
+number, and category-hash-changed flag quoted here is read from that
+snapshot, not hand-transcribed -- if the underlying extraction/cache-churn
+behavior ever drifts, `cargo insta test` / `INSTA_UPDATE=no` fails before this
+document's claims can silently go stale. Timing is excluded from the
+snapshot (non-deterministic on shared hardware) and stays informational-only,
+reported via `eprintln!` in the sibling tests.
+
 ## What was measured
 
 The production `didChange` -> shard-update path
 (`WorkspaceIndex::index_file_with_generation`, called from
-`crates/perl-lsp-rs/src/runtime/text_sync.rs:294` and `:1076` via a background
-task) on a fixture file with 80 `sub`s (565+ LOC, 81 symbols including the
-enclosing package -- see `fixture_prefix`/`fixture_is_large_enough` in
-`reindex_workshape_measurement`), across six edit classes:
+`crates/perl-lsp-rs/src/runtime/text_sync.rs:320` and `:1137` via a
+background task) on a fixture file with 80 `sub`s (565+ LOC, 81 symbols
+including the enclosing package -- see `fixture_prefix`/`fixture_is_large_enough`
+in `reindex_workshape_measurement`), across six edit classes. Table values are
+taken directly from the `.snap` file:
 
-| # | Edit class | anchors | entities | occurrences | edges | Extraction re-run? |
-|---|---|---|---|---|---|---|
-| 1 | Comment/whitespace-only (trailing, no byte-span shift) | unchanged | unchanged | unchanged | unchanged | **YES -- every extractor runs once** |
-| 2 | Reference-only (new call to existing sub) | **changed** (see note) | unchanged | changed | -- | YES |
-| 3 | Declaration-changing (new sub) | changed | changed | -- | -- | YES |
-| 4 | Dynamic/generated fact (`eval "sub NAME {...}"`) | changed | changed | -- | -- | YES |
-| 5 | Revert-to-original | == original (bit-identical) | == original | == original | == original | YES (deterministic) |
-| 6 | Superseded generation (older, out-of-order) | n/a -- rejected before commit | n/a | n/a | n/a | **NO -- rejected pre-parse, no stale publish** |
+| # | Edit class | anchors | entities | occurrences | edges | generation_outcome | Extraction re-run? |
+|---|---|---|---|---|---|---|---|
+| 1 | Comment/whitespace-only (trailing, no byte-span shift) | Unchanged | Unchanged | Unchanged | Unchanged | accepted | **YES -- every extractor runs once** |
+| 2 | Reference-only (new call to existing sub) | **Changed** (see note) | Unchanged | Changed | Unchanged | accepted | YES |
+| 3 | Declaration-changing (new sub) | Changed | Changed | Unchanged | Changed | accepted | YES |
+| 4 | Dynamic/generated fact (`eval "sub NAME {...}"`) | Changed | Changed | Changed | Unchanged | accepted | YES |
+| 5 | Revert-to-original | Unchanged (== original, bit-identical) | Unchanged | Unchanged | Unchanged | accepted | YES (deterministic) |
+| 6 | Superseded generation (older, out-of-order) | NotApplicableRejected | NotApplicableRejected | NotApplicableRejected | NotApplicableRejected | stale_rejected_pre_parse | **NO extraction at all -- rejected pre-parse, no stale publish** |
 
 **Note on class 2:** `anchors_hash` changes even though no declaration
 changed. `symbol_refs_to_semantic_facts`
@@ -37,30 +49,50 @@ skip would have to treat "anchors changed" as common (any new/removed
 reference trips it), not rare. This does **not** affect the comment-only case
 (class 1), where no reference is added or removed either.
 
+**Note on class 6:** the rejection happens in the PRE-PARSE monotonic
+generation guard, before `Parser::new(&text).parse()` even runs -- so the
+rejected call does zero extraction work (`visitor_visit_calls: 0` and every
+extractor count `0` in the snapshot). Rejection itself is cheap; the
+"material" finding below is about the ACCEPTED-generation classes (1-5), not
+this one.
+
 ## The key measurement: comment-only edit (class 1)
 
-Despite **zero** category-hash change, the current path re-runs, once each,
-every canonical extractor:
+Despite **zero** category-hash change (all four `Unchanged` in the snapshot),
+the current path re-runs, once each, every canonical extractor:
 
-- `IndexVisitor::visit` (legacy symbol/reference walk)
-- `extract_symbol_decls`
-- `extract_symbol_refs`
-- `extract_eval_sub_boundaries`
-- `extract_generated_member_facts`
-- `extract_import_specs`
-- `extract_use_lib_facts`
+- `IndexVisitor::visit` (legacy symbol/reference walk) -- `visitor_visit_calls: 1`
+- `extract_symbol_decls` -- `canonical_decl_extract_calls: 1`
+- `extract_symbol_refs` -- `canonical_ref_extract_calls: 1`
+- `extract_eval_sub_boundaries` -- `dynamic_boundary_extract_calls: 1`
+- `extract_generated_member_facts` -- `generated_member_extract_calls: 1`
+- `extract_import_specs` -- `import_extract_calls: 1`
+- `extract_use_lib_facts` -- `use_lib_extract_calls: 1`
 
-and tears down + rebuilds the legacy symbol/search/global-reference caches in
-full: 321 symbol-table entries removed and re-added (80 subs x [sub + 2
-params + 1 lexical] + 1 package), 643 global-reference entries removed and
-re-added -- identical counts before and after, i.e. this churn produces no net
-change, only wasted work.
+and passes THIS FILE's own legacy symbol/search/global-reference-index
+CONTRIBUTION through the removal-then-re-add routine in full: 321
+symbol-table entries (`file_symbol_contribution_removed` /
+`_added`, both 321 -- 80 subs x [sub + 2 params + 1 lexical] + 1 package) and
+643 global-reference entries (`file_global_ref_contribution_removed` /
+`_added`, both 643), all for THIS ONE URI -- identical removed/added counts,
+i.e. this per-file contribution churn produces no net change, only wasted
+work. This is **not** a whole-workspace cache rebuild, and the counts are
+**not** necessarily the number of entries removed from the global
+qualified/bare-name map -- the dual-indexing pattern
+(`perl-workspace/CLAUDE.md`, PR #122) may write each contributed symbol under
+up to two global keys, so the true global-map delta could be larger than the
+per-file contribution count quoted here. All work described in this section
+runs **off-lock**: parsing, `IndexVisitor::visit`, and every extractor call
+happen before `WorkspaceIndex::index_file_with_generation` ever acquires
+`self.files.write()` -- only the cache-churn step that follows is
+lock-held. So this finding is about avoidable **CPU cost**, not lock
+contention or freshness latency.
 
 ### Informational timing (NOT gated -- no hard-millisecond threshold anywhere in this PR)
 
 Single-sample and 15-iteration repeated-edit distributions, `cargo test`
 `dev`-profile-with-opts build, shared/debug hardware (informational only, per
-the measurement-discipline directive):
+the measurement-discipline directive; excluded from the `insta` snapshot):
 
 | Metric | Single sample | 15-iteration min / median / max |
 |---|---|---|
@@ -73,43 +105,72 @@ Reference-only, declaration-changing, and dynamic-fact edits all show similar
 per-edit extraction totals (~1.2-1.8 ms single-sample) since the SAME
 unconditional full re-extraction runs regardless of edit class.
 
-## Disposition: MATERIAL
+## Disposition: MATERIAL (off-lock CPU cost, not a correctness or lock-latency failure)
 
 Per the issue's own framing, this crosses from "bounded" to "material":
 
 - The comment-only case (the edit class #1711 exists to ask about) still pays
-  full extraction + full legacy cache churn on every edit, even though the
-  category-scoped propagation machinery (`ShardCategoryHashes` /
-  `plan_shard_replacement`) proves after the fact that nothing downstream
-  needed to change.
+  full extraction + full per-file cache-contribution churn on every edit,
+  even though the category-scoped propagation machinery
+  (`ShardCategoryHashes` / `plan_shard_replacement`) proves after the fact
+  that nothing downstream needed to change.
 - Extraction cost is comparable to parse cost on this fixture size (not
   "cheap relative to parse" -- the bounded-disposition criterion from the
   issue thread does not hold here).
-- Correctness is not at risk (class 6 confirms superseded generations are
-  still rejected before publish; class 5 confirms determinism across
-  revert). This is purely a cost/overlap finding.
+- **This is specifically an off-lock CPU-cost finding, not a
+  freshness-correctness or lock-latency failure.** Every wasted extraction
+  call happens BEFORE `self.files.write()` is acquired (see the "off-lock"
+  note above); the lock is only held for the (comparatively fast) cache-churn
+  step. Correctness is not at risk either way: class 6 confirms superseded
+  generations are rejected before publish (and before any extraction work at
+  all, in the pre-parse case measured here); class 5 confirms determinism
+  across revert.
 
-**Recommendation:** proceed toward a retirement design (a follow-up issue/PR,
-NOT this one), but first prove that category-preclassification (a cheap
-pre-check of which categories a diff could plausibly touch, run BEFORE the
-full extractors) is itself cheaper than the extraction it would avoid --
-otherwise the fix trades one full walk for two. The class-2 finding above
-(reference-anchors share the anchors category) means any preclassification
-design must treat "anchors changed" as common, not rare, or it will provide
-little benefit beyond the comment-only case. Consolidating the legacy
-`IndexVisitor` projection with the canonical extraction path (today they run
-independently and duplicate a full AST walk) is a candidate first step,
-since it would shrink the "extraction total" baseline being measured here
-before any skip-logic is added.
+**What this does NOT prove:** it does not prove category preclassification is
+impossible. The class-2 finding (reference-anchors share the `anchors`
+category with declaration-anchors) means a cheap, EXACT category-membership
+precheck is not available today without re-deriving most of what the full
+extractors already compute -- so a naive "preview AST walk to classify which
+categories this edit could touch, then conditionally skip the full
+extractors" design would likely just replace one redundant full walk with
+another. Category preclassification is therefore an **UNPROVEN, LATER**
+option -- not ruled out, but not validated by this PR either, and it is
+**out of scope to design here** (this PR measures and recommends; it
+retires nothing).
+
+**Recommendation:** rescope the retirement path toward **consolidation
+first**, not edit-class skipping:
+
+1. **1711-B (next PR): consolidate to a single authoritative extraction
+   spine.** Today the legacy `IndexVisitor` projection and the canonical
+   `build_canonical_fact_shard_for_ast` extractors run independently and each
+   duplicate a full AST walk over the same file. Merging them into one walk
+   shrinks the "extraction total" baseline measured here regardless of any
+   future skip logic, and is a prerequisite for any category-preclassification
+   design to be worth its own cost.
+2. **1711-C (optional, only after 1711-B lands and is remeasured):**
+   reconsider edit-class skipping / category preclassification, but only once
+   the post-consolidation extraction cost is remeasured against a candidate
+   precheck's cost -- per this PR's measurement discipline, no skip logic
+   should be built on an assumption that hasn't been measured as cheaper than
+   what it avoids.
+
+Do not over-recommend skip logic before consolidation is measured: this PR's
+evidence supports "duplicate extraction work exists and is material," not
+"the fix is obviously to skip it."
 
 ## Reproduction
 
 ```bash
 cargo test -p perl-workspace --lib reindex_workshape_measurement -- --nocapture --test-threads=1
+INSTA_UPDATE=no cargo test -p perl-workspace --lib reindex_workshape_measurement
 ```
 
-Six edit-class tests plus a repeated-sampling timing test, all under
+Six edit-class tests, a repeated-sampling timing test, and one
+`insta`-snapshotted structural-receipt test, all under
 `crates/perl-workspace/src/workspace/workspace_index.rs` ::
-`reindex_workshape_measurement`. Every category-hash assertion is a hard
-`assert_eq!`/`assert_ne!` (mechanically enforced); every timing number is
-`eprintln!`-only (never asserted against a threshold).
+`reindex_workshape_measurement`. Every category-hash assertion in the
+edit-class tests is a hard `assert_eq!`/`assert_ne!`; the structural counts
+are additionally mechanically bound via the checked-in `.snap` file; every
+timing number is `eprintln!`-only (never asserted against a threshold, never
+part of the snapshot).

@@ -5161,10 +5161,22 @@ pub(crate) mod reindex_metrics {
         pub import_extract_time: Duration,
         pub use_lib_extract_calls: u32,
         pub use_lib_extract_time: Duration,
+        /// THIS URI's own `FileIndex::symbols` contribution -- the count of
+        /// entries passed through the legacy symbol-table removal routine
+        /// on this call. NOT necessarily the number of entries removed from
+        /// the global qualified/bare-name map (dual-indexing may write each
+        /// contributed symbol under up to two global keys), and NOT a
+        /// whole-workspace rebuild -- only this one file's contribution.
         pub legacy_symbols_removed: usize,
+        /// Same file-scoped contribution, on the re-add side of this call.
         pub legacy_symbols_added: usize,
+        /// THIS URI's contribution passed through the search-index removal
+        /// routine (same file-scoped caveat as `legacy_symbols_removed`).
         pub legacy_search_removed: usize,
         pub legacy_search_added: usize,
+        /// THIS URI's own global-reference-index contribution (not the
+        /// whole workspace-wide reference cache) passed through the
+        /// removal routine on this call.
         pub global_refs_removed: usize,
         pub global_refs_added: usize,
         /// `true` when this call took the whole-file content-hash
@@ -9647,6 +9659,14 @@ mod file_fact_shard_serde_tests {
 /// `#[cfg(test)]` and never run in a production build. See
 /// `docs/reference/1711-A-reextraction-workshape-receipt.md` for the
 /// human-readable summary and the bounded-vs-material disposition.
+///
+/// The structural evidence (category-hash-changed flags, call counts,
+/// per-file cache-contribution counts) is MECHANICALLY BOUND via
+/// `reextraction_workshape_receipt_snapshot`'s checked-in `insta` snapshot --
+/// so those numbers cannot silently drift from what the Markdown receipt
+/// claims without `cargo insta review`/`INSTA_UPDATE=no` failing. Timing
+/// stays informational-only (`eprintln!`, no assertion, excluded from the
+/// snapshot) -- it is not deterministic on shared/debug hardware.
 #[cfg(test)]
 mod reindex_workshape_measurement {
     // Measurement receipts are only useful if a human can read them: `cargo
@@ -9662,6 +9682,22 @@ mod reindex_workshape_measurement {
     /// the enclosing package) comfortably clears the spec's "500+ LOC / 50+
     /// symbols" bar -- see the LOC assertion in `fixture_is_large_enough`.
     const SUB_COUNT: usize = 80;
+
+    /// `origin/main` commit this measurement's baseline sits on
+    /// (`git merge-base HEAD origin/main` at PR-1711-A creation time). A
+    /// fixed label, not introspected via `git` at test run time -- git
+    /// introspection would be fragile under shallow clones, tarball
+    /// checkouts, and CI sandboxes with no `.git` directory, and would make
+    /// the snapshot's determinism depend on the runner's checkout depth
+    /// rather than on the code being measured. Update by hand only if
+    /// `index_file_with_generation`'s extraction logic is materially
+    /// re-baselined.
+    const BASE_SHA: &str = "393f167d006fcd79bf6009a93aefe872b3807e67";
+
+    /// Commit that introduced this measurement instrumentation
+    /// (perl-lsp-swarm PR #4013, "1711-A"). Same update policy as
+    /// `BASE_SHA` -- a traceability label, not a live git lookup.
+    const MEASUREMENT_INTRODUCED_AT_SHA: &str = "6ebbc1fd4be43ed46872b960a836c7586dc0aefe";
 
     /// Builds the shared fixture body (package header + `SUB_COUNT` subs),
     /// WITHOUT the trailing `1;\n`. Every edit class appends its own content
@@ -9746,15 +9782,161 @@ mod reindex_workshape_measurement {
             + m.use_lib_extract_time
     }
 
+    /// Whether an `index_file_with_generation` call was rejected by either
+    /// monotonic generation guard (as opposed to accepted, or short-circuited
+    /// by an unchanged content hash).
+    fn was_stale_rejected(m: &reindex_metrics::ReindexWorkMetrics) -> bool {
+        m.stale_generation_rejected_pre_parse || m.stale_generation_rejected_post_parse
+    }
+
+    /// One evidence bucket for a per-category shard-hash comparison. Kept as
+    /// an explicit three-state enum (not `bool`) because "rejected, so shard
+    /// replacement never ran at all" is a materially different fact from
+    /// "ran, and this category happened to be unchanged" -- collapsing them
+    /// into `false` would hide that a superseded generation never reaches
+    /// shard replacement in the first place.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CategoryDelta {
+        Changed,
+        Unchanged,
+        /// The call was rejected before any shard replacement occurred (a
+        /// stale/superseded generation) -- "changed vs unchanged" does not
+        /// apply.
+        NotApplicableRejected,
+    }
+
+    /// Deterministic, checked-in STRUCTURAL receipt for one edit class.
+    /// Every field is a compile-time constant, a call count, a per-file
+    /// cache-contribution count, or a category-hash-changed flag -- nothing
+    /// timing-based. This is the type `reextraction_workshape_receipt_snapshot`
+    /// snapshots; the Markdown receipt
+    /// (`docs/reference/1711-A-reextraction-workshape-receipt.md`) treats
+    /// this snapshot as the source of truth for counts, not hand-transcribed
+    /// numbers.
+    ///
+    /// `#[allow(dead_code)]`: every field is written by `build_receipt` and
+    /// read collectively by `#[derive(Debug)]` when `insta::assert_debug_snapshot!`
+    /// formats it, but rustc's `dead_code` lint only recognizes direct
+    /// per-field reads, not the derive-generated `Debug::fmt` body -- so it
+    /// flags each field as "never read" even though the snapshot output IS
+    /// the read. This is a `#[cfg(test)]`-only snapshot record; the allow
+    /// does not affect production code.
+    #[derive(Debug, Clone)]
+    #[allow(dead_code)]
+    struct EditClassReceipt {
+        base_sha: &'static str,
+        measurement_introduced_at_sha: &'static str,
+        edit_class: &'static str,
+        anchors_hash: CategoryDelta,
+        entities_hash: CategoryDelta,
+        occurrences_hash: CategoryDelta,
+        edges_hash: CategoryDelta,
+        /// `IndexVisitor::visit` call count (legacy symbol/reference walk).
+        visitor_visit_calls: u32,
+        /// Canonical declaration extractor (`extract_symbol_decls`) call count.
+        canonical_decl_extract_calls: u32,
+        /// Canonical reference extractor (`extract_symbol_refs`) call count.
+        canonical_ref_extract_calls: u32,
+        /// Dynamic-boundary extractor (`extract_eval_sub_boundaries`, e.g.
+        /// `eval "sub NAME {...}"`) call count.
+        dynamic_boundary_extract_calls: u32,
+        /// Generated-member extractor (`extract_generated_member_facts`,
+        /// e.g. Moo/Moose `has`) call count.
+        generated_member_extract_calls: u32,
+        import_extract_calls: u32,
+        use_lib_extract_calls: u32,
+        /// This file's own symbol-table CONTRIBUTION -- i.e. the number of
+        /// entries in `FileIndex::symbols` for THIS URI that were passed
+        /// through the legacy-cache removal routine on this call. This is
+        /// NOT necessarily the number of entries removed from the global
+        /// qualified/bare-name map: the dual-indexing pattern
+        /// (`perl-workspace/CLAUDE.md`, PR #122) may write each contributed
+        /// symbol under up to two global keys, and it is not a
+        /// whole-workspace rebuild -- only this one file's contribution is
+        /// touched.
+        file_symbol_contribution_removed: usize,
+        /// Same file-scoped contribution, on the re-add side of the same call.
+        file_symbol_contribution_added: usize,
+        /// This file's contribution passed through the search-index
+        /// removal routine (same caveat as `file_symbol_contribution_removed`).
+        file_search_contribution_removed: usize,
+        file_search_contribution_added: usize,
+        /// This file's own global-reference-index CONTRIBUTION (only this
+        /// URI's entries, not the whole workspace-wide reference cache)
+        /// passed through the removal routine.
+        file_global_ref_contribution_removed: usize,
+        file_global_ref_contribution_added: usize,
+        /// `"accepted"` | `"content_hash_short_circuit"` |
+        /// `"stale_rejected_pre_parse"` | `"stale_rejected_post_parse"`.
+        generation_outcome: &'static str,
+    }
+
+    /// Builds one `EditClassReceipt` from a before/after category-hash pair
+    /// and the metrics recorded for the (second, edited) call.
+    fn build_receipt(
+        edit_class: &'static str,
+        before: CategoryHashes,
+        after: CategoryHashes,
+        m: &reindex_metrics::ReindexWorkMetrics,
+    ) -> EditClassReceipt {
+        let rejected = was_stale_rejected(m);
+        let delta = |b: Option<u64>, a: Option<u64>| {
+            if rejected {
+                CategoryDelta::NotApplicableRejected
+            } else if b == a {
+                CategoryDelta::Unchanged
+            } else {
+                CategoryDelta::Changed
+            }
+        };
+        let generation_outcome = if m.generation_accepted {
+            "accepted"
+        } else if m.content_hash_short_circuit {
+            "content_hash_short_circuit"
+        } else if m.stale_generation_rejected_pre_parse {
+            "stale_rejected_pre_parse"
+        } else if m.stale_generation_rejected_post_parse {
+            "stale_rejected_post_parse"
+        } else {
+            "unknown"
+        };
+        EditClassReceipt {
+            base_sha: BASE_SHA,
+            measurement_introduced_at_sha: MEASUREMENT_INTRODUCED_AT_SHA,
+            edit_class,
+            anchors_hash: delta(before.1, after.1),
+            entities_hash: delta(before.2, after.2),
+            occurrences_hash: delta(before.3, after.3),
+            edges_hash: delta(before.4, after.4),
+            visitor_visit_calls: m.visit_calls,
+            canonical_decl_extract_calls: m.decl_extract_calls,
+            canonical_ref_extract_calls: m.ref_extract_calls,
+            dynamic_boundary_extract_calls: m.eval_sub_calls,
+            generated_member_extract_calls: m.generated_member_calls,
+            import_extract_calls: m.import_extract_calls,
+            use_lib_extract_calls: m.use_lib_extract_calls,
+            file_symbol_contribution_removed: m.legacy_symbols_removed,
+            file_symbol_contribution_added: m.legacy_symbols_added,
+            file_search_contribution_removed: m.legacy_search_removed,
+            file_search_contribution_added: m.legacy_search_added,
+            file_global_ref_contribution_removed: m.global_refs_removed,
+            file_global_ref_contribution_added: m.global_refs_added,
+            generation_outcome,
+        }
+    }
+
     /// **Edit class 1 -- comment/whitespace-only edit. The key waste case.**
     ///
     /// The trailing comment block is appended strictly after the existing
     /// `1;\n`, so no anchor/entity/occurrence/edge byte span moves. All four
     /// category hashes must therefore be bit-identical before/after, while
     /// the whole-file `content_hash` must differ (real bytes were added).
-    #[test]
-    fn edit_class_1_comment_only_reextracts_unconditionally_despite_unchanged_categories()
-    -> Result<(), String> {
+    ///
+    /// Returns `(before, after, metrics-of-the-comment-edit)` so both the
+    /// correctness assertions below and the snapshot test can share one
+    /// code path.
+    fn run_class_1_comment_only()
+    -> Result<(CategoryHashes, CategoryHashes, reindex_metrics::ReindexWorkMetrics), String> {
         let uri = "file:///big/comment_only.pm";
         let prefix = fixture_prefix(SUB_COUNT);
         let baseline = format!("{prefix}1;\n");
@@ -9763,16 +9945,17 @@ mod reindex_workshape_measurement {
         let index = WorkspaceIndex::new();
         let (r0, _m0) = index_and_measure(&index, uri, baseline, 1);
         r0?;
-        // Independent parse-time reference for the SAME text, for the
-        // informational parse-vs-extraction ratio below.
-        let parse_start = std::time::Instant::now();
-        let _ = Parser::new(&comment_only).parse();
-        let parse_time = parse_start.elapsed();
-
         let before = must_some(category_hashes(&index, uri));
         let (r1, m1) = index_and_measure(&index, uri, comment_only, 2);
         r1?;
         let after = must_some(category_hashes(&index, uri));
+        Ok((before, after, m1))
+    }
+
+    #[test]
+    fn edit_class_1_comment_only_reextracts_unconditionally_despite_unchanged_categories()
+    -> Result<(), String> {
+        let (before, after, m1) = run_class_1_comment_only()?;
 
         assert_ne!(before.0, after.0, "content_hash must change -- real bytes were added");
         assert_eq!(
@@ -9805,20 +9988,24 @@ mod reindex_workshape_measurement {
         assert!(m1.generation_accepted);
         assert!(!m1.content_hash_short_circuit);
 
-        // Legacy cache churn: every previously-indexed symbol is torn down
-        // and rebuilt even though the symbol SET is byte-for-byte identical.
+        // Legacy cache CONTRIBUTION churn: this file's own symbol-table
+        // contribution is torn down and rebuilt in full even though the
+        // symbol SET is byte-for-byte identical. This is THIS FILE's
+        // contribution passing through the removal/re-add routine, not a
+        // whole-workspace cache rebuild -- see `EditClassReceipt`'s field
+        // docs for the exact caveat (dual-indexing may write each
+        // contributed symbol under up to two global keys).
         assert_eq!(m1.legacy_symbols_removed, m1.legacy_symbols_added);
         assert!(
             m1.legacy_symbols_removed >= SUB_COUNT,
-            "expected full legacy symbol-cache churn on a comment-only edit; got {}",
+            "expected this file's full symbol-contribution churn on a comment-only edit; got {}",
             m1.legacy_symbols_removed
         );
 
         eprintln!(
-            "[1711-A receipt] comment-only edit: extraction_total={:?} parse_total={:?} \
-             legacy_symbols_churned={} global_refs_churned={}",
+            "[1711-A receipt] comment-only edit: extraction_total={:?} \
+             file_symbol_contribution_churned={} file_global_ref_contribution_churned={}",
             total_extraction_time(&m1),
-            parse_time,
             m1.legacy_symbols_removed,
             m1.global_refs_removed
         );
@@ -9835,7 +10022,8 @@ mod reindex_workshape_measurement {
     /// extraction-vs-parse time. Per the measurement-discipline directive,
     /// this is INFORMATIONAL ONLY -- no assertion anywhere in this file
     /// gates on an absolute millisecond value; the decision rests on the
-    /// WORK counts asserted in the sibling test above.
+    /// WORK counts asserted in the sibling test above (and mechanically
+    /// bound in `reextraction_workshape_receipt_snapshot`).
     #[test]
     fn edit_class_1_repeated_comment_only_edits_timing_distribution() -> Result<(), String> {
         const ITERATIONS: usize = 15;
@@ -9926,9 +10114,8 @@ mod reindex_workshape_measurement {
     /// have to treat "anchors changed" as common (any new reference trips
     /// it), not just "rare" -- it does NOT undermine the comment-only
     /// case (class 1), where no reference is added either.
-    #[test]
-    fn edit_class_2_reference_only_edit_changes_occurrences_and_reference_anchors()
-    -> Result<(), String> {
+    fn run_class_2_reference_only()
+    -> Result<(CategoryHashes, CategoryHashes, reindex_metrics::ReindexWorkMetrics), String> {
         let uri = "file:///big/reference_only.pm";
         let prefix = fixture_prefix(SUB_COUNT);
         let baseline = format!("{prefix}1;\n");
@@ -9938,10 +10125,16 @@ mod reindex_workshape_measurement {
         let (r0, _m0) = index_and_measure(&index, uri, baseline, 1);
         r0?;
         let before = must_some(category_hashes(&index, uri));
-
         let (r1, m1) = index_and_measure(&index, uri, reference_only, 2);
         r1?;
         let after = must_some(category_hashes(&index, uri));
+        Ok((before, after, m1))
+    }
+
+    #[test]
+    fn edit_class_2_reference_only_edit_changes_occurrences_and_reference_anchors()
+    -> Result<(), String> {
+        let (before, after, m1) = run_class_2_reference_only()?;
 
         assert_ne!(before.0, after.0, "content_hash must change");
         assert_ne!(
@@ -9968,8 +10161,8 @@ mod reindex_workshape_measurement {
     /// Appends a brand-new `sub` before `1;\n`. Both `anchors_hash` and
     /// `entities_hash` must change; this is the case category-scoped
     /// propagation is already designed to detect.
-    #[test]
-    fn edit_class_3_declaration_edit_changes_entities_and_anchors() -> Result<(), String> {
+    fn run_class_3_declaration_changing()
+    -> Result<(CategoryHashes, CategoryHashes, reindex_metrics::ReindexWorkMetrics), String> {
         let uri = "file:///big/decl_edit.pm";
         let prefix = fixture_prefix(SUB_COUNT);
         let baseline = format!("{prefix}1;\n");
@@ -9979,10 +10172,15 @@ mod reindex_workshape_measurement {
         let (r0, _m0) = index_and_measure(&index, uri, baseline, 1);
         r0?;
         let before = must_some(category_hashes(&index, uri));
-
         let (r1, m1) = index_and_measure(&index, uri, decl_changed, 2);
         r1?;
         let after = must_some(category_hashes(&index, uri));
+        Ok((before, after, m1))
+    }
+
+    #[test]
+    fn edit_class_3_declaration_edit_changes_entities_and_anchors() -> Result<(), String> {
+        let (before, after, m1) = run_class_3_declaration_changing()?;
 
         assert_ne!(
             before.1, after.1,
@@ -10004,8 +10202,8 @@ mod reindex_workshape_measurement {
     /// dynamic-boundary extractor's synthetic entity/anchor/occurrence path.
     /// Synthetic facts must stay honestly classified (they flow through the
     /// SAME anchors/entities categories, not a hidden fifth category).
-    #[test]
-    fn edit_class_4_dynamic_eval_sub_edit_changes_synthetic_categories() -> Result<(), String> {
+    fn run_class_4_dynamic_fact()
+    -> Result<(CategoryHashes, CategoryHashes, reindex_metrics::ReindexWorkMetrics), String> {
         let uri = "file:///big/dynamic_fact.pm";
         let prefix = fixture_prefix(SUB_COUNT);
         let baseline = format!("{prefix}1;\n");
@@ -10016,10 +10214,15 @@ mod reindex_workshape_measurement {
         let (r0, _m0) = index_and_measure(&index, uri, baseline, 1);
         r0?;
         let before = must_some(category_hashes(&index, uri));
-
         let (r1, m1) = index_and_measure(&index, uri, dynamic_fact, 2);
         r1?;
         let after = must_some(category_hashes(&index, uri));
+        Ok((before, after, m1))
+    }
+
+    #[test]
+    fn edit_class_4_dynamic_eval_sub_edit_changes_synthetic_categories() -> Result<(), String> {
+        let (before, after, m1) = run_class_4_dynamic_fact()?;
 
         assert_ne!(
             before.1, after.1,
@@ -10043,9 +10246,10 @@ mod reindex_workshape_measurement {
     /// baseline -> edited -> baseline again. The final call's recomputed
     /// category hashes must be bit-identical to the FIRST call's -- proving
     /// extraction is a deterministic pure function of content, with no
-    /// accumulated drift across generations.
-    #[test]
-    fn edit_class_5_revert_to_original_is_deterministic() -> Result<(), String> {
+    /// accumulated drift across generations. Returns
+    /// `(original, reverted, metrics-of-the-revert-call)`.
+    fn run_class_5_revert_to_original()
+    -> Result<(CategoryHashes, CategoryHashes, reindex_metrics::ReindexWorkMetrics), String> {
         let uri = "file:///big/revert.pm";
         let prefix = fixture_prefix(SUB_COUNT);
         let baseline = format!("{prefix}1;\n");
@@ -10062,6 +10266,12 @@ mod reindex_workshape_measurement {
         let (r2, m2) = index_and_measure(&index, uri, baseline, 3);
         r2?;
         let reverted = must_some(category_hashes(&index, uri));
+        Ok((original, reverted, m2))
+    }
+
+    #[test]
+    fn edit_class_5_revert_to_original_is_deterministic() -> Result<(), String> {
+        let (original, reverted, m2) = run_class_5_revert_to_original()?;
 
         assert_eq!(
             original, reverted,
@@ -10077,9 +10287,10 @@ mod reindex_workshape_measurement {
     /// then arrives late and must be rejected without publishing its stale
     /// content (the monotonic generation guard already covers this --
     /// asserting it here documents that correctness is not at risk, only
-    /// cost/overlap, matching the issue's own framing).
-    #[test]
-    fn edit_class_6_superseded_generation_never_publishes_stale_content() -> Result<(), String> {
+    /// cost/overlap, matching the issue's own framing). Returns
+    /// `(after_new, after_old_attempt, metrics-of-the-rejected-old-call)`.
+    fn run_class_6_superseded_generation()
+    -> Result<(CategoryHashes, CategoryHashes, reindex_metrics::ReindexWorkMetrics), String> {
         let uri = "file:///big/superseded.pm";
         let prefix = fixture_prefix(SUB_COUNT);
         let gen1_text = format!("{prefix}1;\n");
@@ -10090,24 +10301,80 @@ mod reindex_workshape_measurement {
         // Newer generation (2) commits first.
         let (r_new, m_new) = index_and_measure(&index, uri, gen2_text, 2);
         r_new?;
-        assert!(m_new.generation_accepted);
+        if !m_new.generation_accepted {
+            return Err(format!(
+                "expected the newer generation to commit before the superseded one arrives; got {m_new:?}"
+            ));
+        }
         let after_new = must_some(category_hashes(&index, uri));
 
         // An OLDER, out-of-order generation (1) arrives late.
         let (r_old, m_old) = index_and_measure(&index, uri, gen1_text, 1);
         r_old?;
+        let after_old_attempt = must_some(category_hashes(&index, uri));
+        Ok((after_new, after_old_attempt, m_old))
+    }
+
+    #[test]
+    fn edit_class_6_superseded_generation_never_publishes_stale_content() -> Result<(), String> {
+        let (after_new, after_old_attempt, m_old) = run_class_6_superseded_generation()?;
+
         assert!(
-            m_old.stale_generation_rejected_pre_parse || m_old.stale_generation_rejected_post_parse,
+            was_stale_rejected(&m_old),
             "an out-of-order older generation must be rejected, not published; got {:?}",
             m_old
         );
         assert!(!m_old.generation_accepted);
-
-        let after_old_attempt = must_some(category_hashes(&index, uri));
         assert_eq!(
             after_new, after_old_attempt,
             "the stale older generation must never overwrite the newer, already-committed shard"
         );
+        Ok(())
+    }
+
+    /// **Mechanically-bound structural receipt (item 1 of the maintainer
+    /// review on PR #4013).** Re-runs all six edit classes (via the SAME
+    /// `run_class_*` helpers the correctness tests above use -- not a
+    /// parallel reimplementation) and snapshots the resulting
+    /// `Vec<EditClassReceipt>`. `insta` fails this test (and `INSTA_UPDATE=no`
+    /// CI runs) if any structural count or category-hash-changed flag drifts
+    /// from the checked-in `.snap` file -- so the Markdown receipt's claims
+    /// are traceable back to a mechanically-enforced source of truth, not a
+    /// hand-typed transcription that could silently go stale.
+    ///
+    /// Timing is deliberately absent from `EditClassReceipt` and therefore
+    /// from this snapshot -- see the module doc comment's measurement-
+    /// discipline note.
+    #[test]
+    fn reextraction_workshape_receipt_snapshot() -> Result<(), String> {
+        let (before, after, m) = run_class_1_comment_only()?;
+        let comment_only = build_receipt("comment_only", before, after, &m);
+
+        let (before, after, m) = run_class_2_reference_only()?;
+        let reference_only = build_receipt("reference_only", before, after, &m);
+
+        let (before, after, m) = run_class_3_declaration_changing()?;
+        let declaration_changing = build_receipt("declaration_changing", before, after, &m);
+
+        let (before, after, m) = run_class_4_dynamic_fact()?;
+        let dynamic_fact = build_receipt("dynamic_fact", before, after, &m);
+
+        let (before, after, m) = run_class_5_revert_to_original()?;
+        let revert_to_original = build_receipt("revert_to_original", before, after, &m);
+
+        let (before, after, m) = run_class_6_superseded_generation()?;
+        let superseded_generation = build_receipt("superseded_generation", before, after, &m);
+
+        let receipts = vec![
+            comment_only,
+            reference_only,
+            declaration_changing,
+            dynamic_fact,
+            revert_to_original,
+            superseded_generation,
+        ];
+
+        insta::assert_debug_snapshot!("reindex_workshape_receipt", receipts);
         Ok(())
     }
 }
