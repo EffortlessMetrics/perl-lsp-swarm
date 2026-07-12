@@ -63,6 +63,13 @@ jobs:
           cargo clippy -p tree-sitter-perl-rs --all-targets --all-features --locked -- \
             -D warnings -A missing_docs
           cargo test -p perl-tree-sitter-compat --locked
+          cargo run -p xtask -- parser-corpus-sweep \
+            --manifest .ci/common-corpus-manifest.txt \
+            --enforce --receipt --profile tree-sitter-perl-rs
+          cp target/receipts/tree-sitter-perl-rs-corpus-sweep.json \
+            "$CARGO_TARGET_DIR/receipts-tree-sitter-perl-rs-corpus-sweep.json"
+          cargo run -p perl-ci-hygiene -- quick-bench \
+            > "$CARGO_TARGET_DIR/quick-bench.txt"
           cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked
 
       - name: Write proof receipt
@@ -88,6 +95,8 @@ jobs:
                   "cargo test -p tree-sitter-perl-rs --doc --all-features --locked",
                   "cargo clippy -p tree-sitter-perl-rs --all-targets --all-features --locked -- -D warnings -A missing_docs",
                   "cargo test -p perl-tree-sitter-compat --locked",
+                  "cargo run -p xtask -- parser-corpus-sweep --manifest .ci/common-corpus-manifest.txt --enforce --receipt --profile tree-sitter-perl-rs",
+                  "cargo run -p perl-ci-hygiene -- quick-bench",
                   "cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked",
               ],
           }
@@ -102,6 +111,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: tree-sitter-perl-rs-proof-${{ github.sha }}
-          path: ${{ runner.temp }}/tree-sitter-perl-rs-target/receipts/tree-sitter-perl-rs.json
+          path: |
+            ${{ runner.temp }}/tree-sitter-perl-rs-target/receipts/tree-sitter-perl-rs.json
+            ${{ runner.temp }}/tree-sitter-perl-rs-target/receipts-tree-sitter-perl-rs-corpus-sweep.json
+            ${{ runner.temp }}/tree-sitter-perl-rs-target/quick-bench.txt
           if-no-files-found: warn
           retention-days: 14
