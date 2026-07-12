@@ -338,6 +338,7 @@ impl WorkspaceSymbolsProvider {
     ) -> Result<WorkspaceSymbolIndexReceipt, WorkspaceSymbolFacadeError> {
         let mut parser = FacadeParser::new();
         let outcome = parser.parse_detailed(source);
+        let recovered = outcome.is_recovered();
         let Some(tree) = outcome.tree else {
             let reason = outcome
                 .failure
@@ -364,7 +365,7 @@ impl WorkspaceSymbolsProvider {
             source: source_used,
             compared_with_native: native_ast.is_some(),
             equivalent,
-            recovered: outcome.is_recovered(),
+            recovered,
         })
     }
 
