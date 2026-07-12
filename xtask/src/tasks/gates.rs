@@ -789,7 +789,10 @@ fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> R
     // guard's job is only "would this proceed against a commit-tier gate
     // without --staged", not gate-name validation.
     if let Some(gate_name) = &config.gate_filter {
-        return Ok(policy.gates.iter().any(|gate| gate.name == *gate_name && gate.tier == "commit"));
+        return Ok(policy
+            .gates
+            .iter()
+            .any(|gate| gate.name == *gate_name && gate.tier == "commit"));
     }
 
     Ok(match config.tier {
@@ -819,10 +822,13 @@ fn selects_commit_tier_gate(policy: &GatePolicy, config: &GateRunnerConfig) -> R
 /// commit-tier gate without `--staged`: by `--tier commit`, by naming a
 /// commit-tier gate directly via `--gate <name>` (`filter_gates`'s gate-name
 /// path ignores `--tier` entirely — a bare `--gate staged_tree_identity`
-/// must be caught the same way as `--tier commit`), or by any tier whose
-/// selection transitively includes commit-tier gates (`nightly`/`all` keep
-/// every gate regardless of tier). `--list` is exempt: it never executes a
-/// gate. `None` means the run may proceed.
+/// must be caught the same way as `--tier commit`), or by `--tier all`
+/// (`plan_gates`'s `All` arm genuinely selects every gate regardless of
+/// tier). `--tier nightly` is *not* one of these paths — `NIGHTLY_EXTRA_TIERS`
+/// is `merge_gate` + `nightly` only, deliberately excluding `commit` — see
+/// [`selects_commit_tier_gate`], the single source of truth this function
+/// defers to. `--list` is exempt: it never executes a gate. `None` means the
+/// run may proceed.
 fn staged_guard_violation(
     policy: &GatePolicy,
     config: &GateRunnerConfig,
@@ -1334,7 +1340,7 @@ fn list_gates(gates: &[GateDefinition], policy: &GatePolicy) -> Result<()> {
         by_tier.entry(gate.tier.as_str()).or_default().push(gate);
     }
 
-    for tier_name in &["pr_fast", "merge_gate", "nightly", "release"] {
+    for tier_name in &["commit", "pr_fast", "merge_gate", "nightly", "release"] {
         if let Some(tier_gates) = by_tier.get(tier_name) {
             let tier_def = policy.tiers.get(*tier_name);
             let tier_desc = tier_def.map(|t| t.description.as_str()).unwrap_or("Unknown tier");
@@ -2226,7 +2232,9 @@ fn run_internal_commit_check(
                 // check itself would be, rather than losing the report.
                 Err(render_err) => (
                     "error".to_string(),
-                    format!("Internal xtask execution failed: CheckReport render error: {render_err:#}"),
+                    format!(
+                        "Internal xtask execution failed: CheckReport render error: {render_err:#}"
+                    ),
                 ),
             }
         }
