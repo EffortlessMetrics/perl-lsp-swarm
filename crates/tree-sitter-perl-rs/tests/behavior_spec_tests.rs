@@ -57,8 +57,10 @@ fn when_requesting_named_fields_then_structural_children_are_resolved() {
 
     let condition = must_some(if_node.child_by_field_name("condition"));
     let then_branch = must_some(if_node.child_by_field_name("then_branch"));
+    let conditions: Vec<_> = if_node.children_by_field_name("condition").collect();
     assert_eq!(condition.kind(), "variable");
     assert_eq!(then_branch.kind(), "block");
+    assert_eq!(conditions.len(), 1);
     assert_eq!(if_node.field_name_for_child(0), Some("condition"));
     assert_eq!(if_node.field_name_for_child(1), Some("then_branch"));
     assert!(if_node.child_by_field_name("does_not_exist").is_none());
