@@ -39,7 +39,7 @@ Two more threads run through every artifact this doc governs:
 - **Positive path first.** Guidance leads with the thing to do ("create or
   reconcile the controlling issue, compile the reviewed spec package, then
   begin via `/start-work`"), not a list of things not to do. Prohibitions are
-  reserved for genuine hazards (see §7).
+  reserved for genuine hazards (see §6).
 
 ---
 
@@ -58,10 +58,11 @@ one step later where it's merely *convenient* to check.
 | Stale review or failed remote integration | Before merge |
 
 This is the same boundary `/start-work` already enforces pre-mutation (see
-[`.claude/commands/start-work.md`](../../.claude/commands/start-work.md)) and
-the shape the commit-gate feedback ladder (#3786) and RIPR pre-push output are
-converging toward — this doc names the general principle those concrete
-mechanisms instantiate.
+[`.claude/commands/start-work.md`](../../.claude/commands/start-work.md) and
+[#3971](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3971), the
+issue that introduced it) and the shape the commit-gate feedback ladder
+(#3786) and RIPR pre-push output are converging toward — this doc names the
+general principle those concrete mechanisms instantiate.
 
 ---
 
@@ -189,7 +190,14 @@ Lead every piece of guidance with the thing to do. Reserve explicit "never"
 language for hazards where the cost of getting it wrong is high and the
 correct alternative is unambiguous:
 
-- Never merge with `--admin`.
+- Never use `--admin` to bypass a red required gate (the sole documented
+  exception is the narrow, criteria-bound verified-treadmill-break operator
+  path in
+  [serialize-merges-and-cancellation.md](../concepts/serialize-merges-and-cancellation.md#current-repo-state-merge-queue-available-strict-up-to-date-relaxed-2026-06-13) —
+  an admin merge may proceed only when the PR is `deep-reviewed`, at least 2
+  of 3 required checks are green on the current SHA, and the failing check is
+  confirmed a measurement artifact; this is an operator escape hatch for a
+  known artifact class, not a general license to override review).
 - Never resolve a substantive P1 finding just to clear the ruleset.
 - Never let two writers hold the same branch concurrently.
 - Never publish secrets.
@@ -249,7 +257,8 @@ decision → narrow implementation → late publication):
     release needs to rely on it without re-running the check itself.
 - **Context by role**, not one-size-fits-all: the builder gets the compiled
   spec projection plus invariants, proof obligations, scope/non-goals,
-  latitude, and return-conditions — not the full issue thread by default. The
+  latitude, return-conditions, and evidence links — not the full issue thread
+  by default. The
   plan reviewer gets the full issue thread, research, rejected options, the
   compiled spec, and oracle evidence. The implementation reviewer gets the
   compiled spec, the diff, invariants, proof results, and material
