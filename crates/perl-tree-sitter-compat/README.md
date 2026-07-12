@@ -1,6 +1,6 @@
 # perl-tree-sitter-compat
 
-**Tree-sitter-compatible output over the native Perl parser** — an *adapter*,
+**Tree-sitter-compatible output over the Rust-native Perl facade** — an *adapter*,
 not a re-implementation. It projects the native recursive-descent AST into
 tree-sitter's shapes so editors and tooling built for the tree-sitter ecosystem
 can consume the native parser's output without maintaining a separate grammar.
@@ -32,24 +32,25 @@ for h in highlights(&tree) {
   `children`.
 - **`to_sexp` / `to_sexp_pretty`** — named-node S-expression rendering (no field
   labels or anonymous nodes — see the `sexp` module docs), so tree-sitter test
-  corpora that assert on named-node S-expressions can run against the native
-  parser.
+  corpora that assert on named-node S-expressions can run against the facade.
 - **`highlights` / `capture_for`** — a node-granular highlight capture map
   (`keyword`, `function`, `variable`, `string`, `number`, …).
 
-## Facade shadow validation
+## Facade-first adoption validation
 
-The production parse path also performs a best-effort shadow parse through
-`tree-sitter-perl-rs`. It compares root spans and node counts, retains the
-established native result on mismatch or facade failure, and exposes aggregate
-counters through `shadow_stats()`. This keeps adoption observable without
-changing user-facing output.
+The production parse path uses `tree-sitter-perl-rs` as its authoritative source
+for clean and recovered trees. It projects the established native AST in parallel
+for root-span, node-count, and named-node S-expression receipts. A catastrophic
+facade failure retains the native parser as an observable fallback. Aggregate
+adoption counters are available through `adoption_stats()` and comparison counters
+through `shadow_stats()`.
 
 ## Layering
 
-Uses `perl-parser-core` for the authoritative result and
-`tree-sitter-perl-rs` for the non-authoritative shadow comparison, alongside
-`perl-workspace-core` for its UTF-8 line index — never the editor runtime.
+Uses `tree-sitter-perl-rs` for the authoritative facade result, with
+`perl-parser-core` supplying the established projection and catastrophic-failure
+fallback, alongside `perl-workspace-core` for its UTF-8 line index — never the
+editor runtime.
 
 ## Scope (`publish = false`)
 

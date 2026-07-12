@@ -1,17 +1,18 @@
-//! `perl-tree-sitter-compat` — tree-sitter-compatible output over the native
-//! Perl parser.
+//! `perl-tree-sitter-compat` — tree-sitter-compatible output over the Rust-native
+//! Perl facade.
 //!
-//! This is an **adapter, not a re-implementation**: it projects the native
-//! recursive-descent parser's AST into tree-sitter's shapes — named nodes with
+//! This is an **adapter, not a re-implementation**: it projects the facade's
+//! named-node tree into tree-sitter's shapes — named nodes with
 //! kinds, byte and point ranges, S-expression rendering, and highlight
 //! captures — so editors and tooling built for the tree-sitter ecosystem can
-//! consume the native parser's output without a separate grammar (see
+//! consume the facade's output without a separate grammar (see
 //! [PLSP-ADR-0006](../../../docs/adr/PLSP-ADR-0006-perl-workspace-core-facts-substrate.md)
 //! PR 9).
 //!
 //! It sits at the same layer as the other substrate consumers: it depends on
-//! the leaf parser (`perl-parser-core`) and the LSP-free substrate
-//! (`perl-workspace-core`, for its UTF-8 line index), never the editor runtime.
+//! the Rust-native facade, the leaf parser for its established comparison and
+//! fallback, and the LSP-free substrate for its UTF-8 line index — never the
+//! editor runtime.
 //!
 //! # Quick start
 //!
