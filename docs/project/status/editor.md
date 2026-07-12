@@ -23,7 +23,10 @@ baseline in `.ci/metrics/baselines/editor_ux.json`.
 cargo xtask ux-scorecard
 ```
 
-Output: `docs/project/status/editor_ux.md` and `docs/project/status/editor_ux.json`.
+Output: `docs/project/status/editor_ux.md` (status page, default) and
+`target/receipts/metrics/editor_ux_scorecard.json` (scorecard artifact,
+default — override with `--output <path>`; see
+`xtask/src/tasks/ux_scorecard.rs`'s `DEFAULT_OUTPUT`/`DEFAULT_STATUS_MD`).
 
 ## Gold corpus
 
