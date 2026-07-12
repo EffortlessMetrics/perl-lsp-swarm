@@ -535,6 +535,9 @@ pub use error::{RecoverySalvageClass, RecoverySalvageProfile};
 #[cfg(feature = "incremental")]
 /// Checkpointed incremental parser with simple edit tracking.
 pub use incremental_checkpoint::{CheckpointedIncrementalParser, SimpleEdit};
+#[cfg(feature = "incremental")]
+/// Compatibility adapter over the lower-tier core incremental kernel.
+pub mod incremental_core;
 /// Pragma state tracking for `use strict`, `use warnings`, etc.
 pub use pragma_tracker::{PragmaState, PragmaTracker};
 /// Token types and token stream for lexer output.
@@ -548,6 +551,12 @@ pub use trivia_parser::{TriviaPreservingParser, format_with_trivia};
 #[cfg(feature = "incremental")]
 /// Core incremental parsing types: edit representation, state, and application.
 pub use incremental::{Edit, IncrementalState, apply_edits};
+#[cfg(feature = "incremental")]
+/// Core-backed incremental state for new consumers.
+pub use incremental_core::{
+    CoreIncrementalError, CoreIncrementalResult, CoreIncrementalState, FallbackReason,
+    IncrementalEdit, IncrementalMetrics,
+};
 
 /// Semantic analysis types for hover, tokens, and code understanding.
 pub use semantic::{
