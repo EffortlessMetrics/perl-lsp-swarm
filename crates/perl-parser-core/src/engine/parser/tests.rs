@@ -307,13 +307,12 @@ fn test_unicode_property_complexity() {
 #[test]
 fn test_deep_nesting_stack_overflow() {
     // Issue #423: Deep nesting stack overflow
-    // Nested if statements
+    // Nested bare blocks exercise the structural block-depth guard directly.
     let mut code = String::new();
-    // The fixture exceeds both active limits: the recursion limit is 128 and
-    // the structural block limit is 512. The recursion guard fires first, but
-    // either guard must remain observable as a nesting error.
+    // The fixture exceeds the structural block limit without adding an `if`
+    // recursion frame for every level.
     for _ in 0..600 {
-        code.push_str("if ($a) { ");
+        code.push_str("{ ");
     }
     code.push_str("print 'hi';");
     for _ in 0..600 {
