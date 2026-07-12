@@ -19,6 +19,8 @@ pub struct ShadowComparison {
     pub root_span_match: bool,
     /// Whether both trees contain the same number of nodes.
     pub node_count_match: bool,
+    /// Whether both trees render the same S-expression.
+    pub sexp_match: bool,
 }
 
 /// Aggregate shadow-run counters for the current process.
@@ -58,6 +60,7 @@ pub(crate) fn compare(source: &str, native_root: &Node) -> ShadowComparison {
             facade_tree: false,
             root_span_match: false,
             node_count_match: false,
+            sexp_match: false,
         };
     };
 
@@ -66,8 +69,14 @@ pub(crate) fn compare(source: &str, native_root: &Node) -> ShadowComparison {
     let root_span_match = root.start_byte() == native_root.location.start
         && root.end_byte() == native_root.location.end.min(source.len());
     let node_count_match = count_facade_nodes(root) == native_root.count_nodes();
-    let comparison = ShadowComparison { facade_tree: true, root_span_match, node_count_match };
-    if !comparison.root_span_match || !comparison.node_count_match {
+    let sexp_match = root.to_sexp() == native_root.to_sexp();
+    let comparison = ShadowComparison {
+        facade_tree: true,
+        root_span_match,
+        node_count_match,
+        sexp_match,
+    };
+    if !comparison.root_span_match || !comparison.node_count_match || !comparison.sexp_match {
         FALLBACKS.fetch_add(1, Ordering::Relaxed);
     } else {
         MATCHES.fetch_add(1, Ordering::Relaxed);
