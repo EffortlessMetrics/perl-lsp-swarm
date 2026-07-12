@@ -100,12 +100,20 @@ fn main() {
                 );
                 std::process::exit(1);
             };
+            let fallback =
+                metrics.fallback.map_or_else(|| "none".to_owned(), |reason| reason.to_string());
             println!(
-                "status=success error={} duration_us={} incremental_duration_us={} fresh_edit_duration_us={} equivalent=true ast_nodes_reused={} ast_nodes_reparsed={} tokens_reused={} tokens_relexed={}",
+                "status=success error={} duration_us={} incremental_duration_us={} fresh_edit_duration_us={} incremental_faster={} equivalent=true full_parse={} fallback={} reparsed_bytes={} changed_range_start={} changed_range_end={} ast_nodes_reused={} ast_nodes_reparsed={} tokens_reused={} tokens_relexed={}",
                 has_error,
                 duration,
                 incremental_duration,
                 fresh_duration,
+                incremental_duration < fresh_duration,
+                metrics.full_parse,
+                fallback,
+                metrics.reparsed_bytes,
+                metrics.changed_range.start,
+                metrics.changed_range.end,
                 metrics.ast_nodes_reused,
                 metrics.ast_nodes_reparsed,
                 metrics.tokens_reused,
