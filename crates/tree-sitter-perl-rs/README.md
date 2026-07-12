@@ -90,6 +90,9 @@ This means you can pipe any Perl source through this parser and rely on getting 
 ## Known limitations (Phase 1)
 
 - `Node::children()` allocates a `Vec` internally on each call. Prefer iterating once over calling repeatedly.
+- Point conversion uses a per-tree byte line index, cursor movement caches its
+  current node path, and semantic/pragma overlay models are lazily cached per
+  immutable tree.
 - Incremental replay currently reuses parser tokens, not AST subtrees. Format declarations,
   oversized edits, and unsupported cache windows report a full-parse fallback through
   `Tree::incremental_metrics()`.

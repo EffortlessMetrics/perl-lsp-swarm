@@ -103,3 +103,4 @@ cargo doc -p tree-sitter-perl-rs --open     # View documentation
 - Field-name accessors (named children by field name)
 - Predicate / query API
 - AST subtree reuse beyond the token-level incremental kernel
+- Borrowed child iteration instead of the current AST child-vector adapter

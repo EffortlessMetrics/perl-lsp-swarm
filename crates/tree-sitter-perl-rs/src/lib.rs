@@ -57,6 +57,7 @@ use perl_parser_core::{
 };
 use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::semantic::SemanticModel;
+use std::cell::OnceCell;
 use std::ops::ControlFlow;
 
 /// Re-export of Edit type for tree-sitter-compatible incremental parsing.
@@ -126,6 +127,9 @@ impl Parser {
                 source: source.to_string(),
                 pending_edits: Vec::new(),
                 incremental_state: Some(IncrementalState::new(source)),
+                line_index: ByteLineIndex::new(source),
+                semantic_model: OnceCell::new(),
+                pragma_map: OnceCell::new(),
             }),
             Err(_) => None,
         }
@@ -163,6 +167,9 @@ impl Parser {
                     source: source.to_string(),
                     pending_edits: Vec::new(),
                     incremental_state: Some(state),
+                    line_index: ByteLineIndex::new(source),
+                    semantic_model: OnceCell::new(),
+                    pragma_map: OnceCell::new(),
                 });
             }
         }
@@ -248,16 +255,56 @@ pub static LANGUAGE: PerlLanguage = PerlLanguage {
     field_names: perl_ast::FieldId::ALL,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ByteLineIndex {
+    line_starts: Vec<usize>,
+}
+
+impl ByteLineIndex {
+    fn new(source: &str) -> Self {
+        let mut line_starts = vec![0];
+        for (index, byte) in source.bytes().enumerate() {
+            if byte == b'\n' {
+                line_starts.push(index + 1);
+            }
+        }
+        Self { line_starts }
+    }
+
+    fn point(&self, source_len: usize, byte: usize) -> Point {
+        let clamped = byte.min(source_len);
+        let row = self.line_starts.partition_point(|start| *start <= clamped).saturating_sub(1);
+        Point { row, column: clamped.saturating_sub(self.line_starts[row]) }
+    }
+}
+
 /// The result of a successful parse: an owned syntax tree and the source text.
 ///
 /// Use [`root_node`][Tree::root_node] to begin traversal.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Tree {
     root: AstNode,
     source: String,
     /// Pending edits recorded via [`Tree::edit`].
     pending_edits: Vec<InputEdit>,
     incremental_state: Option<IncrementalState>,
+    line_index: ByteLineIndex,
+    semantic_model: OnceCell<SemanticModel>,
+    pragma_map: OnceCell<Vec<(std::ops::Range<usize>, PragmaState)>>,
+}
+
+impl Clone for Tree {
+    fn clone(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            source: self.source.clone(),
+            pending_edits: self.pending_edits.clone(),
+            incremental_state: self.incremental_state.clone(),
+            line_index: self.line_index.clone(),
+            semantic_model: OnceCell::new(),
+            pragma_map: OnceCell::new(),
+        }
+    }
 }
 
 impl PartialEq for Tree {
@@ -309,7 +356,7 @@ pub struct VisibleImport {
 impl Tree {
     /// Returns the root node of the syntax tree.
     pub fn root_node(&self) -> Node<'_> {
-        Node { inner: &self.root, tree_source: &self.source }
+        Node { inner: &self.root, tree_source: &self.source, line_index: &self.line_index }
     }
 
     /// Returns the source text this tree was built from.
@@ -356,12 +403,20 @@ impl Tree {
     pub fn semantic_overlay(&self) -> SemanticOverlay<'_> {
         SemanticOverlay { tree: self }
     }
+
+    fn semantic_model(&self) -> &SemanticModel {
+        self.semantic_model.get_or_init(|| SemanticModel::build(&self.root, &self.source))
+    }
+
+    fn pragma_map(&self) -> &[(std::ops::Range<usize>, PragmaState)] {
+        self.pragma_map.get_or_init(|| PragmaTracker::build(&self.root))
+    }
 }
 
 impl<'tree> SemanticOverlay<'tree> {
     /// Resolve a symbol definition at a byte offset in the source.
     pub fn definition_at_offset(&self, offset: usize) -> Option<OverlayDefinition> {
-        let model = SemanticModel::build(&self.tree.root, self.tree.source());
+        let model = self.tree.semantic_model();
         model.definition_at(offset).map(|symbol| OverlayDefinition {
             name: symbol.name.clone(),
             qualified_name: symbol.qualified_name.clone(),
@@ -396,8 +451,7 @@ impl<'tree> SemanticOverlay<'tree> {
 
     /// Returns the effective pragma state at a byte offset.
     pub fn pragma_state_at_offset(&self, offset: usize) -> PragmaState {
-        let pragma_map = PragmaTracker::build(&self.tree.root);
-        PragmaTracker::state_for_offset(&pragma_map, offset)
+        PragmaTracker::state_for_offset(self.tree.pragma_map(), offset)
     }
 }
 
@@ -405,9 +459,11 @@ impl<'tree> SemanticOverlay<'tree> {
 ///
 /// Mirrors the tree-sitter `Node` API surface. Lifetime `'tree` is tied to the
 /// owning [`Tree`].
+#[derive(Clone, Copy)]
 pub struct Node<'tree> {
     inner: &'tree AstNode,
     tree_source: &'tree str,
+    line_index: &'tree ByteLineIndex,
 }
 
 impl<'tree> Node<'tree> {
@@ -468,8 +524,11 @@ impl<'tree> Node<'tree> {
 
     /// Returns the `i`-th direct child, or `None` if out of range.
     pub fn child(&self, i: usize) -> Option<Node<'tree>> {
-        ast_child_at(self.inner, i)
-            .map(|child| Node { inner: child, tree_source: self.tree_source })
+        ast_child_at(self.inner, i).map(|child| Node {
+            inner: child,
+            tree_source: self.tree_source,
+            line_index: self.line_index,
+        })
     }
 
     /// Returns the first direct child carrying the given named field.
@@ -480,7 +539,11 @@ impl<'tree> Node<'tree> {
         let mut found = None;
         let _ = self.inner.try_for_each_child_with_field(|candidate, child| {
             if candidate == Some(field) {
-                found = Some(Node { inner: child, tree_source: self.tree_source });
+                found = Some(Node {
+                    inner: child,
+                    tree_source: self.tree_source,
+                    line_index: self.line_index,
+                });
                 ControlFlow::Break(())
             } else {
                 ControlFlow::Continue(())
@@ -496,7 +559,11 @@ impl<'tree> Node<'tree> {
         if let Some(field) = field {
             self.inner.for_each_child_with_field(|candidate, child| {
                 if candidate == Some(field) {
-                    children.push(Node { inner: child, tree_source: self.tree_source });
+                    children.push(Node {
+                        inner: child,
+                        tree_source: self.tree_source,
+                        line_index: self.line_index,
+                    });
                 }
             });
         }
@@ -515,7 +582,11 @@ impl<'tree> Node<'tree> {
         // Collect into a Vec so we can own the references. The lifetimes are valid
         // because all child nodes are part of the same owned tree (Tree::root).
         let kids = ast_children(self.inner);
-        kids.into_iter().map(move |child| Node { inner: child, tree_source: self.tree_source })
+        kids.into_iter().map(move |child| Node {
+            inner: child,
+            tree_source: self.tree_source,
+            line_index: self.line_index,
+        })
     }
 
     /// Returns the start byte offset in the source text (inclusive).
@@ -532,14 +603,14 @@ impl<'tree> Node<'tree> {
     ///
     /// `row`/`column` are zero-based and `column` is measured in bytes.
     pub fn start_position(&self) -> Point {
-        byte_to_point(self.tree_source, self.start_byte())
+        self.line_index.point(self.tree_source.len(), self.start_byte())
     }
 
     /// Returns the end position as a tree-sitter-compatible [`Point`].
     ///
     /// `row`/`column` are zero-based and `column` is measured in bytes.
     pub fn end_position(&self) -> Point {
-        byte_to_point(self.tree_source, self.end_byte())
+        self.line_index.point(self.tree_source.len(), self.end_byte())
     }
 
     /// Extracts the source text slice covered by this node.
@@ -579,7 +650,13 @@ impl<'tree> Node<'tree> {
     /// Mirrors `tree_sitter::TreeCursor` style navigation with a lightweight,
     /// allocation-free path stack.
     pub fn walk(&self) -> TreeCursor<'tree> {
-        TreeCursor { root: self.inner, tree_source: self.tree_source, path: Vec::new() }
+        TreeCursor {
+            root: self.inner,
+            tree_source: self.tree_source,
+            line_index: self.line_index,
+            path: Vec::new(),
+            nodes: Vec::new(),
+        }
     }
 }
 
@@ -595,24 +672,31 @@ pub use perl_ast::{FieldId, NodeKind as PerlNodeKind};
 pub struct TreeCursor<'tree> {
     root: &'tree AstNode,
     tree_source: &'tree str,
+    line_index: &'tree ByteLineIndex,
     /// Child indices from `root` to the current node.
     path: Vec<usize>,
+    nodes: Vec<&'tree AstNode>,
 }
 
 impl<'tree> TreeCursor<'tree> {
     /// Returns the node currently selected by the cursor.
     pub fn node(&self) -> Node<'tree> {
-        Node { inner: self.current_ast_node(), tree_source: self.tree_source }
+        Node {
+            inner: self.nodes.last().copied().unwrap_or(self.root),
+            tree_source: self.tree_source,
+            line_index: self.line_index,
+        }
     }
 
     /// Moves to the first child of the current node.
     ///
     /// Returns `true` when movement succeeds, `false` when the node has no children.
     pub fn goto_first_child(&mut self) -> bool {
-        if self.current_ast_node().first_child().is_none() {
+        let Some(child) = self.current_ast_node().first_child() else {
             return false;
-        }
+        };
         self.path.push(0);
+        self.nodes.push(child);
         true
     }
 
@@ -620,11 +704,15 @@ impl<'tree> TreeCursor<'tree> {
     ///
     /// Returns `true` when movement succeeds, `false` when the node has no children.
     pub fn goto_last_child(&mut self) -> bool {
-        let child_count = self.current_ast_node().children().len();
-        if child_count == 0 {
+        let child_count = ast_child_count(self.current_ast_node());
+        let Some(child) = child_count
+            .checked_sub(1)
+            .and_then(|index| ast_child_at(self.current_ast_node(), index))
+        else {
             return false;
-        }
+        };
         self.path.push(child_count - 1);
+        self.nodes.push(child);
         true
     }
 
@@ -647,6 +735,10 @@ impl<'tree> TreeCursor<'tree> {
 
         let last_pos = self.path.len() - 1;
         self.path[last_pos] = next;
+        let Some(sibling) = ast_child_at(parent, next) else {
+            return false;
+        };
+        self.nodes[last_pos] = sibling;
         true
     }
 
@@ -666,6 +758,11 @@ impl<'tree> TreeCursor<'tree> {
 
         let last_pos = self.path.len() - 1;
         self.path[last_pos] = current_index - 1;
+        let parent = self.current_parent_ast_node();
+        let Some(sibling) = ast_child_at(parent, current_index - 1) else {
+            return false;
+        };
+        self.nodes[last_pos] = sibling;
         true
     }
 
@@ -673,22 +770,27 @@ impl<'tree> TreeCursor<'tree> {
     ///
     /// Returns `true` when movement succeeds, `false` when already at root.
     pub fn goto_parent(&mut self) -> bool {
-        self.path.pop().is_some()
+        if self.path.pop().is_some() {
+            self.nodes.pop();
+            true
+        } else {
+            false
+        }
     }
 
     /// Resets the cursor back to its root node.
     pub fn reset(&mut self) {
         self.path.clear();
+        self.nodes.clear();
     }
 
     fn current_ast_node(&self) -> &'tree AstNode {
-        resolve_path(self.root, &self.path)
+        self.nodes.last().copied().unwrap_or(self.root)
     }
 
     fn current_parent_ast_node(&self) -> &'tree AstNode {
         debug_assert!(!self.path.is_empty(), "current_parent_ast_node requires a non-root cursor");
-        let parent_path_len = self.path.len() - 1;
-        resolve_path(self.root, &self.path[..parent_path_len])
+        if self.path.len() == 1 { self.root } else { self.nodes[self.nodes.len() - 2] }
     }
 }
 
@@ -774,37 +876,6 @@ fn collect_visible_use_imports(
 // Invariant: TreeCursor path is constructed by traversal methods in this type.
 // If a stale/invalid path somehow appears, return the last valid node instead
 // of panicking, preserving total API safety guarantees.
-fn resolve_path<'tree>(root: &'tree AstNode, path: &[usize]) -> &'tree AstNode {
-    let mut current = root;
-    for &index in path {
-        match ast_child_at(current, index) {
-            Some(child) => current = child,
-            None => {
-                debug_assert!(false, "TreeCursor path must reference a valid child");
-                break;
-            }
-        }
-    }
-    current
-}
-
-fn byte_to_point(source: &str, byte: usize) -> Point {
-    let clamped = byte.min(source.len());
-    let mut row = 0usize;
-    let mut column = 0usize;
-
-    for b in source.as_bytes().iter().take(clamped) {
-        if *b == b'\n' {
-            row += 1;
-            column = 0;
-        } else {
-            column += 1;
-        }
-    }
-
-    Point { row, column }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
