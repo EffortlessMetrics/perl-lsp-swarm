@@ -1,0 +1,107 @@
+name: Receipt Instrument Check (Advisory)
+
+# M7 (#3849) / #3947: the completion-claim receipt gate previously lived in
+# `.claude/hooks/task-completed.sh` -- a local agent-runtime hook that (a)
+# read a path (`receipts/{verify-build,clippy,test}.<hash>`) nothing in the
+# repo ever wrote, and (b) even if populated, trusted a bare `exit_code: 0`,
+# which cannot distinguish a genuine pass from a silently-vacuous instrument
+# that exercises nothing (the #3599 lesson). That hook logic has been
+# REMOVED, not repointed: a local hook is an agent-runtime event with no
+# guarantee it fires for every completion path, and it is invisible to
+# reviewers/branch-protection. The authority for "the intended instrument
+# ran, bound to this head" belongs here instead -- a head-bound,
+# actor-agnostic GitHub check.
+#
+# This workflow runs ONE narrow, real gate (`unit_scoped`: scope-aware
+# library tests for ci-scope-selected crates) to produce a genuine
+# `target/receipts/receipt.json` (schema: `xtask/src/tasks/gates.rs`
+# `Receipt`), then asserts on it via `scripts/ci/check-receipt-instrument.sh`
+# -- the same schema and vacuous-skip guard exercised by
+# `scripts/tests/test-check-receipt-instrument.sh`. It intentionally does
+# NOT re-run the whole pr-fast tier (that's `pr-smoke`'s job already) --
+# just enough of a real instrument to prove the "ran, not vacuous" claim
+# for this head.
+#
+# ADVISORY: intentionally NOT listed in `.ci/policies/required-checks.toml`.
+# Per the M6 lesson, do not promote to required until this shows recurring
+# value catching a real vacuous-skip incident.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/**/*.rs'
+      - 'xtask/src/tasks/gates.rs'
+      - '.ci/gate-policy.yaml'
+      - 'scripts/ci/check-receipt-instrument.sh'
+      - 'scripts/tests/test-check-receipt-instrument.sh'
+      - '.github/workflows/receipt-instrument-check.yml'
+  merge_group:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  receipt-instrument-check:
+    name: Receipt instrument check (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          cache-on-failure: true
+          shared-key: receipt-instrument-check-${{ hashFiles('Cargo.lock') }}
+
+      - name: Detect a Rust-relevant diff
+        id: diff
+        run: |
+          if git diff --name-only origin/main...HEAD -- 'crates/**/*.rs' 'xtask/**/*.rs' | grep -q .; then
+            echo "has_rust_diff=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_rust_diff=false" >> "$GITHUB_OUTPUT"
+            echo "No .rs files in this diff vs origin/main -- nothing for unit_scoped to run; skipping the instrument check (nothing to prove)."
+          fi
+
+      - name: Run unit_scoped gate with a fresh receipt
+        if: steps.diff.outputs.has_rust_diff == 'true'
+        run: |
+          mkdir -p target/receipts
+          cargo xtask gates --gate unit_scoped --receipt \
+            --receipt-path target/receipts/receipt.json --base origin/main
+
+      - name: Assert the instrument actually ran (the #3599 vacuous-skip guard)
+        if: steps.diff.outputs.has_rust_diff == 'true'
+        run: |
+          bash scripts/ci/check-receipt-instrument.sh \
+            "${{ github.event.pull_request.head.sha || github.sha }}" \
+            target/receipts/receipt.json
+
+      - name: Test the assertion script itself (fixture-based red/green)
+        run: bash scripts/tests/test-check-receipt-instrument.sh
+
+      - name: Upload receipt
+        if: always() && steps.diff.outputs.has_rust_diff == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: receipt-instrument-check-${{ github.sha }}
+          path: target/receipts/receipt.json
+          if-no-files-found: warn
+          retention-days: 7

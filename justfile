@@ -43,6 +43,13 @@ check-agent-capabilities:
     {{cargo_safe}} xtask check-agent-capabilities
     bash .claude/hooks/tests/test_pre_tool_use_readonly.sh
 
+# M7 (#3849 / #3947): red/green regression test for the receipt-instrument
+# check (scripts/ci/check-receipt-instrument.sh) -- the head-bound GitHub
+# check that replaced the dead local task-completed.sh receipt gate.
+# Hermetic fixture-based test, no cargo build.
+check-receipt-instrument:
+    bash scripts/tests/test-check-receipt-instrument.sh
+
 # ============================================================================
 # Tiered CI Execution (works locally via Nix and in GitHub Actions)
 # ============================================================================

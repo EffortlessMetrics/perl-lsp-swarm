@@ -20,12 +20,6 @@ payload_field() {
   echo "${INPUT}" | jq -r "${query}" 2>/dev/null | tr -d '\r'
 }
 
-receipt_field() {
-  local receipt="$1"
-  local query="$2"
-  jq -r "${query}" "${receipt}" 2>/dev/null | tr -d '\r'
-}
-
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
 
 # Quick sanity check: is cargo fmt clean?
@@ -47,126 +41,23 @@ if [[ "${HAS_RS_DIFF}" -eq 1 ]]; then
   fi
 fi
 
-# ── Receipt gate: verify-build, clippy, test ──────────────────────────────
-# Receipt files are JSON blobs written by verify-build / clippy / test steps.
-#
-# Receipt format (path convention):
-#   receipts/verify-build.<commit-hash>
-#   receipts/clippy.<commit-hash>
-#   receipts/test.<commit-hash>
-#
-# Content (JSON):
-#   {"exit_code": 0, "timestamp": "<ISO 8601 UTC>", "duration_s": <float>}
-#
-# Staleness: receipts older than 1 hour are rejected (re-run verification).
-# This gate only fires when .rs files are in the current diff.
-
-RECEIPT_DIR="${REPO_ROOT}/receipts"
-
-# Fix #1: require jq — without it we cannot validate receipt JSON
-if ! command -v jq &>/dev/null; then
-  echo "Task completion blocked: jq is required for receipt validation but not found in PATH."
-  echo "Install jq (e.g. apt install jq, brew install jq) and re-run."
-  exit 2
-fi
-
-# Fix #5: no silent fallback — fail hard if git is unavailable
-COMMIT_HASH="$(git rev-parse --short HEAD 2>/dev/null)" || {
-  echo "Task completion blocked: could not determine current commit hash via git."
-  exit 2
-}
-
-MAX_AGE_SECONDS=3600  # 1 hour
-
-# Fix #3: guard HEAD~1 — on first commit (shallow clone, fresh repo) fall back to all tracked .rs files
-RS_CHANGED=0
-if git diff --cached --name-only 2>/dev/null | grep -q '\.rs$'; then
-  RS_CHANGED=1
-elif git rev-parse HEAD~1 &>/dev/null 2>&1 && git diff --name-only HEAD~1 2>/dev/null | grep -q '\.rs$'; then
-  RS_CHANGED=1
-elif ! git rev-parse HEAD~1 &>/dev/null 2>&1; then
-  # No parent commit — check if any tracked .rs files exist (repo has Rust code)
-  if git ls-files -- '*.rs' 2>/dev/null | grep -q .; then
-    RS_CHANGED=1
-  fi
-fi
-
-if [[ "${RS_CHANGED}" -eq 1 ]]; then
-
-  MISSING=()
-  STALE=()
-  FAILED=()
-
-  for CHECK in verify-build clippy test; do
-    RECEIPT="${RECEIPT_DIR}/${CHECK}.${COMMIT_HASH}"
-
-    if [[ ! -f "${RECEIPT}" ]]; then
-      MISSING+=("${CHECK}")
-      continue
-    fi
-
-    # Fix #6: validate receipt JSON structure before trusting fields
-    EXIT_CODE="$(receipt_field "${RECEIPT}" '.exit_code // empty')"
-    TS_STR="$(receipt_field "${RECEIPT}" '.timestamp // empty')"
-    DURATION="$(receipt_field "${RECEIPT}" '.duration_s // empty')"
-
-    # Structural validation: must have exit_code and timestamp, timestamp must match UTC pattern
-    if ! jq -e '(.exit_code | type) == "number" and (.timestamp | type) == "string"' "${RECEIPT}" &>/dev/null; then
-      FAILED+=("${CHECK} (malformed receipt: missing or invalid exit_code/timestamp)")
-      continue
-    fi
-
-    # Fix #4: enforce UTC — timestamp must end with Z or +00:00
-    if ! [[ "${TS_STR}" =~ Z$ || "${TS_STR}" =~ \+00:00$ ]]; then
-      FAILED+=("${CHECK} (timestamp not UTC: ${TS_STR})")
-      continue
-    fi
-
-    if [[ "${EXIT_CODE}" != "0" ]]; then
-      FAILED+=("${CHECK} (exit code ${EXIT_CODE})")
-    elif [[ -n "${TS_STR}" ]]; then
-      # Fix #2: reject future timestamps
-      TS_EPOCH="$(date -d "${TS_STR}" -u +%s 2>/dev/null)" || {
-        FAILED+=("${CHECK} (unparseable timestamp: ${TS_STR})")
-        continue
-      }
-      NOW_EPOCH="$(date -u +%s)"
-      if [[ "${TS_EPOCH}" -gt "${NOW_EPOCH}" ]]; then
-        FAILED+=("${CHECK} (future timestamp: ${TS_STR})")
-        continue
-      fi
-      # Validate freshness
-      AGE=$(( NOW_EPOCH - TS_EPOCH ))
-      if [[ "${AGE}" -gt "${MAX_AGE_SECONDS}" ]]; then
-        STALE+=("${CHECK} (${AGE}s old, max ${MAX_AGE_SECONDS}s)")
-      fi
-    fi
-  done
-
-  BLOCKED=0
-  if [[ ${#MISSING[@]} -gt 0 ]]; then
-    echo "Task completion blocked: missing receipts: ${MISSING[*]}"
-    BLOCKED=1
-  fi
-  if [[ ${#STALE[@]} -gt 0 ]]; then
-    echo "Task completion blocked: stale receipts: ${STALE[*]}"
-    BLOCKED=1
-  fi
-  if [[ ${#FAILED[@]} -gt 0 ]]; then
-    echo "Task completion blocked: failed receipts: ${FAILED[*]}"
-    BLOCKED=1
-  fi
-
-  if [[ "${BLOCKED}" -eq 1 ]]; then
-    echo ""
-    echo "Run verify-build, clippy, and test steps to generate fresh receipts at:"
-    echo "  receipts/{verify-build,clippy,test}.${COMMIT_HASH}"
-    echo ""
-    echo "Receipt format: {\"exit_code\": 0, \"timestamp\": \"<ISO 8601 UTC ending in Z>\", \"duration_s\": <float>}"
-    echo "Receipts must be less than ${MAX_AGE_SECONDS}s old."
-    exit 2
-  fi
-fi
+# NOTE (M7, #3849 / #3947): a receipt gate used to live here, keyed on
+# `receipts/{verify-build,clippy,test}.<short-hash>` -- a path nothing in the
+# repo ever wrote (confirmed via `git log --all -- 'receipts/*'`: only the PR
+# that added this gate touched it), and even if populated, its bare
+# `{exit_code, timestamp, duration_s}` shape could not distinguish a genuine
+# pass from a silently-vacuous instrument that exits 0 having exercised
+# nothing (the #3599 lesson). Removed rather than repointed: a local hook is
+# an agent-runtime event that is not guaranteed to fire for every completion
+# path and is invisible to reviewers, so it is the wrong place to hold this
+# authority. The live, head-bound, actor-agnostic version of this check is
+# the `Receipt Instrument Check` GitHub Actions workflow
+# (`.github/workflows/receipt-instrument-check.yml`), which reads the LIVE
+# `cargo xtask gates --receipt` schema (`xtask/src/tasks/gates.rs`) via
+# `scripts/ci/check-receipt-instrument.sh` and asserts tests_total > 0 /
+# tests_passed > 0 / tests_skipped < tests_total for any gate reporting test
+# metrics, bound to `github.sha`. It runs advisory (not in
+# `.ci/policies/required-checks.toml`) until it shows recurring value.
 
 # Check if test files were modified and CURRENT_STATUS.md needs updating
 HAS_TEST_DIFF=0
