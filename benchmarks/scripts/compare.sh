@@ -6,7 +6,7 @@ set -euo pipefail
 # (benchmarks/scripts/../.. -> <repo>), not one (which previously resolved to
 # <repo>/benchmarks and made every path below it, including the cargo
 # manifest, point one directory too deep — see #3979).
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)"
 BIN="${REPO_ROOT}/target/debug/perl-ci-hygiene"
 

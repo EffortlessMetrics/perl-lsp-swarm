@@ -168,6 +168,13 @@ jobs:
         # (removed here) swallowed it, producing "Total benchmarks: 0" (#3979).
         #
         # Entries are "crate:bench-target:required-feature" (feature may be empty).
+        # This list must stay a superset of every real bench target
+        # `cargo metadata --no-deps --format-version 1` reports (`.targets[]
+        # | select(.kind == ["bench"])`) -- since this REPLACES the blanket
+        # `cargo bench --workspace`, an omitted target here is silent
+        # coverage loss the old command wouldn't have had. Verified against
+        # the current metadata (14 bench targets, all 14 listed below); if a
+        # new bench target is added to the workspace, add it here too.
         declare -a BENCH_TARGETS=(
           "perl-workspace:workspace_index_benchmark:workspace"
           "perl-token:token_scorecard:"
@@ -177,9 +184,12 @@ jobs:
           "perl-parser:incremental_benchmark:incremental"
           "perl-parser:scope_benchmark:"
           "perl-parser:cpan_patterns_benchmark:"
+          "perl-parser:positions_bench:"
+          "perl-parser:substitution_performance:"
           "perl-lsp-rs:rope_performance_benchmark:"
           "perl-lexer:lexer_benchmarks:"
           "perl-dap:dap_benchmarks:"
+          "perl-incremental-parsing:incremental_parsing_benchmarks:"
         )
 
         for entry in "${BENCH_TARGETS[@]}"; do
@@ -220,7 +230,10 @@ jobs:
           --expect-id "cpan_moose_oo_class" \
           --expect-id "document_insertions/rope_insertion" \
           --expect-id "simple_tokens" \
-          --expect-id "configuration_validation/launch_config_validation"
+          --expect-id "configuration_validation/launch_config_validation" \
+          --expect-id "offset_to_pos16_cached" \
+          --expect-id "parse_basic_substitution" \
+          --expect-id "undo_redo/edit_undo_redo"
 
     - name: Real-repo first-diagnostics perf gate (Catalyst 5000+ lines)
       run: |

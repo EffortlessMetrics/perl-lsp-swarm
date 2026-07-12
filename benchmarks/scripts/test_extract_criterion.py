@@ -59,6 +59,17 @@ class ParseEstimatesPathTests(unittest.TestCase):
         )
         self.assertEqual(parsed, ("document_insertions", "rope_insertion"))
 
+    def test_parameterized_grouped_benchmark_is_four_level(self) -> None:
+        # target/criterion/<group>/<function>/<param>/new/estimates.json --
+        # a `group.bench_with_input(BenchmarkId::new(function, param), ...)`
+        # call. The join-based reconstruction in parse_estimates_path must
+        # fold the extra parameter component back into the bench name
+        # (group, "function/param"), not silently drop or mis-group it.
+        parsed = extract_criterion.parse_estimates_path(
+            ("document_insertions", "rope_insertion", "10000", "new", "estimates.json")
+        )
+        self.assertEqual(parsed, ("document_insertions", "rope_insertion/10000"))
+
     def test_direct_benchmark_name_containing_slash_does_not_nest(self) -> None:
         # `c.bench_function("cpan/moose_oo_class", ...)` is a DIRECT call
         # (no `benchmark_group`) whose id string happens to contain a

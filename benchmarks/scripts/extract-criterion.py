@@ -109,12 +109,12 @@ def parse_estimates_path(rel_path_parts: tuple) -> "tuple[str, str] | None":
     return group, bench_name
 
 
-def find_criterion_results(base_path: Path) -> dict:
+def find_criterion_results(base_path: Path) -> "tuple[dict, set]":
     """Find and parse Criterion benchmark results.
 
-    Returns a dict of category -> {bench_name: {...}} plus a top-level
-    "_ids" key containing the set of canonical benchmark_id() strings that
-    were found, for --expect-id matching.
+    Returns a 2-tuple `(results, ids)`: `results` is a dict of
+    category -> {bench_name: {...}}, and `ids` is the set of canonical
+    benchmark_id() strings found, for --expect-id matching.
     """
     results = {}
     ids = set()
