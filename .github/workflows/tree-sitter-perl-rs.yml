@@ -83,6 +83,16 @@ jobs:
           grep -q 'ast_nodes_reused=[1-9]' "$CARGO_TARGET_DIR/incremental-bench.txt"
           grep -q 'tokens_reused=[1-9]' "$CARGO_TARGET_DIR/incremental-bench.txt"
           cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- \
+            "$CARGO_TARGET_DIR/incremental-smoke.pl" --incremental-suite \
+            > "$CARGO_TARGET_DIR/incremental-suite-bench.txt"
+          grep -q 'equivalent=true' "$CARGO_TARGET_DIR/incremental-suite-bench.txt"
+          grep -q 'all_replayed=true' "$CARGO_TARGET_DIR/incremental-suite-bench.txt"
+          grep -q 'fallback_rate_ppm=0' "$CARGO_TARGET_DIR/incremental-suite-bench.txt"
+          grep -q 'incremental_p95_us=[1-9]' "$CARGO_TARGET_DIR/incremental-suite-bench.txt"
+          grep -q 'fresh_p95_us=[1-9]' "$CARGO_TARGET_DIR/incremental-suite-bench.txt"
+          grep -q 'ast_nodes_reused_min=[1-9]' "$CARGO_TARGET_DIR/incremental-suite-bench.txt"
+          grep -q 'tokens_reused_min=[1-9]' "$CARGO_TARGET_DIR/incremental-suite-bench.txt"
+          cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- \
             tree-sitter-perl/test/highlight/expressions.pm --profile \
             > "$CARGO_TARGET_DIR/profile-bench.txt"
           grep -q 'traversal_duration_us=' "$CARGO_TARGET_DIR/profile-bench.txt"
@@ -129,6 +139,16 @@ jobs:
                   "grep -q fresh_edit_duration_us=[1-9] incremental-bench.txt",
                   "grep -q full_parse=false incremental-bench.txt",
                   "grep -q fallback=none incremental-bench.txt",
+                  "grep -q ast_nodes_reused=[1-9] incremental-bench.txt",
+                  "grep -q tokens_reused=[1-9] incremental-bench.txt",
+                  "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- incremental-smoke.pl --incremental-suite",
+                  "grep -q equivalent=true incremental-suite-bench.txt",
+                  "grep -q all_replayed=true incremental-suite-bench.txt",
+                  "grep -q fallback_rate_ppm=0 incremental-suite-bench.txt",
+                  "grep -q incremental_p95_us=[1-9] incremental-suite-bench.txt",
+                  "grep -q fresh_p95_us=[1-9] incremental-suite-bench.txt",
+                  "grep -q ast_nodes_reused_min=[1-9] incremental-suite-bench.txt",
+                  "grep -q tokens_reused_min=[1-9] incremental-suite-bench.txt",
                   "cargo run --locked -p tree-sitter-perl-rs --bin bench_facade -- tree-sitter-perl/test/highlight/expressions.pm --profile",
                   "cargo package -p tree-sitter-perl-rs --allow-dirty --no-verify --locked",
               ],
@@ -149,6 +169,7 @@ jobs:
             ${{ runner.temp }}/tree-sitter-perl-rs-target/receipts-tree-sitter-perl-rs-corpus-sweep.json
             ${{ runner.temp }}/tree-sitter-perl-rs-target/quick-bench.txt
             ${{ runner.temp }}/tree-sitter-perl-rs-target/incremental-bench.txt
+            ${{ runner.temp }}/tree-sitter-perl-rs-target/incremental-suite-bench.txt
             ${{ runner.temp }}/tree-sitter-perl-rs-target/profile-bench.txt
           if-no-files-found: warn
           retention-days: 14
