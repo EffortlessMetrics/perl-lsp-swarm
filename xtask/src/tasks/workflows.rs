@@ -186,26 +186,41 @@ impl Report {
 }
 
 /// Every `uses:` reference across every job/step in a workflow document.
+///
+/// Two distinct forms: a JOB-level `jobs.<id>.uses:` invokes a reusable
+/// workflow (no `steps:` on that job at all); a STEP-level
+/// `jobs.<id>.steps[].uses:` invokes an action. Both must be collected — a
+/// job that only calls a reusable workflow has no `steps` key, so gating the
+/// job-level check behind a successful `steps` lookup (the original bug)
+/// silently drops every reusable-workflow reference from both the
+/// local-ref-integrity and pinning-policy checks below.
 fn all_uses_refs(workflow: &YamlValue) -> Vec<String> {
     let mut out = Vec::new();
     let Some(jobs) = workflow.get("jobs").and_then(YamlValue::as_mapping) else {
         return out;
     };
     for job in jobs.values() {
-        let Some(steps) = job
-            .as_mapping()
-            .and_then(|m| m.get(YamlValue::String("steps".to_string())))
-            .and_then(YamlValue::as_sequence)
-        else {
-            continue;
-        };
-        for step in steps {
-            if let Some(uses) = step
-                .as_mapping()
-                .and_then(|m| m.get(YamlValue::String("uses".to_string())))
-                .and_then(YamlValue::as_str)
-            {
-                out.push(uses.to_string());
+        let Some(job_map) = job.as_mapping() else { continue };
+
+        // Job-level reusable-workflow reference.
+        if let Some(uses) =
+            job_map.get(YamlValue::String("uses".to_string())).and_then(YamlValue::as_str)
+        {
+            out.push(uses.to_string());
+        }
+
+        // Step-level action references.
+        if let Some(steps) =
+            job_map.get(YamlValue::String("steps".to_string())).and_then(YamlValue::as_sequence)
+        {
+            for step in steps {
+                if let Some(uses) = step
+                    .as_mapping()
+                    .and_then(|m| m.get(YamlValue::String("uses".to_string())))
+                    .and_then(YamlValue::as_str)
+                {
+                    out.push(uses.to_string());
+                }
             }
         }
     }
@@ -324,12 +339,33 @@ fn tool_available(bin: &str, version_flag: &str) -> bool {
     Command::new(bin).arg(version_flag).output().map(|o| o.status.success()).unwrap_or(false)
 }
 
+/// actionlint's documented exit codes (verified against its own usage docs,
+/// "Exit Status Codes" section): 0 = no findings, 1 = findings present
+/// (a NORMAL outcome, not a crash), 2 = invalid command-line option, 3 =
+/// fatal error. Only 2/3 (and any other undocumented code) are instrument
+/// failures.
+fn actionlint_exit_is_clean(code: Option<i32>) -> bool {
+    matches!(code, Some(0) | Some(1))
+}
+
+/// zizmor's documented exit codes (verified against its own usage docs,
+/// "Exit codes" section): 0 = no findings, 1 = error during audit, 2 =
+/// argument-parsing failure, 3 = no inputs collected (1/2/3 are instrument
+/// failures), 11-14 = findings present at increasing severity (a NORMAL
+/// outcome, not a crash — only reachable without `--no-exit-codes`/SARIF).
+fn zizmor_exit_is_clean(code: Option<i32>) -> bool {
+    matches!(code, Some(0) | Some(11) | Some(12) | Some(13) | Some(14))
+}
+
 /// Run `actionlint -format '{{json .}}'` over the workflows directory.
 ///
-/// `Err` means the instrument itself failed (unspawnable binary, or output
-/// that isn't valid JSON — a genuine crash, not findings). actionlint's own
-/// non-zero exit status when it *has* findings is expected and is not an
-/// error condition here; only spawn failure or garbled output is.
+/// `Err` means the instrument itself failed: an unspawnable binary, an exit
+/// code outside actionlint's documented "ran successfully" set
+/// ([`actionlint_exit_is_clean`] — this catches a crash whose diagnostics
+/// went only to stderr with empty/garbled stdout, which would otherwise be
+/// silently accepted as "0 findings"), or output that isn't valid JSON.
+/// actionlint's exit 1 (findings present) is expected and is not an error
+/// condition here.
 ///
 /// The exact JSON field names actionlint emits per finding are not pinned
 /// down here (verified from actionlint's own docs, which show the template
@@ -346,19 +382,35 @@ fn run_actionlint(root: &Path) -> std::result::Result<Vec<serde_json::Value>, St
         .args(["-format", "{{json .}}"])
         .output()
         .map_err(|e| format!("failed to spawn actionlint: {e}"))?;
+    if !actionlint_exit_is_clean(out.status.code()) {
+        return Err(format!(
+            "actionlint exited {:?} (outside its documented 0=clean/1=findings set) — \
+             stderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
     parse_json_array_output(&out.stdout, "actionlint")
 }
 
 /// Run `zizmor --format json .github/workflows` over the workflows
-/// directory. Same instrument-vs-finding split as [`run_actionlint`]; same
-/// defensive raw-`Value` parsing for the same reason (schema not pinned down
-/// from docs alone).
+/// directory. Same instrument-vs-finding split as [`run_actionlint`]
+/// (via [`zizmor_exit_is_clean`]); same defensive raw-`Value` parsing for
+/// the same reason (schema not pinned down from docs alone).
 fn run_zizmor(root: &Path) -> std::result::Result<Vec<serde_json::Value>, String> {
     let out = Command::new("zizmor")
         .current_dir(root)
         .args(["--format", "json", WORKFLOWS_DIR])
         .output()
         .map_err(|e| format!("failed to spawn zizmor: {e}"))?;
+    if !zizmor_exit_is_clean(out.status.code()) {
+        return Err(format!(
+            "zizmor exited {:?} (outside its documented 0=clean/11-14=findings set) — \
+             stderr: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
     parse_json_array_output(&out.stdout, "zizmor")
 }
 
@@ -737,6 +789,39 @@ mod tests {
         Ok(())
     }
 
+    /// Discriminates the positive case above: this fixture deliberately does
+    /// NOT create `reusable.yml`, so a job-level (no `steps`) local reusable-
+    /// workflow ref must still be checked for existence and flagged. Without
+    /// `all_uses_refs` walking `jobs.<id>.uses`, this assertion would be
+    /// vacuously satisfied by an empty findings list -- pinning that bug is
+    /// the whole point of this test (see #3885 factory-droid P1).
+    #[test]
+    fn missing_job_level_local_reusable_workflow_ref_is_flagged() -> std::result::Result<(), String>
+    {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let wf = parse_workflow("jobs:\n  a:\n    uses: ./.github/workflows/reusable.yml@main\n");
+        let findings = find_local_ref_findings(tmp.path(), &wf);
+        assert!(
+            findings.iter().any(|f| f.contains("reusable.yml")),
+            "job-level local reusable-workflow ref must be checked for existence, got {findings:?}"
+        );
+        Ok(())
+    }
+
+    /// Job-level (no `steps`) remote reusable-workflow refs must also be seen
+    /// by the pinning check, not just step-level action refs (#3885 P2).
+    #[test]
+    fn job_level_remote_reusable_workflow_ref_is_checked_for_pinning() {
+        let wf = parse_workflow(
+            "jobs:\n  a:\n    uses: some-org/some-repo/.github/workflows/x.yml@v1\n",
+        );
+        let findings = find_pinning_findings(&wf, &["actions/".to_string()]);
+        assert!(
+            findings.iter().any(|f| f.contains("some-org/some-repo")),
+            "job-level remote reusable-workflow ref must be pinning-checked, got {findings:?}"
+        );
+    }
+
     // --- boundary_state: three-clock cutoff coverage (mirrors changelog.rs) ---
 
     #[test]
@@ -762,6 +847,63 @@ mod tests {
         policy.blocking_enforced_from = None;
         let boundary = boundary_state(Path::new("."), &policy, "HEAD");
         assert_ne!(boundary, Boundary::Blocking);
+    }
+
+    // --- exit-status gates: instrument-failure unit coverage (#3885 P2, no process spawn) ---
+    // Codes verified against each tool's own "Exit Status"/"Exit codes" docs.
+
+    #[test]
+    fn actionlint_exit_0_is_clean() {
+        assert!(actionlint_exit_is_clean(Some(0)));
+    }
+
+    #[test]
+    fn actionlint_exit_1_findings_is_clean() {
+        // Findings present is a NORMAL outcome, not a crash.
+        assert!(actionlint_exit_is_clean(Some(1)));
+    }
+
+    #[test]
+    fn actionlint_exit_2_invalid_option_is_not_clean() {
+        assert!(!actionlint_exit_is_clean(Some(2)));
+    }
+
+    #[test]
+    fn actionlint_exit_3_fatal_is_not_clean() {
+        assert!(!actionlint_exit_is_clean(Some(3)));
+    }
+
+    #[test]
+    fn actionlint_missing_exit_code_is_not_clean() {
+        // e.g. killed by a signal on Unix.
+        assert!(!actionlint_exit_is_clean(None));
+    }
+
+    #[test]
+    fn zizmor_exit_0_is_clean() {
+        assert!(zizmor_exit_is_clean(Some(0)));
+    }
+
+    #[test]
+    fn zizmor_exit_11_through_14_findings_are_clean() {
+        for code in [11, 12, 13, 14] {
+            assert!(zizmor_exit_is_clean(Some(code)), "exit {code} (findings) must be clean");
+        }
+    }
+
+    #[test]
+    fn zizmor_exit_1_audit_error_is_not_clean() {
+        assert!(!zizmor_exit_is_clean(Some(1)));
+    }
+
+    #[test]
+    fn zizmor_exit_2_argument_error_is_not_clean() {
+        assert!(!zizmor_exit_is_clean(Some(2)));
+    }
+
+    #[test]
+    fn zizmor_exit_3_no_inputs_is_not_clean() {
+        assert!(!zizmor_exit_is_clean(Some(3)));
     }
 
     // --- parse_json_array_output: instrument-failure unit coverage (no process spawn) ---
