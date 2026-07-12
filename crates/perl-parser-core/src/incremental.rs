@@ -55,6 +55,10 @@ pub enum FallbackReason {
     CacheBoundaryUnavailable,
     /// Parsing the assembled token stream failed.
     TokenReplayFailed,
+    /// Format declarations require lexer/parser state that token replay cannot preserve safely.
+    ContextSensitiveFormat,
+    /// Replayed recovery diagnostics were not safe to preserve with shifted tokens.
+    RecoveryDiagnosticsUnstable,
 }
 
 impl fmt::Display for FallbackReason {
@@ -64,6 +68,8 @@ impl fmt::Display for FallbackReason {
             Self::NoCheckpointWindow => "no checkpoint window",
             Self::CacheBoundaryUnavailable => "cache boundary unavailable",
             Self::TokenReplayFailed => "token replay failed",
+            Self::ContextSensitiveFormat => "context-sensitive format declaration",
+            Self::RecoveryDiagnosticsUnstable => "replayed recovery diagnostics unstable",
         };
         formatter.write_str(description)
     }
@@ -155,6 +161,9 @@ impl IncrementalState {
         if edit.touched_bytes() > MAX_INCREMENTAL_EDIT_BYTES {
             return self.full_reparse(new_source, Some(FallbackReason::EditTooLarge));
         }
+        if contains_format_declaration(&self.source) || contains_format_declaration(new_source) {
+            return self.full_reparse(new_source, Some(FallbackReason::ContextSensitiveFormat));
+        }
 
         let old_relex_start =
             self.find_before(edit.start_byte).map_or(0, |checkpoint| checkpoint.position);
@@ -226,6 +235,10 @@ impl IncrementalState {
             }
         };
         let diagnostics = parser.errors().to_vec();
+        if !diagnostics.is_empty() {
+            return self
+                .full_reparse(new_source, Some(FallbackReason::RecoveryDiagnosticsUnstable));
+        }
 
         self.source = new_source.to_owned();
         self.tokens = assembled;
@@ -380,6 +393,10 @@ fn shift_offset(offset: usize, delta: isize) -> usize {
     (offset as isize).saturating_add(delta).max(0) as usize
 }
 
+fn contains_format_declaration(source: &str) -> bool {
+    source.lines().any(|line| line.trim_start().starts_with("format "))
+}
+
 fn shift_token(token: &Token, delta: isize) -> Option<Token> {
     let start = shift_offset(token.start, delta);
     let end = shift_offset(token.end, delta);
@@ -435,6 +452,22 @@ mod tests {
         let _ = must(state.reparse(&new_source, &edit));
 
         assert!(!state.diagnostics().is_empty());
+        assert_eq!(state.metrics().fallback, Some(FallbackReason::RecoveryDiagnosticsUnstable));
+        assert!(state.metrics().full_parse);
+    }
+
+    #[test]
+    fn format_declaration_records_a_context_sensitive_fallback() {
+        let source = "format REPORT =\nName: @<<<\n$x\n.\n";
+        let mut state = IncrementalState::new(source);
+        let start = must_some(source.find("Name"));
+        let new_source = source.replacen("Name", "Value", 1);
+        let edit = IncrementalEdit::new(start, start + 4, "Value");
+
+        let _ = must(state.reparse(&new_source, &edit));
+
+        assert_eq!(state.metrics().fallback, Some(FallbackReason::ContextSensitiveFormat));
+        assert!(state.metrics().full_parse);
     }
 
     #[test]
