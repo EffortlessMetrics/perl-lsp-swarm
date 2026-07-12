@@ -9985,8 +9985,15 @@ mod reindex_workshape_measurement {
         assert_eq!(m1.generated_member_calls, 1);
         assert_eq!(m1.import_extract_calls, 1);
         assert_eq!(m1.use_lib_extract_calls, 1);
-        assert!(m1.generation_accepted);
-        assert!(!m1.content_hash_short_circuit);
+        assert!(
+            m1.generation_accepted,
+            "comment-only edit must be accepted as a new generation, not rejected"
+        );
+        assert!(
+            !m1.content_hash_short_circuit,
+            "the comment-only edit changes real bytes, so it must not take the \
+             unchanged-content short-circuit path"
+        );
 
         // Legacy cache CONTRIBUTION churn: this file's own symbol-table
         // contribution is torn down and rebuilt in full even though the
@@ -10277,7 +10284,10 @@ mod reindex_workshape_measurement {
             original, reverted,
             "reverting to byte-identical original text must reproduce bit-identical category hashes"
         );
-        assert!(m2.generation_accepted);
+        assert!(
+            m2.generation_accepted,
+            "the revert-to-original call must be accepted as a new generation, not rejected"
+        );
         Ok(())
     }
 
@@ -10324,7 +10334,10 @@ mod reindex_workshape_measurement {
             "an out-of-order older generation must be rejected, not published; got {:?}",
             m_old
         );
-        assert!(!m_old.generation_accepted);
+        assert!(
+            !m_old.generation_accepted,
+            "stale/older generation must be rejected, so it must never reach the accepted outcome"
+        );
         assert_eq!(
             after_new, after_old_attempt,
             "the stale older generation must never overwrite the newer, already-committed shard"
