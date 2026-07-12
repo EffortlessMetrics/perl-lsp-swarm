@@ -2004,6 +2004,7 @@ dependencies = [
  "perl-workspace-core",
  "serde",
  "serde_json",
+ "tree-sitter-perl-rs",
 ]
 
 [[package]]

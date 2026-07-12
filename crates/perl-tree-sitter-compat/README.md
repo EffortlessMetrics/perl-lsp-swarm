@@ -37,10 +37,19 @@ for h in highlights(&tree) {
 - **`highlights` / `capture_for`** — a node-granular highlight capture map
   (`keyword`, `function`, `variable`, `string`, `number`, …).
 
+## Facade shadow validation
+
+The production parse path also performs a best-effort shadow parse through
+`tree-sitter-perl-rs`. It compares root spans and node counts, retains the
+established native result on mismatch or facade failure, and exposes aggregate
+counters through `shadow_stats()`. This keeps adoption observable without
+changing user-facing output.
+
 ## Layering
 
-Depends only on `perl-parser-core` (the leaf parser) and `perl-workspace-core`
-(the LSP-free substrate, for its UTF-8 line index) — never the editor runtime.
+Uses `perl-parser-core` for the authoritative result and
+`tree-sitter-perl-rs` for the non-authoritative shadow comparison, alongside
+`perl-workspace-core` for its UTF-8 line index — never the editor runtime.
 
 ## Scope (`publish = false`)
 

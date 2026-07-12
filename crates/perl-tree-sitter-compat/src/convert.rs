@@ -4,6 +4,7 @@ use perl_parser_core::{Node, Parser};
 use perl_workspace_core::Utf8LineIndex;
 
 use crate::node::{TsNode, TsPoint, pascal_to_snake};
+use crate::shadow;
 
 /// A failure to produce a tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +32,7 @@ pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
         let mut parser = Parser::new(source);
         parser.parse().map_err(|_| TreeError::ParseFailed)?
     };
+    let _shadow = shadow::compare(source, &ast);
     let line_index = Utf8LineIndex::new(source);
     Ok(to_ts_node(&ast, &line_index))
 }
@@ -92,6 +94,17 @@ mod tests {
     #[test]
     fn tree_error_displays_readably() {
         assert_eq!(TreeError::ParseFailed.to_string(), "could not parse source as Perl");
+    }
+
+    #[test]
+    fn parse_path_records_a_facade_shadow_run() {
+        let before = shadow::shadow_stats();
+        let parsed = parse_to_tree("my $value = 42;\n");
+        assert!(parsed.is_ok());
+        let after = shadow::shadow_stats();
+        assert!(after.runs > before.runs);
+        assert!(after.facade_trees > before.facade_trees);
+        assert!(after.matches > before.matches);
     }
 
     fn has_node_starting_on_row(node: &TsNode, row: u32) -> bool {

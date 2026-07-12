@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 # An adapter over the native parser + the LSP-free substrate's line index.
 perl-parser-core = { workspace = true }
+tree-sitter-perl-rs = { workspace = true }
 perl-workspace-core = { workspace = true }
 serde = { workspace = true }
 
