@@ -75,6 +75,24 @@ fn main() {
                 std::process::exit(1);
             };
             let incremental_duration = incremental_start.elapsed().as_micros();
+            let fresh_start = Instant::now();
+            let mut fresh_parser = Parser::new();
+            let fresh_outcome = fresh_parser.parse_detailed(&new_source);
+            let fresh_duration = fresh_start.elapsed().as_micros();
+            let Some(fresh_tree) = fresh_outcome.tree else {
+                println!(
+                    "status=failure error=true duration_us={} incremental=failed fresh=failed",
+                    duration
+                );
+                std::process::exit(1);
+            };
+            if incremental.root_node().to_sexp() != fresh_tree.root_node().to_sexp() {
+                println!(
+                    "status=failure error=true duration_us={} incremental=non_equivalent fresh_edit_duration_us={}",
+                    duration, fresh_duration
+                );
+                std::process::exit(1);
+            }
             let Some(metrics) = incremental.incremental_metrics() else {
                 println!(
                     "status=failure error=true duration_us={} incremental=unmeasured",
@@ -83,10 +101,11 @@ fn main() {
                 std::process::exit(1);
             };
             println!(
-                "status=success error={} duration_us={} incremental_duration_us={} ast_nodes_reused={} ast_nodes_reparsed={} tokens_reused={} tokens_relexed={}",
+                "status=success error={} duration_us={} incremental_duration_us={} fresh_edit_duration_us={} equivalent=true ast_nodes_reused={} ast_nodes_reparsed={} tokens_reused={} tokens_relexed={}",
                 has_error,
                 duration,
                 incremental_duration,
+                fresh_duration,
                 metrics.ast_nodes_reused,
                 metrics.ast_nodes_reparsed,
                 metrics.tokens_reused,
