@@ -53,8 +53,6 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `Tree::incremental_metrics() -> Option<&IncrementalMetrics>` | Reuse, re-lex, changed-range, and fallback measurements |
 | `Tree::changed_ranges() -> Vec<Range<usize>>` | Byte range reprocessed by the most recent parse |
 | `Parser::parse_detailed(&mut self, source: &str) -> ParseOutcome` | Parse result with recovered-tree status, diagnostics, and typed catastrophic failure |
-| `Tree::walk() -> TreeCursor<'_>` | Returns a cursor for zero-allocation streaming traversal |
-| `Tree::edit(&mut self, edit: &InputEdit)` | Records a source edit; pass the updated tree to `parse_with_old_tree` |
 | `Tree::diagnostics() -> &[ParseDiagnostic]` | Diagnostics collected while building the tree |
 | `Tree::has_error() -> bool` | `true` for diagnostics or an error node anywhere in the tree |
 | `Node::kind() -> String` | Grammar-canonical node type name (e.g. `"source_file"`) matching tree-sitter output |
@@ -95,16 +93,18 @@ Use `Parser::parse_detailed()` when the distinction between a clean tree, a reco
 and a catastrophic failure matters. A recovered tree has `Some(tree)` plus diagnostics;
 catastrophic recursion or nesting failures have `tree == None` and a typed `ParseFailure`.
 
-## Known limitations (Phase 1)
+## Known limitations
 
 - `Node::children()` borrows list-shaped child storage directly; fixed-field variants use a
   bounded indexed fallback. Prefer one traversal when random access is not needed.
 - Point conversion uses a per-tree byte line index, cursor movement caches its
   current node path, and semantic/pragma overlay models are lazily cached per
   immutable tree.
-- Incremental replay currently reuses parser tokens, not AST subtrees. Format declarations,
-  oversized edits, and unsupported cache windows report a full-parse fallback through
-  `Tree::incremental_metrics()`.
+- Incremental AST reuse is deliberately conservative: it reparses one clean top-level statement
+  and retains unaffected statement subtrees. Structural, recovery-sensitive, format, oversized,
+  and unsupported edits report a typed full-parse fallback through `Tree::incremental_metrics()`.
+- The facade's incremental equivalence harness covers seeded and deterministic mixed editor edits;
+  broad corpus-scale latency budgets remain CI work rather than an unconditional API guarantee.
 - `RecursionLimit` / `NestingTooDeep` parse errors produce `None` from `parse()` and a typed
   failure from `parse_detailed()` rather than a partial tree.
 - `Node::kind()` now returns grammar-canonical names (e.g. `"source_file"`) for tree-sitter compatibility. Use `Node::native_kind()` when you need the v3 internal PascalCase name.
@@ -113,7 +113,7 @@ catastrophic recursion or nesting failures have `tree == None` and a typed `Pars
 
 The following APIs are not yet implemented and remain on the backlog:
 
-- Predicate / query API (pattern matching over the AST)
+- Predicate / query API (pattern matching over the AST; available on the query feature branch)
 
 ## License
 

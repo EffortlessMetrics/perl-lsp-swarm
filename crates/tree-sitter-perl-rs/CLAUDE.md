@@ -108,7 +108,6 @@ cargo doc -p tree-sitter-perl-rs --open     # View documentation
 
 ## Backlog follow-ups
 
-- Field-name accessors (named children by field name)
-- Predicate / query API
-- AST subtree reuse beyond the token-level incremental kernel
-- Borrowed child iteration instead of the current AST child-vector adapter
+- Predicate / query API and executable conformance for the repository's `.scm` files
+- Broader corpus-scale incremental latency budgets and fallback-rate receipts
+- Further reduction of the remaining fixed-field child traversal adapter cost
