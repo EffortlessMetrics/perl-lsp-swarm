@@ -10,6 +10,8 @@
 - `TreeCursor` — zero-allocation streaming traversal (`walk()`, `goto_first_child()`, `goto_next_sibling()`, `goto_parent()`)
 - `Tree::edit()` / `Parser::parse_with_old_tree()` / `InputEdit` — checkpoint-bounded token replay with measured fallback
 - `Tree::incremental_metrics()` / `Tree::changed_ranges()` — replay and changed-range observability
+- `Parser::parse_detailed()` / `Tree::diagnostics()` / `Tree::has_error()` / `Node::is_error()` /
+  `Node::has_error()` — recovery and catastrophic-failure observability
 - `PerlLanguage` descriptor, `language()` function, and `LANGUAGE` constant for Rust-native tooling
 - `PerlNodeKind` re-export for pattern matching without a direct `perl-ast` dependency
 - Snapshot tests for representative Perl constructs
@@ -34,8 +36,8 @@ tree-sitter query API.
 - `Node::children()` allocates a `Vec<&AstNode>` internally on each call. Avoid calling it
   in tight loops; iterate once and collect if you need random access.
 - `RecursionLimit` / `NestingTooDeep` parse errors from the v3 parser produce `None` from
-  `Parser::parse()` rather than a partial tree. In practice this only affects pathologically
-  deep nesting.
+  `Parser::parse()` and a typed failure from `Parser::parse_detailed()` rather than a partial
+  tree. In practice this only affects pathologically deep nesting.
 - `Node::kind()` returns grammar-canonical tree-sitter node type strings such as
   `"source_file"`. Use `Node::native_kind()` when callers need v3 internal kind names
   such as `"Program"`.
