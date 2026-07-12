@@ -52,21 +52,21 @@
 use perl_ast::{Node as AstNode, NodeKind};
 use perl_module::parse_module_import_head;
 use perl_parser_core::{
-    incremental::{IncrementalEdit, IncrementalState},
     ParseOutput, Parser as CoreParser,
+    incremental::{IncrementalEdit, IncrementalState},
 };
 use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::semantic::SemanticModel;
 use std::cell::OnceCell;
 use std::sync::Arc;
 
+/// Parser diagnostics surfaced by [`Parser::parse_detailed`].
+pub use perl_parser_core::ParseError as ParseDiagnostic;
 /// Re-export of Edit type for tree-sitter-compatible incremental parsing.
 ///
 /// Mirrors `tree_sitter::InputEdit` field layout for drop-in compatibility.
 pub use perl_parser_core::edit::Edit as InputEdit;
 pub use perl_parser_core::incremental::{FallbackReason, IncrementalMetrics};
-/// Parser diagnostics surfaced by [`Parser::parse_detailed`].
-pub use perl_parser_core::ParseError as ParseDiagnostic;
 
 /// A tree-sitter-compatible source position.
 ///
@@ -1074,11 +1074,7 @@ impl<'tree> TreeCursor<'tree> {
 
     fn current_parent_ast_node(&self) -> &'tree SharedNode {
         debug_assert!(!self.path.is_empty(), "current_parent_ast_node requires a non-root cursor");
-        if self.path.len() == 1 {
-            self.root
-        } else {
-            self.nodes[self.nodes.len() - 2]
-        }
+        if self.path.len() == 1 { self.root } else { self.nodes[self.nodes.len() - 2] }
     }
 }
 
