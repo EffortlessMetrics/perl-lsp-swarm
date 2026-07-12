@@ -93,6 +93,18 @@ Use `Parser::parse_detailed()` when the distinction between a clean tree, a reco
 and a catastrophic failure matters. A recovered tree has `Some(tree)` plus diagnostics;
 catastrophic recursion or nesting failures have `tree == None` and a typed `ParseFailure`.
 
+## Benchmark profile
+
+The repository benchmark binary emits structured hot-path timings for a representative source:
+
+```text
+cargo run -p tree-sitter-perl-rs --bin bench_facade -- path/to/file.pm --profile
+```
+
+The profile reports parse, traversal, grammar-kind lookup, point conversion, and semantic-overlay
+latencies. `--incremental` additionally reports the fresh-versus-edit timing and actual reuse
+metrics; these are smoke receipts, not a release performance guarantee.
+
 ## Known limitations
 
 - `Node::children()` borrows list-shaped child storage directly; fixed-field variants use a
