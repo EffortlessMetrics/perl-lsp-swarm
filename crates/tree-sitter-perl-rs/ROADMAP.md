@@ -16,13 +16,16 @@
 - `PerlNodeKind` re-export for pattern matching without a direct `perl-ast` dependency
 - Snapshot tests for representative Perl constructs
 
-## Phase 2 (planned)
+## Phase 2 (partially shipped)
 
-### Field-name accessors
+### Field-name accessors (shipped)
 
 `Node::child_by_field_name(name: &str) -> Option<Node>` and
 `Node::children_by_field_name(name: &str) -> impl Iterator<Item = Node>` to address named
 child slots (e.g. `"body"`, `"condition"`, `"name"`).
+
+The field vocabulary is canonicalized in `perl-ast` and is also exposed through
+`PerlLanguage::field_names()` and `Node::field_name_for_child()`.
 
 ### Predicate / query API
 
@@ -31,8 +34,8 @@ tree-sitter query API.
 
 ## Known limitations
 
-- Incremental replay currently reuses parser tokens, not AST subtrees. Format declarations,
-  oversized edits, and unsupported cache windows use a safe full-parse fallback.
+- Incremental AST reuse is conservative and statement-scoped. Format declarations, oversized
+  edits, recovery-sensitive input, and unsupported cache windows use a safe full-parse fallback.
 - `Node::children()` uses borrowed slice iterators for list-shaped AST nodes. A small
   indexed fallback remains for fixed-field variants; callers needing random access should
   still collect explicitly.
