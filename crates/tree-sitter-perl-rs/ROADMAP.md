@@ -23,14 +23,15 @@
 ### Structural query subset (shipped behind `queries`)
 
 `Query` and `QueryCursor` support node kinds, wildcards, nested children, named fields,
-captures, `#eq?`, `#not-eq?`, `#match?`, `#not-match?`, multiple top-level patterns,
-and byte-range restriction. Unsupported syntax
+captures, `#eq?`, `#not-eq?`, `#match?`, `#not-match?`, `#set!` settings,
+multiple top-level patterns, and byte-range restriction. Unsupported syntax
 returns a typed `QueryError`.
 
 ### Query predicates (shipped)
 
-The initial predicate set compares captured source text or applies a regular expression.
-Additional predicates remain a follow-up when required by real repository `.scm` fixtures.
+The initial predicate set compares captured source text, applies a regular expression, or
+emits match metadata. Real injection-query predicate spellings are executable conformance
+fixtures; predicates that depend on unsupported anonymous grammar nodes remain typed failures.
 
 ## Known limitations
 

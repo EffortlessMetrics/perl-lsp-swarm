@@ -78,6 +78,7 @@ if let Some(tree) = parser.parse("my $x = 42;") {
 | `FieldId` | Stable named-field identifier shared by the AST and facade |
 | `PerlNodeKind` | Re-export of `perl_ast::NodeKind` for pattern matching |
 | `Query` / `QueryCursor` | Structural AST matching when the `queries` feature is enabled |
+| `QueryMatch::settings()` | `#set!` metadata emitted by a query match |
 
 ### Structural queries
 
@@ -89,8 +90,10 @@ tree-sitter-perl-rs = { version = "...", features = ["queries"] }
 
 The supported subset includes node kinds, wildcards, nested children, named fields,
 captures, `#eq?`, `#not-eq?`, `#match?`, `#not-match?`, multiple top-level patterns,
-and byte-range restriction. Other unsupported tree-sitter query syntax returns a typed
-`QueryError`; it is not silently ignored.
+`#set!` metadata directives, and byte-range restriction. Other unsupported tree-sitter
+query syntax returns a typed `QueryError`; it is not silently ignored. The repository's
+injection fixture vocabulary is covered by executable conformance tests; grammar features
+that depend on anonymous C-grammar nodes remain explicitly outside this facade's contract.
 | `ParseOutcome` / `ParseFailure` / `ParseDiagnostic` | Detailed recovery and catastrophic-failure reporting |
 
 ## Error tolerance

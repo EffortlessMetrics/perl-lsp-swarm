@@ -7,6 +7,11 @@ use tree_sitter_perl_rs::{Parser, Query, QueryCursor, QueryError};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
+fn parse(source: &str) -> tree_sitter_perl_rs::Tree {
+    let mut parser = Parser::new();
+    must_some(parser.parse(source))
+}
+
 #[test]
 fn executes_a_supported_fragment_from_the_upstream_highlights_query() -> TestResult {
     let upstream = include_str!("../../../tree-sitter-perl/queries/highlights.scm");
@@ -46,11 +51,19 @@ fn upstream_injection_predicates_have_explicit_phase_2b_behavior() -> TestResult
         return Err("supported predicate fixture did not compile as one pattern".into());
     }
 
-    let unsupported = Query::new(r#"(comment) @content (#set! injection.language "comment")"#);
+    let injection = Query::new(r#"(number) @content (#set! injection.language "comment")"#)?;
+    let tree = parse("my $value = 42;\n");
+    let mut cursor = QueryCursor::new();
+    let matches = cursor.matches(&injection, tree.root_node()).collect::<Vec<_>>();
+    let query_match = matches.first().ok_or("injection setting query did not match")?;
+    let setting = query_match.settings().first().ok_or("#set! setting was not emitted")?;
+    if setting.key != "injection.language" || setting.value != "comment" {
+        return Err(format!("unexpected injection setting: {setting:?}").into());
+    }
+
+    let unsupported = Query::new(r#"(number) @content (#lua-match? @content "^#!")"#);
     if !matches!(unsupported, Err(QueryError::UnsupportedSyntax { .. })) {
-        return Err(
-            format!("#set! was not rejected with a typed syntax error: {unsupported:?}").into()
-        );
+        return Err(format!("unsupported predicate was not rejected: {unsupported:?}").into());
     }
     Ok(())
 }

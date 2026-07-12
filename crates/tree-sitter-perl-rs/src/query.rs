@@ -177,6 +177,7 @@ impl<'tree> Iterator for QueryMatches<'tree> {
 pub struct QueryMatch<'tree> {
     pattern_index: usize,
     captures: Vec<QueryCapture<'tree>>,
+    settings: Vec<QuerySetting>,
 }
 
 impl<'tree> QueryMatch<'tree> {
@@ -189,6 +190,21 @@ impl<'tree> QueryMatch<'tree> {
     pub fn captures(&self) -> &[QueryCapture<'tree>] {
         &self.captures
     }
+
+    /// Return `#set!` metadata attached to this match.
+    pub fn settings(&self) -> &[QuerySetting] {
+        &self.settings
+    }
+}
+
+/// Metadata emitted by a `#set! key "value"` query directive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct QuerySetting {
+    /// Setting key, such as `injection.language`.
+    pub key: String,
+    /// Setting value, such as `comment` or `perl`.
+    pub value: String,
 }
 
 /// A named node captured by a query match.
@@ -244,6 +260,7 @@ enum NodeKindPattern {
 enum PredicatePattern {
     Eq { capture: String, value: String, negated: bool },
     Match { capture: String, pattern: String, negated: bool },
+    Set { key: String, value: String },
 }
 
 fn lex(source: &str) -> Result<Vec<Token>, QueryError> {
@@ -457,8 +474,27 @@ fn take_predicates(
         };
         let name = name.clone();
         *position += 1;
-        if !matches!(name.as_str(), "#eq?" | "#not-eq?" | "#match?" | "#not-match?") {
+        if !matches!(name.as_str(), "#eq?" | "#not-eq?" | "#match?" | "#not-match?" | "#set!") {
             return Err(QueryError::UnsupportedSyntax { syntax: name });
+        }
+        if name == "#set!" {
+            let key = match tokens.get(*position) {
+                Some(Token::Atom(key)) => {
+                    *position += 1;
+                    key.clone()
+                }
+                _ => return Err(QueryError::InvalidPredicateArguments { name }),
+            };
+            let value = match tokens.get(*position) {
+                Some(Token::String(value)) => {
+                    *position += 1;
+                    value.clone()
+                }
+                _ => return Err(QueryError::InvalidPredicateArguments { name }),
+            };
+            expect_token(tokens, position, Token::Close)?;
+            predicates.push(PredicatePattern::Set { key, value });
+            continue;
         }
         let capture = match tokens.get(*position) {
             Some(Token::Capture(capture)) => {
@@ -495,6 +531,7 @@ fn validate_predicates(patterns: &[NodePattern]) -> Result<(), QueryError> {
                 PredicatePattern::Match { capture, pattern, negated } => {
                     (if *negated { "#not-match?" } else { "#match?" }, capture, Some(pattern))
                 }
+                PredicatePattern::Set { .. } => continue,
             };
             if !pattern_has_capture(pattern, capture) {
                 return Err(QueryError::MissingPredicateCapture {
@@ -568,8 +605,9 @@ fn collect_matches<'tree>(
     if overlaps_range {
         for (pattern_index, pattern) in query.patterns.iter().enumerate() {
             let mut captures = Vec::new();
-            if matches_pattern(pattern, node, &mut captures) {
-                output.push(QueryMatch { pattern_index, captures });
+            let mut settings = Vec::new();
+            if matches_pattern(pattern, node, &mut captures, &mut settings) {
+                output.push(QueryMatch { pattern_index, captures, settings });
             }
         }
     }
@@ -583,6 +621,7 @@ fn matches_pattern<'tree>(
     pattern: &NodePattern,
     node: Node<'tree>,
     captures: &mut Vec<QueryCapture<'tree>>,
+    settings: &mut Vec<QuerySetting>,
 ) -> bool {
     let kind_matches = match &pattern.kind {
         NodeKindPattern::Any => true,
@@ -605,8 +644,15 @@ fn matches_pattern<'tree>(
             }
 
             let mut nested_captures = Vec::new();
-            if matches_pattern(&child_pattern.pattern, child, &mut nested_captures) {
+            let mut nested_settings = Vec::new();
+            if matches_pattern(
+                &child_pattern.pattern,
+                child,
+                &mut nested_captures,
+                &mut nested_settings,
+            ) {
                 captures.extend(nested_captures);
+                settings.extend(nested_settings);
                 child_match = true;
                 break;
             }
@@ -620,13 +666,22 @@ fn matches_pattern<'tree>(
         captures.push(QueryCapture { name: name.clone(), node });
     }
 
-    pattern.predicates.iter().all(|predicate| predicate_matches(predicate, captures))
+    pattern.predicates.iter().all(|predicate| predicate_matches(predicate, captures, settings))
 }
 
-fn predicate_matches(predicate: &PredicatePattern, captures: &[QueryCapture<'_>]) -> bool {
+fn predicate_matches(
+    predicate: &PredicatePattern,
+    captures: &[QueryCapture<'_>],
+    settings: &mut Vec<QuerySetting>,
+) -> bool {
+    if let PredicatePattern::Set { key, value } = predicate {
+        settings.push(QuerySetting { key: key.clone(), value: value.clone() });
+        return true;
+    }
     let (capture_name, negated) = match predicate {
         PredicatePattern::Eq { capture, negated, .. }
         | PredicatePattern::Match { capture, negated, .. } => (capture, *negated),
+        PredicatePattern::Set { .. } => return true,
     };
     let Some(capture) = captures.iter().rev().find(|capture| capture.name == *capture_name) else {
         return false;
@@ -640,6 +695,7 @@ fn predicate_matches(predicate: &PredicatePattern, captures: &[QueryCapture<'_>]
         PredicatePattern::Match { pattern, .. } => {
             Regex::new(pattern).is_ok_and(|regex| regex.is_match(text))
         }
+        PredicatePattern::Set { .. } => return true,
     };
     if negated { !matches_value } else { matches_value }
 }

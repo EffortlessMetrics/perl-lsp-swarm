@@ -59,14 +59,16 @@ use std::ops::ControlFlow;
 #[cfg(feature = "queries")]
 mod query;
 
+/// Parser diagnostics surfaced by [`Parser::parse_detailed`].
+pub use perl_parser_core::ParseError as ParseDiagnostic;
 /// Re-export of Edit type for tree-sitter-compatible incremental parsing.
 ///
 /// Mirrors `tree_sitter::InputEdit` field layout for drop-in compatibility.
 pub use perl_parser_core::edit::Edit as InputEdit;
-/// Parser diagnostics surfaced by [`Parser::parse_detailed`].
-pub use perl_parser_core::ParseError as ParseDiagnostic;
 #[cfg(feature = "queries")]
-pub use query::{Query, QueryCapture, QueryCursor, QueryError, QueryMatch, QueryMatches};
+pub use query::{
+    Query, QueryCapture, QueryCursor, QueryError, QueryMatch, QueryMatches, QuerySetting,
+};
 
 /// A tree-sitter-compatible source position.
 ///
