@@ -58,7 +58,7 @@ pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
     };
     let _shadow = shadow::compare(source, &ast);
     let line_index = Utf8LineIndex::new(source);
-    Ok(to_ts_node(&ast, &line_index))
+    try_to_ts_node(&ast, &line_index)
 }
 
 /// Convert one native [`Node`] (and its named children) into a [`TsNode`].
@@ -69,6 +69,15 @@ pub fn parse_to_tree(source: &str) -> Result<TsNode, TreeError> {
 #[must_use]
 pub fn to_ts_node(node: &Node, line_index: &Utf8LineIndex) -> TsNode {
     to_ts_node_at_depth(node, line_index, 0)
+}
+
+/// Convert a native AST with checked tree-sitter coordinates.
+///
+/// This is the fallible form used by the production fallback path. The older
+/// [`to_ts_node`] helper remains available for compatibility callers that
+/// intentionally accept `u32::MAX` clamping.
+pub fn try_to_ts_node(node: &Node, line_index: &Utf8LineIndex) -> Result<TsNode, TreeError> {
+    try_to_ts_node_at_depth(node, line_index, 0)
 }
 
 fn to_ts_node_at_depth(node: &Node, line_index: &Utf8LineIndex, depth: usize) -> TsNode {
@@ -93,6 +102,36 @@ fn to_ts_node_at_depth(node: &Node, line_index: &Utf8LineIndex, depth: usize) ->
         end_point: TsPoint { row: end_row, column: end_column },
         children,
     }
+}
+
+fn try_to_ts_node_at_depth(
+    node: &Node,
+    line_index: &Utf8LineIndex,
+    depth: usize,
+) -> Result<TsNode, TreeError> {
+    let start_byte = u32::try_from(node.location.start)
+        .map_err(|_| TreeError::CoordinateOverflow { value: node.location.start })?;
+    let end_byte = u32::try_from(node.location.end)
+        .map_err(|_| TreeError::CoordinateOverflow { value: node.location.end })?;
+    let (start_row, start_column) = line_index.line_col(start_byte);
+    let (end_row, end_column) = line_index.line_col(end_byte);
+    let children = if depth >= MAX_PROJECTION_DEPTH {
+        Vec::new()
+    } else {
+        node.children()
+            .iter()
+            .map(|child| try_to_ts_node_at_depth(child, line_index, depth + 1))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    Ok(TsNode {
+        kind: pascal_to_snake(node.kind.kind_name()),
+        named: true,
+        start_byte,
+        end_byte,
+        start_point: TsPoint { row: start_row, column: start_column },
+        end_point: TsPoint { row: end_row, column: end_column },
+        children,
+    })
 }
 
 /// Convert a node from the Rust-native tree-sitter facade.

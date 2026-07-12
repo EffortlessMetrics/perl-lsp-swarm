@@ -43,7 +43,7 @@ pub mod node;
 pub mod sexp;
 pub mod shadow;
 
-pub use convert::{TreeError, parse_to_tree, to_ts_node};
+pub use convert::{TreeError, parse_to_tree, to_ts_node, try_to_ts_node};
 pub use dogfood::{AdoptionStats, adoption_stats};
 pub use highlight::{Highlight, capture_for, highlights};
 pub use node::{TsNode, TsPoint, pascal_to_snake};
