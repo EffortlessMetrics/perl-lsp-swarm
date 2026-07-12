@@ -67,6 +67,8 @@ fn snapshot(node: Node<'_>, source: &str, field_name: Option<String>) -> TestRes
 
 fn equivalent(incremental: &Tree, fresh: &Tree, source: &str) -> TestResult {
     assert_eq!(incremental.root_node().to_sexp(), fresh.root_node().to_sexp());
+    assert_eq!(incremental.diagnostics(), fresh.diagnostics(), "incremental diagnostics diverged");
+    assert_eq!(incremental.has_error(), fresh.has_error(), "incremental recovery status diverged");
     assert_eq!(
         snapshot(incremental.root_node(), source, None)?,
         snapshot(fresh.root_node(), source, None)?,
