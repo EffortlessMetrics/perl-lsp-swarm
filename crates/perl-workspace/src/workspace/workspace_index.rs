@@ -4984,19 +4984,43 @@ impl IndexVisitor {
             // visit `variable` too (it has no such declaration/reference
             // distinction), incorrectly emitting a plain `Read`/`SymbolRef`
             // for e.g. a signature's `$name` binding.
-            NodeKind::MandatoryParameter { .. } | NodeKind::SlurpyParameter { .. } => {
-                // Nothing to walk: the bound variable is a declaration.
+            //
+            // `NamedParameter` is grouped here (TOTAL skip, including its
+            // `default_value`) to mirror `ref.rs:80-84` EXACTLY --
+            // `extract_symbol_refs` groups `NamedParameter` with
+            // `MandatoryParameter`/`SlurpyParameter` as a Phase-1
+            // intentional exclusion (see `ref.rs`'s module doc, lines
+            // 15-17: "Optional parameter *default values* are still walked
+            // because they are expressions" -- explicitly NOT named-param
+            // defaults). Only `OptionalParameter` gets its default walked.
+            // An earlier draft of this arm walked `NamedParameter`'s
+            // `default_value` too, which made the unified traversal's
+            // CANONICAL projection produce an extra `SymbolRef` production
+            // `extract_symbol_refs` never produces for a named-param
+            // default (e.g. `method bar(:$beta = calc_default())`) --
+            // caught by an independent correctness review, since no
+            // corpus/real-project/edge-case fixture exercised
+            // `NamedParameter` at the time. See
+            // `docs/reference/1711-B-coverage-delta.md` and the
+            // `coverage_delta_named_parameter_default_is_not_a_new_case`
+            // test below, which locks in that this is NOT a
+            // coverage-delta case (legacy's pre-unification behavior for
+            // `NamedParameter` was ALSO a total skip -- `NamedParameter`
+            // was never in `visit_node`/`visit_children`'s coverage
+            // either -- so nothing changes for legacy here, and canonical
+            // must stay byte-identical).
+            NodeKind::MandatoryParameter { .. }
+            | NodeKind::SlurpyParameter { .. }
+            | NodeKind::NamedParameter { .. } => {
+                // Nothing to walk: the bound variable is a declaration,
+                // and (for `NamedParameter`) its default value is also
+                // intentionally excluded, matching canonical exactly.
             }
             NodeKind::OptionalParameter { default_value, .. } => {
                 // Only the default-value expression may reference other
                 // symbols (it's evaluated in the caller's scope) -- the
                 // bound variable itself is skipped, matching ref.rs.
                 self.walk_unified(default_value, file_index, symbol_refs);
-            }
-            NodeKind::NamedParameter { default_value, .. } => {
-                if let Some(default) = default_value {
-                    self.walk_unified(default, file_index, symbol_refs);
-                }
             }
 
             NodeKind::VariableDeclaration { initializer, .. }
@@ -11586,6 +11610,54 @@ sub bar { return $greeting; }
         assert_parity("heredoc_pod_strings", uri, text);
         assert_unified_canonical_parity("heredoc_pod_strings", uri, text);
         assert_unified_legacy_is_superset("heredoc_pod_strings", uri, text);
+    }
+
+    /// **Closes a harness gap found by independent correctness review.**
+    /// `NamedParameter` default-value expressions (`:$beta = calc_default()`)
+    /// were ZERO-covered across all 6 targeted edge cases + all 37
+    /// gold-corpus fixtures + all 29 real-project files -- which is exactly
+    /// how an earlier draft's `NamedParameter` arm (incorrectly walking
+    /// `default_value`, unlike `OptionalParameter`) slipped past
+    /// `assert_unified_canonical_parity` undetected. This fixture makes the
+    /// harness enforce it going forward: canonical must stay byte-identical
+    /// (production `extract_symbol_refs` groups `NamedParameter` with
+    /// `MandatoryParameter`/`SlurpyParameter` as a total-skip Phase-1
+    /// exclusion -- see `ref.rs:80-84` and its module doc -- so
+    /// `calc_default()` inside a named-param default must NOT produce a
+    /// `SymbolRef`, unlike the same construct on an `OptionalParameter`).
+    ///
+    /// This is intentionally run through the SAME general-purpose
+    /// assertions as the other edge cases (not `assert_coverage_delta_case`,
+    /// which asserts old=0/new>=1) -- `NamedParameter` defaults are NOT a
+    /// coverage-delta case: legacy's pre-unification behavior was ALSO a
+    /// total skip (`NamedParameter` was never in
+    /// `visit_node`/`visit_children`'s coverage either), so nothing should
+    /// change for legacy OR canonical here.
+    #[test]
+    fn parity_named_parameter_default_is_not_a_coverage_delta() {
+        let text = "use feature 'class';\nclass Foo { method bar(:$beta = calc_default()) { return $beta; } }\n";
+        let uri = "file:///edge/named_parameter_default.pl";
+        assert_parity("named_parameter_default", uri, text);
+        assert_unified_canonical_parity("named_parameter_default", uri, text);
+        assert_unified_legacy_is_superset("named_parameter_default", uri, text);
+
+        // Explicit, mechanically-enforced statement of the invariant this
+        // fixture exists to protect: `calc_default()` must NOT appear as a
+        // canonical occurrence (production `extract_symbol_refs` skips
+        // `NamedParameter` defaults entirely), even though the structurally
+        // similar `OptionalParameter` case (`sub greet($name =
+        // default_name())`, see `coverage_delta_subroutine_signature_default`)
+        // correctly DOES walk its default.
+        let mut parser = Parser::new(text);
+        let ast = must(parser.parse());
+        let direct = build_direct(uri, text, &ast);
+        let unified = build_bundle_unified(uri, text, &ast);
+        assert_eq!(
+            direct.shard.occurrences.len(),
+            unified.canonical_shard.occurrences.len(),
+            "named_parameter_default: occurrence count must match production exactly -- a \
+             named-param default must never contribute a canonical occurrence"
+        );
     }
 
     // ── Perl corpus + real-project fixtures ───────────────────────────────

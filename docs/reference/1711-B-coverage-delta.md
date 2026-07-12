@@ -177,6 +177,58 @@ anything else (e.g. an indexed/complex assignment target), it does
 index expression (`compute_key()`) is invisible today. Test:
 `coverage_delta_assignment_indexed_target`.
 
+## Not a coverage-delta case (and a real bug this exact gap caused)
+
+### `NamedParameter` default-value expressions
+
+```perl
+use feature 'class';
+class Foo { method bar(:$beta = calc_default()) { return $beta; } }
+```
+
+This looks structurally identical to case 8 (`Subroutine` signature
+defaults), but it is **NOT** a coverage-delta case: production
+`extract_symbol_refs` (`perl-symbol/src/surface/ref.rs:80-84`) groups
+`NamedParameter` with `MandatoryParameter`/`SlurpyParameter` as a **total
+skip** -- its module doc (`ref.rs:15-17`) is explicit that only
+`OptionalParameter` default values are walked, as a deliberate Phase-1
+scope decision. Legacy's pre-unification behavior for `NamedParameter` was
+ALSO a total skip (it was never in `visit_node`/`visit_children`'s
+coverage either). So for this construct, nothing should change on EITHER
+side under unification -- canonical must stay byte-identical, and legacy
+gains nothing new here specifically (though the SAME fixture's class-body
+does independently benefit from case 2's fix).
+
+**A real bug shipped here first and was caught by independent correctness
+review, not by this PR's own test sweep**: the unified `walk_unified`'s
+first-drafted `NamedParameter` arm walked `default_value` (copying
+`OptionalParameter`'s logic by analogy, incorrectly). This made the
+unified traversal's CANONICAL projection produce an extra `SymbolRef` for
+`calc_default()` that production `extract_symbol_refs` never produces --
+proven empirically (production canonical = 1 occurrence, unified = 2)
+by the reviewer. **Root cause of the miss**: `NamedParameter` had ZERO
+coverage across all 6 targeted edge cases, all 37 gold-corpus fixtures,
+and all 29 real-project files at the time -- a genuine harness gap, not a
+logic gap in the assertions themselves (`assert_unified_canonical_parity`
+would have caught the divergence immediately had any fixture exercised
+the construct).
+
+**Fix**: `NamedParameter` was moved into the same total-skip arm as
+`MandatoryParameter`/`SlurpyParameter` (mirroring `ref.rs` exactly,
+`default_value` and all), and the harness gap was closed with a dedicated
+fixture/test,
+`parity_named_parameter_default_is_not_a_coverage_delta`, in
+`extraction_bundle_shadow_compare` -- it now asserts (a) the general
+`assert_unified_canonical_parity`/`assert_unified_legacy_is_superset`
+checks, AND (b) an explicit occurrence-count equality, so a future
+regression on this exact seam fails loudly rather than silently.
+
+This was NOT "fixed" by changing `perl-symbol`'s `ref.rs` to track
+named-parameter defaults -- that would be an unreviewed canonical-semantics
+change, out of scope for a shadow consolidation PR. If named-param
+defaults should be tracked, that is a separate, explicit decision for the
+maintainer.
+
 ## What does NOT change (and was verified, not assumed)
 
 - **Canonical (`FileFactShard`) output is byte-for-byte identical** between
