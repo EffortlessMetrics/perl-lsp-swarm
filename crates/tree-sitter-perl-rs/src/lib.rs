@@ -155,6 +155,9 @@ impl Parser {
             source: source.to_string(),
             pending_edits: Vec::new(),
             incremental_state: Some(IncrementalState::with_diagnostics(source, &diagnostics)),
+            line_index: ByteLineIndex::new(source),
+            semantic_model: OnceCell::new(),
+            pragma_map: OnceCell::new(),
             diagnostics: diagnostics.clone(),
         });
 
@@ -691,14 +694,11 @@ impl<'tree> Node<'tree> {
     ///
     /// The iterator yields [`Node`] values sharing the same `'tree` lifetime as `self`.
     pub fn children(&self) -> impl Iterator<Item = Node<'tree>> + '_ {
-        // Collect into a Vec so we can own the references. The lifetimes are valid
-        // because all child nodes are part of the same owned tree (Tree::root).
-        let kids = ast_children(self.inner);
-        kids.into_iter().map(move |child| Node {
-            inner: child,
+        NodeChildren {
+            inner: AstChildren::new(self.inner),
             tree_source: self.tree_source,
             line_index: self.line_index,
-        })
+        }
     }
 
     /// Returns the start byte offset in the source text (inclusive).
@@ -914,13 +914,88 @@ impl<'tree> TreeCursor<'tree> {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-// Collect the direct children of an `AstNode` as a `Vec<&AstNode>`.
-//
-// This thin wrapper exists because the public `Node::children()` method in `perl_ast`
-// has the same name as our facade method and would be ambiguous in `impl` blocks.
-#[inline]
-fn ast_children(node: &AstNode) -> Vec<&AstNode> {
-    node.children()
+/// Borrowed direct-child iterator used by the facade.
+///
+/// List-shaped AST nodes use their backing slice iterator directly. The indexed
+/// fallback is reserved for the small fixed-field variants, where avoiding a
+/// temporary allocation is more important than maintaining a second large match
+/// table in this facade.
+struct NodeChildren<'tree> {
+    inner: AstChildren<'tree>,
+    tree_source: &'tree str,
+    line_index: &'tree ByteLineIndex,
+}
+
+impl<'tree> Iterator for NodeChildren<'tree> {
+    type Item = Node<'tree>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|inner| Node {
+            inner,
+            tree_source: self.tree_source,
+            line_index: self.line_index,
+        })
+    }
+}
+
+enum AstChildren<'tree> {
+    Slice(std::slice::Iter<'tree, AstNode>),
+    HashPairs {
+        pairs: std::slice::Iter<'tree, (AstNode, AstNode)>,
+        value_pending: Option<&'tree AstNode>,
+    },
+    Indexed {
+        node: &'tree AstNode,
+        index: usize,
+    },
+}
+
+impl<'tree> AstChildren<'tree> {
+    #[inline]
+    fn new(node: &'tree AstNode) -> Self {
+        match &node.kind {
+            NodeKind::Program { statements }
+            | NodeKind::VariableListDeclaration { variables: statements, .. }
+            | NodeKind::NestedVariableList { items: statements }
+            | NodeKind::ArrayLiteral { elements: statements }
+            | NodeKind::Block { statements }
+            | NodeKind::Signature { parameters: statements }
+            | NodeKind::FunctionCall { args: statements, .. }
+            | NodeKind::MethodCall { args: statements, .. }
+            | NodeKind::IndirectCall { args: statements, .. }
+            | NodeKind::Tie { args: statements, .. } => Self::Slice(statements.iter()),
+            NodeKind::HashLiteral { pairs } => {
+                Self::HashPairs { pairs: pairs.iter(), value_pending: None }
+            }
+            _ => Self::Indexed { node, index: 0 },
+        }
+    }
+}
+
+impl<'tree> Iterator for AstChildren<'tree> {
+    type Item = &'tree AstNode;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Slice(children) => children.next(),
+            Self::HashPairs { pairs, value_pending } => {
+                if let Some(value) = value_pending.take() {
+                    return Some(value);
+                }
+                let (key, value) = pairs.next()?;
+                *value_pending = Some(value);
+                Some(key)
+            }
+            Self::Indexed { node, index } => {
+                let child = ast_child_at(node, *index);
+                if child.is_some() {
+                    *index += 1;
+                }
+                child
+            }
+        }
+    }
 }
 
 #[inline]
@@ -935,7 +1010,13 @@ fn ast_has_error(node: &AstNode) -> bool {
         return true;
     }
 
-    node.children().iter().any(|child| ast_has_error(child))
+    let mut found = false;
+    node.for_each_child(|child| {
+        if !found && ast_has_error(child) {
+            found = true;
+        }
+    });
+    found
 }
 
 #[inline]
@@ -1174,6 +1255,30 @@ mod tests {
         let root = tree.root_node();
         let collected: Vec<_> = root.children().collect();
         assert_eq!(collected.len(), root.child_count());
+    }
+
+    #[test]
+    fn test_borrowed_child_iterator_preserves_list_and_pair_order() {
+        let first_loc = perl_ast::SourceLocation { start: 0, end: 1 };
+        let second_loc = perl_ast::SourceLocation { start: 1, end: 2 };
+        let parent_loc = perl_ast::SourceLocation { start: 0, end: 2 };
+        let first = AstNode::new(NodeKind::Identifier { name: "x".to_string() }, first_loc);
+        let second = AstNode::new(NodeKind::Number { value: "2".to_string() }, second_loc);
+        let program = AstNode::new(
+            NodeKind::Program { statements: vec![first.clone(), second.clone()] },
+            parent_loc,
+        );
+        let program_starts: Vec<_> =
+            AstChildren::new(&program).map(|node| node.location.start).collect();
+        assert_eq!(program_starts, vec![0, 1]);
+
+        let hash = AstNode::new(
+            NodeKind::HashLiteral { pairs: vec![(first, second)] },
+            parent_loc,
+        );
+        let hash_kinds: Vec<_> =
+            AstChildren::new(&hash).map(|node| node.kind.kind_name()).collect();
+        assert_eq!(hash_kinds, vec!["Identifier", "Number"]);
     }
 
     #[test]
