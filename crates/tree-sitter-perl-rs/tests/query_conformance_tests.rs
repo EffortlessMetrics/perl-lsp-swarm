@@ -47,10 +47,7 @@ fn upstream_injection_predicates_have_explicit_phase_2b_behavior() -> TestResult
     }
 
     let unsupported = Query::new(r#"(comment) @content (#set! injection.language "comment")"#);
-    if !matches!(
-        unsupported,
-        Err(QueryError::UnsupportedSyntax { .. }) | Err(QueryError::UnexpectedToken { .. })
-    ) {
+    if !matches!(unsupported, Err(QueryError::UnsupportedSyntax { .. })) {
         return Err(
             format!("#set! was not rejected with a typed syntax error: {unsupported:?}").into()
         );
