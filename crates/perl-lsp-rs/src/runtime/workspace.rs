@@ -10,7 +10,10 @@
 
 use super::*;
 #[cfg(feature = "workspace")]
-use crate::runtime::readiness::{IndexReadinessOutcome, IndexReadinessPolicy, check_readiness};
+use crate::runtime::readiness::{
+    IndexReadinessOutcome, IndexReadinessPolicy, ReadinessMilestone, WorkspaceReadinessReceipt,
+    check_readiness,
+};
 #[cfg(feature = "workspace")]
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use crate::runtime::workspace_progress::{
@@ -85,7 +88,7 @@ fn is_permission_denied_error(e: &std::io::Error) -> bool {
 #[cfg(feature = "workspace")]
 use crate::util::read_text_file_with_encoding;
 #[cfg(feature = "workspace")]
-use perl_workspace::monitoring::WorkspaceIndexingReceipt;
+use perl_workspace::monitoring::{IndexingPhase, WorkspaceIndexingReceipt};
 
 #[cfg(feature = "workspace")]
 fn read_watched_file_content(uri: &str, purpose: &str) -> Option<String> {
@@ -1921,6 +1924,8 @@ impl LspServer {
         std::thread::spawn(move || {
             let _guard = indexing_guard; // moved into closure, drops when closure exits
             let budget_start = Instant::now();
+            let mut readiness_receipt = WorkspaceReadinessReceipt::default();
+            readiness_receipt.record_workspace_start(budget_start);
             coordinator.transition_to_scanning();
 
             // Send progress begin if client supports work done progress.
@@ -1932,6 +1937,7 @@ impl LspServer {
             let mut files: Vec<std::path::PathBuf> = Vec::new();
             let mut early_exit: Option<(EarlyExitReason, u64, usize, usize)> = None;
             let mut indexing_receipt = WorkspaceIndexingReceipt::default();
+            let discovery_started = Instant::now();
 
             'scan: for folder_state in workspace_folders {
                 let Some(root) =
@@ -1972,6 +1978,8 @@ impl LspServer {
             }
 
             coordinator.update_scan_progress(files.len());
+            readiness_receipt.record_peak_queued_work(files.len());
+            indexing_receipt.record_phase(IndexingPhase::Discovery, discovery_started.elapsed());
             indexing_receipt.record_discovery(files.len(), budget_start.elapsed());
             coordinator.transition_to_indexing(files.len());
 
@@ -1997,6 +2005,7 @@ impl LspServer {
                 let content = match read_text_file_with_encoding(&path) {
                     Ok(c) => c,
                     Err(e) => {
+                        indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
                         indexing_receipt.record_read_error();
                         if is_permission_denied_error(&e) {
                             // ONE-TIME window/showMessage (AtomicBool guard)
@@ -2054,13 +2063,17 @@ impl LspServer {
                         continue;
                     }
                 };
+                indexing_receipt.record_phase(IndexingPhase::Read, read_started.elapsed());
                 let Ok(url) = Url::from_file_path(&path) else {
                     indexing_receipt.record_index_error();
                     continue;
                 };
                 let read_elapsed = read_started.elapsed();
                 let index_started = Instant::now();
-                if coordinator.index().index_file(url, content).is_ok() {
+                let index_result = coordinator.index().index_file(url, content);
+                let index_elapsed = index_started.elapsed();
+                indexing_receipt.record_phase(IndexingPhase::IndexFileOperation, index_elapsed);
+                if index_result.is_ok() {
                     indexing_receipt.record_indexed_file(
                         &path,
                         read_elapsed,
@@ -2096,12 +2109,16 @@ impl LspServer {
                 if work_done_progress {
                     send_progress_end(&outbound, "Indexing stopped early");
                 }
+                readiness_receipt.log();
                 send_index_ready_notification(&outbound, false);
             } else {
                 indexing_receipt.log(budget_start.elapsed(), None);
                 let file_count = coordinator.index().file_count();
                 let symbol_count = coordinator.index().symbol_count();
                 coordinator.transition_to_ready(file_count, symbol_count);
+                readiness_receipt
+                    .record_milestone(ReadinessMilestone::WholeWorkspaceReady, Instant::now());
+                readiness_receipt.log();
                 if work_done_progress {
                     send_progress_end(&outbound, "Indexing complete");
                 }

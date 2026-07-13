@@ -1,5 +1,7 @@
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 use perl_parser::workspace_index::IndexCoordinator;
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -8,6 +10,182 @@ use std::time::{Duration, Instant};
 
 const INDEX_READY_WAIT_MS: u64 = 2_000;
 const INDEX_READY_POLL_MS: u64 = 1;
+
+/// LSP-level milestones used to measure when startup indexing becomes useful.
+#[allow(dead_code)] // Provider readiness hooks land in the follow-up workload slice.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ReadinessMilestone {
+    /// Workspace indexing thread began.
+    WorkspaceStart,
+    /// The active document is ready for provider requests.
+    ActiveDocumentReady,
+    /// Direct imports of the active document are ready.
+    DirectDependencySetReady,
+    /// The full workspace index is ready.
+    WholeWorkspaceReady,
+}
+
+impl ReadinessMilestone {
+    fn field_name(self) -> &'static str {
+        match self {
+            Self::WorkspaceStart => "workspace_start_us",
+            Self::ActiveDocumentReady => "active_document_ready_us",
+            Self::DirectDependencySetReady => "direct_dependency_set_ready_us",
+            Self::WholeWorkspaceReady => "whole_workspace_ready_us",
+        }
+    }
+}
+
+/// Provider classes whose first correct answer is useful during startup.
+#[allow(dead_code)] // Provider readiness hooks land in the follow-up workload slice.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ReadinessAnswerKind {
+    /// Completion became correct for the active document.
+    Completion,
+    /// Hover became correct for the active document.
+    Hover,
+    /// Definition became correct for the active document.
+    Definition,
+    /// References became correct for the active document.
+    References,
+    /// Diagnostics became correct for the active document.
+    Diagnostics,
+}
+
+impl ReadinessAnswerKind {
+    fn field_name(self) -> &'static str {
+        match self {
+            Self::Completion => "completion",
+            Self::Hover => "hover",
+            Self::Definition => "definition",
+            Self::References => "references",
+            Self::Diagnostics => "diagnostics",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FirstCorrectAnswerReceipt {
+    elapsed_us: u128,
+    expected_result_class: String,
+    answering_tier: String,
+    freshness: String,
+    fallback_reason: Option<String>,
+}
+
+/// LSP-owned receipt for startup usefulness, independent of index lifecycle state.
+///
+/// Timestamps are recorded relative to `workspace_start`.  The receipt accepts
+/// explicit instants so deterministic synthetic workspaces can test transitions
+/// without sleeps.  Provider hooks can add first-correct-answer evidence as the
+/// readiness workload is connected in a later slice.
+#[derive(Debug, Default)]
+pub(crate) struct WorkspaceReadinessReceipt {
+    workspace_start: Option<Instant>,
+    milestones: BTreeMap<&'static str, u128>,
+    first_correct_answers: BTreeMap<&'static str, FirstCorrectAnswerReceipt>,
+    peak_queued_work: usize,
+    memory_high_water_bytes: Option<u64>,
+}
+
+impl WorkspaceReadinessReceipt {
+    /// Record the start of a workspace indexing run once.
+    pub(crate) fn record_workspace_start(&mut self, at: Instant) {
+        if self.workspace_start.is_none() {
+            self.workspace_start = Some(at);
+            self.milestones.insert(ReadinessMilestone::WorkspaceStart.field_name(), 0);
+        }
+    }
+
+    /// Record the first observation of a readiness milestone.
+    pub(crate) fn record_milestone(&mut self, milestone: ReadinessMilestone, at: Instant) {
+        let Some(start) = self.workspace_start else {
+            return;
+        };
+        self.milestones
+            .entry(milestone.field_name())
+            .or_insert_with(|| at.saturating_duration_since(start).as_micros());
+    }
+
+    /// Record the first correct provider answer for a workload row.
+    #[allow(dead_code)] // Provider readiness hooks land in the follow-up workload slice.
+    pub(crate) fn record_first_correct_answer(
+        &mut self,
+        kind: ReadinessAnswerKind,
+        at: Instant,
+        expected_result_class: &str,
+        answering_tier: &str,
+        freshness: &str,
+        fallback_reason: Option<&str>,
+    ) {
+        let Some(start) = self.workspace_start else {
+            return;
+        };
+        self.first_correct_answers.entry(kind.field_name()).or_insert_with(|| {
+            FirstCorrectAnswerReceipt {
+                elapsed_us: at.saturating_duration_since(start).as_micros(),
+                expected_result_class: expected_result_class.to_string(),
+                answering_tier: answering_tier.to_string(),
+                freshness: freshness.to_string(),
+                fallback_reason: fallback_reason.map(str::to_string),
+            }
+        });
+    }
+
+    /// Record the largest observed amount of queued startup work.
+    pub(crate) fn record_peak_queued_work(&mut self, queued_work: usize) {
+        self.peak_queued_work = self.peak_queued_work.max(queued_work);
+    }
+
+    /// Record a memory high-water mark when the host can provide one.
+    #[allow(dead_code)] // Host memory sampling lands with the readiness runner.
+    pub(crate) fn record_memory_high_water(&mut self, bytes: u64) {
+        self.memory_high_water_bytes = Some(match self.memory_high_water_bytes {
+            Some(previous) => previous.max(bytes),
+            None => bytes,
+        });
+    }
+
+    /// Return the path-free structured readiness receipt.
+    pub(crate) fn summary_json(&self) -> Value {
+        let milestone = |name: &'static str| self.milestones.get(name).copied();
+        let answers = self
+            .first_correct_answers
+            .iter()
+            .map(|(kind, receipt)| {
+                (
+                    (*kind).to_string(),
+                    json!({
+                        "elapsed_us": receipt.elapsed_us,
+                        "expected_result_class": receipt.expected_result_class,
+                        "answering_tier": receipt.answering_tier,
+                        "freshness": receipt.freshness,
+                        "fallback_reason": receipt.fallback_reason,
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+
+        json!({
+            "workspace_start_us": milestone("workspace_start_us"),
+            "active_document_ready_us": milestone("active_document_ready_us"),
+            "direct_dependency_set_ready_us": milestone("direct_dependency_set_ready_us"),
+            "whole_workspace_ready_us": milestone("whole_workspace_ready_us"),
+            "first_correct_answers": answers,
+            "peak_queued_work": self.peak_queued_work,
+            "memory_high_water_bytes": self.memory_high_water_bytes,
+        })
+    }
+
+    /// Emit the current readiness receipt without exposing host paths.
+    pub(crate) fn log(&self) {
+        tracing::info!(
+            target: "perl_lsp::workspace_readiness",
+            receipt = %self.summary_json(),
+            "Workspace readiness receipt"
+        );
+    }
+}
 
 /// Policy determining how a provider handles index-not-ready states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,7 +382,8 @@ fn notify_index_ready_wait_entered() {}
 #[cfg(test)]
 mod tests {
     use super::{
-        IndexReadinessOutcome, IndexReadinessPolicy, check_readiness, check_readiness_with_budget,
+        IndexReadinessOutcome, IndexReadinessPolicy, ReadinessAnswerKind, ReadinessMilestone,
+        WorkspaceReadinessReceipt, check_readiness, check_readiness_with_budget,
         set_index_ready_wait_entered_observer,
     };
     use anyhow::Result;
@@ -213,7 +392,54 @@ mod tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn readiness_receipt_records_deterministic_first_useful_answer() -> Result<()> {
+        let start = Instant::now();
+        let mut receipt = WorkspaceReadinessReceipt::default();
+        receipt.record_workspace_start(start);
+        receipt.record_milestone(
+            ReadinessMilestone::ActiveDocumentReady,
+            start + Duration::from_micros(10),
+        );
+        receipt.record_first_correct_answer(
+            ReadinessAnswerKind::Completion,
+            start + Duration::from_micros(25),
+            "non_empty_exact",
+            "semantic_source_backed",
+            "current_generation",
+            Some("partial_index"),
+        );
+        receipt.record_first_correct_answer(
+            ReadinessAnswerKind::Completion,
+            start + Duration::from_micros(50),
+            "must_not_replace_first",
+            "wrong_tier",
+            "stale",
+            None,
+        );
+        receipt.record_peak_queued_work(4);
+        receipt.record_peak_queued_work(2);
+        receipt.record_memory_high_water(128);
+        receipt.record_memory_high_water(64);
+
+        let summary = receipt.summary_json();
+        assert_eq!(summary["workspace_start_us"], 0);
+        assert_eq!(summary["active_document_ready_us"], 10);
+        assert_eq!(summary["first_correct_answers"]["completion"]["elapsed_us"], 25);
+        assert_eq!(
+            summary["first_correct_answers"]["completion"]["expected_result_class"],
+            "non_empty_exact"
+        );
+        assert_eq!(
+            summary["first_correct_answers"]["completion"]["fallback_reason"],
+            "partial_index"
+        );
+        assert_eq!(summary["peak_queued_work"], 4);
+        assert_eq!(summary["memory_high_water_bytes"], 128);
+        Ok(())
+    }
 
     #[test]
     fn readiness_contract_waitbriefly_ready_returns_ready() -> Result<()> {

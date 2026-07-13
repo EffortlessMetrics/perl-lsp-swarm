@@ -5,6 +5,32 @@ use std::time::Duration;
 
 const SLOWEST_FILE_LIMIT: usize = 10;
 
+/// Coarse phase boundaries currently observable by the startup indexer.
+///
+/// The workspace index API currently performs parsing, declaration/reference
+/// extraction, and commit work inside one `index_file` call.  That bundled
+/// operation is kept explicit here so receipts do not claim a finer split than
+/// the producer can prove.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndexingPhase {
+    /// Discover candidate workspace files.
+    Discovery,
+    /// Read one workspace file from disk.
+    Read,
+    /// Parse/extract/commit one file through the current index API boundary.
+    IndexFileOperation,
+}
+
+impl IndexingPhase {
+    fn field_name(self) -> &'static str {
+        match self {
+            Self::Discovery => "discovery_us",
+            Self::Read => "read_us",
+            Self::IndexFileOperation => "index_file_operation_us",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkspaceIndexingFileTiming {
     path: PathBuf,
@@ -28,6 +54,7 @@ pub struct WorkspaceIndexingReceipt {
     discovery_ms: u64,
     read_ms: u64,
     index_ms: u64,
+    phase_us: std::collections::BTreeMap<&'static str, u64>,
     slowest_files: Vec<WorkspaceIndexingFileTiming>,
 }
 
@@ -36,6 +63,13 @@ impl WorkspaceIndexingReceipt {
     pub fn record_discovery(&mut self, discovered_files: usize, elapsed: Duration) {
         self.discovered_files = discovered_files;
         self.discovery_ms = duration_ms(elapsed);
+    }
+
+    /// Record a measured startup phase without inventing sub-phase precision.
+    pub fn record_phase(&mut self, phase: IndexingPhase, elapsed: Duration) {
+        let elapsed_us = duration_us(elapsed);
+        let entry = self.phase_us.entry(phase.field_name()).or_default();
+        *entry = entry.saturating_add(elapsed_us);
     }
 
     /// Record a file read failure during indexing.
@@ -109,6 +143,7 @@ impl WorkspaceIndexingReceipt {
             "discovery_ms": self.discovery_ms,
             "read_ms": self.read_ms,
             "index_ms": self.index_ms,
+            "phase_us": self.phase_us,
             "total_elapsed_ms": total_elapsed_ms,
             "files_per_second": files_per_second(self.indexed_files, total_elapsed),
             "early_exit": early_exit.map(|reason| format!("{reason:?}")),
@@ -130,6 +165,10 @@ impl WorkspaceIndexingReceipt {
 
 fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
 fn files_per_second(indexed_files: usize, total_elapsed: Duration) -> f64 {
@@ -256,6 +295,9 @@ mod tests {
     fn summary_json_reports_phase_totals_and_early_exit() {
         let mut receipt = WorkspaceIndexingReceipt::default();
         receipt.record_discovery(3, Duration::from_millis(4));
+        receipt.record_phase(IndexingPhase::Discovery, Duration::from_micros(4_500));
+        receipt.record_phase(IndexingPhase::Read, Duration::from_micros(1_250));
+        receipt.record_phase(IndexingPhase::IndexFileOperation, Duration::from_micros(8_750));
         receipt.record_read_error();
         receipt.record_index_error();
         receipt.record_indexed_file(
@@ -277,5 +319,8 @@ mod tests {
         assert_eq!(summary["total_elapsed_ms"], 20);
         assert_eq!(summary["early_exit"], "InitialTimeBudget");
         assert_eq!(summary["slowest_files"][0]["path"], "lib/App.pm");
+        assert_eq!(summary["phase_us"]["discovery_us"], 4_500);
+        assert_eq!(summary["phase_us"]["read_us"], 1_250);
+        assert_eq!(summary["phase_us"]["index_file_operation_us"], 8_750);
     }
 }
