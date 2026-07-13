@@ -80,4 +80,32 @@ describe('workspace configuration event routing', () => {
 
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
   });
+
+  test('uses stderr when no error handler is supplied', () => {
+    let listener: ((event: vscode.ConfigurationChangeEvent) => void) | undefined;
+    (vscode.workspace.onDidChangeConfiguration as jest.Mock).mockImplementation((callback) => {
+      listener = callback;
+      return { dispose: jest.fn() };
+    });
+    const stderrWrite = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    registerWorkspaceConfigurationEvents({
+      onLiveConfigurationChanged: () => {
+        throw new Error('unreported handler failed');
+      },
+      onReconstructConfigurationChanged: jest.fn(),
+      onRestartRequired: jest.fn(),
+    });
+
+    listener?.({
+      affectsConfiguration: (setting: string) => setting === 'perl-lsp.includePaths',
+    } as vscode.ConfigurationChangeEvent);
+
+    expect(stderrWrite).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '[workspace-configuration] handler failed: Error: unreported handler failed',
+      ),
+    );
+    stderrWrite.mockRestore();
+  });
 });

@@ -35,6 +35,7 @@ import { registerWorkspaceConfigurationEvents } from './extensionWorkspaceEvents
 import {
   buildDisabledFeaturesFromConfig,
   buildPerlCriticConfiguration as buildPerlCriticConfigurationPayload,
+  CRITIC_SETTINGS,
   hasExplicitPerlCriticOverrides,
   syncLanguageClientConfiguration,
   syncPerlCriticConfiguration as syncPerlCriticConfigurationFromConfig,
@@ -1727,18 +1728,7 @@ export async function activate(context: vscode.ExtensionContext) {
         await validateIncludePaths(context);
       }
 
-      const criticChanged = [
-        'perl-lsp.critic.enabled',
-        'perl-lsp.critic.engine',
-        'perl-lsp.critic.profile',
-        'perl-lsp.critic.severity',
-        'perl-lsp.critic.include',
-        'perl-lsp.critic.exclude',
-        'perl-lsp.perlcritic.enabled',
-        'perl-lsp.perlcritic.severity',
-        'perl-lsp.perlcritic.profile',
-        'perl-lsp.perlcritic.theme',
-      ].some((setting) => event.affectsConfiguration(setting));
+      const criticChanged = CRITIC_SETTINGS.some((setting) => event.affectsConfiguration(setting));
       if (event.affectsConfiguration('perl-lsp.includePaths') || criticChanged) {
         await syncLanguageClientConfiguration(client);
       }

@@ -74,6 +74,16 @@ describe('language client configuration', () => {
     );
   });
 
+  test('uses the document scope for folder-specific initial synchronization', () => {
+    const documentUri = vscode.Uri.file('/workspace/folder/src/main.pl');
+    const config = makeConfig({ includePaths: ['folder/lib'] });
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(config);
+
+    buildLanguageClientConfigurationPayload(documentUri);
+
+    expect(vscode.workspace.getConfiguration).toHaveBeenCalledWith('perl-lsp', documentUri);
+  });
+
   test('preserves deprecated critic aliases without making them preferred', () => {
     const config = makeConfig({ 'perlcritic.severity': 2 });
     (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(config);

@@ -16,12 +16,20 @@ function invoke(
   event: ConfigurationChangeEventLike,
   onError: ((error: unknown) => void) | undefined,
 ): void {
+  const reportError = (error: unknown): void => {
+    if (onError) {
+      onError(error);
+      return;
+    }
+    process.stderr.write(`[workspace-configuration] handler failed: ${String(error)}\n`);
+  };
+
   try {
     Promise.resolve(callback(event)).catch((error: unknown) => {
-      onError?.(error);
+      reportError(error);
     });
   } catch (error: unknown) {
-    onError?.(error);
+    reportError(error);
   }
 }
 

@@ -47,11 +47,15 @@ const LEGACY_CRITIC_KEYS = [
   'perlcritic.theme',
 ] as const;
 
+export const CRITIC_SETTINGS = [
+  ...NATIVE_CRITIC_KEYS.map((key) => `perl-lsp.${key}`),
+  ...LEGACY_CRITIC_KEYS.map((key) => `perl-lsp.${key}`),
+] as const;
+
 const LIVE_SETTINGS = [
   'perl-lsp.includePaths',
   'perl-lsp.trace.server',
-  ...NATIVE_CRITIC_KEYS.map((key) => `perl-lsp.${key}`),
-  ...LEGACY_CRITIC_KEYS.map((key) => `perl-lsp.${key}`),
+  ...CRITIC_SETTINGS,
 ] as const;
 
 const RECONSTRUCT_SETTINGS = [
@@ -202,7 +206,7 @@ export function buildPerlCriticConfiguration(
 export function buildLanguageClientConfigurationPayload(
   documentUri?: vscode.Uri,
 ): Record<string, unknown> {
-  const config = vscode.workspace.getConfiguration('perl-lsp');
+  const config = vscode.workspace.getConfiguration('perl-lsp', documentUri);
   const perl: Record<string, unknown> = {
     workspace: buildWorkspaceConfigurationPayload(config).workspace,
   };
