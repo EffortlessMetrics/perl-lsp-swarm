@@ -16,11 +16,6 @@ pipeline completed these checks:
 | `npm run typecheck:all` | pass                               |    7.17 s |
 | `npm run lint`          | pass: 446/446 warning budget       |    2.46 s |
 
-The Jest result includes the existing post-completion downloader warning on
-Windows (`ENOENT` from an asynchronous test fixture after the suite exits).
-The process still exits successfully; this probe does not claim that warning
-is resolved.
-
 The repository has no `vitest` dependency or configuration. A bounded
 compatibility probe using `npx --yes vitest@4.1.10` resolved
 `vitest/4.1.10 win32-x64 node-v26.5.0`; no package or lockfile was changed.
