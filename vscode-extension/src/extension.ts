@@ -2213,6 +2213,7 @@ function createLanguageClientLifecycle(
   return new ExtensionLanguageClientLifecycle({
     resolveServerPath: () => getServerPath(context),
     createClient: (serverPath) => createLanguageClient(serverPath),
+    onStarted: (startedClient) => finalizeStartedLanguageClient(context, startedClient),
     onStateChange: (snapshot) => {
       syncLifecycleProjection();
       healthWidget?.onStateChange(clientStateForLifecycle(snapshot.state));
@@ -2237,6 +2238,30 @@ function clientStateForLifecycle(state: LifecycleState): ClientState {
   return ClientState.Stopped;
 }
 
+async function finalizeStartedLanguageClient(
+  context: vscode.ExtensionContext,
+  startedClient: LanguageClient,
+): Promise<void> {
+  // This hook is part of the lifecycle controller so initial startup and
+  // restart/reinstall generations rebuild the same client integrations.
+  const serverVersion = startedClient.initializeResult?.serverInfo?.version;
+  if (serverVersion) {
+    healthWidget?.setVersion(serverVersion);
+  }
+
+  // Offer AI inline completion once if the server advertises support (#1634).
+  // Fire-and-forget; failures must not block lifecycle finalization.
+  suggestAiCompletionIfSupported(context, startedClient).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    outputChannel.appendLine(`[ai-completion] Error suggesting AI completion: ${msg}`);
+  });
+
+  await refreshTestAdapter(context);
+  refreshStreamingController(startedClient);
+  lastStartupDiagnosis = undefined;
+  outputChannel.appendLine('Perl Language Server started successfully');
+}
+
 async function initializeLanguageClient(context: vscode.ExtensionContext): Promise<boolean> {
   healthWidget?.onStateChange(ClientState.Starting);
 
@@ -2259,28 +2284,6 @@ async function initializeLanguageClient(context: vscode.ExtensionContext): Promi
       return false;
     }
 
-    // Expose the server version in the widget tooltip once the handshake completes.
-    const serverVersion = startedClient.initializeResult?.serverInfo?.version;
-    if (serverVersion) {
-      healthWidget?.setVersion(serverVersion);
-    }
-
-    // Offer AI inline completion once if the server advertises support (#1634).
-    // Fire-and-forget; failures must not block startup finalization.
-    suggestAiCompletionIfSupported(context, startedClient).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      outputChannel.appendLine(`[ai-completion] Error suggesting AI completion: ${msg}`);
-    });
-
-    await refreshTestAdapter(context);
-
-    // Initialize streaming inline completion controller (config-gated)
-    refreshStreamingController(startedClient);
-
-    // Clear any stale startup diagnosis — the server started successfully so
-    // the root cause (e.g. missing Perl) no longer applies.
-    lastStartupDiagnosis = undefined;
-    outputChannel.appendLine('Perl Language Server started successfully');
     return true;
   } catch (startError: unknown) {
     const msg = startError instanceof Error ? startError.message : String(startError);
@@ -3460,7 +3463,9 @@ async function reinstallServerBinary(
   // Windows releases its handle on the existing perllsp.exe. On failure
   // we restart with the previous binary so the user is never left worse
   // off than before they invoked Reinstall.
-  const wasRunning = languageClientLifecycle?.availability.kind === 'ready';
+  const lifecycleState = languageClientLifecycle?.snapshot.state;
+  const wasRunning =
+    lifecycleState !== undefined && lifecycleState !== 'stopped' && lifecycleState !== 'failed';
   const previousServerPath = languageClientLifecycle?.serverPath ?? null;
 
   if (wasRunning) {

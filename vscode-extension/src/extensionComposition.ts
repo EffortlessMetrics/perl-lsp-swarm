@@ -86,6 +86,9 @@ export class ExtensionLanguageClientLifecycle<
 
   /** Compatibility projection for command/provider code. */
   get client(): TClient | undefined {
+    if (this.snapshot.state !== 'running') {
+      return undefined;
+    }
     return this.projectedClient;
   }
 

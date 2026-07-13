@@ -51,13 +51,33 @@ describe('ExtensionLanguageClientLifecycle', () => {
     expect(lifecycle.serverPath).toBe('perllsp');
     expect(availabilityKind(lifecycle.availability)).toBe('ready');
 
-    await lifecycle.stop();
+    const stopping = lifecycle.stop();
+    expect(lifecycle.snapshot.state).toBe('stopping');
+    expect(lifecycle.client).toBeUndefined();
+    await stopping;
 
     expect(lifecycle.client).toBeUndefined();
     expect(lifecycle.serverPath).toBeNull();
     expect(availabilityKind(lifecycle.availability)).toBe('unavailable');
     expect(clients[0]?.stop).toHaveBeenCalledTimes(1);
     expect(clients[0]?.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  test('runs the started hook for initial start and restart generations', async () => {
+    const onStarted = jest.fn();
+    const lifecycle = new ExtensionLanguageClientLifecycle<FakeClient, TestEvent>({
+      resolveServerPath: async () => 'perllsp',
+      createClient: () => new FakeClient(),
+      onStarted,
+    });
+
+    await lifecycle.start();
+    await lifecycle.stop();
+    await lifecycle.restart();
+
+    expect(onStarted).toHaveBeenCalledTimes(2);
+    expect(onStarted).toHaveBeenNthCalledWith(1, expect.any(FakeClient), 'perllsp');
+    expect(onStarted).toHaveBeenNthCalledWith(2, expect.any(FakeClient), 'perllsp');
   });
 
   test('reports starting while resolving and consumes a reinstall path override', async () => {
