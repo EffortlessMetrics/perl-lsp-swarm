@@ -330,7 +330,7 @@ fn check_canonical_base(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
             status: CheckStatus::Pass,
             reason: format!("`{}` resolves to {remote_sha}", snapshot.requested_base),
         },
-        Some(selected_sha) if selected_sha == remote_sha => CheckResult {
+        Some(selected_sha) if sha_matches(remote_sha, selected_sha) => CheckResult {
             name,
             status: CheckStatus::Pass,
             reason: format!("`{}` matches expected {remote_sha}", snapshot.requested_base),
@@ -344,6 +344,25 @@ fn check_canonical_base(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
             ),
         },
     }
+}
+
+/// A caller-supplied `--expected-base-sha` is commonly a short/abbreviated
+/// SHA (this is how commits are conventionally referenced in issues, PR
+/// descriptions, and plan-review comments — e.g. "currently 6fade008c"),
+/// not necessarily the full 40-hex-character SHA. Exact string equality
+/// would false-BLOCK every short-SHA caller even when the base is exactly
+/// correct. Accept a full match OR a case-insensitive hex-prefix match, with
+/// a minimum prefix length (git's own historical default abbreviation is 7
+/// hex characters) to avoid a degenerate short prefix matching too loosely.
+fn sha_matches(remote_sha: &str, selected_sha: &str) -> bool {
+    const MIN_PREFIX_LEN: usize = 4;
+    if selected_sha.eq_ignore_ascii_case(remote_sha) {
+        return true;
+    }
+    selected_sha.len() >= MIN_PREFIX_LEN
+        && selected_sha.len() <= remote_sha.len()
+        && selected_sha.chars().all(|c| c.is_ascii_hexdigit())
+        && remote_sha[..selected_sha.len()].eq_ignore_ascii_case(selected_sha)
 }
 
 fn check_shadow_ref(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
@@ -595,6 +614,21 @@ fn check_writer_collision(snapshot: &WriterAdmissionSnapshot) -> CheckResult {
 
 // ---- Live gathering --------------------------------------------------------------
 
+/// Runs a read-only `git` query and returns its non-empty stdout lines.
+///
+/// A non-zero exit is always treated as a genuine instrument failure
+/// (`Err`), never silently folded into "no results". This matters for
+/// callers like `for-each-ref`: it exits **0** with empty stdout when
+/// nothing matches a pattern — a real, legitimate absence — so a non-zero
+/// exit from it means something actually went wrong (corrupt ref store,
+/// invalid pattern, not a git repository at all), not "zero matches".
+/// Conflating the two would let a genuine failure silently report as a
+/// clean/empty result — the exact instrument-failure-must-never-be-PASS
+/// invariant this tool exists to uphold. Callers that DO have a
+/// documented, command-specific "non-zero exit legitimately means
+/// absence" case (e.g. `git symbolic-ref -q HEAD` on a detached HEAD)
+/// must not route through this helper — they inspect `Command::output()`
+/// directly, as `gather_head_info` does.
 fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
     let output = Command::new("git")
         .args(args)
@@ -602,11 +636,12 @@ fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
         .output()
         .map_err(|e| format!("failed to spawn `git {}`: {e}", args.join(" ")))?;
     if !output.status.success() {
-        // Non-zero here means "resource absent" for several of our
-        // read-only queries (e.g. no matching refs), not necessarily an
-        // instrument failure. Callers decide how to interpret an empty
-        // Ok(vec![]) vs treating stderr as an error.
-        return Ok(Vec::new());
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git {} failed with status {}", args.join(" "), output.status)
+        } else {
+            format!("git {} failed: {stderr}", args.join(" "))
+        });
     }
     let text = String::from_utf8_lossy(&output.stdout);
     Ok(text.lines().filter(|l| !l.is_empty()).map(str::to_string).collect())
@@ -778,6 +813,16 @@ fn gather_dirty_info(worktree_root: &Path) -> DirtyInfo {
     DirtyInfo { status_count, unpushed_commits, error: None }
 }
 
+/// Disposition note (reviewed, not changed): dividing 1024-byte blocks by
+/// `1024*1024` yields **binary** gigabytes (GiB), not decimal GB, even
+/// though the fields/flags are named `_gb`/`FLOOR_GB`. This is intentional
+/// bug-for-bug compatibility with `scripts/clean-worktrees.sh`, which the
+/// #3957 W1 spec requires reusing verbatim (`avail_gb=$((avail_kb / 1024 /
+/// 1024))`, displayed as `${avail_gb}G`) rather than inventing a new
+/// convention. The numerator and denominator always use the same units
+/// here, so the floor comparison itself is correct; only the "GB" naming
+/// is imprecise. Not relabeled to avoid diverging the CLI flag names
+/// (`--floor-gb`, matching `FLOOR_GB`) from the reused source.
 fn gather_disk_info(root: &Path, worktree_count: u32) -> DiskInfo {
     let output = Command::new("df").args(["-Pk", "."]).current_dir(root).output();
     match output {
@@ -1074,6 +1119,41 @@ mod tests {
     }
 
     #[test]
+    fn short_sha_prefix_of_the_correct_base_is_not_a_false_block() {
+        // --expected-base-sha is commonly a short SHA (e.g. "currently
+        // 6fade008c" is how commits get cited in issues/plan-reviews).
+        // Exact-string equality would false-BLOCK this every time even
+        // though the base is exactly correct.
+        let mut snapshot = base_snapshot();
+        // base_snapshot()'s remote_sha is "deadbeef".
+        snapshot.canonical_base.selected_sha = Some("dead".to_string());
+        let checks = run_checks(&snapshot, &default_config());
+        assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::Pass, "{checks:?}");
+    }
+
+    #[test]
+    fn short_sha_that_is_genuinely_a_different_commit_still_blocks() {
+        let mut snapshot = base_snapshot();
+        // Not a prefix of "deadbeef" at all — a real mismatch, short or not.
+        snapshot.canonical_base.selected_sha = Some("beef".to_string());
+        let checks = run_checks(&snapshot, &default_config());
+        assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::Block, "{checks:?}");
+    }
+
+    #[test]
+    fn sha_matches_accepts_exact_and_prefix_rejects_short_and_wrong() {
+        assert!(sha_matches("deadbeef", "deadbeef"));
+        assert!(sha_matches("deadbeef", "DEAD"), "case-insensitive prefix should match");
+        assert!(!sha_matches("deadbeef", "dea"), "below the minimum prefix length must not match");
+        assert!(!sha_matches("deadbeef", "beef"), "a non-prefix substring must not match");
+        assert!(
+            !sha_matches("deadbeef", "deadbeefff"),
+            "longer than the remote SHA must not match"
+        );
+        assert!(!sha_matches("deadbeef", "dead-bad"), "non-hex characters must not match");
+    }
+
+    #[test]
     fn low_disk_blocks() {
         let mut snapshot = base_snapshot();
         snapshot.disk.avail_gb = Some(10.0);
@@ -1161,5 +1241,51 @@ mod tests {
         let info = gather_pr_ownership("", None);
         assert_eq!(info.status, PrStatus::Unknown);
         assert!(info.pr_number.is_none());
+    }
+
+    #[test]
+    fn shadow_ref_check_with_error_is_not_proven_never_pass() {
+        // Regression guard on the check-level contract: an empty `refs`
+        // list is legitimate ("no matches", e.g. `for-each-ref` exiting 0
+        // with nothing to report) and must PASS, but the SAME empty list
+        // paired with a genuine tool error must never be folded into that
+        // same PASS — it must be NOT_PROVEN. This is the invariant the
+        // live-gathering bug below violated: a real `git for-each-ref`
+        // failure was indistinguishable from a legitimate empty match.
+        let mut snapshot = base_snapshot();
+        snapshot.shadow_refs = ShadowRefInfo {
+            refs: Vec::new(),
+            error: Some("git for-each-ref failed: fatal: not a git repository".to_string()),
+        };
+        let checks = run_checks(&snapshot, &default_config());
+        assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::NotProven, "{checks:?}");
+        assert!(
+            checks.iter().any(|c| c.name == "shadow-ref" && c.status == CheckStatus::NotProven),
+            "expected shadow-ref to be NOT_PROVEN, never PASS, on a tool error: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn gather_shadow_refs_on_a_genuine_git_failure_reports_error_not_empty() -> Result<()> {
+        // The actual live-gathering bug: `git for-each-ref` exits 0 with
+        // empty stdout when nothing matches (a legitimate absence), so a
+        // NON-zero exit means something is genuinely wrong (here: not a
+        // git repository at all). Before the fix, `git_lines` swallowed
+        // ANY non-zero exit into `Ok(vec![])`, so this genuine failure
+        // was indistinguishable from "no shadow refs found" — a silent
+        // instrument-failure-to-false-PASS. It must instead surface as
+        // `ShadowRefInfo.error`, which `check_shadow_ref` already routes
+        // to NOT_PROVEN (see the check-level test above).
+        let dir = tempfile::tempdir()?;
+        // dir.path() is deliberately NOT a git repository.
+        let info = gather_shadow_refs(dir.path());
+        assert!(
+            info.error.is_some(),
+            "expected a genuine git failure (not a git repository) to be \
+             surfaced as an error, not silently folded into an empty \
+             match list: {info:?}"
+        );
+        assert!(info.refs.is_empty());
+        Ok(())
     }
 }
