@@ -4,9 +4,6 @@ on:
   pull_request:
     branches: [main]
     paths: [.github/workflows/_tmp-probe-changie-cutover.yml]
-  push:
-    branches: [agent/changie-release-cutover]
-    paths: [.github/workflows/_tmp-probe-changie-cutover.yml]
 
 permissions:
   contents: read
@@ -20,35 +17,36 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - name: Install Changie
+      - name: Download branch and probe project batching
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          repo="${RUNNER_TEMP}/repo"
+          mkdir -p "$repo"
+          curl -fsSL "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${HEAD_SHA}" -o "${RUNNER_TEMP}/repo.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/repo.tar.gz" --strip-components=1 -C "$repo"
+
           asset="changie_${CHANGIE_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL "https://github.com/miniscruff/changie/releases/download/v${CHANGIE_VERSION}/${asset}" -o "/tmp/${asset}"
-          echo "${CHANGIE_LINUX_AMD64_SHA256}  /tmp/${asset}" | sha256sum -c -
-          sudo tar -xzf "/tmp/${asset}" -C /usr/local/bin changie
-      - name: Probe project batching
-        run: |
-          set -euo pipefail
+          curl -fsSL "https://github.com/miniscruff/changie/releases/download/v${CHANGIE_VERSION}/${asset}" -o "${RUNNER_TEMP}/${asset}"
+          echo "${CHANGIE_LINUX_AMD64_SHA256}  ${RUNNER_TEMP}/${asset}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${asset}" -C "${RUNNER_TEMP}" changie
+
+          cd "$repo"
           echo "FRAGMENT_COUNT=$(find .changes/unreleased -maxdepth 1 -type f -name '*.yaml' | wc -l)"
           for project in product vscode; do
             work="${RUNNER_TEMP}/${project}"
-            cp -a . "$work"
+            cp -a "$repo" "$work"
             cd "$work"
             set +e
-            changie batch v9.9.9-probe --project "$project" >/tmp/${project}.stdout 2>/tmp/${project}.stderr
+            "${RUNNER_TEMP}/changie" batch v9.9.9-probe --project "$project" >"${RUNNER_TEMP}/${project}.stdout" 2>"${RUNNER_TEMP}/${project}.stderr"
             rc=$?
             set -e
             echo "PROJECT=${project}"
             echo "BATCH_RC=${rc}"
-            echo "CHANGED_PATHS_BEGIN"
-            git status --short | sed -n '1,40p'
-            echo "CHANGED_PATHS_END"
-            echo "VERSION_FILES_BEGIN"
-            find .changes -maxdepth 3 -type f ! -path '*/unreleased/*' -print | sort | tail -20
-            echo "VERSION_FILES_END"
-            echo "STDOUT=$(tr '\n' ' ' </tmp/${project}.stdout | head -c 500)"
-            echo "STDERR=$(tr '\n' ' ' </tmp/${project}.stderr | head -c 500)"
-            cd "$GITHUB_WORKSPACE"
+            echo "CHANGED_PATHS=$(git status --short | tr '\n' '|' | head -c 1600)"
+            echo "VERSION_FILES=$(find .changes -maxdepth 3 -type f ! -path '*/unreleased/*' -print | sort | tr '\n' '|' | tail -c 1600)"
+            echo "STDOUT=$(tr '\n' ' ' <"${RUNNER_TEMP}/${project}.stdout" | head -c 500)"
+            echo "STDERR=$(tr '\n' ' ' <"${RUNNER_TEMP}/${project}.stderr" | head -c 500)"
+            cd "$repo"
           done
