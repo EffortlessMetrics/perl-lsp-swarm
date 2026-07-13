@@ -111,8 +111,15 @@ export async function validateIncludePaths(context: vscode.ExtensionContext): Pr
       for (const includePath of creatablePaths) {
         const resolved = path.resolve(folder.uri.fsPath, includePath);
         if (!fs.existsSync(resolved) && hasSafeExistingAncestor(workspaceRealPath, resolved)) {
-          fs.mkdirSync(resolved, { recursive: true });
-          createdPaths.push(includePath);
+          try {
+            fs.mkdirSync(resolved, { recursive: true });
+            createdPaths.push(includePath);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            void vscode.window.showWarningMessage(
+              `Perl LSP: failed to create directory "${includePath}": ${msg}`,
+            );
+          }
         }
       }
 
@@ -371,9 +378,11 @@ export async function warnAboutPerlExtensionConflicts(
     return;
   }
 
-  const selfId = `${packageJSON.publisher ?? 'EffortlessMetrics'}.${packageJSON.name ?? 'perl-lsp-rs'}`;
+  const selfId =
+    `${packageJSON.publisher ?? 'EffortlessMetrics'}.${packageJSON.name ?? 'perl-lsp-rs'}`.toLowerCase();
   const conflicts = (vscode.extensions.all as unknown as InstalledExtension[]).filter(
-    (extension) => extension && extension.id !== selfId && isPerlLanguageExtension(extension),
+    (extension) =>
+      extension && extension.id?.toLowerCase() !== selfId && isPerlLanguageExtension(extension),
   );
 
   if (conflicts.length === 0) {

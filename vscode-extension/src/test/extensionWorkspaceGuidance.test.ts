@@ -80,6 +80,19 @@ test('does not offer or perform directory creation through a workspace symlink',
   expect(fs.existsSync(path.join(outsideDir, 'escape'))).toBe(false);
 });
 
+test('reports directory creation failures without aborting guidance', async () => {
+  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-mkdir-'));
+  fs.writeFileSync(path.join(workspaceDir, 'blocked'), 'not a directory');
+  mountWorkspace(workspaceDir, ['blocked/child']);
+  (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Create Missing Directories');
+
+  await validateIncludePaths({ globalState: makeState() } as any);
+
+  expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+    expect.stringContaining('Perl LSP: failed to create directory "blocked/child":'),
+  );
+});
+
 test('dismissal is sticky for an unchanged discovered module layout', async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-cache-'));
   fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
@@ -111,7 +124,7 @@ test('does not prompt for AI completion without a real server capability', async
 test('does not report the extension itself as a Perl conflict', async () => {
   (vscode.extensions as any).all = [
     {
-      id: 'EffortlessMetrics.perl-lsp-rs',
+      id: 'effortlessmetrics.perl-lsp-rs',
       packageJSON: {
         publisher: 'EffortlessMetrics',
         name: 'perl-lsp-rs',
