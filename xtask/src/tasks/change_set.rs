@@ -130,7 +130,7 @@ pub fn resolve_change_set(identity: ArtifactIdentity, root: &Path) -> Result<Cha
 /// Order: `origin/main` (canonical), `main` (local mirror, e.g. a clone
 /// without a configured remote), `HEAD~1` (shallow-clone / single-remote
 /// -less-history fallback).
-const BASE_CANDIDATES: &[&str] = &["origin/main", "main", "HEAD~1"];
+const BASE_CANDIDATES: [&str; 3] = ["origin/main", "main", "HEAD~1"];
 
 /// Resolve a base ref: an explicit non-`"auto"` `base` is tried first (and
 /// used if it exists), then [`BASE_CANDIDATES`] in order. Returns a loud
@@ -442,6 +442,37 @@ mod tests {
             "expected no changed paths, got {:?}",
             change_set.changed_paths
         );
+        Ok(())
+    }
+
+    /// Three-dot diff (`base...head`) requires a merge base; on genuinely
+    /// unrelated histories (an orphan branch sharing no ancestor with
+    /// `main`) git fails it outright (`fatal: ... no merge base`), which is
+    /// exactly the failure `diff_paths` is documented to fall back from.
+    /// Without this test the two-dot fallback branch — the one place this
+    /// module deliberately mirrors `ci_scope::get_changed_files`'s fallback
+    /// — had zero coverage; a change that silently dropped the fallback
+    /// (or swapped which paths it reports) would still pass every other
+    /// test in this file.
+    #[test]
+    fn test_diff_paths_falls_back_to_two_dot_on_unrelated_histories() -> Result<()> {
+        let tmp = tempfile::tempdir().context("failed to create tempdir")?;
+        let repo = init_repo_with_origin_main(tmp.path())?;
+
+        // An orphan branch shares no common ancestor with `main` at all, so
+        // `git diff main...unrelated` fails with "no merge base" — unlike
+        // ordinary divergent branches, which always share the initial
+        // commit and would make three-dot succeed trivially.
+        run_git(&repo, &["checkout", "-q", "--orphan", "unrelated"])?;
+        // `--orphan` carries the current index/working tree forward with no
+        // parent commit; committing here keeps README.md (identical
+        // content to main's) plus a new file, so the only genuine diff
+        // between the two trees is the new file.
+        commit_file(&repo, "orphan.txt", "orphan content\n", "orphan init")?;
+
+        let paths = diff_paths("main", "unrelated", &repo)?;
+        let expected = vec!["orphan.txt".to_string()];
+        ensure!(paths == expected, "expected {expected:?}, got {paths:?}");
         Ok(())
     }
 }
