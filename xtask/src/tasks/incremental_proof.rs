@@ -289,10 +289,10 @@ fn measure_case(
         document_size_bytes: base_source.len(),
         edit_position_byte: edit_position,
         iterations,
-        fresh_p50_ns: percentile(&fresh_samples, 50),
-        fresh_p95_ns: percentile(&fresh_samples, 95),
-        replay_p50_ns: percentile(&replay_samples, 50),
-        replay_p95_ns: percentile(&replay_samples, 95),
+        fresh_p50_ns: nearest_rank_percentile(&fresh_samples, 50),
+        fresh_p95_ns: nearest_rank_percentile(&fresh_samples, 95),
+        replay_p50_ns: nearest_rank_percentile(&replay_samples, 50),
+        replay_p95_ns: nearest_rank_percentile(&replay_samples, 95),
         average_reprocessed_bytes: average(&reprocessed_bytes),
         average_tokens_reused: average(&tokens_reused),
         average_tokens_relexed: average(&tokens_relexed),
@@ -348,7 +348,8 @@ fn position_at(source: &str, byte: usize) -> Result<Position> {
         .get(..byte)
         .ok_or_else(|| eyre!("byte offset {byte} is outside source length {}", source.len()))?;
     let line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32;
-    let column = prefix.rsplit('\n').next().map_or(prefix.len(), str::len) as u32;
+    let line = line + 1;
+    let column = prefix.rsplit('\n').next().map_or(prefix.len(), str::len) as u32 + 1;
     Ok(Position::new(byte, line, column))
 }
 
@@ -471,13 +472,18 @@ fn summarize(rows: &[MeasurementRow], iterations: usize) -> Summary {
     }
 }
 
-fn percentile(values: &[u128], percentile: usize) -> u128 {
+/// Compute a nearest-rank percentile while retaining nanosecond precision.
+///
+/// The shared parser helper uses `u64` samples; this receipt keeps `u128`
+/// timings so the measurement cannot truncate a future long-running sample.
+fn nearest_rank_percentile(values: &[u128], pct: usize) -> u128 {
     if values.is_empty() {
         return 0;
     }
     let mut sorted = values.to_vec();
     sorted.sort_unstable();
-    let index = ((sorted.len() - 1) * percentile / 100).min(sorted.len() - 1);
+    let rank = sorted.len().saturating_mul(pct.min(100)).saturating_add(99) / 100;
+    let index = rank.saturating_sub(1).min(sorted.len() - 1);
     sorted[index]
 }
 
@@ -487,19 +493,43 @@ fn average(values: &[usize]) -> usize {
 
 fn hash_inputs(profile: Profile, fixtures: &[Fixture]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(profile.slug().as_bytes());
+    hash_u64(&mut hasher, u64::from(SCHEMA_VERSION));
+    hash_bytes(&mut hasher, b"tree_sitter_incremental_proof");
+    hash_bytes(&mut hasher, profile.slug().as_bytes());
+    hash_u64(&mut hasher, profile.iterations() as u64);
+    hash_u64(&mut hasher, profile.multipliers().len() as u64);
+    for multiplier in profile.multipliers() {
+        hash_u64(&mut hasher, *multiplier as u64);
+    }
+    hash_u64(&mut hasher, fixtures.len() as u64);
     for fixture in fixtures {
-        hasher.update(fixture.name.as_bytes());
-        hasher.update(fixture.base_source.as_bytes());
+        hash_bytes(&mut hasher, fixture.name.as_bytes());
+        hash_bytes(&mut hasher, fixture.base_source.as_bytes());
+        hash_u64(&mut hasher, fixture.cases.len() as u64);
         for case in &fixture.cases {
-            hasher.update(case.name.as_bytes());
-            hasher.update(case.class.as_bytes());
-            hasher.update(case.old_text.as_bytes());
-            hasher.update(case.new_text.as_bytes());
-            hasher.update(case.fixed_start.unwrap_or(usize::MAX).to_le_bytes());
+            hash_bytes(&mut hasher, case.name.as_bytes());
+            hash_bytes(&mut hasher, case.class.as_bytes());
+            hash_bytes(&mut hasher, case.old_text.as_bytes());
+            hash_bytes(&mut hasher, case.new_text.as_bytes());
+            match case.fixed_start {
+                Some(start) => {
+                    hasher.update([1]);
+                    hash_u64(&mut hasher, start as u64);
+                }
+                None => hasher.update([0]),
+            }
         }
     }
     hex_lower(&hasher.finalize())
+}
+
+fn hash_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    hash_u64(hasher, bytes.len() as u64);
+    hasher.update(bytes);
+}
+
+fn hash_u64(hasher: &mut Sha256, value: u64) {
+    hasher.update(value.to_le_bytes());
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -523,19 +553,10 @@ fn rustc_version() -> Result<String> {
 }
 
 fn output_path(root: &Path, profile: Profile, output: Option<PathBuf>) -> PathBuf {
-    output
-        .unwrap_or_else(|| PathBuf::from(format!("{DEFAULT_OUTPUT_PREFIX}{}.json", profile.slug())))
-        .pipe_relative_to(root)
-}
-
-trait RelativeToRoot {
-    fn pipe_relative_to(self, root: &Path) -> PathBuf;
-}
-
-impl RelativeToRoot for PathBuf {
-    fn pipe_relative_to(self, root: &Path) -> PathBuf {
-        if self.is_absolute() { self } else { root.join(self) }
-    }
+    let output = output.unwrap_or_else(|| {
+        PathBuf::from(format!("{DEFAULT_OUTPUT_PREFIX}{}.json", profile.slug()))
+    });
+    if output.is_absolute() { output } else { root.join(output) }
 }
 
 fn write_receipt(path: &Path, receipt: &Receipt) -> Result<()> {
@@ -723,19 +744,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn percentile_is_deterministic_and_bounded() {
-        assert_eq!(percentile(&[9, 1, 5, 3, 7], 50), 5);
-        assert_eq!(percentile(&[9, 1, 5, 3, 7], 95), 7);
-        assert_eq!(percentile(&[], 95), 0);
+    fn percentile_is_deterministic_and_bounded() -> Result<()> {
+        let median = nearest_rank_percentile(&[9, 1, 5, 3, 7], 50);
+        if median != 5 {
+            return Err(eyre!("expected nearest-rank p50 of 5, got {median}"));
+        }
+        let p95 = nearest_rank_percentile(&[9, 1, 5, 3, 7], 95);
+        if p95 != 9 {
+            return Err(eyre!("expected nearest-rank p95 of 9, got {p95}"));
+        }
+        if nearest_rank_percentile(&[], 95) != 0 {
+            return Err(eyre!("empty percentile sample must return zero"));
+        }
+        Ok(())
     }
 
     #[test]
-    fn fixture_hash_changes_when_a_case_changes() {
+    fn fixture_hash_changes_when_a_case_changes() -> Result<()> {
         let fixtures = fixtures();
         let first = hash_inputs(Profile::Pr, &fixtures);
         let mut changed = fixtures;
         changed[0].cases[0].new_text = "other";
-        assert_ne!(first, hash_inputs(Profile::Pr, &changed));
+        let second = hash_inputs(Profile::Pr, &changed);
+        if first == second {
+            return Err(eyre!("changing a fixture case must change the input hash"));
+        }
+        Ok(())
     }
 
     #[test]
@@ -748,10 +782,17 @@ mod tests {
             fixed_start: None,
         };
         let (new_source, edit) = make_edit("my $x = 1;", &case, true)?;
-        assert_eq!(new_source, "my $x = 42;");
-        assert_eq!(edit.start_byte, 8);
-        assert_eq!(edit.old_end_byte, 9);
-        assert_eq!(edit.new_end_byte, 10);
+        if new_source != "my $x = 42;" {
+            return Err(eyre!("unexpected edited source: {new_source:?}"));
+        }
+        if edit.start_byte != 8 || edit.old_end_byte != 9 || edit.new_end_byte != 10 {
+            return Err(eyre!(
+                "unexpected edit range: {}..{} -> {}",
+                edit.start_byte,
+                edit.old_end_byte,
+                edit.new_end_byte
+            ));
+        }
         Ok(())
     }
 }

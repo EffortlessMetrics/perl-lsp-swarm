@@ -17,6 +17,10 @@ struct NodeShape {
 }
 
 fn shape(node: Node<'_>) -> Result<NodeShape, String> {
+    shape_with_field(node, None)
+}
+
+fn shape_with_field(node: Node<'_>, field_name: Option<&'static str>) -> Result<NodeShape, String> {
     let start = node.start_position();
     let end = node.end_position();
     let text = node
@@ -26,23 +30,11 @@ fn shape(node: Node<'_>) -> Result<NodeShape, String> {
     let mut children = Vec::with_capacity(node.child_count());
     for index in 0..node.child_count() {
         let child = node.child(index).ok_or_else(|| format!("missing child {index}"))?;
-        children.push(NodeShape {
-            kind: child.kind(),
-            field_name: node.field_name_for_child(index),
-            start_byte: child.start_byte(),
-            end_byte: child.end_byte(),
-            start_point: (child.start_position().row, child.start_position().column),
-            end_point: (child.end_position().row, child.end_position().column),
-            text: child
-                .utf8_text(child.tree_source().as_bytes())
-                .map_err(|error| error.to_string())?
-                .to_owned(),
-            children: shape_children(child)?,
-        });
+        children.push(shape_with_field(child, node.field_name_for_child(index))?);
     }
     Ok(NodeShape {
         kind: node.kind(),
-        field_name: None,
+        field_name,
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
         start_point: (start.row, start.column),
@@ -52,27 +44,16 @@ fn shape(node: Node<'_>) -> Result<NodeShape, String> {
     })
 }
 
-fn shape_children(node: Node<'_>) -> Result<Vec<NodeShape>, String> {
-    let mut children = Vec::with_capacity(node.child_count());
-    for index in 0..node.child_count() {
-        let child = node.child(index).ok_or_else(|| format!("missing child {index}"))?;
-        let start = child.start_position();
-        let end = child.end_position();
-        children.push(NodeShape {
-            kind: child.kind(),
-            field_name: node.field_name_for_child(index),
-            start_byte: child.start_byte(),
-            end_byte: child.end_byte(),
-            start_point: (start.row, start.column),
-            end_point: (end.row, end.column),
-            text: child
-                .utf8_text(child.tree_source().as_bytes())
-                .map_err(|error| error.to_string())?
-                .to_owned(),
-            children: shape_children(child)?,
-        });
+fn position_at(source: &str, byte: usize) -> Result<Position, String> {
+    if byte > source.len() || !source.is_char_boundary(byte) {
+        return Err(format!("invalid position byte offset {byte}"));
     }
-    Ok(children)
+    let prefix = &source[..byte];
+    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+    let column = prefix.rsplit('\n').next().map_or(0, str::len) + 1;
+    let line = u32::try_from(line).map_err(|_| "line number exceeds u32".to_owned())?;
+    let column = u32::try_from(column).map_err(|_| "column exceeds u32".to_owned())?;
+    Ok(Position::new(byte, line, column))
 }
 
 fn edit(source: &str, old_text: &str, new_text: &str) -> Result<(String, Edit), String> {
@@ -87,9 +68,9 @@ fn edit(source: &str, old_text: &str, new_text: &str) -> Result<(String, Edit), 
         start,
         old_end,
         new_end,
-        Position::new(start, 0, start as u32),
-        Position::new(old_end, 0, old_end as u32),
-        Position::new(new_end, 0, new_end as u32),
+        position_at(source, start)?,
+        position_at(source, old_end)?,
+        position_at(&new_source, new_end)?,
     );
     Ok((new_source, descriptor))
 }
@@ -120,9 +101,9 @@ fn checkpoint_left_boundary_matches_fresh_parse() -> Result<(), String> {
         boundary,
         boundary,
         boundary + 1,
-        Position::new(boundary, 0, boundary as u32),
-        Position::new(boundary, 0, boundary as u32),
-        Position::new(boundary + 1, 0, (boundary + 1) as u32),
+        position_at(&source, boundary)?,
+        position_at(&source, boundary)?,
+        position_at(&new_source, boundary + 1)?,
     );
 
     let mut parser = Parser::new();
