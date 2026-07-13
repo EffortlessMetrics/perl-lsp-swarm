@@ -45,8 +45,24 @@ function readNpmVersion() {
     }).trim();
   }
 
-  const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  return execFileSync(npmExecutable, ['--version'], {
+  if (process.platform === 'win32') {
+    const npmCliPath = path.join(
+      path.dirname(process.execPath),
+      'node_modules',
+      'npm',
+      'bin',
+      'npm-cli.js',
+    );
+    if (!fs.existsSync(npmCliPath)) {
+      throw new Error(`could not locate npm CLI entry point at ${npmCliPath}`);
+    }
+    return execFileSync(process.execPath, [npmCliPath, '--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  }
+
+  return execFileSync('npm', ['--version'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();

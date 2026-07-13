@@ -116,7 +116,7 @@ If you haven't already:
 ### 6. Login to vsce
 
 ```bash
-vsce login <publisher-id>
+npm exec -- @vscode/vsce login <publisher-id>
 # Enter your Personal Access Token when prompted
 ```
 
@@ -130,9 +130,9 @@ npm run publish -- --pat "$VSCE_PAT"
 npm run publish:openvsx -- perl-lsp-rs-*.vsix --pat "$OVSX_PAT"
 
 # Or publish with version bump on Marketplace
-vsce publish minor  # 0.5.0 -> 0.6.0
-vsce publish major  # 0.5.0 -> 0.9.x
-vsce publish 0.5.1  # Specific version
+npm exec -- @vscode/vsce publish minor  # 0.5.0 -> 0.6.0
+npm exec -- @vscode/vsce publish major  # 0.5.0 -> 0.9.x
+npm exec -- @vscode/vsce publish 0.5.1  # Specific version
 ```
 
 ## Post-Publishing
