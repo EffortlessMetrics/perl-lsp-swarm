@@ -176,7 +176,9 @@ impl Parser {
                     return self.parse_with_fallback(source, FallbackReason::InvalidEdit);
                 };
 
-                let mut state = old_tree.incremental_state.clone();
+                let mut state = old_tree.incremental_state.as_ref().cloned().unwrap_or_else(|| {
+                    IncrementalState::with_diagnostics(old_tree.source(), old_tree.diagnostics())
+                });
                 match state.reparse(source, &incremental_edit) {
                     Ok(root) => {
                         let mode =
@@ -188,14 +190,14 @@ impl Parser {
                             source: source.to_string(),
                             pending_edits: Vec::new(),
                             diagnostics: state.diagnostics().to_vec(),
-                            incremental_state: state,
+                            incremental_state: Some(state),
                             reparse_mode: Some(mode),
                         });
                     }
                     Err(_) => FallbackReason::TokenReplay(CoreFallbackReason::TokenReplayFailed),
                 }
             }
-            [] => FallbackReason::TokenReplay(CoreFallbackReason::NoCheckpointWindow),
+            [] => FallbackReason::NoPendingEdit,
             _ => FallbackReason::MultipleEdits,
         };
 
@@ -205,6 +207,8 @@ impl Parser {
     fn parse_with_fallback(&mut self, source: &str, reason: FallbackReason) -> Option<Tree> {
         let mut tree = self.parse(source)?;
         tree.reparse_mode = Some(ReparseMode::FullParseFallback(reason));
+        tree.incremental_state =
+            Some(IncrementalState::with_diagnostics(source, tree.diagnostics()));
         Some(tree)
     }
 }
@@ -236,6 +240,14 @@ fn validated_incremental_edit(
     let inserted = edit.new_end_byte.checked_sub(edit.start_byte)?;
     let expected_len = old_source.len().checked_sub(removed)?.checked_add(inserted)?;
     if expected_len != new_source.len() {
+        return None;
+    }
+
+    let old_prefix = old_source.get(..edit.start_byte)?;
+    let new_prefix = new_source.get(..edit.start_byte)?;
+    let old_suffix = old_source.get(edit.old_end_byte..)?;
+    let new_suffix = new_source.get(edit.new_end_byte..)?;
+    if old_prefix != new_prefix || old_suffix != new_suffix {
         return None;
     }
 
@@ -334,6 +346,8 @@ pub enum FallbackReason {
     InvalidEdit,
     /// More than one pending edit was recorded on the old tree.
     MultipleEdits,
+    /// The source changed but no pending edit was recorded on the old tree.
+    NoPendingEdit,
     /// The lower-tier token replay kernel rejected the incremental operation.
     TokenReplay(CoreFallbackReason),
 }
@@ -348,7 +362,7 @@ pub struct Tree {
     /// Pending edits recorded via [`Tree::edit`].
     pending_edits: Vec<InputEdit>,
     diagnostics: Vec<ParseDiagnostic>,
-    incremental_state: IncrementalState,
+    incremental_state: Option<IncrementalState>,
     reparse_mode: Option<ReparseMode>,
 }
 
@@ -366,7 +380,7 @@ fn tree_from_parts(root: AstNode, source: &str, diagnostics: Vec<ParseDiagnostic
         root,
         source: source.to_string(),
         pending_edits: Vec::new(),
-        incremental_state: IncrementalState::with_diagnostics(source, &diagnostics),
+        incremental_state: None,
         diagnostics,
         reparse_mode: None,
     }
@@ -498,7 +512,7 @@ impl Tree {
     pub fn incremental_metrics(&self) -> Option<&IncrementalMetrics> {
         match self.reparse_mode {
             Some(ReparseMode::TokenReplay | ReparseMode::FullParseFallback(_)) => {
-                Some(self.incremental_state.metrics())
+                self.incremental_state.as_ref().map(IncrementalState::metrics)
             }
             Some(ReparseMode::Unchanged) | None => None,
         }

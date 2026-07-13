@@ -328,3 +328,29 @@ fn stale_input_edit_uses_a_full_parse_fallback_without_partial_replay() {
         must_some(parser.parse("my $x = 42;")).root_node().to_sexp()
     );
 }
+
+#[test]
+fn same_length_change_outside_the_edit_uses_an_invalid_edit_fallback() {
+    let old_source = "my $x = 1; my $y = 2;";
+    let new_source = "my $x = 1; my $y = 3;";
+    let mut parser = Parser::new();
+    let old_tree = must_some(parser.parse(old_source));
+    let mut edited_tree = old_tree;
+    edited_tree.edit(&Edit::new(
+        8,
+        9,
+        9,
+        Position::new(8, 0, 8),
+        Position::new(9, 0, 9),
+        Position::new(9, 0, 9),
+    ));
+
+    let reparsed = must_some(parser.parse_with_old_tree(new_source, &edited_tree));
+    let fresh = must_some(parser.parse(new_source));
+
+    assert_eq!(
+        reparsed.reparse_mode(),
+        Some(ReparseMode::FullParseFallback(FallbackReason::InvalidEdit))
+    );
+    assert_eq!(reparsed.root_node().to_sexp(), fresh.root_node().to_sexp());
+}
