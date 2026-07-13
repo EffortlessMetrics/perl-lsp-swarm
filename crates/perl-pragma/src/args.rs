@@ -13,6 +13,12 @@ pub(crate) fn builtin_import_names(arg: &str) -> Vec<String> {
 }
 
 pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
+    apply_builtin_imports_if_changed(state, args);
+}
+
+/// Returns `true` if at least one new import was added to `state.builtin_imports`.
+pub(crate) fn apply_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before = state.builtin_imports.len();
     for arg in args {
         for name in builtin_import_names(arg) {
             if !state.builtin_imports.iter().any(|import| import == &name) {
@@ -20,6 +26,7 @@ pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
             }
         }
     }
+    state.builtin_imports.len() != before
 }
 
 /// Insert `category` into `state.disabled_warning_categories` if not already present and

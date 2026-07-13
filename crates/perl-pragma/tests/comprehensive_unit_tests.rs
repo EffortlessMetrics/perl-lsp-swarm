@@ -1323,6 +1323,25 @@ fn duplicate_no_warnings_category_does_not_create_extra_entry()
 }
 
 #[test]
+fn duplicate_builtin_imports_do_not_create_extra_entry() -> Result<(), Box<dyn std::error::Error>> {
+    // Two consecutive `use builtin 'weaken'` statements must produce only one map entry
+    // because the second adds no new imports to state.builtin_imports.
+    let ast = program(vec![
+        use_node("builtin", &["'weaken'"], 0, 20),
+        use_node("builtin", &["'weaken'"], 21, 41),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 1, "duplicate `use builtin` import should not add a redundant map entry");
+    assert_eq!(
+        map[0].1.builtin_imports,
+        vec!["weaken"],
+        "builtin_imports must contain exactly one entry"
+    );
+    Ok(())
+}
+
+#[test]
 fn no_warnings_empty_string_category_is_ignored() -> Result<(), Box<dyn std::error::Error>> {
     // `no warnings ''` after quote-stripping yields an empty category name.
     // Error-recovery AST nodes can produce this.  The empty string must not be
