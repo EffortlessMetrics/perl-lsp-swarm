@@ -22,6 +22,15 @@ pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
     }
 }
 
+/// Like [`apply_builtin_imports`] but returns `true` only when at least one new
+/// name was actually inserted — callers can skip emitting a map entry when
+/// nothing changed.
+pub(crate) fn apply_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before_len = state.builtin_imports.len();
+    apply_builtin_imports(state, args);
+    state.builtin_imports.len() != before_len
+}
+
 /// Insert `category` into `state.disabled_warning_categories` if not already present and
 /// within the hard cap of [`MAX_DISABLED_WARNING_CATEGORIES`].
 ///
