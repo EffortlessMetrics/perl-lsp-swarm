@@ -68,10 +68,16 @@ describe('LanguageClientStartupMetrics', function () {
   });
 
   test('retains the first timestamp when a lifecycle event is observed again', function () {
-    const metrics = new LanguageClientStartupMetrics();
-    metrics.markMilestone('workspace_ready');
-    const first = metrics.snapshot().milestones.workspace_ready;
-    metrics.markMilestone('workspace_ready');
-    assert.equal(metrics.snapshot().milestones.workspace_ready, first);
+    const now = jest.spyOn(performance, 'now');
+    now.mockReturnValueOnce(1000).mockReturnValueOnce(1000).mockReturnValueOnce(1100);
+    try {
+      const metrics = new LanguageClientStartupMetrics();
+      metrics.markMilestone('workspace_ready');
+      const first = metrics.snapshot().milestones.workspace_ready;
+      metrics.markMilestone('workspace_ready');
+      assert.equal(metrics.snapshot().milestones.workspace_ready, first);
+    } finally {
+      now.mockRestore();
+    }
   });
 });
