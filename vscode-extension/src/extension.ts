@@ -1874,11 +1874,20 @@ export async function activate(context: vscode.ExtensionContext) {
   ) {
     outputChannel.appendLine('[extension-test] Skipping automatic server startup.');
     languageClientStartupMetrics.markMilestone('activate_returned');
-    return;
+    return {
+      getLanguageClientStartupMetrics,
+      markLanguageClientStartupMilestone,
+      stop: deactivate,
+    };
   }
 
   startLanguageClientAfterActivation(context, whatsNewManager);
   languageClientStartupMetrics.markMilestone('activate_returned');
+  return {
+    getLanguageClientStartupMetrics,
+    markLanguageClientStartupMilestone,
+    stop: deactivate,
+  };
 }
 
 export async function deactivate() {

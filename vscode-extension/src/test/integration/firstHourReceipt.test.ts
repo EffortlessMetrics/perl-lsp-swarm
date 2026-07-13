@@ -478,7 +478,6 @@ suite('First-hour VS Code receipt', function () {
         completionPosition,
         symbolPosition,
       );
-      extensionApi?.markLanguageClientStartupMilestone?.('restart');
       assert.equal(
         restarted.completion.status,
         'ok',
