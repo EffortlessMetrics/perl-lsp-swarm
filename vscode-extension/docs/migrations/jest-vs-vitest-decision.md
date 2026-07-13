@@ -21,11 +21,12 @@ compatibility probe using `npx --yes vitest@4.1.10` resolved
 `vitest/4.1.10 win32-x64 node-v26.5.0`; no package or lockfile was changed.
 The probe took 4.36 s to fail, but that elapsed time is only the duration of
 the compatibility probe, not a runner benchmark. It was not a comparable test
-run: Vitest discovered both `src/test/**/*.ts` and the emitted
-`out-test/**/*.js`, then failed 71 suites because the current contract depends
-on Jest globals, `@jest/globals`, the Jest `vscode` module mapper, and
-Jest-specific mocks. The probe therefore establishes integration work, not a
-performance result.
+run: Vitest discovered both TypeScript test files under `src/test` (for
+example, `src/test/**/*.test.ts`) and emitted Jest files under `out-test/test`
+(for example, `out-test/test/**/*.test.js`), then failed 71 suites because the
+current contract depends on Jest globals, `@jest/globals`, the Jest `vscode`
+module mapper, and Jest-specific mocks. The probe therefore establishes
+integration work, not a performance result.
 
 ## Decision
 
@@ -41,8 +42,8 @@ first provide a separate parity harness that:
 1. runs the same unit-test surface without mixing source and emitted files;
 2. preserves source-path targeted runs such as `--runTestsByPath
 src/test/commands.test.ts` and clean-output discovery semantics;
-3. preserves VS Code module mocks, Jest-style fake timers, module mocks, and
-   source-mapped failures;
+3. preserves VS Code module mapping, Jest-style fake timers, `jest.mock(...)`
+   calls, and source-mapped failures;
 4. compares clean-install size, full-suite and focused-test time, watch
    latency, coverage parity, Windows behavior, failure output, and open-handle
    detection; and
