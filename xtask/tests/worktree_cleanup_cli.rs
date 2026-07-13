@@ -80,6 +80,30 @@ fn write_gh_stub(dir: &Path, exit_code: i32, stdout: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// A `gh` stub that records its own invocation cwd to `marker` and reports
+/// no open PR. Used to pin exactly which directory `gh` is invoked from —
+/// a cwd-blind stub (like [`write_gh_stub`]) cannot catch a regression
+/// where `gh` silently queries the wrong repo.
+#[cfg(windows)]
+fn write_cwd_probe_gh_stub(dir: &Path, marker: &Path) -> Result<PathBuf> {
+    let path = dir.join("gh.cmd");
+    let body = format!("@echo off\r\necho %CD%>\"{}\"\r\nexit /b 0\r\n", marker.display());
+    fs::write(&path, body)?;
+    Ok(path)
+}
+
+#[cfg(unix)]
+fn write_cwd_probe_gh_stub(dir: &Path, marker: &Path) -> Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("gh");
+    let body = format!("#!/bin/sh\npwd > \"{}\"\nexit 0\n", marker.display());
+    fs::write(&path, body)?;
+    let mut perms = fs::metadata(&path)?.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms)?;
+    Ok(path)
+}
+
 fn run_xtask_cleanup(root: &Path, force: bool, gh_bin: Option<&Path>) -> Result<(bool, String)> {
     let mut cmd = cargo_bin_cmd!("xtask");
     cmd.arg("worktree-cleanup").arg("--root").arg(root);
@@ -185,6 +209,67 @@ fn open_pr_worktree_is_never_removed_even_under_force() -> Result<()> {
         pr_wt.exists(),
         "SAFETY VIOLATION: worktree with an open PR was removed under --force: {force_output}"
     );
+    Ok(())
+}
+
+// ── gh must be invoked with the classified repo as cwd, not the ambient
+//    process cwd (a `--root` that differs from where the xtask process
+//    happens to be launched from must not silently query the wrong repo).
+
+#[test]
+fn gh_is_invoked_with_the_classified_root_as_cwd_not_the_ambient_process_cwd() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = init_fixture_repo(tmp.path())?;
+    let wt = add_agent_worktree(&repo, "wt-cwd-probe")?;
+
+    // A directory that is NOT the fixture repo — simulates the xtask
+    // process being launched from somewhere other than the repo passed
+    // via --root (e.g. a different worktree, or the shell's own cwd).
+    let ambient_cwd = tmp.path().join("ambient-cwd-decoy");
+    fs::create_dir_all(&ambient_cwd)?;
+
+    let marker = tmp.path().join("gh-invocation-cwd.txt");
+    let gh_stub_dir = tmp.path().join("gh-cwd-probe");
+    fs::create_dir_all(&gh_stub_dir)?;
+    let gh_stub = write_cwd_probe_gh_stub(&gh_stub_dir, &marker)?;
+
+    let mut cmd = cargo_bin_cmd!("xtask");
+    cmd.current_dir(&ambient_cwd)
+        .arg("worktree-cleanup")
+        .arg("--root")
+        .arg(&repo)
+        .arg("--force")
+        .env(GH_BIN_ENV, &gh_stub);
+    let output = cmd.output()?;
+    let combined = format!(
+        "{}\n---stderr---\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "run must exit 0: {combined}");
+
+    let recorded = fs::read_to_string(&marker)
+        .map_err(|e| anyhow::anyhow!("gh stub did not write its cwd marker: {e}\n{combined}"))?;
+    let recorded_cwd = PathBuf::from(recorded.trim());
+    let recorded_canon = recorded_cwd.canonicalize().map_err(|e| {
+        anyhow::anyhow!("recorded cwd '{}' does not canonicalize: {e}", recorded_cwd.display())
+    })?;
+    let expected_canon = repo.canonicalize()?;
+
+    assert_eq!(
+        recorded_canon,
+        expected_canon,
+        "gh must be invoked with cwd = the classified repo root ({}), not the ambient \
+         process cwd ({}); gh actually ran in: {}\n{combined}",
+        expected_canon.display(),
+        ambient_cwd.display(),
+        recorded_cwd.display()
+    );
+
+    // Sanity: the stub reports "no PR", so with a correctly-scoped gh call
+    // the worktree is still eligible for removal (this test is about cwd
+    // correctness, not about the open-PR guard itself).
+    assert!(!wt.exists(), "expected the no-PR worktree to be removed under --force: {combined}");
     Ok(())
 }
 

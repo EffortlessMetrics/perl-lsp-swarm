@@ -129,15 +129,13 @@ fn run(root: &Path, force: bool) -> Result<()> {
         }
     }
 
+    // Printed before removal actually runs (even in --force mode), so this
+    // reports the classification outcome ("to remove") rather than a
+    // post-hoc completion count — the per-line REMOVE / REMOVE (dry-run: ...)
+    // markers above and the "Cleanup complete" message below distinguish
+    // dry-run from an executed removal.
     println!();
-    println!(
-        "=== summary: {} to remove, {keep_count} kept ===",
-        if force {
-            to_remove.len().to_string()
-        } else {
-            format!("{} would be removed", to_remove.len())
-        }
-    );
+    println!("=== summary: {} to remove, {keep_count} kept ===", to_remove.len());
 
     if !force {
         println!();
@@ -204,7 +202,7 @@ fn classify(root: &Path, entry: &WorktreeEntry) -> Verdict {
         return Verdict::Keep("detached HEAD — no branch to verify PR status".to_string());
     };
 
-    match branch_pr_status(branch) {
+    match branch_pr_status(root, branch) {
         PrStatus::Open(number) => {
             Verdict::Keep(format!("open PR #{number} exists for branch '{branch}'"))
         }
@@ -239,8 +237,16 @@ fn worktree_dirty(path: &Path) -> Result<bool> {
 /// Query whether `branch` has an open PR, via `gh pr list`. Any failure
 /// (gh absent, unauthenticated, no network, no remote configured) yields
 /// `Unknown` rather than `None` — the caller must treat `Unknown` as unsafe.
-fn branch_pr_status(branch: &str) -> PrStatus {
+///
+/// `gh` resolves the target owner/repo from the git remote of its current
+/// working directory. It **must** run with `root` (the repo being
+/// classified) as its cwd, not whatever cwd the xtask process happens to
+/// have inherited — otherwise a `--root` that differs from the ambient
+/// process cwd would silently query the wrong repo, turning "PR status
+/// unknown" into a false "no PR" and defeating the entire open-PR guard.
+fn branch_pr_status(root: &Path, branch: &str) -> PrStatus {
     let output = Command::new(gh_program())
+        .current_dir(root)
         .args([
             "pr",
             "list",
