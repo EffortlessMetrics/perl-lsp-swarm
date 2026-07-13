@@ -384,6 +384,12 @@ fn ripr_facts_emits_schema_valid_deterministic_packet() -> Result<(), Box<dyn st
         "sha256:".len() + 64,
         "packet_fingerprint should contain a full SHA-256 hex digest"
     );
+    assert!(
+        fingerprint["sha256:".len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()),
+        "packet_fingerprint should contain only hexadecimal characters"
+    );
 
     // The `.pm` and `.t` files were discovered as facts.
     let files = packet["files"].as_array().ok_or("files is not an array")?;
