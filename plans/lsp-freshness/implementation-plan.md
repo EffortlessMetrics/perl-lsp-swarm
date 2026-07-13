@@ -172,7 +172,7 @@ Stop condition: the references replay scorecard is captured and attached.
 **Met via #3998/#4057.** Six initialized-lexical candidates remain for
 #4002; method-shaped and Mojolicious package-sub rows are unexercised.
 
-### Phase 9 — Request-time workspace scan retirement (#1658) — PLANNED
+### Phase 9 — Request-time workspace scan retirement (#1658) — REMAINING
 
 Retire the `ready-index` full-workspace request-time text scan by request
 class only after first-failure instrumentation (#4002), bounded fallback
