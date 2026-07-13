@@ -71,7 +71,9 @@ export async function runLanguageServerHealthCheck(
       finish(false);
     };
 
-    timer = setTimeout(onTimeout, timeoutMs);
+    if (timeoutMs > 0) {
+      timer = setTimeout(onTimeout, timeoutMs);
+    }
 
     try {
       child = runProcess(
@@ -101,6 +103,10 @@ export async function runLanguageServerHealthCheck(
           const healthy = isHealthyOutput(stdout);
           if (!healthy) {
             safeAppendLine(log, `[health-check] Unexpected output: ${stdoutText}`);
+            const stderrText = stderr.trim();
+            if (stderrText) {
+              safeAppendLine(log, `[health-check] stderr: ${stderrText}`);
+            }
           }
           finish(healthy);
         },

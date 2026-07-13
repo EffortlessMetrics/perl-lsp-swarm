@@ -39,7 +39,7 @@ describe('runLanguageServerHealthCheck', () => {
 
   test('rejects malformed output instead of accepting an ok prefix', async () => {
     mockedExecFile.mockImplementationOnce((_path, _args, _options, callback) => {
-      callback(null, 'okay but malformed\n', '');
+      callback(null, 'okay but malformed\n', 'diagnostic stderr');
     });
     const log = { appendLine: jest.fn() };
 
@@ -49,6 +49,27 @@ describe('runLanguageServerHealthCheck', () => {
     expect(log.appendLine).toHaveBeenCalledWith(
       '[health-check] Unexpected output: okay but malformed',
     );
+    expect(log.appendLine).toHaveBeenCalledWith('[health-check] stderr: diagnostic stderr');
+  });
+
+  test('treats a zero timeout as no timeout', async () => {
+    let callback!: (error: Error | null, stdout: string, stderr: string) => void;
+    mockedExecFile.mockImplementation((_path, _args, options, processCallback) => {
+      expect(options.timeout).toBe(0);
+      callback = processCallback;
+      return { kill: jest.fn(() => true) };
+    });
+    const log = { appendLine: jest.fn() };
+    jest.useFakeTimers();
+
+    const result = runLanguageServerHealthCheck('/tmp/perllsp', log, {
+      execFile: execFileOption,
+      timeoutMs: 0,
+    });
+    expect(jest.getTimerCount()).toBe(0);
+    callback(null, 'ok 0.17.0\n', '');
+
+    await expect(result).resolves.toBe(true);
   });
 
   test('records process failure and both output streams', async () => {
