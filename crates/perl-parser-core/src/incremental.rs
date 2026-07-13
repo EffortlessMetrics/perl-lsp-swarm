@@ -165,11 +165,12 @@ impl IncrementalState {
             return self.full_reparse(new_source, Some(FallbackReason::ContextSensitiveFormat));
         }
 
-        let old_relex_start =
-            self.find_before(edit.start_byte).map_or(0, |checkpoint| checkpoint.position);
-        let old_relex_end = self
-            .find_after(edit.old_end_byte)
-            .map_or(self.source.len(), |checkpoint| checkpoint.position);
+        let Some(old_relex_start) = self.replay_start(edit.start_byte) else {
+            return self.full_reparse(new_source, Some(FallbackReason::NoCheckpointWindow));
+        };
+        let Some(old_relex_end) = self.replay_end(edit.old_end_byte) else {
+            return self.full_reparse(new_source, Some(FallbackReason::NoCheckpointWindow));
+        };
 
         if old_relex_end < old_relex_start || old_relex_end > self.source.len() {
             return self.full_reparse(new_source, Some(FallbackReason::NoCheckpointWindow));
@@ -194,7 +195,11 @@ impl IncrementalState {
             return self.full_reparse(new_source, Some(FallbackReason::CacheBoundaryUnavailable));
         };
 
-        let left_checkpoint = self.find_before(edit.start_byte).cloned();
+        let left_checkpoint = self
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.position == old_relex_start)
+            .cloned();
         let mut lexer = PerlLexer::new(new_source);
         if let Some(checkpoint) = &left_checkpoint {
             lexer.restore(checkpoint);
@@ -295,7 +300,10 @@ impl IncrementalState {
             .saturating_add(edit.new_text.len());
         if new_source.len() != expected_len {
             return Err(ParseError::syntax(
-                "new source does not match the incremental edit",
+                format!(
+                    "new source length mismatch: expected {expected_len} bytes, got {}",
+                    new_source.len()
+                ),
                 edit.start_byte,
             ));
         }
@@ -322,6 +330,33 @@ impl IncrementalState {
             ));
         }
         Ok(())
+    }
+
+    fn replay_start(&self, edit_start: usize) -> Option<usize> {
+        let checkpoint = self.find_before(edit_start)?;
+        if checkpoint.position == 0 {
+            return Some(0);
+        }
+
+        let prefix_token =
+            self.tokens.iter().rev().find(|token| token.end <= checkpoint.position)?;
+        let preceding_checkpoint = self.find_before(prefix_token.start)?;
+        (preceding_checkpoint.position < checkpoint.position)
+            .then_some(preceding_checkpoint.position)
+    }
+
+    fn replay_end(&self, edit_end: usize) -> Option<usize> {
+        let Some(checkpoint) = self.find_after(edit_end) else {
+            return Some(self.source.len());
+        };
+        if checkpoint.position != edit_end {
+            return Some(checkpoint.position);
+        }
+
+        self.checkpoints
+            .iter()
+            .find(|candidate| candidate.position > checkpoint.position)
+            .map_or(Some(self.source.len()), |next| Some(next.position))
     }
 
     fn full_reparse(
@@ -434,6 +469,39 @@ mod tests {
     use perl_tdd_support::{must, must_some};
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    fn assert_incremental_matches_fresh(
+        source: &str,
+        new_source: &str,
+        edit: &IncrementalEdit,
+    ) -> IncrementalMetrics {
+        let mut state = IncrementalState::new(source);
+        let incremental = must(state.reparse(new_source, edit));
+        let mut fresh_parser = Parser::new(new_source);
+        let fresh = must(fresh_parser.parse());
+        let (fresh_tokens, _) = lex_full(new_source);
+
+        assert_eq!(incremental.to_sexp(), fresh.to_sexp(), "source: {new_source:?}");
+        assert_eq!(state.diagnostics(), fresh_parser.errors(), "source: {new_source:?}");
+        assert_eq!(state.tokens, fresh_tokens, "source: {new_source:?}");
+        state.metrics().clone()
+    }
+
+    fn identifier_checkpoint_source() -> (String, usize) {
+        let identifier = "x".repeat(254);
+        let source = format!("my ${identifier};\nmy $tail = 1;\n");
+        let boundary = 4 + identifier.len();
+        assert_eq!(boundary, 258);
+
+        let state = IncrementalState::new(&source);
+        assert!(state.checkpoints.iter().any(|checkpoint| checkpoint.position == boundary));
+        assert!(
+            state.tokens.iter().any(|token| token.end == boundary),
+            "token ends: {:?}",
+            state.tokens.iter().map(|token| token.end).collect::<Vec<_>>()
+        );
+        (source, boundary)
+    }
+
     #[test]
     fn local_edit_reuses_tokens_and_matches_fresh_parse() {
         let source = "my $value = 1;\n".repeat(40);
@@ -445,11 +513,98 @@ mod tests {
         let incremental = must(state.reparse(&new_source, &edit));
         let mut fresh_parser = Parser::new(&new_source);
         let fresh = must(fresh_parser.parse());
+        let (fresh_tokens, _) = lex_full(&new_source);
 
         assert_eq!(incremental.to_sexp(), fresh.to_sexp());
+        assert_eq!(state.diagnostics(), fresh_parser.errors());
+        assert_eq!(state.tokens, fresh_tokens);
         assert!(!state.metrics().full_parse);
         assert!(state.metrics().tokens_reused > 0);
         assert!(state.metrics().tokens_relexed > 0);
+    }
+
+    #[test]
+    fn sequential_edits_preserve_fresh_equivalence() {
+        let source = "my $value = 1;\n".repeat(40);
+        let first_start = must_some(source.find('1'));
+        let first_new_source = source.replacen('1', "22", 1);
+        let first_edit = IncrementalEdit::new(first_start, first_start + 1, "22");
+        let mut state = IncrementalState::new(&source);
+
+        let first_incremental = must(state.reparse(&first_new_source, &first_edit));
+        let mut first_fresh_parser = Parser::new(&first_new_source);
+        let first_fresh = must(first_fresh_parser.parse());
+        let (first_fresh_tokens, _) = lex_full(&first_new_source);
+        assert_eq!(first_incremental.to_sexp(), first_fresh.to_sexp());
+        assert_eq!(state.diagnostics(), first_fresh_parser.errors());
+        assert_eq!(state.tokens, first_fresh_tokens);
+
+        let second_start = must_some(first_new_source.find("22"));
+        let second_new_source = first_new_source.replacen("22", "3", 1);
+        let second_edit = IncrementalEdit::new(second_start, second_start + 2, "3");
+
+        let second_incremental = must(state.reparse(&second_new_source, &second_edit));
+        let mut second_fresh_parser = Parser::new(&second_new_source);
+        let second_fresh = must(second_fresh_parser.parse());
+        let (second_fresh_tokens, _) = lex_full(&second_new_source);
+        assert_eq!(second_incremental.to_sexp(), second_fresh.to_sexp());
+        assert_eq!(state.diagnostics(), second_fresh_parser.errors());
+        assert_eq!(state.tokens, second_fresh_tokens);
+    }
+
+    #[test]
+    fn insertion_after_identifier_at_checkpoint_relexes_the_prefix_token() {
+        let (source, boundary) = identifier_checkpoint_source();
+        let identifier = "x".repeat(254);
+        let new_source = format!("my ${identifier}z;\nmy $tail = 1;\n");
+        let edit = IncrementalEdit::new(boundary, boundary, "z");
+
+        let metrics = assert_incremental_matches_fresh(&source, &new_source, &edit);
+
+        assert!(!metrics.full_parse);
+        assert_eq!(metrics.changed_range.start, 0);
+    }
+
+    #[test]
+    fn left_boundary_insertions_match_fresh_parse_for_lexical_delimiters() {
+        let (source, boundary) = identifier_checkpoint_source();
+        let identifier = "x".repeat(254);
+
+        for insertion in ["z", "0", "#", "\"", "$"] {
+            let new_source = format!("my ${identifier}{insertion};\nmy $tail = 1;\n");
+            let edit = IncrementalEdit::new(boundary, boundary, insertion);
+            assert_incremental_matches_fresh(&source, &new_source, &edit);
+        }
+    }
+
+    #[test]
+    fn edit_inside_the_first_replayed_token_matches_fresh_parse() {
+        let (source, boundary) = identifier_checkpoint_source();
+        let start = boundary - 1;
+        let new_source = format!("my ${}y;\nmy $tail = 1;\n", "x".repeat(253));
+        let edit = IncrementalEdit::new(start, boundary, "y");
+
+        let metrics = assert_incremental_matches_fresh(&source, &new_source, &edit);
+
+        assert!(!metrics.full_parse);
+        assert_eq!(metrics.changed_range.start, 0);
+    }
+
+    #[test]
+    fn number_and_operator_left_boundaries_match_fresh_parse() {
+        let number_prefix = "my $value = ";
+        let number = "1".repeat(256 - number_prefix.len());
+        let number_source = format!("{number_prefix}{number};\nmy $tail = 1;\n");
+        let number_new_source = format!("{number_prefix}{number}0;\nmy $tail = 1;\n");
+        let number_edit = IncrementalEdit::new(256, 256, "0");
+        assert_incremental_matches_fresh(&number_source, &number_new_source, &number_edit);
+
+        let operator_prefix = "my $value = 1 ";
+        let padding = " ".repeat(255 - operator_prefix.len());
+        let operator_source = format!("{operator_prefix}{padding}+;\nmy $tail = 1;\n");
+        let operator_new_source = format!("{operator_prefix}{padding}+=;\nmy $tail = 1;\n");
+        let operator_edit = IncrementalEdit::new(256, 256, "=");
+        assert_incremental_matches_fresh(&operator_source, &operator_new_source, &operator_edit);
     }
 
     #[test]
@@ -477,6 +632,12 @@ mod tests {
             let result = catch_unwind(AssertUnwindSafe(|| state.reparse(new_source, &edit)));
             assert!(matches!(result, Ok(Err(_))));
         }
+
+        let mut state = IncrementalState::new("a;");
+        let error = must_some(state.reparse("a", &IncrementalEdit::new(1, 1, "x")).err());
+        let message = error.to_string();
+        assert!(message.contains("expected 3 bytes"));
+        assert!(message.contains("got 1"));
     }
 
     #[test]
