@@ -196,11 +196,28 @@ and active-builder guards; `/start-work` just runs the same check earlier,
 before mutation instead of before spawning a second builder.
 
 Under the mechanical fast path with no issue number, there is no `#<issue#>`
-or `impl/<issue#>-*` to search for — adapt the searches to whatever branch
-name/slug the mechanical change will use instead (e.g. `gh pr list --search
-"<slug>"` and `git branch -a --list "*<slug>*"`), and still check
-`git worktree list` / `worktree-manager.py query` for an existing writer on
-that slug.
+or `impl/<issue#>-*` to search for — but the searches must stay just as
+false-match-safe as the issue-based path above, **not** the bare `*<slug>*`
+substring glob this doc just warned against two paragraphs up (a slug like
+`fix-parse` would false-match `fix-parser`, `prefix-parse-bug`, etc. — the
+identical anti-pattern). Decide the exact branch name the mechanical change
+will use *before* searching, then match it precisely:
+
+```bash
+gh pr list --search "<exact-branch-name>" --state open
+git branch -a --list "<exact-branch-name>" "*/<exact-branch-name>"
+git worktree list
+python3 scripts/worktree-manager.py query
+```
+
+`git branch -a --list` here takes the **exact** branch name (optionally with
+a remote-prefixed form, e.g. `*/<exact-branch-name>`, to match
+`origin/<exact-branch-name>`) — never a `*<slug>*` wildcard on either side.
+As with Step 5's PR search, confirm any hit is this exact change and not a
+substring/false hit — cross-check the exact branch name or the PR's
+`closingIssuesReferences`/title, not just "the search returned something."
+`git worktree list` / `worktree-manager.py query` give the same precise,
+non-fuzzy signal Step 5 relies on for an existing writer on that branch.
 
 ## Step 6: Fetch fresh `origin/main`
 
@@ -415,7 +432,8 @@ naming falls back to a descriptive `<slug>` (there is no established
 issue-free branch-naming convention codified elsewhere in this repo yet —
 flagging as a follow-up rather than inventing one here); adapt Step 5's and
 Step 7's `impl/<issue#>-<slug>` / `--slot issue-<issue#>` forms to that slug
-directly.
+directly — using the same exact-branch-name matching (never a `*<slug>*`
+substring glob) documented in Step 5's mechanical-path note above.
 
 Then hand off exactly as in Step 7.
 
