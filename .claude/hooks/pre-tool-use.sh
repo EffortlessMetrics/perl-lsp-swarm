@@ -47,6 +47,23 @@ CMD="${CMD//$'\r'/}"
 # matched, because its content is blanked same as any other quoted content --
 # this was already true before this change (the guard comment above the
 # rm-rf pattern documents it) and is not a new hole.
+#
+# Narrow exception (adversarial review on #4041): a quoted argument
+# immediately after a known shell interpreter's `-c` flag (`bash -c "..."`,
+# `sh -c '...'`, etc.) is not narrative -- it is a second shell script that
+# actually executes. Blindly blanking it (as the general quoted-content rule
+# above does) hides a real hazard (`bash -c "... && rm -rf /etc"`) from the
+# same six guards. _shell_c_context() detects this one well-known,
+# unambiguous code-execution idiom so that specific quoted region is passed
+# through unblanked instead (see SQ_PASS/DQ_PASS below); this is a narrower,
+# not a general, exception -- it does not attempt to recognize every way a
+# quoted string can end up executed (eval, ssh remote-command, `perl -e`,
+# command substitution, etc. are still out of scope, consistent with "not a
+# full shell parser" above).
+_shell_c_context() {
+  [[ "$1" =~ (^|[[:space:]])(bash|sh|zsh|ksh|dash|csh|tcsh)[[:space:]]+-c[[:space:]]*$ ]]
+}
+
 strip_narrative() {
   local input="$1"
   local -a LINES=()
@@ -106,16 +123,92 @@ strip_narrative() {
             i=$((i + 1))
           fi
           ;;
+        SQ_PASS)
+          # Mirrors SQ (single-quote has no escape semantics in real bash)
+          # but PASSES CONTENT THROUGH instead of blanking it, AND drops the
+          # wrapping quote chars themselves (dequotes) so the interior reads
+          # like plain top-level command text to the guards below -- e.g. a
+          # trailing dangerous path must be followed by whitespace/EOL to
+          # match the rm-rf guard's terminator class; a literal closing `"`
+          # right after it would NOT match, silently reintroducing the
+          # bypass. Entered only when the quote opened immediately after a
+          # known shell interpreter's `-c` flag (see _shell_c_context
+          # below): that quoted argument is not narrative, it is a second
+          # shell script that will actually execute -- blanking OR
+          # re-quoting it would hide a real hazard from the existing guards
+          # (adversarial review on #4041).
+          if [ "$c" = "'" ]; then
+            state="NORMAL"
+          else
+            lineout+="$c"
+          fi
+          i=$((i + 1))
+          ;;
+        DQ_PASS)
+          # Mirrors DQ's escape handling but passes content through and
+          # drops the wrapping quote chars (see SQ_PASS above for why).
+          if [ "$c" = '"' ]; then
+            state="NORMAL"
+            i=$((i + 1))
+          elif [ "$c" = '\' ]; then
+            lineout+="$c"
+            local pnc="${line:$((i + 1)):1}"
+            if [ -n "$pnc" ]; then
+              lineout+="$pnc"
+              i=$((i + 2))
+            else
+              i=$((i + 1))
+            fi
+          else
+            lineout+="$c"
+            i=$((i + 1))
+          fi
+          ;;
         NORMAL)
-          if [ "$c" = "#" ]; then
+          if [ "$c" = '\' ]; then
+            # Backslash OUTSIDE any quote makes the following character
+            # literal -- it does NOT start an escape sequence to interpret
+            # later, and critically it must NOT let a following `"`/`'`
+            # open SQ/DQ (adversarial review on #4041: `\"` in NORMAL was
+            # wrongly treated as a bare quote-open, which then desynced the
+            # rest of the line/buffer into DQ and silently absorbed a real
+            # trailing hazard as if it were quoted content -- a false
+            # ALLOW). Consume both the backslash and the escaped char here,
+            # emitted verbatim, with no state transition. This must run
+            # before the `#`/quote/heredoc checks below so none of them see
+            # an escaped char as if it were bare.
+            lineout+="$c"
+            local nc="${line:$((i + 1)):1}"
+            if [ -n "$nc" ]; then
+              lineout+="$nc"
+              i=$((i + 2))
+            else
+              i=$((i + 1))
+            fi
+          elif [ "$c" = "#" ]; then
             i=$n
           elif [ "$c" = "'" ]; then
-            lineout+="'"
-            state="SQ"
+            # Lookback MUST happen before appending the quote char itself --
+            # _shell_c_context matches a trailing `-c` + optional whitespace
+            # at the END of the buffer, which the quote char would break.
+            # The opening quote char is only appended for the general
+            # (blanking) SQ case; SQ_PASS dequotes, so it is dropped here.
+            if _shell_c_context "$lineout"; then
+              state="SQ_PASS"
+            else
+              state="SQ"
+              lineout+="'"
+            fi
             i=$((i + 1))
           elif [ "$c" = '"' ]; then
-            lineout+='"'
-            state="DQ"
+            # As above: the opening quote char is only appended for the
+            # general (blanking) DQ case; DQ_PASS dequotes, so it's dropped.
+            if _shell_c_context "$lineout"; then
+              state="DQ_PASS"
+            else
+              state="DQ"
+              lineout+='"'
+            fi
             i=$((i + 1))
           elif [ "$c" = "<" ] && [ "${line:$((i + 1)):1}" = "<" ] && [ "${line:$((i + 2)):1}" = "<" ]; then
             # here-string `<<<` -- not a heredoc, leave as literal structure.
@@ -186,6 +279,24 @@ strip_narrative() {
       state="HEREDOC_SKIP"
     fi
   done
+
+  # Fail-safe (adversarial review on #4041): a lexer desync must never
+  # produce a false ALLOW. If parsing ends inside an unterminated
+  # quote/heredoc (state != NORMAL), $out cannot be trusted -- narrative
+  # blanking may have silently absorbed real, unquoted command text (this
+  # is exactly the shape a lexer bug or a construct we don't model
+  # produces). Rather than ship a possibly-corrupted stripped view, fall
+  # back to the RAW input so every guard still sees the untouched command.
+  # A string that genuinely leaves a quote/heredoc unterminated is not
+  # valid, executable bash in the first place, so the worst case of this
+  # fallback is a narrative false-block on malformed input -- never a
+  # hazard false-allow. The invariant: strip_narrative may only DROP text
+  # it is confident is narrative; when uncertain, it must keep text so a
+  # guard can still fire.
+  if [ "$state" != "NORMAL" ]; then
+    printf '%s' "$input"
+    return
+  fi
 
   printf '%s' "$out"
 }

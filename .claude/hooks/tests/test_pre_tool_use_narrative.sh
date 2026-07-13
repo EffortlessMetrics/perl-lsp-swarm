@@ -116,6 +116,67 @@ run_case "block: commit msg narrative followed by real git push --force" \
 
 echo
 echo "############################################"
+echo "# SHOULD-STILL-BLOCK: backslash-escaped-quote-in-NORMAL desync (adversarial"
+echo "# review on #4041 -- a bare \\\" or \\' outside any quote must NOT be treated"
+echo "# as a quote-open; doing so silently absorbed the rest of the line/buffer"
+echo "# into a wrongly-entered quote state, dropping a real trailing hazard --"
+echo "# a false ALLOW, confirmed by execution at head 300eb9b9.)"
+echo "############################################"
+
+# The exact confirmed repro: a fully valid, executable bash line (backslash-
+# escaped quotes outside any real quoting are literal chars in real bash) that
+# runs TWO commands. Before the NORMAL-state backslash fix, strip_narrative
+# wrongly opened DQ at the first `\"`, then silently ate everything from
+# there on -- including `&& rm -rf /etc` -- producing CMD_STRIPPED=`echo \"`
+# and exit 0. Must now retain the trailing hazard and block.
+run_case "block: bare backslash-quote in NORMAL does not eat a trailing hazard" \
+  'echo \"x\" && rm -rf /etc' 2
+
+# Same shape but the hazard is on a second physical line -- proves the
+# desync doesn't just eat the rest of one line, it can eat the rest of the
+# whole buffer across a heredoc-unrelated newline.
+run_case "block: bare backslash-quote in NORMAL, cross-line hazard" \
+  "$(printf 'echo \\"safe\\"\nrm -rf /etc')" 2
+
+# Same desync class via a bare backslash-single-quote in NORMAL.
+run_case "block: bare backslash-single-quote in NORMAL does not eat a trailing hazard" \
+  "echo \\'x\\' && rm -rf /etc" 2
+
+# Realistic idiom: `bash -c "<script>"` is not narrative -- the quoted
+# argument is a second shell script that actually executes. Blanking it
+# (the general quoted-content rule) would hide a real hazard; the narrow
+# _shell_c_context passthrough must keep it visible to the same rm-rf guard.
+run_case "block: bash -c wrapping a real hazard in its script argument" \
+  'bash -c "echo \"hi\" && rm -rf /etc"' 2
+
+run_case "block: sh -c wrapping a real hazard directly" \
+  'sh -c "rm -rf /etc"' 2
+
+# Fail-safe fallback in isolation: a genuinely unterminated double quote (not
+# the backslash-desync class above) with a trailing hazard after it. This is
+# malformed, non-executable bash, so blocking it is a harmless false-block,
+# never a hazard false-allow -- exactly the fail-safe's stated invariant.
+run_case "block: genuinely unterminated quote with trailing hazard (fail-safe)" \
+  'git commit -m "unterminated && rm -rf /etc' 2
+
+echo
+echo "############################################"
+echo "# SHOULD-ALLOW: legitimate escaped-quote narrative is still recognized as"
+echo "# narrative (the NORMAL-backslash fix must not make backslash-quote"
+echo "# handling MORE aggressive than before -- only correct)"
+echo "############################################"
+
+run_case "allow: commit msg with an escaped quote inside narrative still blanks" \
+  'git commit -m "he said \"hi\" and mentioned git push --force"' 0
+
+run_case "allow: bash -c wrapping a harmless script is unaffected" \
+  'bash -c "echo hello world"' 0
+
+run_case "allow: curl JSON payload with escaped quotes is unrelated to -c context" \
+  'curl -d "{\"k\":\"v\"}"' 0
+
+echo
+echo "############################################"
 echo "# SHOULD-STILL-BLOCK: M4b read-only-agent guard (real mutation, narrative-wrapped)"
 echo "############################################"
 
