@@ -78,6 +78,18 @@ fn commit_unpushed_change(path: &Path, filename: &str, contents: &str) -> Result
     Ok(())
 }
 
+/// The worktree's current local `HEAD` commit SHA — used to build a `gh`
+/// merged-PR stub response whose `headRefOid` either matches (worktree is
+/// exactly at the merged state) or doesn't (worktree has post-merge
+/// commits) the worktree's actual HEAD.
+fn worktree_head_sha(path: &Path) -> Result<String> {
+    let output = Command::new("git").current_dir(path).args(["rev-parse", "HEAD"]).output()?;
+    if !output.status.success() {
+        bail!("git rev-parse HEAD failed in {}", path.display());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[cfg(windows)]
 fn write_gh_stub(dir: &Path, exit_code: i32, stdout: &str) -> Result<PathBuf> {
     let path = dir.join("gh.cmd");
@@ -131,9 +143,12 @@ fn write_cwd_probe_gh_stub(dir: &Path, marker: &Path) -> Result<PathBuf> {
 }
 
 /// A `gh` stub that answers differently depending on the `--state` flag in
-/// its invocation: `open_stdout`/`open_exit` for `--state open`,
-/// `merged_stdout`/`merged_exit` for `--state merged`. Used to simulate a
-/// squash-merged branch: no *open* PR, but a *merged* one.
+/// its invocation: `open_stdout`/`open_exit` for `--state open` (bare text,
+/// matching `branch_pr_status`'s `--jq '.[0].number'` post-filter — empty
+/// string or a bare PR number), `merged_stdout`/`merged_exit` for `--state
+/// merged` (matching `branch_merge_status`'s `--jq '.[0] // empty'` output
+/// — empty string for no merged PR, or a single JSON object literal like
+/// `{"number":99,"headRefOid":"<sha>"}` for one; never a JSON array).
 ///
 /// Matches on the literal, space-joined token pair `--state merged` (not a
 /// bare `merged` substring) — a bare substring match would false-positive
@@ -168,7 +183,9 @@ fn write_gh_stub_by_state(dir: &Path, open: (i32, &str), merged: (i32, &str)) ->
     let (merged_exit, merged_stdout) = merged;
     let mut body = String::from("#!/bin/sh\ncase \"$*\" in\n  *\"--state merged\"*)\n");
     if !merged_stdout.is_empty() {
-        body.push_str(&format!("    echo {merged_stdout}\n"));
+        // Double-quoted: the JSON stub text contains `[`/`{` which a POSIX
+        // shell would otherwise be free to glob-expand or word-split.
+        body.push_str(&format!("    echo \"{merged_stdout}\"\n"));
     }
     body.push_str(&format!("    exit {merged_exit}\n    ;;\n  *)\n"));
     if !open_stdout.is_empty() {
@@ -358,9 +375,20 @@ fn clean_worktree_with_unpushed_commits_and_no_open_pr_is_kept_not_removed() -> 
 // commits, so `rev-list --count origin/main..HEAD` stays > 0 forever even
 // after the PR merges — the unpushed-commits guard alone would misread an
 // already-landed, already-safe-to-delete branch as "still has unpushed
-// work" and Keep it forever. A merged-PR hit from `gh` must override that.
+// work" and Keep it forever. A merged-PR hit from `gh` must override that
+// — but ONLY when the worktree's local HEAD is still exactly the commit
+// GitHub recorded as the merged PR's `headRefOid`. The same branch/worktree
+// can keep accumulating commits after its PR merges (a builder re-aiming at
+// the next round of work before opening the next PR), and those post-merge
+// commits are invisible to every other guard: `worktree_dirty` only catches
+// *uncommitted* changes, and a merged PR's ancestry makes the
+// unpushed-commits check moot. A bare "branch name has A merged PR" check
+// (matched by branch name only, ignoring which commit merged) would
+// silently destroy that post-merge work — this is the defect this pair of
+// tests pins down.
+
 #[test]
-fn squash_merged_branch_with_no_open_pr_is_removed_despite_ahead_by_ancestry() -> Result<()> {
+fn squash_merged_branch_at_merged_head_is_removed_despite_ahead_by_ancestry() -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let repo = init_fixture_repo(tmp.path())?;
     // Deliberately does NOT contain the substring "merged" — the branch
@@ -371,13 +399,16 @@ fn squash_merged_branch_with_no_open_pr_is_removed_despite_ahead_by_ancestry() -
     // forever for a real squash-merged branch (the squash commit that
     // landed the content is never an ancestor of this commit).
     commit_unpushed_change(&wt, "landed.txt", "already squash-merged upstream\n")?;
+    let head_sha = worktree_head_sha(&wt)?;
 
     let gh_stub_dir = tmp.path().join("gh-landed-pr");
     fs::create_dir_all(&gh_stub_dir)?;
     // No open PR, but PR #99 shows up as merged for this branch's head name
     // (GitHub still resolves it by head-branch name after the ref is
-    // deleted, per `delete_branch_on_merge`).
-    let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, ""), (0, "99"))?;
+    // deleted, per `delete_branch_on_merge`) — with `headRefOid` exactly
+    // matching the worktree's current HEAD (no commits since the merge).
+    let merged_json = format!(r#"{{"number":99,"headRefOid":"{head_sha}"}}"#);
+    let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, ""), (0, &merged_json))?;
 
     // Match on the worktree's basename, not its full path: `entry.path`
     // (and thus every printed line) always uses forward slashes (git
@@ -396,21 +427,104 @@ fn squash_merged_branch_with_no_open_pr_is_removed_despite_ahead_by_ancestry() -
     assert!(dry_ok, "dry-run must exit 0: {dry_output}");
     assert!(
         dry_output.contains("REMOVE (dry-run: would remove)") && dry_output.contains(&wt_name),
-        "expected the squash-merged worktree to be reported REMOVE-eligible (merged PR \
-         overrides the ahead-by-ancestry signal), not KEEP: {dry_output}"
+        "expected the squash-merged worktree (HEAD == merged PR's headRefOid) to be reported \
+         REMOVE-eligible, not KEEP: {dry_output}"
     );
     assert!(
         !dry_output.contains("unpushed"),
-        "must not be classified via the unpushed-commits guard once a merged PR is \
-         confirmed for this branch: {dry_output}"
+        "must not be classified via the unpushed-commits guard once a merged PR at the \
+         current HEAD is confirmed for this branch: {dry_output}"
     );
 
     let (force_ok, force_output) = run_xtask_cleanup(&repo, true, Some(&gh_stub))?;
     assert!(force_ok, "--force run must exit 0: {force_output}");
     assert!(
         !wt.exists(),
-        "squash-merged worktree (merged PR, no open PR, ahead-by-ancestry) should have \
-         been removed under --force: {force_output}"
+        "squash-merged worktree at the merged PR's exact head (no open PR, ahead-by-ancestry) \
+         should have been removed under --force: {force_output}"
+    );
+    Ok(())
+}
+
+#[test]
+fn branch_with_merged_pr_but_post_merge_commits_is_kept_not_removed() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = init_fixture_repo(tmp.path())?;
+    let wt = add_agent_worktree(&repo, "wt-post-merge-work")?;
+    // This is the commit GitHub recorded as the merged PR's headRefOid —
+    // captured BEFORE the next commit, so the stub's recorded merge point
+    // is stale relative to the worktree's actual (later) HEAD.
+    commit_unpushed_change(&wt, "landed.txt", "already squash-merged upstream\n")?;
+    let merged_head_sha = worktree_head_sha(&wt)?;
+    // A builder re-aimed at the same worktree for the next round of work
+    // before opening a new PR — a normal swarm pattern (CLAUDE.md: "re-aim
+    // the same builder across churn rounds"). This commit exists nowhere
+    // else: no open PR references it, and it's newer than what merged.
+    commit_unpushed_change(&wt, "next-round.txt", "new work after the merge\n")?;
+
+    let gh_stub_dir = tmp.path().join("gh-post-merge");
+    fs::create_dir_all(&gh_stub_dir)?;
+    // No open PR; PR #99 merged, but at the OLDER commit — stale relative
+    // to this worktree's current HEAD.
+    let merged_json = format!(r#"{{"number":99,"headRefOid":"{merged_head_sha}"}}"#);
+    let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, ""), (0, &merged_json))?;
+
+    let (dry_ok, dry_output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
+    assert!(dry_ok, "dry-run must exit 0: {dry_output}");
+    assert!(
+        dry_output.contains("KEEP"),
+        "expected the worktree with post-merge commits to be reported KEEP, not \
+         REMOVE-eligible on the strength of a merged PR whose head it has moved past: \
+         {dry_output}"
+    );
+
+    let (force_ok, force_output) = run_xtask_cleanup(&repo, true, Some(&gh_stub))?;
+    assert!(force_ok, "--force run must exit 0: {force_output}");
+    assert!(
+        wt.exists(),
+        "SAFETY VIOLATION: worktree with post-merge commits (HEAD past the merged PR's \
+         headRefOid) was removed under --force: {force_output}"
+    );
+    Ok(())
+}
+
+// Direct coverage for the `MergeStatus::Unknown` path specifically: the
+// *open*-PR query succeeds (and reports no open PR), but the *merged*-PR
+// query itself fails. This must be indistinguishable from any other
+// gh-unavailable case: Keep, never Remove. The existing
+// `gh_failure_yields_unknown_pr_status_and_keeps_the_worktree` test doesn't
+// exercise this path — it fails BOTH queries, so `PrStatus::Unknown`
+// short-circuits `classify()` before `branch_merge_status` is ever called.
+#[test]
+fn merged_pr_query_failure_yields_unknown_status_and_keeps_the_worktree() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = init_fixture_repo(tmp.path())?;
+    let wt = add_agent_worktree(&repo, "wt-merged-query-fails")?;
+
+    let gh_stub_dir = tmp.path().join("gh-merged-query-fails");
+    fs::create_dir_all(&gh_stub_dir)?;
+    // --state open: succeeds, no open PR. --state merged: exits non-zero
+    // (simulates gh auth/network failure specifically on that query).
+    let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, ""), (1, ""))?;
+
+    let (dry_ok, dry_output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
+    assert!(dry_ok, "dry-run must exit 0: {dry_output}");
+    assert!(
+        dry_output.contains("KEEP"),
+        "expected KEEP when the merged-PR query itself fails, even though the open-PR \
+         query succeeded with no open PR: {dry_output}"
+    );
+    assert!(
+        dry_output.contains("could not be determined") || dry_output.contains("unavailable"),
+        "expected the merged-PR-status-unknown reason to be reported: {dry_output}"
+    );
+
+    let (force_ok, force_output) = run_xtask_cleanup(&repo, true, Some(&gh_stub))?;
+    assert!(force_ok, "--force run must exit 0: {force_output}");
+    assert!(
+        wt.exists(),
+        "SAFETY VIOLATION: worktree was removed under --force when merged-PR status was \
+         unknown: {force_output}"
     );
     Ok(())
 }

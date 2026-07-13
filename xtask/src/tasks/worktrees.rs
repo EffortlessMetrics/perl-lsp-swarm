@@ -11,6 +11,15 @@
 //! - on a branch with an **open PR** (or PR status could not be determined —
 //!   "unknown" is treated as unsafe, never as "no PR", to avoid destroying a
 //!   worktree that turns out to have a live PR when `gh` is unavailable);
+//! - has a **merged PR whose head the worktree has moved past** — a merged
+//!   PR only proves *that commit's* content landed, not that the worktree
+//!   is still sitting at it. The same local branch/worktree can keep
+//!   accumulating commits after its PR merges (re-aiming the same builder
+//!   at the next round of work before opening the next PR), and those
+//!   post-merge commits are invisible to every other guard here. Only when
+//!   the worktree's local `HEAD` is *exactly* the commit GitHub recorded as
+//!   the merged PR's `headRefOid` is it Remove-eligible on this basis;
+//!   otherwise Keep;
 //! - has **unpushed commits and no merged PR** — the branch's `HEAD` has
 //!   commits not present on its upstream (`@{u}`), or, when no upstream is
 //!   configured, not present on `origin/main`/`origin/master`, *and* no
@@ -19,10 +28,10 @@
 //!   as losing uncommitted changes. This repo squash-merges exclusively, so
 //!   a branch whose PR was squash-merged is *always* "ahead" of
 //!   `origin/main` by commit count (the squash commit is never an ancestor
-//!   of the original commits) — a merged-PR hit from `gh` is checked first
-//!   and, if found, overrides the ahead-by-ancestry signal (fail-safe: if
-//!   neither the upstream/default-branch reference nor the merged-PR query
-//!   can be resolved, "unpushed" is assumed);
+//!   of the original commits) — a merged-PR-at-current-HEAD hit from `gh`
+//!   is checked first and, if found, overrides the ahead-by-ancestry signal
+//!   (fail-safe: if neither the upstream/default-branch reference nor the
+//!   merged-PR query can be resolved, "unpushed" is assumed);
 //! - the **root checkout**.
 //!
 //! Removal itself never passes `--force` to `git worktree remove` — a
@@ -88,12 +97,23 @@ enum PrStatus {
 /// a PR by its recorded head-branch name even after the branch ref itself
 /// has been deleted (the `delete_branch_on_merge` default here).
 ///
+/// `Merged` is matched by **branch name only** — it does not by itself mean
+/// "safe to remove". The same local branch name can accumulate commits
+/// *after* its PR merged (a builder re-aiming at the same worktree before
+/// opening the next PR is a normal swarm pattern), and those post-merge
+/// commits are invisible to every other guard: `worktree_dirty` only
+/// catches *uncommitted* changes, and a merged PR's ancestry makes
+/// [`has_unpushed_commits`] moot. `Merged` therefore carries the PR's
+/// recorded `head_ref_oid` — the exact commit GitHub squash-merged — so the
+/// caller can compare it against the worktree's actual local `HEAD` and
+/// only treat the worktree as safe when they're identical (see `classify`).
+///
 /// `Unknown` (gh absent, unauthenticated, or the query otherwise failed)
 /// must never be treated the same as `NotMerged` — doing so could let an
 /// unmerged branch be removed on a machine where `gh` can't answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MergeStatus {
-    Merged(u64),
+    Merged { number: u64, head_ref_oid: String },
     NotMerged,
     Unknown,
 }
@@ -267,11 +287,14 @@ fn is_agent_worktree(path: &Path) -> bool {
 ///    "merged" hit is the authoritative "this branch's content already
 ///    landed" signal (see [`MergeStatus`] on why ancestry alone can't tell
 ///    this apart from "never pushed" under this repo's squash-merge
-///    convention) — it means Remove-eligible even though the branch is
-///    still "ahead" of `origin/main` by commit count.
-/// 4. Only once neither an open nor a merged PR exists do local
-///    **unpushed-commits** ancestry checks decide: ahead of `@{u}` (or the
-///    default remote branch) means Keep, otherwise Remove.
+///    convention) — but it's Remove-eligible *only* when the worktree's
+///    local `HEAD` still equals the merged PR's recorded `headRefOid`.
+///    If `HEAD` has moved past it (more commits since the merge, on the
+///    same branch/worktree), that's Keep — the merge proves the *old*
+///    content landed, not the new commits.
+/// 4. Only once neither an open nor a merged-and-unmoved PR exists do
+///    local **unpushed-commits** ancestry checks decide: ahead of `@{u}`
+///    (or the default remote branch) means Keep, otherwise Remove.
 ///
 /// Any `gh` failure/uncertainty (`PrStatus::Unknown` /
 /// `MergeStatus::Unknown`) means Keep, never Remove — fail-safe, matching
@@ -316,7 +339,29 @@ fn classify(root: &Path, entry: &WorktreeEntry) -> Verdict {
     }
 
     match branch_merge_status(root, branch) {
-        MergeStatus::Merged(_number) => return Verdict::Remove,
+        MergeStatus::Merged { number, head_ref_oid } => {
+            // A merged PR only proves *that commit's* content landed — not
+            // that the worktree is still sitting at it. The same local
+            // branch/worktree can keep accumulating commits after its PR
+            // merges (re-aiming the same builder at the next round of
+            // work before opening the next PR is a normal swarm pattern),
+            // and those post-merge commits are invisible to every other
+            // guard here: `worktree_dirty` only catches *uncommitted*
+            // changes, and ancestry-based `has_unpushed_commits` is moot
+            // once a merge is confirmed. Only Remove when local HEAD is
+            // *exactly* the commit GitHub squash-merged.
+            return match worktree_head(&entry.path) {
+                Ok(local_head) if local_head == head_ref_oid => Verdict::Remove,
+                Ok(_) => Verdict::Keep(format!(
+                    "branch '{branch}' has a merged PR #{number}, but the worktree's HEAD \
+                     is past the merged commit — not safe to remove"
+                )),
+                Err(error) => Verdict::Keep(format!(
+                    "could not determine worktree HEAD to compare against merged PR #{number} \
+                     ({error}) — not safe to remove"
+                )),
+            };
+        }
         MergeStatus::Unknown => {
             return Verdict::Keep(format!(
                 "merged-PR status for branch '{branch}' could not be determined (gh \
@@ -486,10 +531,28 @@ fn branch_pr_status(root: &Path, branch: &str) -> PrStatus {
     }
 }
 
+/// A merged PR's `number` and `headRefOid`, as selected by `gh`'s `--jq
+/// '.[0] // empty'` post-filter.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct MergedPrJson {
+    number: u64,
+    #[serde(rename = "headRefOid")]
+    head_ref_oid: String,
+}
+
 /// Query whether `branch` has a **merged** PR, via `gh pr list --state
 /// merged`. See [`MergeStatus`] for why this — not an ancestry diff — is
 /// the authoritative "content already landed" signal in a repo that
-/// squash-merges exclusively.
+/// squash-merges exclusively, and why `headRefOid` (not just a bare
+/// merged/not-merged bit) is required.
+///
+/// Uses `--jq '.[0] // empty'` (not `.[0].number` like [`branch_pr_status`])
+/// specifically so a no-match result is unambiguously **empty stdout** —
+/// jq's `empty` generator produces zero output values by construction,
+/// unlike relying on however a bare `null` happens to render — while a
+/// match still comes back as one JSON object line, parsed directly with
+/// `serde_json` rather than a second `--jq` field extraction. An unexpected
+/// shape (or any other query failure) fails safe as `Unknown`.
 ///
 /// Same cwd requirement as [`branch_pr_status`]: `gh` infers the target
 /// repo from its current working directory, so this must run with `root`
@@ -505,9 +568,9 @@ fn branch_merge_status(root: &Path, branch: &str) -> MergeStatus {
             "--state",
             "merged",
             "--json",
-            "number",
+            "number,headRefOid",
             "--jq",
-            ".[0].number",
+            ".[0] // empty",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -515,18 +578,33 @@ fn branch_merge_status(root: &Path, branch: &str) -> MergeStatus {
 
     match output {
         Ok(out) if out.status.success() => {
-            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if text.is_empty() {
+            if out.stdout.iter().all(u8::is_ascii_whitespace) {
                 MergeStatus::NotMerged
             } else {
-                match text.parse::<u64>() {
-                    Ok(number) => MergeStatus::Merged(number),
+                match serde_json::from_slice::<MergedPrJson>(&out.stdout) {
+                    Ok(pr) => {
+                        MergeStatus::Merged { number: pr.number, head_ref_oid: pr.head_ref_oid }
+                    }
                     Err(_) => MergeStatus::Unknown,
                 }
             }
         }
         _ => MergeStatus::Unknown,
     }
+}
+
+/// The worktree's current local `HEAD` commit SHA.
+fn worktree_head(path: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(path)
+        .args(["rev-parse", "HEAD"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    if !output.status.success() {
+        bail!("git rev-parse HEAD exited non-zero: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Parse `git worktree list --porcelain` output into entries.
