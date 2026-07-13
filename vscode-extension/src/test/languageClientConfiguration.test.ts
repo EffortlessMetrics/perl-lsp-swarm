@@ -20,12 +20,11 @@ function makeConfig(values: Record<string, unknown>, explicit = Object.keys(valu
 }
 
 describe('language client configuration', () => {
-  test('builds canonical workspace include-path payload with defaults', () => {
+  test('does not turn built-in defaults into an explicit workspace override', () => {
     const payload = buildWorkspaceConfigurationPayload(makeConfig({}, []));
 
-    expect(payload).toEqual({
-      workspace: { includePaths: [...DEFAULT_INCLUDE_PATHS] },
-    });
+    expect(payload).toBeUndefined();
+    expect(DEFAULT_INCLUDE_PATHS).toEqual(['lib', 'local/lib/perl5']);
   });
 
   test('builds canonical workspace include-path payload from current settings', () => {
@@ -82,6 +81,15 @@ describe('language client configuration', () => {
     buildLanguageClientConfigurationPayload(documentUri);
 
     expect(vscode.workspace.getConfiguration).toHaveBeenCalledWith('perl-lsp', documentUri);
+  });
+
+  test('preserves project configuration when no editor setting is explicit', () => {
+    const config = makeConfig({}, []);
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(config);
+
+    expect(buildLanguageClientConfigurationPayload()).toEqual({
+      settings: { perl: {} },
+    });
   });
 
   test('preserves deprecated critic aliases without making them preferred', () => {

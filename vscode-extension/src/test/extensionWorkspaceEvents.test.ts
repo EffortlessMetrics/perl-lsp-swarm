@@ -108,4 +108,29 @@ describe('workspace configuration event routing', () => {
     );
     stderrWrite.mockRestore();
   });
+
+  test('reports rejected async handlers', async () => {
+    let listener: ((event: vscode.ConfigurationChangeEvent) => void) | undefined;
+    (vscode.workspace.onDidChangeConfiguration as jest.Mock).mockImplementation((callback) => {
+      listener = callback;
+      return { dispose: jest.fn() };
+    });
+
+    const onError = jest.fn();
+    registerWorkspaceConfigurationEvents({
+      onLiveConfigurationChanged: async () => {
+        throw new Error('async handler failed');
+      },
+      onReconstructConfigurationChanged: jest.fn(),
+      onRestartRequired: jest.fn(),
+      onError,
+    });
+
+    listener?.({
+      affectsConfiguration: (setting: string) => setting === 'perl-lsp.includePaths',
+    } as vscode.ConfigurationChangeEvent);
+    await Promise.resolve();
+
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
 });

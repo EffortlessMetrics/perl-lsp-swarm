@@ -187,7 +187,11 @@ function readIncludePaths(config: ConfigurationReader): string[] {
 
 export function buildWorkspaceConfigurationPayload(
   config: ConfigurationReader = vscode.workspace.getConfiguration('perl-lsp'),
-): Record<string, unknown> {
+): Record<string, unknown> | undefined {
+  if (!hasExplicitOverride(config, 'includePaths')) {
+    return undefined;
+  }
+
   return {
     workspace: {
       includePaths: readIncludePaths(config),
@@ -207,9 +211,11 @@ export function buildLanguageClientConfigurationPayload(
   documentUri?: vscode.Uri,
 ): Record<string, unknown> {
   const config = vscode.workspace.getConfiguration('perl-lsp', documentUri);
-  const perl: Record<string, unknown> = {
-    workspace: buildWorkspaceConfigurationPayload(config).workspace,
-  };
+  const perl: Record<string, unknown> = {};
+  const workspace = buildWorkspaceConfigurationPayload(config);
+  if (workspace) {
+    Object.assign(perl, workspace);
+  }
   const critic = buildCriticSettings(documentUri);
   if (critic) {
     Object.assign(perl, critic);
