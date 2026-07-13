@@ -38,8 +38,17 @@ fn init_fixture_repo(tmp: &Path) -> Result<PathBuf> {
     let repo = tmp.join("repo");
     fs::create_dir_all(&repo)?;
     if run_git(&repo, &["init", "-q", "-b", "main"]).is_err() {
-        // Older git without `-b` support on `init`.
+        // Older git (< 2.28) without `-b` support on `init`. Plain `git
+        // init -q` honors `init.defaultBranch`, which defaults to
+        // `master` when unset — not `main`, which every downstream
+        // `run_git` call in this fixture (including the final `git push
+        // -q origin main`) assumes. Pin the branch name explicitly so the
+        // fixture is internally consistent regardless of which init path
+        // ran or how `init.defaultBranch` is configured on the host,
+        // mirroring the same-crate convention in
+        // `xtask/tests/freshness_check.rs`.
         run_git(&repo, &["init", "-q"])?;
+        run_git(&repo, &["symbolic-ref", "HEAD", "refs/heads/main"])?;
     }
     run_git(&repo, &["config", "user.email", "test@test.local"])?;
     run_git(&repo, &["config", "user.name", "Test"])?;

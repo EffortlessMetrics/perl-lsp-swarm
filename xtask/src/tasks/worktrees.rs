@@ -237,18 +237,30 @@ fn run(root: &Path, force: bool) -> Result<()> {
     // A refusal here must not abort the whole cleanup run — that would let
     // one raced worktree block cleaning every other, genuinely-safe entry
     // in the same batch. Log a skip warning and move on.
+    //
+    // Not every refusal is the concurrent-write race the doc comment above
+    // describes — a submodule/permission error, a filesystem error, or an
+    // externally-held lock can also make `git worktree remove` exit
+    // non-zero. Captured (not inherited) so its stderr can be surfaced in
+    // the warning: silently attributing every refusal to "concurrent
+    // write" would mask a genuinely unexpected, worth-investigating
+    // failure behind a reassuring but potentially wrong explanation.
     for entry in &to_remove {
         println!("Removing: {}", entry.path.display());
-        let remove_status = Command::new("git")
+        let remove_output = Command::new("git")
             .current_dir(root)
             .args(["worktree", "remove"])
             .arg(&entry.path)
-            .status()?;
-        if !remove_status.success() {
+            .output()?;
+        if !remove_output.status.success() {
+            let stderr = String::from_utf8_lossy(&remove_output.stderr);
+            let stderr = stderr.trim();
             println!(
-                "  -> WARNING: skipped {} — worktree became non-empty since classification \
-                 (concurrent write) — keeping",
-                entry.path.display()
+                "  -> WARNING: skipped {} — `git worktree remove` refused (most likely a \
+                 concurrent write landed since classification, but see git's message below) \
+                 — keeping{}",
+                entry.path.display(),
+                if stderr.is_empty() { String::new() } else { format!(": {stderr}") }
             );
         }
     }
