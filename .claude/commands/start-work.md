@@ -24,10 +24,10 @@ issue number is given, stop and ask for one — this command never guesses a
 target.
 
 If `--mechanical` is present, skip to **Mechanical fast path** below instead
-of the build-readiness check (Steps 3-4 only) — the issue-open check (Step 2),
-collision check (Step 5), and fresh-`origin/main` fetch (Step 6) still apply.
-The flag must be passed explicitly; never infer it from the issue body or
-title.
+of the build-readiness check (Steps 3-4 and the Step 4b advisory audit) — the
+issue-open check (Step 2), collision check (Step 5), and fresh-`origin/main`
+fetch (Step 6) still apply. The flag must be passed explicitly; never infer
+it from the issue body or title.
 
 ## Step 2: Read the issue
 
@@ -104,19 +104,37 @@ references. It has no dedicated single-issue flag — only `--fixture <path>`
 (an offline JSON array of issues) or `--repo`/`--label` (a live, whole-set
 query). Every check it runs is purely per-issue (no cross-issue
 correlation), so a one-issue fixture built from `gh issue view` is a complete
-target:
+target.
+
+A failed or empty fetch must never read as a clean "no findings" — that would
+be a silent false-clean (the instrument ran, but never actually saw real
+issue data). Check `gh issue view`'s own exit status **and** that the
+resulting fixture is a non-empty JSON array before trusting the audit's
+output:
 
 ```bash
 FIXTURE="$(mktemp --suffix=.json)"
-gh issue view <issue#> --repo EffortlessMetrics/perl-lsp-swarm \
-  --json number,title,body,state,labels | jq -s . > "$FIXTURE"
-cargo xtask issue-plan audit --fixture "$FIXTURE" --dry-run --format json
+ISSUE_JSON="$(gh issue view <issue#> --repo EffortlessMetrics/perl-lsp-swarm \
+  --json number,title,body,state,labels)"
+GH_STATUS=$?
+if [ "$GH_STATUS" -eq 0 ] && [ -n "$ISSUE_JSON" ]; then
+  echo "$ISSUE_JSON" | jq -s . > "$FIXTURE"
+fi
+if [ "$GH_STATUS" -eq 0 ] && [ -s "$FIXTURE" ] \
+   && [ "$(jq 'length > 0' "$FIXTURE" 2>/dev/null)" = "true" ]; then
+  cargo xtask issue-plan audit --fixture "$FIXTURE" --dry-run --format json
+else
+  echo "Note: could not fetch #<issue#> for the issue-plan audit (fetch" \
+       "failed or empty) — skipping the advisory audit; this does not" \
+       "block the handoff."
+fi
 rm -f "$FIXTURE"
 ```
 
 This is advisory signal only — it does **not** add a second gate alongside
-`builder-ready`/the BUILD verdict from Steps 3-4, and a non-empty `findings`
-array never stops the handoff. Surface findings as a note, not a stop:
+`builder-ready`/the BUILD verdict from Steps 3-4, and neither a non-empty
+`findings` array nor a failed fetch ever stops the handoff. Surface findings
+as a note, not a stop:
 
 ```
 Note: issue-plan audit flags <n> finding(s) for #<issue#> (e.g.
