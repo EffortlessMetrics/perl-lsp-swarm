@@ -661,33 +661,44 @@ impl LspServer {
                                                 offset,
                                                 include_declaration,
                                             );
-                                        source_backed_attempt = Some(live_attempt.clone());
-                                        if let SourceBackedReferenceAttempt::Exact(
-                                            mut live_locations,
-                                        ) = live_attempt
-                                        {
-                                            live_locations.truncate(cap);
-                                            // Precompute before the tracing macro so these
-                                            // expressions are unconditionally instrumented
-                                            // rather than lazily evaluated only when the
-                                            // debug subscriber is active.
-                                            let ref_count = live_locations.len();
-                                            let elapsed = start.elapsed();
-                                            tracing::debug!(
-                                                ref_count,
-                                                elapsed = ?elapsed,
-                                                "References: returned live source-backed compiler facts"
-                                            );
-                                            let result_count = live_locations.len();
-                                            return Ok((
-                                                Some(json!(live_locations)),
-                                                ReferencesAnsweringTier::SemanticSourceBacked,
-                                                index_state,
-                                                result_count,
-                                                0,
-                                                start.elapsed().as_micros(),
-                                                source_backed_attempt.clone(),
-                                            ));
+                                        match live_attempt {
+                                            SourceBackedReferenceAttempt::Exact(
+                                                mut live_locations,
+                                            ) => {
+                                                // The receipt only needs the outcome marker. Keep
+                                                // its vector empty so the exact response is not
+                                                // cloned solely for observability.
+                                                source_backed_attempt = Some(
+                                                    SourceBackedReferenceAttempt::Exact(Vec::new()),
+                                                );
+                                                live_locations.truncate(cap);
+                                                // Precompute before the tracing macro so these
+                                                // expressions are unconditionally instrumented
+                                                // rather than lazily evaluated only when the
+                                                // debug subscriber is active.
+                                                let ref_count = live_locations.len();
+                                                let elapsed = start.elapsed();
+                                                tracing::debug!(
+                                                    ref_count,
+                                                    elapsed = ?elapsed,
+                                                    "References: returned live source-backed compiler facts"
+                                                );
+                                                let result_count = live_locations.len();
+                                                return Ok((
+                                                    Some(json!(live_locations)),
+                                                    ReferencesAnsweringTier::SemanticSourceBacked,
+                                                    index_state,
+                                                    result_count,
+                                                    0,
+                                                    start.elapsed().as_micros(),
+                                                    source_backed_attempt,
+                                                ));
+                                            }
+                                            SourceBackedReferenceAttempt::Declined(decline) => {
+                                                source_backed_attempt = Some(
+                                                    SourceBackedReferenceAttempt::Declined(decline),
+                                                );
+                                            }
                                         }
                                     }
 
