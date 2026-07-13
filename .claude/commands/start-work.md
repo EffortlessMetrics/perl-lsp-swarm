@@ -215,7 +215,7 @@ genuinely new branch, which is not the failure mode to guard against here:
 
 ```bash
 git fetch origin
-gh pr list --search "<exact-branch-name>" --state open
+gh pr list --head "<exact-branch-name>" --state open
 git branch -a --list "<exact-branch-name>" "*/<exact-branch-name>"
 git worktree list
 python3 scripts/worktree-manager.py query
@@ -232,11 +232,12 @@ on the searches below it.
 `git branch -a --list` here takes the **exact** branch name (optionally with
 a remote-prefixed form, e.g. `*/<exact-branch-name>`, to match
 `origin/<exact-branch-name>`) — never a `*<slug>*` wildcard on either side.
-As with Step 5's PR search, confirm any hit is this exact change and not a
-substring/false hit — cross-check the exact branch name or the PR's
-`closingIssuesReferences`/title, not just "the search returned something."
-`git worktree list` / `worktree-manager.py query` give the same precise,
-non-fuzzy signal Step 5 relies on for an existing writer on that branch.
+`gh pr list --head` above already matches by exact head-branch name, so
+unlike Step 5's issue-reference `--search` there is no substring/false-hit
+to cross-check — a hit here means some open PR's head literally is this
+branch. `git worktree list` / `worktree-manager.py query` give the same
+precise, non-fuzzy signal Step 5 relies on for an existing writer on that
+branch.
 
 ## Step 6: Fetch fresh `origin/main`
 
