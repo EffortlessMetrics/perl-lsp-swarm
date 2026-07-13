@@ -61,6 +61,9 @@ export class LanguageClientStartupMetrics {
   }
 
   public markMilestone(milestone: LanguageClientStartupMilestone): void {
+    if (this.milestones[milestone] !== undefined) {
+      return;
+    }
     this.milestones[milestone] = Math.max(0, Math.round(performance.now() - this.origin));
   }
 

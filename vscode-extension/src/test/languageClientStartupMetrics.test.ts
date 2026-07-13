@@ -66,4 +66,12 @@ describe('LanguageClientStartupMetrics', function () {
     assert.equal(snapshot.server_start_status, 'idle');
     assert.equal(snapshot.server_start_ms, null);
   });
+
+  test('retains the first timestamp when a lifecycle event is observed again', function () {
+    const metrics = new LanguageClientStartupMetrics();
+    metrics.markMilestone('workspace_ready');
+    const first = metrics.snapshot().milestones.workspace_ready;
+    metrics.markMilestone('workspace_ready');
+    assert.equal(metrics.snapshot().milestones.workspace_ready, first);
+  });
 });
