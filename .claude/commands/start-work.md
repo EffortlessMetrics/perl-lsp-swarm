@@ -203,22 +203,31 @@ substring glob this doc just warned against two paragraphs up (a slug like
 identical anti-pattern). Decide the exact branch name the mechanical change
 will use *before* searching, then match it precisely.
 
-As with Step 5 above, fetch that exact branch **first** — `git branch -a`
+As with Step 5 above, fetch remote branches **first** — `git branch -a`
 only shows remote-tracking refs already fetched into this checkout, so a
 stale checkout would silently miss a branch another agent just pushed (even
-one with no open PR yet), producing a false "no collision":
+one with no open PR yet), producing a false "no collision". Unlike Step 5,
+the mechanical branch has no fixed namespace to glob-fetch (it may not live
+under `impl/*`), so fetch the whole remote rather than one exact ref —
+an exact-ref fetch (`+refs/heads/<name>:refs/remotes/origin/<name>`) fails
+outright with "couldn't find remote ref" for the typical case of a
+genuinely new branch, which is not the failure mode to guard against here:
 
 ```bash
-git fetch origin "+refs/heads/<exact-branch-name>:refs/remotes/origin/<exact-branch-name>"
+git fetch origin
 gh pr list --search "<exact-branch-name>" --state open
 git branch -a --list "<exact-branch-name>" "*/<exact-branch-name>"
 git worktree list
 python3 scripts/worktree-manager.py query
 ```
 
-Confirm the fetch succeeded (exit `0`, no "couldn't find remote ref" error)
-before trusting a "no collision" result from the searches below it — the
-same exposure Step 5's fetch-first ordering exists to close.
+Confirm the fetch *operation* itself succeeded — the remote was reachable,
+no network/auth error — not that the exact branch turned up among the
+refreshed remote-tracking refs. For a genuinely new mechanical branch, the
+branch being **absent** from those refs after a successful fetch is itself
+part of the "no collision" signal, not a reason to distrust it. Only an
+outright fetch error (network unreachable, auth failure) should cast doubt
+on the searches below it.
 
 `git branch -a --list` here takes the **exact** branch name (optionally with
 a remote-prefixed form, e.g. `*/<exact-branch-name>`, to match
@@ -315,18 +324,22 @@ check failed," not "a STOP-class check failed."
   or, for writer-collision:
 
   ```text
-  STOP: writer-admission reports a writer collision (<reason>) — this is
-  the same fact Step 5's collision check already halts on; do not create a
-  second worktree for this branch.
+  STOP: writer-admission reports a writer collision (<reason>) — an open PR
+  already owns this exact branch; do not create a second worktree for it.
   ```
 
-  (`writer-collision` checks the identical fact Step 5's own STOP already
-  covers — an open PR already owning the branch — so in practice Step 5 will
-  usually STOP first. That overlap doesn't make running writer-collision
-  redundant: per the `--branch` guidance above, it's invoked as a second,
-  independent confirmation of the same fact through a different code path —
-  useful precisely if Step 5's own search was somehow skipped or stale, not
-  a contradiction of it.)
+  (`writer-collision` and Step 5's STOP are complementary, not identical —
+  they detect an existing writer via two different queries that can
+  disagree. Step 5 searches by **issue reference**
+  (`gh pr list --search "#<issue#>"`) plus branch-name pattern;
+  `writer-collision` queries by **exact target-branch ownership**
+  (`gh pr list --head <branch>`). A PR can reference the issue while sitting
+  on a different branch, or own the exact branch without mentioning the
+  issue anywhere in its title/body — either check can catch a collision the
+  other misses. That's why running both adds value: per the `--branch`
+  guidance above, `writer-collision` is a second confirmation via a
+  different signal, not a redundant recheck of the identical fact Step 5
+  already found.)
 - **`shadow-ref`, `symbolic-head`, `branch-worktree-mapping`,
   `dirty-unpushed`, `canonical-base` `BLOCK`** → advisory strong note (this
   narrows #3982's literal "unsafe checkout" STOP language to only the two
