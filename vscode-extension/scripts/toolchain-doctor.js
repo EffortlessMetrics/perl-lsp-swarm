@@ -69,14 +69,30 @@ function main() {
     );
     return;
   }
-  const nodeFloor = readNodeFloor(packageJson.engines?.node ?? '');
+  let nodeFloor;
+  try {
+    nodeFloor = readNodeFloor(packageJson.engines?.node ?? '');
+  } catch (error) {
+    fail(
+      `could not read the Node engine floor: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
   const nodeVersion = parseVersion(process.versions.node);
   if (compareVersions(nodeVersion, nodeFloor) < 0) {
     fail(`Node ${process.versions.node} is below the declared floor ${packageJson.engines.node}`);
     return;
   }
 
-  const npmVersion = readNpmVersion();
+  let npmVersion;
+  try {
+    npmVersion = readNpmVersion();
+  } catch (error) {
+    fail(
+      `could not determine npm version: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
   if (npmVersion !== expectedNpmVersion) {
     fail(`npm ${npmVersion} does not match packageManager npm@${expectedNpmVersion}`);
     return;
