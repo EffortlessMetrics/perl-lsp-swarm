@@ -21,6 +21,7 @@ import * as path from 'path';
 import {
   buildInventory,
   compareInventory,
+  failureExitCode,
   surfaceForFile,
 } from '../../scripts/check-oxlint-warning-budget';
 
@@ -139,6 +140,13 @@ describe('Oxlint configuration', () => {
     expect(compareInventory({ ...current, warning_count: 3 }, baseline)).toContain(
       'total warnings: 3 > 2',
     );
+  });
+
+  test('Oxlint errors always produce a failing process status', () => {
+    expect(failureExitCode([{ severity: 'error' }], 0)).toBe(1);
+    expect(failureExitCode([{ severity: 'error' }], 2)).toBe(2);
+    expect(failureExitCode([], 2)).toBe(2);
+    expect(failureExitCode([], null)).toBe(1);
   });
 
   test('canonical config covers tests and JavaScript build scripts', () => {

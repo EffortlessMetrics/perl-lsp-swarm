@@ -5,20 +5,20 @@
     "oxlint": "1.73.0",
     "oxlint-tsgolint": "0.24.0"
   },
-  "warning_count": 444,
+  "warning_count": 446,
   "by_rule": {
-    "eslint(no-console)": 16,
+    "eslint(no-console)": 18,
     "eslint(no-unused-vars)": 12,
     "typescript(consistent-type-imports)": 3,
     "typescript(no-explicit-any)": 413
   },
   "by_surface": {
-    "scripts": 16,
+    "scripts": 18,
     "tests": 428
   },
   "by_rule_and_surface": {
     "eslint(no-console)": {
-      "scripts": 16
+      "scripts": 18
     },
     "eslint(no-unused-vars)": {
       "tests": 12
@@ -33,6 +33,7 @@
   "by_file": {
     "scripts/bundle-lsp.js": 8,
     "scripts/lint-canary.js": 8,
+    "scripts/toolchain-doctor.js": 2,
     "src/test/__mocks__/vscode.ts": 17,
     "src/test/arrowCompletion.test.ts": 5,
     "src/test/commands.test.ts": 54,

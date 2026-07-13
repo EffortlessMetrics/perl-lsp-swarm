@@ -18,11 +18,7 @@ const OXLINT_PATHS = ['src', 'src/test', 'scripts', 'jest.config.js', 'rolldown.
  * @returns {string}
  */
 function normalizeFilename(filename) {
-  const normalized = filename.replaceAll('\\', '/');
-  const root = `${ROOT.replaceAll('\\', '/')}/`;
-  return normalized.startsWith(root)
-    ? normalized.slice(root.length)
-    : normalized.replace(/^\.\//, '');
+  return path.relative(ROOT, path.resolve(ROOT, filename)).replaceAll('\\', '/');
 }
 
 /**
@@ -62,9 +58,11 @@ function buildInventory(diagnostics) {
   const byRuleAndSurface = {};
   /** @type {CountMap} */
   const byFile = {};
+  let warningCount = 0;
 
   for (const diagnostic of diagnostics) {
     if (diagnostic.severity !== 'warning') continue;
+    warningCount += 1;
     const rule = diagnostic.code || 'unknown';
     const filename = normalizeFilename(diagnostic.filename || 'unknown');
     const surface = surfaceForFile(filename);
@@ -76,7 +74,7 @@ function buildInventory(diagnostics) {
   }
 
   return {
-    warning_count: diagnostics.filter((diagnostic) => diagnostic.severity === 'warning').length,
+    warning_count: warningCount,
     by_rule: sortedCounts(byRule),
     by_surface: sortedCounts(bySurface),
     by_rule_and_surface: Object.fromEntries(
@@ -92,7 +90,7 @@ function runOxlint() {
   return spawnSync(
     process.execPath,
     [OXLINT_ENTRY, ...OXLINT_PATHS, '--type-aware', '--format', 'json'],
-    { cwd: ROOT, encoding: 'utf8', windowsHide: true },
+    { cwd: ROOT, encoding: 'utf8', windowsHide: true, maxBuffer: 10 * 1024 * 1024 },
   );
 }
 
@@ -133,6 +131,12 @@ function compareInventory(current, baseline) {
     ...countExceeds(current.by_rule, baseline.by_rule, 'rule'),
     ...countExceeds(current.by_surface, baseline.by_surface, 'surface'),
   ];
+}
+
+/** @param {OxlintDiagnostic[]} errors @param {number | null} status @returns {number} */
+function failureExitCode(errors, status) {
+  if (errors.length > 0) return status && status !== 0 ? status : 1;
+  return status ?? 1;
 }
 
 /** @param {OxlintDiagnostic} diagnostic @returns {string} */
@@ -179,18 +183,24 @@ function main() {
 
   let diagnostics;
   try {
-    diagnostics = readDiagnostics(`${result.stdout ?? ''}${result.stderr ?? ''}`);
+    diagnostics = readDiagnostics(result.stdout ?? '');
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    if (result.stderr) process.stderr.write(`Oxlint stderr:\n${result.stderr}\n`);
     return 1;
   }
 
   const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error');
   if (errors.length > 0 || result.status !== 0) {
-    for (const diagnostic of errors.slice(0, 20))
-      process.stderr.write(`${formatDiagnostic(diagnostic)}\n`);
-    if (errors.length > 20) process.stderr.write(`... ${errors.length - 20} more Oxlint errors\n`);
-    return result.status ?? 1;
+    if (errors.length > 0) {
+      for (const diagnostic of errors.slice(0, 20))
+        process.stderr.write(`${formatDiagnostic(diagnostic)}\n`);
+      if (errors.length > 20)
+        process.stderr.write(`... ${errors.length - 20} more Oxlint errors\n`);
+    } else if (result.stderr) {
+      process.stderr.write(`Oxlint stderr:\n${result.stderr}\n`);
+    }
+    return failureExitCode(errors, result.status);
   }
 
   const inventory = buildInventory(diagnostics);
@@ -206,4 +216,4 @@ function main() {
 
 if (require.main === module) process.exitCode = main();
 
-module.exports = { buildInventory, compareInventory, surfaceForFile };
+module.exports = { buildInventory, compareInventory, failureExitCode, surfaceForFile };

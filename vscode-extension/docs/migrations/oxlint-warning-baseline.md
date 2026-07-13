@@ -9,10 +9,14 @@ The machine-readable inventory is [`oxlint-warning-baseline.json`](./oxlint-warn
 - command: `npm run lint`
 - Oxlint: 1.73.0
 - oxlint-tsgolint: 0.24.0
-- result: 0 errors, 444 warnings
-- breakdown by rule: 413 `typescript/no-explicit-any`, 16 `no-console`, 12
+- result: 0 errors, 446 warnings
+- breakdown by rule: 413 `typescript/no-explicit-any`, 18 `no-console`, 12
   `no-unused-vars`, 3 `typescript/consistent-type-imports`
-- breakdown by surface: 428 tests, 16 scripts, 0 production, 0 build-config
+- breakdown by surface: 428 tests, 18 scripts, 0 production, 0 build-config
+
+The baseline was refreshed on 2026-07-13 after the Node/npm/TypeScript
+authority slice added `scripts/toolchain-doctor.js`; its two existing
+`no-console` warnings are recorded explicitly rather than silently absorbed.
 
 `scripts/check-oxlint-warning-budget.js` consumes Oxlint JSON diagnostics and
 enforces a non-increasing total, per-rule, and per-surface inventory. New

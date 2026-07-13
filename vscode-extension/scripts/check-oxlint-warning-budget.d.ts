@@ -21,4 +21,5 @@ export function compareInventory(
   current: OxlintWarningInventory,
   baseline: OxlintWarningInventory,
 ): string[];
+export function failureExitCode(errors: OxlintDiagnostic[], status: number | null): number;
 export function surfaceForFile(filename: string): string;
