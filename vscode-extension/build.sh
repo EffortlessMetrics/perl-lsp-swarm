@@ -8,9 +8,10 @@ if ! command -v npm &> /dev/null; then
     exit 1
 fi
 
-# Install dependencies
+# Install the locked dependencies
 echo "Installing dependencies..."
-npm install
+npm ci
+npm run doctor
 
 # Compile TypeScript
 echo "Compiling TypeScript..."

@@ -4,7 +4,7 @@ This guide covers building, testing, and iterating on the extension locally with
 
 ## Prerequisites
 
-- Node.js 18+ and npm
+- Node.js 20 or newer and npm 10.8.2
 - VS Code
 - A built `perllsp` binary (see [Building the server](#building-the-server))
 
@@ -12,8 +12,13 @@ This guide covers building, testing, and iterating on the extension locally with
 
 ```bash
 cd vscode-extension
-npm install
+npm ci
+npm run doctor
 ```
+
+The extension uses npm and `package-lock.json` as its only package authority.
+`npm run doctor` enforces the Node floor and the exact `packageManager` value
+declared in `package.json`; run it after selecting the supported toolchain.
 
 ## Building the server
 
@@ -37,6 +42,7 @@ This bypasses the auto-download and uses your local build.
 
 ```bash
 npm run typecheck   # Type-check only (tsc --noEmit) — TypeScript 7 is the sole type-check authority
+npm run typecheck:all # Check source, unit tests, integration, published smoke, and scripts
 npm run compile     # Single build (Rolldown bundles out/extension.js — does NOT type-check)
 npm run watch       # Rebuild out/extension.js on every file change (use during active development)
 npm run watch:types # Optional companion: live tsc --noEmit type-check loop in a separate terminal

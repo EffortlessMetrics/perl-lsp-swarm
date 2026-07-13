@@ -1,0 +1,90 @@
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+
+const extensionRoot = path.resolve(__dirname, '..');
+const packageJsonPath = path.join(extensionRoot, 'package.json');
+
+function readPackageJson() {
+  return JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+}
+
+function parseVersion(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  if (!match) {
+    throw new Error(`invalid semantic version: ${version}`);
+  }
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareVersions(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return left[index] - right[index];
+    }
+  }
+  return 0;
+}
+
+function readNodeFloor(range) {
+  const match = /^\s*>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(range);
+  if (!match) {
+    throw new Error(`unsupported Node engine range: ${range}`);
+  }
+  return [Number(match[1]), Number(match[2] ?? 0), Number(match[3] ?? 0)];
+}
+
+function readNpmVersion() {
+  const npmExecPath = process.env.npm_execpath;
+  if (npmExecPath) {
+    return execFileSync(process.execPath, [npmExecPath, '--version'], {
+      encoding: 'utf8',
+    }).trim();
+  }
+
+  const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  return execFileSync(npmExecutable, ['--version'], { encoding: 'utf8' }).trim();
+}
+
+function fail(message) {
+  console.error(`Toolchain doctor failed: ${message}`);
+  process.exitCode = 1;
+}
+
+function main() {
+  const packageJson = readPackageJson();
+  const packageManager = packageJson.packageManager;
+  const packageManagerMatch = /^npm@(.+)$/.exec(packageManager ?? '');
+  if (!packageManagerMatch) {
+    fail(`packageManager must be an npm version, received ${String(packageManager)}`);
+    return;
+  }
+
+  const expectedNpmVersion = packageManagerMatch[1];
+  if (packageJson.engines?.npm !== expectedNpmVersion) {
+    fail(
+      `engines.npm ${String(packageJson.engines?.npm)} does not match packageManager npm@${expectedNpmVersion}`,
+    );
+    return;
+  }
+  const nodeFloor = readNodeFloor(packageJson.engines?.node ?? '');
+  const nodeVersion = parseVersion(process.versions.node);
+  if (compareVersions(nodeVersion, nodeFloor) < 0) {
+    fail(`Node ${process.versions.node} is below the declared floor ${packageJson.engines.node}`);
+    return;
+  }
+
+  const npmVersion = readNpmVersion();
+  if (npmVersion !== expectedNpmVersion) {
+    fail(`npm ${npmVersion} does not match packageManager npm@${expectedNpmVersion}`);
+    return;
+  }
+
+  console.log(
+    `Toolchain doctor passed: Node ${process.versions.node}, npm ${npmVersion}, packageManager npm@${expectedNpmVersion}`,
+  );
+}
+
+main();

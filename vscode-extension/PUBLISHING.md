@@ -2,14 +2,10 @@
 
 ## Prerequisites
 
-1. **Node.js and npm** installed
+1. **Node.js 20 or newer and npm 10.8.2** installed
 2. **Visual Studio Code** installed
-3. **vsce** (Visual Studio Code Extension manager) and **ovsx** (Open VSX CLI) installed:
-   ```bash
-   npm install -g @vscode/vsce ovsx
-   ```
-4. **Publisher account** on Visual Studio Marketplace
-5. **Open VSX access token** for `EffortlessMetrics` publisher
+3. **Publisher account** on Visual Studio Marketplace
+4. **Open VSX access token** for `EffortlessMetrics` publisher
 
 ## Build Process
 
@@ -27,7 +23,8 @@ cargo build -p perllsp --release
 
 ```bash
 # From vscode-extension/
-npm install
+npm ci
+npm run doctor
 npm run verify:marketplace
 ```
 
