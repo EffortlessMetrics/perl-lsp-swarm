@@ -110,18 +110,25 @@ pub(crate) enum SourceBackedReferenceDecline {
     DeclarationLocationUnavailable,
     /// The initialized lexical declaration gate rejected the source shape.
     InitializedLexicalGateRejected,
-    /// An occurrence had no serializable wire location.
+    /// An occurrence had no wire location anchor.
     OccurrenceLocationUnavailable,
+    /// An occurrence location could not be serialized for the wire response.
+    OccurrenceSerializationFailed,
     /// The exact path produced no locations after filtering.
     EmptyExactResult,
 }
 
 impl SourceBackedReferenceAttempt {
-    fn receipt_fields(
-        &self,
-    ) -> (bool, &'static str, Option<&'static str>, bool, usize, Option<&'static str>) {
+    fn receipt_fields(&self) -> SourceBackedReceiptFields {
         match self {
-            Self::Exact(_) => (true, "exact", None, false, 0, Some("exact")),
+            Self::Exact(_) => SourceBackedReceiptFields {
+                attempted: true,
+                outcome: "exact",
+                decline_stage: None,
+                symbol_at_found: false,
+                exact_candidate_count: 0,
+                cutover_result: Some("exact"),
+            },
             Self::Declined(decline) => {
                 let (stage, symbol_at_found, exact_candidate_count, cutover_result) = match decline
                 {
@@ -153,21 +160,34 @@ impl SourceBackedReferenceAttempt {
                     SourceBackedReferenceDecline::OccurrenceLocationUnavailable => {
                         ("occurrence_location", false, 0, None)
                     }
+                    SourceBackedReferenceDecline::OccurrenceSerializationFailed => {
+                        ("occurrence_serialization", false, 0, None)
+                    }
                     SourceBackedReferenceDecline::EmptyExactResult => {
-                        ("empty_exact_result", false, 0, Some("exact"))
+                        ("empty_exact_result", false, 0, None)
                     }
                 };
-                (
-                    true,
-                    "declined",
-                    Some(stage),
+                SourceBackedReceiptFields {
+                    attempted: true,
+                    outcome: "declined",
+                    decline_stage: Some(stage),
                     symbol_at_found,
                     exact_candidate_count,
                     cutover_result,
-                )
+                }
             }
         }
     }
+}
+
+/// Stable receipt fields derived from a source-backed references attempt.
+pub(crate) struct SourceBackedReceiptFields {
+    pub(crate) attempted: bool,
+    pub(crate) outcome: &'static str,
+    pub(crate) decline_stage: Option<&'static str>,
+    pub(crate) symbol_at_found: bool,
+    pub(crate) exact_candidate_count: usize,
+    pub(crate) cutover_result: Option<&'static str>,
 }
 
 impl ReferencesAnsweringTier {
@@ -415,16 +435,23 @@ impl LspServer {
         let source_backed_result_count: usize =
             if tier.is_source_backed() { result_count } else { 0 };
 
-        let (
-            source_backed_attempted,
-            source_backed_outcome,
-            source_backed_decline_stage,
-            source_backed_symbol_at_found,
-            source_backed_exact_candidate_count,
-            source_backed_cutover_result,
-        ) = match source_backed_attempt {
+        let SourceBackedReceiptFields {
+            attempted: source_backed_attempted,
+            outcome: source_backed_outcome,
+            decline_stage: source_backed_decline_stage,
+            symbol_at_found: source_backed_symbol_at_found,
+            exact_candidate_count: source_backed_exact_candidate_count,
+            cutover_result: source_backed_cutover_result,
+        } = match source_backed_attempt {
             Some(attempt) => attempt.receipt_fields(),
-            None => (false, "not_attempted", None, false, 0, None),
+            None => SourceBackedReceiptFields {
+                attempted: false,
+                outcome: "not_attempted",
+                decline_stage: None,
+                symbol_at_found: false,
+                exact_candidate_count: 0,
+                cutover_result: None,
+            },
         };
 
         self.record_provider_decision_trace(
@@ -1435,7 +1462,7 @@ impl LspServer {
             let location: lsp_types::Location = wire_location.into();
             let Ok(location) = serde_json::to_value(location) else {
                 return SourceBackedReferenceAttempt::Declined(
-                    SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
+                    SourceBackedReferenceDecline::OccurrenceSerializationFailed,
                 );
             };
             locations.push(location);
@@ -1773,19 +1800,91 @@ mod tests {
 
     #[test]
     fn source_backed_attempt_receipt_preserves_named_decline_stage() -> Result<(), Box<dyn Error>> {
-        let declined = SourceBackedReferenceAttempt::Declined(
-            SourceBackedReferenceDecline::EntityUnresolved {
-                symbol_at_found: true,
-                exact_candidate_count: 2,
-            },
-        );
-        assert_eq!(
-            declined.receipt_fields(),
-            (true, "declined", Some("entity_resolution"), true, 2, None)
-        );
+        let cases = [
+            (SourceBackedReferenceDecline::ByteOffsetOutOfRange, "byte_offset", false, 0, None),
+            (
+                SourceBackedReferenceDecline::WorkspaceIndexUnavailable,
+                "workspace_index",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri,
+                "semantic_queries",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::EntityUnresolved {
+                    symbol_at_found: true,
+                    exact_candidate_count: 2,
+                },
+                "entity_resolution",
+                true,
+                2,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::CutoverNotExact { result_class: "partial" },
+                "cutover",
+                false,
+                0,
+                Some("partial"),
+            ),
+            (
+                SourceBackedReferenceDecline::DeclarationAnchorUnavailable,
+                "declaration_anchor",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                "declaration_location",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::InitializedLexicalGateRejected,
+                "initialized_lexical_gate",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
+                "occurrence_location",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::OccurrenceSerializationFailed,
+                "occurrence_serialization",
+                false,
+                0,
+                None,
+            ),
+            (SourceBackedReferenceDecline::EmptyExactResult, "empty_exact_result", false, 0, None),
+        ];
+        for (decline, stage, symbol_at_found, exact_candidate_count, cutover_result) in cases {
+            let fields = SourceBackedReferenceAttempt::Declined(decline).receipt_fields();
+            assert!(fields.attempted);
+            assert_eq!(fields.outcome, "declined");
+            assert_eq!(fields.decline_stage, Some(stage));
+            assert_eq!(fields.symbol_at_found, symbol_at_found);
+            assert_eq!(fields.exact_candidate_count, exact_candidate_count);
+            assert_eq!(fields.cutover_result, cutover_result);
+        }
 
-        let exact = SourceBackedReferenceAttempt::Exact(Vec::new());
-        assert_eq!(exact.receipt_fields(), (true, "exact", None, false, 0, Some("exact")));
+        let fields = SourceBackedReferenceAttempt::Exact(Vec::new()).receipt_fields();
+        assert!(fields.attempted);
+        assert_eq!(fields.outcome, "exact");
+        assert_eq!(fields.decline_stage, None);
+        assert_eq!(fields.cutover_result, Some("exact"));
         Ok(())
     }
 
