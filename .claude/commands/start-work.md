@@ -270,22 +270,35 @@ consumer (this doc, via #3982). #3982's own "Failure language" names `STOP`
 as "write collision, unsafe checkout, destructive risk, **or capacity
 hazard**" — so two of the seven checks are STOP-class here, not advisory:
 
+**Route on the per-check `checks[]` status, never the top-level `verdict`
+field.** `aggregate_verdict` is worst-status-wins: it flips the top-level
+`verdict` to `BLOCK` the instant *any* check reports `BLOCK`, including a
+purely advisory-class one like `shadow-ref` or `dirty-unpushed`. Find the
+`disk-capacity` and `writer-collision` entries in `checks[]` specifically
+and STOP only if *those two* report `BLOCK`. Do **not** STOP merely because
+`verdict: BLOCK` appears at the top — that aggregate says "at least one
+check failed," not "a STOP-class check failed."
+
 - **`disk-capacity` `BLOCK`** and **`writer-collision` `BLOCK`** →
   **STOP**, the same class as Step 5's collision STOP (this is the literal
   "capacity hazard" / "write collision" language from #3982's Failure
   language, and the real disk-exhaustion failure mode this repo has already
   been burned by — target dirs filling the disk and being misread as
   product bugs). Report:
-  ```
+
+  ```text
   STOP: writer-admission reports a capacity hazard (<reason>) — resolve
   before creating the worktree, e.g. `just clean-worktrees`.
   ```
+
   or, for writer-collision:
-  ```
+
+  ```text
   STOP: writer-admission reports a writer collision (<reason>) — this is
   the same fact Step 5's collision check already halts on; do not create a
   second worktree for this branch.
   ```
+
   (`writer-collision` duplicates Step 5's own STOP for the identical
   fact — an open PR already owning the branch — so in practice Step 5 will
   usually STOP first; Step 6b's own `writer-collision` check exists as a
