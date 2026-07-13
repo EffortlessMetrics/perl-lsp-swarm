@@ -108,6 +108,8 @@ pub(crate) enum SourceBackedReferenceDecline {
     DeclarationAnchorUnavailable,
     /// The declaration anchor had no wire location.
     DeclarationLocationUnavailable,
+    /// The declaration location could not be serialized for the wire response.
+    DeclarationSerializationFailed,
     /// The initialized lexical declaration gate rejected the source shape.
     InitializedLexicalGateRejected,
     /// An occurrence had no wire location anchor.
@@ -153,6 +155,9 @@ impl SourceBackedReferenceAttempt {
                     }
                     SourceBackedReferenceDecline::DeclarationLocationUnavailable => {
                         ("declaration_location", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::DeclarationSerializationFailed => {
+                        ("declaration_serialization", false, 0, None)
                     }
                     SourceBackedReferenceDecline::InitializedLexicalGateRejected => {
                         ("initialized_lexical_gate", false, 0, None)
@@ -1478,7 +1483,7 @@ impl LspServer {
                     let decl_location: lsp_types::Location = wire_location.into();
                     let Ok(decl_value) = serde_json::to_value(&decl_location) else {
                         return SourceBackedReferenceAttempt::Declined(
-                            SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                            SourceBackedReferenceDecline::DeclarationSerializationFailed,
                         );
                     };
                     let already_present = locations.iter().any(|loc| loc == &decl_value);
@@ -1843,6 +1848,13 @@ mod tests {
             (
                 SourceBackedReferenceDecline::DeclarationLocationUnavailable,
                 "declaration_location",
+                false,
+                0,
+                None,
+            ),
+            (
+                SourceBackedReferenceDecline::DeclarationSerializationFailed,
+                "declaration_serialization",
                 false,
                 0,
                 None,
