@@ -327,6 +327,7 @@ jobs:
               cargo check --workspace --locked
               cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
               cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+              INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
               sccache --show-stats || true
             '
 
@@ -481,6 +482,7 @@ jobs:
               cargo check --workspace --locked
               cargo test --locked -p perl-parser --test semantic_smoke_tests -- --nocapture
               cargo test --locked -p perl-lsp-rs --test lsp_smoke -- --test-threads=1 --nocapture
+              INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
               sccache --show-stats || true
             '
 
@@ -531,6 +533,7 @@ jobs:
           set -euo pipefail
           cargo fetch --locked
           cargo check --workspace --locked
+          INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
           git diff --check
 
   # ── Disk-full failover ──────────────────────────────────────────────────────
@@ -599,6 +602,7 @@ jobs:
           set -euo pipefail
           cargo fetch --locked
           cargo check --workspace --locked
+          INSTA_UPDATE=no cargo test -p perl-lsp-rs --lib --features workspace --profile agent --locked references_tier_scorecard_tests -- --test-threads=1
           git diff --check
 
   rust-small-result:
