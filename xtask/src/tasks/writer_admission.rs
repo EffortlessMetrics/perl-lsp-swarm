@@ -1295,7 +1295,8 @@ mod tests {
     }
 
     #[test]
-    fn head_info_spawn_error_preserves_already_gathered_symbolic_ref() {
+    fn head_info_spawn_error_preserves_already_gathered_symbolic_ref() -> Result<()> {
+        use perl_tdd_support::must_some;
         // Regression for the writer-admission fast-follow (#3957 W1): the
         // `git rev-parse` spawn-error arm of `gather_head_info` used to
         // build its early-return `HeadInfo` with `..Default::default()`,
@@ -1309,19 +1310,25 @@ mod tests {
             Some("refs/heads/impl/1234-feature".to_string()),
             "failed to spawn git rev-parse: boom".to_string(),
         );
-        assert_eq!(info.symbolic_ref, Some("refs/heads/impl/1234-feature".to_string()));
-        assert_eq!(info.error, Some("failed to spawn git rev-parse: boom".to_string()));
+        let symbolic_ref = must_some(info.symbolic_ref.clone());
+        assert_eq!(symbolic_ref, "refs/heads/impl/1234-feature");
+        let error = must_some(info.error.clone());
+        assert_eq!(error, "failed to spawn git rev-parse: boom");
         assert_eq!(info.resolved_sha, None);
         assert!(!info.dangling);
+        Ok(())
     }
 
     #[test]
-    fn head_info_spawn_error_with_no_prior_symbolic_ref_stays_none() {
+    fn head_info_spawn_error_with_no_prior_symbolic_ref_stays_none() -> Result<()> {
+        use perl_tdd_support::must_some;
         // Symmetric case: the `git symbolic-ref` spawn-error arm has
         // nothing gathered yet, so it correctly passes `None` through.
         let info =
             head_info_spawn_error(None, "failed to spawn git symbolic-ref: boom".to_string());
         assert_eq!(info.symbolic_ref, None);
-        assert_eq!(info.error, Some("failed to spawn git symbolic-ref: boom".to_string()));
+        let error = must_some(info.error.clone());
+        assert_eq!(error, "failed to spawn git symbolic-ref: boom");
+        Ok(())
     }
 }
