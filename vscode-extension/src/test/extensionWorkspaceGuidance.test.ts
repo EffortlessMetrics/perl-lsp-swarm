@@ -107,6 +107,37 @@ test('dismissal is sticky for an unchanged discovered module layout', async () =
   expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
 });
 
+test('retries a discovered-path suggestion after an update failure', async () => {
+  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-retry-'));
+  fs.mkdirSync(path.join(workspaceDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'src', 'Module.pm'), 'package Module; 1;\n');
+  const globalState = makeState();
+  const update = jest.fn(async () => {
+    throw new Error('workspace is read-only');
+  });
+  (vscode.workspace as any).workspaceFolders = [
+    {
+      name: 'workspace',
+      uri: { fsPath: workspaceDir, toString: () => `file://${workspaceDir}` },
+    },
+  ];
+  (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
+    get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+    update,
+  }));
+  (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add to Include Paths');
+
+  await suggestDiscoveredIncludePaths({ globalState } as any);
+  await suggestDiscoveredIncludePaths({ globalState } as any);
+
+  expect(update).toHaveBeenCalledTimes(2);
+  expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(2);
+  expect(globalState.update).not.toHaveBeenCalledWith(
+    expect.stringContaining('perl-lsp.includePathsSuggestion.'),
+    expect.any(String),
+  );
+});
+
 test('does not prompt for AI completion without a real server capability', async () => {
   (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
     get: jest.fn(() => false),

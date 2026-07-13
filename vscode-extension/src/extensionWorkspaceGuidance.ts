@@ -245,6 +245,7 @@ export async function suggestDiscoveredIncludePaths(
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         void vscode.window.showWarningMessage(`Perl LSP: could not update include paths: ${msg}`);
+        continue;
       }
     } else if (choice === 'Open Settings') {
       void vscode.commands.executeCommand(
