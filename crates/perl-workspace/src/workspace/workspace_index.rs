@@ -4489,7 +4489,21 @@ impl IndexVisitor {
                 self.visit_node(body, file_index);
             }
 
-            NodeKind::VariableDeclaration { initializer, .. } => {
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                // `our @ISA = qw(Base1 Base2)` — register inheritance dependencies.
+                if let (NodeKind::Variable { sigil, name }, Some(init)) =
+                    (&variable.kind, initializer.as_deref())
+                {
+                    if sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(init))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+                }
                 // Visit initializer
                 if let Some(init) = initializer {
                     self.visit_node(init, file_index);
@@ -4555,6 +4569,18 @@ impl IndexVisitor {
                             .dependencies
                             .insert(normalize_dependency_module_name(&module_name));
                     }
+                } else if name == "push" {
+                    // `push @ISA, 'Base'` — register inheritance dependencies.
+                    if let Some(first) = args.first() {
+                        if matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+                        {
+                            for module_name in extract_module_names_from_call_args(&args[1..]) {
+                                file_index
+                                    .dependencies
+                                    .insert(normalize_dependency_module_name(&module_name));
+                            }
+                        }
+                    }
                 }
 
                 // Visit arguments
@@ -4590,6 +4616,17 @@ impl IndexVisitor {
                 let is_compound = op != "=";
 
                 if let NodeKind::Variable { sigil, name } = &lhs.kind {
+                    // `@ISA = (...)` — bare assignment registers inheritance dependencies.
+                    if !is_compound && sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(rhs))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+
                     let var_name = format!("{}{}", sigil, name);
 
                     // For compound assignments, it's a read first
@@ -5046,8 +5083,26 @@ impl IndexVisitor {
                 self.walk_unified(default_value, file_index, symbol_refs);
             }
 
-            NodeKind::VariableDeclaration { initializer, .. }
-            | NodeKind::VariableListDeclaration { initializer, .. } => {
+            NodeKind::VariableDeclaration { variable, initializer, .. } => {
+                // `our @ISA = qw(Base1 Base2)` — register inheritance dependencies.
+                if let (NodeKind::Variable { sigil, name }, Some(init)) =
+                    (&variable.kind, initializer.as_deref())
+                {
+                    if sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(init))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+                }
+                if let Some(init) = initializer {
+                    self.walk_unified(init, file_index, symbol_refs);
+                }
+            }
+            NodeKind::VariableListDeclaration { initializer, .. } => {
                 if let Some(init) = initializer {
                     self.walk_unified(init, file_index, symbol_refs);
                 }
@@ -5118,6 +5173,18 @@ impl IndexVisitor {
                     && let Some(module_name) = extract_module_name_from_require_args(args)
                 {
                     file_index.dependencies.insert(normalize_dependency_module_name(&module_name));
+                } else if name == "push" {
+                    // `push @ISA, 'Base'` — register inheritance dependencies.
+                    if let Some(first) = args.first() {
+                        if matches!(&first.kind, NodeKind::Variable { sigil, name } if sigil == "@" && name == "ISA")
+                        {
+                            for module_name in extract_module_names_from_call_args(&args[1..]) {
+                                file_index
+                                    .dependencies
+                                    .insert(normalize_dependency_module_name(&module_name));
+                            }
+                        }
+                    }
                 }
 
                 Self::emit_canonical_ref(node, symbol_refs);
@@ -5148,6 +5215,17 @@ impl IndexVisitor {
             NodeKind::Assignment { lhs, rhs, op } => {
                 let is_compound = op != "=";
                 if let NodeKind::Variable { sigil, name } = &lhs.kind {
+                    // `@ISA = (...)` — bare assignment registers inheritance dependencies.
+                    if !is_compound && sigil == "@" && name == "ISA" {
+                        for module_name in
+                            extract_module_names_from_call_args(std::slice::from_ref(rhs))
+                        {
+                            file_index
+                                .dependencies
+                                .insert(normalize_dependency_module_name(&module_name));
+                        }
+                    }
+
                     let var_name = format!("{sigil}{name}");
                     if is_compound {
                         file_index.references.entry(var_name.clone()).or_default().push(
