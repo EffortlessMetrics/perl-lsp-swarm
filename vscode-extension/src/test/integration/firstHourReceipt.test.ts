@@ -551,6 +551,12 @@ suite('First-hour VS Code receipt', function () {
     if (!currentSourceSmoke) {
       extensionApi?.markLanguageClientStartupMilestone?.('warm_request');
     }
+    const receiptLanguageClientMetrics = currentSourceSmoke
+      ? initialLanguageClientMetrics
+      : (extensionApi?.getLanguageClientStartupMetrics?.() ?? {
+          status: 'unavailable',
+          limitation: 'extension activation API did not expose startup metrics',
+        });
 
     const badDocument = await vscode.workspace.openTextDocument(badPath);
     await vscode.window.showTextDocument(badDocument);
@@ -564,7 +570,7 @@ suite('First-hour VS Code receipt', function () {
         extension_activation_ms: activationMs,
         extension_activated_within_30s: activationMs <= 30_000,
         command_registration_ms: commandRegistrationMs,
-        language_client: initialLanguageClientMetrics,
+        language_client: receiptLanguageClientMetrics,
         health,
         indexing_announcement_observed: 'not_observable_from_extension_host_public_api',
       },
