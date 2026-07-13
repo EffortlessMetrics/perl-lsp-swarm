@@ -26,14 +26,11 @@ if (!serverSourceRevision) {
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 function runNpm(args, env) {
-  const spawnTarget =
-    process.platform === 'win32'
-      ? { command: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', npmCommand, ...args] }
-      : { command: npmCommand, args };
-  return spawnSync(spawnTarget.command, spawnTarget.args, {
+  return spawnSync(npmCommand, args, {
     cwd: root,
     env,
     stdio: 'inherit',
+    shell: process.platform === 'win32',
     windowsHide: true,
   });
 }

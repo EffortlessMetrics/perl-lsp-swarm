@@ -305,8 +305,12 @@ suite('First-hour VS Code receipt', function () {
         expectedExtensionsDir,
         'current-source smoke requires the clean extensions directory',
       );
-      const extensionPath = path.resolve(extension.extensionPath);
-      const extensionsDir = path.resolve(expectedExtensionsDir);
+      let extensionPath = path.resolve(extension.extensionPath);
+      let extensionsDir = path.resolve(expectedExtensionsDir);
+      if (process.platform === 'win32') {
+        extensionPath = extensionPath.toLowerCase();
+        extensionsDir = extensionsDir.toLowerCase();
+      }
       assert.ok(
         extensionPath === extensionsDir || extensionPath.startsWith(`${extensionsDir}${path.sep}`),
         `extension must be loaded from the clean installed profile: ${extensionPath}`,
@@ -452,9 +456,11 @@ suite('First-hour VS Code receipt', function () {
       restartedMoment = restarted;
 
       const deactivateStart = Date.now();
-      const extensionMain = require(
-        path.join(extension.extensionPath, extension.packageJSON.main),
-      ) as { deactivate?: () => Promise<void> };
+      const mainScript = extension.packageJSON?.main;
+      assert.ok(mainScript, 'extension package.json must define a main script');
+      const extensionMain = require(path.join(extension.extensionPath, mainScript)) as {
+        deactivate?: () => Promise<void>;
+      };
       assert.equal(typeof extensionMain.deactivate, 'function', 'extension must export deactivate');
       await withTimeout('language client shutdown', extensionMain.deactivate!(), 30_000);
       lifecycle = {

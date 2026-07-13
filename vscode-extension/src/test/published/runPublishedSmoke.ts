@@ -271,7 +271,12 @@ async function main(): Promise<void> {
     });
   } finally {
     for (const directory of [workspacePath, userDataDir, extensionsDir, downloadDir]) {
-      fs.rmSync(directory, { recursive: true, force: true });
+      try {
+        fs.rmSync(directory, { recursive: true, force: true });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`[published-smoke] cleanup failed for ${directory}: ${message}\n`);
+      }
     }
   }
 }
