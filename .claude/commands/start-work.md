@@ -1,6 +1,6 @@
 ---
 description: Pre-mutation guard — confirm an issue is build-ready before creating a writer worktree/branch
-argument-hint: "<issue#> [--mechanical]"
+argument-hint: "<issue#> [--mechanical] | --mechanical [<issue#>]"
 user-invocable: true
 ---
 
@@ -19,17 +19,32 @@ for the full model.
 
 ## Step 1: Parse arguments
 
-Extract `<issue#>` and the optional `--mechanical` flag from $ARGUMENTS. If no
-issue number is given, stop and ask for one — this command never guesses a
-target.
+Extract the optional `<issue#>` and the optional `--mechanical` flag from
+$ARGUMENTS.
 
-If `--mechanical` is present, skip to **Mechanical fast path** below instead
-of the build-readiness check (Steps 3-4 and the Step 4b advisory audit) — the
-issue-open check (Step 2), collision check (Step 5), and fresh-`origin/main`
-fetch (Step 6) still apply. The flag must be passed explicitly; never infer
-it from the issue body or title.
+**Without `--mechanical`:** an issue number is required. If none is given,
+stop and ask for one — this command never guesses a target.
+
+**With `--mechanical`:** an issue number is optional. Genuinely mechanical
+work (see "Which changes qualify as mechanical" in the Mechanical fast path
+section below) frequently has no controlling issue at all — a typo fix or a
+deterministic lockfile regeneration doesn't need one to exist first. When
+`--mechanical` is present, skip **Step 2 entirely** (the issue-open check —
+this applies whether or not an issue number was also given; mechanical work
+has no issue-state precondition to verify) and skip straight to the
+**Mechanical fast path** below, which also skips the build-readiness check
+(Steps 3-4), the Step 4b advisory audit, and the Step 6b writer-admission
+check. Only the safety-relevant checks still apply: collision (Step 5),
+fresh `origin/main` (Step 6), and worktree integrity.
+
+The flag must be passed explicitly; never infer it from an issue's body or
+title — and never carry it over from an earlier invocation in the same
+session. Each `/start-work` call re-classifies fresh from $ARGUMENTS.
 
 ## Step 2: Read the issue
+
+Skipped entirely under `--mechanical` (see Step 1) — jump straight to the
+Mechanical fast path.
 
 ```bash
 gh issue view <issue#> --json title,body,labels,state,comments
@@ -180,6 +195,13 @@ open a second worktree"). This mirrors `lead-build.md`'s existing duplicate-PR
 and active-builder guards; `/start-work` just runs the same check earlier,
 before mutation instead of before spawning a second builder.
 
+Under the mechanical fast path with no issue number, there is no `#<issue#>`
+or `impl/<issue#>-*` to search for — adapt the searches to whatever branch
+name/slug the mechanical change will use instead (e.g. `gh pr list --search
+"<slug>"` and `git branch -a --list "*<slug>*"`), and still check
+`git worktree list` / `worktree-manager.py query` for an existing writer on
+that slug.
+
 ## Step 6: Fetch fresh `origin/main`
 
 ```bash
@@ -189,12 +211,68 @@ git fetch origin main
 Confirm the fetch succeeded before proceeding — a stale base produces the
 exact `origin/master`-base-ref class of defect this repo has hit before.
 
+## Step 6b: Advisory writer-admission check
+
+`xtask writer-admission` (`xtask/src/tasks/writer_admission.rs`, landed in
+#4099) is a read-only admission diagnostic: it inspects canonical-base
+freshness, `refs/heads/origin/*` shadow refs, a dangling/detached HEAD, the
+branch↔worktree mapping, dirty/unpushed state, disk capacity, and
+writer-collision (an open PR already owning the target branch), and returns
+a `PASS` / `BLOCK` / `NOT_PROVEN` verdict with a per-check reason. It never
+mutates git state, the filesystem, or GitHub, and always exits `0` — the
+verdict lives in its output, not its exit code.
+
+Run it for the branch/worktree about to be admitted:
+
+```bash
+cargo xtask writer-admission --base origin/main \
+  --repo EffortlessMetrics/perl-lsp-swarm --json
+```
+
+If the target branch is already known (e.g. reusing an idle worktree-manager
+slot instead of creating a fresh one), pass it explicitly along with the
+worktree path being reused:
+
+```bash
+cargo xtask writer-admission --branch impl/<issue#>-<slug> \
+  --base origin/main --worktree <path> \
+  --repo EffortlessMetrics/perl-lsp-swarm --json
+```
+
+When no branch exists yet (the common case — the branch is created *by* the
+Step 7 hand-off), omitting `--branch`/`--worktree` falls back to the current
+checkout, which still surfaces real pre-admission risk: disk headroom,
+dirty/unpushed state, shadow-ref contamination, and canonical-base drift in
+the environment about to spawn the new worktree.
+
+This is advisory signal exactly like Step 4b — it does **not** add a sixth
+hard gate alongside issue-open/`builder-ready`/BUILD-verdict/collision/fresh-
+`origin/main`, and neither a `BLOCK` nor a `NOT_PROVEN` verdict stops the
+handoff on its own:
+
+- **`BLOCK`**: surface every `BLOCK`-status check's reason as a strong note,
+  e.g. `Note: writer-admission reports BLOCK: disk headroom 188.3G is below
+  the floor 372.6G (max(FLOOR_GB=200, FLOOR_PCT=5%)), 71 worktree(s) present
+  — resolve before creating the worktree.` The operator may still proceed;
+  this is a strong nudge to fix the underlying condition (e.g. run
+  `just clean-worktrees`) first, not a stop.
+- **`NOT_PROVEN`**: surface as `Note: writer-admission couldn't verify
+  <check>: <reason> — proceeding without this signal.`
+- **`PASS`**: no note needed beyond recording it in the settled-packet output
+  (Step 7's Output section).
+
+Skipped under `--mechanical`, alongside Steps 2-4 and 4b — mechanical work
+has no planning-readiness decision for this diagnostic to compose into;
+only the plain safety checks (collision, fresh `origin/main`, worktree
+integrity) still apply.
+
 ## Step 7: Hand off — delegate, don't fork
 
-All five conditions (issue open, `builder-ready`, matching BUILD verdict, no
-collision, fresh `origin/main`) are the settled packet. `/start-work` does
-not create the branch, worktree, or `.spec/` files itself — it hands off to
-the existing entry point:
+All conditions (issue open, `builder-ready`, matching BUILD verdict, no
+collision, fresh `origin/main` — plus the Step 6b writer-admission verdict as
+advisory signal) are the settled packet. `/start-work` does not create the
+branch, worktree, or `.spec/` files itself — it hands off to the existing
+entry point:
 
 - **Pipeline work** (going through the standard build gate): spawn the
   `spec-planner` agent on the issue. It reads the `builder-ready` issue,
@@ -223,20 +301,62 @@ Report which path was used and the resulting branch/worktree location.
 ## Mechanical fast path (`--mechanical`)
 
 Reachable **only** via the explicit `--mechanical` flag — never inferred from
-issue content. For work with no planning decision: generated-file
-regeneration, dependency-lock bumps, format-only changes, typo fixes,
-deterministic-fixture updates. Architecture, parser/compiler semantics,
-concurrency, security, public LSP/DAP behavior, CI authority, merge policy,
-and control-plane behavior always take the full path above, even with the
-flag.
+issue content, and never carried over from an earlier invocation. This path
+is genuinely issue-free: it does not require an open issue, or any issue at
+all, to exist.
 
-Still run **Step 2** (confirm the issue exists and is `OPEN`), **Step 5**
-(collision check), and **Step 6** (fresh `origin/main`) — none of those are
-planning-decision gates, they're basic write-safety (there must be a real,
-open, uncontested issue to attach the mechanical change to). Only Steps 3-4
-(`builder-ready` label / matching BUILD verdict) and **Step 4b** (issue-plan
-audit) are skipped — those are the planning-readiness gate (and its advisory
-companion), which mechanical work has no planning decision to clear or audit.
+### Which changes qualify as mechanical (self-classify against this list)
+
+**No issue required — mechanical:**
+- Obvious typo fixes (comments, doc prose, log/error strings).
+- Formatting-only repair (whitespace, `cargo fmt`/`rustfmt`, markdown lint).
+- Deterministic regeneration (lockfiles, generated fixtures, snapshot
+  re-recording from an unchanged source-of-truth, corpus-manifest refresh).
+- No-code lock-or-dependency refresh: a `Cargo.lock`/lockfile bump with no
+  source-code changes, no known user-facing/security fix riding along, and
+  no material compatibility decision — i.e. the version number moved and
+  nothing else.
+
+**Issue path required — not mechanical, even if it looks small:**
+- Anything touching behavior, policy, architecture, semantics, CI authority,
+  or security.
+- A dependency bump that requires source-code changes to adopt, fixes a
+  known user-facing or security concern, or carries a material compatibility
+  decision (breaking API, MSRV bump, feature-flag change) — the issue isn't
+  optional just because the diff is a version bump; it's the fix/decision
+  behind the bump that needs one.
+- Architecture, parser/compiler semantics, concurrency, security, public
+  LSP/DAP behavior, CI authority, merge policy, and control-plane behavior
+  always take the full path above, even with the flag.
+
+When genuinely ambiguous, treat it as **not** mechanical and use the full
+path — the flag is for the clear cases, not a way to skip planning on a
+judgment call.
+
+### What still runs
+
+Only the safety-relevant checks still apply — none of them are
+planning-decision gates, they're basic write-safety that has nothing to do
+with whether a plan was reviewed:
+
+- **Step 5** (collision check) — is someone already writing this change?
+- **Step 6** (fresh `origin/main`) — is the base current?
+- Worktree integrity generally (Step 5's `git worktree list` /
+  worktree-manager query, and the branch/worktree-mapping half of what Step
+  6b's tool checks, if a target branch is already known).
+
+**Everything else is skipped**, because none of it is a safety check — it's
+the planning-readiness gate this fast path exists to bypass for genuinely
+mechanical work:
+
+- **Step 2** (issue-open check) — skipped entirely; there is no issue
+  precondition when `--mechanical` is set, whether or not an issue number
+  was also given.
+- **Steps 3-4** (`builder-ready` label / matching BUILD verdict) — skipped;
+  no planning decision to clear.
+- **Step 4b** (issue-plan audit) — skipped; nothing to audit without a plan.
+- **Step 6b** (writer-admission) — skipped; it's advisory planning-readiness
+  signal composed alongside 3-4/4b, not a safety check in its own right.
 
 Before proceeding, record and print all five fields — do not create the
 worktree until every field is filled in:
@@ -251,14 +371,26 @@ No collision: <confirm Step 5 found nothing>
 Rollback: <exact command to revert if this is wrong>
 ```
 
+If an issue number happens to be given (e.g. to link a mechanical cleanup to
+a tracking issue for visibility), it's recorded for reference only — it
+carries no gating weight on this path. If no issue number is given, branch
+naming falls back to a descriptive `<slug>` (there is no established
+issue-free branch-naming convention codified elsewhere in this repo yet —
+flagging as a follow-up rather than inventing one here); adapt Step 5's and
+Step 7's `impl/<issue#>-<slug>` / `--slot issue-<issue#>` forms to that slug
+directly.
+
 Then hand off exactly as in Step 7.
 
 ## Output
 
-On success, print the settled packet (issue #, plan revision, BUILD verdict
-comment link, collision check result, base SHA) and the branch/worktree
-handed off to. On stop, print exactly one next action — never both a stop and
-a partial handoff.
+On success, print the settled packet — for the full path: issue #, plan
+revision, BUILD verdict comment link, collision check result, base SHA, and
+the Step 6b writer-admission verdict (with any `BLOCK`/`NOT_PROVEN` reasons
+noted); for the mechanical path: the five recorded fields, collision check
+result, base SHA, and issue # if one was given — and the branch/worktree
+handed off to. On stop, print exactly one next action — never both a stop
+and a partial handoff.
 
 ## Bootstrap note
 
