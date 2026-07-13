@@ -66,7 +66,7 @@ impl ReadinessAnswerKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FirstCorrectAnswerReceipt {
-    elapsed_us: u128,
+    elapsed_us: u64,
     expected_result_class: String,
     answering_tier: String,
     freshness: String,
@@ -82,7 +82,7 @@ struct FirstCorrectAnswerReceipt {
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceReadinessReceipt {
     workspace_start: Option<Instant>,
-    milestones: BTreeMap<&'static str, u128>,
+    milestones: BTreeMap<&'static str, u64>,
     first_correct_answers: BTreeMap<&'static str, FirstCorrectAnswerReceipt>,
     peak_queued_work: usize,
     memory_high_water_bytes: Option<u64>,
@@ -104,7 +104,7 @@ impl WorkspaceReadinessReceipt {
         };
         self.milestones
             .entry(milestone.field_name())
-            .or_insert_with(|| at.saturating_duration_since(start).as_micros());
+            .or_insert_with(|| duration_us(at.saturating_duration_since(start)));
     }
 
     /// Record the first correct provider answer for a workload row.
@@ -123,7 +123,7 @@ impl WorkspaceReadinessReceipt {
         };
         self.first_correct_answers.entry(kind.field_name()).or_insert_with(|| {
             FirstCorrectAnswerReceipt {
-                elapsed_us: at.saturating_duration_since(start).as_micros(),
+                elapsed_us: duration_us(at.saturating_duration_since(start)),
                 expected_result_class: expected_result_class.to_string(),
                 answering_tier: answering_tier.to_string(),
                 freshness: freshness.to_string(),
@@ -185,6 +185,10 @@ impl WorkspaceReadinessReceipt {
             "Workspace readiness receipt"
         );
     }
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// Policy determining how a provider handles index-not-ready states.
