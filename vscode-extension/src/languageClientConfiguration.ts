@@ -106,31 +106,51 @@ function getPerlCriticConfiguration(documentUri?: vscode.Uri): vscode.WorkspaceC
   return vscode.workspace.getConfiguration('perl-lsp', scope);
 }
 
+type ExplicitSettingSpec<T> = {
+  key: string;
+  property: keyof T;
+  defaultValue: unknown;
+};
+
+function pickExplicit<T extends object>(
+  config: ConfigurationReader,
+  specs: readonly ExplicitSettingSpec<T>[],
+): Partial<T> {
+  const settings: Partial<T> = {};
+
+  for (const spec of specs) {
+    if (hasExplicitOverride(config, spec.key)) {
+      settings[spec.property] = config.get(spec.key, spec.defaultValue) as T[typeof spec.property];
+    }
+  }
+
+  return settings;
+}
+
+const NATIVE_CRITIC_SPECS: readonly ExplicitSettingSpec<NativeCriticSyncSettings>[] = [
+  { key: 'critic.enabled', property: 'enabled', defaultValue: true },
+  { key: 'critic.engine', property: 'engine', defaultValue: 'native' },
+  { key: 'critic.profile', property: 'profile', defaultValue: 'recommended' },
+  { key: 'critic.severity', property: 'severity', defaultValue: 3 },
+  { key: 'critic.include', property: 'include', defaultValue: [] },
+  { key: 'critic.exclude', property: 'exclude', defaultValue: [] },
+];
+
+const LEGACY_CRITIC_SPECS: readonly ExplicitSettingSpec<LegacyPerlCriticSyncSettings>[] = [
+  { key: 'perlcritic.enabled', property: 'enabled', defaultValue: false },
+  { key: 'perlcritic.severity', property: 'severity', defaultValue: 3 },
+  { key: 'perlcritic.profile', property: 'profile', defaultValue: '' },
+  { key: 'perlcritic.theme', property: 'theme', defaultValue: '' },
+];
+
 function getNativeCriticSyncSettings(
   config: ConfigurationReader,
   severityOverride?: number,
 ): NativeCriticSyncSettings {
-  const settings: NativeCriticSyncSettings = {};
+  const settings = pickExplicit(config, NATIVE_CRITIC_SPECS);
 
-  if (hasExplicitOverride(config, 'critic.enabled')) {
-    settings.enabled = config.get<boolean>('critic.enabled', true);
-  }
-  if (hasExplicitOverride(config, 'critic.engine')) {
-    settings.engine = config.get<string>('critic.engine', 'native');
-  }
-  if (hasExplicitOverride(config, 'critic.profile')) {
-    settings.profile = config.get<string>('critic.profile', 'recommended');
-  }
   if (severityOverride !== undefined) {
     settings.severity = severityOverride;
-  } else if (hasExplicitOverride(config, 'critic.severity')) {
-    settings.severity = config.get<number>('critic.severity', 3);
-  }
-  if (hasExplicitOverride(config, 'critic.include')) {
-    settings.include = config.get<string[]>('critic.include', []);
-  }
-  if (hasExplicitOverride(config, 'critic.exclude')) {
-    settings.exclude = config.get<string[]>('critic.exclude', []);
   }
 
   return settings;
@@ -139,22 +159,7 @@ function getNativeCriticSyncSettings(
 function getLegacyPerlCriticSyncSettings(
   config: ConfigurationReader,
 ): LegacyPerlCriticSyncSettings {
-  const settings: LegacyPerlCriticSyncSettings = {};
-
-  if (hasExplicitOverride(config, 'perlcritic.enabled')) {
-    settings.enabled = config.get<boolean>('perlcritic.enabled', false);
-  }
-  if (hasExplicitOverride(config, 'perlcritic.severity')) {
-    settings.severity = config.get<number>('perlcritic.severity', 3);
-  }
-  if (hasExplicitOverride(config, 'perlcritic.profile')) {
-    settings.profile = config.get<string>('perlcritic.profile', '');
-  }
-  if (hasExplicitOverride(config, 'perlcritic.theme')) {
-    settings.theme = config.get<string>('perlcritic.theme', '');
-  }
-
-  return settings;
+  return pickExplicit(config, LEGACY_CRITIC_SPECS);
 }
 
 function buildCriticSettings(

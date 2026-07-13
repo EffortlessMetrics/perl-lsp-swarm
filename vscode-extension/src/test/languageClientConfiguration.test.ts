@@ -7,7 +7,9 @@ import {
   classifyConfigurationChange,
   classifyConfigurationSetting,
   DEFAULT_INCLUDE_PATHS,
+  hasExplicitPerlCriticOverrides,
   syncLanguageClientConfiguration,
+  syncPerlCriticConfiguration,
 } from '../languageClientConfiguration';
 
 function makeConfig(values: Record<string, unknown>, explicit = Object.keys(values)) {
@@ -99,6 +101,31 @@ describe('language client configuration', () => {
     expect(buildPerlCriticConfiguration()).toEqual({
       settings: { perl: { perlcritic: { severity: 2 } } },
     });
+  });
+
+  test('detects explicit critic overrides and resets them when unset', () => {
+    const values = { 'critic.severity': 4 };
+    const explicit = ['critic.severity'];
+    const config = makeConfig(values, explicit);
+    (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue(config);
+
+    expect(hasExplicitPerlCriticOverrides()).toBe(true);
+    expect(buildPerlCriticConfiguration()).toEqual({
+      settings: { perl: { critic: { severity: 4 } } },
+    });
+
+    explicit.length = 0;
+
+    expect(hasExplicitPerlCriticOverrides()).toBe(false);
+    expect(buildPerlCriticConfiguration()).toBeUndefined();
+    expect(buildLanguageClientConfigurationPayload()).toEqual({
+      settings: { perl: {} },
+    });
+  });
+
+  test('does not notify when no active client is available', async () => {
+    await syncLanguageClientConfiguration(undefined);
+    await syncPerlCriticConfiguration(undefined);
   });
 
   test('adds disabled feature aliases without mutating the configured array', () => {
