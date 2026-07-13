@@ -845,17 +845,63 @@ use warnings;
     //   `explicit_refusal_safe`/`unclassified`), so this row's forced
     //   definition-cursoring cannot manufacture an unfalsifiable coverage gap.
     //
-    // CORRECTED FINDING: after re-pointing the cursor, the previously-claimed
-    // `coverage_gap` disposition for the `Catalyst.pm dispatch`
-    // (`PackageSubSameFile`) row is INVALIDATED by this fix — see the
-    // checked-in snapshot and the disposition rollup printed by this test for
-    // the row's corrected, currently-observed disposition. The `startup` row
-    // (the other `PackageSubSameFile` row) is likewise re-measured, not
+    // CORRECTED FINDING (round 5): after re-pointing the cursor, the
+    // previously-claimed `coverage_gap` disposition for the `Catalyst.pm
+    // dispatch` (`PackageSubSameFile`) row is INVALIDATED by this fix — see
+    // the checked-in snapshot and the disposition rollup printed by this test
+    // for the row's corrected, currently-observed disposition. The `startup`
+    // row (the other `PackageSubSameFile` row) is likewise re-measured, not
     // assumed unchanged. This strengthens, not weakens, the conclusion that
     // #1658 should stay open and bounded: the evidence for entity-linking
     // coverage gaps in the subroutine classes is now LESS conclusive than
     // previously claimed, not more — see the disposition table in the PR body
     // for the corrected, honest before/after per row.
+    //
+    // ## Revision note, round 6 (request-shape confound)
+    //
+    // A live maintainer review of round 5's fix found a SIXTH confound, one
+    // level deeper: the surviving `coverage_gap` row (`Catalyst.pm dispatch`,
+    // re-pointed in round 5 to cursor `$c->dispatch;`, line 180) is a
+    // variable-receiver METHOD call. But the positive control that
+    // authorizes `coverage_gap` for `PackageSubSameFile` rows
+    // (`SUBROUTINE_CONTROL_TEXT`, which cursors bare `target()` /
+    // package-qualified `InclDecl::target()`) is a FUNCTION call — bare or
+    // package-qualified name resolution, never a variable-receiver method
+    // dispatch. A FUNCTION-call control proves the semantic path resolves
+    // FUNCTION calls; it says nothing about whether a variable-receiver
+    // METHOD call resolves, since method dispatch and bareword/qualified
+    // name resolution are structurally different code paths
+    // (`references.rs::may_use_source_backed_references` /
+    // `live_source_backed_reference_locations`). Authorizing `coverage_gap`
+    // for a METHOD-shaped request on the strength of a FUNCTION-shaped
+    // control's evidence is the same class of error as rounds 1-5: the
+    // control doesn't match the request shape. This revision:
+    // - adds an explicit `RequestShape::{FunctionCall, MethodCall,
+    //   NotApplicable}` dimension to every replay row (recorded in both the
+    //   full receipt and the durable snapshot) so a method-shaped request can
+    //   never again be silently authorized by a function-shaped control;
+    // - adds `METHOD_CONTROL_TEXT` + `observe_multi_file_method_positive_control`,
+    //   a variable-receiver, same-file METHOD positive control mirroring
+    //   `SUBROUTINE_CONTROL_TEXT`'s def-plus-call-site shape but for a method
+    //   receiver (`$self->target_method()`), observed per-project alongside
+    //   the existing lexical/subroutine controls;
+    // - `classify_disposition` now requires the MATCHING
+    //   `method_positive_control_evidence` (not `subroutine_positive_control_evidence`)
+    //   before granting `coverage_gap` to a `MethodCall`-shaped
+    //   `PackageSubSameFile` row; without it, the honest disposition is
+    //   `method_shaped_request_unexercised` — "unexercised for this shape",
+    //   not "proven absent" and not "coverage gap".
+    //
+    // CORRECTED FINDING (round 6): the Catalyst.pm `dispatch` row's
+    // `coverage_gap` disposition is INVALIDATED again by this fix unless the
+    // method-shaped control itself independently activates
+    // `semantic_source_backed` for the `catalyst_skeleton` project — see the
+    // checked-in snapshot and the disposition rollup printed by this test for
+    // the row's corrected, currently-observed disposition, and the PR body
+    // for the honest before/after. The #1658 conclusion is UNCHANGED: keep
+    // the request-time scan BOUNDED, do not retire it — this correction only
+    // stops attributing the method-shaped row's non-activation to the wrong
+    // semantic path.
     //
     // ## Selection rule (so the corpus composition is inspectable)
     //
@@ -1018,6 +1064,47 @@ use warnings;
         }
     }
 
+    /// Whether a request's cursor sits on a bare/package-qualified FUNCTION
+    /// call, or a variable-receiver METHOD call (`$obj->method`). Added in PR
+    /// #3998's sixth review round (maintainer finding on live review of round
+    /// 5's fix): the existing subroutine positive control
+    /// (`SUBROUTINE_CONTROL_TEXT`, which cursors bare `target()` /
+    /// package-qualified `InclDecl::target()`) proves the semantic path can
+    /// resolve a FUNCTION call; it says nothing about whether a
+    /// variable-receiver METHOD call resolves — method dispatch and
+    /// bareword/qualified name resolution are structurally different code
+    /// paths. The Catalyst.pm `dispatch` row's real request is `$c->dispatch`
+    /// — a METHOD call — so authorizing `coverage_gap` for it on the
+    /// strength of the FUNCTION-shaped control repeats the same class of
+    /// confound as rounds 1-5, one level deeper: the control doesn't match
+    /// the request shape. See `classify_disposition`, which now requires a
+    /// MATCHING `method_positive_control_evidence` before granting
+    /// `coverage_gap` to a `MethodCall`-shaped `PackageSubSameFile` row.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum RequestShape {
+        /// Bare (`target()`) or package-qualified (`Pkg::target()`) function
+        /// call — the shape `SUBROUTINE_CONTROL_TEXT` exercises.
+        FunctionCall,
+        /// Variable-receiver method call (`$obj->method`, `$self->method`) —
+        /// a distinct request shape the function-call control does not
+        /// exercise. The shape `METHOD_CONTROL_TEXT` exercises.
+        MethodCall,
+        /// Not a subroutine call at all (variable references, imported
+        /// symbols, empty positions, or a cursor sitting on a definition line
+        /// rather than any call site).
+        NotApplicable,
+    }
+
+    impl RequestShape {
+        fn as_str(self) -> &'static str {
+            match self {
+                Self::FunctionCall => "function_call",
+                Self::MethodCall => "method_call",
+                Self::NotApplicable => "not_applicable",
+            }
+        }
+    }
+
     /// One checked-in replay request. `cursor_occurrence` and the two
     /// occurrence-index sets refer to the boundary-safe, file-ordered
     /// occurrences of `needle` in `file` (see `ident_boundary_occurrences`).
@@ -1041,6 +1128,8 @@ use warnings;
         declaration_shape: DeclarationShape,
         /// See `CursorSite` doc comment.
         cursor_site: CursorSite,
+        /// See `RequestShape` doc comment.
+        request_shape: RequestShape,
         scenario_rationale: &'static str,
     }
 
@@ -1086,6 +1175,7 @@ use warnings;
             known_false_occurrences: &[0],
             declaration_shape: DeclarationShape::SimpleInit,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // Same `$plugins` symbol, `includeDeclaration: true` variant: cursor
@@ -1100,6 +1190,7 @@ use warnings;
             known_false_occurrences: &[],
             declaration_shape: DeclarationShape::SimpleInit,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "same_file_lexical_usage_with_declaration_included",
         },
         // `$c` in `dispatch` (occ 0-6, occ0 = decl): must exclude the
@@ -1119,6 +1210,7 @@ use warnings;
             known_false_occurrences: &[0, 7, 8, 9, 10],
             declaration_shape: DeclarationShape::Destructuring,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$c` in `handler` (occ 7-10, occ7 = decl): the mirror-image request
@@ -1136,6 +1228,7 @@ use warnings;
             known_false_occurrences: &[0, 1, 2, 3, 4, 5, 6, 7],
             declaration_shape: DeclarationShape::SimpleInit,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch`: def(54, occ0) + true call `$self->dispatch($c)`(67, occ3)
@@ -1156,6 +1249,7 @@ use warnings;
             expected_true_occurrences: &[0, 3], known_false_occurrences: &[1, 2],
             declaration_shape: DeclarationShape::NotApplicable,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::MethodCall,
             scenario_rationale: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
         },
         // `startup`: call(35, occ0) + def(94, occ1), unambiguous same-file sub.
@@ -1169,6 +1263,7 @@ use warnings;
             expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::MethodCall,
             scenario_rationale: "same_file_subroutine_def_and_call",
         },
         // `croak`(73, occ1): Carp is not vendored in this fixture project, so
@@ -1180,6 +1275,7 @@ use warnings;
             expected_true_occurrences: &[], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::FunctionCall,
             scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
         // ---- Dancer2: lib/Dancer2/Core/App.pm ----
@@ -1196,6 +1292,7 @@ use warnings;
             known_false_occurrences: &[0, 3, 4],
             declaration_shape: DeclarationShape::SimpleInit,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$method` scope pair, side A: `add_route` (occ0 = decl, occ1) vs
@@ -1211,6 +1308,7 @@ use warnings;
             known_false_occurrences: &[0, 2, 3],
             declaration_shape: DeclarationShape::SimpleInit,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$method` scope pair, side B: the mirror-image request (occ2 = decl).
@@ -1226,6 +1324,7 @@ use warnings;
             known_false_occurrences: &[0, 1, 2],
             declaration_shape: DeclarationShape::SimpleInit,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch` is DEFINED at App.pm:34; its only in-project call site is
@@ -1249,6 +1348,7 @@ use warnings;
             expected_true_occurrences: &[0], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::MethodCall,
             scenario_rationale: "cross_file_caller_lives_outside_the_same_file_scope",
         },
         // `croak`(27, occ1): same out-of-fixture-declaration reasoning as Mojolicious.
@@ -1259,6 +1359,7 @@ use warnings;
             expected_true_occurrences: &[], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::FunctionCall,
             scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
         // ---- Catalyst: lib/Catalyst/Action.pm, lib/Catalyst.pm, lib/Catalyst/Dispatcher.pm ----
@@ -1276,6 +1377,7 @@ use warnings;
             known_false_occurrences: &[0],
             declaration_shape: DeclarationShape::SimpleInit,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `$c` in `dispatch` (occ0-4, occ0 = decl): must exclude `$c` in
@@ -1293,6 +1395,7 @@ use warnings;
             known_false_occurrences: &[0, 5, 6, 7, 8, 9, 10],
             declaration_shape: DeclarationShape::Destructuring,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "same_file_lexical_usage_without_declaration",
         },
         // `dispatch` in Catalyst.pm: call `$c->dispatch;`(180,occ0) +
@@ -1310,6 +1413,7 @@ use warnings;
             expected_true_occurrences: &[0, 1], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::MethodCall,
             scenario_rationale: "same_file_subroutine_def_and_call",
         },
         // `dispatch` in Dispatcher.pm: def(12,occ0); ALL THREE in-file calls
@@ -1339,6 +1443,7 @@ use warnings;
             expected_true_occurrences: &[0], known_false_occurrences: &[1, 2, 3],
             declaration_shape: DeclarationShape::NotApplicable,
             cursor_site: CursorSite::Definition,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "cross_class_method_dispatch_not_disambiguated_by_receiver_type",
         },
         // `croak`(31, occ1): same out-of-fixture-declaration reasoning as above.
@@ -1349,6 +1454,7 @@ use warnings;
             expected_true_occurrences: &[], known_false_occurrences: &[],
             declaration_shape: DeclarationShape::NotApplicable,
             cursor_site: CursorSite::Usage,
+            request_shape: RequestShape::FunctionCall,
             scenario_rationale: "carp_croak_declared_outside_the_fixture_project",
         },
     ];
@@ -1405,6 +1511,8 @@ use warnings;
         declaration_shape: DeclarationShape,
         /// See `CursorSite` doc comment.
         cursor_site: CursorSite,
+        /// See `RequestShape` doc comment.
+        request_shape: RequestShape,
         scenario_rationale: &'static str,
         disposition: &'static str,
     }
@@ -1692,11 +1800,25 @@ use warnings;
     ///   false`) that failed to reach `source_backed`, AND ONLY when the
     ///   MATCHING positive control has evidence for that project:
     ///   `lexical_positive_control_evidence` for `LocalLexical`,
-    ///   `subroutine_positive_control_evidence` for `PackageSubSameFile`. A
-    ///   lexical-only control does NOT authorize `coverage_gap` for
-    ///   `PackageSubSameFile` — a subroutine-specific harness/entity-
-    ///   resolution boundary is a distinct possible confound. Without the
-    ///   matching evidence the class is `unexercised`, not `coverage_gap`.
+    ///   `subroutine_positive_control_evidence` for a `FunctionCall`-shaped
+    ///   `PackageSubSameFile` row, `method_positive_control_evidence` for a
+    ///   `MethodCall`-shaped `PackageSubSameFile` row. A lexical-only control
+    ///   does NOT authorize `coverage_gap` for `PackageSubSameFile` — a
+    ///   subroutine-specific harness/entity-resolution boundary is a distinct
+    ///   possible confound. Without the matching evidence the class is
+    ///   `unexercised`, not `coverage_gap`.
+    /// - `method_shaped_request_unexercised`: PR #3998 round 6 (see the
+    ///   module doc comment). A `MethodCall`-shaped `PackageSubSameFile` row
+    ///   whose FUNCTION-call control (`subroutine_positive_control_evidence`)
+    ///   activated — which would have authorized `coverage_gap` under the
+    ///   pre-round-6 logic — but whose MATCHING method-shaped control
+    ///   (`method_positive_control_evidence`) did NOT. The function-call
+    ///   control's activation proves nothing about method-receiver
+    ///   resolution, so this row's non-activation cannot be attributed to a
+    ///   genuine entity-linking coverage gap; it is honestly "unexercised for
+    ///   this shape", distinct from a `PackageSubSameFile` row whose
+    ///   FUNCTION-call control never activated at all (which stays the plain
+    ///   `unexercised` bucket below, unaffected by this shape check).
     /// - `unclassified`: the default — including any `source_backed` row that
     ///   is NOT strictly checked, or a strictly-checked `source_backed` row
     ///   that (should never happen, since the hard assertion above would have
@@ -1706,12 +1828,14 @@ use warnings;
         fact_class: FactClass,
         declaration_shape: DeclarationShape,
         include_declaration: bool,
+        request_shape: RequestShape,
         source_backed: bool,
         result_count: usize,
         result_locations: &[(String, u32, u32)],
         expected_keys: &[(String, u32, u32)],
         lexical_positive_control_evidence: bool,
         subroutine_positive_control_evidence: bool,
+        method_positive_control_evidence: bool,
     ) -> &'static str {
         if declaration_shape == DeclarationShape::Destructuring {
             return "unsupported_declaration_shape";
@@ -1737,7 +1861,19 @@ use warnings;
                 }
             }
             FactClass::PackageSubSameFile => {
-                if subroutine_positive_control_evidence {
+                if request_shape == RequestShape::MethodCall {
+                    // Round 6: a method-shaped request must be authorized by
+                    // a MATCHING method-shaped control, never by the
+                    // function-call control alone (see the doc comment
+                    // above and the module doc comment's round-6 note).
+                    if method_positive_control_evidence {
+                        "coverage_gap"
+                    } else if subroutine_positive_control_evidence {
+                        "method_shaped_request_unexercised"
+                    } else {
+                        "unexercised"
+                    }
+                } else if subroutine_positive_control_evidence {
                     "coverage_gap"
                 } else {
                     "unexercised"
@@ -1760,6 +1896,7 @@ use warnings;
         fixture_files: &[(String, String)],
         lexical_positive_control_evidence: bool,
         subroutine_positive_control_evidence: bool,
+        method_positive_control_evidence: bool,
     ) -> Result<ReplayRow, Box<dyn std::error::Error>> {
         let content = fixture_content(fixture_files, request.file)?;
         let uri = project_uri(request.project, request.file);
@@ -1895,12 +2032,14 @@ use warnings;
             request.fact_class,
             request.declaration_shape,
             request.include_declaration,
+            request.request_shape,
             evidence.source_backed,
             result_count,
             &result_locations,
             &expected_keys,
             lexical_positive_control_evidence,
             subroutine_positive_control_evidence,
+            method_positive_control_evidence,
         );
 
         Ok(ReplayRow {
@@ -1927,6 +2066,7 @@ use warnings;
             receipt_source_backed_state: evidence.source_backed_state,
             declaration_shape: request.declaration_shape,
             cursor_site: request.cursor_site,
+            request_shape: request.request_shape,
             scenario_rationale: request.scenario_rationale,
             disposition,
         })
@@ -2002,6 +2142,7 @@ use warnings;
             receipt_source_backed_state: evidence.source_backed_state,
             declaration_shape: DeclarationShape::NotApplicable,
             cursor_site: CursorSite::NotApplicable,
+            request_shape: RequestShape::NotApplicable,
             scenario_rationale: "no_symbol_under_cursor_correctly_empty",
             disposition: "explicit_refusal_safe",
         })
@@ -2034,6 +2175,7 @@ use warnings;
             "receipt_source_backed_state": row.receipt_source_backed_state,
             "declaration_shape": row.declaration_shape.as_str(),
             "cursor_site": row.cursor_site.as_str(),
+            "request_shape": row.request_shape.as_str(),
             "scenario_rationale": row.scenario_rationale,
             "disposition": row.disposition,
         })
@@ -2067,6 +2209,7 @@ use warnings;
             "receipt_source_backed_state": row.receipt_source_backed_state,
             "declaration_shape": row.declaration_shape.as_str(),
             "cursor_site": row.cursor_site.as_str(),
+            "request_shape": row.request_shape.as_str(),
             "scenario_rationale": row.scenario_rationale,
             "disposition": row.disposition,
         })
@@ -2243,20 +2386,88 @@ use warnings;
         Ok(tier == "semantic_source_backed")
     }
 
+    /// A variable-receiver, same-file METHOD positive control — the shape
+    /// counterpart to `SUBROUTINE_CONTROL_TEXT`. PR #3998 round 6 (maintainer
+    /// finding on live review of round 5's fix): the existing subroutine
+    /// control only proves the semantic path can resolve a bare/
+    /// package-qualified FUNCTION call (`target()` / `InclDecl::target()`).
+    /// The real Catalyst `dispatch` request this replay's surviving
+    /// `coverage_gap` row names is `$c->dispatch` — a variable-receiver
+    /// METHOD call, a distinct request shape the function-call control does
+    /// not exercise. Mirrors `SUBROUTINE_CONTROL_TEXT`'s
+    /// declaration-plus-call-site shape, but the call site is a method
+    /// invocation through a blessed-self receiver (`$self->target_method()`)
+    /// rather than a bareword/qualified name.
+    const METHOD_CONTROL_TEXT: &str = concat!(
+        "package InclDecl;\n",
+        "\n",
+        "sub new { return bless {}, shift; }\n",
+        "\n",
+        "sub target_method {\n", // line 4 — declaration site
+        "    return 1;\n",
+        "}\n",
+        "\n",
+        "sub caller {\n",
+        "    my $self = shift;\n",
+        "    $self->target_method();\n", // line 9 — variable-receiver method call (cursor here)
+        "}\n",
+        "\n",
+        "1;\n",
+    );
+
+    /// The SAME method-receiver control, opened alongside a real,
+    /// already-opened multi-file project in the SAME server. Returns whether
+    /// it reached `semantic_source_backed` — does NOT panic on failure, for
+    /// the same reason `observe_multi_file_subroutine_positive_control`
+    /// doesn't: whether a variable-receiver method call resolves through the
+    /// same-file AST-indexed path AT ALL is itself part of the evidence this
+    /// replay collects (PR #3998 round 6), not an assumed precondition.
+    /// Required (and must return `true`) before a `MethodCall`-shaped
+    /// `PackageSubSameFile` row (the Catalyst.pm `dispatch` row) may be
+    /// classified `coverage_gap` — see `classify_disposition` and the
+    /// module doc comment's round-6 note. If this returns `false`, the
+    /// honest disposition for that row is `method_shaped_request_unexercised`,
+    /// not `coverage_gap`.
+    fn observe_multi_file_method_positive_control(
+        project: &str,
+        server: &LspServer,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let control_uri = format!("file:///real_projects/{project}/__method_control__.pl");
+        open_document(server, &control_uri, METHOD_CONTROL_TEXT)?;
+        let (line, character) = position_of(METHOD_CONTROL_TEXT, "target_method(")?;
+
+        let params = json!({
+            "textDocument": {"uri": control_uri},
+            "position": {"line": line, "character": character},
+            "context": {"includeDeclaration": true}
+        });
+        server.test_handle_references(Some(params))?;
+        let explanation = explain_provider_decision(server, "references")?;
+        let receipt = explanation
+            .get("request_receipt")
+            .and_then(Value::as_object)
+            .ok_or("missing request_receipt")?;
+        let tier = receipt.get("answering_tier").and_then(Value::as_str).unwrap_or("");
+        eprintln!("multi_file_method_positive_control project={project} observed_tier={tier:?}");
+        Ok(tier == "semantic_source_backed")
+    }
+
     /// Representative-workspace replay for #2674 PR-3 (references measurement,
     /// no live provider behavior change). Fires every request in
     /// `REPLAY_MANIFEST` + `EMPTY_POSITION_MANIFEST` against three real,
-    /// committed project fixtures, observes an in-band LEXICAL and SUBROUTINE
-    /// positive control per project (see
+    /// committed project fixtures, observes an in-band LEXICAL, SUBROUTINE,
+    /// and METHOD positive control per project (see
     /// `observe_multi_file_lexical_positive_control` /
-    /// `observe_multi_file_subroutine_positive_control` — these calls are
-    /// inline, not separate skippable tests, so removing either removes
-    /// coverage from THIS governing test; neither panics on a `false`
+    /// `observe_multi_file_subroutine_positive_control` /
+    /// `observe_multi_file_method_positive_control` — these calls are
+    /// inline, not separate skippable tests, so removing any of them removes
+    /// coverage from THIS governing test; none panics on a `false`
     /// observation, since that is itself collected evidence, not an assumed
-    /// precondition — see Defect 2 in the module doc comment above), checks
-    /// the 9 hard assertions described in the module doc comment above,
-    /// snapshots a durable receipt via `insta`, and prints the full
-    /// (latency-inclusive) receipt with a per-request #1658 disposition.
+    /// precondition — see Defect 2 and the round-6 note in the module doc
+    /// comment above), checks the 9 hard assertions described in the module
+    /// doc comment above, snapshots a durable receipt via `insta`, and
+    /// prints the full (latency-inclusive) receipt with a per-request #1658
+    /// disposition.
     #[test]
     fn references_representative_workspace_replay() -> Result<(), Box<dyn std::error::Error>> {
         use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -2266,11 +2477,18 @@ use warnings;
         let mut servers: HashMap<&str, LspServer> = HashMap::new();
         let mut lexical_positive_control_evidence: HashMap<&str, bool> = HashMap::new();
         let mut subroutine_positive_control_evidence: HashMap<&str, bool> = HashMap::new();
+        let mut method_positive_control_evidence: HashMap<&str, bool> = HashMap::new();
 
         // Global (project-independent) sanity checks first -- these DO panic
         // on failure, since they establish the harness baseline: if a
         // single-file server can't reach `semantic_source_backed` for either
-        // shape, nothing downstream in this replay is trustworthy.
+        // shape, nothing downstream in this replay is trustworthy. There is
+        // deliberately NO `assert_single_file_method_positive_control` here:
+        // whether a variable-receiver method call reaches
+        // `semantic_source_backed` at all (even in a fully controlled
+        // single-file shape) is itself the round-6 finding under
+        // investigation, not an assumed harness precondition -- see
+        // `observe_multi_file_method_positive_control`.
         assert_single_file_lexical_positive_control()?;
         assert_single_file_subroutine_positive_control()?;
 
@@ -2280,16 +2498,22 @@ use warnings;
             // In-band multi-file-shape positive controls: observed inline, so
             // a regression here is visible in THIS governing test's own
             // receipt, not a separate test that could silently bit-rot or be
-            // skipped. Two SEPARATE controls (Defect 2, PR #3998 fourth
-            // review round): a lexical-only control does not authorize
-            // `coverage_gap` for `PackageSubSameFile` rows, since subroutine
-            // references go through a different (`symbol_is_variable ==
-            // false`) resolution path -- and empirically the two controls do
-            // NOT always agree (see the disposition rollup in the receipt).
+            // skipped. THREE separate controls (Defect 2, PR #3998 fourth
+            // review round, extended by round 6): a lexical-only control does
+            // not authorize `coverage_gap` for `PackageSubSameFile` rows,
+            // since subroutine references go through a different
+            // (`symbol_is_variable == false`) resolution path -- and a
+            // FUNCTION-call subroutine control does not authorize
+            // `coverage_gap` for a METHOD-shaped `PackageSubSameFile` row
+            // either, since method dispatch is a distinct request shape
+            // (round 6) -- and empirically the controls do NOT always agree
+            // (see the disposition rollup in the receipt).
             let lexical_ok = observe_multi_file_lexical_positive_control(project, &server)?;
             lexical_positive_control_evidence.insert(project, lexical_ok);
             let subroutine_ok = observe_multi_file_subroutine_positive_control(project, &server)?;
             subroutine_positive_control_evidence.insert(project, subroutine_ok);
+            let method_ok = observe_multi_file_method_positive_control(project, &server)?;
+            method_positive_control_evidence.insert(project, method_ok);
             project_files.insert(project, files);
             servers.insert(project, server);
         }
@@ -2302,12 +2526,15 @@ use warnings;
                 lexical_positive_control_evidence.get(request.project).copied().unwrap_or(false);
             let subroutine_evidence =
                 subroutine_positive_control_evidence.get(request.project).copied().unwrap_or(false);
+            let method_evidence =
+                method_positive_control_evidence.get(request.project).copied().unwrap_or(false);
             rows.push(fire_replay_request(
                 server,
                 request,
                 files,
                 lexical_evidence,
                 subroutine_evidence,
+                method_evidence,
             )?);
         }
         for (project, file, line0) in EMPTY_POSITION_MANIFEST.iter().copied() {
@@ -2369,6 +2596,7 @@ use warnings;
             "projects": projects,
             "lexical_positive_control_evidence": lexical_positive_control_evidence,
             "subroutine_positive_control_evidence": subroutine_positive_control_evidence,
+            "method_positive_control_evidence": method_positive_control_evidence,
             "request_count": rows.len(),
             "rows": rows.iter().map(row_to_json_full).collect::<Vec<_>>(),
         });
@@ -2391,9 +2619,17 @@ use warnings;
         // not just visible under `--nocapture`. Any drift (a new project, a
         // changed disposition, a newly-reached source-backed row) fails this
         // test until the snapshot is reviewed and re-accepted.
+        //
+        // `method_positive_control_evidence` is checked in HERE (round 6,
+        // per-project sorted into a `BTreeMap` for deterministic key order)
+        // so the method control's observed activation can never silently
+        // regress without the snapshot flagging it for review.
+        let method_positive_control_evidence_sorted: BTreeMap<&str, bool> =
+            method_positive_control_evidence.iter().map(|(k, v)| (*k, *v)).collect();
         let snapshot_receipt = json!({
             "schema_version": 2,
             "projects": projects,
+            "method_positive_control_evidence": method_positive_control_evidence_sorted,
             "request_count": rows.len(),
             "rows": rows.iter().map(row_to_json_snapshot).collect::<Vec<_>>(),
         });
@@ -2634,10 +2870,12 @@ use warnings;
             FactClass::LocalLexical,
             DeclarationShape::SimpleInit,
             false,
+            RequestShape::NotApplicable,
             false,
             8,
             &empty_locations,
             &empty_locations,
+            false,
             false,
             false,
         );
@@ -2651,11 +2889,13 @@ use warnings;
             FactClass::LocalLexical,
             DeclarationShape::SimpleInit,
             false,
+            RequestShape::NotApplicable,
             false,
             8,
             &empty_locations,
             &empty_locations,
             true,
+            false,
             false,
         );
         assert_eq!(
@@ -2677,11 +2917,13 @@ use warnings;
             FactClass::PackageSubSameFile,
             DeclarationShape::NotApplicable,
             true,
+            RequestShape::FunctionCall,
             false,
             2,
             &empty_locations,
             &empty_locations,
             true,
+            false,
             false,
         );
         assert_eq!(
@@ -2694,17 +2936,101 @@ use warnings;
             FactClass::PackageSubSameFile,
             DeclarationShape::NotApplicable,
             true,
+            RequestShape::FunctionCall,
             false,
             2,
             &empty_locations,
             &empty_locations,
             true,
             true,
+            false,
         );
         assert_eq!(
             with_subroutine_control, "coverage_gap",
             "with matching subroutine positive-control evidence, a non-source-backed \
              PackageSubSameFile row is coverage_gap"
+        );
+    }
+
+    /// Revert-proves the round-6 fix (PR #3998 sixth review round, live
+    /// maintainer finding): a FUNCTION-call positive control must NOT
+    /// authorize `coverage_gap` for a `MethodCall`-shaped `PackageSubSameFile`
+    /// row (the Catalyst.pm `dispatch` row's real shape, `$c->dispatch`) --
+    /// method dispatch is a distinct request shape from bareword/qualified
+    /// function-name resolution, so the function-call control's activation
+    /// alone must leave a method-shaped row `method_shaped_request_unexercised`
+    /// until a MATCHING method-shaped control also passes. A
+    /// `PackageSubSameFile` row whose function-call control never activated
+    /// at all stays the plain `unexercised` bucket regardless of shape,
+    /// unaffected by this check.
+    #[test]
+    fn classify_disposition_requires_method_specific_evidence_for_method_shaped_package_sub_coverage_gap(
+    ) {
+        let empty_locations: Vec<(String, u32, u32)> = Vec::new();
+
+        // Function-call control activated, but the method-shaped control did
+        // NOT: this is exactly the pre-round-6 confound (the Catalyst.pm
+        // `dispatch` row's real, pre-fix shape) -- must not be `coverage_gap`.
+        let function_control_only = classify_disposition(
+            FactClass::PackageSubSameFile,
+            DeclarationShape::NotApplicable,
+            true,
+            RequestShape::MethodCall,
+            false,
+            1,
+            &empty_locations,
+            &empty_locations,
+            true,
+            true,
+            false,
+        );
+        assert_eq!(
+            function_control_only, "method_shaped_request_unexercised",
+            "a FUNCTION-call-only positive control must not authorize coverage_gap for a \
+             MethodCall-shaped PackageSubSameFile row"
+        );
+
+        // With a MATCHING method-shaped control also passing, coverage_gap is
+        // authorized.
+        let with_method_control = classify_disposition(
+            FactClass::PackageSubSameFile,
+            DeclarationShape::NotApplicable,
+            true,
+            RequestShape::MethodCall,
+            false,
+            1,
+            &empty_locations,
+            &empty_locations,
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            with_method_control, "coverage_gap",
+            "with a matching method-shaped positive control also passing, a non-source-backed \
+             MethodCall-shaped PackageSubSameFile row is coverage_gap"
+        );
+
+        // Neither control activated: stays the plain `unexercised` bucket,
+        // not `method_shaped_request_unexercised` -- that label is reserved
+        // for the specific "would-have-been-wrongly-authorized" case.
+        let neither_control = classify_disposition(
+            FactClass::PackageSubSameFile,
+            DeclarationShape::NotApplicable,
+            true,
+            RequestShape::MethodCall,
+            false,
+            1,
+            &empty_locations,
+            &empty_locations,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(
+            neither_control, "unexercised",
+            "when the function-call control never activated either, a MethodCall-shaped \
+             PackageSubSameFile row stays the plain unexercised bucket"
         );
     }
 
@@ -2723,11 +3049,13 @@ use warnings;
                 FactClass::LocalLexical,
                 DeclarationShape::SimpleInit,
                 true,
+                RequestShape::NotApplicable,
                 false,
                 3,
                 &empty_locations,
                 &empty_locations,
                 lexical_positive_control_evidence,
+                false,
                 false,
             );
             assert_eq!(
@@ -2750,10 +3078,12 @@ use warnings;
             FactClass::DynamicAmbiguous,
             DeclarationShape::NotApplicable,
             false,
+            RequestShape::NotApplicable,
             false,
             12,
             &empty_locations,
             &empty_locations,
+            false,
             false,
             false,
         );
@@ -2766,10 +3096,12 @@ use warnings;
             FactClass::DynamicAmbiguous,
             DeclarationShape::NotApplicable,
             false,
+            RequestShape::NotApplicable,
             false,
             0,
             &empty_locations,
             &empty_locations,
+            false,
             false,
             false,
         );
@@ -2794,11 +3126,13 @@ use warnings;
                 FactClass::LocalLexical,
                 DeclarationShape::Destructuring,
                 false,
+                RequestShape::NotApplicable,
                 false,
                 8,
                 &empty_locations,
                 &empty_locations,
                 lexical_positive_control_evidence,
+                false,
                 false,
             );
             assert_eq!(
