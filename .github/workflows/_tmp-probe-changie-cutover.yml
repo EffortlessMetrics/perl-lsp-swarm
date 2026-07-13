@@ -1,6 +1,9 @@
 name: Temporary probe Changie release batching
 
 on:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/_tmp-probe-changie-cutover.yml]
   push:
     branches: [agent/changie-release-cutover]
     paths: [.github/workflows/_tmp-probe-changie-cutover.yml]
@@ -24,7 +27,7 @@ jobs:
           asset="changie_${CHANGIE_VERSION}_linux_amd64.tar.gz"
           curl -fsSL "https://github.com/miniscruff/changie/releases/download/v${CHANGIE_VERSION}/${asset}" -o "/tmp/${asset}"
           echo "${CHANGIE_LINUX_AMD64_SHA256}  /tmp/${asset}" | sha256sum -c -
-          tar -xzf "/tmp/${asset}" -C /usr/local/bin changie
+          sudo tar -xzf "/tmp/${asset}" -C /usr/local/bin changie
           changie --version
       - name: Probe product and VS Code project batching
         run: |
