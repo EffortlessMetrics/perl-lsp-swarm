@@ -8,23 +8,35 @@
 //!
 //! - **dirty** — `git status --porcelain` reports uncommitted changes;
 //! - **locked** — `git worktree list --porcelain` reports a `locked` entry;
-//! - has **unpushed commits** — the branch's `HEAD` has commits not present
-//!   on its upstream (`@{u}`), or, when no upstream is configured, not
-//!   present on `origin/main`/`origin/master`; a clean worktree can still
-//!   hold committed-but-unpushed work, and losing it is just as much data
-//!   loss as losing uncommitted changes (a fail-safe: if neither reference
-//!   can be resolved, "unpushed" is assumed);
 //! - on a branch with an **open PR** (or PR status could not be determined —
 //!   "unknown" is treated as unsafe, never as "no PR", to avoid destroying a
 //!   worktree that turns out to have a live PR when `gh` is unavailable);
+//! - has **unpushed commits and no merged PR** — the branch's `HEAD` has
+//!   commits not present on its upstream (`@{u}`), or, when no upstream is
+//!   configured, not present on `origin/main`/`origin/master`, *and* no
+//!   merged PR exists for it either. A clean worktree can still hold
+//!   committed-but-unpushed work, and losing it is just as much data loss
+//!   as losing uncommitted changes. This repo squash-merges exclusively, so
+//!   a branch whose PR was squash-merged is *always* "ahead" of
+//!   `origin/main` by commit count (the squash commit is never an ancestor
+//!   of the original commits) — a merged-PR hit from `gh` is checked first
+//!   and, if found, overrides the ahead-by-ancestry signal (fail-safe: if
+//!   neither the upstream/default-branch reference nor the merged-PR query
+//!   can be resolved, "unpushed" is assumed);
 //! - the **root checkout**.
 //!
+//! Removal itself never passes `--force` to `git worktree remove` — a
+//! concurrent write between classification and removal makes git refuse,
+//! and that refusal is logged and skipped rather than treated as a fatal
+//! error for the whole run.
+//!
 //! This mirrors `scripts/swarm-clean`'s dry-run-first, classify-before-delete
-//! convention. It intentionally does *not* implement that script's full
-//! KEEP/CACHE-ONLY/REMOVE/SALVAGE/REVIEW bucket taxonomy (branch-merged
-//! detection, active-lock-with-live-pid, etc.) — this is the narrow safety
-//! guard against unconditional force-removal; the fuller classification is
-//! tracked separately (#3957 W2). See issue #4097.
+//! convention (including its no-`--force` removal and merged-PR-by-head
+//! query). It intentionally does *not* implement that script's full
+//! KEEP/CACHE-ONLY/REMOVE/SALVAGE/REVIEW bucket taxonomy (active-lock-with-
+//! live-pid, etc.) — this is the narrow safety guard against unconditional
+//! force-removal; the fuller classification is tracked separately (#3957
+//! W2). See issue #4097.
 
 use crate::utils::project_root;
 use color_eyre::eyre::{Result, bail};
@@ -61,6 +73,31 @@ enum PrStatus {
     Unknown,
 }
 
+/// Tri-state result of asking whether a branch's PR has already been
+/// **merged**.
+///
+/// This repo merges exclusively via GitHub's squash-merge (confirmed:
+/// `allow_squash_merge=true`, `delete_branch_on_merge=true`, no merge
+/// commits in `origin/main` history — every landed change is a single
+/// `(#N)` squash commit). A squash-merge commit is never an ancestor of the
+/// original branch's commits, so ancestry-based checks like
+/// [`has_unpushed_commits`] cannot tell "already landed via squash-merge"
+/// apart from "genuinely never pushed" — both look "ahead" of
+/// `origin/main`/`@{u}` by commit count. Querying `gh pr list --state
+/// merged --head <branch>` is authoritative instead: GitHub still resolves
+/// a PR by its recorded head-branch name even after the branch ref itself
+/// has been deleted (the `delete_branch_on_merge` default here).
+///
+/// `Unknown` (gh absent, unauthenticated, or the query otherwise failed)
+/// must never be treated the same as `NotMerged` — doing so could let an
+/// unmerged branch be removed on a machine where `gh` can't answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MergeStatus {
+    Merged(u64),
+    NotMerged,
+    Unknown,
+}
+
 /// Environment variable that overrides the `gh` binary invoked to check PR
 /// status. Used by tests to inject a stub; unset in production, in which
 /// case the real `gh` on `PATH` is used.
@@ -74,6 +111,22 @@ fn gh_program() -> String {
 ///
 /// `root` defaults to the perl-lsp workspace root (via [`project_root`])
 /// when `None`; tests pass an explicit fixture root.
+///
+/// # Errors
+///
+/// Returns an error when:
+/// - `root` is `None` and the workspace root cannot be resolved
+///   ([`project_root`]);
+/// - `git worktree prune` or `git worktree list --porcelain` fails to run
+///   or exits non-zero;
+/// - the `git worktree list --porcelain` output is not valid UTF-8;
+/// - the final `git worktree prune` (after removal) fails to run or exits
+///   non-zero.
+///
+/// A single worktree's `git worktree remove` refusing (e.g. it became dirty
+/// between classification and removal) is *not* an error here — see the
+/// module docs — it's logged and skipped so the rest of the batch still
+/// gets cleaned up.
 pub fn cleanup(root: Option<PathBuf>, force: bool) -> Result<()> {
     let root = match root {
         Some(root) => root,
@@ -149,15 +202,34 @@ fn run(root: &Path, force: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Deliberately no `--force` here: `to_remove` is a snapshot taken by the
+    // classification pass above, before any of these `git worktree remove`
+    // calls run. A concurrent agent can write to (or commit into) one of
+    // these worktrees in the gap between classification and this loop
+    // reaching it — the classification pass can take a while, since it does
+    // a `gh` round trip per entry. `--force` bypasses git's own
+    // last-resort "worktree is not clean" refusal, which is exactly the
+    // hazard #4097 exists to close; running without it keeps that refusal
+    // live as a second, independent safety net. Mirrors
+    // `scripts/swarm-clean`'s `remove_worktree()`, which uses the same
+    // no-`--force` + warn-and-continue pattern.
+    //
+    // A refusal here must not abort the whole cleanup run — that would let
+    // one raced worktree block cleaning every other, genuinely-safe entry
+    // in the same batch. Log a skip warning and move on.
     for entry in &to_remove {
         println!("Removing: {}", entry.path.display());
         let remove_status = Command::new("git")
             .current_dir(root)
-            .args(["worktree", "remove", "--force"])
+            .args(["worktree", "remove"])
             .arg(&entry.path)
             .status()?;
         if !remove_status.success() {
-            bail!("git worktree remove failed for {}", entry.path.display());
+            println!(
+                "  -> WARNING: skipped {} — worktree became non-empty since classification \
+                 (concurrent write) — keeping",
+                entry.path.display()
+            );
         }
     }
 
@@ -185,10 +257,25 @@ fn is_agent_worktree(path: &Path) -> bool {
 
 /// Classify a single worktree as `Remove` or `Keep(reason)`.
 ///
-/// Order matters: cheaper, purely-local checks (root, locked, dirty,
-/// unpushed-commits) run before the network-dependent PR check, so a dirty,
-/// locked, or unpushed-work worktree never needs a `gh` round trip to be
-/// kept safe.
+/// Order matters, and is deliberate:
+///
+/// 1. Cheap, purely-local checks (root, locked, dirty) run first, so a
+///    dirty or locked worktree never needs a `gh` round trip to be kept
+///    safe.
+/// 2. **Open-PR status** runs next: an open PR always means Keep.
+/// 3. **Merged-PR status** runs only when there is no open PR: a `gh`
+///    "merged" hit is the authoritative "this branch's content already
+///    landed" signal (see [`MergeStatus`] on why ancestry alone can't tell
+///    this apart from "never pushed" under this repo's squash-merge
+///    convention) — it means Remove-eligible even though the branch is
+///    still "ahead" of `origin/main` by commit count.
+/// 4. Only once neither an open nor a merged PR exists do local
+///    **unpushed-commits** ancestry checks decide: ahead of `@{u}` (or the
+///    default remote branch) means Keep, otherwise Remove.
+///
+/// Any `gh` failure/uncertainty (`PrStatus::Unknown` /
+/// `MergeStatus::Unknown`) means Keep, never Remove — fail-safe, matching
+/// the dirty-check `Err` philosophy.
 fn classify(root: &Path, entry: &WorktreeEntry) -> Verdict {
     if paths_match(&entry.path, root) {
         return Verdict::Keep("root checkout — never removed".to_string());
@@ -215,29 +302,39 @@ fn classify(root: &Path, entry: &WorktreeEntry) -> Verdict {
         return Verdict::Keep("detached HEAD — no branch to verify PR status".to_string());
     };
 
-    match has_unpushed_commits(&entry.path) {
-        Ok(true) => {
-            return Verdict::Keep(
-                "unpushed commits — branch is ahead of its upstream/remote — not safe to remove"
-                    .to_string(),
-            );
-        }
-        Ok(false) => {}
-        Err(error) => {
-            return Verdict::Keep(format!(
-                "could not determine unpushed-commit status ({error}) — not safe to remove"
-            ));
-        }
-    }
-
     match branch_pr_status(root, branch) {
         PrStatus::Open(number) => {
-            Verdict::Keep(format!("open PR #{number} exists for branch '{branch}'"))
+            return Verdict::Keep(format!("open PR #{number} exists for branch '{branch}'"));
         }
-        PrStatus::None => Verdict::Remove,
-        PrStatus::Unknown => Verdict::Keep(format!(
-            "PR status for branch '{branch}' could not be determined (gh unavailable) \
-             — not safe to remove"
+        PrStatus::Unknown => {
+            return Verdict::Keep(format!(
+                "PR status for branch '{branch}' could not be determined (gh unavailable) \
+                 — not safe to remove"
+            ));
+        }
+        PrStatus::None => {}
+    }
+
+    match branch_merge_status(root, branch) {
+        MergeStatus::Merged(_number) => return Verdict::Remove,
+        MergeStatus::Unknown => {
+            return Verdict::Keep(format!(
+                "merged-PR status for branch '{branch}' could not be determined (gh \
+                 unavailable) — not safe to remove"
+            ));
+        }
+        MergeStatus::NotMerged => {}
+    }
+
+    match has_unpushed_commits(&entry.path) {
+        Ok(true) => Verdict::Keep(
+            "unpushed commits — branch is ahead of its upstream/remote, and has no open or \
+             merged PR — not safe to remove"
+                .to_string(),
+        ),
+        Ok(false) => Verdict::Remove,
+        Err(error) => Verdict::Keep(format!(
+            "could not determine unpushed-commit status ({error}) — not safe to remove"
         )),
     }
 }
@@ -386,6 +483,49 @@ fn branch_pr_status(root: &Path, branch: &str) -> PrStatus {
             }
         }
         _ => PrStatus::Unknown,
+    }
+}
+
+/// Query whether `branch` has a **merged** PR, via `gh pr list --state
+/// merged`. See [`MergeStatus`] for why this — not an ancestry diff — is
+/// the authoritative "content already landed" signal in a repo that
+/// squash-merges exclusively.
+///
+/// Same cwd requirement as [`branch_pr_status`]: `gh` infers the target
+/// repo from its current working directory, so this must run with `root`
+/// as cwd, not the ambient process cwd.
+fn branch_merge_status(root: &Path, branch: &str) -> MergeStatus {
+    let output = Command::new(gh_program())
+        .current_dir(root)
+        .args([
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "merged",
+            "--json",
+            "number",
+            "--jq",
+            ".[0].number",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if text.is_empty() {
+                MergeStatus::NotMerged
+            } else {
+                match text.parse::<u64>() {
+                    Ok(number) => MergeStatus::Merged(number),
+                    Err(_) => MergeStatus::Unknown,
+                }
+            }
+        }
+        _ => MergeStatus::Unknown,
     }
 }
 

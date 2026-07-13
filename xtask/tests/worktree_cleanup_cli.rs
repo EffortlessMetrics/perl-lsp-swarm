@@ -15,7 +15,7 @@ use anyhow::{Result, bail};
 use assert_cmd::cargo::cargo_bin_cmd;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const GH_BIN_ENV: &str = "XTASK_WORKTREE_CLEANUP_GH_BIN";
 
@@ -128,6 +128,109 @@ fn write_cwd_probe_gh_stub(dir: &Path, marker: &Path) -> Result<PathBuf> {
     perms.set_mode(0o755);
     fs::set_permissions(&path, perms)?;
     Ok(path)
+}
+
+/// A `gh` stub that answers differently depending on the `--state` flag in
+/// its invocation: `open_stdout`/`open_exit` for `--state open`,
+/// `merged_stdout`/`merged_exit` for `--state merged`. Used to simulate a
+/// squash-merged branch: no *open* PR, but a *merged* one.
+///
+/// Matches on the literal, space-joined token pair `--state merged` (not a
+/// bare `merged` substring) — a bare substring match would false-positive
+/// on any test branch name that happens to contain the text "merged"
+/// (e.g. a branch literally named after a squash-merged PR).
+#[cfg(windows)]
+fn write_gh_stub_by_state(dir: &Path, open: (i32, &str), merged: (i32, &str)) -> Result<PathBuf> {
+    let path = dir.join("gh.cmd");
+    let (open_exit, open_stdout) = open;
+    let (merged_exit, merged_stdout) = merged;
+    let mut body = String::from("@echo off\r\necho %* | findstr /C:\"--state merged\" >nul\r\n");
+    body.push_str("if %ERRORLEVEL%==0 (\r\n");
+    if !merged_stdout.is_empty() {
+        body.push_str(&format!("  echo {merged_stdout}\r\n"));
+    }
+    body.push_str(&format!("  exit /b {merged_exit}\r\n"));
+    body.push_str(") else (\r\n");
+    if !open_stdout.is_empty() {
+        body.push_str(&format!("  echo {open_stdout}\r\n"));
+    }
+    body.push_str(&format!("  exit /b {open_exit}\r\n"));
+    body.push_str(")\r\n");
+    fs::write(&path, body)?;
+    Ok(path)
+}
+
+#[cfg(unix)]
+fn write_gh_stub_by_state(dir: &Path, open: (i32, &str), merged: (i32, &str)) -> Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("gh");
+    let (open_exit, open_stdout) = open;
+    let (merged_exit, merged_stdout) = merged;
+    let mut body = String::from("#!/bin/sh\ncase \"$*\" in\n  *\"--state merged\"*)\n");
+    if !merged_stdout.is_empty() {
+        body.push_str(&format!("    echo {merged_stdout}\n"));
+    }
+    body.push_str(&format!("    exit {merged_exit}\n    ;;\n  *)\n"));
+    if !open_stdout.is_empty() {
+        body.push_str(&format!("    echo {open_stdout}\n"));
+    }
+    body.push_str(&format!("    exit {open_exit}\n    ;;\nesac\n"));
+    fs::write(&path, body)?;
+    let mut perms = fs::metadata(&path)?.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms)?;
+    Ok(path)
+}
+
+/// A `gh` stub that sleeps for `sleep_secs` seconds when invoked with
+/// `--head <branch>` where `branch` contains the literal substring
+/// "decoy", and answers instantly with "no PR" for anything else.
+///
+/// Used to open a deterministic classification-to-removal window: while
+/// xtask is still blocked on the decoy worktree's slow `gh` call (during
+/// the classify-all pass, which runs entirely before any removal begins),
+/// the test injects a filesystem write into an *already-classified*
+/// worktree — simulating a concurrent agent write landing in the gap
+/// between that worktree's classification and its actual removal.
+#[cfg(windows)]
+fn write_slow_decoy_gh_stub(dir: &Path, sleep_secs: u32) -> Result<PathBuf> {
+    let path = dir.join("gh.cmd");
+    let body = format!(
+        "@echo off\r\necho %* | findstr /C:\"decoy\" >nul\r\nif %ERRORLEVEL%==0 (ping -n {} 127.0.0.1 >nul)\r\nexit /b 0\r\n",
+        sleep_secs + 1
+    );
+    fs::write(&path, body)?;
+    Ok(path)
+}
+
+#[cfg(unix)]
+fn write_slow_decoy_gh_stub(dir: &Path, sleep_secs: u32) -> Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("gh");
+    let body =
+        format!("#!/bin/sh\ncase \"$*\" in\n  *decoy*) sleep {sleep_secs} ;;\nesac\nexit 0\n");
+    fs::write(&path, body)?;
+    let mut perms = fs::metadata(&path)?.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms)?;
+    Ok(path)
+}
+
+/// Spawns (non-blocking) `cargo xtask worktree-cleanup --root <root>
+/// --force`, so the caller can inject state changes into the fixture while
+/// the child process is still running — needed to prove the
+/// classification-to-removal concurrent-write race is handled safely.
+fn spawn_xtask_cleanup(root: &Path, gh_bin: &Path) -> Result<std::process::Child> {
+    let bin = assert_cmd::cargo_bin!("xtask");
+    let mut cmd = Command::new(bin);
+    cmd.arg("worktree-cleanup")
+        .arg("--root")
+        .arg(root)
+        .arg("--force")
+        .env(GH_BIN_ENV, gh_bin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Ok(cmd.spawn()?)
 }
 
 fn run_xtask_cleanup(root: &Path, force: bool, gh_bin: Option<&Path>) -> Result<(bool, String)> {
@@ -245,6 +348,175 @@ fn clean_worktree_with_unpushed_commits_and_no_open_pr_is_kept_not_removed() -> 
         wt.exists(),
         "SAFETY VIOLATION: worktree with unpushed commits and no open PR was removed \
          under --force: {force_output}"
+    );
+    Ok(())
+}
+
+// This repo squash-merges exclusively (allow_squash_merge=true,
+// delete_branch_on_merge=true, no merge commits in origin/main history).
+// A squash-merge commit is never an ancestor of the branch's original
+// commits, so `rev-list --count origin/main..HEAD` stays > 0 forever even
+// after the PR merges — the unpushed-commits guard alone would misread an
+// already-landed, already-safe-to-delete branch as "still has unpushed
+// work" and Keep it forever. A merged-PR hit from `gh` must override that.
+#[test]
+fn squash_merged_branch_with_no_open_pr_is_removed_despite_ahead_by_ancestry() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = init_fixture_repo(tmp.path())?;
+    // Deliberately does NOT contain the substring "merged" — the branch
+    // name must not collide with the gh-stub's `--state merged` matching.
+    let wt = add_agent_worktree(&repo, "wt-landed-pr")?;
+    // Committed locally, never pushed to `origin/main` — this makes
+    // `rev-list --count origin/main..HEAD` > 0, exactly as it would stay
+    // forever for a real squash-merged branch (the squash commit that
+    // landed the content is never an ancestor of this commit).
+    commit_unpushed_change(&wt, "landed.txt", "already squash-merged upstream\n")?;
+
+    let gh_stub_dir = tmp.path().join("gh-landed-pr");
+    fs::create_dir_all(&gh_stub_dir)?;
+    // No open PR, but PR #99 shows up as merged for this branch's head name
+    // (GitHub still resolves it by head-branch name after the ref is
+    // deleted, per `delete_branch_on_merge`).
+    let gh_stub = write_gh_stub_by_state(&gh_stub_dir, (0, ""), (0, "99"))?;
+
+    // Match on the worktree's basename, not its full path: `entry.path`
+    // (and thus every printed line) always uses forward slashes (git
+    // normalizes `worktree list --porcelain` paths that way, even on
+    // Windows — see `is_agent_worktree`'s doc comment), but a `PathBuf`
+    // built in this test via `.join()` uses the platform separator
+    // (backslashes on Windows), so a full-path substring check would
+    // never match there.
+    let wt_name = wt
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("worktree path has no file name"))?
+        .to_string_lossy()
+        .to_string();
+
+    let (dry_ok, dry_output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
+    assert!(dry_ok, "dry-run must exit 0: {dry_output}");
+    assert!(
+        dry_output.contains("REMOVE (dry-run: would remove)") && dry_output.contains(&wt_name),
+        "expected the squash-merged worktree to be reported REMOVE-eligible (merged PR \
+         overrides the ahead-by-ancestry signal), not KEEP: {dry_output}"
+    );
+    assert!(
+        !dry_output.contains("unpushed"),
+        "must not be classified via the unpushed-commits guard once a merged PR is \
+         confirmed for this branch: {dry_output}"
+    );
+
+    let (force_ok, force_output) = run_xtask_cleanup(&repo, true, Some(&gh_stub))?;
+    assert!(force_ok, "--force run must exit 0: {force_output}");
+    assert!(
+        !wt.exists(),
+        "squash-merged worktree (merged PR, no open PR, ahead-by-ancestry) should have \
+         been removed under --force: {force_output}"
+    );
+    Ok(())
+}
+
+// ── Concurrent-write-during-removal guard ───────────────────────────────
+//
+// The classify-all pass runs entirely before the removal loop starts, and
+// can take a while (one `gh` round trip per entry). A worktree that was
+// clean and Remove-eligible at classification time can be written to by a
+// concurrent agent before the removal loop actually reaches it. Removal
+// must never pass `--force` to `git worktree remove` — that flag bypasses
+// git's own last-resort "this worktree is not clean" refusal, which is the
+// only thing standing between that concurrent write and permanent data
+// loss. A refusal must be logged and skipped, not treated as fatal for the
+// whole cleanup run.
+
+#[test]
+fn worktree_dirtied_after_classification_survives_force_cleanup_and_is_skipped() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = init_fixture_repo(tmp.path())?;
+    // `git worktree list --porcelain` returns entries in lexicographic path
+    // order, so the `a`/`b` prefixes pin which one classifies first.
+    //
+    // Classified first: clean, no PR, no unpushed commits — genuinely
+    // Remove-eligible at classification time.
+    let target_wt = add_agent_worktree(&repo, "wt-a-race-target")?;
+    // Classified second, with a `gh` stub that sleeps on this worktree's
+    // branch name — holds the classify-all pass open long enough for the
+    // test to inject a write into `target_wt` after it was already
+    // classified Remove-eligible but before the removal loop reaches it.
+    let _decoy_wt = add_agent_worktree(&repo, "wt-b-race-decoy")?;
+
+    let gh_stub_dir = tmp.path().join("gh-race");
+    fs::create_dir_all(&gh_stub_dir)?;
+    let gh_stub = write_slow_decoy_gh_stub(&gh_stub_dir, 5)?;
+
+    let mut child = spawn_xtask_cleanup(&repo, &gh_stub)?;
+    let child_stdout =
+        child.stdout.take().ok_or_else(|| anyhow::anyhow!("child stdout was not piped"))?;
+    let mut child_stderr =
+        child.stderr.take().ok_or_else(|| anyhow::anyhow!("child stderr was not piped"))?;
+
+    // Drain stderr on a background thread concurrently with reading stdout
+    // below, so a full stderr pipe buffer can never deadlock this test.
+    let stderr_handle: std::thread::JoinHandle<Result<String>> = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        child_stderr.read_to_string(&mut buf)?;
+        Ok(buf)
+    });
+
+    // `run()`'s classify-all loop prints a `REMOVE`/`KEEP` line for each
+    // worktree the instant it finishes classifying — before the removal
+    // loop starts (which only happens once every entry, including the
+    // slow decoy, has been classified). Rust's stdout is line-buffered, so
+    // reading line-by-line here lets us inject the concurrent write
+    // exactly once `target_wt`'s classification line has been observed —
+    // deterministic regardless of system load, unlike a fixed sleep.
+    //
+    // Match on the basename, not the full path: every printed line uses
+    // forward slashes (git normalizes `worktree list --porcelain` output
+    // that way, even on Windows), but `target_wt` was built via `.join()`
+    // in this test and so uses the platform separator (backslashes on
+    // Windows) — a full-path substring check would never match there.
+    use std::io::{BufRead, BufReader};
+    let target_marker = target_wt
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("target_wt path has no file name"))?
+        .to_string_lossy()
+        .to_string();
+    let mut stdout_lines = Vec::new();
+    let mut injected = false;
+    for line in BufReader::new(child_stdout).lines() {
+        let line = line?;
+        let is_target_line = line.contains(&target_marker);
+        stdout_lines.push(line);
+        if is_target_line && !injected {
+            // Leave the write uncommitted/untracked — that's exactly what
+            // makes `git worktree remove` (without `--force`) refuse: it
+            // treats an unclean working tree (per `git status
+            // --porcelain`) as unsafe to remove, the same signal
+            // `worktree_dirty()` uses during classification.
+            fs::write(target_wt.join("late-write.txt"), "concurrent agent write\n")?;
+            injected = true;
+        }
+    }
+
+    let status = child.wait()?;
+    let stderr_output =
+        stderr_handle.join().map_err(|_| anyhow::anyhow!("stderr-draining thread panicked"))??;
+    let combined = format!("{}\n---stderr---\n{stderr_output}", stdout_lines.join("\n"));
+
+    assert!(
+        injected,
+        "never observed target_wt's classification line in stdout — test setup is broken: \
+         {combined}"
+    );
+    assert!(status.success(), "--force run must exit 0 even with a skipped entry: {combined}");
+    assert!(
+        target_wt.exists(),
+        "SAFETY VIOLATION: worktree written to after classification but before removal \
+         was destroyed by --force: {combined}"
+    );
+    assert!(
+        combined.contains("skipped") || combined.contains("WARNING"),
+        "expected a skip warning for the raced worktree, not silent success: {combined}"
     );
     Ok(())
 }
