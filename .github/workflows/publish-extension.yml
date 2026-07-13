@@ -37,7 +37,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20.18.0"
+          node-version: "20.19.0"
           cache: npm
           cache-dependency-path: vscode-extension/package-lock.json
 
@@ -130,7 +130,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20.18.0"
+          node-version: "20.19.0"
 
       - name: Install Marketplace publisher
         run: npm install -g @vscode/vsce
@@ -180,7 +180,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20.18.0"
+          node-version: "20.19.0"
 
       - name: Install Open VSX publisher
         run: npm install -g ovsx
@@ -265,7 +265,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20.18.0"
+          node-version: "20.19.0"
           cache: npm
           cache-dependency-path: vscode-extension/package-lock.json
 
@@ -305,7 +305,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20.18.0"
+          node-version: "20.19.0"
           cache: npm
           cache-dependency-path: vscode-extension/package-lock.json
 

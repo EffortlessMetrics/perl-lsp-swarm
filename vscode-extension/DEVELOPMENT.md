@@ -4,7 +4,7 @@ This guide covers building, testing, and iterating on the extension locally with
 
 ## Prerequisites
 
-- Node.js 20 or newer and npm 10.8.2
+- Node.js 20.19.0 or newer and npm 10.8.2
 - VS Code
 - A built `perllsp` binary (see [Building the server](#building-the-server))
 
