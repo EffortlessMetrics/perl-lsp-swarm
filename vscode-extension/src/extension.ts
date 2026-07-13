@@ -3581,6 +3581,10 @@ async function reinstallServerBinary(
 }
 
 function handleClientStateChange(event: StateChangeEvent): void {
+  // Preserve the status-bar signal for an unexpected language-client crash;
+  // the controller state changes only on explicit lifecycle operations.
+  healthWidget?.onStateChange(event.newState as unknown as ClientState);
+
   // When the server stops unexpectedly after a successful start (mid-session
   // crash), capture a generic diagnosis so serverNotRunningMessage() returns
   // an actionable hint instead of the stale "not running" fallback.
