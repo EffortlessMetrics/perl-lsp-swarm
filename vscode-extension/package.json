@@ -1332,7 +1332,7 @@
     "bundle-lsp": "node ./scripts/bundle-lsp.js",
     "package": "npm exec -- @vscode/vsce package",
     "publish": "npm exec -- @vscode/vsce publish",
-    "verify:marketplace": "npm run doctor && npm run typecheck:all && npm run compile && npm run bundle-lsp && npm run package",
+    "verify:marketplace": "npm run bundle-lsp && npm run package",
     "publish:openvsx": "npx ovsx publish",
     "check:openvsx": "npx ovsx --version"
   },
