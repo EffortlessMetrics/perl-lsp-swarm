@@ -385,9 +385,7 @@ fn ripr_facts_emits_schema_valid_deterministic_packet() -> Result<(), Box<dyn st
         "packet_fingerprint should contain a full SHA-256 hex digest"
     );
     assert!(
-        fingerprint["sha256:".len()..]
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit()),
+        fingerprint["sha256:".len()..].bytes().all(|byte| byte.is_ascii_hexdigit()),
         "packet_fingerprint should contain only hexadecimal characters"
     );
 
