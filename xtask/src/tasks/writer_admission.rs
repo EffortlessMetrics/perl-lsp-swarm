@@ -1009,9 +1009,10 @@ mod tests {
         snapshot.shadow_refs.refs = vec!["refs/heads/origin/main".to_string()];
         let checks = run_checks(&snapshot, &default_config());
         assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::Block);
-        let shadow =
-            checks.iter().find(|c| c.name == "shadow-ref").expect("shadow-ref check present");
-        assert_eq!(shadow.status, CheckStatus::Block);
+        assert!(
+            checks.iter().any(|c| c.name == "shadow-ref" && c.status == CheckStatus::Block),
+            "expected shadow-ref check present and blocking: {checks:?}"
+        );
     }
 
     #[test]
@@ -1021,9 +1022,10 @@ mod tests {
         snapshot.head.resolved_sha = None;
         let checks = run_checks(&snapshot, &default_config());
         assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::Block);
-        let head_check =
-            checks.iter().find(|c| c.name == "symbolic-head").expect("symbolic-head check present");
-        assert_eq!(head_check.status, CheckStatus::Block);
+        assert!(
+            checks.iter().any(|c| c.name == "symbolic-head" && c.status == CheckStatus::Block),
+            "expected symbolic-head check present and blocking: {checks:?}"
+        );
     }
 
     #[test]
@@ -1044,11 +1046,12 @@ mod tests {
         snapshot.is_root_checkout = true;
         let checks = run_checks(&snapshot, &default_config());
         assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::Block);
-        let mapping = checks
-            .iter()
-            .find(|c| c.name == "branch-worktree-mapping")
-            .expect("mapping check present");
-        assert_eq!(mapping.status, CheckStatus::Block);
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.name == "branch-worktree-mapping" && c.status == CheckStatus::Block),
+            "expected branch-worktree-mapping check present and blocking: {checks:?}"
+        );
     }
 
     #[test]
@@ -1102,11 +1105,12 @@ mod tests {
             PrOwnershipInfo { status: PrStatus::Unknown, pr_number: None, error: None };
         let checks = run_checks(&snapshot, &default_config());
         assert_eq!(aggregate_verdict(&checks), AdmissionVerdict::NotProven);
-        let collision = checks
-            .iter()
-            .find(|c| c.name == "writer-collision")
-            .expect("writer-collision check present");
-        assert_eq!(collision.status, CheckStatus::NotProven);
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.name == "writer-collision" && c.status == CheckStatus::NotProven),
+            "expected writer-collision check present and NOT_PROVEN: {checks:?}"
+        );
     }
 
     #[test]
