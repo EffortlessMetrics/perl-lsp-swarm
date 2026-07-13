@@ -85,9 +85,6 @@ let streamingController: StreamingCompletionController | undefined;
 let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
   | undefined;
-const MANAGED_BINARY_HEALTH_TIMEOUT_MS = 30_000;
-const COEXISTENCE_GUIDE_URL =
-  'https://github.com/EffortlessMetrics/perl-lsp/blob/master/vscode-extension/README.md#extension-coexistence';
 /**
  * Cached startup diagnosis from the last server failure.
  *

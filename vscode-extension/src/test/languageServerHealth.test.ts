@@ -39,7 +39,11 @@ describe('runLanguageServerHealthCheck', () => {
 
   test('rejects malformed output instead of accepting an ok prefix', async () => {
     mockedExecFile.mockImplementationOnce((_path, _args, _options, callback) => {
-      callback(null, 'okay but malformed\n', 'diagnostic stderr');
+      callback(
+        null,
+        '\u001b[31mokay but malformed\u001b[0m\n',
+        '\u001b[33mdiagnostic stderr\u001b[0m',
+      );
     });
     const log = { appendLine: jest.fn() };
 

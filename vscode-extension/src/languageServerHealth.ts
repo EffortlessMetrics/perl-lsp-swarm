@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import { stripVTControlCharacters } from 'util';
 
 export const MANAGED_BINARY_HEALTH_TIMEOUT_MS = 30_000;
 
@@ -21,11 +22,13 @@ function safeAppendLine(log: HealthCheckLog, message: string): void {
   }
 }
 
+function normalizeHealthOutput(output: string): string {
+  return stripVTControlCharacters(output).trim();
+}
+
 function isHealthyOutput(stdout: string): boolean {
-  // The server emits `ok <version>`. Strip terminal colour escapes because a
-  // caller can still inherit a colour-enabled environment through execFile.
-  const withoutAnsi = stdout.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '').trim();
-  return /^ok(?:\s|$)/.test(withoutAnsi);
+  // The server emits `ok <version>`.
+  return /^ok(?:\s|$)/.test(stdout);
 }
 
 /**
@@ -72,7 +75,9 @@ export async function runLanguageServerHealthCheck(
     };
 
     if (timeoutMs > 0) {
-      timer = setTimeout(onTimeout, timeoutMs);
+      if (timeoutMs > 0) {
+        timer = setTimeout(onTimeout, timeoutMs);
+      }
     }
 
     try {
@@ -87,11 +92,11 @@ export async function runLanguageServerHealthCheck(
 
           if (error) {
             safeAppendLine(log, `[health-check] Failed: ${error.message}`);
-            const stderrText = stderr.trim();
+            const stderrText = normalizeHealthOutput(stderr);
             if (stderrText) {
               safeAppendLine(log, `[health-check] stderr: ${stderrText}`);
             }
-            const stdoutText = stdout.trim();
+            const stdoutText = normalizeHealthOutput(stdout);
             if (stdoutText) {
               safeAppendLine(log, `[health-check] stdout: ${stdoutText}`);
             }
@@ -99,11 +104,11 @@ export async function runLanguageServerHealthCheck(
             return;
           }
 
-          const stdoutText = stdout.trim();
-          const healthy = isHealthyOutput(stdout);
+          const stdoutText = normalizeHealthOutput(stdout);
+          const stderrText = normalizeHealthOutput(stderr);
+          const healthy = isHealthyOutput(stdoutText);
           if (!healthy) {
             safeAppendLine(log, `[health-check] Unexpected output: ${stdoutText}`);
-            const stderrText = stderr.trim();
             if (stderrText) {
               safeAppendLine(log, `[health-check] stderr: ${stderrText}`);
             }
