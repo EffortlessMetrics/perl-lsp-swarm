@@ -80,6 +80,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: vscode-current-source-linux-smoke-${{ github.sha }}
-          path: vscode-extension/target/receipts/vscode-smoke/**
+          path: target/receipts/vscode-smoke/**
           if-no-files-found: warn
           retention-days: 14
