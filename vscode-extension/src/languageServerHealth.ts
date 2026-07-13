@@ -75,9 +75,7 @@ export async function runLanguageServerHealthCheck(
     };
 
     if (timeoutMs > 0) {
-      if (timeoutMs > 0) {
-        timer = setTimeout(onTimeout, timeoutMs);
-      }
+      timer = setTimeout(onTimeout, timeoutMs);
     }
 
     try {
