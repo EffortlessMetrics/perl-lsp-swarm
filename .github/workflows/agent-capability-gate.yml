@@ -12,6 +12,7 @@ on:
       - '.claude/agents/**'
       - '.claude/hooks/pre-tool-use.sh'
       - '.claude/hooks/tests/test_pre_tool_use_readonly.sh'
+      - '.claude/hooks/tests/test_pre_tool_use_narrative.sh'
       - 'xtask/src/tasks/agent_capability_policy.rs'
       - '.github/workflows/agent-capability-gate.yml'
   merge_group:
@@ -45,3 +46,6 @@ jobs:
 
       - name: Read-only-shell hook guard test
         run: bash .claude/hooks/tests/test_pre_tool_use_readonly.sh
+
+      - name: Narrative-stripping hook guard test (#4006)
+        run: bash .claude/hooks/tests/test_pre_tool_use_narrative.sh

@@ -42,6 +42,7 @@ agent-pr-fast:
 check-agent-capabilities:
     {{cargo_safe}} xtask check-agent-capabilities
     bash .claude/hooks/tests/test_pre_tool_use_readonly.sh
+    bash .claude/hooks/tests/test_pre_tool_use_narrative.sh
 
 # ============================================================================
 # Tiered CI Execution (works locally via Nix and in GitHub Actions)
