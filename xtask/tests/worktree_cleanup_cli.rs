@@ -27,7 +27,13 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Initializes a fresh git repo at `<tmp>/repo` with one commit on `main`.
+/// Initializes a fresh git repo at `<tmp>/repo` with one commit on `main`,
+/// plus a bare `origin` remote with that commit already pushed. Real
+/// perl-lsp-swarm worktrees are always clones of a GitHub `origin`, so the
+/// fixture mirrors that topology — it's what lets the unpushed-commits
+/// guard compare a branch against `origin/main` even when the branch
+/// itself never had `git push -u` run against it (the common state for a
+/// freshly created agent worktree).
 fn init_fixture_repo(tmp: &Path) -> Result<PathBuf> {
     let repo = tmp.join("repo");
     fs::create_dir_all(&repo)?;
@@ -41,15 +47,35 @@ fn init_fixture_repo(tmp: &Path) -> Result<PathBuf> {
     fs::write(repo.join("README.md"), "init\n")?;
     run_git(&repo, &["add", "README.md"])?;
     run_git(&repo, &["commit", "-q", "-m", "init"])?;
+
+    let remote = tmp.join("origin.git");
+    run_git(tmp, &["init", "-q", "--bare", &remote.to_string_lossy()])?;
+    run_git(&repo, &["remote", "add", "origin", &remote.to_string_lossy()])?;
+    run_git(&repo, &["push", "-q", "origin", "main"])?;
+
     Ok(repo)
 }
 
 /// Adds a linked worktree under `<repo>/.claude/worktrees/<name>` on a new
 /// branch `<name>`. Returns the worktree's absolute path.
+///
+/// The branch is created purely locally (no `--track`/upstream), matching
+/// how agent worktrees actually come into being: `git worktree add -b` runs
+/// before the branch has ever been pushed.
 fn add_agent_worktree(repo: &Path, name: &str) -> Result<PathBuf> {
     let wt_path = repo.join(".claude").join("worktrees").join(name);
     run_git(repo, &["worktree", "add", "-q", "-b", name, &wt_path.to_string_lossy()])?;
     Ok(wt_path)
+}
+
+/// Commits a new file in the worktree at `path`, without pushing —
+/// simulates in-progress agent work that has been committed but never
+/// reached any remote.
+fn commit_unpushed_change(path: &Path, filename: &str, contents: &str) -> Result<()> {
+    fs::write(path.join(filename), contents)?;
+    run_git(path, &["add", filename])?;
+    run_git(path, &["commit", "-q", "-m", &format!("add {filename}")])?;
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -179,6 +205,46 @@ fn force_removes_only_the_clean_worktree_and_never_the_dirty_one() -> Result<()>
     assert!(
         !clean_wt.exists(),
         "clean, no-open-PR worktree should have been removed under --force: {output}"
+    );
+    Ok(())
+}
+
+// ── Unpushed-commits guard ──────────────────────────────────────────────
+//
+// A worktree can be clean (no uncommitted changes) yet still hold real,
+// unsalvaged work: commits made locally that were never pushed anywhere.
+// With no open PR, `PrStatus::None` alone would previously classify this
+// as `Remove` — deleting committed-but-unpushed work is exactly as
+// destructive as deleting uncommitted work, so it must be kept.
+
+#[test]
+fn clean_worktree_with_unpushed_commits_and_no_open_pr_is_kept_not_removed() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let repo = init_fixture_repo(tmp.path())?;
+    let wt = add_agent_worktree(&repo, "wt-unpushed")?;
+    // Committed, not just uncommitted: worktree_dirty() would report this
+    // worktree as clean, so this is exercising the unpushed-commits guard
+    // specifically, not the pre-existing dirty guard.
+    commit_unpushed_change(&wt, "wip.txt", "unpushed agent work\n")?;
+
+    let gh_stub_dir = tmp.path().join("gh-nopr-unpushed");
+    fs::create_dir_all(&gh_stub_dir)?;
+    let gh_stub = write_gh_stub(&gh_stub_dir, 0, "")?;
+
+    let (dry_ok, dry_output) = run_xtask_cleanup(&repo, false, Some(&gh_stub))?;
+    assert!(dry_ok, "dry-run must exit 0: {dry_output}");
+    assert!(
+        dry_output.contains("KEEP") && dry_output.contains("unpushed"),
+        "expected the committed-but-unpushed worktree to be reported KEEP with an \
+         unpushed-commits reason: {dry_output}"
+    );
+
+    let (force_ok, force_output) = run_xtask_cleanup(&repo, true, Some(&gh_stub))?;
+    assert!(force_ok, "--force run must exit 0: {force_output}");
+    assert!(
+        wt.exists(),
+        "SAFETY VIOLATION: worktree with unpushed commits and no open PR was removed \
+         under --force: {force_output}"
     );
     Ok(())
 }

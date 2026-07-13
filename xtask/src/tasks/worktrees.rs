@@ -8,6 +8,12 @@
 //!
 //! - **dirty** — `git status --porcelain` reports uncommitted changes;
 //! - **locked** — `git worktree list --porcelain` reports a `locked` entry;
+//! - has **unpushed commits** — the branch's `HEAD` has commits not present
+//!   on its upstream (`@{u}`), or, when no upstream is configured, not
+//!   present on `origin/main`/`origin/master`; a clean worktree can still
+//!   hold committed-but-unpushed work, and losing it is just as much data
+//!   loss as losing uncommitted changes (a fail-safe: if neither reference
+//!   can be resolved, "unpushed" is assumed);
 //! - on a branch with an **open PR** (or PR status could not be determined —
 //!   "unknown" is treated as unsafe, never as "no PR", to avoid destroying a
 //!   worktree that turns out to have a live PR when `gh` is unavailable);
@@ -167,15 +173,22 @@ fn run(root: &Path, force: bool) -> Result<()> {
 
 /// Does `path` live under a `.claude/worktrees/` directory? Git always
 /// normalizes worktree list paths to forward slashes, even on Windows.
+///
+/// Checked as a path-component boundary (`.claude/worktrees` as an
+/// ancestor), not a raw substring match, so a path that merely embeds the
+/// literal text elsewhere (e.g. as part of a longer directory name) isn't
+/// misclassified.
 fn is_agent_worktree(path: &Path) -> bool {
-    path.to_string_lossy().replace('\\', "/").contains(".claude/worktrees/")
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    Path::new(&normalized).ancestors().any(|a| a.ends_with(Path::new(".claude/worktrees")))
 }
 
 /// Classify a single worktree as `Remove` or `Keep(reason)`.
 ///
-/// Order matters: cheaper, purely-local checks (root, locked, dirty) run
-/// before the network-dependent PR check, so a dirty or locked worktree
-/// never needs a `gh` round trip to be kept safe.
+/// Order matters: cheaper, purely-local checks (root, locked, dirty,
+/// unpushed-commits) run before the network-dependent PR check, so a dirty,
+/// locked, or unpushed-work worktree never needs a `gh` round trip to be
+/// kept safe.
 fn classify(root: &Path, entry: &WorktreeEntry) -> Verdict {
     if paths_match(&entry.path, root) {
         return Verdict::Keep("root checkout — never removed".to_string());
@@ -201,6 +214,21 @@ fn classify(root: &Path, entry: &WorktreeEntry) -> Verdict {
     let Some(branch) = &entry.branch else {
         return Verdict::Keep("detached HEAD — no branch to verify PR status".to_string());
     };
+
+    match has_unpushed_commits(&entry.path) {
+        Ok(true) => {
+            return Verdict::Keep(
+                "unpushed commits — branch is ahead of its upstream/remote — not safe to remove"
+                    .to_string(),
+            );
+        }
+        Ok(false) => {}
+        Err(error) => {
+            return Verdict::Keep(format!(
+                "could not determine unpushed-commit status ({error}) — not safe to remove"
+            ));
+        }
+    }
 
     match branch_pr_status(root, branch) {
         PrStatus::Open(number) => {
@@ -232,6 +260,88 @@ fn worktree_dirty(path: &Path) -> Result<bool> {
         bail!("git status --porcelain exited non-zero");
     }
     Ok(!output.stdout.is_empty())
+}
+
+/// `true` if the worktree at `path` has commits on `HEAD` that are not
+/// provably present on any remote — i.e. removing it would discard
+/// unsalvaged committed work.
+///
+/// Preference order for the "known safe" reference to compare `HEAD`
+/// against:
+///
+/// 1. The branch's configured upstream (`@{u}`), if one is set — the most
+///    precise signal, since it names exactly the ref this branch pushes to.
+/// 2. `origin/main` or `origin/master`, if a remote-tracking ref for one of
+///    those exists — the common case for a freshly created agent worktree
+///    that hasn't had its first `git push -u` yet (no upstream configured,
+///    but its commits may already all be present on the default branch).
+/// 3. Neither resolves: we cannot prove *anything* about this branch is
+///    pushed anywhere, so — matching the fail-safe philosophy already used
+///    for a dirty-check `Err` and `PrStatus::Unknown` — treat it as
+///    unpushed rather than risk deleting real work.
+fn has_unpushed_commits(path: &Path) -> Result<bool> {
+    let reference = match resolve_upstream(path) {
+        Some(upstream) => upstream,
+        None => match resolve_default_remote_ref(path) {
+            Some(default_ref) => default_ref,
+            None => return Ok(true),
+        },
+    };
+
+    let output = Command::new("git")
+        .current_dir(path)
+        .args(["rev-list", "--count", &format!("{reference}..HEAD")])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    if !output.status.success() {
+        bail!(
+            "git rev-list --count {reference}..HEAD exited non-zero: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let count: u64 = text.parse().map_err(|error| {
+        color_eyre::eyre::eyre!("failed to parse ahead-count '{text}' from git rev-list: {error}")
+    })?;
+    Ok(count > 0)
+}
+
+/// The branch's configured push/pull upstream (`@{u}`), if any is set.
+/// `None` covers both "no upstream configured" and any other resolution
+/// failure — the caller falls back to comparing against a default remote
+/// branch in either case.
+fn resolve_upstream(path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .current_dir(path)
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
+}
+
+/// The first of `origin/main` / `origin/master` that resolves to an actual
+/// remote-tracking ref in this repository, if any.
+fn resolve_default_remote_ref(path: &Path) -> Option<String> {
+    for candidate in ["origin/main", "origin/master"] {
+        let status = Command::new("git")
+            .current_dir(path)
+            .args(["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{candidate}")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if matches!(status, Ok(status) if status.success()) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
 }
 
 /// Query whether `branch` has an open PR, via `gh pr list`. Any failure
