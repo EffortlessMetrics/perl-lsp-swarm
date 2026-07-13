@@ -62,7 +62,7 @@ For labels with live ground truth (`ci-green`, `needs-ci-fix`), the reconciler d
 - Live CI red: leave `needs-ci-fix`; `ci-green` is stale but harmless — the live red blocks merge
 - Live CI green and neither label exists: PR may still be mergeable; absence of `ci-green` means "green-ci hasn't formally signed off" — not that CI is red
 
-For no-live-signal labels (every other label), the reconciler uses GitHub timeline: if both `deep-reviewed` and `needs-deep-review` exist, the later-applied label wins.
+For no-live-signal labels, the reconciler no longer arbitrates by GitHub timeline ("later-applied label wins") — click-order was retired as an authority source (#4005 D5). Two review-label pairs are instead resolved against a SHA-bound review receipt (`ReviewReceipt` / `contradictions_from_current_review_receipt`): a current-head *independent* `Approved` receipt (one where `fix_forward_applied` is `false`) strips the routing label (`needs-builder-fix`, `needs-diff-fix`); a `NeedsBuilder`/`NeedsDiff` verdict strips the sign-off label (`review-reviewed`/`diff-audited`). The `deep-reviewed`/`needs-deep-review` pair has no receipt-verdict mapping — with timestamp arbitration gone, that pair is simply left un-arbitrated: both labels can coexist until an agent or operator resolves it directly.
 
 The reconciler implementation: `xtask/src/tasks/queue_reconciler.rs`
 
