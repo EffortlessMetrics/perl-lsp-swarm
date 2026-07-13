@@ -389,6 +389,7 @@ suite('First-hour VS Code receipt', function () {
       | {
           getLanguageClientStartupMetrics?: () => Record<string, unknown>;
           markLanguageClientStartupMilestone?: (milestone: string) => void;
+          stop?: () => Promise<void>;
         }
       | undefined;
 
@@ -484,17 +485,27 @@ suite('First-hour VS Code receipt', function () {
       restartedMoment = restarted;
 
       const deactivateStart = monotonicNow();
-      const mainScript = extension.packageJSON?.main;
-      assert.ok(mainScript, 'extension package.json must define a main script');
-      const extensionMain = require(path.join(extension.extensionPath, mainScript)) as {
-        deactivate?: () => Promise<void>;
-        getLanguageClientStartupMetrics?: () => Record<string, unknown>;
-      };
-      assert.equal(typeof extensionMain.deactivate, 'function', 'extension must export deactivate');
-      await withTimeout('language client shutdown', extensionMain.deactivate!(), 30_000);
-      const shutdownMetrics =
-        extensionMain.getLanguageClientStartupMetrics?.() ??
-        extensionApi?.getLanguageClientStartupMetrics?.();
+      let shutdownMetrics: Record<string, unknown> | undefined;
+      if (extensionApi?.stop) {
+        await withTimeout('language client shutdown', extensionApi.stop(), 30_000);
+        shutdownMetrics = extensionApi.getLanguageClientStartupMetrics?.();
+      } else {
+        const mainScript = extension.packageJSON?.main;
+        assert.ok(mainScript, 'extension package.json must define a main script');
+        const extensionMain = require(path.join(extension.extensionPath, mainScript)) as {
+          deactivate?: () => Promise<void>;
+          getLanguageClientStartupMetrics?: () => Record<string, unknown>;
+        };
+        assert.equal(
+          typeof extensionMain.deactivate,
+          'function',
+          'extension must export deactivate',
+        );
+        await withTimeout('language client shutdown', extensionMain.deactivate!(), 30_000);
+        shutdownMetrics =
+          extensionMain.getLanguageClientStartupMetrics?.() ??
+          extensionApi?.getLanguageClientStartupMetrics?.();
+      }
       lifecycle = {
         restart: {
           status: 'ok',
