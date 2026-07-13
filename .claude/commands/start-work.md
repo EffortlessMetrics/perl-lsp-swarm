@@ -211,7 +211,7 @@ git fetch origin main
 Confirm the fetch succeeded before proceeding — a stale base produces the
 exact `origin/master`-base-ref class of defect this repo has hit before.
 
-## Step 6b: Advisory writer-admission check
+## Step 6b: writer-admission check (STOP on capacity/collision, advisory otherwise)
 
 `xtask writer-admission` (`xtask/src/tasks/writer_admission.rs`, landed in
 #4099) is a read-only admission diagnostic: it inspects canonical-base
@@ -245,17 +245,42 @@ checkout, which still surfaces real pre-admission risk: disk headroom,
 dirty/unpushed state, shadow-ref contamination, and canonical-base drift in
 the environment about to spawn the new worktree.
 
-This is advisory signal exactly like Step 4b — it does **not** add a sixth
-hard gate alongside issue-open/`builder-ready`/BUILD-verdict/collision/fresh-
-`origin/main`, and neither a `BLOCK` nor a `NOT_PROVEN` verdict stops the
-handoff on its own:
+This composes over the existing gates, not a uniform advisory bolt-on like
+Step 4b — its per-check severity is **not** flat. `writer_admission.rs`'s own
+module doc says `AdmissionVerdict::Block` is "explicitly a blocking signal
+for whatever consumes it," and leaves the STOP-vs-advisory call to the
+consumer (this doc, via #3982). #3982's own "Failure language" names `STOP`
+as "write collision, unsafe checkout, destructive risk, **or capacity
+hazard**" — so two of the seven checks are STOP-class here, not advisory:
 
-- **`BLOCK`**: surface every `BLOCK`-status check's reason as a strong note,
-  e.g. `Note: writer-admission reports BLOCK: disk headroom 188.3G is below
-  the floor 372.6G (max(FLOOR_GB=200, FLOOR_PCT=5%)), 71 worktree(s) present
-  — resolve before creating the worktree.` The operator may still proceed;
-  this is a strong nudge to fix the underlying condition (e.g. run
-  `just clean-worktrees`) first, not a stop.
+- **`disk-capacity` `BLOCK`** and **`writer-collision` `BLOCK`** →
+  **STOP**, the same class as Step 5's collision STOP (this is the literal
+  "capacity hazard" / "write collision" language from #3982's Failure
+  language, and the real disk-exhaustion failure mode this repo has already
+  been burned by — target dirs filling the disk and being misread as
+  product bugs). Report:
+  ```
+  STOP: writer-admission reports a capacity hazard (<reason>) — resolve
+  before creating the worktree, e.g. `just clean-worktrees`.
+  ```
+  or, for writer-collision:
+  ```
+  STOP: writer-admission reports a writer collision (<reason>) — this is
+  the same fact Step 5's collision check already halts on; do not create a
+  second worktree for this branch.
+  ```
+  (`writer-collision` duplicates Step 5's own STOP for the identical
+  fact — an open PR already owning the branch — so in practice Step 5 will
+  usually STOP first; Step 6b's own `writer-collision` check exists as a
+  second, independent confirmation of the same fact, not a downgrade of it.)
+- **`shadow-ref`, `symbolic-head`, `branch-worktree-mapping`,
+  `dirty-unpushed`, `canonical-base` `BLOCK`** → advisory strong note (this
+  narrows #3982's literal "unsafe checkout" STOP language to only the two
+  checks above; see the PR's Non-goals for why): surface every `BLOCK`-status
+  check's reason, e.g. `Note: writer-admission reports BLOCK: <check>:
+  <reason> — resolve before creating the worktree.` The operator may still
+  proceed; this is a strong nudge to fix the underlying condition first, not
+  a stop.
 - **`NOT_PROVEN`**: surface as `Note: writer-admission couldn't verify
   <check>: <reason> — proceeding without this signal.`
 - **`PASS`**: no note needed beyond recording it in the settled-packet output
@@ -264,15 +289,20 @@ handoff on its own:
 Skipped under `--mechanical`, alongside Steps 2-4 and 4b — mechanical work
 has no planning-readiness decision for this diagnostic to compose into;
 only the plain safety checks (collision, fresh `origin/main`, worktree
-integrity) still apply.
+integrity) still apply. This means the mechanical path also loses Step 6b's
+STOP-class capacity/collision coverage from this tool specifically — it
+still gets equivalent collision coverage from Step 5's own STOP (see "What
+still runs" below), but not a dedicated disk-capacity check; that gap is
+acceptable for mechanical work's narrow scope and is not addressed by this
+PR.
 
 ## Step 7: Hand off — delegate, don't fork
 
 All conditions (issue open, `builder-ready`, matching BUILD verdict, no
-collision, fresh `origin/main` — plus the Step 6b writer-admission verdict as
-advisory signal) are the settled packet. `/start-work` does not create the
-branch, worktree, or `.spec/` files itself — it hands off to the existing
-entry point:
+collision, fresh `origin/main`, and Step 6b's writer-admission verdict — STOP
+on `disk-capacity`/`writer-collision`, advisory otherwise) are the settled
+packet. `/start-work` does not create the branch, worktree, or `.spec/`
+files itself — it hands off to the existing entry point:
 
 - **Pipeline work** (going through the standard build gate): spawn the
   `spec-planner` agent on the issue. It reads the `builder-ready` issue,
@@ -341,9 +371,12 @@ with whether a plan was reviewed:
 
 - **Step 5** (collision check) — is someone already writing this change?
 - **Step 6** (fresh `origin/main`) — is the base current?
-- Worktree integrity generally (Step 5's `git worktree list` /
-  worktree-manager query, and the branch/worktree-mapping half of what Step
-  6b's tool checks, if a target branch is already known).
+- Worktree integrity generally — this is Step 5's own `git worktree list` /
+  worktree-manager query, **not** a partial invocation of Step 6b's tool.
+  Step 6b is skipped in full under `--mechanical` (see below); do not run
+  `cargo xtask writer-admission` "just for the branch/worktree-mapping
+  check" — the underlying git fact (is this branch/worktree pairing
+  unambiguous) is already covered by Step 5's own checks.
 
 **Everything else is skipped**, because none of it is a safety check — it's
 the planning-readiness gate this fast path exists to bypass for genuinely
@@ -355,8 +388,12 @@ mechanical work:
 - **Steps 3-4** (`builder-ready` label / matching BUILD verdict) — skipped;
   no planning decision to clear.
 - **Step 4b** (issue-plan audit) — skipped; nothing to audit without a plan.
-- **Step 6b** (writer-admission) — skipped; it's advisory planning-readiness
-  signal composed alongside 3-4/4b, not a safety check in its own right.
+- **Step 6b** (writer-admission) — skipped in full, including its
+  STOP-class `disk-capacity`/`writer-collision` checks (see "What still
+  runs" above for why that's an accepted gap here, not an oversight) — the
+  tool itself is scoped as one composable unit alongside the
+  planning-readiness checks it's introduced next to, not split per-check
+  based on severity.
 
 Before proceeding, record and print all five fields — do not create the
 worktree until every field is filled in:
@@ -384,10 +421,15 @@ Then hand off exactly as in Step 7.
 
 ## Output
 
+A Step 6b `disk-capacity`/`writer-collision` `BLOCK` is a STOP like any other
+— it ends the run with exactly one next action, same as Steps 3-5. It is
+not part of the "success" packet below.
+
 On success, print the settled packet — for the full path: issue #, plan
 revision, BUILD verdict comment link, collision check result, base SHA, and
-the Step 6b writer-admission verdict (with any `BLOCK`/`NOT_PROVEN` reasons
-noted); for the mechanical path: the five recorded fields, collision check
+the Step 6b writer-admission verdict (with any advisory-class `BLOCK`/
+`NOT_PROVEN` reasons noted — STOP-class `BLOCK`s already halted the run
+above); for the mechanical path: the five recorded fields, collision check
 result, base SHA, and issue # if one was given — and the branch/worktree
 handed off to. On stop, print exactly one next action — never both a stop
 and a partial handoff.
