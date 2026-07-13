@@ -108,6 +108,7 @@ export async function validateIncludePaths(context: vscode.ExtensionContext): Pr
       );
     } else if (choice === 'Create Missing Directories') {
       const createdPaths: string[] = [];
+      let creationFailed = false;
       for (const includePath of creatablePaths) {
         const resolved = path.resolve(folder.uri.fsPath, includePath);
         if (!fs.existsSync(resolved) && hasSafeExistingAncestor(workspaceRealPath, resolved)) {
@@ -115,6 +116,7 @@ export async function validateIncludePaths(context: vscode.ExtensionContext): Pr
             fs.mkdirSync(resolved, { recursive: true });
             createdPaths.push(includePath);
           } catch (err: unknown) {
+            creationFailed = true;
             const msg = err instanceof Error ? err.message : String(err);
             void vscode.window.showWarningMessage(
               `Perl LSP: failed to create directory "${includePath}": ${msg}`,
@@ -128,6 +130,9 @@ export async function validateIncludePaths(context: vscode.ExtensionContext): Pr
           `Created ${createdPaths.length} include director${createdPaths.length === 1 ? 'y' : 'ies'}: ${createdPaths.join(', ')}.`,
         );
         await context.globalState.update(cacheKey, undefined);
+        continue;
+      }
+      if (creationFailed) {
         continue;
       }
     }

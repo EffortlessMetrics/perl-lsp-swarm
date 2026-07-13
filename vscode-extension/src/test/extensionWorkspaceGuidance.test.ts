@@ -9,6 +9,9 @@ import {
   warnAboutPerlExtensionConflicts,
 } from '../extensionWorkspaceGuidance';
 
+const workspaceMock = vscode.workspace as unknown as { workspaceFolders: unknown };
+const extensionsMock = vscode.extensions as unknown as { all: unknown[] };
+
 function makeState(): { get: jest.Mock; update: jest.Mock } {
   const values = new Map<string, unknown>();
   return {
@@ -24,7 +27,7 @@ function makeState(): { get: jest.Mock; update: jest.Mock } {
 }
 
 function mountWorkspace(workspaceDir: string, includePaths: string[]): void {
-  (vscode.workspace as any).workspaceFolders = [
+  workspaceMock.workspaceFolders = [
     {
       name: 'workspace',
       uri: { fsPath: workspaceDir, toString: () => `file://${workspaceDir}` },
@@ -41,8 +44,8 @@ function mountWorkspace(workspaceDir: string, includePaths: string[]): void {
 
 afterEach(() => {
   jest.clearAllMocks();
-  (vscode.workspace as any).workspaceFolders = undefined;
-  (vscode.extensions as any).all = [];
+  workspaceMock.workspaceFolders = undefined;
+  extensionsMock.all = [];
   (vscode.workspace.getConfiguration as jest.Mock).mockImplementation(() => ({
     get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
     inspect: jest.fn(),
@@ -54,7 +57,7 @@ test('does not prompt for absent built-in include paths', async () => {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-default-'));
   mountWorkspace(workspaceDir, ['lib']);
 
-  await validateIncludePaths({ globalState: makeState() } as any);
+  await validateIncludePaths({ globalState: makeState() } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
 });
@@ -71,7 +74,7 @@ test('does not offer or perform directory creation through a workspace symlink',
   mountWorkspace(workspaceDir, ['linked/escape']);
   (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Create Missing Directories');
 
-  await validateIncludePaths({ globalState: makeState() } as any);
+  await validateIncludePaths({ globalState: makeState() } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
     expect.any(String),
@@ -84,13 +87,20 @@ test('reports directory creation failures without aborting guidance', async () =
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-guidance-mkdir-'));
   fs.writeFileSync(path.join(workspaceDir, 'blocked'), 'not a directory');
   mountWorkspace(workspaceDir, ['blocked/child']);
+  const state = makeState();
   (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Create Missing Directories');
 
-  await validateIncludePaths({ globalState: makeState() } as any);
+  await validateIncludePaths({ globalState: state } as unknown as vscode.ExtensionContext);
+  await validateIncludePaths({ globalState: state } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
     expect.stringContaining('Perl LSP: failed to create directory "blocked/child":'),
   );
+  expect(
+    (vscode.window.showWarningMessage as jest.Mock).mock.calls.filter(([message]) =>
+      String(message).includes('configured include path "blocked/child"'),
+    ),
+  ).toHaveLength(2);
 });
 
 test('dismissal is sticky for an unchanged discovered module layout', async () => {
@@ -101,8 +111,8 @@ test('dismissal is sticky for an unchanged discovered module layout', async () =
   mountWorkspace(workspaceDir, ['lib']);
   (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Dismiss');
 
-  await suggestDiscoveredIncludePaths({ globalState } as any);
-  await suggestDiscoveredIncludePaths({ globalState } as any);
+  await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
+  await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
 });
@@ -115,7 +125,7 @@ test('retries a discovered-path suggestion after an update failure', async () =>
   const update = jest.fn(async () => {
     throw new Error('workspace is read-only');
   });
-  (vscode.workspace as any).workspaceFolders = [
+  workspaceMock.workspaceFolders = [
     {
       name: 'workspace',
       uri: { fsPath: workspaceDir, toString: () => `file://${workspaceDir}` },
@@ -127,8 +137,8 @@ test('retries a discovered-path suggestion after an update failure', async () =>
   }));
   (vscode.window.showInformationMessage as jest.Mock).mockResolvedValue('Add to Include Paths');
 
-  await suggestDiscoveredIncludePaths({ globalState } as any);
-  await suggestDiscoveredIncludePaths({ globalState } as any);
+  await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
+  await suggestDiscoveredIncludePaths({ globalState } as unknown as vscode.ExtensionContext);
 
   expect(update).toHaveBeenCalledTimes(2);
   expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(2);
@@ -145,7 +155,7 @@ test('does not prompt for AI completion without a real server capability', async
   });
   const workspaceState = makeState();
 
-  await suggestAiCompletionIfSupported({ workspaceState } as any, {
+  await suggestAiCompletionIfSupported({ workspaceState } as unknown as vscode.ExtensionContext, {
     initializeResult: { capabilities: { hoverProvider: true } },
   });
 
@@ -153,7 +163,7 @@ test('does not prompt for AI completion without a real server capability', async
 });
 
 test('does not report the extension itself as a Perl conflict', async () => {
-  (vscode.extensions as any).all = [
+  extensionsMock.all = [
     {
       id: 'effortlessmetrics.perl-lsp-rs',
       packageJSON: {
@@ -170,7 +180,7 @@ test('does not report the extension itself as a Perl conflict', async () => {
       packageJSON: { publisher: 'EffortlessMetrics', name: 'perl-lsp-rs', version: '0.12.3' },
     },
     globalState: makeState(),
-  } as any);
+  } as unknown as vscode.ExtensionContext);
 
   expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
 });
