@@ -1,10 +1,10 @@
 use perl_parser_core::hir::{
     BarewordFact, BarewordRole, COMPILE_EFFECT_MODEL_VERSION, CompileConfidence,
     CompileEffectFactKind, CompileEffectKind, CompileEffectSourceKind, CompileEnvironment,
-    CompileEnvironmentBoundaryKind, CompileProvenance, DynamicBoundaryKind, FrameworkAdapterKind,
-    FrameworkAdapterRegistry, FrameworkExportedSymbolKind, GlobSlotSource, HirFile, HirKind,
-    IncRootKind, ModuleResolutionRoot, PragmaArgumentKind, RecoveryConfidence, ScopeGraph,
-    StashConfidence, StashGraph, StashProvenance, lower_ast,
+    CompileEnvironmentBoundaryKind, CompileProvenance, DerefAggregateKind, DerefOperandKind,
+    FrameworkAdapterKind, FrameworkAdapterRegistry, FrameworkExportedSymbolKind, GlobSlotSource,
+    HirFile, HirKind, IncRootKind, ModuleResolutionRoot, PragmaArgumentKind, RecoveryConfidence,
+    ScopeGraph, StashConfidence, StashGraph, StashProvenance, lower_ast,
 };
 use perl_parser_core::{Node, NodeKind, Parser, SourceLocation};
 use perl_semantic_facts::{
@@ -1472,7 +1472,7 @@ fn hir_compile_effect_log_links_source_mutations_facts_and_boundaries()
 }
 
 #[test]
-fn hir_symbolic_refs_emit_dynamic_boundaries_only_when_strict_refs_disabled()
+fn hir_dereferences_lower_as_runtime_expressions_without_compile_effects()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"package Symbolic::Refs;
 use strict;
@@ -1483,6 +1483,9 @@ ${$strict_scalar} = 1;
     @{$loose_array} = ();
     %{$loose_hash} = ();
     &{$loose_code}();
+    ${"Symbolic::literal"} = 1;
+    ${"Symbolic::" . "computed"} = 2;
+    ${"$interpolated_symbol"} = 3;
 }
 ${$strict_again} = 2;
 *alias = \&target;
@@ -1495,28 +1498,38 @@ ${$strict_again} = 2;
     let loose_array = source.find("@{$loose_array}").ok_or("expected loose array deref")?;
     let loose_hash = source.find("%{$loose_hash}").ok_or("expected loose hash deref")?;
     let loose_code = source.find("&{$loose_code}").ok_or("expected loose code deref")?;
+    let literal_symbol =
+        source.find("${\"Symbolic::literal\"}").ok_or("expected literal symbolic deref")?;
+    let computed_symbol = source
+        .find("${\"Symbolic::\" . \"computed\"}")
+        .ok_or("expected computed symbolic deref")?;
+    let interpolated_symbol =
+        source.find("${\"$interpolated_symbol\"}").ok_or("expected interpolated symbolic deref")?;
 
-    let symbolic_items = file
+    let dereferences = file
         .items
         .iter()
         .filter_map(|item| match &item.kind {
-            HirKind::DynamicBoundary(boundary)
-                if boundary.kind == DynamicBoundaryKind::SymbolicReferenceDeref =>
-            {
-                Some((item.range.start, boundary.reason.as_str()))
+            HirKind::DerefExpr(expr) => {
+                Some((item.range.start, expr.aggregate_kind, expr.operand_kind))
             }
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        symbolic_items,
+        dereferences,
         vec![
-            (loose_scalar, "symbolic reference dereference is not statically known"),
-            (loose_array, "symbolic reference dereference is not statically known"),
-            (loose_hash, "symbolic reference dereference is not statically known"),
-            (loose_code, "symbolic reference dereference is not statically known"),
+            (strict_scalar, DerefAggregateKind::Scalar, DerefOperandKind::Variable),
+            (loose_scalar, DerefAggregateKind::Scalar, DerefOperandKind::Variable),
+            (loose_array, DerefAggregateKind::Array, DerefOperandKind::Variable),
+            (loose_hash, DerefAggregateKind::Hash, DerefOperandKind::Variable),
+            (loose_code, DerefAggregateKind::Code, DerefOperandKind::Variable),
+            (literal_symbol, DerefAggregateKind::Scalar, DerefOperandKind::StringLiteral),
+            (computed_symbol, DerefAggregateKind::Scalar, DerefOperandKind::Expression),
+            (interpolated_symbol, DerefAggregateKind::Scalar, DerefOperandKind::StringLiteral),
+            (strict_again, DerefAggregateKind::Scalar, DerefOperandKind::Variable),
         ],
-        "symbolic-reference HIR boundaries should follow the scoped no strict refs region"
+        "dereferences should remain runtime expressions regardless of strict refs state"
     );
 
     let symbolic_boundaries = file
@@ -1525,36 +1538,24 @@ ${$strict_again} = 2;
         .iter()
         .filter(|boundary| boundary.kind == CompileEnvironmentBoundaryKind::SymbolicReferenceDeref)
         .collect::<Vec<_>>();
-    let boundary_starts =
-        symbolic_boundaries.iter().map(|boundary| boundary.range.start).collect::<Vec<_>>();
-    assert_eq!(boundary_starts, vec![loose_scalar, loose_array, loose_hash, loose_code]);
-    assert!(
-        symbolic_boundaries.iter().all(|boundary| {
-            boundary.provenance == CompileProvenance::DynamicBoundary
-                && boundary.confidence == CompileConfidence::Low
-                && boundary.package_context.as_deref() == Some("Symbolic::Refs")
-                && boundary.reason == "symbolic reference dereference is not statically known"
-        }),
-        "symbolic-reference facts should stay fail-closed with package context"
+    assert_eq!(
+        symbolic_boundaries.iter().map(|boundary| boundary.range.start).collect::<Vec<_>>(),
+        vec![literal_symbol, computed_symbol, interpolated_symbol],
+        "only string-valued dereference operands should retain deferred symbolic boundaries"
     );
-    assert!(
-        !boundary_starts.contains(&strict_scalar) && !boundary_starts.contains(&strict_again),
-        "strict refs regions should not be marked as symbolic-reference boundaries"
-    );
-
+    assert!(symbolic_boundaries.iter().all(|boundary| {
+        boundary.provenance == CompileProvenance::DynamicBoundary
+            && boundary.confidence == CompileConfidence::Low
+            && boundary.reason == "symbolic reference dereference is deferred to runtime"
+    }));
     let effects = file.compile_effects();
-    assert!(
-        effects.iter().any(|effect| {
-            effect.kind == CompileEffectKind::EmitDynamicBoundary
-                && effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref
-                && effect.fact_kind == CompileEffectFactKind::DynamicBoundary
-                && effect.fact_name.as_deref() == Some("SymbolicReferenceDeref")
-                && effect.dynamic_reason.as_deref()
-                    == Some("symbolic reference dereference is not statically known")
-                && effect.provenance == CompileProvenance::DynamicBoundary
-                && effect.confidence == CompileConfidence::Low
-        }),
-        "compile-effect log should expose symbolic-reference boundary rows"
+    assert_eq!(
+        effects
+            .iter()
+            .filter(|effect| effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref)
+            .count(),
+        3,
+        "string-valued symbolic names should remain visible as deferred compile facts"
     );
     assert!(
         effects.iter().any(|effect| {
@@ -1568,6 +1569,25 @@ ${$strict_again} = 2;
             |item| matches!(&item.kind, HirKind::CallExpr(expr) if expr.name == "provider_cutover")
         ),
         "symbolic-reference facts must not imply live provider cutover"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn hir_nested_subroutine_dereference_stays_runtime_deferred()
+-> Result<(), Box<dyn std::error::Error>> {
+    let file = lower_source("BEGIN { sub inspect { keys %$hash; } }");
+
+    assert!(
+        file.items.iter().any(|item| matches!(&item.kind, HirKind::DerefExpr(_))),
+        "nested subroutine dereference should remain a typed runtime expression"
+    );
+    assert!(
+        !file.compile_effects().iter().any(|effect| {
+            effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref
+        }),
+        "a later-executing subroutine body must not create a symbolic compile effect"
     );
 
     Ok(())
