@@ -221,7 +221,13 @@ impl IncrementalState {
             }
         }
 
+        if raw_relexed.last().is_some_and(|token| token.end > new_relex_end) {
+            return self.full_reparse(new_source, Some(FallbackReason::CacheBoundaryUnavailable));
+        }
         let reparsed = TokenStream::lexer_tokens_to_parser_tokens(raw_relexed);
+        if replay_crosses_cached_suffix(&reparsed, &suffix) {
+            return self.full_reparse(new_source, Some(FallbackReason::CacheBoundaryUnavailable));
+        }
         let tokens_relexed = reparsed.len();
         let mut assembled = prefix;
         assembled.extend(reparsed);
@@ -287,20 +293,31 @@ impl IncrementalState {
             .len()
             .saturating_sub(edit.old_end_byte - edit.start_byte)
             .saturating_add(edit.new_text.len());
-        if new_source.len() != expected_len
-            || edit.new_text.len() > new_source.len().saturating_sub(edit.start_byte)
-            || new_source[edit.start_byte..edit.start_byte + edit.new_text.len()] != edit.new_text
-        {
+        if new_source.len() != expected_len {
             return Err(ParseError::syntax(
                 "new source does not match the incremental edit",
                 edit.start_byte,
             ));
         }
-        if !new_source.is_char_boundary(edit.start_byte)
-            || !new_source.is_char_boundary(edit.start_byte + edit.new_text.len())
+        let Some(new_edit_end) = edit.start_byte.checked_add(edit.new_text.len()) else {
+            return Err(ParseError::syntax(
+                "incremental edit range overflows the new source",
+                edit.start_byte,
+            ));
+        };
+        if edit.start_byte > new_source.len()
+            || new_edit_end > new_source.len()
+            || !new_source.is_char_boundary(edit.start_byte)
+            || !new_source.is_char_boundary(new_edit_end)
         {
             return Err(ParseError::syntax(
                 "new source edit is not aligned to UTF-8 boundaries",
+                edit.start_byte,
+            ));
+        }
+        if new_source.get(edit.start_byte..new_edit_end) != Some(edit.new_text.as_str()) {
+            return Err(ParseError::syntax(
+                "new source does not contain the replacement text at the edit range",
                 edit.start_byte,
             ));
         }
@@ -403,10 +420,19 @@ fn shift_token(token: &Token, delta: isize) -> Option<Token> {
     (start <= end).then(|| Token::new(token.kind, token.text.clone(), start, end))
 }
 
+fn replay_crosses_cached_suffix(replayed: &[Token], suffix: &[Token]) -> bool {
+    let Some(replayed_end) = replayed.last().map(|token| token.end) else {
+        return false;
+    };
+    suffix.first().is_some_and(|token| token.start < replayed_end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::token_stream::TokenKind;
     use perl_tdd_support::{must, must_some};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     #[test]
     fn local_edit_reuses_tokens_and_matches_fresh_parse() {
@@ -439,6 +465,28 @@ mod tests {
         let fresh = must(fresh_parser.parse());
 
         assert_eq!(incremental.to_sexp(), fresh.to_sexp());
+    }
+
+    #[test]
+    fn malformed_new_source_boundaries_return_an_error_without_panicking() {
+        let cases =
+            [("é", IncrementalEdit::new(1, 1, "")), ("aé", IncrementalEdit::new(1, 1, "x"))];
+
+        for (new_source, edit) in cases {
+            let mut state = IncrementalState::new("a;");
+            let result = catch_unwind(AssertUnwindSafe(|| state.reparse(new_source, &edit)));
+            assert!(matches!(result, Ok(Err(_))));
+        }
+    }
+
+    #[test]
+    fn replay_crossing_cached_suffix_is_detected() {
+        let replayed = [Token::new(TokenKind::Identifier, "long", 10, 20)];
+        let overlapping_suffix = [Token::new(TokenKind::Identifier, "suffix", 18, 24)];
+        let adjacent_suffix = [Token::new(TokenKind::Identifier, "suffix", 20, 24)];
+
+        assert!(replay_crosses_cached_suffix(&replayed, &overlapping_suffix));
+        assert!(!replay_crosses_cached_suffix(&replayed, &adjacent_suffix));
     }
 
     #[test]
