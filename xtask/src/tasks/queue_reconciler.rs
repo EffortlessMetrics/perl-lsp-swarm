@@ -25,20 +25,28 @@
 //! - Live CI RED → strip `merge-ready` (live CI blocks merge)
 //! - Live CI PENDING → leave both
 //!
-//! ## Review-label pairs — un-arbitrated navigation labels
+//! ## Review-label pairs — timestamp arbitration removed (#4005 D5)
 //!
 //! `deep-reviewed + needs-deep-review`, `diff-audited + needs-diff-fix`,
 //! `review-reviewed + needs-builder-fix`, and `maintainer-pr-reviewed +
-//! needs-builder-fix` have no live ground truth to resolve against. Per
-//! #4005 (repository protocol cleanup), this reconciler no longer arbitrates
-//! those pairs by label-apply timestamp ("whichever was applied later wins")
-//! — click-order is not authority. The reconciler leaves both labels alone
-//! when a pair contradicts; they remain search/navigation hints. Merge
-//! readiness for these pairs is decided by required checks and review
+//! needs-builder-fix` have no *live* ground truth (no CI check to query
+//! against). Per #4005 (repository protocol cleanup), this reconciler no
+//! longer arbitrates any of these pairs by label-apply timestamp
+//! ("whichever was applied later wins") — click-order is not authority.
+//!
+//! For `diff-audited`/`needs-diff-fix` and `review-reviewed`/`needs-builder-fix`,
+//! a SHA-bound review receipt already resolves the contradiction against a
+//! concrete artifact (see `ReviewReceipt` /
+//! `contradictions_from_current_review_receipt` below): a current-head
+//! `Approved` receipt strips the routing label, a `NeedsBuilder`/`NeedsDiff`
+//! verdict strips the sign-off label. Only `deep-reviewed`/`needs-deep-review`
+//! has no receipt-verdict mapping — for that pair, removing the timestamp
+//! arbitration leaves the contradiction genuinely un-resolved, which is the
+//! intended effect of this cut.
+//!
+//! Merge readiness for these pairs is decided by required checks and review
 //! convergence (#3693/#3988), not by which label a human or agent clicked
-//! last. A future cut may resolve these pairs from a SHA-bound review
-//! receipt (see `ReviewReceipt` / `contradictions_from_current_review_receipt`
-//! below) — that is a separate, not-yet-built mechanism.
+//! last.
 //!
 //! ## merge-ready + non-CI needs-* labels
 //!
