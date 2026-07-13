@@ -38,11 +38,13 @@
 //! a SHA-bound review receipt already resolves the contradiction against a
 //! concrete artifact (see `ReviewReceipt` /
 //! `contradictions_from_current_review_receipt` below): a current-head
-//! `Approved` receipt strips the routing label, a `NeedsBuilder`/`NeedsDiff`
-//! verdict strips the sign-off label. Only `deep-reviewed`/`needs-deep-review`
-//! has no receipt-verdict mapping — for that pair, removing the timestamp
-//! arbitration leaves the contradiction genuinely un-resolved, which is the
-//! intended effect of this cut.
+//! *independent* `Approved` receipt (one where the reviewer did not also
+//! fix-forward in the same pass — invariant #4, a fix-forward pass can't
+//! stand in for independent sign-off) strips the routing label, and a
+//! `NeedsBuilder`/`NeedsDiff` verdict strips the sign-off label. Only
+//! `deep-reviewed`/`needs-deep-review` has no receipt-verdict mapping — for
+//! that pair, removing the timestamp arbitration leaves the contradiction
+//! genuinely un-resolved, which is the intended effect of this cut.
 //!
 //! Merge readiness for these pairs is decided by required checks and review
 //! convergence (#3693/#3988), not by which label a human or agent clicked
