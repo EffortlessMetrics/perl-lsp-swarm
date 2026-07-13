@@ -41,11 +41,26 @@ function readNpmVersion() {
   if (npmExecPath) {
     return execFileSync(process.execPath, [npmExecPath, '--version'], {
       encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
   }
 
   const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  return execFileSync(npmExecutable, ['--version'], { encoding: 'utf8' }).trim();
+  return execFileSync(npmExecutable, ['--version'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function describeError(error) {
+  if (error && typeof error === 'object' && 'status' in error && typeof error.status === 'number') {
+    return `command exited with status ${error.status}`;
+  }
+  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
+    return `command failed with ${error.code}`;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return message.split(/\r?\n/, 1)[0];
 }
 
 function fail(message) {
@@ -88,9 +103,7 @@ function main() {
   try {
     npmVersion = readNpmVersion();
   } catch (error) {
-    fail(
-      `could not determine npm version: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    fail(`could not determine npm version: ${describeError(error)}`);
     return;
   }
   if (npmVersion !== expectedNpmVersion) {
