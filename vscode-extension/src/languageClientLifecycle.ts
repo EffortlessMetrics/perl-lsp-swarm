@@ -39,6 +39,11 @@ export interface LifecycleHooks<TClient extends LifecycleClient<TEvent>, TEvent 
   createClient(serverPath: string): TClient;
   onStateChange?(snapshot: LifecycleSnapshot): void | Promise<void>;
   onClientStateChange?(client: TClient, event: TEvent): void | Promise<void>;
+  /**
+   * Invoked once the client has started. Unlike the other hooks, an error
+   * thrown or rejected here aborts startup: the client is shut down and the
+   * error is surfaced as the rejection of start() or restart().
+   */
   onStarted?(client: TClient, serverPath: string): void | Promise<void>;
   onStopped?(snapshot: LifecycleSnapshot): void | Promise<void>;
   onFailed?(snapshot: LifecycleSnapshot): void | Promise<void>;
@@ -125,8 +130,16 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       return this.stopPromise;
     }
 
+    const invalidatedStartPromise = this.startPromise;
     const promise = this.runStop();
     this.stopPromise = promise;
+    const clearStopState = (): void => {
+      if (this.startPromise === invalidatedStartPromise) {
+        this.startPromise = undefined;
+      }
+      this.clearStopPromise(promise);
+    };
+    promise.then(clearStopState, clearStopState);
     return promise;
   }
 
@@ -248,15 +261,10 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
       this.transition('stopped', stopGeneration);
       this.notifyCallback('stopped', this.hooks.onStopped, this.snapshot);
     }
-
-    this.stopPromise = undefined;
   }
 
   private async runRestart(): Promise<TClient | undefined> {
     await this.stop();
-    // A startup invalidated by this restart may still be finishing its
-    // cleanup. It must not be reused as the promise for the fresh generation.
-    this.startPromise = undefined;
     return this.beginStart();
   }
 
@@ -378,6 +386,12 @@ export class LanguageClientLifecycle<TClient extends LifecycleClient<TEvent>, TE
   private clearStartPromise(promise: Promise<TClient | undefined>): void {
     if (this.startPromise === promise) {
       this.startPromise = undefined;
+    }
+  }
+
+  private clearStopPromise(promise: Promise<void>): void {
+    if (this.stopPromise === promise) {
+      this.stopPromise = undefined;
     }
   }
 

@@ -149,6 +149,18 @@ describe('LanguageClientLifecycle', () => {
     expect(harness.clients).toHaveLength(1);
   });
 
+  test('returns the running client without re-resolving', async () => {
+    const resolveServerPath = jest.fn(async () => '/server/perllsp');
+    const harness = makeHarness(resolveServerPath);
+
+    const client = await harness.controller.start();
+    const again = await harness.controller.start();
+
+    expect(again).toBe(client);
+    expect(resolveServerPath).toHaveBeenCalledTimes(1);
+    expect(harness.clients).toHaveLength(1);
+  });
+
   test('coalesces concurrent restarts and disposes the old client once', async () => {
     const harness = makeHarness();
     const oldClient = await harness.controller.start();
@@ -190,6 +202,32 @@ describe('LanguageClientLifecycle', () => {
     await expect(start).resolves.toBeUndefined();
     expect(harness.clients).toHaveLength(0);
     expect(harness.controller.snapshot.state).toBe('stopped');
+  });
+
+  test('starts a fresh generation after stopping pending startup', async () => {
+    const firstResolution = new Deferred<string | null>();
+    let resolutionCalls = 0;
+    const harness = makeHarness(async () => {
+      resolutionCalls += 1;
+      if (resolutionCalls === 1) {
+        return firstResolution.promise;
+      }
+      return '/fresh/server';
+    });
+
+    const firstStart = harness.controller.start();
+    await flush();
+    await expect(harness.controller.stop()).resolves.toBeUndefined();
+
+    const secondStart = harness.controller.start();
+    expect(secondStart).not.toBe(firstStart);
+    firstResolution.resolve('/stale/server');
+
+    const freshClient = await secondStart;
+    expect(freshClient).toBe(harness.clients[0]);
+    await expect(firstStart).resolves.toBeUndefined();
+    expect(harness.clients).toHaveLength(1);
+    expect(harness.controller.snapshot.serverPath).toBe('/fresh/server');
   });
 
   test('restarts cleanly when restart is requested during startup', async () => {
@@ -243,17 +281,24 @@ describe('LanguageClientLifecycle', () => {
   });
 
   test('bounds a hung stop and still disposes the client', async () => {
-    const harness = makeHarness(undefined, { stopTimeoutMs: 10 });
-    const client = await harness.controller.start();
-    expect(client).toBeDefined();
-    const hungStop = new Deferred<void>();
-    jest.spyOn(client!, 'stop').mockReturnValue(hungStop.promise);
-    const dispose = jest.spyOn(client!, 'dispose');
+    jest.useFakeTimers();
+    try {
+      const harness = makeHarness(undefined, { stopTimeoutMs: 10 });
+      const client = await harness.controller.start();
+      expect(client).toBeDefined();
+      const hungStop = new Deferred<void>();
+      jest.spyOn(client!, 'stop').mockReturnValue(hungStop.promise);
+      const dispose = jest.spyOn(client!, 'dispose');
 
-    await expect(harness.controller.stop()).resolves.toBeUndefined();
+      const stopPromise = harness.controller.stop();
+      await jest.advanceTimersByTimeAsync(10);
+      await expect(stopPromise).resolves.toBeUndefined();
 
-    expect(dispose).toHaveBeenCalledTimes(1);
-    expect(harness.controller.snapshot.state).toBe('failed');
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(harness.controller.snapshot.state).toBe('failed');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('stop does not wait for onStarted finalization', async () => {
