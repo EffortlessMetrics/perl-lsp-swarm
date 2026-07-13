@@ -51,14 +51,23 @@
 
 use perl_ast::{Node as AstNode, NodeKind};
 use perl_module::parse_module_import_head;
-use perl_parser_core::Parser as CoreParser;
+use perl_parser_core::{ParseOutput, Parser as CoreParser};
 use perl_pragma::{PragmaState, PragmaTracker};
 use perl_semantic_analyzer::semantic::SemanticModel;
+use std::ops::ControlFlow;
+
+/// Parser diagnostics surfaced by [`Parser::parse_detailed`].
+pub use perl_parser_core::ParseError as ParseDiagnostic;
+
+#[cfg(feature = "queries")]
+mod query;
 
 /// Re-export of Edit type for tree-sitter-compatible incremental parsing.
 ///
 /// Mirrors `tree_sitter::InputEdit` field layout for drop-in compatibility.
 pub use perl_parser_core::edit::Edit as InputEdit;
+#[cfg(feature = "queries")]
+pub use query::{Query, QueryCapture, QueryCursor, QueryError, QueryMatch, QueryMatches};
 
 /// A tree-sitter-compatible source position.
 ///
@@ -116,9 +125,36 @@ impl Parser {
     pub fn parse(&mut self, source: &str) -> Option<Tree> {
         let mut core = CoreParser::new(source);
         match core.parse() {
-            Ok(root) => Some(Tree { root, source: source.to_string(), pending_edits: Vec::new() }),
+            Ok(root) => Some(Tree {
+                root,
+                source: source.to_string(),
+                pending_edits: Vec::new(),
+                diagnostics: core.errors().to_vec(),
+            }),
             Err(_) => None,
         }
+    }
+
+    /// Parse `source` and preserve recovery diagnostics and catastrophic failures.
+    ///
+    /// A recovered parse returns `tree: Some(_)` with one or more diagnostics. A
+    /// catastrophic failure returns `tree: None` and a typed [`ParseFailure`]. Existing
+    /// callers that only need the compatibility `Option` API can continue using
+    /// [`parse`][Parser::parse].
+    pub fn parse_detailed(&mut self, source: &str) -> ParseOutcome {
+        let mut core = CoreParser::new(source);
+        let ParseOutput { ast, diagnostics, terminated_early, .. } = core.parse_with_recovery();
+        let failure = terminated_early
+            .then(|| diagnostics.iter().find_map(ParseFailure::from_diagnostic))
+            .flatten();
+        let tree = failure.is_none().then(|| Tree {
+            root: ast,
+            source: source.to_string(),
+            pending_edits: Vec::new(),
+            diagnostics: diagnostics.clone(),
+        });
+
+        ParseOutcome { tree, diagnostics, failure }
     }
 
     /// Parse `source` using `old_tree` as a hint for incremental re-parsing.
@@ -164,6 +200,7 @@ impl Default for Parser {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PerlLanguage {
     kind_names: &'static [&'static str],
+    field_names: &'static [perl_ast::FieldId],
 }
 
 impl PerlLanguage {
@@ -185,6 +222,16 @@ impl PerlLanguage {
     pub fn node_kind_is_named(&self, kind: &str) -> bool {
         self.kind_names.contains(&kind)
     }
+
+    /// Returns the stable named-field identifiers exposed by the AST.
+    pub fn field_names(&self) -> &'static [FieldId] {
+        self.field_names
+    }
+
+    /// Returns the field identifier for a canonical field name.
+    pub fn field_id_for_name(&self, name: &str) -> Option<FieldId> {
+        perl_ast::FieldId::from_name(name)
+    }
 }
 
 impl Default for PerlLanguage {
@@ -201,7 +248,10 @@ pub fn language() -> PerlLanguage {
 }
 
 /// The [`PerlLanguage`] descriptor as a constant.
-pub static LANGUAGE: PerlLanguage = PerlLanguage { kind_names: perl_ast::NodeKind::ALL_KIND_NAMES };
+pub static LANGUAGE: PerlLanguage = PerlLanguage {
+    kind_names: perl_ast::NodeKind::ALL_KIND_NAMES,
+    field_names: perl_ast::FieldId::ALL,
+};
 
 /// The result of a successful parse: an owned syntax tree and the source text.
 ///
@@ -212,6 +262,67 @@ pub struct Tree {
     source: String,
     /// Pending edits recorded via [`Tree::edit`].
     pending_edits: Vec<InputEdit>,
+    diagnostics: Vec<ParseDiagnostic>,
+}
+
+/// The result of [`Parser::parse_detailed`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ParseOutcome {
+    /// The recovered syntax tree, when parsing did not fail catastrophically.
+    pub tree: Option<Tree>,
+    /// Diagnostics collected during parsing, including recoverable errors.
+    pub diagnostics: Vec<ParseDiagnostic>,
+    /// The typed reason parsing could not produce a usable tree, if any.
+    pub failure: Option<ParseFailure>,
+}
+
+impl ParseOutcome {
+    /// Returns `true` when diagnostics or an explicit error node were observed.
+    pub fn has_error(&self) -> bool {
+        self.diagnostics.iter().any(ParseDiagnostic::blocks_clean_parse)
+            || self.tree.as_ref().is_some_and(Tree::has_error)
+    }
+
+    /// Returns `true` when a tree was produced with recovery diagnostics.
+    pub fn is_recovered(&self) -> bool {
+        self.tree.is_some() && self.has_error()
+    }
+}
+
+/// Typed catastrophic parse failures surfaced by [`Parser::parse_detailed`].
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum ParseFailure {
+    /// The parser recursion budget was exceeded.
+    RecursionLimit,
+    /// The parser's structural nesting budget was exceeded.
+    NestingTooDeep {
+        /// Observed nesting depth.
+        depth: usize,
+        /// Configured maximum nesting depth.
+        max_depth: usize,
+    },
+    /// Parsing was cancelled by the caller.
+    Cancelled,
+    /// A future or currently unclassified catastrophic failure.
+    Other {
+        /// The original parser diagnostic.
+        diagnostic: ParseDiagnostic,
+    },
+}
+
+impl ParseFailure {
+    fn from_diagnostic(diagnostic: &ParseDiagnostic) -> Option<Self> {
+        match diagnostic {
+            ParseDiagnostic::RecursionLimit => Some(Self::RecursionLimit),
+            ParseDiagnostic::NestingTooDeep { depth, max_depth } => {
+                Some(Self::NestingTooDeep { depth: *depth, max_depth: *max_depth })
+            }
+            ParseDiagnostic::Cancelled => Some(Self::Cancelled),
+            _ => Some(Self::Other { diagnostic: diagnostic.clone() }),
+        }
+    }
 }
 
 /// Experimental semantic overlay query handle.
@@ -261,6 +372,17 @@ impl Tree {
     /// Returns the source text this tree was built from.
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Returns the diagnostics collected while building this tree.
+    pub fn diagnostics(&self) -> &[ParseDiagnostic] {
+        &self.diagnostics
+    }
+
+    /// Returns `true` when parsing produced diagnostics or an explicit error node.
+    pub fn has_error(&self) -> bool {
+        self.diagnostics.iter().any(ParseDiagnostic::blocks_clean_parse)
+            || ast_has_error(&self.root)
     }
 
     /// Records a source edit on this tree, invalidating affected byte ranges.
@@ -336,6 +458,7 @@ impl<'tree> SemanticOverlay<'tree> {
 ///
 /// Mirrors the tree-sitter `Node` API surface. Lifetime `'tree` is tied to the
 /// owning [`Tree`].
+#[derive(Clone, Copy)]
 pub struct Node<'tree> {
     inner: &'tree AstNode,
     tree_source: &'tree str,
@@ -384,6 +507,16 @@ impl<'tree> Node<'tree> {
         self.inner.kind.grammar_kind_name()
     }
 
+    /// Returns `true` when this node is an explicit parser error node.
+    pub fn is_error(&self) -> bool {
+        matches!(self.inner.kind, NodeKind::Error { .. })
+    }
+
+    /// Returns `true` when this node or one of its descendants is an error node.
+    pub fn has_error(&self) -> bool {
+        ast_has_error(self.inner)
+    }
+
     /// Returns a tree-sitter-compatible S-expression for this node and its subtree.
     ///
     /// Delegates to `perl_ast::Node::to_sexp()`. Example output:
@@ -401,6 +534,42 @@ impl<'tree> Node<'tree> {
     pub fn child(&self, i: usize) -> Option<Node<'tree>> {
         ast_child_at(self.inner, i)
             .map(|child| Node { inner: child, tree_source: self.tree_source })
+    }
+
+    /// Returns the first direct child carrying the given named field.
+    ///
+    /// Unknown field names and fields absent from this node return `None`.
+    pub fn child_by_field_name(&self, name: &str) -> Option<Node<'tree>> {
+        let field = FieldId::from_name(name)?;
+        let mut found = None;
+        let _ = self.inner.try_for_each_child_with_field(|candidate, child| {
+            if candidate == Some(field) {
+                found = Some(Node { inner: child, tree_source: self.tree_source });
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        found
+    }
+
+    /// Returns all direct children carrying the given named field, in source order.
+    pub fn children_by_field_name(&self, name: &str) -> impl Iterator<Item = Node<'tree>> + '_ {
+        let field = FieldId::from_name(name);
+        let mut children = Vec::new();
+        if let Some(field) = field {
+            self.inner.for_each_child_with_field(|candidate, child| {
+                if candidate == Some(field) {
+                    children.push(Node { inner: child, tree_source: self.tree_source });
+                }
+            });
+        }
+        children.into_iter()
+    }
+
+    /// Returns the named field associated with the `index`-th direct child.
+    pub fn field_name_for_child(&self, index: usize) -> Option<&'static str> {
+        ast_child_field(self.inner, index).map(FieldId::name)
     }
 
     /// Returns an iterator over direct children.
@@ -480,7 +649,7 @@ impl<'tree> Node<'tree> {
 
 /// Re-export of [`perl_ast::NodeKind`] so callers can pattern-match node variants
 /// without a direct dependency on `perl-ast`.
-pub use perl_ast::NodeKind as PerlNodeKind;
+pub use perl_ast::{FieldId, NodeKind as PerlNodeKind};
 
 /// Stateful cursor for navigating a subtree.
 ///
@@ -607,15 +776,36 @@ fn ast_child_count(node: &AstNode) -> usize {
     count
 }
 
+fn ast_has_error(node: &AstNode) -> bool {
+    if matches!(node.kind, NodeKind::Error { .. }) {
+        return true;
+    }
+
+    node.children().iter().any(|child| ast_has_error(child))
+}
+
 #[inline]
 fn ast_child_at(node: &AstNode, index: usize) -> Option<&AstNode> {
+    ast_child_with_field(node, index).map(|(_, child)| child)
+}
+
+#[inline]
+fn ast_child_field(node: &AstNode, index: usize) -> Option<FieldId> {
+    ast_child_with_field(node, index).and_then(|(field, _)| field)
+}
+
+#[inline]
+fn ast_child_with_field(node: &AstNode, index: usize) -> Option<(Option<FieldId>, &AstNode)> {
     let mut idx = 0usize;
     let mut found = None;
-    node.for_each_child(|child| {
-        if found.is_none() && idx == index {
-            found = Some(child);
+    let _ = node.try_for_each_child_with_field(|field, child| {
+        if idx == index {
+            found = Some((field, child));
+            ControlFlow::Break(())
+        } else {
+            idx += 1;
+            ControlFlow::Continue(())
         }
-        idx += 1;
     });
     found
 }
