@@ -1330,6 +1330,7 @@
     "test:grammar:update": "vscode-tmgrammar-snap --config package.json -u \"test/grammar/fixtures/*.pl\"",
     "test:receipt-summary": "node --test scripts/summarize-vscode-receipts.test.js && node --test scripts/check-typescript-strictness.test.js",
     "summarize:vscode": "node scripts/summarize-vscode-receipts.js",
+    "sample:published:local": "node scripts/sample-local-vsix-smoke.js",
     "test:integration": "npm run typecheck && npm run compile && tsc -p ./tsconfig.integration.json && node ./out/test/integration/runTest.js",
     "test:published": "tsc -p ./tsconfig.published-smoke.json && node ./out/test/published/runPublishedSmoke.js",
     "test:published:local": "node ./scripts/run-local-vsix-smoke.js",
