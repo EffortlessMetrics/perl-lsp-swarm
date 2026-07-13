@@ -1236,45 +1236,27 @@ mod tests {
     /// `NOT PROVEN` `CommitCheckOutcome::Flagged`, never as a bubbled `Err`
     /// (which `gates::run_internal_commit_check` maps to a hard "error"
     /// gate status — the silent-failure-reads-as-product-failure class this
-    /// item exists to close). The fixture: a repo with a staged Changie
-    /// fragment but NO `.changie.yaml` at all — `changie_fragment_staged_at`
-    /// itself still returns `Err` here (see
-    /// `changie_fragment_staged_blocks_malformed_yaml` for that direct-call
-    /// proof), but going through the dispatcher must convert it.
+    /// item exists to close).
+    ///
+    /// `run_named_check` always resolves `root` via `project_root()`
+    /// internally (it takes no `root` parameter), so a temp-repo fixture
+    /// can't be used here — any tree OID handed to it is resolved against
+    /// THIS repo, not a fixture. A syntactically malformed OID makes every
+    /// check's first `staged::staged_diff_paths` call fail immediately
+    /// (`git diff` rejects it as an unknown revision) — a deterministic,
+    /// host-repo-state-independent instrument failure.
     #[test]
     fn run_named_check_converts_an_instrument_failure_to_not_proven_not_a_hard_error() -> Result<()>
     {
-        let repo = TempRepo::init()?;
-        repo.write("README.md", "hello\n")?;
-        repo.add("README.md")?;
-        repo.commit("initial")?;
-
-        // No .changie.yaml staged at all -- load_staged_changie_config will
-        // fail once a fragment is staged, which is exactly the internal
-        // failure this test needs.
-        repo.write(".changes/unreleased/product-1-Added-000000.yaml", "kind: Added\n")?;
-        repo.add(".changes/unreleased/product-1-Added-000000.yaml")?;
-        let tree_oid = staged::staged_tree_oid(repo.root())?;
-
-        // Sanity: confirm the direct call really does fail (otherwise this
-        // test wouldn't be exercising the instrument-failure path at all).
-        if changie_fragment_staged_at(repo.root(), Some(&tree_oid)).is_ok() {
-            bail!(
-                "test fixture is broken: expected changie_fragment_staged_at to fail with no \
-                 .changie.yaml staged, so run_named_check has an actual instrument failure to \
-                 convert"
-            );
-        }
-
-        match run_named_check("changie_fragment_staged", Some(&tree_oid))? {
+        match run_named_check("conflict_markers_staged", Some("not-a-real-oid"))? {
             CommitCheckOutcome::Flagged(report) => {
                 assert_eq!(
                     report.posture,
                     Posture::NotProven,
-                    "an internal instrument failure must classify as NOT PROVEN, not any other \
-                     posture: {report:?}"
+                    "an internal instrument failure (a malformed tree OID makes git fail) must \
+                     classify as NOT PROVEN, not any other posture: {report:?}"
                 );
-                assert_eq!(report.check, "changie_fragment_staged");
+                assert_eq!(report.check, "conflict_markers_staged");
             }
             CommitCheckOutcome::Pass(summary) => {
                 bail!(
