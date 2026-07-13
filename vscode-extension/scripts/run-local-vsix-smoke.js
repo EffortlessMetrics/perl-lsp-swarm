@@ -6,8 +6,6 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
-const vscodeTestDir = path.join(root, '.vscode-test');
-const hadVscodeTestDir = fs.existsSync(vscodeTestDir);
 const serverPath = process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
 if (!serverPath || !fs.existsSync(serverPath)) {
   process.stderr.write(
@@ -43,7 +41,23 @@ function gitRevision() {
   return result.stdout.trim();
 }
 
+function ensureCleanWorkingTree() {
+  const result = spawnSync('git', ['status', '--porcelain'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(`Unable to inspect working tree: ${result.stderr || result.error}`);
+  }
+  if (result.stdout.trim()) {
+    throw new Error(
+      'Working tree has uncommitted changes; commit them before running the local VSIX smoke test.',
+    );
+  }
+}
+
 const revision = gitRevision();
+ensureCleanWorkingTree();
 if (serverSourceRevision !== revision) {
   throw new Error(
     `Server source revision ${serverSourceRevision} does not match extension source revision ${revision}`,
@@ -85,8 +99,5 @@ try {
   }
 } finally {
   fs.rmSync(vsixPath, { force: true });
-  if (!hadVscodeTestDir) {
-    fs.rmSync(vscodeTestDir, { recursive: true, force: true });
-  }
 }
 process.exit(smokeStatus);
