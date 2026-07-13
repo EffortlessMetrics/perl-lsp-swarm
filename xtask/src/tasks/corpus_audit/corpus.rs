@@ -142,9 +142,14 @@ fn parse_corpus_layer(layer_path: &Path, layer: CorpusLayer) -> Result<Vec<Corpu
             continue;
         }
 
-        // Read file content
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read corpus file: {}", path.display()))?;
+        // Read file content — use lossy UTF-8 so Latin-1 encoded fixtures
+        // (e.g. test_corpus/legacy_encoding.pl, tracked in #1387) don't abort
+        // the entire corpus scan. Non-UTF-8 bytes become U+FFFD replacement chars.
+        let content = {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("Failed to read corpus file: {}", path.display()))?;
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
 
         // Create corpus file entry
         files.push(CorpusFile {
