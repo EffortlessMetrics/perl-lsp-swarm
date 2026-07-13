@@ -23,8 +23,8 @@ cargo build -p perllsp --release
 
 ```bash
 # From vscode-extension/
-npm ci
 npm run doctor
+npm ci
 npm run verify:marketplace
 ```
 

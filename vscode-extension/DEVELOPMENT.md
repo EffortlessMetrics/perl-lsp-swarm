@@ -12,13 +12,14 @@ This guide covers building, testing, and iterating on the extension locally with
 
 ```bash
 cd vscode-extension
-npm ci
 npm run doctor
+npm ci
 ```
 
 The extension uses npm and `package-lock.json` as its only package authority.
 `npm run doctor` enforces the Node floor and the exact `packageManager` value
-declared in `package.json`; run it after selecting the supported toolchain.
+declared in `package.json`; run it before installing dependencies so an
+unsupported environment fails before native packages are installed.
 
 ## Building the server
 
