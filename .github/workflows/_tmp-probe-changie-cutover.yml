@@ -1,0 +1,52 @@
+name: Temporary probe Changie release batching
+
+on:
+  push:
+    branches: [agent/changie-release-cutover]
+    paths: [.github/workflows/_tmp-probe-changie-cutover.yml]
+
+permissions:
+  contents: read
+
+env:
+  CHANGIE_VERSION: "1.25.0"
+  CHANGIE_LINUX_AMD64_SHA256: "f8c012073cd7865783d6db5123c59cdc006b2244309ce80243c8f6a1dda7aa5a"
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Changie
+        run: |
+          set -euo pipefail
+          asset="changie_${CHANGIE_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL "https://github.com/miniscruff/changie/releases/download/v${CHANGIE_VERSION}/${asset}" -o "/tmp/${asset}"
+          echo "${CHANGIE_LINUX_AMD64_SHA256}  /tmp/${asset}" | sha256sum -c -
+          tar -xzf "/tmp/${asset}" -C /usr/local/bin changie
+          changie --version
+      - name: Probe product and VS Code project batching
+        run: |
+          set -euo pipefail
+          echo '--- unreleased fragments ---'
+          find .changes/unreleased -maxdepth 1 -type f -print | sort || true
+          echo '--- product dry-run ---'
+          changie batch v9.9.9-probe --project product --dry-run --keep || true
+          echo '--- vscode dry-run ---'
+          changie batch v9.9.9-probe --project vscode --dry-run --keep || true
+          for project in product vscode; do
+            work="${RUNNER_TEMP}/${project}"
+            cp -a . "$work"
+            cd "$work"
+            echo "--- ${project} actual batch ---"
+            set +e
+            changie batch v9.9.9-probe --project "$project"
+            rc=$?
+            set -e
+            echo "BATCH_RC=${rc}"
+            git status --short
+            find .changes -maxdepth 3 -type f -print | sort
+            git diff -- CHANGELOG.md vscode-extension/CHANGELOG.md .changes || true
+            cd "$GITHUB_WORKSPACE"
+          done
