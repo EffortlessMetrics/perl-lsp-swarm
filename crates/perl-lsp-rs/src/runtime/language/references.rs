@@ -82,6 +82,94 @@ pub(crate) enum ReferencesAnsweringTier {
     Empty,
 }
 
+/// Outcome of attempting the live semantic source-backed references path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceBackedReferenceAttempt {
+    /// The source-backed path produced exact locations.
+    Exact(Vec<Value>),
+    /// The source-backed path declined with a named first-failure stage.
+    Declined(SourceBackedReferenceDecline),
+}
+
+/// Named first-failure stages for the source-backed references attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceBackedReferenceDecline {
+    /// The request byte offset could not be represented by the semantic query API.
+    ByteOffsetOutOfRange,
+    /// No workspace index was available.
+    WorkspaceIndexUnavailable,
+    /// Semantic queries could not be opened for the request URI.
+    SemanticQueriesUnavailableForUri,
+    /// Entity resolution did not produce one exact entity.
+    EntityUnresolved { symbol_at_found: bool, exact_candidate_count: usize },
+    /// The semantic cutover returned a non-exact class.
+    CutoverNotExact { result_class: &'static str },
+    /// The entity had no usable declaration anchor.
+    DeclarationAnchorUnavailable,
+    /// The declaration anchor had no wire location.
+    DeclarationLocationUnavailable,
+    /// The initialized lexical declaration gate rejected the source shape.
+    InitializedLexicalGateRejected,
+    /// An occurrence had no serializable wire location.
+    OccurrenceLocationUnavailable,
+    /// The exact path produced no locations after filtering.
+    EmptyExactResult,
+}
+
+impl SourceBackedReferenceAttempt {
+    fn receipt_fields(
+        &self,
+    ) -> (bool, &'static str, Option<&'static str>, bool, usize, Option<&'static str>) {
+        match self {
+            Self::Exact(_) => (true, "exact", None, false, 0, Some("exact")),
+            Self::Declined(decline) => {
+                let (stage, symbol_at_found, exact_candidate_count, cutover_result) = match decline
+                {
+                    SourceBackedReferenceDecline::ByteOffsetOutOfRange => {
+                        ("byte_offset", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::WorkspaceIndexUnavailable => {
+                        ("workspace_index", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri => {
+                        ("semantic_queries", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::EntityUnresolved {
+                        symbol_at_found,
+                        exact_candidate_count,
+                    } => ("entity_resolution", *symbol_at_found, *exact_candidate_count, None),
+                    SourceBackedReferenceDecline::CutoverNotExact { result_class } => {
+                        ("cutover", false, 0, Some(*result_class))
+                    }
+                    SourceBackedReferenceDecline::DeclarationAnchorUnavailable => {
+                        ("declaration_anchor", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::DeclarationLocationUnavailable => {
+                        ("declaration_location", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::InitializedLexicalGateRejected => {
+                        ("initialized_lexical_gate", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::OccurrenceLocationUnavailable => {
+                        ("occurrence_location", false, 0, None)
+                    }
+                    SourceBackedReferenceDecline::EmptyExactResult => {
+                        ("empty_exact_result", false, 0, Some("exact"))
+                    }
+                };
+                (
+                    true,
+                    "declined",
+                    Some(stage),
+                    symbol_at_found,
+                    exact_candidate_count,
+                    cutover_result,
+                )
+            }
+        }
+    }
+}
+
 impl ReferencesAnsweringTier {
     /// Stable snake_case label for the tier, written to the decision trace JSON.
     pub(crate) fn as_str(self) -> &'static str {
@@ -309,6 +397,7 @@ impl LspServer {
         index_result_count: usize,
         text_result_count: usize,
         latency_us: u128,
+        source_backed_attempt: Option<&SourceBackedReferenceAttempt>,
     ) {
         let Some(context) = context else {
             return;
@@ -325,6 +414,18 @@ impl LspServer {
         // source_backed_result_count is the total result count only for source-backed answers
         let source_backed_result_count: usize =
             if tier.is_source_backed() { result_count } else { 0 };
+
+        let (
+            source_backed_attempted,
+            source_backed_outcome,
+            source_backed_decline_stage,
+            source_backed_symbol_at_found,
+            source_backed_exact_candidate_count,
+            source_backed_cutover_result,
+        ) = match source_backed_attempt {
+            Some(attempt) => attempt.receipt_fields(),
+            None => (false, "not_attempted", None, false, 0, None),
+        };
 
         self.record_provider_decision_trace(
             "references",
@@ -352,6 +453,12 @@ impl LspServer {
                 "fallback_state": fallback_state,
                 "dynamic_boundary": false,
                 "trace_only_no_live_behavior_change": true,
+                "source_backed_attempted": source_backed_attempted,
+                "source_backed_outcome": source_backed_outcome,
+                "source_backed_decline_stage": source_backed_decline_stage,
+                "source_backed_symbol_at_found": source_backed_symbol_at_found,
+                "source_backed_exact_candidate_count": source_backed_exact_candidate_count,
+                "source_backed_cutover_result": source_backed_cutover_result,
                 "claim_boundary": "records existing references response only; no broader live references cutover"
             }),
         );
@@ -369,8 +476,15 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let trace_context = Self::references_decision_trace_context(params.as_ref())?;
-        let (result, tier, index_state, index_result_count, text_result_count, latency_us) =
-            self.handle_references_inner(params)?;
+        let (
+            result,
+            tier,
+            index_state,
+            index_result_count,
+            text_result_count,
+            latency_us,
+            source_backed_attempt,
+        ) = self.handle_references_inner(params)?;
         self.record_references_provider_decision_trace(
             trace_context.as_ref(),
             result.as_ref(),
@@ -379,6 +493,7 @@ impl LspServer {
             index_result_count,
             text_result_count,
             latency_us,
+            source_backed_attempt.as_ref(),
         );
         Ok(result)
     }
@@ -396,12 +511,21 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<
-        (Option<Value>, ReferencesAnsweringTier, &'static str, usize, usize, u128),
+        (
+            Option<Value>,
+            ReferencesAnsweringTier,
+            &'static str,
+            usize,
+            usize,
+            u128,
+            Option<SourceBackedReferenceAttempt>,
+        ),
         JsonRpcError,
     > {
         let start = Instant::now();
         let deadline = reference_search_deadline();
         let cap = references_cap();
+        let mut source_backed_attempt: Option<SourceBackedReferenceAttempt> = None;
 
         if let Some(params) = params {
             let uri = req_uri(&params)?;
@@ -528,7 +652,7 @@ impl LspServer {
                                         symbol_is_variable,
                                         include_declaration,
                                     ) {
-                                        if let Some(mut live_locations) = self
+                                        let live_attempt = self
                                             .live_source_backed_reference_locations(
                                                 uri,
                                                 symbol_key.name.as_ref(),
@@ -536,7 +660,11 @@ impl LspServer {
                                                 symbol_key.sigil,
                                                 offset,
                                                 include_declaration,
-                                            )
+                                            );
+                                        source_backed_attempt = Some(live_attempt.clone());
+                                        if let SourceBackedReferenceAttempt::Exact(
+                                            mut live_locations,
+                                        ) = live_attempt
                                         {
                                             live_locations.truncate(cap);
                                             // Precompute before the tracing macro so these
@@ -558,6 +686,7 @@ impl LspServer {
                                                 result_count,
                                                 0,
                                                 start.elapsed().as_micros(),
+                                                source_backed_attempt.clone(),
                                             ));
                                         }
                                     }
@@ -604,6 +733,7 @@ impl LspServer {
                                             index_count,
                                             0,
                                             start.elapsed().as_micros(),
+                                            source_backed_attempt.clone(),
                                         ));
                                     }
 
@@ -725,6 +855,7 @@ impl LspServer {
                                             index_count,
                                             text_count,
                                             start.elapsed().as_micros(),
+                                            source_backed_attempt.clone(),
                                         ));
                                     }
 
@@ -762,6 +893,7 @@ impl LspServer {
                                                 result_count,
                                                 0,
                                                 start.elapsed().as_micros(),
+                                                source_backed_attempt.clone(),
                                             ));
                                         }
                                     }
@@ -849,6 +981,7 @@ impl LspServer {
                                                                 result_count,
                                                                 0,
                                                                 start.elapsed().as_micros(),
+                                                                source_backed_attempt.clone(),
                                                             ));
                                                         }
                                                     }
@@ -945,6 +1078,7 @@ impl LspServer {
                                                             0,
                                                             text_count,
                                                             start.elapsed().as_micros(),
+                                                            source_backed_attempt.clone(),
                                                         ));
                                                     }
                                                 }
@@ -990,6 +1124,7 @@ impl LspServer {
                                                 result_count,
                                                 0,
                                                 start.elapsed().as_micros(),
+                                                source_backed_attempt.clone(),
                                             ));
                                         }
                                     }
@@ -1041,6 +1176,7 @@ impl LspServer {
                                             0,
                                             result_count,
                                             start.elapsed().as_micros(),
+                                            source_backed_attempt.clone(),
                                         ));
                                     }
                                 }
@@ -1096,6 +1232,7 @@ impl LspServer {
                             0,
                             0,
                             start.elapsed().as_micros(),
+                            source_backed_attempt.clone(),
                         ));
                     }
                 }
@@ -1109,6 +1246,7 @@ impl LspServer {
             0,
             0,
             start.elapsed().as_micros(),
+            source_backed_attempt.clone(),
         ))
     }
 
@@ -1121,14 +1259,25 @@ impl LspServer {
         sigil: Option<char>,
         byte_offset: usize,
         include_declaration: bool,
-    ) -> Option<Vec<Value>> {
-        let byte_offset = u32::try_from(byte_offset).ok()?;
-        let workspace_index = self.workspace_index()?;
+    ) -> SourceBackedReferenceAttempt {
+        let byte_offset = match u32::try_from(byte_offset) {
+            Ok(byte_offset) => byte_offset,
+            Err(_) => {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::ByteOffsetOutOfRange,
+                );
+            }
+        };
+        let Some(workspace_index) = self.workspace_index() else {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::WorkspaceIndexUnavailable,
+            );
+        };
 
         // Resolve the semantic outcome plus the declaration anchor when either
         // the caller wants it included or the P8 lexical slice needs to prove
         // this entity is an initialized lexical declaration.
-        let (outcome, decl_anchor) = workspace_index
+        let semantic_resolution = workspace_index
             .with_semantic_queries_for_uri(uri, |file_id, queries| {
                 let ctx = QueryContext::new(file_id, None, Some(byte_offset));
 
@@ -1137,9 +1286,11 @@ impl LspServer {
                 // candidate.  When resolving via definitions we keep the
                 // anchor around so we can include it as the declaration site.
                 let symbol_at = queries.symbol_at(file_id, byte_offset);
+                let symbol_at_found = symbol_at.is_some();
                 let entity_id =
-                    symbol_at.as_ref().and_then(|(_, occurrence)| occurrence.entity_id).or_else(
-                        || {
+                    match symbol_at.as_ref().and_then(|(_, occurrence)| occurrence.entity_id) {
+                        Some(entity_id) => entity_id,
+                        None => {
                             let exact_candidates: Vec<_> = queries
                                 .definitions(symbol, &ctx)
                                 .into_iter()
@@ -1156,11 +1307,18 @@ impl LspServer {
                                 })
                                 .collect();
                             match exact_candidates.as_slice() {
-                                [candidate] => Some(candidate.entity_id),
-                                _ => None,
+                                [candidate] => candidate.entity_id,
+                                _ => {
+                                    return Some(Err(
+                                        SourceBackedReferenceDecline::EntityUnresolved {
+                                            symbol_at_found,
+                                            exact_candidate_count: exact_candidates.len(),
+                                        },
+                                    ));
+                                }
                             }
-                        },
-                    )?;
+                        }
+                    };
 
                 // Find the declaration anchor for this entity.  We accept the
                 // anchor from `symbol_at` if the occurrence is a definition
@@ -1196,30 +1354,80 @@ impl LspServer {
                     symbol,
                     entity_id,
                 );
-                Some((outcome, decl_anchor))
+                Some(Ok((outcome, decl_anchor)))
             })
-            .flatten()?;
+            .flatten();
+        let Some(semantic_resolution) = semantic_resolution else {
+            return SourceBackedReferenceAttempt::Declined(
+                SourceBackedReferenceDecline::SemanticQueriesUnavailableForUri,
+            );
+        };
+        let (outcome, decl_anchor) = match semantic_resolution {
+            Ok(resolution) => resolution,
+            Err(decline) => return SourceBackedReferenceAttempt::Declined(decline),
+        };
 
-        let ReferencesCutoverResult::Exact(occurrences) = outcome.result else {
-            return None;
+        let occurrences = match outcome.result {
+            ReferencesCutoverResult::Exact(occurrences) => occurrences,
+            ReferencesCutoverResult::Ambiguous(_) => {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::CutoverNotExact { result_class: "ambiguous" },
+                );
+            }
+            ReferencesCutoverResult::LegacyFallback(_) => {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::CutoverNotExact {
+                        result_class: "legacy_fallback",
+                    },
+                );
+            }
         };
 
         if let Some(sigil) = sigil {
-            let decl_anchor = decl_anchor?;
-            let wire_location = workspace_index.semantic_anchor_wire_location(decl_anchor)?;
-            let decl_line = usize::try_from(wire_location.range.start.line).ok()?;
-            let line = source.lines().nth(decl_line)?;
+            let Some(decl_anchor) = decl_anchor else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationAnchorUnavailable,
+                );
+            };
+            let Some(wire_location) = workspace_index.semantic_anchor_wire_location(decl_anchor)
+            else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                );
+            };
+            let Ok(decl_line) = usize::try_from(wire_location.range.start.line) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                );
+            };
+            let Some(line) = source.lines().nth(decl_line) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                );
+            };
             if !line_has_initialized_lexical_declaration(line, sigil, symbol) {
-                return None;
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::InitializedLexicalGateRejected,
+                );
             }
         }
 
         let mut locations = Vec::with_capacity(occurrences.len() + 1);
         for occurrence in occurrences {
-            let wire_location =
-                workspace_index.semantic_anchor_wire_location(occurrence.anchor_id)?;
+            let Some(wire_location) =
+                workspace_index.semantic_anchor_wire_location(occurrence.anchor_id)
+            else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
+                );
+            };
             let location: lsp_types::Location = wire_location.into();
-            locations.push(serde_json::to_value(location).ok()?);
+            let Ok(location) = serde_json::to_value(location) else {
+                return SourceBackedReferenceAttempt::Declined(
+                    SourceBackedReferenceDecline::OccurrenceLocationUnavailable,
+                );
+            };
+            locations.push(location);
         }
 
         // Include the declaration location when requested, deduped against the
@@ -1230,7 +1438,11 @@ impl LspServer {
                     workspace_index.semantic_anchor_wire_location(anchor_id)
                 {
                     let decl_location: lsp_types::Location = wire_location.into();
-                    let decl_value = serde_json::to_value(&decl_location).ok()?;
+                    let Ok(decl_value) = serde_json::to_value(&decl_location) else {
+                        return SourceBackedReferenceAttempt::Declined(
+                            SourceBackedReferenceDecline::DeclarationLocationUnavailable,
+                        );
+                    };
                     let already_present = locations.iter().any(|loc| loc == &decl_value);
                     if !already_present {
                         locations.push(decl_value);
@@ -1239,7 +1451,11 @@ impl LspServer {
             }
         }
 
-        if locations.is_empty() { None } else { Some(locations) }
+        if locations.is_empty() {
+            SourceBackedReferenceAttempt::Declined(SourceBackedReferenceDecline::EmptyExactResult)
+        } else {
+            SourceBackedReferenceAttempt::Exact(locations)
+        }
     }
 
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
@@ -1541,6 +1757,24 @@ mod tests {
             assert_eq!(tier.fallback_state(1), "legacy_provider");
             assert_eq!(tier.fallback_state(0), "no_result");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn source_backed_attempt_receipt_preserves_named_decline_stage() -> Result<(), Box<dyn Error>> {
+        let declined = SourceBackedReferenceAttempt::Declined(
+            SourceBackedReferenceDecline::EntityUnresolved {
+                symbol_at_found: true,
+                exact_candidate_count: 2,
+            },
+        );
+        assert_eq!(
+            declined.receipt_fields(),
+            (true, "declined", Some("entity_resolution"), true, 2, None)
+        );
+
+        let exact = SourceBackedReferenceAttempt::Exact(Vec::new());
+        assert_eq!(exact.receipt_fields(), (true, "exact", None, false, 0, Some("exact")));
         Ok(())
     }
 
@@ -1855,6 +2089,21 @@ mod tests {
             "P8 lexical references result must be recorded as source-backed"
         );
         assert_eq!(
+            receipt.get("source_backed_attempted").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "source-backed lexical references must record an attempted semantic path"
+        );
+        assert_eq!(
+            receipt.get("source_backed_outcome").and_then(serde_json::Value::as_str),
+            Some("exact"),
+            "source-backed lexical references must record the exact attempt outcome"
+        );
+        assert_eq!(
+            receipt.get("source_backed_decline_stage"),
+            Some(&serde_json::Value::Null),
+            "exact source-backed references must not report a decline stage"
+        );
+        assert_eq!(
             receipt.get("include_declaration").and_then(serde_json::Value::as_bool),
             Some(false),
             "provider trace must record includeDeclaration=false"
@@ -1928,6 +2177,21 @@ mod tests {
             receipt.get("source_backed").and_then(serde_json::Value::as_bool),
             Some(false),
             "bare lexical fallback must not be recorded as source-backed"
+        );
+        assert_eq!(
+            receipt.get("source_backed_attempted").and_then(serde_json::Value::as_bool),
+            Some(true),
+            "eligible bare lexical requests must record the attempted semantic path"
+        );
+        assert_eq!(
+            receipt.get("source_backed_outcome").and_then(serde_json::Value::as_str),
+            Some("declined"),
+            "bare lexical requests must expose the semantic decline rather than generic None"
+        );
+        assert_eq!(
+            receipt.get("source_backed_decline_stage").and_then(serde_json::Value::as_str),
+            Some("initialized_lexical_gate"),
+            "bare lexical requests must identify the initialized lexical gate as first failure"
         );
 
         Ok(())
