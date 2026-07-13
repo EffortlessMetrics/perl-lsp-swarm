@@ -325,6 +325,7 @@ suite('First-hour VS Code receipt', function () {
     }
     const baseReceipt = {
       schema_version: 1,
+      sample_count: 1,
       issue: 3102,
       generated_at: new Date().toISOString(),
       environment: {
