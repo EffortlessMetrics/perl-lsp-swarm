@@ -4,6 +4,7 @@ const {
   compareToBaseline,
   parseDiagnostics,
   summarizeDiagnostics,
+  validateCompilerResult,
 } = require('./check-typescript-strictness');
 
 void test('parses and buckets TypeScript diagnostics by config, code, and file', () => {
@@ -51,4 +52,16 @@ void test('rejects total and bucket growth without absorbing new debt', () => {
     'code TS2345 grew from 0 to 1',
     'file tsconfig.json:src/b.ts grew from 0 to 1',
   ]);
+});
+
+void test('rejects compiler failures without parseable diagnostics', () => {
+  assert.throws(
+    () =>
+      validateCompilerResult(
+        { status: 1, stdout: '', stderr: 'error TS5058: invalid project' },
+        [],
+        'missing.json',
+      ),
+    /TypeScript failed for missing\.json without parsed diagnostics/,
+  );
 });

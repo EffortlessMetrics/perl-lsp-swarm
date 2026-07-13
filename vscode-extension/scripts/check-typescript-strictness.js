@@ -75,6 +75,15 @@ function compareToBaseline(actual, baseline) {
   return violations;
 }
 
+function validateCompilerResult(result, diagnostics, config) {
+  if (result.status !== 0 && diagnostics.length === 0) {
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    throw new Error(
+      `TypeScript failed for ${config} without parsed diagnostics (status ${result.status ?? 'unknown'}): ${output.trim() || 'no output'}`,
+    );
+  }
+}
+
 function runConfig(config) {
   const result = spawnSync(
     process.execPath,
@@ -93,7 +102,10 @@ function runConfig(config) {
   if (result.error) {
     throw result.error;
   }
-  return parseDiagnostics(`${result.stdout ?? ''}${result.stderr ?? ''}`, config);
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  const diagnostics = parseDiagnostics(output, config);
+  validateCompilerResult(result, diagnostics, config);
+  return diagnostics;
 }
 
 function main() {
@@ -134,4 +146,9 @@ if (require.main === module) {
   }
 }
 
-module.exports = { compareToBaseline, parseDiagnostics, summarizeDiagnostics };
+module.exports = {
+  compareToBaseline,
+  parseDiagnostics,
+  summarizeDiagnostics,
+  validateCompilerResult,
+};
