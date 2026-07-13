@@ -201,14 +201,24 @@ false-match-safe as the issue-based path above, **not** the bare `*<slug>*`
 substring glob this doc just warned against two paragraphs up (a slug like
 `fix-parse` would false-match `fix-parser`, `prefix-parse-bug`, etc. — the
 identical anti-pattern). Decide the exact branch name the mechanical change
-will use *before* searching, then match it precisely:
+will use *before* searching, then match it precisely.
+
+As with Step 5 above, fetch that exact branch **first** — `git branch -a`
+only shows remote-tracking refs already fetched into this checkout, so a
+stale checkout would silently miss a branch another agent just pushed (even
+one with no open PR yet), producing a false "no collision":
 
 ```bash
+git fetch origin "+refs/heads/<exact-branch-name>:refs/remotes/origin/<exact-branch-name>"
 gh pr list --search "<exact-branch-name>" --state open
 git branch -a --list "<exact-branch-name>" "*/<exact-branch-name>"
 git worktree list
 python3 scripts/worktree-manager.py query
 ```
+
+Confirm the fetch succeeded (exit `0`, no "couldn't find remote ref" error)
+before trusting a "no collision" result from the searches below it — the
+same exposure Step 5's fetch-first ordering exists to close.
 
 `git branch -a --list` here takes the **exact** branch name (optionally with
 a remote-prefixed form, e.g. `*/<exact-branch-name>`, to match
@@ -239,16 +249,24 @@ a `PASS` / `BLOCK` / `NOT_PROVEN` verdict with a per-check reason. It never
 mutates git state, the filesystem, or GitHub, and always exits `0` — the
 verdict lives in its output, not its exit code.
 
-Run it for the branch/worktree about to be admitted:
+Run it for the branch/worktree about to be admitted. The branch **name** is
+already decided by this point in both paths — Step 5 picked it before
+searching for collisions (`impl/<issue#>-<slug>` for issue-based work, the
+exact branch name for mechanical work) — even though the branch itself
+usually doesn't exist locally yet (it's created *by* the Step 7 hand-off).
+Pass that name via `--branch` whenever it's known, which is nearly always
+true at this point in the flow:
 
 ```bash
-cargo xtask writer-admission --base origin/main \
-  --repo EffortlessMetrics/perl-lsp-swarm --json
+cargo xtask writer-admission --branch impl/<issue#>-<slug> \
+  --base origin/main --repo EffortlessMetrics/perl-lsp-swarm --json
 ```
 
-If the target branch is already known (e.g. reusing an idle worktree-manager
-slot instead of creating a fresh one), pass it explicitly along with the
-worktree path being reused:
+`writer-collision` resolves the branch name via `gh` (an open PR already
+owning that name) — it doesn't require the branch to exist locally or in a
+worktree, so passing `--branch` here is what actually exercises that check.
+Add `--worktree <path>` too when reusing an idle worktree-manager slot
+instead of creating a fresh one:
 
 ```bash
 cargo xtask writer-admission --branch impl/<issue#>-<slug> \
@@ -256,11 +274,14 @@ cargo xtask writer-admission --branch impl/<issue#>-<slug> \
   --repo EffortlessMetrics/perl-lsp-swarm --json
 ```
 
-When no branch exists yet (the common case — the branch is created *by* the
-Step 7 hand-off), omitting `--branch`/`--worktree` falls back to the current
-checkout, which still surfaces real pre-admission risk: disk headroom,
-dirty/unpushed state, shadow-ref contamination, and canonical-base drift in
-the environment about to spawn the new worktree.
+Only omit `--branch`/`--worktree` entirely — falling back to the current
+checkout — in the genuinely-undecided-name case. That fallback still
+surfaces real pre-admission risk: disk headroom, dirty/unpushed state,
+shadow-ref contamination, and canonical-base drift in the environment about
+to spawn the new worktree. It does **not** exercise `writer-collision`,
+since there is no target branch name for that check to test against — do
+not read a `PASS` verdict under this fallback as having confirmed no
+collision.
 
 This composes over the existing gates, not a uniform advisory bolt-on like
 Step 4b — its per-check severity is **not** flat. `writer_admission.rs`'s own
@@ -299,10 +320,13 @@ check failed," not "a STOP-class check failed."
   second worktree for this branch.
   ```
 
-  (`writer-collision` duplicates Step 5's own STOP for the identical
-  fact — an open PR already owning the branch — so in practice Step 5 will
-  usually STOP first; Step 6b's own `writer-collision` check exists as a
-  second, independent confirmation of the same fact, not a downgrade of it.)
+  (`writer-collision` checks the identical fact Step 5's own STOP already
+  covers — an open PR already owning the branch — so in practice Step 5 will
+  usually STOP first. That overlap doesn't make running writer-collision
+  redundant: per the `--branch` guidance above, it's invoked as a second,
+  independent confirmation of the same fact through a different code path —
+  useful precisely if Step 5's own search was somehow skipped or stale, not
+  a contradiction of it.)
 - **`shadow-ref`, `symbolic-head`, `branch-worktree-mapping`,
   `dirty-unpushed`, `canonical-base` `BLOCK`** → advisory strong note (this
   narrows #3982's literal "unsafe checkout" STOP language to only the two
