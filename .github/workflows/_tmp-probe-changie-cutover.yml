@@ -28,28 +28,27 @@ jobs:
           curl -fsSL "https://github.com/miniscruff/changie/releases/download/v${CHANGIE_VERSION}/${asset}" -o "/tmp/${asset}"
           echo "${CHANGIE_LINUX_AMD64_SHA256}  /tmp/${asset}" | sha256sum -c -
           sudo tar -xzf "/tmp/${asset}" -C /usr/local/bin changie
-          changie --version
-      - name: Probe product and VS Code project batching
+      - name: Probe project batching
         run: |
           set -euo pipefail
-          echo '--- unreleased fragments ---'
-          find .changes/unreleased -maxdepth 1 -type f -print | sort || true
-          echo '--- product dry-run ---'
-          changie batch v9.9.9-probe --project product --dry-run --keep || true
-          echo '--- vscode dry-run ---'
-          changie batch v9.9.9-probe --project vscode --dry-run --keep || true
+          echo "FRAGMENT_COUNT=$(find .changes/unreleased -maxdepth 1 -type f -name '*.yaml' | wc -l)"
           for project in product vscode; do
             work="${RUNNER_TEMP}/${project}"
             cp -a . "$work"
             cd "$work"
-            echo "--- ${project} actual batch ---"
             set +e
-            changie batch v9.9.9-probe --project "$project"
+            changie batch v9.9.9-probe --project "$project" >/tmp/${project}.stdout 2>/tmp/${project}.stderr
             rc=$?
             set -e
+            echo "PROJECT=${project}"
             echo "BATCH_RC=${rc}"
-            git status --short
-            find .changes -maxdepth 3 -type f -print | sort
-            git diff -- CHANGELOG.md vscode-extension/CHANGELOG.md .changes || true
+            echo "CHANGED_PATHS_BEGIN"
+            git status --short | sed -n '1,40p'
+            echo "CHANGED_PATHS_END"
+            echo "VERSION_FILES_BEGIN"
+            find .changes -maxdepth 3 -type f ! -path '*/unreleased/*' -print | sort | tail -20
+            echo "VERSION_FILES_END"
+            echo "STDOUT=$(tr '\n' ' ' </tmp/${project}.stdout | head -c 500)"
+            echo "STDERR=$(tr '\n' ' ' </tmp/${project}.stderr | head -c 500)"
             cd "$GITHUB_WORKSPACE"
           done
