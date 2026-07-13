@@ -478,6 +478,14 @@ suite('First-hour VS Code receipt', function () {
         completionPosition,
         symbolPosition,
       );
+      const restartStatus =
+        restartMetrics === undefined
+          ? 'unavailable'
+          : restartMetrics.binary_resolution_status === 'ok' &&
+              restartMetrics.server_start_status === 'ok' &&
+              restartMetrics.initialize_status === 'ok'
+            ? 'ok'
+            : 'error';
       assert.equal(
         restarted.completion.status,
         'ok',
@@ -509,7 +517,7 @@ suite('First-hour VS Code receipt', function () {
       }
       lifecycle = {
         restart: {
-          status: 'ok',
+          status: restartStatus,
           duration_ms: Math.round(monotonicNow() - restartStart),
           language_client: restartMetrics ?? {
             status: 'unavailable',

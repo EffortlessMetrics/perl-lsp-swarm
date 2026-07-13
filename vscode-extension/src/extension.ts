@@ -2,7 +2,12 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execFile } from 'child_process';
-import { LanguageClient, TransportKind, Trace } from 'vscode-languageclient/node';
+import {
+  LanguageClient,
+  State as LanguageClientState,
+  TransportKind,
+  Trace,
+} from 'vscode-languageclient/node';
 import type {
   LanguageClientOptions,
   ServerOptions,
@@ -92,7 +97,6 @@ let languageClientLifecycle:
   | ExtensionLanguageClientLifecycle<LanguageClient, StateChangeEvent>
   | undefined;
 const languageClientStartupMetrics = new LanguageClientStartupMetrics();
-let binaryResolutionSource: BinaryResolutionSource = 'unknown';
 
 export function getLanguageClientStartupMetrics(): LanguageClientStartupMetricsSnapshot {
   return languageClientStartupMetrics.snapshot();
@@ -1981,8 +1985,9 @@ export function diagnoseConfiguredServerPath(
   return userPath;
 }
 
-async function getServerPath(context: vscode.ExtensionContext): Promise<string | null> {
-  binaryResolutionSource = 'unknown';
+async function getServerPath(
+  context: vscode.ExtensionContext,
+): Promise<{ path: string | null; source: BinaryResolutionSource }> {
   // First check user settings
   const config = vscode.workspace.getConfiguration('perl-lsp');
   const userPath = config.get<string>('serverPath');
@@ -1991,8 +1996,7 @@ async function getServerPath(context: vscode.ExtensionContext): Promise<string |
   if (userPath && userPathExists) {
     outputChannel.appendLine(`Using user-configured Perl LSP binary: ${userPath}`);
     configuredServerPathMissing = null;
-    binaryResolutionSource = 'configured';
-    return userPath;
+    return { path: userPath, source: 'configured' };
   }
 
   configuredServerPathMissing = diagnoseConfiguredServerPath(
@@ -2013,7 +2017,6 @@ async function getServerPath(context: vscode.ExtensionContext): Promise<string |
         const fullPath = path.join(dir, binaryName);
         if (fs.existsSync(fullPath)) {
           outputChannel.appendLine(`Found Perl LSP binary in PATH: ${fullPath}`);
-          binaryResolutionSource = 'path';
           return fullPath;
         }
       }
@@ -2058,21 +2061,18 @@ async function getServerPath(context: vscode.ExtensionContext): Promise<string |
   if (preferPathBeforeBundled) {
     const pathCandidate = findInPath();
     if (pathCandidate) {
-      binaryResolutionSource = 'path';
-      return pathCandidate;
+      return { path: pathCandidate, source: 'path' };
     }
   }
 
   const bundledCandidate = findBundled();
   if (bundledCandidate) {
-    binaryResolutionSource = 'bundled';
-    return bundledCandidate;
+    return { path: bundledCandidate, source: 'bundled' };
   }
 
   const pathCandidate = findInPath();
   if (pathCandidate) {
-    binaryResolutionSource = 'path';
-    return pathCandidate;
+    return { path: pathCandidate, source: 'path' };
   }
 
   // Check if auto-download is enabled
@@ -2085,16 +2085,14 @@ async function getServerPath(context: vscode.ExtensionContext): Promise<string |
 
     if (downloadedPath) {
       outputChannel.appendLine(`Downloaded Perl LSP binary to: ${downloadedPath}`);
-      binaryResolutionSource = 'downloaded';
-      return downloadedPath;
+      return { path: downloadedPath, source: 'downloaded' };
     }
   } else {
     outputChannel.appendLine('Perl LSP binary not found and auto-download is disabled');
   }
 
   outputChannel.appendLine('Failed to obtain a Perl LSP binary');
-  binaryResolutionSource = 'unavailable';
-  return null;
+  return { path: null, source: 'unavailable' };
 }
 
 function createLanguageClientLifecycle(
@@ -2104,14 +2102,14 @@ function createLanguageClientLifecycle(
     resolveServerPath: async () => {
       languageClientStartupMetrics.beginBinaryResolution();
       try {
-        const serverPath = await getServerPath(context);
+        const resolution = await getServerPath(context);
         languageClientStartupMetrics.finishBinaryResolution(
-          serverPath ? 'ok' : 'unavailable',
-          serverPath ? binaryResolutionSource : 'unavailable',
+          resolution.path ? 'ok' : 'unavailable',
+          resolution.source,
         );
-        return serverPath;
+        return resolution.path;
       } catch (error: unknown) {
-        languageClientStartupMetrics.finishBinaryResolution('error', binaryResolutionSource);
+        languageClientStartupMetrics.finishBinaryResolution('error');
         throw error;
       }
     },
@@ -2138,6 +2136,10 @@ function createLanguageClientLifecycle(
       healthWidget?.onStateChange(clientStateForLifecycle(snapshot.state));
     },
     onClientStateChange: (_activeClient, event) => {
+      if (event.newState === LanguageClientState.Starting) {
+        languageClientStartupMetrics.markMilestone('process_started');
+        languageClientStartupMetrics.finishServerStart('ok');
+      }
       handleClientStateChange(event);
     },
     onCallbackError: (error, phase) => {
