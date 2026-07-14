@@ -140,6 +140,16 @@ pub fn scenarios() -> Vec<Scenario> {
 /// `hooks/pre-push` lines 77-206 (doc-only glob, then single-crate scope,
 /// else full `pr-fast`). This is a measurement-only reimplementation —
 /// `hooks/pre-push` itself is not invoked and not modified by this module.
+///
+/// **Provenance note**: This enum models the shell's *taxonomy* logic
+/// (`hooks/pre-push:77-206` glob rules and branch detection), but NOT the
+/// `resolve-package-name` resolution step the shell applies at line 182
+/// (converting directory basename → Cargo package name, e.g.
+/// `perl-lsp` → `perl-lsp-rs` per issue #4512). For the current corpus
+/// scenarios in this module, all crate directory basenames match their
+/// Cargo package names, so the verdicts are correct despite this
+/// simplification. When adding scenarios with basename ≠ package-name,
+/// the `SingleCrate` variant and matrix data must be updated accordingly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ShellVerdict {
     /// Every changed path matched the doc-only glob (`hooks/pre-push:130`)
@@ -147,7 +157,9 @@ pub enum ShellVerdict {
     DocOnlySkip,
     /// Every non-doc-only changed path lives under exactly one
     /// `crates/<name>/` — the targeted `cargo fmt/clippy/test -p <name>`
-    /// gate runs (`hooks/pre-push:172-206`).
+    /// gate runs (`hooks/pre-push:172-206`). Note: `<name>` here is the
+    /// directory basename, not the resolved Cargo package name (see
+    /// provenance note above).
     SingleCrate(String),
     /// Ambiguous, multi-crate, or non-crate change — falls back to the full
     /// `nix develop -c just pr-fast` gate (`hooks/pre-push:208+`).
@@ -743,6 +755,40 @@ mod tests {
         };
         let (direction, _) = compare(&shell, &rust);
         assert_eq!(direction, Direction::RustNarrower);
+    }
+
+    #[test]
+    fn compare_rust_narrower_when_single_crate_has_empty_touched_crates() {
+        // Shell identifies a single crate but ci_scope's touched_crates is
+        // empty (all selected lanes carry no crate scope, e.g., only
+        // ci_config/security/publish lanes fire).
+        let shell = ShellVerdict::SingleCrate("perl-pod".to_string());
+        let rust = RustVerdict {
+            diff_class: "code".to_string(),
+            direct_crates: vec!["perl-pod".to_string()],
+            reverse_dep_crates: vec![],
+            selected_lane_names: vec!["ci_config".to_string()],
+            touched_crates: vec![],
+        };
+        let (direction, _) = compare(&shell, &rust);
+        assert_eq!(direction, Direction::RustNarrower);
+    }
+
+    #[test]
+    fn compare_ambiguous_when_single_crate_not_in_touched_set() {
+        // Shell scopes to a single crate, but ci_scope's touched_crates set
+        // does not include that crate (contradictory signals — ci_scope
+        // selected some lane but excluded the changed crate).
+        let shell = ShellVerdict::SingleCrate("perl-pod".to_string());
+        let rust = RustVerdict {
+            diff_class: "code".to_string(),
+            direct_crates: vec!["perl-pod".to_string()],
+            reverse_dep_crates: vec![],
+            selected_lane_names: vec!["lsp_smoke".to_string()],
+            touched_crates: vec!["perl-parser".to_string(), "perl-lsp-rs".to_string()],
+        };
+        let (direction, _) = compare(&shell, &rust);
+        assert_eq!(direction, Direction::Ambiguous);
     }
 
     // --- full corpus + report rendering ---
