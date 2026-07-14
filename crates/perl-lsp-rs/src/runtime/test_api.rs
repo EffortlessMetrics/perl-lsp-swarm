@@ -878,6 +878,77 @@ impl LspServer {
         super::readiness::set_index_ready_wait_entered_observer(sender);
     }
 
+    /// Configure the active-document and direct-dependency targets for a
+    /// deterministic startup-readiness probe.
+    #[cfg(feature = "workspace")]
+    pub fn test_set_readiness_target(
+        &self,
+        active_document_uri: Option<&str>,
+        direct_dependency_uris: &[&str],
+    ) {
+        self.workspace_readiness_receipt.lock().set_readiness_target(
+            active_document_uri.map(str::to_owned),
+            direct_dependency_uris.iter().map(|uri| (*uri).to_owned()),
+        );
+    }
+
+    /// Hold the real indexing thread after it enters `Building` until the
+    /// probe has issued its pre-index request.
+    #[cfg(feature = "workspace")]
+    pub fn test_gate_workspace_indexing_start(
+        &self,
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        super::readiness::set_workspace_indexing_start_gate(
+            &self.workspace_indexing_start_gate,
+            started,
+            release,
+        );
+    }
+
+    /// Record an oracle-confirmed provider observation against the active
+    /// startup-readiness receipt. The expected class and readiness outcome are
+    /// supplied by the deterministic workload oracle, never inferred from a
+    /// non-empty response alone.
+    #[cfg(feature = "workspace")]
+    pub fn test_record_readiness_provider_observation(
+        &self,
+        provider: &str,
+        expected_result_class: &str,
+        readiness_outcome: &str,
+    ) -> Result<(), String> {
+        let kind = super::readiness::ReadinessAnswerKind::from_provider(provider)
+            .ok_or_else(|| format!("unsupported readiness provider: {provider}"))?;
+        let trace = self
+            .provider_decision_traces
+            .lock()
+            .get(provider)
+            .cloned()
+            .ok_or_else(|| format!("missing provider trace for {provider}"))?;
+        let answering_tier =
+            trace.get("answering_tier").and_then(Value::as_str).unwrap_or("unknown");
+        let freshness = trace.get("freshness").and_then(Value::as_str).unwrap_or("unknown");
+        let fallback_reason = trace.get("fallback_reason").and_then(Value::as_str);
+
+        self.workspace_readiness_receipt.lock().record_provider_observation(
+            kind,
+            std::time::Instant::now(),
+            expected_result_class,
+            readiness_outcome,
+            answering_tier,
+            freshness,
+            fallback_reason,
+        );
+        Ok(())
+    }
+
+    /// Return the current path-free startup-readiness receipt for a probe.
+    #[cfg(feature = "workspace")]
+    pub fn test_readiness_receipt_snapshot(&self) -> Value {
+        self.workspace_readiness_receipt.lock().summary_json()
+    }
+
     /// Enable `callHierarchy` in the server's advertised features.
     ///
     /// Test-only helper used by coverage tests that need to reach the
