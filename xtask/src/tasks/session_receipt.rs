@@ -85,8 +85,8 @@ pub struct SessionReceipt {
     /// auto-selects a repository-global program.
     pub program: Option<String>,
     pub lane: Option<String>,
-    /// Populated when `program` is `None` because the candidate id
-    /// failed validation (as opposed to simply being absent).
+    /// Reserved for compatibility with older receipt consumers. Portfolio
+    /// selection no longer populates this field.
     pub program_note: Option<String>,
     /// The threshold that was in effect when `stale_warning` was computed
     /// (provenance for the advisory decision).
@@ -166,10 +166,6 @@ fn render_human(receipt: &SessionReceipt) -> String {
         format!("lane:             {}", receipt.lane.as_deref().unwrap_or("(none)")),
     ];
 
-    if let Some(note) = &receipt.program_note {
-        lines.push(format!("program_note:     {note}"));
-    }
-
     if receipt.fetch_ok {
         lines.push(format!(
             "origin/main:      {} (behind={}, ahead={})",
@@ -211,10 +207,7 @@ fn build_receipt(
 
     let toolchain_version = rustc_version().unwrap_or_else(|| "unknown".to_owned());
 
-    let (program, program_note) = match program_arg {
-        Some(explicit) => (Some(explicit), None),
-        None => (None, None),
-    };
+    let program = program_arg;
     let lane = lane_arg;
 
     // Distinguishes a session-start receipt captured under a CI runner
@@ -244,7 +237,7 @@ fn build_receipt(
         toolchain_version,
         program,
         lane,
-        program_note,
+        program_note: None,
         warn_threshold,
         stale_warning,
     })

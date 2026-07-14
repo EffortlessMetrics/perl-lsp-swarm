@@ -34,7 +34,7 @@ const PROGRAM_REQUIRED_PATH_FIELDS: &[&str] =
     &["proposal", "plan", "status_pointer", "operating_model"];
 const PROGRAM_REQUIRED_TEXT_ARRAYS: &[&str] = &["end_state", "claim_boundaries"];
 const PROGRAM_REQUIRED_PATH_ARRAYS: &[&str] = &["status_docs", "specs"];
-const PORTFOLIO_PROGRAM_KINDS: &[&str] = &["lane_routing", "milestone_ledger"];
+const PORTFOLIO_PROGRAM_KINDS: [&str; 2] = ["lane_routing", "milestone_ledger"];
 const EXPECTED_REPOSITORY: &str = "perl-lsp-swarm";
 
 const LANE_REQUIRED_TOP_LEVEL_STRINGS: &[&str] = &["id", "program", "proof_policy"];
@@ -218,8 +218,12 @@ fn validate_portfolio(
         }
     }
 
-    let Some(programs) = table.get("program").and_then(Value::as_array) else {
-        violations.push(format!("{ACTIVE_GOAL_PATH}: at least one [[program]] entry is required"));
+    let Some(program_value) = table.get("program") else {
+        violations.push(format!("{ACTIVE_GOAL_PATH}: [[program]] entries are required"));
+        return;
+    };
+    let Some(programs) = program_value.as_array() else {
+        violations.push(format!("{ACTIVE_GOAL_PATH}: program must be an array of tables"));
         return;
     };
     if programs.is_empty() {
