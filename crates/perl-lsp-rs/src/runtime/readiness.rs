@@ -86,9 +86,16 @@ pub(crate) struct WorkspaceReadinessReceipt {
     first_correct_answers: BTreeMap<&'static str, FirstCorrectAnswerReceipt>,
     peak_queued_work: usize,
     memory_high_water_bytes: Option<u64>,
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    test_observer_id: Option<u64>,
 }
 
 impl WorkspaceReadinessReceipt {
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) fn set_test_observer_id(&mut self, observer_id: u64) {
+        self.test_observer_id = Some(observer_id);
+    }
+
     /// Record the start of a workspace indexing run once.
     pub(crate) fn record_workspace_start(&mut self, at: Instant) {
         if self.workspace_start.is_none() {
@@ -185,7 +192,10 @@ impl WorkspaceReadinessReceipt {
             receipt = %receipt,
             "Workspace readiness receipt"
         );
-        notify_workspace_readiness_receipt(receipt);
+        #[cfg(any(test, feature = "expose_lsp_test_api"))]
+        notify_workspace_readiness_receipt(receipt, self.test_observer_id);
+        #[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+        notify_workspace_readiness_receipt(receipt, None);
     }
 }
 
@@ -401,6 +411,13 @@ pub(crate) struct WorkspaceReadinessReceiptObserverGuard {
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
+impl WorkspaceReadinessReceiptObserverGuard {
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 impl Drop for WorkspaceReadinessReceiptObserverGuard {
     fn drop(&mut self) {
         if let Ok(mut observers) = WORKSPACE_READINESS_RECEIPT_OBSERVERS.lock() {
@@ -422,11 +439,17 @@ pub(crate) fn set_workspace_readiness_receipt_observer(
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-fn notify_workspace_readiness_receipt(receipt: Value) {
+fn notify_workspace_readiness_receipt(receipt: Value, observer_id: Option<u64>) {
     let senders = WORKSPACE_READINESS_RECEIPT_OBSERVERS
         .lock()
         .ok()
-        .map(|observers| observers.iter().map(|(_, sender)| sender.clone()).collect::<Vec<_>>())
+        .map(|observers| {
+            observers
+                .iter()
+                .filter(|(id, _)| Some(*id) == observer_id)
+                .map(|(_, sender)| sender.clone())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     for sender in senders {
         let _ = sender.send(receipt.clone());
@@ -434,7 +457,7 @@ fn notify_workspace_readiness_receipt(receipt: Value) {
 }
 
 #[cfg(not(any(test, feature = "expose_lsp_test_api")))]
-fn notify_workspace_readiness_receipt(_receipt: Value) {}
+fn notify_workspace_readiness_receipt(_receipt: Value, _observer_id: Option<u64>) {}
 
 #[cfg(test)]
 mod tests {

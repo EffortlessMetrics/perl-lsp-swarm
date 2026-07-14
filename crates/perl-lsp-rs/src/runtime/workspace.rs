@@ -1920,11 +1920,16 @@ impl LspServer {
         // increment so it doesn't collide with IDs from other server-to-client requests.
         let progress_create_id = self.next_server_request_id();
         let permission_denied_shown = Arc::clone(&self.permission_denied_shown);
+        #[cfg(any(test, feature = "expose_lsp_test_api"))]
+        let readiness_observer_id =
+            self.readiness_receipt_observer_id.load(std::sync::atomic::Ordering::Relaxed);
 
         std::thread::spawn(move || {
             let _guard = indexing_guard; // moved into closure, drops when closure exits
             let budget_start = Instant::now();
             let mut readiness_receipt = WorkspaceReadinessReceipt::default();
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            readiness_receipt.set_test_observer_id(readiness_observer_id);
             readiness_receipt.record_workspace_start(budget_start);
             coordinator.transition_to_scanning();
 
@@ -3064,6 +3069,9 @@ mod tests {
         let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
         let _receipt_observer_guard =
             crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        server
+            .readiness_receipt_observer_id
+            .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
 
         server.start_workspace_indexing();
         // The channel is the observable completion barrier; the timeout only
