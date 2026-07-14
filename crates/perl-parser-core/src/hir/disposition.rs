@@ -417,7 +417,7 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             true,
             true,
             true,
-            false,
+            true,
             true,
             "Aggregate dereferences emit `DerefExpr`; proven-symbolic dereferences (string-literal, `.`-concatenation, or interpolated-string operands) under no-strict-refs additionally emit `DynamicBoundary`; operand always traversed."
         ),
@@ -913,7 +913,10 @@ mod tests {
         assert!(unary.emits_items, "Unary must emit DerefExpr for aggregate dereferences");
         assert!(unary.may_emit_boundary, "Unary must be able to emit DynamicBoundary");
         assert!(unary.traverses_children, "Unary must traverse the operand child");
-        assert!(!unary.records_side_facts, "Unary does not record side-facts");
+        assert!(
+            unary.records_side_facts,
+            "Unary records compile-environment side-facts for symbolic-reference dereferences"
+        );
 
         // `Do`: non-block form emits boundary; both forms traverse.
         let do_ = disposition_for("Do").expect("Do must have a disposition");
