@@ -224,6 +224,57 @@ enum Commands {
         command: IssuePlanSubcommand,
     },
 
+    /// Writer admission — read-only pre-admission diagnostic (#3957 W1).
+    /// Reports a PASS/BLOCK/NOT_PROVEN verdict with per-check reasons.
+    /// Never mutates git state, the filesystem, or GitHub.
+    #[command(name = "writer-admission")]
+    WriterAdmission {
+        /// Target branch being admitted (defaults to the current branch).
+        #[arg(long)]
+        branch: Option<String>,
+
+        /// Canonical base ref (e.g. origin/main).
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Worktree/checkout path to inspect (defaults to the CWD).
+        #[arg(long)]
+        worktree: Option<PathBuf>,
+
+        /// Expected SHA for the canonical base. Omit to skip the
+        /// base-ref-mismatch comparison.
+        #[arg(long)]
+        expected_base_sha: Option<String>,
+
+        /// GitHub repo (owner/name) for the writer-collision PR-ownership
+        /// check.
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// JSON fixture (offline / deterministic tests) instead of live
+        /// git/gh.
+        #[arg(long)]
+        fixture: Option<PathBuf>,
+
+        /// Emit JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+
+        /// Disk-floor GB threshold (matches clean-worktrees.sh FLOOR_GB).
+        #[arg(long, default_value_t = 200.0)]
+        floor_gb: f64,
+
+        /// Disk-floor percentage threshold (matches clean-worktrees.sh
+        /// FLOOR_PCT).
+        #[arg(long, default_value_t = 5.0)]
+        floor_pct: f64,
+
+        /// Large-staged-change-set threshold (synthetic mass-staged
+        /// additions guard).
+        #[arg(long, default_value_t = 1000)]
+        large_staged_threshold: u32,
+    },
+
     /// Build project with various configurations
     Build {
         /// Build in release mode
@@ -1837,8 +1888,27 @@ enum Commands {
         crate_dir: String,
     },
 
-    /// Remove stale `.claude/worktrees` entries and prune Git metadata.
-    WorktreeCleanup,
+    /// Report (and, with `--force`, remove) stale `.claude/worktrees` entries.
+    ///
+    /// Defaults to a dry-run report: every agent worktree is classified
+    /// KEEP or REMOVE with a reason, but nothing is deleted. A worktree is
+    /// always classified KEEP — never force-removed — when it is dirty
+    /// (uncommitted changes), locked, on a branch with an open PR (or PR
+    /// status could not be determined), or is the root checkout. Pass
+    /// `--force` to actually remove the REMOVE-classified worktrees. See
+    /// issue #4097.
+    WorktreeCleanup {
+        /// Repository root whose `.claude/worktrees/` entries should be
+        /// evaluated. Defaults to the perl-lsp workspace root. Override for
+        /// testing against a fixture repository.
+        #[arg(long)]
+        root: Option<PathBuf>,
+
+        /// Actually remove worktrees classified REMOVE. Default is a
+        /// dry-run report only — nothing is deleted without this flag.
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Validate the committed Claude swarm agent roster contract.
     ValidateSwarmAgentRoster {
@@ -3243,29 +3313,6 @@ enum QueueCommand {
         #[arg(long)]
         fixture: Option<PathBuf>,
     },
-
-    /// Project UI labels from canonical PR state receipts.
-    ProjectLabels {
-        /// Path to canonical queue state JSON.
-        #[arg(long, default_value = "target/receipts/queue-state.json")]
-        state: PathBuf,
-
-        /// Plan label changes without applying them (default).
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Apply projected label changes against GitHub. Requires GH_TOKEN.
-        #[arg(long)]
-        apply: bool,
-
-        /// Optional output path for the label-projection receipt JSON.
-        #[arg(long)]
-        receipt: Option<PathBuf>,
-
-        /// Path to projection rules TOML.
-        #[arg(long, default_value = ".ci/state/label-projection.toml")]
-        config: PathBuf,
-    },
 }
 
 #[derive(Subcommand)]
@@ -3424,15 +3471,6 @@ fn run_cli(cli: Cli) -> Result<()> {
             QueueCommand::Snapshot { out, fixture } => queue_snapshot::run_snapshot(out, fixture),
             QueueCommand::Health { receipt, fixture } => {
                 queue_health::run(queue_health::QueueHealthArgs { receipt, fixture })
-            }
-            QueueCommand::ProjectLabels { state, dry_run, apply, receipt, config } => {
-                label_projector::run_project_labels(label_projector::LabelProjectorArgs {
-                    state,
-                    dry_run,
-                    apply,
-                    receipt,
-                    config,
-                })
             }
         },
         Commands::Pr { command } => match command {
@@ -4361,6 +4399,29 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
+        Commands::WriterAdmission {
+            branch,
+            base,
+            worktree,
+            expected_base_sha,
+            repo,
+            fixture,
+            json,
+            floor_gb,
+            floor_pct,
+            large_staged_threshold,
+        } => writer_admission::run(writer_admission::AdmissionConfig {
+            branch,
+            base,
+            worktree,
+            expected_base_sha,
+            repo,
+            fixture,
+            json,
+            floor_gb,
+            floor_pct,
+            large_staged_threshold,
+        }),
         Commands::TargetedChecks { base, mode } => targeted_checks::run(base, mode),
         Commands::ResolvePackageName { crate_dir } => {
             // Use the current working directory as workspace root so this subcommand
@@ -4371,7 +4432,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             println!("{name}");
             Ok(())
         }
-        Commands::WorktreeCleanup => worktrees::cleanup(),
+        Commands::WorktreeCleanup { root, force } => worktrees::cleanup(root, force),
         Commands::ValidateSwarmAgentRoster { root } => swarm_agent_roster::run(root),
         Commands::CheckAgentCapabilities { root } => agent_capability_policy::run(root),
         Commands::SwarmSummary { ops_dir, since, limit, format } => {
