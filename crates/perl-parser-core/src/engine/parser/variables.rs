@@ -437,6 +437,26 @@ impl<'a> Parser<'a> {
             ));
         };
 
+        // The lexer intentionally keeps `*{...}` together as one identifier
+        // token so dynamic typeglob assignments remain unambiguous. In an
+        // rvalue position, recover the inner expression and expose the same
+        // dereference shell used by the other aggregate sigils. Keep the
+        // assignment path as a Typeglob for stash/alias analysis.
+        if sigil == "*"
+            && name.starts_with('{')
+            && name.ends_with('}')
+            && self.peek_kind() != Some(TokenKind::Assign)
+        {
+            let inner_text = &name[1..name.len() - 1];
+            let operand = parse_inline_expression(inner_text, token.start + 2)?;
+            let end = token.end;
+            let node = Node::new(
+                NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(operand) },
+                SourceLocation { start: token.start, end },
+            );
+            return self.parse_postfix_chain(node);
+        }
+
         if matches!(sigil.as_str(), "$" | "@" | "%")
             && name.is_empty()
             && self.peek_kind() == Some(TokenKind::LeftBrace)
@@ -1020,6 +1040,21 @@ impl<'a> Parser<'a> {
             }
         };
 
+        // Special handling for * sigil followed by { - dynamic typeglob dereference.
+        // Keep this distinct from a named typeglob (`*name`), which remains a
+        // Typeglob node for aliasing and slot analysis.
+        if sigil == "*" && name.is_empty() && self.peek_kind() == Some(TokenKind::LeftBrace) {
+            self.tokens.next()?; // consume {
+            let expr = self.parse_expression()?;
+            self.consume_deref_body_terminators()?;
+            self.expect(TokenKind::RightBrace)?;
+            let end = self.previous_position();
+            return Ok(Node::new(
+                NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(expr) },
+                SourceLocation { start, end },
+            ));
+        }
+
         // Special handling for @, %, or $ sigil followed by { - array/hash/scalar dereference
         // e.g. @{$ref}, %{$hash}, ${"${pkg}::$sym"}
         if (sigil == "@" || sigil == "%" || sigil == "$")
@@ -1578,6 +1613,32 @@ impl<'a> Parser<'a> {
     fn is_variable_name_kind(kind: TokenKind) -> bool {
         kind == TokenKind::Identifier || Self::can_be_sub_name(kind)
     }
+}
+
+/// Parse an expression captured inside the lexer's single `*{...}` token and
+/// restore its source offsets relative to the containing source file.
+fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<Node> {
+    let mut parser = Parser::new(source);
+    let ast = parser.parse()?;
+    let NodeKind::Program { mut statements } = ast.kind else {
+        return Err(ParseError::syntax("Expected an expression program", offset));
+    };
+    let statement = statements
+        .drain(..)
+        .next()
+        .ok_or_else(|| ParseError::syntax("Expected an expression", offset))?;
+    let NodeKind::ExpressionStatement { expression } = statement.kind else {
+        return Err(ParseError::syntax("Expected an expression statement", offset));
+    };
+    let mut expression = *expression;
+    shift_node_locations(&mut expression, offset);
+    Ok(expression)
+}
+
+fn shift_node_locations(node: &mut Node, offset: usize) {
+    node.location.start += offset;
+    node.location.end += offset;
+    node.for_each_child_mut(|child| shift_node_locations(child, offset));
 }
 
 /// Return `true` if `c` is a character that Perl permits in old-style prototypes.
