@@ -22,6 +22,14 @@ fn variable_dereferences_without_strict_refs_remain_runtime_expressions() {
         "sub inspect { my ($hash, $array, $row) = @_; keys %$hash; scalar @$array; my ($name) = @$_; }",
     );
 
+    assert_eq!(
+        file.items
+            .iter()
+            .filter(|item| matches!(&item.kind, perl_parser_core::hir::HirKind::DerefExpr(_)))
+            .count(),
+        3,
+        "variable dereferences must remain represented as runtime HIR expressions"
+    );
     assert!(
         !file.compile_effects().iter().any(|effect| {
             effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref

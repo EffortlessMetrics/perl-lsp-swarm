@@ -1577,7 +1577,7 @@ ${$strict_again} = 2;
 #[test]
 fn hir_nested_subroutine_dereference_stays_runtime_deferred()
 -> Result<(), Box<dyn std::error::Error>> {
-    let file = lower_source("BEGIN { sub inspect { keys %$hash; } }");
+    let file = lower_source(r#"BEGIN { no strict 'refs'; sub inspect { keys %{"hash"}; } }"#);
 
     assert!(
         file.items.iter().any(|item| matches!(&item.kind, HirKind::DerefExpr(_))),

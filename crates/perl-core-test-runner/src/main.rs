@@ -366,6 +366,12 @@ fn is_runtime_callable_scope(scope_id: Option<HirScopeId>, hir: &HirFile) -> boo
         let Some(scope) = hir.scope_graph.scopes.get(scope_id.index() as usize) else {
             return false;
         };
+        // The nearest execution frame wins.  A BEGIN nested inside a
+        // subroutine executes during compilation, while a subroutine body
+        // declared inside BEGIN remains runtime-callable.
+        if matches!(scope.kind, ScopeKind::PhaseBlock) {
+            return false;
+        }
         if matches!(scope.kind, ScopeKind::Subroutine | ScopeKind::Method) {
             return true;
         }
@@ -2389,6 +2395,23 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Pass);
         assert!(result.bucket.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn compile_symbolic_dereference_inside_begin_nested_in_subroutine_is_compile_effect()
+    -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(
+                "no strict 'refs';\nsub inspect { BEGIN { ${\"Foo::bar\"} = 1; } }\n".to_string(),
+            ),
+            display_path: "-e".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("compile_effect"));
         Ok(())
     }
 
