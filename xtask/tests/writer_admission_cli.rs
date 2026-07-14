@@ -144,6 +144,64 @@ fn human_output_mode_prints_verdict_and_per_check_reasons() -> Result<()> {
 }
 
 #[test]
+fn healthy_feature_branch_guidance_reports_existing_worktree_for_reuse() -> Result<()> {
+    // #3957 W2: the fixture already has exactly one worktree entry mapped
+    // to the target branch — the real CLI entry point (not just the
+    // `compute_guidance` unit) must surface it as a REUSE candidate.
+    let (ok, stdout) = run_fixture("healthy-feature-branch.json")?;
+    assert!(ok, "writer-admission must always exit 0 (advisory-first): {stdout}");
+    assert!(
+        stdout.contains("\"existing_worktree_path\": \"/repo/.claude/worktrees/agent-1\""),
+        "expected guidance.existing_worktree_path to name the REUSE candidate: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"remote_branch_sha\": null"),
+        "this fixture has no remote_branch.sha set — RESUME guidance must stay null: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resume_existing_remote_branch_guidance_reports_remote_sha_not_a_reuse_path() -> Result<()> {
+    // #3957 W2: no local worktree maps to the branch, but it already
+    // exists on the remote — a RESUME candidate, not REUSE.
+    let (ok, stdout) = run_fixture("resume-existing-remote-branch.json")?;
+    assert!(ok, "writer-admission must always exit 0 (advisory-first): {stdout}");
+    assert!(
+        stdout.contains("\"remote_branch_sha\": \"9c1c9c1c9c1c9c1c9c1c9c1c9c1c9c1c9c1c9c1c\""),
+        "expected guidance.remote_branch_sha to name the RESUME candidate: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"existing_worktree_path\": null"),
+        "no worktree maps to the branch in this fixture — REUSE guidance must stay null: {stdout}"
+    );
+    // This fixture is otherwise clean (no shadow ref, no dirty state, no PR,
+    // healthy disk) — the RESUME signal must not itself flip the verdict to
+    // BLOCK; `guidance` is informational only.
+    assert!(stdout.contains("\"verdict\": \"PASS\""), "expected PASS verdict, got: {stdout}");
+    Ok(())
+}
+
+#[test]
+fn human_output_mode_prints_resume_guidance_line() -> Result<()> {
+    let mut cmd = cargo_bin_cmd!("xtask");
+    let output = cmd
+        .args([
+            "writer-admission",
+            "--fixture",
+            &fixture_path("resume-existing-remote-branch.json").display().to_string(),
+        ])
+        .output()?;
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(
+        stdout.contains("[GUIDANCE]") && stdout.contains("RESUME"),
+        "expected a human-readable RESUME guidance line: {stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 fn writer_admission_never_mutates_the_working_tree() -> Result<()> {
     // Read-only guarantee: running the command against a fixture must not
     // touch git state at all. We assert this indirectly by running twice
