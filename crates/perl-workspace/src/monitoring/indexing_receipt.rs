@@ -11,6 +11,7 @@ const SLOWEST_FILE_LIMIT: usize = 10;
 /// extraction, and commit work inside one `index_file` call.  That bundled
 /// operation is kept explicit here so receipts do not claim a finer split than
 /// the producer can prove.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IndexingPhase {
     /// Discover candidate workspace files.
