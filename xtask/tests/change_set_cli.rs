@@ -346,3 +346,52 @@ fn test_change_set_auto_base_resolves_to_origin_main_sha() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// G. Unrecognized --format value -> loud error, never a silent fallback to
+//    JSON (kilocode-bot review finding on PR #4171).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_change_set_unknown_format_fails_loudly_not_silent_json() -> Result<()> {
+    let tmp = tempfile::tempdir().context("failed to create tempdir")?;
+    let repo = init_fixture_repo(tmp.path())?;
+    run_git(&repo, &["checkout", "-q", "-b", "feature"])?;
+    commit_file(&repo, "feature.rs", "fn feature() {}\n", "add feature")?;
+    let local_sha = head_sha(&repo)?;
+
+    let mut cmd = cargo_bin_cmd!("xtask");
+    cmd.args([
+        "change-set",
+        "--base",
+        "auto",
+        "--head",
+        &local_sha,
+        // A plausible typo of "paths" — a shell consumer expecting
+        // newline-separated paths must not silently receive JSON instead.
+        "--format",
+        "pathss",
+        "--root",
+    ])
+    .arg(&repo);
+    let output = cmd.output().context("failed to run cargo xtask change-set")?;
+
+    assert!(
+        !output.status.success(),
+        "an unrecognized --format value must fail loudly, not silently succeed; \
+         stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.trim().is_empty(),
+        "on an unrecognized --format, stdout must not carry a JSON payload that a caller \
+         could misparse as a paths list; got: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pathss") && stderr.to_lowercase().contains("format"),
+        "error should name the offending --format value; got: {stderr}"
+    );
+    Ok(())
+}

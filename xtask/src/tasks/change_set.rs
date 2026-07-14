@@ -305,7 +305,10 @@ pub struct ChangeSetConfig {
 /// `color_eyre`) when resolution fails — callers (notably `hooks/pre-push`)
 /// must treat a non-zero exit as "could not prove the change set" and stop,
 /// never fall back to an empty changed-paths set as if the proof passed
-/// (issue #3985 Slice 3A).
+/// (issue #3985 Slice 3A). An unrecognized `--format` value is the same
+/// class of failure: a loud `Err`, never a silent fallback to `"json"` —
+/// a shell consumer expecting `paths` that typos the flag must see a clear
+/// error, not misparse a JSON blob as a newline-separated path list.
 pub fn run(config: ChangeSetConfig) -> Result<()> {
     let root = match config.root {
         Some(root) => root,
@@ -320,7 +323,7 @@ pub fn run(config: ChangeSetConfig) -> Result<()> {
                 println!("{path}");
             }
         }
-        _ => {
+        "json" => {
             let json = serde_json::json!({
                 "base_sha": resolved.base_sha,
                 "head_sha": resolved.head_sha,
@@ -329,6 +332,12 @@ pub fn run(config: ChangeSetConfig) -> Result<()> {
             let pretty = serde_json::to_string_pretty(&json)
                 .context("Failed to serialize change set to JSON")?;
             println!("{pretty}");
+        }
+        other => {
+            return Err(eyre!(
+                "Unknown --format '{other}'; expected 'json' or 'paths'. Refusing to silently \
+                 fall back to JSON for an unrecognized format value."
+            ));
         }
     }
 

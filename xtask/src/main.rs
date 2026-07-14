@@ -911,7 +911,8 @@ enum Commands {
         head: String,
 
         /// Output format: `json` (default, bounded contract) or `paths`
-        /// (one changed path per line, no SHAs).
+        /// (one changed path per line, no SHAs). Any other value is a
+        /// loud error, never a silent fallback to `json`.
         #[arg(long, default_value = "json")]
         format: String,
 
