@@ -2129,10 +2129,9 @@ impl LspServer {
                 let file_count = coordinator.index().file_count();
                 let symbol_count = coordinator.index().symbol_count();
                 coordinator.transition_to_ready(file_count, symbol_count);
-                readiness_receipt
-                    .lock()
-                    .record_milestone(ReadinessMilestone::WholeWorkspaceReady, Instant::now());
-                readiness_receipt.lock().log();
+                let mut receipt = readiness_receipt.lock();
+                receipt.record_milestone(ReadinessMilestone::WholeWorkspaceReady, Instant::now());
+                receipt.log();
                 if work_done_progress {
                     send_progress_end(&outbound, "Indexing complete");
                 }
