@@ -3062,7 +3062,8 @@ mod tests {
                 .with_path(dir.path().to_path_buf()),
         );
         let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
-        crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        let _receipt_observer_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
 
         server.start_workspace_indexing();
         // The channel is the observable completion barrier; the timeout only

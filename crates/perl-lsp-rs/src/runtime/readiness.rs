@@ -367,9 +367,13 @@ static INDEX_READY_WAIT_ENTERED_OBSERVER: std::sync::Mutex<Option<std::sync::mps
     std::sync::Mutex::new(None);
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-static WORKSPACE_READINESS_RECEIPT_OBSERVER: std::sync::Mutex<
-    Option<std::sync::mpsc::Sender<Value>>,
-> = std::sync::Mutex::new(None);
+static WORKSPACE_READINESS_RECEIPT_OBSERVERS: std::sync::Mutex<
+    Vec<(u64, std::sync::mpsc::Sender<Value>)>,
+> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+static NEXT_WORKSPACE_READINESS_RECEIPT_OBSERVER_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub(crate) fn set_index_ready_wait_entered_observer(sender: std::sync::mpsc::Sender<()>) {
@@ -391,18 +395,41 @@ fn notify_index_ready_wait_entered() {
 fn notify_index_ready_wait_entered() {}
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-pub(crate) fn set_workspace_readiness_receipt_observer(sender: std::sync::mpsc::Sender<Value>) {
-    if let Ok(mut observer) = WORKSPACE_READINESS_RECEIPT_OBSERVER.lock() {
-        *observer = Some(sender);
+/// Removes a test-only readiness receipt observer when dropped.
+pub(crate) struct WorkspaceReadinessReceiptObserverGuard {
+    id: u64,
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+impl Drop for WorkspaceReadinessReceiptObserverGuard {
+    fn drop(&mut self) {
+        if let Ok(mut observers) = WORKSPACE_READINESS_RECEIPT_OBSERVERS.lock() {
+            observers.retain(|(id, _)| *id != self.id);
+        }
     }
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) fn set_workspace_readiness_receipt_observer(
+    sender: std::sync::mpsc::Sender<Value>,
+) -> WorkspaceReadinessReceiptObserverGuard {
+    let id = NEXT_WORKSPACE_READINESS_RECEIPT_OBSERVER_ID
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut observers) = WORKSPACE_READINESS_RECEIPT_OBSERVERS.lock() {
+        observers.push((id, sender));
+    }
+    WorkspaceReadinessReceiptObserverGuard { id }
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 fn notify_workspace_readiness_receipt(receipt: Value) {
-    let sender =
-        WORKSPACE_READINESS_RECEIPT_OBSERVER.lock().ok().and_then(|mut observer| observer.take());
-    if let Some(sender) = sender {
-        let _ = sender.send(receipt);
+    let senders = WORKSPACE_READINESS_RECEIPT_OBSERVERS
+        .lock()
+        .ok()
+        .map(|observers| observers.iter().map(|(_, sender)| sender.clone()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for sender in senders {
+        let _ = sender.send(receipt.clone());
     }
 }
 

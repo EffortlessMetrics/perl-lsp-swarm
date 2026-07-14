@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_json_reports_phase_totals_and_early_exit() {
+    fn summary_json_reports_phase_totals_and_early_exit() -> Result<()> {
         let mut receipt = WorkspaceIndexingReceipt::default();
         receipt.record_discovery(3, Duration::from_millis(4));
         receipt.record_phase(IndexingPhase::Discovery, Duration::from_micros(4_500));
@@ -330,5 +330,6 @@ mod tests {
         assert_eq!(summary["phase_us"]["discovery_us"], 4_500);
         assert_eq!(summary["phase_us"]["read_us"], 1_250);
         assert_eq!(summary["phase_us"]["index_file_operation_us"], 8_750);
+        Ok(())
     }
 }
