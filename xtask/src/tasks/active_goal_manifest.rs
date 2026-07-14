@@ -856,6 +856,7 @@ fn validate_work_items(
     };
 
     let mut ids = BTreeSet::new();
+    let mut program_active_work_items = 0;
     for (index, item) in items.iter().enumerate() {
         let item_doc = format!("{doc}: work_item[{index}]");
         let Some(item_table) = item.as_table() else {
@@ -880,6 +881,7 @@ fn validate_work_items(
             }
             if status == "active" {
                 stats.active_work_items += 1;
+                program_active_work_items += 1;
             }
             if status == "completed" {
                 stats.completed_work_items += 1;
@@ -901,7 +903,7 @@ fn validate_work_items(
         validate_optional_command_array(&item_doc, item_table, "commands", stats, violations);
     }
 
-    if !allow_completed && stats.active_work_items == 0 {
+    if !allow_completed && program_active_work_items == 0 {
         violations.push(format!("{doc}: at least one work_item must be active"));
     }
 }
@@ -1927,6 +1929,59 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn active_work_requirement_is_checked_per_program() -> Result<()> {
+        let root = project_root()?;
+        let lanes = BTreeSet::from(["trust".to_owned()]);
+
+        let mut active_item = Table::new();
+        active_item.insert("id".to_owned(), Value::String("active".to_owned()));
+        active_item.insert("status".to_owned(), Value::String("active".to_owned()));
+        active_item.insert("lane".to_owned(), Value::String("trust".to_owned()));
+        active_item.insert("claim_boundary".to_owned(), Value::String("fixture".to_owned()));
+        let mut active_program = Table::new();
+        active_program
+            .insert("work_item".to_owned(), Value::Array(vec![Value::Table(active_item)]));
+
+        let mut ready_item = Table::new();
+        ready_item.insert("id".to_owned(), Value::String("ready".to_owned()));
+        ready_item.insert("status".to_owned(), Value::String("ready".to_owned()));
+        ready_item.insert("lane".to_owned(), Value::String("trust".to_owned()));
+        ready_item.insert("claim_boundary".to_owned(), Value::String("fixture".to_owned()));
+        let mut ready_program = Table::new();
+        ready_program.insert("work_item".to_owned(), Value::Array(vec![Value::Table(ready_item)]));
+
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+        validate_work_items(
+            &root,
+            "program A",
+            &active_program,
+            &lanes,
+            &mut stats,
+            &mut violations,
+            false,
+        );
+        validate_work_items(
+            &root,
+            "program B",
+            &ready_program,
+            &lanes,
+            &mut stats,
+            &mut violations,
+            false,
+        );
+
+        assert_eq!(stats.active_work_items, 1);
+        assert!(
+            violations.iter().any(|v| { v == "program B: at least one work_item must be active" })
+        );
+        assert!(
+            !violations.iter().any(|v| v == "program A: at least one work_item must be active")
+        );
         Ok(())
     }
 
