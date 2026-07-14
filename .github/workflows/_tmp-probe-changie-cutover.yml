@@ -23,6 +23,7 @@ jobs:
         run: |
           set -euo pipefail
           repo="${RUNNER_TEMP}/repo"
+          receipt="${RUNNER_TEMP}/changie-probe.txt"
           mkdir -p "$repo"
           curl -fsSL "https://codeload.github.com/${GITHUB_REPOSITORY}/tar.gz/${HEAD_SHA}" -o "${RUNNER_TEMP}/repo.tar.gz"
           tar -xzf "${RUNNER_TEMP}/repo.tar.gz" --strip-components=1 -C "$repo"
@@ -33,7 +34,7 @@ jobs:
           tar -xzf "${RUNNER_TEMP}/${asset}" -C "${RUNNER_TEMP}" changie
 
           cd "$repo"
-          echo "FRAGMENT_COUNT=$(find .changes/unreleased -maxdepth 1 -type f -name '*.yaml' | wc -l)"
+          echo "FRAGMENT_COUNT=$(find .changes/unreleased -maxdepth 1 -type f -name '*.yaml' | wc -l)" >> "$receipt"
           for project in product vscode; do
             work="${RUNNER_TEMP}/${project}"
             cp -a "$repo" "$work"
@@ -42,11 +43,22 @@ jobs:
             "${RUNNER_TEMP}/changie" batch v9.9.9-probe --project "$project" >"${RUNNER_TEMP}/${project}.stdout" 2>"${RUNNER_TEMP}/${project}.stderr"
             rc=$?
             set -e
-            echo "PROJECT=${project}"
-            echo "BATCH_RC=${rc}"
-            echo "CHANGED_PATHS=$(git status --short | tr '\n' '|' | head -c 1600)"
-            echo "VERSION_FILES=$(find .changes -maxdepth 3 -type f ! -path '*/unreleased/*' -print | sort | tr '\n' '|' | tail -c 1600)"
-            echo "STDOUT=$(tr '\n' ' ' <"${RUNNER_TEMP}/${project}.stdout" | head -c 500)"
-            echo "STDERR=$(tr '\n' ' ' <"${RUNNER_TEMP}/${project}.stderr" | head -c 500)"
+            {
+              echo "PROJECT=${project}"
+              echo "BATCH_RC=${rc}"
+              echo "CHANGED_PATHS=$(git status --short | tr '\n' '|' | head -c 1600)"
+              echo "VERSION_FILES=$(find .changes -maxdepth 3 -type f ! -path '*/unreleased/*' -print | sort | tr '\n' '|' | tail -c 1600)"
+              echo "STDOUT=$(tr '\n' ' ' <"${RUNNER_TEMP}/${project}.stdout" | head -c 500)"
+              echo "STDERR=$(tr '\n' ' ' <"${RUNNER_TEMP}/${project}.stderr" | head -c 500)"
+            } >> "$receipt"
             cd "$repo"
           done
+          cat "$receipt"
+
+      - name: Upload probe receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: changie-project-batch-probe
+          path: ${{ runner.temp }}/changie-probe.txt
+          retention-days: 7
+          if-no-files-found: error
