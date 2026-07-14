@@ -919,6 +919,11 @@ impl LspServer {
                                         )?;
                                         // Check deadline between patterns
                                         if start.elapsed() >= deadline {
+                                            fallback_receipt.deadline_exhausted = true;
+                                            fallback_receipt.fallback_completeness = "partial";
+                                            fallback_receipt.fallback_reason = Some(
+                                                "reference_scan_deadline_during_search".to_owned(),
+                                            );
                                             tracing::debug!(
                                                 "References: deadline exceeded during text search"
                                             );
@@ -1169,6 +1174,14 @@ impl LspServer {
                                                         )?;
                                                         // Check deadline
                                                         if start.elapsed() >= deadline {
+                                                            fallback_receipt.deadline_exhausted =
+                                                                true;
+                                                            fallback_receipt
+                                                                .fallback_completeness = "partial";
+                                                            fallback_receipt.fallback_reason = Some(
+                                                                "reference_scan_deadline_during_search"
+                                                                    .to_owned(),
+                                                            );
                                                             break 'doc_scan;
                                                         }
                                                         let lines: Vec<&str> =
