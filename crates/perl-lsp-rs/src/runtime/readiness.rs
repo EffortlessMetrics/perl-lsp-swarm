@@ -178,6 +178,17 @@ impl WorkspaceReadinessReceipt {
         self.indexed_uris.clear();
     }
 
+    /// Return target and indexed-URI state for test-only lifecycle assertions.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    #[allow(dead_code)] // Used by workspace lifecycle integration tests.
+    pub(crate) fn test_target_state(&self) -> (Option<String>, BTreeSet<String>, BTreeSet<String>) {
+        (
+            self.active_document_uri.clone(),
+            self.direct_dependency_uris.clone(),
+            self.indexed_uris.clone(),
+        )
+    }
+
     /// Record an indexed URI and derive target milestones from the observed set.
     pub(crate) fn record_indexed_uri(&mut self, uri: &str, at: Instant) {
         self.indexed_uris.insert(uri.to_owned());

@@ -3099,6 +3099,130 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
+    fn real_indexing_thread_resets_readiness_between_runs() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let active_path = dir.path().join("main.pl");
+        let dependency_path = dir.path().join("Dep.pm");
+        let replacement_path = dir.path().join("Replacement.pm");
+        let active_uri = url::Url::from_file_path(&active_path)
+            .map_err(|_| "invalid active document path")?
+            .to_string();
+        let dependency_uri = url::Url::from_file_path(&dependency_path)
+            .map_err(|_| "invalid dependency path")?
+            .to_string();
+        let replacement_uri = url::Url::from_file_path(&replacement_path)
+            .map_err(|_| "invalid replacement path")?
+            .to_string();
+        let active_text = "package Main;\nuse Dep;\nmy $value = 1;\n$value;\n";
+        std::fs::write(&active_path, active_text)?;
+        std::fs::write(&dependency_path, "package Dep;\nsub value { 1 }\n1;\n")?;
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+            )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+        server.test_set_readiness_target(Some(&active_uri), &[&dependency_uri]);
+
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        let _receipt_observer_guard =
+            crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+        server
+            .readiness_receipt_observer_id
+            .store(_receipt_observer_guard.id(), std::sync::atomic::Ordering::Relaxed);
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        server.test_gate_workspace_indexing_start(started_tx, release_rx);
+        server.start_workspace_indexing();
+        started_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+        server.test_apply_did_open(&active_uri, active_text, 1)?;
+
+        let provider_result = server.test_handle_completion(Some(json!({
+            "textDocument": {"uri": active_uri},
+            "position": {"line": 3, "character": 1},
+            "context": {"triggerKind": 1}
+        })));
+        let observation_result = server.test_record_readiness_provider_observation(
+            "completion",
+            &provider_result,
+            "explicit_partial_or_fallback",
+        );
+        release_tx.send(())?;
+        provider_result?;
+        observation_result.map_err(std::io::Error::other)?;
+
+        let first_receipt = receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        if first_receipt["first_correct_answers"]["completion"].is_null() {
+            return Err("first indexing run did not record its provider observation".into());
+        }
+        if !first_receipt["active_document_ready_us"].is_u64()
+            || !first_receipt["direct_dependency_set_ready_us"].is_u64()
+        {
+            return Err("first indexing run did not record target milestones".into());
+        }
+
+        let wait_for_indexing = || -> Result<(), Box<dyn std::error::Error>> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+                if std::time::Instant::now() >= deadline {
+                    return Err("indexing thread did not finish before timeout".into());
+                }
+                std::thread::yield_now();
+            }
+            Ok(())
+        };
+        wait_for_indexing()?;
+
+        std::fs::remove_file(&active_path)?;
+        std::fs::remove_file(&dependency_path)?;
+        std::fs::write(&replacement_path, "package Replacement;\n1;\n")?;
+
+        server.start_workspace_indexing();
+        let second_receipt = receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+        wait_for_indexing()?;
+
+        if !second_receipt["workspace_start_us"].is_u64()
+            || !second_receipt["whole_workspace_ready_us"].is_u64()
+        {
+            return Err("second indexing run did not emit fresh workspace milestones".into());
+        }
+        if second_receipt["first_correct_answers"]["completion"].is_object()
+            || second_receipt["active_document_ready_us"].is_number()
+            || second_receipt["direct_dependency_set_ready_us"].is_number()
+        {
+            return Err("second indexing run retained stale readiness state".into());
+        }
+
+        let receipt = server.workspace_readiness_receipt.lock();
+        let (configured_active_uri, configured_dependencies, indexed_uris) =
+            receipt.test_target_state();
+        if configured_active_uri.as_deref() != Some(active_uri.as_str())
+            || !configured_dependencies.contains(&dependency_uri)
+            || indexed_uris.contains(&active_uri)
+            || indexed_uris.contains(&dependency_uri)
+            || !indexed_uris.contains(&replacement_uri)
+            || indexed_uris.len() != 1
+        {
+            return Err(
+                "second indexing run did not reset indexed state or preserve targets".into()
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
     fn readiness_probe_records_pre_index_answer_and_index_milestones()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
