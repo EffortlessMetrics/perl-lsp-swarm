@@ -14,10 +14,11 @@
 //! # Composition, not duplication
 //!
 //! This module does not reimplement `git diff` or base-ref resolution — it
-//! calls [`change_set::resolve_change_set`] exactly like the `change-set`
-//! CLI does (`xtask/src/tasks/change_set.rs`). `ChangeSet` (as read from
-//! that module) exposes only `identity`/`base_sha`/`head_sha`/
-//! `changed_paths` — no crate or docs/code classification — so:
+//! calls [`change_set::resolve_change_set_with_mode`] exactly like the
+//! `change-set` CLI calls [`change_set::resolve_change_set`]
+//! (`xtask/src/tasks/change_set.rs`). `ChangeSet` (as read from that
+//! module) exposes only `identity`/`base_sha`/`head_sha`/`changed_paths` —
+//! no crate or docs/code classification — so:
 //!
 //! - **`changed_crates`** is derived here from `crates/<name>/...` path
 //!   prefixes only (see [`derive_changed_crates`]'s doc comment for why
@@ -27,12 +28,29 @@
 //!   (that function *is* reachable as a library — `pub fn classify_diff(files:
 //!   &[String]) -> String` — so this module composes it rather than
 //!   duplicating the prose/docs-as-code/ci_config/code heuristic).
+//!
+//! # Diff mode: `DirectTwoDot`, not the default `MergeBaseThreeDot`
+//!
+//! `seam_diff`'s `base` is a **fixed review-epoch marker commit**, not a
+//! moving branch tip. After a rebase or force-push (the normal re-review
+//! trigger), that marker commit is frequently no longer an ancestor of
+//! `head`. The default `MergeBaseThreeDot` mode (`base...head`) would then
+//! silently diff `merge-base(base, head)..head` instead of the marker's
+//! tree against head's tree — under-reporting which reviewed seams
+//! changed, or, when `head` was reset back to (an ancestor of) the marker,
+//! producing a **false-empty** report even though the two trees genuinely
+//! differ. `seam_diff` therefore always requests
+//! [`change_set::DiffMode::DirectTwoDot`] (`base..head`, a direct tree
+//! comparison with no merge-base indirection) — see
+//! `test_seam_diff_reset_to_epoch_ancestor_is_not_falsely_empty` below for
+//! the regression proof (RED under `MergeBaseThreeDot`, GREEN under
+//! `DirectTwoDot`).
 
 use std::path::Path;
 
 use color_eyre::eyre::{Context, Result, eyre};
 
-use crate::tasks::change_set::{self, ArtifactIdentity};
+use crate::tasks::change_set::{self, ArtifactIdentity, DiffMode};
 use crate::tasks::ci_scope;
 
 /// Report of which seams (changed files, plus coarse crate membership) a
@@ -83,11 +101,17 @@ fn derive_changed_crates(changed_files: &[String]) -> Vec<String> {
 /// Resolve the seams a push changed between `base_sha` (a recorded
 /// review-epoch marker SHA — see `.claude/reference/review-convergence.md`
 /// § Review-epoch markers) and `head_sha`, by composing
-/// [`change_set::resolve_change_set`] — this function does not reimplement
-/// git diff or base-ref resolution.
+/// [`change_set::resolve_change_set_with_mode`] in
+/// [`DiffMode::DirectTwoDot`] mode — this function does not reimplement
+/// git diff or base-ref resolution. See the module doc comment's "Diff
+/// mode" section for why `DirectTwoDot` (not the resolver's default
+/// `MergeBaseThreeDot`) is required here: `base_sha` is a fixed marker
+/// commit that may not be an ancestor of `head_sha` after a rebase, and
+/// three-dot's merge-base indirection can under-report or even falsely
+/// report an empty diff in that case.
 ///
 /// An invalid/nonexistent `base_sha` (or `head_sha`) propagates
-/// `resolve_change_set`'s loud [`Err`] (see
+/// `resolve_change_set_with_mode`'s loud [`Err`] (see
 /// `change_set::resolve_base_ref`'s doc comment: an explicit base must
 /// resolve on its own, never silently substituted) rather than returning a
 /// silently-empty report — a bad base must never read as "no seams
@@ -95,7 +119,7 @@ fn derive_changed_crates(changed_files: &[String]) -> Vec<String> {
 pub fn seam_diff(base_sha: &str, head_sha: &str, root: &Path) -> Result<SeamDiffReport> {
     let identity =
         ArtifactIdentity::CommitRange { base: base_sha.to_string(), head: head_sha.to_string() };
-    let resolved = change_set::resolve_change_set(identity, root)
+    let resolved = change_set::resolve_change_set_with_mode(identity, root, DiffMode::DirectTwoDot)
         .context("seam-diff: failed to resolve change set")?;
 
     let changed_files = resolved.changed_paths;
@@ -345,6 +369,82 @@ mod tests {
         ensure!(
             message.contains(bogus_base) || message.to_lowercase().contains("does not exist"),
             "expected a descriptive error naming the bad base, got: {message}"
+        );
+        Ok(())
+    }
+
+    /// REBASE-AFTER-EPOCH DRIFT PATH (mandatory mutation-proof test; the
+    /// exact bug the codex thread on this module flagged). A recorded
+    /// review-epoch marker commit `E` is a fixed SHA — after a
+    /// rebase/force-push (the normal re-review trigger), `E` is frequently
+    /// no longer an ancestor of `head`. This test builds the sharpest such
+    /// scenario: `head` is reset all the way back to `E`'s own parent (a
+    /// "reset to base" force-push), so `E` and `head` share a common
+    /// ancestor but `E`'s tree and `head`'s tree still genuinely differ
+    /// (`epoch_only.rs` exists in `E`'s tree, not in `head`'s).
+    ///
+    /// Under the resolver's default `MergeBaseThreeDot` mode, `E...head`
+    /// diffs `merge-base(E, head)..head` — and since `head == merge-base`
+    /// here, that is a **self-diff**: empty, even though `E`'s tree and
+    /// `head`'s tree differ. That is the false "no seams changed" this test
+    /// exists to catch — silently reporting `is_empty: true` when a
+    /// reviewed file was actually removed relative to the epoch is exactly
+    /// the false-clean class this whole reporter exists to avoid.
+    ///
+    /// This test is RED against `MergeBaseThreeDot` and GREEN only once
+    /// `seam_diff` uses `DiffMode::DirectTwoDot` (confirmed manually: with
+    /// `seam_diff`'s call temporarily reverted to
+    /// `change_set::resolve_change_set` — i.e. the default three-dot mode —
+    /// this test fails with `is_empty == true` and empty `changed_files`;
+    /// restoring `DiffMode::DirectTwoDot` makes it pass).
+    #[test]
+    fn test_seam_diff_reset_to_epoch_ancestor_is_not_falsely_empty() -> Result<()> {
+        let tmp = tempfile::tempdir().context("failed to create tempdir")?;
+        let repo = tmp.path().join("repo");
+        init_repo(&repo, "main")?;
+        commit_file(&repo, "README.md", "init\n", "init")?;
+        let base_commit = head_sha(&repo)?;
+
+        // The review-epoch commit E: one file added on top of base_commit.
+        // `.rs` (not `.txt`/`.md`) so `ci_scope::classify_diff` sees this as
+        // a `code` change, not `prose_only` — this test's `is_empty` /
+        // `changed_files` assertions are what pin the diff-mode bug; the
+        // `is_non_substantive` assertion should reflect an ordinary code
+        // file, not accidentally exercise the prose classifier.
+        commit_file(
+            &repo,
+            "epoch_only.rs",
+            "pub fn reviewed_at_epoch() {}\n",
+            "add epoch-only file",
+        )?;
+        let epoch = head_sha(&repo)?;
+
+        // Simulate a force-push that resets the branch tip back to
+        // base_commit — E is no longer an ancestor of the new HEAD at all;
+        // in fact HEAD now points at E's own parent. This is the sharpest
+        // "epoch not an ancestor of head" case: merge-base(E, HEAD) ==
+        // HEAD itself, so three-dot's `E...HEAD` degenerates to a self-diff.
+        run_git(&repo, &["reset", "--hard", &base_commit])?;
+        let head_after_reset = head_sha(&repo)?;
+        ensure!(
+            head_after_reset == base_commit,
+            "expected HEAD to be reset to base_commit, got {head_after_reset}"
+        );
+
+        let report = seam_diff(&epoch, "HEAD", &repo)?;
+        ensure!(
+            !report.is_empty,
+            "false-empty bug: epoch_only.rs genuinely differs between epoch's tree and \
+             head's tree after a reset-to-base force-push, but is_empty was true"
+        );
+        ensure!(
+            report.changed_files.contains(&"epoch_only.rs".to_string()),
+            "expected epoch_only.rs in changed_files (removed relative to epoch), got {:?}",
+            report.changed_files
+        );
+        ensure!(
+            !report.is_non_substantive,
+            "a removed non-doc, non-prose file must not classify as non-substantive"
         );
         Ok(())
     }

@@ -79,6 +79,37 @@ pub enum ArtifactIdentity {
     StagedTree { oid: String },
 }
 
+/// Diff strategy used by the `CommitRange` arm of [`resolve_change_set`] /
+/// [`resolve_change_set_with_mode`]. The two variants answer genuinely
+/// different questions — picking the wrong one silently changes what
+/// "changed" means for the caller's `base`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffMode {
+    /// Merge-base-relative (`base...head`), falling back to a direct
+    /// two-dot diff (`base..head`) only when three-dot fails (e.g.
+    /// unrelated histories with no merge base — see [`diff_paths`]'s doc
+    /// comment). This is the **default**, and is correct for "what did
+    /// this PR change relative to where it diverged from base" — the
+    /// CI-scoping question `ci_scope`, `gates`, and `targeted_checks` all
+    /// ask, where `base` is a moving branch tip (e.g. `origin/main`).
+    #[default]
+    MergeBaseThreeDot,
+    /// Direct tree comparison (`base..head`) only — never merge-base
+    /// indirection. Required whenever `base` is a **fixed marker commit**
+    /// (e.g. a recorded review-epoch SHA — see
+    /// `xtask/src/tasks/seam_diff.rs`) that may not be an ancestor of
+    /// `head` after a rebase or force-push: three-dot would silently
+    /// compare `merge-base(base, head)..head` instead of the tree
+    /// difference between the marker and head, under-reporting changes —
+    /// or, if `head` was reset back to (an ancestor of) the marker,
+    /// producing a **false-empty** diff even though the marker's tree and
+    /// head's tree genuinely differ. This is the exact bug `seam_diff`'s
+    /// `test_seam_diff_reset_to_epoch_ancestor_is_not_falsely_empty` guards
+    /// against (confirmed RED under `MergeBaseThreeDot`, GREEN under
+    /// `DirectTwoDot`).
+    DirectTwoDot,
+}
+
 /// The result of resolving an [`ArtifactIdentity`] against a repository:
 /// the concrete identity actually used, the resolved base/head SHAs where
 /// applicable, and the changed repo-relative paths.
@@ -100,21 +131,37 @@ pub struct ChangeSet {
     pub changed_paths: Vec<String>,
 }
 
-/// Resolve an [`ArtifactIdentity`] into a [`ChangeSet`]: the single base
-/// resolver (for `CommitRange`) plus the single `git diff` (both arms).
+/// Resolve an [`ArtifactIdentity`] into a [`ChangeSet`] using the default
+/// [`DiffMode::MergeBaseThreeDot`] strategy. Thin wrapper over
+/// [`resolve_change_set_with_mode`] that preserves every existing caller's
+/// behavior unchanged (`ci_scope::run`, `gates::compute_scope_output`,
+/// `targeted_checks::run`, the `cargo xtask change-set` CLI — all of these
+/// diff a moving branch tip against `base`, which three-dot answers
+/// correctly).
 ///
-/// Consumers: `ci_scope::run`, `gates::compute_scope_output`, and
-/// `targeted_checks::run` (#3985 Slice 2), plus the `cargo xtask
-/// change-set` CLI ([`run`] below) that `hooks/pre-push` consumes (#3985
-/// Slice 3A). Proven correct by the unit tests below, including the
-/// falsifiable parity corpus (`tests::test_parity_*`).
+/// Proven correct by the unit tests below, including the falsifiable
+/// parity corpus (`tests::test_parity_*`).
 pub fn resolve_change_set(identity: ArtifactIdentity, root: &Path) -> Result<ChangeSet> {
+    resolve_change_set_with_mode(identity, root, DiffMode::MergeBaseThreeDot)
+}
+
+/// Resolve an [`ArtifactIdentity`] into a [`ChangeSet`]: the single base
+/// resolver (for `CommitRange`) plus the single `git diff` (both arms),
+/// with an explicit [`DiffMode`] controlling the `CommitRange` arm's diff
+/// strategy. See [`DiffMode`]'s doc comment for when to choose
+/// `DirectTwoDot` over the default `MergeBaseThreeDot` — `mode` is ignored
+/// for the `StagedTree` arm, which never calls [`diff_paths`].
+pub fn resolve_change_set_with_mode(
+    identity: ArtifactIdentity,
+    root: &Path,
+    mode: DiffMode,
+) -> Result<ChangeSet> {
     match identity {
         ArtifactIdentity::CommitRange { base, head } => {
             let resolved_base = resolve_base_ref(&base, root)?;
             let base_sha = resolve_sha(&resolved_base, root)?;
             let head_sha = resolve_sha(&head, root)?;
-            let changed_paths = diff_paths(&resolved_base, &head, root)?;
+            let changed_paths = diff_paths(&resolved_base, &head, root, mode)?;
             Ok(ChangeSet {
                 identity: ArtifactIdentity::CommitRange { base: resolved_base, head },
                 base_sha: Some(base_sha),
@@ -237,12 +284,26 @@ fn resolve_sha(reference: &str, root: &Path) -> Result<String> {
         .to_string())
 }
 
-/// Changed paths between `base` and `head`: three-dot (`base...head`,
-/// merge-base relative) first, falling back to two-dot (`base..head`,
-/// direct) when the three-dot form fails — the same shape the deleted
-/// `ci_scope::get_changed_files` / `targeted_checks::changed_files` used
-/// before #3985 Slice 2 repointed both onto this function.
-fn diff_paths(base: &str, head: &str, root: &Path) -> Result<Vec<String>> {
+/// Changed paths between `base` and `head`, per [`DiffMode`]:
+///
+/// - [`DiffMode::MergeBaseThreeDot`] (default): three-dot (`base...head`,
+///   merge-base relative) first, falling back to [`direct_diff_paths`]
+///   (two-dot, `base..head`) only when the three-dot form fails — the same
+///   shape the deleted `ci_scope::get_changed_files` /
+///   `targeted_checks::changed_files` used before #3985 Slice 2 repointed
+///   both onto this function.
+/// - [`DiffMode::DirectTwoDot`]: [`direct_diff_paths`] unconditionally, no
+///   merge-base indirection. **Do not** silently fall back to three-dot
+///   semantics here — a caller in this mode has explicitly opted out of
+///   merge-base relativity because its `base` is a fixed marker that may
+///   not be an ancestor of `head` (see [`DiffMode`]'s doc comment); a
+///   fallback to three-dot would reintroduce exactly the false-empty bug
+///   this mode exists to avoid.
+fn diff_paths(base: &str, head: &str, root: &Path, mode: DiffMode) -> Result<Vec<String>> {
+    if mode == DiffMode::DirectTwoDot {
+        return direct_diff_paths(base, head, root);
+    }
+
     let three_dot = format!("{base}...{head}");
     let output = cmd("git", &["diff", "--name-only", &three_dot])
         .dir(root)
@@ -258,15 +319,21 @@ fn diff_paths(base: &str, head: &str, root: &Path) -> Result<Vec<String>> {
         return Ok(stdout.lines().map(str::to_string).collect());
     }
 
+    direct_diff_paths(base, head, root)
+}
+
+/// Direct two-dot tree comparison (`base..head`) — no merge-base
+/// indirection. Used unconditionally by [`DiffMode::DirectTwoDot`], and as
+/// the three-dot-failure fallback for [`DiffMode::MergeBaseThreeDot`].
+fn direct_diff_paths(base: &str, head: &str, root: &Path) -> Result<Vec<String>> {
     let two_dot = format!("{base}..{head}");
-    let output2 = cmd("git", &["diff", "--name-only", &two_dot])
+    let output = cmd("git", &["diff", "--name-only", &two_dot])
         .dir(root)
         .stdout_capture()
         .stderr_capture()
         .run()
-        .context("Failed to run git diff (two-dot fallback)")?;
-    let stdout =
-        String::from_utf8(output2.stdout).context("git diff output was not valid UTF-8")?;
+        .context("Failed to run git diff (two-dot)")?;
+    let stdout = String::from_utf8(output.stdout).context("git diff output was not valid UTF-8")?;
     Ok(stdout.lines().map(str::to_string).collect())
 }
 
@@ -600,7 +667,7 @@ mod tests {
         // between the two trees is the new file.
         commit_file(&repo, "orphan.txt", "orphan content\n", "orphan init")?;
 
-        let paths = diff_paths("main", "unrelated", &repo)?;
+        let paths = diff_paths("main", "unrelated", &repo, DiffMode::MergeBaseThreeDot)?;
         let expected = vec!["orphan.txt".to_string()];
         ensure!(paths == expected, "expected {expected:?}, got {paths:?}");
         Ok(())
