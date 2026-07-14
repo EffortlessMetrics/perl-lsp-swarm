@@ -23,7 +23,7 @@ use toml::Value;
 use super::manifest;
 use super::select::{
     LiveOpenPr, MilestoneCandidate, MilestoneStatus, ProgramCandidate, ReconciliationFinding,
-    SelectionSnapshot, parse_status, reconcile_in_progress,
+    SelectionSnapshot, ambiguity_detail, parse_status, reconcile_in_progress,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -414,6 +414,19 @@ fn build_reconciliation_report_at(
     fixture: Option<PathBuf>,
 ) -> Result<Vec<ReconciliationFinding>> {
     let snapshot = build_snapshot_at(root, program, fixture.clone())?;
+    let Some(_resolved_program) = snapshot.resolved_program.as_deref() else {
+        return Ok(vec![ReconciliationFinding {
+            milestone_id: "<program>".to_owned(),
+            issue: None,
+            kind: "ambiguous_program_authority".to_owned(),
+            detail: format!(
+                "no program resolved; reconciliation cannot inspect candidates ({})",
+                ambiguity_detail(&snapshot)
+            ),
+            pr_number: None,
+            pr_url: None,
+        }]);
+    };
     let merged_prs =
         load_merged_prs_for_candidates(root, &snapshot.candidates, fixture.as_deref())?;
     Ok(reconcile_in_progress(
@@ -872,6 +885,28 @@ exit_criteria = "y"
             findings.iter().any(|f| f.milestone_id == "M4" && f.kind == "pending_without_identity"),
             "expected a soft pending_without_identity finding for M4, got {findings:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_reports_unresolved_program_instead_of_no_findings() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let programs_dir = temp.path().join(".perl-lsp/goals/programs");
+        fs::create_dir_all(&programs_dir)?;
+        fs::write(
+            temp.path().join(".perl-lsp/goals/active.toml"),
+            "schema = 3\nmode = \"portfolio\"\n\n[[program]]\nid = \"p\"\nenabled = false\n",
+        )?;
+        fs::write(programs_dir.join("p.toml"), "id = \"p\"\ntitle = \"t\"\n")?;
+
+        let fixture_path = temp.path().join("prs.json");
+        fs::write(&fixture_path, r#"{"repository":"r","prs":[]}"#)?;
+
+        let findings = build_reconciliation_report_at(temp.path(), None, Some(fixture_path))?;
+
+        assert_eq!(findings.len(), 1, "expected an authority finding, got {findings:?}");
+        assert_eq!(findings[0].kind, "ambiguous_program_authority");
+        assert!(findings[0].detail.contains("no program resolved"));
         Ok(())
     }
 }
