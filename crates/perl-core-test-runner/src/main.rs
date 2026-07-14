@@ -5,10 +5,11 @@
 // TAP is the process protocol for this binary.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
-use anyhow::{Context, Result, bail};
-use perl_core_harness_types::{RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus};
+use anyhow::{bail, Context, Result};
+use perl_core_harness_types::{RunnerRecord, RunnerStatus, RUNNER_RECORD_SCHEMA_VERSION};
 use perl_parser_core::hir::{
-    CompileEffect, CompileEffectKind, CompileEffectSourceKind, CompilePhase, HirFile, lower_ast,
+    lower_ast, CompileEffect, CompileEffectKind, CompileEffectSourceKind, CompilePhase, HirFile,
+    HirScopeId, ScopeKind,
 };
 use perl_parser_core::{Parser, RecoverySalvageClass, RecoverySalvageProfile};
 use std::env;
@@ -349,13 +350,28 @@ fn is_unsupported_compile_boundary(
 }
 
 fn is_compile_phase_symbolic_reference(effect: &CompileEffect, hir: &HirFile) -> bool {
-    hir.compile_environment.phase_blocks.iter().any(|phase_block| {
+    let in_compile_phase = hir.compile_environment.phase_blocks.iter().any(|phase_block| {
         matches!(
             phase_block.phase,
             CompilePhase::Begin | CompilePhase::UnitCheck | CompilePhase::Check
         ) && effect.range.start >= phase_block.range.start
             && effect.range.end <= phase_block.range.end
-    })
+    });
+    in_compile_phase && !is_runtime_callable_scope(effect.scope_id, hir)
+}
+
+fn is_runtime_callable_scope(scope_id: Option<HirScopeId>, hir: &HirFile) -> bool {
+    let mut current = scope_id;
+    while let Some(scope_id) = current {
+        let Some(scope) = hir.scope_graph.scopes.get(scope_id.index() as usize) else {
+            return false;
+        };
+        if matches!(scope.kind, ScopeKind::Subroutine | ScopeKind::Method) {
+            return true;
+        }
+        current = scope.parent;
+    }
+    false
 }
 
 /// Govern the fixed bootstrap boundaries used by the pinned receipt sources.
@@ -2357,6 +2373,22 @@ mod tests {
         assert!(result.first_diagnostic.as_deref().is_some_and(|diagnostic| {
             diagnostic.contains("symbolic reference dereference is deferred to runtime")
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn compile_symbolic_dereference_inside_nested_subroutine_stays_deferred() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(
+                "no strict 'refs';\nBEGIN { sub inspect { ${\"Foo::bar\"} = 1; } }\n".to_string(),
+            ),
+            display_path: "-e".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Pass);
+        assert!(result.bucket.is_none());
         Ok(())
     }
 
