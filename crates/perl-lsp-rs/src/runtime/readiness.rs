@@ -474,6 +474,7 @@ pub(crate) struct WorkspaceIndexingStartGate {
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
+#[allow(dead_code)] // Test-only receipt observers are constructed by the test harness.
 static NEXT_WORKSPACE_READINESS_RECEIPT_OBSERVER_ID: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1);
 
@@ -498,11 +499,13 @@ fn notify_index_ready_wait_entered() {}
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 /// Removes a test-only readiness receipt observer when dropped.
+#[allow(dead_code)] // Test-only receipt observers are used only by readiness probes.
 pub(crate) struct WorkspaceReadinessReceiptObserverGuard {
     id: u64,
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
+#[allow(dead_code)] // Test-only receipt observers are used only by readiness probes.
 impl WorkspaceReadinessReceiptObserverGuard {
     pub(crate) fn id(&self) -> u64 {
         self.id
@@ -519,6 +522,7 @@ impl Drop for WorkspaceReadinessReceiptObserverGuard {
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
+#[allow(dead_code)] // Test-only receipt observers are registered by readiness probes.
 pub(crate) fn set_workspace_readiness_receipt_observer(
     sender: std::sync::mpsc::Sender<Value>,
 ) -> WorkspaceReadinessReceiptObserverGuard {
