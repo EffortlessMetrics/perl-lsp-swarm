@@ -7,7 +7,9 @@
 
 use anyhow::{Context, Result, bail};
 use perl_core_harness_types::{RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus};
-use perl_parser_core::hir::{CompileEffect, CompileEffectKind, CompileEffectSourceKind, lower_ast};
+use perl_parser_core::hir::{
+    CompileEffect, CompileEffectKind, CompileEffectSourceKind, CompilePhase, HirFile, lower_ast,
+};
 use perl_parser_core::{Parser, RecoverySalvageClass, RecoverySalvageProfile};
 use std::env;
 use std::ffi::OsString;
@@ -280,8 +282,9 @@ fn run_compile(invocation: &Invocation) -> Result<ModeRunResult> {
 
     let hir = lower_ast(&output.ast);
     let effects = hir.compile_effects();
-    if let Some(effect) =
-        effects.iter().find(|effect| is_unsupported_compile_boundary(effect, invocation, &source))
+    if let Some(effect) = effects
+        .iter()
+        .find(|effect| is_unsupported_compile_boundary(effect, invocation, &source, &hir))
     {
         let first_diagnostic = effect
             .dynamic_reason
@@ -298,11 +301,14 @@ fn is_unsupported_compile_boundary(
     effect: &CompileEffect,
     invocation: &Invocation,
     source: &str,
+    hir: &HirFile,
 ) -> bool {
     if effect.kind != CompileEffectKind::EmitDynamicBoundary {
         return false;
     }
-    if effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref {
+    if effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref
+        && !is_compile_phase_symbolic_reference(effect, hir)
+    {
         return false;
     }
     !is_static_perl_core_test_bootstrap_boundary(effect, invocation, source)
@@ -340,6 +346,16 @@ fn is_unsupported_compile_boundary(
         && !is_run_switchdx_miniperl_setup_boundary(effect, invocation, source)
         && !is_run_data_argv_setup_boundary(effect, invocation, source)
         && !is_run_switchp_data_setup_boundary(effect, invocation, source)
+}
+
+fn is_compile_phase_symbolic_reference(effect: &CompileEffect, hir: &HirFile) -> bool {
+    hir.compile_environment.phase_blocks.iter().any(|phase_block| {
+        matches!(
+            phase_block.phase,
+            CompilePhase::Begin | CompilePhase::UnitCheck | CompilePhase::Check
+        ) && effect.range.start >= phase_block.range.start
+            && effect.range.end <= phase_block.range.end
+    })
 }
 
 /// Govern the fixed bootstrap boundaries used by the pinned receipt sources.
@@ -822,8 +838,19 @@ fn is_comp_parser_line_table_self_write_boundary(
     invocation: &Invocation,
     source: &str,
 ) -> bool {
-    if normalize_display_path(&invocation.display_path) != "comp/parser.t"
-        || effect.source_kind != CompileEffectSourceKind::PhaseBlock
+    if normalize_display_path(&invocation.display_path) != "comp/parser.t" {
+        return false;
+    }
+
+    if effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref {
+        return source.replace("\r\n", "\n")
+            == r#"#!./perl
+$file = __FILE__;
+BEGIN{ ${"_<".__FILE__} = \1 }
+"#;
+    }
+
+    if effect.source_kind != CompileEffectSourceKind::PhaseBlock
         || effect.dynamic_reason.as_deref()
             != Some("phase block compile-time execution is recorded but not evaluated")
     {
@@ -2311,6 +2338,25 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Pass);
         assert!(result.bucket.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn compile_phase_symbolic_dereference_remains_a_compile_effect_boundary() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline(
+                "no strict 'refs';\nBEGIN { ${\"Foo::bar\"} = 1; }\n".to_string(),
+            ),
+            display_path: "-e".to_string(),
+        };
+
+        let result = run_compile(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.bucket.as_deref(), Some("compile_effect"));
+        assert!(result.first_diagnostic.as_deref().is_some_and(|diagnostic| {
+            diagnostic.contains("symbolic reference dereference is deferred to runtime")
+        }));
         Ok(())
     }
 
@@ -5421,7 +5467,7 @@ my $result = runperl(
         for effect in hir
             .compile_effects()
             .iter()
-            .filter(|effect| is_unsupported_compile_boundary(effect, &invocation, source))
+            .filter(|effect| is_unsupported_compile_boundary(effect, &invocation, source, &hir))
         {
             let slice = source.get(effect.range.start..effect.range.end).unwrap_or("<invalid>");
             use std::fmt::Write as _;
