@@ -179,11 +179,13 @@ impl WorkspaceReadinessReceipt {
 
     /// Emit the current readiness receipt without exposing host paths.
     pub(crate) fn log(&self) {
+        let receipt = self.summary_json();
         tracing::info!(
             target: "perl_lsp::workspace_readiness",
-            receipt = %self.summary_json(),
+            receipt = %receipt,
             "Workspace readiness receipt"
         );
+        notify_workspace_readiness_receipt(receipt);
     }
 }
 
@@ -365,6 +367,11 @@ static INDEX_READY_WAIT_ENTERED_OBSERVER: std::sync::Mutex<Option<std::sync::mps
     std::sync::Mutex::new(None);
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
+static WORKSPACE_READINESS_RECEIPT_OBSERVER: std::sync::Mutex<
+    Option<std::sync::mpsc::Sender<Value>>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub(crate) fn set_index_ready_wait_entered_observer(sender: std::sync::mpsc::Sender<()>) {
     if let Ok(mut observer) = INDEX_READY_WAIT_ENTERED_OBSERVER.lock() {
         *observer = Some(sender);
@@ -382,6 +389,25 @@ fn notify_index_ready_wait_entered() {
 
 #[cfg(not(any(test, feature = "expose_lsp_test_api")))]
 fn notify_index_ready_wait_entered() {}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) fn set_workspace_readiness_receipt_observer(sender: std::sync::mpsc::Sender<Value>) {
+    if let Ok(mut observer) = WORKSPACE_READINESS_RECEIPT_OBSERVER.lock() {
+        *observer = Some(sender);
+    }
+}
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+fn notify_workspace_readiness_receipt(receipt: Value) {
+    let sender =
+        WORKSPACE_READINESS_RECEIPT_OBSERVER.lock().ok().and_then(|mut observer| observer.take());
+    if let Some(sender) = sender {
+        let _ = sender.send(receipt);
+    }
+}
+
+#[cfg(not(any(test, feature = "expose_lsp_test_api")))]
+fn notify_workspace_readiness_receipt(_receipt: Value) {}
 
 #[cfg(test)]
 mod tests {

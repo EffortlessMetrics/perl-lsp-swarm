@@ -44,6 +44,14 @@ struct WorkspaceIndexingFileTiming {
 /// This records the first-hour evidence that coarse phase transitions cannot
 /// answer: read cost, indexing cost, throughput, skipped/error counts, and the
 /// slowest files in the run.
+///
+/// The legacy `*_ms` fields are retained for compatibility with existing
+/// consumers and slow-file summaries. `phase_us` is the finer-grained phase
+/// view. These views have different aggregation boundaries and must not be
+/// added together; consumers should choose one representation for a timing
+/// calculation. In particular, `read_ms` and `index_ms` only include
+/// successfully indexed files, while `phase_us` also records measured phase
+/// work for files that later fail.
 #[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct WorkspaceIndexingReceipt {

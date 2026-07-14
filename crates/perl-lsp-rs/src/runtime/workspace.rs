@@ -2623,6 +2623,10 @@ mod tests {
     use super::{LspServer, module_name_appears_in_text};
     #[cfg(feature = "workspace")]
     use crate::util::read_text_file_with_encoding;
+    #[cfg(feature = "workspace")]
+    use perl_parser::workspace_index::{
+        IndexCoordinator, IndexPerformanceCaps, IndexResourceLimits,
+    };
     use serde_json::json;
     #[cfg(feature = "workspace")]
     use std::io::Write;
@@ -3033,6 +3037,46 @@ mod tests {
 
         let read = read_text_file_with_encoding(&path)?;
         assert_eq!(read, text);
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn real_indexing_thread_emits_populated_readiness_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let source_path = dir.path().join("readiness.pm");
+        std::fs::write(&source_path, "package Readiness;\nsub ready { 1 }\n1;\n")?;
+        let folder_uri = url::Url::from_directory_path(dir.path())
+            .map_err(|_| "invalid workspace folder path")?
+            .to_string();
+
+        let mut server = LspServer::new();
+        server.index_coordinator =
+            Some(std::sync::Arc::new(IndexCoordinator::with_limits_and_caps(
+                IndexResourceLimits::default(),
+                IndexPerformanceCaps { initial_scan_budget_ms: 30_000, ..Default::default() },
+            )));
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(folder_uri)
+                .with_path(dir.path().to_path_buf()),
+        );
+        let (receipt_tx, receipt_rx) = std::sync::mpsc::channel();
+        crate::runtime::readiness::set_workspace_readiness_receipt_observer(receipt_tx);
+
+        server.start_workspace_indexing();
+        // The channel is the observable completion barrier; the timeout only
+        // prevents a broken indexing thread from hanging the test forever.
+        let receipt = receipt_rx.recv_timeout(std::time::Duration::from_secs(30))?;
+
+        assert_eq!(receipt["workspace_start_us"], 0);
+        let _whole_workspace_ready_us =
+            receipt["whole_workspace_ready_us"].as_u64().ok_or("missing ready milestone")?;
+        let peak_queued_work =
+            receipt["peak_queued_work"].as_u64().ok_or("missing queued-work receipt")?;
+        assert_eq!(peak_queued_work, 1);
+        let coordinator = server.coordinator().ok_or("missing workspace coordinator")?;
+        assert_eq!(coordinator.index().file_count(), 1);
         Ok(())
     }
 
