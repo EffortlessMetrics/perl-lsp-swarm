@@ -55,6 +55,24 @@ fn build_snapshot_at(
     program_arg: Option<String>,
     fixture: Option<PathBuf>,
 ) -> Result<SelectionSnapshot> {
+    let (repository, live_open_prs, live_prs_available) = load_live_prs(root, fixture)?;
+    build_snapshot_with_live_prs(root, program_arg, repository, live_open_prs, live_prs_available)
+}
+
+/// Core of [`build_snapshot_at`] with live-PR state already resolved,
+/// split out (#4174 slice 1) so a portfolio scan across every known
+/// program (`build_portfolio_snapshots_at`) can fetch `gh pr list` /
+/// read the `--fixture` file exactly ONCE and reuse it for every program's
+/// snapshot, instead of re-fetching per program. This is the exact same
+/// resolution logic `build_snapshot_at` always ran — no behavior change
+/// for the existing single-program callers.
+fn build_snapshot_with_live_prs(
+    root: &Path,
+    program_arg: Option<String>,
+    repository: String,
+    live_open_prs: Vec<LiveOpenPr>,
+    live_prs_available: bool,
+) -> Result<SelectionSnapshot> {
     let pointer = manifest::load_active_pointer(root)?;
     let default_program = pointer
         .default_program
@@ -84,7 +102,6 @@ fn build_snapshot_at(
     let resolved_program =
         resolve_program(root, program_arg.as_deref(), default_program.as_deref());
 
-    let (repository, live_open_prs, live_prs_available) = load_live_prs(root, fixture)?;
     let current_git_ref = current_git_ref(root);
 
     let mut snapshot = SelectionSnapshot {
@@ -109,6 +126,76 @@ fn build_snapshot_at(
     }
 
     Ok(snapshot)
+}
+
+/// #4174 slice 1: builds one [`SelectionSnapshot`] per known program
+/// (`.perl-lsp/goals/programs/*.toml`), sharing a single live-PR fetch
+/// across all of them (see `build_snapshot_with_live_prs`). Backs the
+/// no-arg `cargo xtask goals next` PORTFOLIO REPORT — plural, one entry
+/// per program — as distinct from the (still `--program`-gated) single
+/// global selection `build_snapshot`/`select::select_next` produce.
+/// Read-only, same guarantees as `build_snapshot`.
+pub fn build_portfolio_snapshots(
+    fixture: Option<PathBuf>,
+) -> Result<(Option<String>, Vec<SelectionSnapshot>)> {
+    build_portfolio_snapshots_at(&project_root()?, fixture)
+}
+
+fn build_portfolio_snapshots_at(
+    root: &Path,
+    fixture: Option<PathBuf>,
+) -> Result<(Option<String>, Vec<SelectionSnapshot>)> {
+    let pointer = manifest::load_active_pointer(root)?;
+    // Surfaced for transparency only — #4174 slice 1 stops treating this as
+    // an implicit no-arg selection default (see `resolve_program`'s
+    // callers here, which always pass an explicit `Some(candidate.id)`).
+    let deprecated_default_program = pointer
+        .default_program
+        .clone()
+        .or_else(|| (!pointer.active_program.is_empty()).then(|| pointer.active_program.clone()));
+
+    let known_programs = discover_known_programs(root)?;
+    let (repository, live_open_prs, live_prs_available) = load_live_prs(root, fixture)?;
+
+    let mut snapshots = Vec::with_capacity(known_programs.len());
+    for candidate in &known_programs {
+        let snapshot = build_snapshot_with_live_prs(
+            root,
+            Some(candidate.id.clone()),
+            repository.clone(),
+            live_open_prs.clone(),
+            live_prs_available,
+        )?;
+        snapshots.push(snapshot);
+    }
+
+    Ok((deprecated_default_program, snapshots))
+}
+
+/// #4174 slice 1: `cargo xtask goals reconcile` analog of
+/// [`build_portfolio_snapshots`] — one reconciliation report per known
+/// program, sharing nothing extra (each program's merged-PR search is
+/// already scoped to its own in-progress candidates, so there is no
+/// shared live-fetch to hoist the way `build_portfolio_snapshots` hoists
+/// the open-PR fetch). Read-only.
+pub fn build_portfolio_reconciliation_report(
+    fixture: Option<PathBuf>,
+) -> Result<Vec<(String, Vec<ReconciliationFinding>)>> {
+    build_portfolio_reconciliation_report_at(&project_root()?, fixture)
+}
+
+fn build_portfolio_reconciliation_report_at(
+    root: &Path,
+    fixture: Option<PathBuf>,
+) -> Result<Vec<(String, Vec<ReconciliationFinding>)>> {
+    let known_programs = discover_known_programs(root)?;
+    let mut results = Vec::with_capacity(known_programs.len());
+    for candidate in &known_programs {
+        let findings =
+            build_reconciliation_report_at(root, Some(candidate.id.clone()), fixture.clone())?;
+        results.push((candidate.id.clone(), findings));
+    }
+    Ok(results)
 }
 
 /// Resolves which program `goals next` selects against: an explicit
@@ -792,6 +879,80 @@ exit_criteria = "y"
             findings.iter().any(|f| f.milestone_id == "M4" && f.kind == "pending_without_identity"),
             "expected a soft pending_without_identity finding for M4, got {findings:?}"
         );
+        Ok(())
+    }
+
+    // #4174 slice 1: no-arg `goals next`/`goals reconcile` portfolio report
+    // coverage. `build_portfolio_snapshots_at`/`build_portfolio_reconciliation_report_at`
+    // must return ONE entry per known program (never collapse to a single
+    // repository-global pick) while reusing the exact same, unmodified
+    // `build_snapshot_with_live_prs` resolution each single-program caller
+    // already used.
+
+    fn write_two_program_portfolio_fixture(temp: &tempfile::TempDir) -> Result<PathBuf> {
+        let programs_dir = temp.path().join(".perl-lsp/goals/programs");
+        fs::create_dir_all(&programs_dir)?;
+        fs::write(
+            temp.path().join(".perl-lsp/goals/active.toml"),
+            "active_program = \"a\"\ndefault_program = \"a\"\n",
+        )?;
+        fs::write(
+            programs_dir.join("a.toml"),
+            "[[work_item]]\nid = \"wi-1\"\nstatus = \"active\"\n",
+        )?;
+        fs::write(
+            programs_dir.join("b.toml"),
+            "id = \"b\"\ntitle = \"prog b\"\n\n[[milestone]]\nid = \"M1\"\ntitle = \"one\"\nstatus = \"pending\"\nexit_criteria = \"x\"\n",
+        )?;
+        let fixture_path = temp.path().join("prs.json");
+        fs::write(&fixture_path, r#"{"repository":"r","prs":[]}"#)?;
+        Ok(fixture_path)
+    }
+
+    #[test]
+    fn build_portfolio_snapshots_returns_one_entry_per_known_program() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let fixture_path = write_two_program_portfolio_fixture(&temp)?;
+
+        let (deprecated_default_program, snapshots) =
+            build_portfolio_snapshots_at(temp.path(), Some(fixture_path))?;
+
+        assert_eq!(deprecated_default_program.as_deref(), Some("a"));
+        assert_eq!(
+            snapshots.len(),
+            2,
+            "expected one snapshot per known program, got {snapshots:?}"
+        );
+        let mut resolved: Vec<Option<String>> =
+            snapshots.iter().map(|s| s.resolved_program.clone()).collect();
+        resolved.sort();
+        assert_eq!(resolved, vec![Some("a".to_owned()), Some("b".to_owned())]);
+        // Each program's own candidates were loaded (not shared/mixed
+        // across programs) — proves this is a real per-program snapshot,
+        // not one snapshot duplicated N times.
+        let program_a = snapshots
+            .iter()
+            .find(|s| s.resolved_program.as_deref() == Some("a"))
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing program a snapshot"))?;
+        assert_eq!(program_a.candidates.len(), 1);
+        let program_b = snapshots
+            .iter()
+            .find(|s| s.resolved_program.as_deref() == Some("b"))
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing program b snapshot"))?;
+        assert_eq!(program_b.program_title.as_deref(), Some("prog b"));
+        Ok(())
+    }
+
+    #[test]
+    fn build_portfolio_reconciliation_report_returns_one_entry_per_known_program() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let fixture_path = write_two_program_portfolio_fixture(&temp)?;
+
+        let results = build_portfolio_reconciliation_report_at(temp.path(), Some(fixture_path))?;
+
+        let mut ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["a", "b"], "expected one reconcile entry per known program");
         Ok(())
     }
 }

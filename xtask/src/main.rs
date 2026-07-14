@@ -3252,10 +3252,16 @@ enum GoalsCommand {
     /// (main, live open GitHub PRs, the M2 manifest chain, and — for
     /// milestone-ledger programs — the `[[milestone]]` ledger).
     /// READ-ONLY: never creates a branch, worktree, or PR.
+    ///
+    /// #4174 slice 1: without `--program`, this prints a PORTFOLIO REPORT
+    /// (one entry per known program) instead of resolving one
+    /// repository-global selection from `active.toml`'s deprecated
+    /// `default_program`/`active_program` pointer — pass `--program <id>`
+    /// for the original single-program selection behavior.
     Next {
         /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// Defaults to `active.toml`'s governed `default_program`
-        /// (falling back to `active_program`).
+        /// REQUIRED for single-program selection (#4174 slice 1) — omit to
+        /// get the portfolio report across every known program instead.
         #[arg(long)]
         program: Option<String>,
 
@@ -3273,10 +3279,15 @@ enum GoalsCommand {
     /// not open, PR) or that lack the identity `next`'s selector needs.
     /// READ-ONLY, advisory (#3696 item B): never mutates a ledger or PR.
     /// Exits non-zero when findings exist.
+    ///
+    /// #4174 slice 1: without `--program`, this reconciles EVERY known
+    /// program and reports findings per program, instead of resolving one
+    /// repository-global default — pass `--program <id>` for the original
+    /// single-program behavior.
     Reconcile {
         /// Explicitly select a program by id (`.perl-lsp/goals/programs/<id>.toml`).
-        /// Defaults to `active.toml`'s governed `default_program`
-        /// (falling back to `active_program`).
+        /// REQUIRED for single-program reconciliation (#4174 slice 1) —
+        /// omit to reconcile every known program instead.
         #[arg(long)]
         program: Option<String>,
 
@@ -3449,16 +3460,31 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
         Commands::CheckWorkspaceSymbolClasses => workspace_symbol_classes::run(),
+        // #4174 slice 1: no-arg `next`/`reconcile` (no `--program`) now
+        // print a portfolio report instead of resolving `active.toml`'s
+        // `default_program` into one repository-global selection. An
+        // explicit `--program <id>` still runs the EXACT pre-existing
+        // single-program selection path unchanged.
         Commands::Goals { command } => match command {
-            GoalsCommand::Next { program, fixture, json } => goals::next(program, fixture, json),
-            GoalsCommand::Reconcile { program, fixture, json } => {
-                let finding_count = goals::reconcile(program, fixture, json)?;
+            GoalsCommand::Next { program: Some(program), fixture, json } => {
+                goals::next(Some(program), fixture, json)
+            }
+            GoalsCommand::Next { program: None, fixture, json } => goals::portfolio(fixture, json),
+            GoalsCommand::Reconcile { program: Some(program), fixture, json } => {
+                let finding_count = goals::reconcile(Some(program), fixture, json)?;
                 if finding_count > 0 {
                     // Exit 1: findings exist. Distinct from a hard parse/gh
                     // error (which already propagates via `?` above) --
                     // mirrors the `pr-close-proof` non-zero-exit-lives-in-
                     // main.rs pattern (#3696 item B); the `goals` module
                     // itself never calls `process::exit`.
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
+            GoalsCommand::Reconcile { program: None, fixture, json } => {
+                let finding_count = goals::reconcile_portfolio(fixture, json)?;
+                if finding_count > 0 {
                     std::process::exit(1);
                 }
                 Ok(())

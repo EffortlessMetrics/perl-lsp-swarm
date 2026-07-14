@@ -54,6 +54,11 @@ struct ManifestStats {
     repo: String,
     lane: String,
     program: String,
+    /// Advisory findings from `note_deprecated_singleton_field` /
+    /// `validate_default_program` — never `bail!`s the check (#4174 slice
+    /// 1: the singleton `active_program`/`active_lane`/`default_program`
+    /// pointer is being retired, but stays readable for one release).
+    deprecations: Vec<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -73,6 +78,16 @@ pub fn run() -> Result<()> {
         stats.proof_commands,
     );
 
+    if !stats.deprecations.is_empty() {
+        println!(
+            "active goal manifest deprecation warning(s) ({}) — see #4174 (singleton active-goal retirement):",
+            stats.deprecations.len()
+        );
+        for deprecation in &stats.deprecations {
+            println!("  - {deprecation}");
+        }
+    }
+
     Ok(())
 }
 
@@ -87,15 +102,21 @@ fn validate(root: &Path) -> Result<ManifestStats> {
 
     let mut stats = ManifestStats::default();
     let mut violations = Vec::new();
+    let mut deprecations = Vec::new();
 
     // Captured from the pointer before validate_pointer/validate_program_manifest
     // run, so the program-manifest and lane-manifest cross-checks below can fail
     // loud on dangling/mistyped pointer-to-program and pointer-to-lane references
-    // (see #3612 M2 review: factory-droid P1, sourcery, cubic).
+    // (see #3612 M2 review: factory-droid P1, sourcery, cubic). Both fields
+    // are OPTIONAL as of #4174 slice 1 (singleton active-goal retirement):
+    // absent is `""`, which every downstream cross-check below already
+    // guards with `!expected_*.is_empty()` and therefore skips rather than
+    // fails.
     let expected_program = string_field(pointer_table, "active_program").unwrap_or_default();
     let expected_lane = string_field(pointer_table, "active_lane").unwrap_or_default();
 
-    let resolved = validate_pointer(root, pointer_table, &mut stats, &mut violations);
+    let resolved =
+        validate_pointer(root, pointer_table, &mut stats, &mut violations, &mut deprecations);
 
     if let Some((program_path, _board_path)) = resolved {
         match load_table(root, &program_path) {
@@ -133,7 +154,13 @@ fn validate(root: &Path) -> Result<ManifestStats> {
         }
     }
 
-    validate_default_program(root, pointer_table, expected_program, &mut violations);
+    validate_default_program(
+        root,
+        pointer_table,
+        expected_program,
+        &mut violations,
+        &mut deprecations,
+    );
 
     if !violations.is_empty() {
         eprintln!("active goal manifest violations:");
@@ -143,6 +170,7 @@ fn validate(root: &Path) -> Result<ManifestStats> {
         bail!("active goal manifest check failed with {} violation(s)", violations.len());
     }
 
+    stats.deprecations = deprecations;
     Ok(stats)
 }
 
@@ -165,6 +193,7 @@ fn validate_pointer(
     table: &Table,
     stats: &mut ManifestStats,
     violations: &mut Vec<String>,
+    deprecations: &mut Vec<String>,
 ) -> Option<(String, String)> {
     match table.get("schema").and_then(Value::as_integer) {
         Some(2) => {}
@@ -174,8 +203,18 @@ fn validate_pointer(
         None => violations.push(format!("{ACTIVE_GOAL_PATH}: schema must be an integer")),
     }
 
-    require_non_empty_string(ACTIVE_GOAL_PATH, table, "active_program", violations);
-    require_non_empty_string(ACTIVE_GOAL_PATH, table, "active_lane", violations);
+    // #4174 slice 1: `active_program`/`active_lane` were REQUIRED
+    // (`require_non_empty_string` -> hard `bail!`) singleton
+    // selection-authority fields. The singleton active-goal control
+    // surface is being retired in favor of an explicit `--program <id>`
+    // portfolio selector (`goals::snapshot::resolve_program` no longer
+    // falls back to them for the no-arg case) — so they are demoted here
+    // to accepted-but-deprecated: present-and-non-empty emits an ADVISORY
+    // deprecation finding, never a violation; absent is not an error at
+    // all. `default_program` gets the same treatment inside
+    // `validate_default_program` below.
+    note_deprecated_singleton_field(ACTIVE_GOAL_PATH, table, "active_program", deprecations);
+    note_deprecated_singleton_field(ACTIVE_GOAL_PATH, table, "active_lane", deprecations);
 
     if let Some(program) = string_field(table, "active_program") {
         stats.program = program.to_owned();
@@ -276,12 +315,27 @@ fn validate_pointer(
 /// shared `goals::manifest::validate_milestone_ledger` structural checks —
 /// keeping this validator and the `goals next` selector from drifting on
 /// what a valid ledger looks like.
+///
+/// #4174 slice 1: a present, well-formed `default_program` still validates
+/// structurally (a garbage value is still bad data), but is no longer
+/// privileged as the implicit no-arg selection default (`goals next`/
+/// `goals reconcile` now require an explicit `--program`) — its mere
+/// presence emits an ADVISORY deprecation finding via
+/// `note_deprecated_singleton_field`.
 fn validate_default_program(
     root: &Path,
     pointer_table: &Table,
     expected_program: &str,
     violations: &mut Vec<String>,
+    deprecations: &mut Vec<String>,
 ) {
+    note_deprecated_singleton_field(
+        ACTIVE_GOAL_PATH,
+        pointer_table,
+        "default_program",
+        deprecations,
+    );
+
     let Some(raw) = pointer_table.get("default_program") else {
         return;
     };
@@ -861,6 +915,28 @@ fn require_non_empty_string(doc: &str, table: &Table, field: &str, violations: &
     }
 }
 
+/// #4174 slice 1: `active_program`/`active_lane`/`default_program` are the
+/// singleton active-goal control surface being retired in favor of an
+/// explicit `--program <id>` portfolio selector. Unlike
+/// [`require_non_empty_string`], a missing or blank value here is NOT an
+/// error at all (nothing to deprecate if it isn't used) — a present,
+/// non-empty value emits one ADVISORY finding into `deprecations` and never
+/// touches `violations`, so the manifest still validates either way.
+fn note_deprecated_singleton_field(
+    doc: &str,
+    table: &Table,
+    field: &str,
+    deprecations: &mut Vec<String>,
+) {
+    if let Some(value) = string_field(table, field)
+        && !value.trim().is_empty()
+    {
+        deprecations.push(format!(
+            "{doc}: {field} = {value:?} is DEPRECATED (#4174 singleton active-goal retirement) — no longer required or privileged as an implicit no-arg default; use `--program <id>` for explicit selection"
+        ));
+    }
+}
+
 fn string_field<'a>(table: &'a Table, field: &str) -> Option<&'a str> {
     table.get(field).and_then(Value::as_str)
 }
@@ -893,6 +969,103 @@ mod tests {
         assert_eq!(stats.lanes, 3);
         assert_eq!(stats.active_work_items, 1);
         assert_eq!(stats.completed_work_items, 0);
+        // #4174 slice 1: the real `active.toml` still carries
+        // `active_program`/`active_lane`/`default_program` (retirement is
+        // additive this release — the fields are demoted, not deleted), so
+        // the full end-to-end `validate()` pipeline must surface all three
+        // as advisory deprecation findings without failing the check.
+        for field in ["active_program", "active_lane", "default_program"] {
+            assert!(
+                stats.deprecations.iter().any(|d| d.contains(field) && d.contains("DEPRECATED")),
+                "expected a {field} deprecation finding, got {:?}",
+                stats.deprecations
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Test (c) from #4174 slice 1's spec: a manifest with the deprecated
+    /// singleton fields PRESENT validates with a deprecation finding (not
+    /// an error), and one with them ABSENT validates with no hard error at
+    /// all (previously `require_non_empty_string` would have `bail!`d).
+    /// Exercises `validate_pointer` directly (mirrors the other
+    /// pointer-shape tests above) since the full `validate(root)` pipeline
+    /// additionally requires an on-disk program/lane manifest chain that
+    /// isn't this test's concern.
+    #[test]
+    fn active_goal_manifest_validator_deprecates_rather_than_requires_singleton_fields()
+    -> Result<()> {
+        let root = fixture_root(&["programs/p.toml", "docs/board.md"])?;
+
+        // Present + non-empty: deprecation finding, zero singleton-field violations.
+        let mut present = Table::new();
+        present.insert("schema".to_owned(), Value::Integer(2));
+        present.insert("active_program".to_owned(), Value::String("p".to_owned()));
+        present.insert("active_lane".to_owned(), Value::String("p_lane".to_owned()));
+        let mut program = Table::new();
+        program.insert("manifest".to_owned(), Value::String("programs/p.toml".to_owned()));
+        program.insert("board".to_owned(), Value::String("docs/board.md".to_owned()));
+        present.insert("program".to_owned(), Value::Table(program));
+        let mut authority = Table::new();
+        authority.insert("work_items".to_owned(), Value::String("github".to_owned()));
+        authority.insert("receipts".to_owned(), Value::String("machine".to_owned()));
+        present.insert("authority".to_owned(), Value::Table(authority));
+
+        let mut present_stats = ManifestStats::default();
+        let mut present_violations = Vec::new();
+        let mut present_deprecations = Vec::new();
+        validate_pointer(
+            root.path(),
+            &present,
+            &mut present_stats,
+            &mut present_violations,
+            &mut present_deprecations,
+        );
+        ensure!(
+            !present_violations
+                .iter()
+                .any(|v| v.contains("active_program") || v.contains("active_lane")),
+            "present-and-valid singleton fields must not produce a violation, got {present_violations:?}"
+        );
+        ensure!(
+            present_deprecations.len() == 2,
+            "expected exactly 2 deprecation findings (active_program + active_lane), got {present_deprecations:?}"
+        );
+
+        // Absent: no hard error at all (this is the #4174 slice-1 relaxation;
+        // pre-slice this hit `require_non_empty_string`'s hard `bail!`).
+        let mut absent = Table::new();
+        absent.insert("schema".to_owned(), Value::Integer(2));
+        let mut program = Table::new();
+        program.insert("manifest".to_owned(), Value::String("programs/p.toml".to_owned()));
+        program.insert("board".to_owned(), Value::String("docs/board.md".to_owned()));
+        absent.insert("program".to_owned(), Value::Table(program));
+        let mut authority = Table::new();
+        authority.insert("work_items".to_owned(), Value::String("github".to_owned()));
+        authority.insert("receipts".to_owned(), Value::String("machine".to_owned()));
+        absent.insert("authority".to_owned(), Value::Table(authority));
+
+        let mut absent_stats = ManifestStats::default();
+        let mut absent_violations = Vec::new();
+        let mut absent_deprecations = Vec::new();
+        validate_pointer(
+            root.path(),
+            &absent,
+            &mut absent_stats,
+            &mut absent_violations,
+            &mut absent_deprecations,
+        );
+        ensure!(
+            !absent_violations
+                .iter()
+                .any(|v| v.contains("active_program") || v.contains("active_lane")),
+            "absent singleton fields must not produce a violation, got {absent_violations:?}"
+        );
+        ensure!(
+            absent_deprecations.is_empty(),
+            "absent singleton fields have nothing to deprecate, got {absent_deprecations:?}"
+        );
 
         Ok(())
     }
@@ -905,14 +1078,14 @@ mod tests {
         table.insert("work_item".to_owned(), Value::Array(Vec::new()));
         let mut stats = ManifestStats::default();
         let mut violations = Vec::new();
+        let mut deprecations = Vec::new();
 
-        let resolved = validate_pointer(root.path(), &table, &mut stats, &mut violations);
+        let resolved =
+            validate_pointer(root.path(), &table, &mut stats, &mut violations, &mut deprecations);
 
         assert!(resolved.is_none());
         for expected in [
             ".perl-lsp/goals/active.toml: schema must be an integer",
-            ".perl-lsp/goals/active.toml: active_program must not be empty",
-            ".perl-lsp/goals/active.toml: active_lane must be a string",
             ".perl-lsp/goals/active.toml: must not contain [[work_item]] entries (pointer-only in schema 2)",
             ".perl-lsp/goals/active.toml: [program] table is required",
         ] {
@@ -921,6 +1094,20 @@ mod tests {
                 "missing violation {expected:?}; got {violations:?}"
             );
         }
+        // #4174 slice 1: a blank `active_program` (whitespace-only) and an
+        // absent `active_lane` are demoted from hard violations to simply
+        // not-present — neither is a violation NOR a deprecation finding
+        // (nothing to deprecate when the value is effectively unset).
+        for regressed in [
+            ".perl-lsp/goals/active.toml: active_program must not be empty",
+            ".perl-lsp/goals/active.toml: active_lane must be a string",
+        ] {
+            ensure!(
+                !violations.iter().any(|violation| violation == regressed),
+                "expected no violation {regressed:?} after #4174 slice 1 relaxation; got {violations:?}"
+            );
+        }
+        ensure!(deprecations.is_empty(), "got unexpected deprecations: {deprecations:?}");
 
         Ok(())
     }
@@ -942,8 +1129,10 @@ mod tests {
         table.insert("authority".to_owned(), Value::Table(authority));
         let mut stats = ManifestStats::default();
         let mut violations = Vec::new();
+        let mut deprecations = Vec::new();
 
-        let resolved = validate_pointer(root.path(), &table, &mut stats, &mut violations);
+        let resolved =
+            validate_pointer(root.path(), &table, &mut stats, &mut violations, &mut deprecations);
 
         assert_eq!(
             resolved,
@@ -959,6 +1148,17 @@ mod tests {
                 "missing violation {expected:?}; got {violations:?}"
             );
         }
+        // #4174 slice 1: `active_program`/`active_lane` are present here
+        // (both non-empty) — that must produce advisory deprecation
+        // findings, never a violation.
+        ensure!(
+            deprecations.iter().any(|d| d.contains("active_program") && d.contains("DEPRECATED")),
+            "expected an active_program deprecation finding, got {deprecations:?}"
+        );
+        ensure!(
+            deprecations.iter().any(|d| d.contains("active_lane") && d.contains("DEPRECATED")),
+            "expected an active_lane deprecation finding, got {deprecations:?}"
+        );
 
         Ok(())
     }
@@ -1439,8 +1639,15 @@ mod tests {
             let mut pointer_table = Table::new();
             pointer_table.insert("default_program".to_owned(), Value::String(hostile.to_owned()));
             let mut violations = Vec::new();
+            let mut deprecations = Vec::new();
 
-            validate_default_program(root.path(), &pointer_table, "expected", &mut violations);
+            validate_default_program(
+                root.path(),
+                &pointer_table,
+                "expected",
+                &mut violations,
+                &mut deprecations,
+            );
 
             assert!(
                 violations.iter().any(|v| v.contains("bare program id")),
@@ -1463,8 +1670,15 @@ mod tests {
             let mut pointer_table = Table::new();
             pointer_table.insert("default_program".to_owned(), Value::String(hostile.to_owned()));
             let mut violations = Vec::new();
+            let mut deprecations = Vec::new();
 
-            validate_default_program(root.path(), &pointer_table, hostile, &mut violations);
+            validate_default_program(
+                root.path(),
+                &pointer_table,
+                hostile,
+                &mut violations,
+                &mut deprecations,
+            );
 
             assert!(
                 violations.iter().any(|v| v.contains("bare program id")),
@@ -1485,8 +1699,9 @@ mod tests {
         table.insert("active_lane".to_owned(), Value::String("trust".to_owned()));
         let mut stats = ManifestStats::default();
         let mut violations = Vec::new();
+        let mut deprecations = Vec::new();
 
-        validate_pointer(root.path(), &table, &mut stats, &mut violations);
+        validate_pointer(root.path(), &table, &mut stats, &mut violations, &mut deprecations);
 
         assert!(
             violations
@@ -1509,10 +1724,23 @@ mod tests {
             Value::String("agent_loop_enablement".to_owned()),
         );
         let mut violations = Vec::new();
+        let mut deprecations = Vec::new();
 
-        validate_default_program(&root, &pointer_table, "expected", &mut violations);
+        validate_default_program(
+            &root,
+            &pointer_table,
+            "expected",
+            &mut violations,
+            &mut deprecations,
+        );
 
         assert_eq!(violations, Vec::<String>::new(), "got violations: {violations:?}");
+        // #4174 slice 1: a present, structurally valid `default_program`
+        // still validates (no violation) but is flagged deprecated.
+        assert!(
+            deprecations.iter().any(|d| d.contains("default_program") && d.contains("DEPRECATED")),
+            "expected a default_program deprecation finding, got {deprecations:?}"
+        );
         Ok(())
     }
 

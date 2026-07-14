@@ -15,6 +15,23 @@
 //! `docs/`. Branch/worktree/PR creation is `/start-pr`'s job — a separate,
 //! later deliverable, deliberately out of scope here.
 //!
+//! #4174 slice 1 (retiring the singleton active-goal control surface):
+//! no-arg `goals next`/`goals reconcile` no longer resolve `active.toml`'s
+//! `default_program` into ONE repository-global selection — that implicit
+//! fallback is gone from `resolve_program`. Instead they print a
+//! PORTFOLIO REPORT (`portfolio`/`reconcile_portfolio` below): one entry
+//! per known program (`.perl-lsp/goals/programs/*.toml`), each computed by
+//! running the exact same, unmodified `select::select_next` /
+//! reconciliation logic against that program alone. Program-local
+//! selection is unchanged and still requires an explicit `--program <id>`
+//! (`next`/`reconcile` below, called only when `--program` is given).
+//!
+//! `default_program`/`active_program`/`active_lane` are NOT deleted this
+//! release — only demoted (see `active_goal_manifest::validate_pointer`'s
+//! deprecation findings) — so `active.toml` v2 stays readable. Deleting
+//! them and introducing a durable `portfolio.toml` registry is a later,
+//! separate slice (#4175).
+//!
 //! Three layers, so the selection algorithm stays pure and independently
 //! testable:
 //! - [`manifest`] — shared typed loader for `active.toml`'s
@@ -108,6 +125,132 @@ fn render_json_error(err: &color_eyre::eyre::Report) -> String {
     })
 }
 
+/// #4174 slice 1: one program's entry in the no-arg PORTFOLIO REPORT.
+/// Deliberately shaped like [`GoalsNextOutput`] (same `decision` flatten)
+/// so JSON consumers see a familiar per-program shape — the difference is
+/// there are many of these in one report, never a single repository-global
+/// pick.
+#[derive(Debug, Clone, Serialize)]
+pub struct PortfolioProgramEntry {
+    pub id: String,
+    /// Informational only: whether `active.toml`'s deprecated
+    /// `default_program`/`active_program` pointer currently names this
+    /// program. Carries no selection weight — every program in the report
+    /// is computed identically regardless of this flag.
+    pub is_deprecated_default: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub program_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracker_issue: Option<u64>,
+    #[serde(flatten)]
+    pub decision: SelectionDecision,
+}
+
+/// #4174 slice 1: no-arg `cargo xtask goals next --json` output shape —
+/// REPLACES the single-selection `GoalsNextOutput` for the no-`--program`
+/// case. `goals next --program <id>` still returns `GoalsNextOutput`
+/// (`next()`, unchanged).
+#[derive(Debug, Clone, Serialize)]
+pub struct GoalsPortfolioReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deprecated_default_program: Option<String>,
+    pub program_count: usize,
+    pub programs: Vec<PortfolioProgramEntry>,
+}
+
+/// `cargo xtask goals next` entry point for the no-`--program` case
+/// (#4174 slice 1). Mirrors `next()`'s `--json`-always-parseable contract
+/// exactly (same error-rendering helper, same exit-1-on-json-error shape)
+/// — the only difference is the payload is a portfolio, not a selection.
+pub fn portfolio(fixture: Option<PathBuf>, json: bool) -> Result<()> {
+    match render_portfolio_output(fixture, json) {
+        Ok(text) => {
+            println!("{text}");
+            Ok(())
+        }
+        Err(err) if json => {
+            println!("{}", render_json_error(&err));
+            std::process::exit(1);
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn render_portfolio_output(fixture: Option<PathBuf>, json: bool) -> Result<String> {
+    let (deprecated_default_program, snapshots) = snapshot::build_portfolio_snapshots(fixture)?;
+
+    let programs: Vec<PortfolioProgramEntry> = snapshots
+        .into_iter()
+        .map(|snap| {
+            let id = snap.resolved_program.clone().unwrap_or_default();
+            let is_deprecated_default = deprecated_default_program.as_deref() == Some(id.as_str());
+            let program_title = snap.program_title.clone();
+            let tracker_issue = snap.tracker_issue;
+            let decision = select::select_next(&snap);
+            PortfolioProgramEntry {
+                id,
+                is_deprecated_default,
+                program_title,
+                tracker_issue,
+                decision,
+            }
+        })
+        .collect();
+
+    let report = GoalsPortfolioReport {
+        deprecated_default_program,
+        program_count: programs.len(),
+        programs,
+    };
+
+    if json {
+        Ok(serde_json::to_string_pretty(&report)?)
+    } else {
+        Ok(render_portfolio_human(&report))
+    }
+}
+
+fn render_portfolio_human(report: &GoalsPortfolioReport) -> String {
+    let mut lines = vec![format!("portfolio: {} program(s)", report.program_count)];
+    if let Some(deprecated) = &report.deprecated_default_program {
+        lines.push(format!(
+            "note: active.toml's default_program={deprecated:?} is deprecated (#4174) — no longer used to pick a single global next; pass --program <id> to select"
+        ));
+    }
+    if report.programs.is_empty() {
+        lines.push("no known programs found under .perl-lsp/goals/programs/".to_owned());
+        return lines.join("\n");
+    }
+    for entry in &report.programs {
+        let marker = if entry.is_deprecated_default { " (deprecated default)" } else { "" };
+        lines.push(String::new());
+        lines.push(format!(
+            "== {}{marker} =={}",
+            entry.id,
+            entry.program_title.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()
+        ));
+        if let Some(issue) = entry.tracker_issue {
+            lines.push(format!("tracker: #{issue}"));
+        }
+        match &entry.decision {
+            SelectionDecision::Selected(packet) => {
+                lines.push(format!("selectable: {} — {}", packet.id, packet.session_goal));
+                lines.push(format!("reason: {}", packet.reason));
+            }
+            SelectionDecision::Blocked(blockers) => {
+                lines.push(format!("blocked: {} blocker(s)", blockers.len()));
+                for blocker in blockers {
+                    lines.push(format!("  - [{}] {}", blocker.kind, blocker.detail));
+                }
+            }
+            SelectionDecision::Complete(evidence) => {
+                lines.push(format!("complete: {}", evidence.detail));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
 /// `cargo xtask goals reconcile --json` output shape. Advisory/diagnostic —
 /// unlike [`GoalsNextOutput`] this never represents a selection decision,
 /// just a list of drift findings (#3696 item B).
@@ -171,6 +314,90 @@ fn render_reconcile_human(output: &GoalsReconcileOutput) -> String {
     lines.push(format!("reconcile: {} finding(s)", output.findings.len()));
     for finding in &output.findings {
         lines.push(format!("  - [{}] {}: {}", finding.kind, finding.milestone_id, finding.detail));
+    }
+    lines.join("\n")
+}
+
+/// #4174 slice 1: one program's findings in the no-arg `goals reconcile`
+/// PORTFOLIO REPORT — analog of [`PortfolioProgramEntry`] for reconcile.
+#[derive(Debug, Clone, Serialize)]
+pub struct PortfolioProgramReconcile {
+    pub program: String,
+    pub finding_count: usize,
+    pub findings: Vec<select::ReconciliationFinding>,
+}
+
+/// #4174 slice 1: no-arg `cargo xtask goals reconcile --json` output shape
+/// — REPLACES the single-program `GoalsReconcileOutput` for the
+/// no-`--program` case. `goals reconcile --program <id>` still returns
+/// `GoalsReconcileOutput` (`reconcile()`, unchanged).
+#[derive(Debug, Clone, Serialize)]
+pub struct GoalsReconcilePortfolioOutput {
+    pub programs: Vec<PortfolioProgramReconcile>,
+    pub total_finding_count: usize,
+}
+
+/// `cargo xtask goals reconcile` entry point for the no-`--program` case
+/// (#4174 slice 1). Mirrors `reconcile()`'s `--json`-always-parseable
+/// contract and its "findings exist" nonzero-count-on-`Ok` shape exactly
+/// (`main.rs` decides the process exit code from the returned count, same
+/// as `reconcile()`).
+pub fn reconcile_portfolio(fixture: Option<PathBuf>, json: bool) -> Result<usize> {
+    match render_reconcile_portfolio_output(fixture, json) {
+        Ok((text, total_finding_count)) => {
+            println!("{text}");
+            Ok(total_finding_count)
+        }
+        Err(err) if json => {
+            println!("{}", render_json_error(&err));
+            std::process::exit(1);
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn render_reconcile_portfolio_output(
+    fixture: Option<PathBuf>,
+    json: bool,
+) -> Result<(String, usize)> {
+    let per_program = snapshot::build_portfolio_reconciliation_report(fixture)?;
+    let programs: Vec<PortfolioProgramReconcile> = per_program
+        .into_iter()
+        .map(|(program, findings)| PortfolioProgramReconcile {
+            program,
+            finding_count: findings.len(),
+            findings,
+        })
+        .collect();
+    let total_finding_count = programs.iter().map(|p| p.finding_count).sum();
+    let output = GoalsReconcilePortfolioOutput { programs, total_finding_count };
+
+    let text = if json {
+        serde_json::to_string_pretty(&output)?
+    } else {
+        render_reconcile_portfolio_human(&output)
+    };
+    Ok((text, total_finding_count))
+}
+
+fn render_reconcile_portfolio_human(output: &GoalsReconcilePortfolioOutput) -> String {
+    let mut lines = vec![format!(
+        "portfolio reconcile: {} program(s), {} total finding(s)",
+        output.programs.len(),
+        output.total_finding_count
+    )];
+    for program in &output.programs {
+        if program.findings.is_empty() {
+            lines.push(format!("  {}: no findings", program.program));
+            continue;
+        }
+        lines.push(format!("  {}: {} finding(s)", program.program, program.finding_count));
+        for finding in &program.findings {
+            lines.push(format!(
+                "    - [{}] {}: {}",
+                finding.kind, finding.milestone_id, finding.detail
+            ));
+        }
     }
     lines.join("\n")
 }
@@ -379,5 +606,100 @@ mod tests {
 
         let human_result = render_reconcile_output(None, Some(bogus), false);
         assert!(human_result.is_err(), "non-json path must still surface Err to its caller");
+    }
+
+    // #4174 slice 1 tests (a) and (b): no-arg `goals next` reports a
+    // portfolio instead of selecting one repository-global next, while
+    // `goals next --program <id>` selects program-locally exactly as
+    // before (parity with the pre-existing single-program behavior).
+    // These exercise the REAL repo tree's `.perl-lsp/goals/programs/`
+    // (`agent_loop_enablement`, `real_perl_editor_trust`) via a
+    // `--fixture` file so no live `gh` call is needed, mirroring every
+    // other `render_output`/`render_reconcile_output` test in this module.
+
+    fn write_empty_prs_fixture(temp: &tempfile::TempDir) -> Result<std::path::PathBuf> {
+        let path = temp.path().join("prs.json");
+        std::fs::write(&path, r#"{"repository":"r","prs":[]}"#)?;
+        Ok(path)
+    }
+
+    #[test]
+    fn test_a_no_arg_portfolio_report_does_not_emit_a_single_global_selection() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let fixture_path = write_empty_prs_fixture(&temp)?;
+
+        let text = render_portfolio_output(Some(fixture_path.clone()), false)?;
+        assert!(text.starts_with("portfolio:"), "expected a portfolio report header, got {text:?}");
+        // The OLD single-selection `render_human` always starts with a
+        // `repository: <name>` line — the portfolio report must not
+        // reproduce that shape (it names no single resolved repository-wide
+        // program/decision).
+        assert!(
+            !text.starts_with("repository:"),
+            "no-arg goals next must not emit the old single-selection shape, got {text:?}"
+        );
+
+        let json_text = render_portfolio_output(Some(fixture_path), true)?;
+        let parsed: serde_json::Value = serde_json::from_str(&json_text)
+            .unwrap_or_else(|e| panic!("portfolio JSON must be parseable: {e}\n{json_text}"));
+        assert!(
+            parsed.get("programs").is_some_and(|v| v.is_array()),
+            "expected a \"programs\" array in {json_text}"
+        );
+        // The OLD single-selection `GoalsNextOutput` flattens `decision`
+        // (and `data`) as TOP-LEVEL keys via `#[serde(tag = "decision", ...)]`
+        // — the portfolio report must never reproduce that top-level shape,
+        // only per-program (nested) decisions.
+        assert!(
+            parsed.get("decision").is_none(),
+            "no-arg goals next must not emit a top-level \"decision\" (that's the old single-selection shape), got {json_text}"
+        );
+        let programs = parsed
+            .get("programs")
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("expected a \"programs\" array in {json_text}"));
+        assert!(
+            programs.len() >= 2,
+            "expected at least the 2 known real-repo programs in the portfolio, got {programs:?}"
+        );
+        for program in programs {
+            assert!(
+                program.get("decision").is_some(),
+                "expected each per-program entry to carry its OWN decision, got {program:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_b_explicit_program_selection_is_unchanged_parity_with_pre_slice_behavior() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let fixture_path = write_empty_prs_fixture(&temp)?;
+
+        // This is the EXACT pre-#4174 code path (`next()`/`render_output`
+        // with `program = Some(id)`) -- unmodified by this slice. Proves
+        // `--program` selection still resolves the named program directly,
+        // never falling through to a portfolio or an unrelated default.
+        let json_text =
+            render_output(Some("real_perl_editor_trust".to_owned()), Some(fixture_path), true)?;
+        let parsed: serde_json::Value = serde_json::from_str(&json_text)
+            .unwrap_or_else(|e| panic!("selection JSON must be parseable: {e}\n{json_text}"));
+        assert_eq!(
+            parsed.get("program").and_then(|v| v.as_str()),
+            Some("real_perl_editor_trust"),
+            "expected the explicitly-requested program to resolve, got {json_text}"
+        );
+        // Single-selection shape: a top-level "decision" key, exactly like
+        // pre-slice `GoalsNextOutput` -- never the portfolio's "programs" array.
+        assert!(
+            parsed.get("decision").is_some(),
+            "expected the pre-existing single-selection \"decision\" shape, got {json_text}"
+        );
+        assert!(
+            parsed.get("programs").is_none(),
+            "explicit --program selection must never emit the portfolio's \"programs\" array, got {json_text}"
+        );
+        Ok(())
     }
 }
