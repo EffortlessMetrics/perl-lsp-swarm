@@ -3,27 +3,35 @@
 //! This module is the SINGLE base-resolver + SINGLE `git diff` shared by
 //! `ci_scope::run`, `gates::compute_scope_output`/`select_scope_base`, and
 //! `targeted_checks::run` (#3985 Slice 2 repointed all three onto
-//! [`resolve_change_set`] — see the parity test in this module's test
-//! suite, `tests::test_repointed_resolver_matches_pre_repoint_diff_logic`,
-//! which pins that the repoint is zero-behavior-change on real diff
-//! fixtures). The pre-push hook migration is a later slice.
+//! [`resolve_change_set`] — see the falsifiable parity corpus in this
+//! module's test suite, `tests::test_parity_*` (doc-only, single-crate,
+//! multi-crate, mixed, ci-config, a deletion, a rename), which pins that
+//! the repoint is zero-behavior-change on real diff fixtures). The
+//! pre-push hook migration is a later slice.
 //!
 //! # Why not `origin/master`
 //!
 //! `origin/master` does not exist on this remote (verified via `git
 //! ls-remote --heads origin master`; `refs/remotes/origin/HEAD` points at
 //! `origin/main`). [`resolve_base_ref`] therefore never includes
-//! `origin/master` in its candidate chain — unlike `ci_scope::resolve_base_ref`
-//! (`xtask/src/tasks/ci_scope.rs`), which still carries it as a historical
-//! fallback. Per #3985: prefer the canonical `origin/main` and fail loudly
-//! when no canonical base resolves, rather than silently resolving a stray
+//! `origin/master` in its candidate chain. **Historical note:** prior to
+//! #3985 Slice 2, `ci_scope::resolve_base_ref` and
+//! `targeted_checks::resolve_base_ref` — private per-consumer copies of
+//! this same resolver, both deleted by this PR now that `ci_scope::run`
+//! and `targeted_checks::run` call [`resolve_change_set`] instead — still
+//! carried `origin/master` as a fallback candidate; this module never did.
+//! Per #3985: prefer the canonical `origin/main` and fail loudly when no
+//! canonical base resolves, rather than silently resolving a stray
 //! `origin/master`-shaped ref if one is ever recreated on the remote.
 //!
 //! # Composition, not duplication
 //!
-//! - The base-ref candidate chain and three-dot `git diff` mirror
-//!   `ci_scope::resolve_base_ref` / `ci_scope::get_changed_files`
-//!   (`xtask/src/tasks/ci_scope.rs:812-890`), reordered to drop
+//! - The base-ref candidate chain and three-dot `git diff` mirror what
+//!   `ci_scope::resolve_base_ref` / `ci_scope::get_changed_files` and
+//!   `targeted_checks::resolve_base_ref` / `targeted_checks::changed_files`
+//!   used to do before #3985 Slice 2 deleted all four (now dead code —
+//!   `ci_scope::run`/`targeted_checks::run` call [`resolve_change_set`]
+//!   directly); this module's shape was reordered from theirs to drop
 //!   `origin/master` from the candidates.
 //! - The `StagedTree` arm composes `staged::staged_diff_paths` and
 //!   `staged::diff_base` (`xtask/src/tasks/staged.rs`) rather than
@@ -44,8 +52,9 @@ use crate::tasks::staged;
 pub enum ArtifactIdentity {
     /// A base/head commit-ish pair. `base == "auto"` triggers the
     /// main-first candidate chain in [`resolve_base_ref`]; any other value
-    /// is tried first, then the chain is used as a fallback (mirroring
-    /// `ci_scope::resolve_base_ref`'s behavior).
+    /// is treated as an **explicit** base and must resolve on its own —
+    /// see [`resolve_base_ref`]'s doc comment for why an unresolvable
+    /// explicit base is a loud [`Err`], never a silent substitution.
     CommitRange { base: String, head: String },
     /// A staged-tree OID as produced by `git write-tree` /
     /// `staged::staged_tree_oid` — the commit-tier identity (#3786).
@@ -129,27 +138,58 @@ pub fn resolve_change_set(identity: ArtifactIdentity, root: &Path) -> Result<Cha
 /// -less-history fallback).
 const BASE_CANDIDATES: [&str; 3] = ["origin/main", "main", "HEAD~1"];
 
-/// Resolve a base ref: an explicit non-`"auto"` `base` is tried first (and
-/// used if it exists), then [`BASE_CANDIDATES`] in order. Returns a loud
-/// [`Err`] — never a silent `origin/master` — when nothing resolves.
+/// Resolve a base ref.
+///
+/// `base == "auto"` walks [`BASE_CANDIDATES`] in order and returns the
+/// first that exists.
+///
+/// An **explicit** (non-`"auto"`) `base` must resolve **on its own** —
+/// it is never silently substituted with a [`BASE_CANDIDATES`] entry.
+/// This is a deliberate safety contract, not an oversight: callers that
+/// pass an explicit base (a `--base` CLI flag, `$CI_SCOPE_BASE`, an
+/// unvalidated `config.base_ref` threaded through
+/// `gates::plan_gates`/`plan_pr_fast_gates`) rely on a loud [`Err`] here
+/// to trigger their own safety net — e.g. `plan_pr_fast_gates` catches
+/// this error and falls back to the broad `rust_fallback` gate plan
+/// rather than silently running PR-fast against a narrower, unintended
+/// scope. #3985 Slice 2 review (PR #4153) caught a version of this
+/// function that fell through to [`BASE_CANDIDATES`] on an unresolvable
+/// explicit base — reproducible as
+/// `resolve_base_ref("origin/definitely-not-fetched", repo)` silently
+/// returning `Ok("origin/main")` — which defeated that safety net for
+/// any caller supplying an unfetched/typo'd explicit base. Never
+/// silently falls back to `origin/master` either way (issue #3985: that
+/// ref does not exist on this remote).
 fn resolve_base_ref(base: &str, root: &Path) -> Result<String> {
-    let mut candidates = Vec::new();
     if base != "auto" {
-        candidates.push(base.to_string());
+        if git_ref_exists(base, root)? {
+            return Ok(base.to_string());
+        }
+        eprintln!(
+            "Warning: explicit base ref '{base}' does not exist; refusing to substitute a \
+             different base (a caller-supplied base must resolve on its own — see #3985 \
+             Slice 2 review, PR #4153)."
+        );
+        return Err(eyre!(
+            "Explicit base ref '{base}' does not exist. Refusing to silently fall back to \
+             {BASE_CANDIDATES:?} for an explicitly-requested base — an explicit base must \
+             resolve on its own, so callers with their own safety net (e.g. \
+             `plan_pr_fast_gates`'s `rust_fallback` broad-plan fallback) see this error \
+             rather than a silently-narrowed scope."
+        ));
     }
-    candidates.extend(BASE_CANDIDATES.iter().map(|s| (*s).to_string()));
 
-    for candidate in candidates {
-        if git_ref_exists(&candidate, root)? {
-            return Ok(candidate);
+    for candidate in BASE_CANDIDATES {
+        if git_ref_exists(candidate, root)? {
+            return Ok(candidate.to_string());
         }
     }
 
     Err(eyre!(
-        "Could not resolve a canonical base ref from '{base}', origin/main, main, or HEAD~1. \
-         Refusing to fall back to origin/master (issue #3985: that ref does not exist on this \
-         remote, and must never be a silent fallback). Ensure the repository has origin/main \
-         reachable, a local main branch, or at least two commits of history."
+        "Could not resolve a canonical base ref from auto-resolution: origin/main, main, or \
+         HEAD~1. Refusing to fall back to origin/master (issue #3985: that ref does not exist \
+         on this remote, and must never be a silent fallback). Ensure the repository has \
+         origin/main reachable, a local main branch, or at least two commits of history."
     ))
 }
 
@@ -186,8 +226,9 @@ fn resolve_sha(reference: &str, root: &Path) -> Result<String> {
 
 /// Changed paths between `base` and `head`: three-dot (`base...head`,
 /// merge-base relative) first, falling back to two-dot (`base..head`,
-/// direct) when the three-dot form fails — mirrors
-/// `ci_scope::get_changed_files`.
+/// direct) when the three-dot form fails — the same shape the deleted
+/// `ci_scope::get_changed_files` / `targeted_checks::changed_files` used
+/// before #3985 Slice 2 repointed both onto this function.
 fn diff_paths(base: &str, head: &str, root: &Path) -> Result<Vec<String>> {
     let three_dot = format!("{base}...{head}");
     let output = cmd("git", &["diff", "--name-only", &three_dot])
@@ -451,7 +492,8 @@ mod tests {
     /// `main`) git fails it outright (`fatal: ... no merge base`), which is
     /// exactly the failure `diff_paths` is documented to fall back from.
     /// Without this test the two-dot fallback branch — the one place this
-    /// module deliberately mirrors `ci_scope::get_changed_files`'s fallback
+    /// module deliberately mirrors the shape the deleted
+    /// `ci_scope::get_changed_files` used to fall back on
     /// — had zero coverage; a change that silently dropped the fallback
     /// (or swapped which paths it reports) would still pass every other
     /// test in this file.
@@ -541,10 +583,17 @@ mod tests {
     /// `GITHUB_BASE_REF` — omitted: they are unset in this test process,
     /// and remain gates-local post-repoint too; see
     /// `gates::select_scope_base`'s doc comment). This chain was
-    /// **master-first** (`gates.rs:1499` before this PR) — the exact
-    /// ordering #3985's architecture-review comment flagged as a latent
-    /// conflict with `ci_scope`'s main-first chain, resolved here by
-    /// proving both chains agree on the live repository (`origin/master`
+    /// **master-first** (`fn select_scope_base` at
+    /// `git show 465ceceab~1:xtask/src/tasks/gates.rs:1780`, candidate
+    /// array at line 1788 of that same pre-repoint blob — verified by
+    /// SHA-anchored `git show`, not a plain line number against the
+    /// current tree, since those drift; the architecture-review comment's
+    /// original `gates.rs:1499` citation had already drifted onto an
+    /// unrelated `Receipt` struct field by the time this PR was built) —
+    /// the exact ordering #3985's architecture-review
+    /// comment flagged as a latent conflict with `ci_scope`'s main-first
+    /// chain, resolved here by proving both chains agree on the live
+    /// repository (`origin/master`
     /// absent) before asserting parity against the shared resolver.
     fn pre_repoint_gates_style_base(root: &Path) -> Result<String> {
         let candidates =

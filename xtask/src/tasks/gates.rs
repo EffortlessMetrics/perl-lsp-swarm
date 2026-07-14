@@ -3339,6 +3339,74 @@ mod tests {
     }
 
     #[test]
+    fn plan_pr_fast_gates_falls_back_broadly_when_explicit_base_does_not_resolve()
+    -> color_eyre::eyre::Result<()> {
+        // #3985 Slice 2 review (PR #4153): before the strict-base fix in
+        // `change_set::resolve_base_ref`, an unresolvable EXPLICIT
+        // `--base`/`$CI_SCOPE_BASE` (threaded through here as
+        // `GateRunnerConfig.base_ref`, which bypasses `select_scope_base`
+        // entirely — see `plan_gates`) silently substituted one of
+        // `change_set::BASE_CANDIDATES` (typically `origin/main`) instead
+        // of surfacing an `Err` that `plan_pr_fast_gates` catches to
+        // trigger its `rust_fallback` safety net. That meant PR-fast
+        // silently narrowed its scope to whatever the substituted base
+        // happened to diff, instead of falling back to the safe broad
+        // plan. This test proves the fix: an explicit base that cannot
+        // resolve must produce the broad `rust_fallback` plan — not a
+        // silently-narrowed scope computed against a substituted base.
+        //
+        // Mutation-checked: reverting the `resolve_base_ref` strict-base
+        // fix (letting an explicit base fall through to
+        // `BASE_CANDIDATES`) turns this test red — `clippy_scoped` gets
+        // selected (a real, narrowed scope against the substituted base)
+        // instead of skipped, and `scope_ok`/`fallback_used` flip to
+        // `true`/`false`.
+        let policy = policy_with_gates(vec![
+            pr_gate(
+                "clippy_scoped",
+                GatePlanningRole::RustScoped,
+                "cargo clippy -p {package_args}",
+            ),
+            pr_gate("clippy_fallback", GatePlanningRole::RustFallback, "cargo clippy --workspace"),
+        ]);
+        let config = GateRunnerConfig {
+            tier: GateTier::PrFast,
+            base_ref: Some("origin/definitely-not-a-real-ref-3985-slice2-parity".to_string()),
+            ..GateRunnerConfig::default()
+        };
+        let root = crate::utils::project_root()?;
+
+        let plan = plan_gates(&root, &policy, &config)?;
+
+        assert!(!plan.scope_ok, "an unresolvable explicit base must NOT produce a valid scope");
+        assert!(
+            plan.fallback_used,
+            "an unresolvable explicit base must trigger the broad rust_fallback plan"
+        );
+        let reason = plan
+            .fallback_reason
+            .as_deref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("expected a fallback reason"))?;
+        assert!(
+            reason.contains("ci-scope failed"),
+            "fallback reason should explain the ci-scope failure, got: {reason}"
+        );
+
+        let selected_names = selected_gate_names(&plan);
+        assert!(
+            selected_names.iter().any(|name| name == "clippy_fallback"),
+            "the broad rust_fallback gate must be selected: {selected_names:?}"
+        );
+        assert!(
+            !selected_names.iter().any(|name| name == "clippy_scoped"),
+            "the narrow rust_scoped gate must NOT be selected on an unresolvable explicit \
+             base (that would mean the scope was silently narrowed instead of the safety \
+             net firing): {selected_names:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn gate_policy_deserializes_gate_defaults() -> color_eyre::eyre::Result<()> {
         let yaml = r#"
 schema_version: 1
