@@ -9,7 +9,7 @@
 //! - **Building/Degraded state**: Same-file semantic analysis + open document scan
 
 use super::super::{byte_to_utf16_col, *};
-use crate::protocol::{req_position, req_uri};
+use crate::protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri};
 use crate::state::{reference_search_deadline, references_cap};
 use crate::util::{is_word_boundary, token_under_cursor};
 use std::sync::OnceLock;
@@ -30,6 +30,9 @@ use crate::runtime::readiness::IndexReadinessPolicy;
 use crate::runtime::routing::{IndexAccessMode, route_index_access};
 
 static QUALIFIED_NAME_RE: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
+
+const REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS: usize = 128;
+const REFERENCE_TEXT_FALLBACK_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// Rollback anchor for the first Phase 2 references provider promotion.
 ///
@@ -193,6 +196,41 @@ pub(crate) struct SourceBackedReceiptFields {
     pub(crate) symbol_at_found: bool,
     pub(crate) exact_candidate_count: usize,
     pub(crate) cutover_result: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+struct ReferenceTextFallbackReceipt {
+    scanned_documents: usize,
+    scanned_bytes: usize,
+    scan_budget_documents: usize,
+    scan_budget_bytes: usize,
+    budget_exhausted: bool,
+    deadline_exhausted: bool,
+    cancellation_observed: bool,
+    fallback_completeness: &'static str,
+    fallback_reason: Option<String>,
+}
+
+impl Default for ReferenceTextFallbackReceipt {
+    fn default() -> Self {
+        Self {
+            scanned_documents: 0,
+            scanned_bytes: 0,
+            scan_budget_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
+            scan_budget_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            budget_exhausted: false,
+            deadline_exhausted: false,
+            cancellation_observed: false,
+            fallback_completeness: "not_attempted",
+            fallback_reason: None,
+        }
+    }
+}
+
+struct ReferenceTextFallbackBudget {
+    max_documents: usize,
+    max_bytes: usize,
+    deadline: Instant,
 }
 
 impl ReferencesAnsweringTier {
@@ -396,6 +434,28 @@ fn should_skip_text_reference_match(
 }
 
 impl LspServer {
+    fn check_references_cancellation(
+        &self,
+        request_id: Option<&JsonRpcId>,
+        receipt: &mut ReferenceTextFallbackReceipt,
+    ) -> Result<(), JsonRpcError> {
+        let Some(request_id) = request_id else {
+            return Ok(());
+        };
+        if !self.is_cancelled(request_id) {
+            return Ok(());
+        }
+        receipt.cancellation_observed = true;
+        receipt.fallback_completeness = "cancelled";
+        receipt.fallback_reason = Some("request_cancelled_during_text_fallback".to_owned());
+        self.cancel_clear(request_id);
+        Err(JsonRpcError {
+            code: REQUEST_CANCELLED,
+            message: "Request cancelled during references text fallback".to_owned(),
+            data: None,
+        })
+    }
+
     fn references_decision_trace_context(
         params: Option<&Value>,
     ) -> Result<Option<ReferencesDecisionTraceContext>, JsonRpcError> {
@@ -423,6 +483,7 @@ impl LspServer {
         text_result_count: usize,
         latency_us: u128,
         source_backed_attempt: Option<&SourceBackedReferenceAttempt>,
+        fallback_receipt: &ReferenceTextFallbackReceipt,
     ) {
         let Some(context) = context else {
             return;
@@ -491,6 +552,15 @@ impl LspServer {
                 "source_backed_symbol_at_found": source_backed_symbol_at_found,
                 "source_backed_exact_candidate_count": source_backed_exact_candidate_count,
                 "source_backed_cutover_result": source_backed_cutover_result,
+                "scanned_documents": fallback_receipt.scanned_documents,
+                "scanned_bytes": fallback_receipt.scanned_bytes,
+                "scan_budget_documents": fallback_receipt.scan_budget_documents,
+                "scan_budget_bytes": fallback_receipt.scan_budget_bytes,
+                "budget_exhausted": fallback_receipt.budget_exhausted,
+                "deadline_exhausted": fallback_receipt.deadline_exhausted,
+                "cancellation_observed": fallback_receipt.cancellation_observed,
+                "fallback_completeness": fallback_receipt.fallback_completeness,
+                "fallback_reason": fallback_receipt.fallback_reason,
                 "claim_boundary": "records existing references response only; no broader live references cutover"
             }),
         );
@@ -503,9 +573,18 @@ impl LspServer {
     /// - **Building/Degraded state**: Same-file semantic analysis only
     ///
     /// Includes deadline enforcement to prevent blocking on large workspaces.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) fn handle_references(
         &self,
         params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_references_with_request_id(params, None)
+    }
+
+    pub(crate) fn handle_references_with_request_id(
+        &self,
+        params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let trace_context = Self::references_decision_trace_context(params.as_ref())?;
         let (
@@ -516,7 +595,8 @@ impl LspServer {
             text_result_count,
             latency_us,
             source_backed_attempt,
-        ) = self.handle_references_inner(params)?;
+            fallback_receipt,
+        ) = self.handle_references_inner(params, request_id)?;
         self.record_references_provider_decision_trace(
             trace_context.as_ref(),
             result.as_ref(),
@@ -526,11 +606,13 @@ impl LspServer {
             text_result_count,
             latency_us,
             source_backed_attempt.as_ref(),
+            &fallback_receipt,
         );
         Ok(result)
     }
 
-    /// Returns `(result, tier, index_state, index_result_count, text_result_count, latency_us)`.
+    /// Returns the provider result, tier, index/text counts, latency, source-backed attempt,
+    /// and bounded fallback receipt.
     ///
     /// - `index_state`: `"full" | "partial" | "none"` derived from the observed `IndexAccessMode`
     ///   at the branch point — NOT inferred from the tier (a Full index can still fall through
@@ -542,6 +624,7 @@ impl LspServer {
     fn handle_references_inner(
         &self,
         params: Option<Value>,
+        request_id: Option<&Value>,
     ) -> Result<
         (
             Option<Value>,
@@ -551,6 +634,7 @@ impl LspServer {
             usize,
             u128,
             Option<SourceBackedReferenceAttempt>,
+            ReferenceTextFallbackReceipt,
         ),
         JsonRpcError,
     > {
@@ -558,6 +642,14 @@ impl LspServer {
         let deadline = reference_search_deadline();
         let cap = references_cap();
         let mut source_backed_attempt: Option<SourceBackedReferenceAttempt> = None;
+        let mut fallback_receipt = ReferenceTextFallbackReceipt::default();
+        let fallback_budget = ReferenceTextFallbackBudget {
+            max_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: start + deadline,
+        };
+        let typed_request_id = request_id.and_then(JsonRpcId::try_from_value);
+        self.check_references_cancellation(typed_request_id.as_ref(), &mut fallback_receipt)?;
 
         if let Some(params) = params {
             let uri = req_uri(&params)?;
@@ -724,6 +816,7 @@ impl LspServer {
                                                     0,
                                                     start.elapsed().as_micros(),
                                                     source_backed_attempt,
+                                                    fallback_receipt.clone(),
                                                 ));
                                             }
                                             SourceBackedReferenceAttempt::Declined(decline) => {
@@ -777,6 +870,7 @@ impl LspServer {
                                             0,
                                             start.elapsed().as_micros(),
                                             source_backed_attempt.clone(),
+                                            fallback_receipt.clone(),
                                         ));
                                     }
 
@@ -796,19 +890,13 @@ impl LspServer {
                                     // generation-N identity with generation-N+1 text for the same
                                     // document. Every other open document is unaffected by this and
                                     // still gets the freshest available read.
-                                    let docs_snapshot: Vec<(String, String)> = {
-                                        let documents = self.documents_guard();
-                                        documents
-                                            .iter()
-                                            .map(|(k, v)| {
-                                                if k.as_str() == uri {
-                                                    (k.clone(), doc.text.clone())
-                                                } else {
-                                                    (k.clone(), v.text.clone())
-                                                }
-                                            })
-                                            .collect()
-                                    };
+                                    let docs_snapshot = self.bounded_open_document_snapshot(
+                                        uri,
+                                        &doc.text,
+                                        &fallback_budget,
+                                        &mut fallback_receipt,
+                                        typed_request_id.as_ref(),
+                                    )?;
 
                                     let mut enhanced_locations = Vec::new();
                                     let symbol_name = &symbol_key.name;
@@ -825,6 +913,10 @@ impl LspServer {
                                     ];
 
                                     'pattern_loop: for pattern in patterns {
+                                        self.check_references_cancellation(
+                                            typed_request_id.as_ref(),
+                                            &mut fallback_receipt,
+                                        )?;
                                         // Check deadline between patterns
                                         if start.elapsed() >= deadline {
                                             tracing::debug!(
@@ -834,6 +926,10 @@ impl LspServer {
                                         }
                                         if let Ok(search_regex) = regex::Regex::new(&pattern) {
                                             for (doc_uri, doc_text) in &docs_snapshot {
+                                                self.check_references_cancellation(
+                                                    typed_request_id.as_ref(),
+                                                    &mut fallback_receipt,
+                                                )?;
                                                 // Early exit on cap
                                                 if enhanced_locations.len() >= cap {
                                                     break 'pattern_loop;
@@ -899,6 +995,7 @@ impl LspServer {
                                             text_count,
                                             start.elapsed().as_micros(),
                                             source_backed_attempt.clone(),
+                                            fallback_receipt.clone(),
                                         ));
                                     }
 
@@ -937,6 +1034,7 @@ impl LspServer {
                                                 0,
                                                 start.elapsed().as_micros(),
                                                 source_backed_attempt.clone(),
+                                                fallback_receipt.clone(),
                                             ));
                                         }
                                     }
@@ -1025,6 +1123,7 @@ impl LspServer {
                                                                 0,
                                                                 start.elapsed().as_micros(),
                                                                 source_backed_attempt.clone(),
+                                                                fallback_receipt.clone(),
                                                             ));
                                                         }
                                                     }
@@ -1040,19 +1139,14 @@ impl LspServer {
                                                     // snapshot above: `qualified_name` was derived from
                                                     // that same capture, so this document must not be
                                                     // re-read at a fresher generation for this search.
-                                                    let docs_snapshot: Vec<(String, String)> = {
-                                                        let documents = self.documents_guard();
-                                                        documents
-                                                            .iter()
-                                                            .map(|(k, v)| {
-                                                                if k.as_str() == uri {
-                                                                    (k.clone(), doc.text.clone())
-                                                                } else {
-                                                                    (k.clone(), v.text.clone())
-                                                                }
-                                                            })
-                                                            .collect()
-                                                    };
+                                                    let docs_snapshot = self
+                                                        .bounded_open_document_snapshot(
+                                                            uri,
+                                                            &doc.text,
+                                                            &fallback_budget,
+                                                            &mut fallback_receipt,
+                                                            typed_request_id.as_ref(),
+                                                        )?;
 
                                                     let mut all_locations = Vec::new();
                                                     let qualified_name =
@@ -1069,6 +1163,10 @@ impl LspServer {
                                                     'doc_scan: for (doc_uri, doc_text) in
                                                         docs_snapshot
                                                     {
+                                                        self.check_references_cancellation(
+                                                            typed_request_id.as_ref(),
+                                                            &mut fallback_receipt,
+                                                        )?;
                                                         // Check deadline
                                                         if start.elapsed() >= deadline {
                                                             break 'doc_scan;
@@ -1122,6 +1220,7 @@ impl LspServer {
                                                             text_count,
                                                             start.elapsed().as_micros(),
                                                             source_backed_attempt.clone(),
+                                                            fallback_receipt.clone(),
                                                         ));
                                                     }
                                                 }
@@ -1168,6 +1267,7 @@ impl LspServer {
                                                 0,
                                                 start.elapsed().as_micros(),
                                                 source_backed_attempt.clone(),
+                                                fallback_receipt.clone(),
                                             ));
                                         }
                                     }
@@ -1185,19 +1285,13 @@ impl LspServer {
                                     // above), so this document must not be re-read at a fresher
                                     // generation for this search. Every other open document still
                                     // gets the freshest available read.
-                                    let docs_snapshot: Vec<(String, String)> = {
-                                        let documents = self.documents_guard();
-                                        documents
-                                            .iter()
-                                            .map(|(k, v)| {
-                                                if k.as_str() == uri {
-                                                    (k.clone(), doc.text.clone())
-                                                } else {
-                                                    (k.clone(), v.text.clone())
-                                                }
-                                            })
-                                            .collect()
-                                    };
+                                    let docs_snapshot = self.bounded_open_document_snapshot(
+                                        uri,
+                                        &doc.text,
+                                        &fallback_budget,
+                                        &mut fallback_receipt,
+                                        typed_request_id.as_ref(),
+                                    )?;
                                     let open_doc_locations = search_document_texts_for_references(
                                         docs_snapshot.iter().map(|(doc_uri, doc_text)| {
                                             (doc_uri.as_str(), doc_text.as_str())
@@ -1220,6 +1314,7 @@ impl LspServer {
                                             result_count,
                                             start.elapsed().as_micros(),
                                             source_backed_attempt.clone(),
+                                            fallback_receipt.clone(),
                                         ));
                                     }
                                 }
@@ -1276,6 +1371,7 @@ impl LspServer {
                             0,
                             start.elapsed().as_micros(),
                             source_backed_attempt.clone(),
+                            fallback_receipt.clone(),
                         ));
                     }
                 }
@@ -1290,7 +1386,93 @@ impl LspServer {
             0,
             start.elapsed().as_micros(),
             source_backed_attempt.clone(),
+            fallback_receipt,
         ))
+    }
+
+    fn bounded_open_document_snapshot(
+        &self,
+        current_uri: &str,
+        current_text: &str,
+        budget: &ReferenceTextFallbackBudget,
+        receipt: &mut ReferenceTextFallbackReceipt,
+        request_id: Option<&JsonRpcId>,
+    ) -> Result<Vec<(String, String)>, JsonRpcError> {
+        receipt.fallback_completeness = "partial";
+        receipt.fallback_reason = Some("bounded_open_document_text_scan".to_owned());
+
+        self.check_references_cancellation(request_id, receipt)?;
+        if Instant::now() >= budget.deadline {
+            receipt.deadline_exhausted = true;
+            receipt.fallback_reason = Some("reference_scan_deadline_before_snapshot".to_owned());
+            return Ok(Vec::new());
+        }
+        if current_text.len() > budget.max_bytes {
+            receipt.budget_exhausted = true;
+            receipt.fallback_reason = Some("current_document_exceeds_scan_byte_budget".to_owned());
+            return Ok(Vec::new());
+        }
+
+        let mut snapshot = vec![(current_uri.to_owned(), current_text.to_owned())];
+        receipt.scanned_documents = 1;
+        receipt.scanned_bytes = current_text.len();
+
+        let mut candidates = {
+            let documents = self.documents_guard();
+            documents
+                .iter()
+                .filter(|(uri, _)| uri.as_str() != current_uri)
+                .map(|(uri, document)| (uri.clone(), document.text.len()))
+                .collect::<Vec<_>>()
+        };
+        candidates.sort_by(|left, right| left.0.cmp(&right.0));
+
+        for (document_uri, metadata_len) in candidates {
+            self.check_references_cancellation(request_id, receipt)?;
+            if Instant::now() >= budget.deadline {
+                receipt.deadline_exhausted = true;
+                receipt.fallback_reason =
+                    Some("reference_scan_deadline_during_snapshot".to_owned());
+                break;
+            }
+            if receipt.scanned_documents >= budget.max_documents {
+                receipt.budget_exhausted = true;
+                receipt.fallback_reason = Some("reference_scan_document_budget".to_owned());
+                break;
+            }
+            if receipt.scanned_bytes.saturating_add(metadata_len) > budget.max_bytes {
+                receipt.budget_exhausted = true;
+                receipt.fallback_reason = Some("reference_scan_byte_budget".to_owned());
+                break;
+            }
+
+            let document_text = {
+                let documents = self.documents_guard();
+                let Some(document) = documents.get(&document_uri) else {
+                    continue;
+                };
+                if document.text.len() != metadata_len
+                    || receipt.scanned_bytes.saturating_add(document.text.len()) > budget.max_bytes
+                {
+                    None
+                } else {
+                    Some(document.text.clone())
+                }
+            };
+            let Some(document_text) = document_text else {
+                receipt.budget_exhausted = true;
+                receipt.fallback_reason = Some("reference_scan_byte_budget".to_owned());
+                break;
+            };
+            receipt.scanned_documents += 1;
+            receipt.scanned_bytes += document_text.len();
+            snapshot.push((document_uri, document_text));
+        }
+
+        if !receipt.budget_exhausted && !receipt.deadline_exhausted {
+            receipt.fallback_completeness = "complete";
+        }
+        Ok(snapshot)
     }
 
     #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
@@ -2219,6 +2401,21 @@ mod tests {
             receipt.get("source_backed_outcome").and_then(serde_json::Value::as_str),
             Some("exact"),
             "source-backed lexical references must record the exact attempt outcome"
+        );
+        assert_eq!(
+            receipt.get("scanned_documents").and_then(serde_json::Value::as_u64),
+            Some(0),
+            "source-backed exact references must not scan open documents"
+        );
+        assert_eq!(
+            receipt.get("scanned_bytes").and_then(serde_json::Value::as_u64),
+            Some(0),
+            "source-backed exact references must not clone fallback text"
+        );
+        assert_eq!(
+            receipt.get("fallback_completeness").and_then(serde_json::Value::as_str),
+            Some("not_attempted"),
+            "source-backed exact references must identify fallback as unused"
         );
         assert_eq!(
             receipt.get("source_backed_decline_stage"),
