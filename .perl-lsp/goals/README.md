@@ -13,16 +13,20 @@ stored as a mutable default in this file.
 
 ## Manifest Contract
 
-The portfolio lives at `.perl-lsp/goals/active.toml` during the compatibility
-migration. It uses schema 3 and may be copied to
-`.perl-lsp/goals/portfolio.toml` by a follow-up once all consumers use the new
-name. Future archived manifests should move under `.perl-lsp/goals/archive/`.
+The portfolio lives at `.perl-lsp/goals/active.toml` as the in-place schema 3
+compatibility migration. There is no second portfolio file; future archived
+manifests should move under `.perl-lsp/goals/archive/`.
 
 An active manifest should include:
 
 - schema and `mode = "portfolio"`
 - authority and selection policy
 - one or more enabled/disabled program manifest entries
+- an explicit `kind` for every program: `lane_routing` or `milestone_ledger`
+
+All entries must have valid identity, path, kind, and parseable manifest shape.
+Only enabled entries contribute active lanes, work items, and milestone
+validation totals.
 
 Legacy `active_program`, `active_lane`, and `default_program` fields are accepted
 only as temporary compatibility warnings. They are never selection authority.
@@ -68,5 +72,6 @@ respect_conflict_surfaces = true
 [[program]]
 id = "real_perl_editor_trust"
 manifest = ".perl-lsp/goals/programs/real_perl_editor_trust.toml"
+kind = "lane_routing"
 enabled = true
 ```
