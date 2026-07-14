@@ -44,12 +44,13 @@ fn empty_source_yields_empty_graph() {
 #[test]
 fn lexical_declaration_writes_lvalue_and_assigns() {
     let graph = lower("my $x = 1;");
-    assert_eq!(op_names(&graph), vec!["LexicalWrite", "Assign"]);
+    assert_eq!(op_names(&graph), vec!["LexicalWrite", "Assign", "Literal"]);
 
     // The declared write target is a known lvalue; the statement-level
     // assignment is void. Neither is silently promoted past what HIR proves.
     assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
     assert_eq!(graph.nodes[1].context, PirContext::Void);
+    assert_eq!(graph.nodes[2].context, PirContext::Unknown);
 
     let name = first_op(&graph, |op| match op {
         PirOperation::LexicalWrite { name } => Some(name.clone()),
@@ -57,6 +58,60 @@ fn lexical_declaration_writes_lvalue_and_assigns() {
     });
     assert_eq!(name.sigil, "$");
     assert_eq!(name.name, "x");
+}
+
+#[test]
+fn literal_operands_precede_enclosing_pir_parents() {
+    let assignment = lower("my $x = 1;");
+    let assignment_id = must_some(
+        assignment
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Assign))
+            .map(|node| node.id),
+    );
+    let assignment_literal_id = must_some(
+        assignment
+            .nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Literal { .. }))
+            .map(|node| node.id),
+    );
+    assert!(assignment.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == assignment_literal_id
+            && edge.to == Some(assignment_id)
+    }));
+    assert!(!assignment.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == assignment_id
+            && edge.to == Some(assignment_literal_id)
+    }));
+
+    let call = lower("foo(1, 2);");
+    let call_id = must_some(
+        call.nodes
+            .iter()
+            .find(|node| matches!(node.operation, PirOperation::Call { .. }))
+            .map(|node| node.id),
+    );
+    let literal_ids: Vec<_> = call
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.operation, PirOperation::Literal { .. }))
+        .map(|node| node.id)
+        .collect();
+    assert_eq!(literal_ids.len(), 2);
+    assert!(call.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == literal_ids[0]
+            && edge.to == Some(literal_ids[1])
+    }));
+    assert!(call.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == literal_ids[1]
+            && edge.to == Some(call_id)
+    }));
 }
 
 #[test]
@@ -455,7 +510,8 @@ fn control_flow_statement_modifier_is_counted_not_dropped() {
     // (postfix if/unless/while/etc).
     let graph = lower("$x = 1 if $y;");
     assert_eq!(graph.receipt.unsupported_construct_counts.get("StatementModifierShell"), Some(&1));
-    assert!(graph.is_empty());
+    assert_eq!(graph.receipt.operation_counts.get("Literal"), Some(&1));
+    assert!(!graph.is_empty());
 }
 
 #[test]
