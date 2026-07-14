@@ -4,7 +4,7 @@ use perl_parser_core::hir::{
     CompileEnvironmentBoundaryKind, CompileProvenance, DerefAggregateKind, DerefOperandKind,
     FrameworkAdapterKind, FrameworkAdapterRegistry, FrameworkExportedSymbolKind, GlobSlotSource,
     HirFile, HirKind, IncRootKind, ModuleResolutionRoot, PragmaArgumentKind, RecoveryConfidence,
-    ScopeGraph, StashConfidence, StashGraph, StashProvenance, lower_ast,
+    ScopeGraph, ScopeKind, StashConfidence, StashGraph, StashProvenance, lower_ast,
 };
 use perl_parser_core::{Node, NodeKind, Parser, SourceLocation};
 use perl_semantic_facts::{
@@ -1583,12 +1583,31 @@ fn hir_nested_subroutine_dereference_stays_runtime_deferred()
         file.items.iter().any(|item| matches!(&item.kind, HirKind::DerefExpr(_))),
         "nested subroutine dereference should remain a typed runtime expression"
     );
-    assert!(
-        !file.compile_effects().iter().any(|effect| {
-            effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref
-        }),
-        "a later-executing subroutine body must not create a symbolic compile effect"
-    );
+    let symbolic_effects = file
+        .compile_effects()
+        .into_iter()
+        .filter(|effect| effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref)
+        .collect::<Vec<_>>();
+    assert_eq!(symbolic_effects.len(), 1, "the symbolic name remains an explicit deferred fact");
+    let scope_id = symbolic_effects
+        .first()
+        .and_then(|effect| effect.scope_id)
+        .ok_or("expected a scope for the nested symbolic dereference")?;
+    let mut current = Some(scope_id);
+    let mut nested_in_subroutine = false;
+    while let Some(id) = current {
+        let scope = file
+            .scope_graph
+            .scopes
+            .get(id.index() as usize)
+            .ok_or("expected the nested symbolic dereference scope to exist")?;
+        if scope.kind == ScopeKind::Subroutine {
+            nested_in_subroutine = true;
+            break;
+        }
+        current = scope.parent;
+    }
+    assert!(nested_in_subroutine, "the deferred symbolic fact must be nested in a subroutine");
 
     Ok(())
 }
