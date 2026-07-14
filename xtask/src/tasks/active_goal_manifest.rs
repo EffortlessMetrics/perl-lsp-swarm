@@ -224,6 +224,7 @@ fn validate_portfolio(
     };
     if programs.is_empty() {
         violations.push(format!("{ACTIVE_GOAL_PATH}: at least one [[program]] entry is required"));
+        return;
     }
 
     let mut ids = BTreeSet::new();
@@ -1257,6 +1258,26 @@ mod tests {
                 .iter()
                 .any(|violation| violation.contains("must enable at least one program")),
             "expected zero-enabled violation, got {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_portfolio_reports_one_missing_program_violation() -> Result<()> {
+        let root = fixture_root(&[])?;
+        let table = portfolio_table(Vec::new());
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+
+        validate_portfolio(root.path(), &table, &mut stats, &mut violations);
+
+        let missing_program_count = violations
+            .iter()
+            .filter(|violation| violation.contains("at least one [[program]] entry is required"))
+            .count();
+        assert_eq!(
+            missing_program_count, 1,
+            "expected one missing-program violation, got {violations:?}"
         );
         Ok(())
     }

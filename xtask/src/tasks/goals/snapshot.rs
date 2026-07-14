@@ -153,18 +153,15 @@ fn portfolio_program_enabled(root: &Path, program_id: &str) -> Result<Option<boo
         return Ok(None);
     }
 
-    let enabled = value
-        .get("program")
-        .and_then(Value::as_array)
-        .and_then(|programs| {
-            programs.iter().find_map(|program| {
-                let table = program.as_table()?;
-                (table.get("id").and_then(Value::as_str) == Some(program_id))
-                    .then(|| table.get("enabled").and_then(Value::as_bool).unwrap_or(false))
-            })
-        })
-        .unwrap_or(false);
-    Ok(Some(enabled))
+    let Some(programs) = value.get("program").and_then(Value::as_array) else {
+        bail!("schema-3 portfolio in {} must contain a [[program]] array", path.display());
+    };
+    let enabled = programs.iter().find_map(|program| {
+        let table = program.as_table()?;
+        (table.get("id").and_then(Value::as_str) == Some(program_id))
+            .then(|| table.get("enabled").and_then(Value::as_bool).unwrap_or(false))
+    });
+    Ok(Some(enabled.unwrap_or(false)))
 }
 
 /// Measures the actual local git ref this snapshot's evidence was read
@@ -704,6 +701,25 @@ commands = ["rtk cargo test"]
         assert_eq!(snapshot.requested_program.as_deref(), Some("disabled"));
         assert_eq!(snapshot.resolved_program, None);
         assert!(snapshot.candidates.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_portfolio_program_shape_is_an_error() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let goals = temp.path().join(".perl-lsp/goals/programs");
+        fs::create_dir_all(&goals)?;
+        fs::write(goals.join("p.toml"), "id = \"p\"\n")?;
+        fs::write(
+            temp.path().join(".perl-lsp/goals/active.toml"),
+            "schema = 3\nprogram = \"not-an-array\"\n",
+        )?;
+        let fixture_path = temp.path().join("prs.json");
+        fs::write(&fixture_path, r#"{"repository":"r","prs":[]}"#)?;
+
+        let error = build_snapshot_at(temp.path(), Some("p".to_owned()), Some(fixture_path))
+            .expect_err("malformed schema-3 program structure must not look disabled");
+        assert!(error.to_string().contains("must contain a [[program]] array"));
         Ok(())
     }
 
