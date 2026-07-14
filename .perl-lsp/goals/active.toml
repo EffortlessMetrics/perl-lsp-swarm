@@ -16,9 +16,11 @@ respect_conflict_surfaces = true
 [[program]]
 id = "real_perl_editor_trust"
 manifest = ".perl-lsp/goals/programs/real_perl_editor_trust.toml"
+kind = "lane_routing"
 enabled = true
 
 [[program]]
 id = "agent_loop_enablement"
 manifest = ".perl-lsp/goals/programs/agent_loop_enablement.toml"
+kind = "milestone_ledger"
 enabled = true

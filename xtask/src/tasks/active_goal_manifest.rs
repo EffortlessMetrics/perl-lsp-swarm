@@ -34,6 +34,7 @@ const PROGRAM_REQUIRED_PATH_FIELDS: &[&str] =
     &["proposal", "plan", "status_pointer", "operating_model"];
 const PROGRAM_REQUIRED_TEXT_ARRAYS: &[&str] = &["end_state", "claim_boundaries"];
 const PROGRAM_REQUIRED_PATH_ARRAYS: &[&str] = &["status_docs", "specs"];
+const PORTFOLIO_PROGRAM_KINDS: &[&str] = &["lane_routing", "milestone_ledger"];
 
 const LANE_REQUIRED_TOP_LEVEL_STRINGS: &[&str] = &["id", "program", "proof_policy"];
 const LANE_REQUIRED_TEXT_ARRAYS: &[&str] = &["may_change", "next_items"];
@@ -263,6 +264,17 @@ fn validate_portfolio(
             stats.enabled_programs += 1;
         }
 
+        let Some(kind) = string_field(program, "kind") else {
+            violations.push(format!("{doc}.kind must be one of {PORTFOLIO_PROGRAM_KINDS:?}"));
+            continue;
+        };
+        if !PORTFOLIO_PROGRAM_KINDS.contains(&kind) {
+            violations.push(format!(
+                "{doc}.kind must be one of {PORTFOLIO_PROGRAM_KINDS:?}, got {kind:?}"
+            ));
+            continue;
+        }
+
         let text = match fs::read_to_string(root.join(manifest)) {
             Ok(text) => text,
             Err(err) => {
@@ -274,26 +286,54 @@ fn validate_portfolio(
             violations.push(format!("{doc}.manifest failed to parse {manifest}"));
             continue;
         };
-        if goals_manifest::is_milestone_ledger(&text) {
-            match goals_manifest::load_milestone_ledger(root, manifest) {
-                Ok(ledger) => violations.extend(goals_manifest::validate_milestone_ledger(&ledger)),
-                Err(err) => violations.push(format!("{doc}.manifest milestone ledger: {err}")),
-            }
+        let actual_kind = if goals_manifest::is_milestone_ledger(&text) {
+            "milestone_ledger"
+        } else {
+            "lane_routing"
+        };
+        if actual_kind != kind {
+            violations
+                .push(format!("{doc}.kind {kind:?} does not match manifest shape {actual_kind:?}"));
             continue;
         }
 
-        let ownership = validate_program_manifest(root, &program_table, "", stats, violations);
-        stats.lanes += ownership.len();
-        for owned in ownership {
-            match load_table(root, &owned.manifest) {
-                Ok(lane_table) => {
-                    validate_lane_manifest(root, &lane_table, &owned, id, stats, violations)
+        match kind {
+            "milestone_ledger" => match goals_manifest::load_milestone_ledger(root, manifest) {
+                Ok(ledger) => {
+                    if ledger.id != id {
+                        violations
+                            .push(format!("{doc}.manifest id must be {id:?}, got {:?}", ledger.id));
+                    }
+                    if enabled {
+                        violations.extend(goals_manifest::validate_milestone_ledger(&ledger));
+                    }
                 }
-                Err(err) => violations.push(format!(
-                    "{doc}.manifest lane_ownership[{}]: failed to load {}: {err}",
-                    owned.lane, owned.manifest
-                )),
+                Err(err) => violations.push(format!("{doc}.manifest milestone ledger: {err}")),
+            },
+            "lane_routing" => {
+                if enabled {
+                    let ownership =
+                        validate_program_manifest(root, &program_table, "", stats, violations);
+                    stats.lanes += ownership.len();
+                    for owned in ownership {
+                        match load_table(root, &owned.manifest) {
+                            Ok(lane_table) => validate_lane_manifest(
+                                root,
+                                &lane_table,
+                                &owned,
+                                id,
+                                stats,
+                                violations,
+                            ),
+                            Err(err) => violations.push(format!(
+                                "{doc}.manifest lane_ownership[{}]: failed to load {}: {err}",
+                                owned.lane, owned.manifest
+                            )),
+                        }
+                    }
+                }
             }
+            _ => {}
         }
     }
     stats.program = "portfolio".to_owned();
@@ -1043,6 +1083,44 @@ mod tests {
         Ok(temp)
     }
 
+    fn portfolio_table(programs: Vec<Value>) -> Table {
+        let mut table = Table::new();
+        table.insert("schema".to_owned(), Value::Integer(3));
+        table.insert("mode".to_owned(), Value::String("portfolio".to_owned()));
+
+        let mut authority = Table::new();
+        authority.insert("work_items".to_owned(), Value::String("github".to_owned()));
+        authority.insert("specs".to_owned(), Value::String("allow".to_owned()));
+        authority.insert("receipts".to_owned(), Value::String("machine".to_owned()));
+        table.insert("authority".to_owned(), Value::Table(authority));
+
+        let mut selection = Table::new();
+        selection.insert("strategy".to_owned(), Value::String("eligible_portfolio".to_owned()));
+        for field in [
+            "require_explicit_claim",
+            "respect_lane_caps",
+            "respect_dependencies",
+            "respect_conflict_surfaces",
+        ] {
+            selection.insert(field.to_owned(), Value::Boolean(true));
+        }
+        table.insert("selection".to_owned(), Value::Table(selection));
+        table.insert("program".to_owned(), Value::Array(programs));
+        table
+    }
+
+    fn portfolio_program(id: &str, kind: &str, enabled: bool) -> Value {
+        let mut program = Table::new();
+        program.insert("id".to_owned(), Value::String(id.to_owned()));
+        program.insert(
+            "manifest".to_owned(),
+            Value::String(goals_manifest::program_manifest_path(id)),
+        );
+        program.insert("kind".to_owned(), Value::String(kind.to_owned()));
+        program.insert("enabled".to_owned(), Value::Boolean(enabled));
+        Value::Table(program)
+    }
+
     #[test]
     fn active_goal_manifest_accepts_current_contract() -> Result<()> {
         let stats = validate(&project_root()?)?;
@@ -1094,6 +1172,7 @@ mod tests {
             "manifest".to_owned(),
             Value::String(".perl-lsp/goals/programs/p.toml".to_owned()),
         );
+        program.insert("kind".to_owned(), Value::String("milestone_ledger".to_owned()));
         program.insert("enabled".to_owned(), Value::Boolean(true));
         table.insert("program".to_owned(), Value::Array(vec![Value::Table(program)]));
 
@@ -1104,6 +1183,78 @@ mod tests {
         assert!(violations.is_empty(), "legacy fields should warn, not fail: {violations:?}");
         assert_eq!(stats.warnings.len(), 3);
         assert!(stats.warnings.iter().all(|warning| warning.contains("ignored")));
+        Ok(())
+    }
+
+    #[test]
+    fn portfolio_requires_unique_ids_and_known_program_kinds() -> Result<()> {
+        let root = fixture_root(&[".perl-lsp/goals/programs/p.toml"])?;
+        fs::write(
+            root.path().join(".perl-lsp/goals/programs/p.toml"),
+            "id = \"p\"\n\n[[milestone]]\nid = \"M1\"\ntitle = \"one\"\nstatus = \"completed\"\nexit_criteria = \"done\"\n",
+        )?;
+        let table = portfolio_table(vec![
+            portfolio_program("p", "milestone_ledger", true),
+            portfolio_program("p", "unknown", true),
+        ]);
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+
+        validate_portfolio(root.path(), &table, &mut stats, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("duplicates program")),
+            "expected duplicate id violation, got {violations:?}"
+        );
+        assert!(
+            violations.iter().any(|violation| violation.contains("kind must be one of")),
+            "expected unknown kind violation, got {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn portfolio_rejects_a_kind_that_does_not_match_manifest_shape() -> Result<()> {
+        let root = fixture_root(&[".perl-lsp/goals/programs/p.toml"])?;
+        fs::write(
+            root.path().join(".perl-lsp/goals/programs/p.toml"),
+            "id = \"p\"\n\n[[milestone]]\nid = \"M1\"\ntitle = \"one\"\nstatus = \"completed\"\nexit_criteria = \"done\"\n",
+        )?;
+        let table = portfolio_table(vec![portfolio_program("p", "lane_routing", true)]);
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+
+        validate_portfolio(root.path(), &table, &mut stats, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("does not match manifest shape")),
+            "expected kind mismatch violation, got {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn disabled_programs_do_not_contribute_active_totals() -> Result<()> {
+        let root = fixture_root(&[".perl-lsp/goals/programs/p.toml"])?;
+        fs::write(root.path().join(".perl-lsp/goals/programs/p.toml"), "id = \"p\"\n")?;
+        let table = portfolio_table(vec![portfolio_program("p", "lane_routing", false)]);
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+
+        validate_portfolio(root.path(), &table, &mut stats, &mut violations);
+
+        assert_eq!(stats.programs, 1);
+        assert_eq!(stats.enabled_programs, 0);
+        assert_eq!(stats.lanes, 0);
+        assert_eq!(stats.work_items, 0);
+        assert_eq!(stats.active_work_items, 0);
+        assert_eq!(stats.completed_work_items, 0);
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("must enable at least one program")),
+            "expected zero-enabled violation, got {violations:?}"
+        );
         Ok(())
     }
 
