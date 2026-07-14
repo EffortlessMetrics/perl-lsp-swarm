@@ -189,11 +189,12 @@ impl LspServer {
             }
         } else {
             // Production: try real handler first, fall back if needed
+            let fallback_params = params.clone().unwrap_or_else(|| json!({}));
             self.handle_references_with_request_id(params, request_id).or_else(|error| {
                 if error.code == crate::protocol::REQUEST_CANCELLED {
                     Err(error)
                 } else {
-                    self.on_references(json!({})).map(Some)
+                    self.on_references(fallback_params).map(Some)
                 }
             })
         }

@@ -12,6 +12,7 @@ use super::super::{byte_to_utf16_col, *};
 use crate::protocol::{JsonRpcError, JsonRpcId, REQUEST_CANCELLED, req_position, req_uri};
 use crate::state::{reference_search_deadline, references_cap};
 use crate::util::{is_word_boundary, token_under_cursor};
+use std::collections::BinaryHeap;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -1413,6 +1414,8 @@ impl LspServer {
     ) -> Result<Vec<(String, String)>, JsonRpcError> {
         receipt.fallback_completeness = "partial";
         receipt.fallback_reason = Some("bounded_open_document_text_scan".to_owned());
+        receipt.scan_budget_documents = budget.max_documents;
+        receipt.scan_budget_bytes = budget.max_bytes;
 
         self.check_references_cancellation(request_id, receipt)?;
         if Instant::now() >= budget.deadline {
@@ -1420,25 +1423,65 @@ impl LspServer {
             receipt.fallback_reason = Some("reference_scan_deadline_before_snapshot".to_owned());
             return Ok(Vec::new());
         }
-        if current_text.len() > budget.max_bytes {
+        if receipt.scanned_documents >= budget.max_documents
+            || receipt.scanned_bytes.saturating_add(current_text.len()) > budget.max_bytes
+        {
             receipt.budget_exhausted = true;
             receipt.fallback_reason = Some("current_document_exceeds_scan_byte_budget".to_owned());
             return Ok(Vec::new());
         }
 
         let mut snapshot = vec![(current_uri.to_owned(), current_text.to_owned())];
-        receipt.scanned_documents = 1;
-        receipt.scanned_bytes = current_text.len();
+        receipt.scanned_documents += 1;
+        receipt.scanned_bytes += current_text.len();
 
-        let mut candidates = {
+        let candidate_limit = budget.max_documents.saturating_sub(1);
+        let mut candidates = BinaryHeap::with_capacity(candidate_limit);
+        let mut candidate_overflowed = false;
+        let mut candidate_seen = false;
+        {
             let documents = self.documents_guard();
-            documents
-                .iter()
-                .filter(|(uri, _)| uri.as_str() != current_uri)
-                .map(|(uri, _)| uri.clone())
-                .collect::<Vec<_>>()
-        };
+            for uri in documents.keys() {
+                if uri.as_str() == current_uri {
+                    continue;
+                }
+                candidate_seen = true;
+                self.check_references_cancellation(request_id, receipt)?;
+                if Instant::now() >= budget.deadline {
+                    receipt.deadline_exhausted = true;
+                    receipt.fallback_reason =
+                        Some("reference_scan_deadline_during_snapshot".to_owned());
+                    break;
+                }
+                if candidate_limit == 0 {
+                    candidate_overflowed = true;
+                    break;
+                }
+
+                let uri = uri.clone();
+                if candidates.len() < candidate_limit {
+                    candidates.push(uri);
+                } else if let Some(largest) = candidates.peek()
+                    && uri.as_str() < largest.as_str()
+                {
+                    candidates.pop();
+                    candidates.push(uri);
+                    candidate_overflowed = true;
+                } else {
+                    candidate_overflowed = true;
+                }
+            }
+        }
+        let mut candidates = candidates.into_vec();
         candidates.sort();
+
+        if candidate_overflowed {
+            receipt.budget_exhausted = true;
+            receipt.fallback_reason = Some("reference_scan_document_budget".to_owned());
+        } else if candidate_seen && candidate_limit == 0 {
+            receipt.budget_exhausted = true;
+            receipt.fallback_reason = Some("reference_scan_document_budget".to_owned());
+        }
 
         for document_uri in candidates {
             self.check_references_cancellation(request_id, receipt)?;
@@ -1458,9 +1501,6 @@ impl LspServer {
                 let Some(document) = documents.get(&document_uri) else {
                     continue;
                 };
-                // Read the current length and clone under the same lock. A document may have
-                // changed since URI ordering, so a stale metadata length must never be
-                // confused with byte-budget exhaustion or terminate later candidates.
                 if receipt.scanned_bytes.saturating_add(document.text.len()) > budget.max_bytes {
                     None
                 } else {
@@ -2254,10 +2294,71 @@ mod tests {
             )
             .into());
         }
+        if receipt.scan_budget_documents != budget.max_documents
+            || receipt.scan_budget_bytes != budget.max_bytes
+        {
+            return Err(format!(
+                "receipt budget did not match enforcement: documents={}, bytes={}",
+                receipt.scan_budget_documents, receipt.scan_budget_bytes
+            )
+            .into());
+        }
         if !receipt.budget_exhausted || receipt.fallback_completeness != "partial" {
             return Err(format!(
                 "budget exhaustion was not recorded: exhausted={}, completeness={}",
                 receipt.budget_exhausted, receipt.fallback_completeness
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_accumulates_across_fallback_passes() -> Result<(), Box<dyn Error>>
+    {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///current-accumulated.pl";
+        server.test_apply_did_open(current_uri, "cur", 1)?;
+        server.test_apply_did_open("file:///a-accumulated.pl", "a", 1)?;
+
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 3,
+            max_bytes: 8,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        server.bounded_open_document_snapshot(current_uri, "cur", &budget, &mut receipt, None)?;
+        server.bounded_open_document_snapshot(current_uri, "cur", &budget, &mut receipt, None)?;
+
+        if receipt.scanned_documents != 3 || receipt.scanned_bytes != 7 {
+            return Err(format!(
+                "repeated fallback pass exceeded or reset accounting: documents={}, bytes={}",
+                receipt.scanned_documents, receipt.scanned_bytes
+            )
+            .into());
+        }
+        if receipt.scan_budget_documents != budget.max_documents
+            || receipt.scan_budget_bytes != budget.max_bytes
+            || !receipt.budget_exhausted
+            || receipt.fallback_completeness != "partial"
+        {
+            return Err(format!(
+                "repeated fallback budget receipt was incomplete: documents={}, bytes={}, exhausted={}, completeness={}",
+                receipt.scan_budget_documents,
+                receipt.scan_budget_bytes,
+                receipt.budget_exhausted,
+                receipt.fallback_completeness
             )
             .into());
         }
