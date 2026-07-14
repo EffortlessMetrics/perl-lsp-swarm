@@ -3151,8 +3151,8 @@ mod tests {
         })));
         let observation_result = server.test_record_readiness_provider_observation(
             "completion",
+            &provider_result,
             "explicit_partial_or_fallback",
-            "partial",
         );
         let pre_index_receipt = server.test_readiness_receipt_snapshot();
         release_tx.send(())?;
