@@ -87,9 +87,10 @@ incident, applying both confused the merge gate and let unfixed bugs ride to mai
 
 **No GitHub-enforced merge check depends on label state**: the two required checks
 (`Perl LSP Rust Small Result`, `ripr+ New Gap Gate` — classic branch-protection status
-checks) green on the exact head, plus 0 unresolved conversation threads (enforced by
-the `main` branch ruleset's required-review-thread-resolution rule; classic branch
-protection's own conversation-resolution setting is off) is what gates a merge
+checks) green on the exact head, plus 0 unresolved conversation threads (this repo's
+conversation-resolution convention — enforced by the `main` branch ruleset's
+`required_review_thread_resolution` rule; classic branch protection's own
+`required_conversation_resolution` setting is off) is what gates a merge
 attempt — not `needs-*`/`merge-ready`. The mechanical `needs-label-gate` that once
 blocked a GitHub merge on `needs-*` presence was retired (#4005). That doesn't make
 `needs-*` inert: the `queue_reconciler` cron strips the `merge-ready` navigation
