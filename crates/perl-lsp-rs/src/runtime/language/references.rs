@@ -1435,12 +1435,12 @@ impl LspServer {
             documents
                 .iter()
                 .filter(|(uri, _)| uri.as_str() != current_uri)
-                .map(|(uri, document)| (uri.clone(), document.text.len()))
+                .map(|(uri, _)| uri.clone())
                 .collect::<Vec<_>>()
         };
-        candidates.sort_by(|left, right| left.0.cmp(&right.0));
+        candidates.sort();
 
-        for (document_uri, metadata_len) in candidates {
+        for document_uri in candidates {
             self.check_references_cancellation(request_id, receipt)?;
             if Instant::now() >= budget.deadline {
                 receipt.deadline_exhausted = true;
@@ -1453,20 +1453,15 @@ impl LspServer {
                 receipt.fallback_reason = Some("reference_scan_document_budget".to_owned());
                 break;
             }
-            if receipt.scanned_bytes.saturating_add(metadata_len) > budget.max_bytes {
-                receipt.budget_exhausted = true;
-                receipt.fallback_reason = Some("reference_scan_byte_budget".to_owned());
-                break;
-            }
-
             let document_text = {
                 let documents = self.documents_guard();
                 let Some(document) = documents.get(&document_uri) else {
                     continue;
                 };
-                if document.text.len() != metadata_len
-                    || receipt.scanned_bytes.saturating_add(document.text.len()) > budget.max_bytes
-                {
+                // Read the current length and clone under the same lock. A document may have
+                // changed since URI ordering, so a stale metadata length must never be
+                // confused with byte-budget exhaustion or terminate later candidates.
+                if receipt.scanned_bytes.saturating_add(document.text.len()) > budget.max_bytes {
                     None
                 } else {
                     Some(document.text.clone())
@@ -2263,6 +2258,62 @@ mod tests {
             return Err(format!(
                 "budget exhaustion was not recorded: exhausted={}, completeness={}",
                 receipt.budget_exhausted, receipt.fallback_completeness
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_accounts_for_live_document_length() -> Result<(), Box<dyn Error>>
+    {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///current-live-length.pl";
+        server.test_apply_did_open(current_uri, "cur", 1)?;
+        server.test_apply_did_open("file:///b-live-length.pl", "b", 1)?;
+        server.test_apply_did_change("file:///b-live-length.pl", "bbbb", 2)?;
+        server.test_apply_did_open("file:///a-live-length.pl", "a", 1)?;
+
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 3,
+            max_bytes: 4,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let snapshot = server.bounded_open_document_snapshot(
+            current_uri,
+            "cur",
+            &budget,
+            &mut receipt,
+            None,
+        )?;
+
+        let uris = snapshot.iter().map(|(uri, _)| uri.as_str()).collect::<Vec<_>>();
+        if uris != [current_uri, "file:///a-live-length.pl"] {
+            return Err(format!("snapshot ignored the live document length: {uris:?}").into());
+        }
+        if receipt.scanned_documents != 2
+            || receipt.scanned_bytes != 4
+            || !receipt.budget_exhausted
+            || receipt.fallback_completeness != "partial"
+        {
+            return Err(format!(
+                "live-length budget accounting was incomplete: documents={}, bytes={}, exhausted={}, completeness={}",
+                receipt.scanned_documents,
+                receipt.scanned_bytes,
+                receipt.budget_exhausted,
+                receipt.fallback_completeness
             )
             .into());
         }
