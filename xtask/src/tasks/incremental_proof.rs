@@ -72,6 +72,22 @@ struct Fixture {
     name: &'static str,
     base_source: String,
     cases: Vec<EditCase>,
+    scale_strategy: ScaleStrategy,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ScaleStrategy {
+    RepeatDocument,
+    RepeatIncompleteBody,
+}
+
+impl ScaleStrategy {
+    fn slug(self) -> &'static str {
+        match self {
+            Self::RepeatDocument => "repeat_document",
+            Self::RepeatIncompleteBody => "repeat_incomplete_body",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,7 +165,7 @@ pub fn run(profile: Profile, output: Option<PathBuf>) -> Result<()> {
     let mut rows = Vec::new();
     for multiplier in profile.multipliers() {
         for fixture in &fixtures {
-            let source = fixture.base_source.repeat(*multiplier);
+            let source = scaled_source(fixture, *multiplier)?;
             for case in &fixture.cases {
                 rows.push(measure_case(fixture, &source, case, iterations)?);
             }
@@ -193,6 +209,19 @@ pub fn run(profile: Profile, output: Option<PathBuf>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn scaled_source(fixture: &Fixture, multiplier: usize) -> Result<String> {
+    match fixture.scale_strategy {
+        ScaleStrategy::RepeatDocument => Ok(fixture.base_source.repeat(multiplier)),
+        ScaleStrategy::RepeatIncompleteBody => {
+            let prefix = "sub foo {";
+            let body = fixture.base_source.strip_prefix(prefix).ok_or_else(|| {
+                eyre!("fixture {} has an invalid incomplete prefix", fixture.name)
+            })?;
+            Ok(format!("{prefix}{}", body.repeat(multiplier)))
+        }
+    }
 }
 
 fn measure_case(
@@ -495,6 +524,7 @@ fn hash_inputs(profile: Profile, fixtures: &[Fixture]) -> String {
     hash_u64(&mut hasher, fixtures.len() as u64);
     for fixture in fixtures {
         hash_bytes(&mut hasher, fixture.name.as_bytes());
+        hash_bytes(&mut hasher, fixture.scale_strategy.slug().as_bytes());
         hash_bytes(&mut hasher, fixture.base_source.as_bytes());
         hash_u64(&mut hasher, fixture.cases.len() as u64);
         for case in &fixture.cases {
@@ -570,6 +600,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "syntax",
             base_source: "my $value = 1;\nmy $sum = $value + 2;\n".to_owned(),
+            scale_strategy: ScaleStrategy::RepeatDocument,
             cases: vec![
                 EditCase {
                     name: "identifier",
@@ -625,6 +656,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "lexical-boundaries",
             base_source: lexical_source,
+            scale_strategy: ScaleStrategy::RepeatDocument,
             cases: vec![
                 EditCase {
                     name: "quote-delimiter",
@@ -659,6 +691,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "heredoc",
             base_source: "my $text = <<'EOF';\nbody line\nEOF\n".to_owned(),
+            scale_strategy: ScaleStrategy::RepeatDocument,
             cases: vec![
                 EditCase {
                     name: "heredoc-delimiter",
@@ -679,6 +712,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "recovered",
             base_source: "my $value = ;\n".to_owned(),
+            scale_strategy: ScaleStrategy::RepeatDocument,
             cases: vec![
                 EditCase {
                     name: "recovered-literal",
@@ -699,6 +733,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "incomplete",
             base_source: "sub foo { my $value = 1;\n".to_owned(),
+            scale_strategy: ScaleStrategy::RepeatIncompleteBody,
             cases: vec![
                 EditCase {
                     name: "incomplete-body",
@@ -719,6 +754,7 @@ fn fixtures() -> Vec<Fixture> {
         Fixture {
             name: "format",
             base_source: "format REPORT =\nName: @<<<\n$value\n.\n".to_owned(),
+            scale_strategy: ScaleStrategy::RepeatDocument,
             cases: vec![EditCase {
                 name: "format-value",
                 class: "format",
@@ -746,6 +782,28 @@ mod tests {
         }
         if nearest_rank_percentile(&[], 95) != 0 {
             return Err(eyre!("empty percentile sample must return zero"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scaled_profiles_have_initial_trees() -> Result<()> {
+        let fixtures = fixtures();
+        for profile in [Profile::Pr, Profile::Nightly, Profile::Release] {
+            for multiplier in profile.multipliers() {
+                for fixture in &fixtures {
+                    let source = scaled_source(fixture, *multiplier)?;
+                    let mut parser = Parser::new();
+                    if parser.parse(&source).is_none() {
+                        return Err(eyre!(
+                            "fixture {} did not produce an initial tree at multiplier {} for {}",
+                            fixture.name,
+                            multiplier,
+                            profile.slug()
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
     }
