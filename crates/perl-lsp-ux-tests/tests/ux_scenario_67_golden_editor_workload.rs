@@ -14,6 +14,7 @@ use perl_lsp_ux_tests::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -43,6 +44,32 @@ sub value {
 1;
 "#;
 
+#[test]
+fn golden_manifest_has_exact_after_ready_shape() -> Result<()> {
+    let manifest: WorkloadManifest = serde_json::from_str(MANIFEST)?;
+    validate_manifest(&manifest)
+}
+
+#[test]
+fn cursor_positions_use_utf16_code_units() -> Result<()> {
+    let cursor = position_from_offset("x😀", "x😀".len())?;
+    ensure!(cursor.line == 0 && cursor.character == 3, "unexpected UTF-16 cursor: {cursor:?}");
+    Ok(())
+}
+
+#[test]
+fn resource_operations_are_checked_for_external_targets() -> Result<()> {
+    let safe = json!({
+        "documentChanges": [{ "oldUri": "file:///workspace/lib/App.pm", "newUri": "file:///workspace/lib/App.pm" }]
+    });
+    let unsafe_edit = json!({
+        "documentChanges": [{ "kind": "create", "uri": "file:///workspace/other.pm" }]
+    });
+    ensure!(!rename_edit_targets_other_file(&safe, "lib/App.pm"));
+    ensure!(rename_edit_targets_other_file(&unsafe_edit, "lib/App.pm"));
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct WorkloadManifest {
     kind: String,
@@ -52,6 +79,7 @@ struct WorkloadManifest {
     projects: Vec<ProjectSpec>,
     journeys: Vec<JourneySpec>,
     zero_budget_metrics: Vec<String>,
+    error_waivers: Vec<ErrorWaiver>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +99,15 @@ struct JourneySpec {
     provider: String,
     request_shape: String,
     expected_result_class: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ErrorWaiver {
+    project: String,
+    journey: String,
+    expected_error_class: String,
+    issue: u64,
+    expires_after: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,12 +143,15 @@ struct ProjectReceipt {
 #[derive(Debug, Serialize)]
 struct WorkloadRow {
     project: String,
+    journey: String,
+    provider: String,
     source_snapshot: &'static str,
     file: String,
     cursor: CursorReceipt,
     request_shape: String,
     expected_result_class: String,
     actual_result_class: String,
+    error_class: String,
     actual_locations: Value,
     actual_edits: Value,
     missing: Vec<String>,
@@ -136,15 +176,15 @@ struct CursorReceipt {
 
 #[derive(Debug, Default, Serialize)]
 struct Rollup {
-    exact_success_count: usize,
-    false_exact_count: usize,
-    unsafe_edit_count: usize,
-    stale_exact_count: usize,
+    exactness_state: &'static str,
+    false_exact_count: &'static str,
+    stale_exact_count: &'static str,
+    unsafe_external_edit_count: usize,
     bounded_fallback_count: usize,
     unexplained_empty_count: usize,
-    error_count: usize,
+    unwaived_error_count: usize,
+    protocol_crash_count: usize,
     measured_debt_count: usize,
-    time_to_first_useful_answer_ms: Option<f64>,
     p50_latency_ms: Option<f64>,
     p95_latency_ms: Option<f64>,
 }
@@ -171,18 +211,24 @@ fn scenario_67_golden_editor_workload_receipt() {
             for project in &manifest.projects {
                 let files = project_files(project)?;
                 let harness = create_harness(project, &files)?;
-                open_all_fixture_files(&harness, &files)?;
                 let source = if project.fixture == "inline_plain_modern_oo" {
                     PLAIN_SOURCE.to_owned()
                 } else {
                     fixture_content(&files, &project.active_file)?.to_owned()
                 };
-                let index_ready = harness.wait_for_index_ready(Duration::from_secs(10));
+                let index_ready = harness.wait_for_index_ready(Duration::from_secs(30));
+                ensure!(
+                    index_ready,
+                    "after-ready workload project {} did not reach index readiness",
+                    project.name
+                );
+                open_all_fixture_files(&harness, &files)?;
                 project_receipts.push(ProjectReceipt {
                     project: project.name.clone(),
                     fixture: project.fixture.clone(),
                     source_snapshot: "checked_in_fixture",
-                    file_count: files.len(),
+                    file_count: files.len()
+                        + usize::from(project.fixture == "inline_plain_modern_oo"),
                     active_file: project.active_file.clone(),
                     index_ready,
                 });
@@ -199,10 +245,10 @@ fn scenario_67_golden_editor_workload_receipt() {
                 harness.assert_no_crash();
             }
 
-            let rollup = build_rollup(&rows)?;
+            let rollup = build_rollup(&rows, &manifest.error_waivers)?;
             let receipt = WorkloadReceipt {
                 kind: "golden_editor_workload",
-                schema_version: 1,
+                schema_version: 2,
                 measured_at_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
                 manifest_version: manifest.manifest_version,
                 claim_boundary: manifest.claim_boundary,
@@ -218,12 +264,20 @@ fn scenario_67_golden_editor_workload_receipt() {
             write_workload_receipt(&receipt)?;
 
             recorder.check("golden workload produced rows", !receipt.rows.is_empty())?;
-            recorder
-                .check("false exact count remains zero", receipt.rollup.false_exact_count == 0)?;
-            recorder
-                .check("unsafe edit count remains zero", receipt.rollup.unsafe_edit_count == 0)?;
-            recorder
-                .check("stale exact count remains zero", receipt.rollup.stale_exact_count == 0)?;
+            recorder.check(
+                "exactness remains explicitly unscored",
+                receipt.rollup.exactness_state == "not_scored"
+                    && receipt.rollup.false_exact_count == "not_measured"
+                    && receipt.rollup.stale_exact_count == "not_measured",
+            )?;
+            recorder.check(
+                "unsafe external edit count remains zero",
+                receipt.rollup.unsafe_external_edit_count == 0,
+            )?;
+            recorder.check(
+                "unwaived request errors remain zero",
+                receipt.rollup.unwaived_error_count == 0,
+            )?;
             recorder.check(
                 "unexplained empty count remains zero",
                 receipt.rollup.unexplained_empty_count == 0,
@@ -235,16 +289,56 @@ fn scenario_67_golden_editor_workload_receipt() {
 
 fn validate_manifest(manifest: &WorkloadManifest) -> Result<()> {
     ensure!(manifest.kind == "golden_editor_workload", "unexpected manifest kind");
-    ensure!(manifest.schema_version == 1, "unsupported manifest schema");
-    ensure!(manifest.projects.len() == 4, "workload must cover four projects");
-    ensure!(manifest.journeys.len() >= 8, "workload must cover the daily-driver journeys");
-    for metric in
-        ["false_exact_count", "unsafe_edit_count", "stale_exact_count", "unexplained_empty_count"]
-    {
+    ensure!(manifest.schema_version == 2, "unsupported manifest schema");
+    let expected_projects =
+        BTreeSet::from(["catalyst", "dancer2", "mojolicious", "plain_modern_oo"]);
+    let actual_projects =
+        manifest.projects.iter().map(|project| project.name.as_str()).collect::<BTreeSet<_>>();
+    ensure!(
+        actual_projects == expected_projects,
+        "workload must cover the exact four projects once"
+    );
+    ensure!(
+        manifest.projects.len() == expected_projects.len(),
+        "workload contains duplicate projects"
+    );
+    let expected_journeys = BTreeSet::from([
+        "close_reopen_pending",
+        "completion_after_ready",
+        "definition_local_or_imported",
+        "diagnostics_present_import",
+        "edit_burst_completion",
+        "edit_burst_hover",
+        "hover_after_ready",
+        "references_lexical",
+        "rename_safe_lexical",
+        "workspace_symbols_after_ready",
+    ]);
+    let actual_journeys =
+        manifest.journeys.iter().map(|journey| journey.id.as_str()).collect::<BTreeSet<_>>();
+    ensure!(
+        actual_journeys == expected_journeys,
+        "workload must cover the exact ten journeys once"
+    );
+    ensure!(
+        manifest.journeys.len() == expected_journeys.len(),
+        "workload contains duplicate journeys"
+    );
+    for metric in [
+        "exactness_state",
+        "unwaived_error_count",
+        "unsafe_external_edit_count",
+        "protocol_crash_count",
+        "unexplained_empty_count",
+    ] {
         ensure!(
             manifest.zero_budget_metrics.iter().any(|candidate| candidate == metric),
             "manifest is missing zero-budget metric {metric}"
         );
+    }
+    for waiver in &manifest.error_waivers {
+        ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
+        ensure!(!waiver.expires_after.is_empty(), "error waiver must have an expiry");
     }
     Ok(())
 }
@@ -289,29 +383,6 @@ fn run_project_workload(
         recorder.mark_request_start(&operation);
         let request_started = Instant::now();
         let (cursor, response, actual_edits) = match journey.id.as_str() {
-            "open_before_index" => {
-                let start = Instant::now();
-                let value = capture(harness.completion(
-                    &project.active_file,
-                    completion_cursor.line,
-                    completion_cursor.character,
-                ));
-                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-                let mut row = response_row(
-                    project,
-                    journey,
-                    completion_cursor,
-                    value,
-                    Value::Null,
-                    "active_document_open",
-                    elapsed,
-                    harness,
-                )?;
-                row.fallback_or_blocker = "baseline_pre_index_request".to_owned();
-                rows.push(row);
-                recorder.mark_first_useful_result(&operation);
-                continue;
-            }
             "completion_after_ready" => (
                 completion_cursor,
                 capture(harness.completion(
@@ -368,31 +439,21 @@ fn run_project_workload(
                 capture(harness.workspace_symbols("new")),
                 Value::Null,
             ),
-            "edit_burst_completion_hover" => {
-                for edit in 0..20 {
-                    harness.change_file_full(
-                        &project.active_file,
-                        &format!("{source}\n# golden editor burst {edit}"),
-                    )?;
-                }
-                let _ = harness.wait_for_index_ready(Duration::from_secs(10));
-                let completion = capture(harness.completion(
+            "edit_burst_completion" => (
+                completion_cursor,
+                run_edit_burst_completion(
+                    harness,
                     &project.active_file,
-                    completion_cursor.line,
-                    completion_cursor.character,
-                ));
-                let hover = capture(
-                    harness
-                        .hover(
-                            &project.active_file,
-                            reference_cursor.line,
-                            reference_cursor.character,
-                        )
-                        .map(|value| value.unwrap_or(Value::Null)),
-                );
-                harness.change_file_full(&project.active_file, source)?;
-                (completion_cursor, json!({"completion": completion, "hover": hover}), Value::Null)
-            }
+                    source,
+                    completion_cursor,
+                )?,
+                Value::Null,
+            ),
+            "edit_burst_hover" => (
+                reference_cursor,
+                run_edit_burst_hover(harness, &project.active_file, source, reference_cursor)?,
+                Value::Null,
+            ),
             "close_reopen_pending" => {
                 let uri = harness.workspace.uri(&project.active_file);
                 harness
@@ -405,7 +466,6 @@ fn run_project_workload(
         };
         let request_latency_ms = request_started.elapsed().as_secs_f64() * 1000.0;
 
-        let provider_receipt = explain_provider(harness, &journey.provider);
         let row = response_row(
             project,
             journey,
@@ -416,13 +476,71 @@ fn run_project_workload(
             request_latency_ms,
             harness,
         )?;
-        let row = apply_provider_receipt(row, provider_receipt);
+        let row = if journey.provider == "lifecycle" {
+            apply_lifecycle_receipt(row)
+        } else {
+            let receipt_id = format!(
+                "golden_{project_name}_{journey_id}",
+                project_name = project.name,
+                journey_id = journey.id,
+            );
+            let receipt_provider = receipt_provider_name(&journey.provider);
+            let provider_receipt = explain_provider(
+                harness,
+                receipt_provider,
+                &receipt_id,
+                journey.id.as_str(),
+                cursor,
+            )?;
+            apply_provider_receipt(row, Ok(provider_receipt))
+        };
         if row.actual_result_class != "empty" && row.actual_result_class != "error" {
             recorder.mark_first_useful_result(&operation);
         }
         rows.push(row);
     }
     Ok(())
+}
+
+fn receipt_provider_name(provider: &str) -> &str {
+    match provider {
+        "definition" => "goto_definition",
+        other => other,
+    }
+}
+
+fn run_edit_burst_completion(
+    harness: &UxHarness,
+    file: &str,
+    source: &str,
+    cursor: CursorReceipt,
+) -> Result<Value> {
+    for edit in 0..20 {
+        harness.change_file_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
+    }
+    let _ = harness.wait_for_index_ready(Duration::from_secs(10));
+    let response = capture(harness.completion(file, cursor.line, cursor.character));
+    harness.change_file_full(file, source)?;
+    Ok(response)
+}
+
+fn run_edit_burst_hover(
+    harness: &UxHarness,
+    file: &str,
+    source: &str,
+    cursor: CursorReceipt,
+) -> Result<Value> {
+    for edit in 0..20 {
+        harness.change_file_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
+    }
+    let _ = harness.wait_for_index_ready(Duration::from_secs(10));
+    let response = capture(
+        harness
+            .hover(file, cursor.line, cursor.character)
+            .map(|value| value.unwrap_or(Value::Null)),
+    );
+    harness.change_file_full(file, source)?;
+    Ok(response)
 }
 
 fn request_rename(harness: &UxHarness, file: &str, cursor: CursorReceipt) -> Result<Value> {
@@ -450,6 +568,11 @@ fn response_row(
     harness: &UxHarness,
 ) -> Result<WorkloadRow> {
     let actual_result_class = classify_result(&response, journey.provider.as_str());
+    let error_class = if actual_result_class == "error" {
+        classify_error(&response)
+    } else {
+        "not_applicable".to_owned()
+    };
     let is_empty = actual_result_class == "empty";
     let fallback_or_blocker =
         response.get("_golden_error").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(
@@ -471,12 +594,15 @@ fn response_row(
         && rename_edit_targets_other_file(&normalized_edits, &project.active_file);
     Ok(WorkloadRow {
         project: project.name.clone(),
+        journey: journey.id.clone(),
+        provider: journey.provider.clone(),
         source_snapshot: "checked_in_fixture",
         file: project.active_file.clone(),
         cursor,
         request_shape: journey.request_shape.clone(),
         expected_result_class: journey.expected_result_class.clone(),
         actual_result_class,
+        error_class,
         actual_locations,
         actual_edits: normalized_edits,
         missing: Vec::new(),
@@ -492,6 +618,27 @@ fn response_row(
         latency_ms,
         unsafe_edit,
     })
+}
+
+fn classify_error(response: &Value) -> String {
+    let message = response.get("_golden_error").and_then(Value::as_str).unwrap_or_default();
+    if message.to_ascii_lowercase().contains("timeout")
+        || message.to_ascii_lowercase().contains("timed out")
+    {
+        "timeout".to_owned()
+    } else {
+        "request_error".to_owned()
+    }
+}
+
+fn apply_lifecycle_receipt(mut row: WorkloadRow) -> WorkloadRow {
+    row.answering_tier = "lifecycle".to_owned();
+    row.fact_producer = "transport".to_owned();
+    row.proof_class = "lifecycle".to_owned();
+    row.confidence = "not_applicable".to_owned();
+    row.freshness = "current".to_owned();
+    row.fallback_or_blocker = "lifecycle_evidence".to_owned();
+    row
 }
 
 fn apply_provider_receipt(mut row: WorkloadRow, receipt: Result<Value>) -> WorkloadRow {
@@ -514,17 +661,45 @@ fn apply_provider_receipt(mut row: WorkloadRow, receipt: Result<Value>) -> Workl
     row
 }
 
-fn explain_provider(harness: &UxHarness, provider: &str) -> Result<Value> {
+fn explain_provider(
+    harness: &UxHarness,
+    provider: &str,
+    receipt_id: &str,
+    journey: &str,
+    cursor: CursorReceipt,
+) -> Result<Value> {
     let response = harness.client.request(
         "workspace/executeCommand",
         json!({
             "command": "perl.explainProviderDecision",
-            "arguments": [{ "provider": provider }]
+            "arguments": [{
+                "provider": provider,
+                "receipt_id": receipt_id,
+                "scenario": "golden_daily_driver_workload",
+                "request_position": {
+                    "uri_scheme": "file",
+                    "line": cursor.line,
+                    "character": cursor.character
+                }
+            }]
         }),
         Duration::from_secs(20),
     )?;
-    ensure!(response.get("error").is_none(), "provider explanation returned an error");
-    Ok(response.get("result").cloned().unwrap_or(Value::Null))
+    ensure!(response.get("error").is_none(), "provider explanation returned an error: {response}");
+    let result = response.get("result").cloned().unwrap_or(Value::Null);
+    ensure!(
+        result.get("provider").and_then(Value::as_str) == Some(provider),
+        "provider receipt for {journey} returned the wrong provider"
+    );
+    ensure!(
+        result.get("receipt_id").and_then(Value::as_str) == Some(receipt_id),
+        "provider receipt for {journey} was not bound to request {receipt_id}"
+    );
+    ensure!(
+        result.get("scenario").and_then(Value::as_str) == Some("golden_daily_driver_workload"),
+        "provider receipt for {journey} was not bound to the workload scenario"
+    );
+    Ok(result)
 }
 
 fn classify_result(response: &Value, provider: &str) -> String {
@@ -558,51 +733,65 @@ fn operation_name(project: &ProjectSpec, journey: &JourneySpec) -> String {
     format!("golden_{}_{}", project.name, journey.id)
 }
 
-fn build_rollup(rows: &[WorkloadRow]) -> Result<Rollup> {
-    let mut rollup = Rollup::default();
+fn build_rollup(rows: &[WorkloadRow], error_waivers: &[ErrorWaiver]) -> Result<Rollup> {
+    let mut rollup = Rollup {
+        exactness_state: "not_scored",
+        false_exact_count: "not_measured",
+        stale_exact_count: "not_measured",
+        ..Rollup::default()
+    };
     let mut latencies = Vec::with_capacity(rows.len());
     for row in rows {
         latencies.push(row.latency_ms);
         match row.actual_result_class.as_str() {
-            "error" => rollup.error_count += 1,
+            "error" => {
+                if error_waivers.iter().any(|waiver| {
+                    waiver.project == row.project
+                        && waiver.journey == row.journey
+                        && waiver.expected_error_class == row.error_class
+                }) {
+                    rollup.measured_debt_count += 1;
+                } else {
+                    rollup.unwaived_error_count += 1;
+                }
+            }
             "empty" => {
                 rollup.unexplained_empty_count +=
                     usize::from(row.fallback_or_blocker == "not_observed");
                 rollup.measured_debt_count += 1;
             }
             "partial" => rollup.bounded_fallback_count += 1,
-            "exact" => rollup.exact_success_count += 1,
             "refused" => rollup.measured_debt_count += 1,
             _ => {}
         }
-        rollup.unsafe_edit_count += usize::from(row.unsafe_edit);
+        rollup.unsafe_external_edit_count += usize::from(row.unsafe_edit);
     }
     latencies.sort_by(f64::total_cmp);
-    rollup.time_to_first_useful_answer_ms = rows
-        .iter()
-        .find(|row| {
-            row.request_shape != "close_reopen_while_pending"
-                && !matches!(row.actual_result_class.as_str(), "empty" | "error" | "refused")
-        })
-        .map(|row| row.latency_ms);
     rollup.p50_latency_ms = percentile(&latencies, 0.50);
     rollup.p95_latency_ms = percentile(&latencies, 0.95);
     Ok(rollup)
 }
 
 fn rename_edit_targets_other_file(edit: &Value, active_file: &str) -> bool {
+    let mut unsafe_edit = false;
     if let Some(changes) = edit.get("changes").and_then(Value::as_object) {
-        return changes.keys().any(|uri| !uri.ends_with(active_file));
+        unsafe_edit |= changes.keys().any(|uri| !uri.ends_with(active_file));
     }
-    edit.get("documentChanges").and_then(Value::as_array).is_some_and(|changes| {
-        changes.iter().any(|change| {
-            change
-                .get("textDocument")
-                .and_then(|document| document.get("uri"))
-                .and_then(Value::as_str)
-                .is_some_and(|uri| !uri.ends_with(active_file))
-        })
-    })
+    if let Some(changes) = edit.get("documentChanges").and_then(Value::as_array) {
+        unsafe_edit |= changes.iter().any(|change| {
+            [
+                change.pointer("/textDocument/uri"),
+                change.get("uri"),
+                change.get("oldUri"),
+                change.get("newUri"),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .any(|uri| !uri.ends_with(active_file))
+        });
+    }
+    unsafe_edit
 }
 
 fn percentile(values: &[f64], fraction: f64) -> Option<f64> {
@@ -643,6 +832,7 @@ fn position_after(source: &str, needle: &str) -> Result<CursorReceipt> {
 fn position_from_offset(source: &str, offset: usize) -> Result<CursorReceipt> {
     let prefix = source.get(..offset).context("cursor is not a UTF-8 boundary")?;
     let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
-    let character = prefix.rsplit('\n').next().map(str::chars).map(Iterator::count).unwrap_or(0);
+    let character =
+        prefix.rsplit('\n').next().map(|line| line.chars().map(char::len_utf16).sum()).unwrap_or(0);
     Ok(CursorReceipt { line: u32::try_from(line)?, character: u32::try_from(character)? })
 }
