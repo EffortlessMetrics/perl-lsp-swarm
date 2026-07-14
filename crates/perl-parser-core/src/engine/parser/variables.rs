@@ -835,6 +835,26 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// Parse one or more expressions inside a split-token `* { ... }` body.
+    ///
+    /// A single expression keeps the historical operand shape. Multiple
+    /// expressions become a block so preceding statements remain available to
+    /// HIR/PIR traversal while the block's final expression remains its value.
+    fn parse_deref_body_expression(&mut self, body_start: usize) -> ParseResult<Node> {
+        let mut expressions = Vec::new();
+        loop {
+            if self.peek_kind() == Some(TokenKind::RightBrace) {
+                break;
+            }
+            expressions.push(self.parse_expression()?);
+            self.consume_deref_body_terminators()?;
+            if self.peek_kind() == Some(TokenKind::RightBrace) {
+                break;
+            }
+        }
+        build_deref_body(expressions, body_start)
+    }
+
     /// Parse a variable when we have a sigil token first
     fn parse_variable_from_sigil(&mut self) -> ParseResult<Node> {
         let sigil_token = self.consume_token()?;
@@ -1045,8 +1065,8 @@ impl<'a> Parser<'a> {
         // Typeglob node for aliasing and slot analysis.
         if sigil == "*" && name.is_empty() && self.peek_kind() == Some(TokenKind::LeftBrace) {
             self.tokens.next()?; // consume {
-            let expr = self.parse_expression()?;
-            self.consume_deref_body_terminators()?;
+            let body_start = self.current_position();
+            let expr = self.parse_deref_body_expression(body_start)?;
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
             if self.peek_kind() == Some(TokenKind::Assign) {
@@ -1630,7 +1650,7 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<Node> {
     let NodeKind::Program { mut statements } = ast.kind else {
         return Err(ParseError::syntax("Expected an expression program", offset));
     };
-    let mut expression = None;
+    let mut expressions = Vec::new();
     for statement in statements.drain(..) {
         let statement_start = statement.location.start;
         let NodeKind::ExpressionStatement { expression: statement_expression } = statement.kind
@@ -1642,13 +1662,38 @@ fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<Node> {
         };
         // A braced dereference follows Perl block-expression semantics: when
         // multiple expression statements are present, the final expression is
-        // the value used as the dereference target. Every preceding statement
-        // is still validated above, rather than silently discarded.
-        expression = Some(*statement_expression);
+        // the value used as the dereference target. Preserve every expression
+        // so HIR/PIR traversal does not lose preceding side effects.
+        let mut expression = *statement_expression;
+        shift_node_locations(&mut expression, offset);
+        expressions.push(expression);
     }
-    let mut expression = expression.ok_or_else(|| ParseError::syntax("Expected an expression", offset))?;
-    shift_node_locations(&mut expression, offset);
-    Ok(expression)
+    build_deref_body(expressions, offset)
+}
+
+fn build_deref_body(mut expressions: Vec<Node>, body_start: usize) -> ParseResult<Node> {
+    if expressions.is_empty() {
+        return Err(ParseError::syntax("Expected an expression", body_start));
+    }
+    if expressions.len() == 1 {
+        return expressions
+            .pop()
+            .ok_or_else(|| ParseError::syntax("Expected an expression", body_start));
+    }
+
+    let start = expressions.first().map_or(body_start, |expression| expression.location.start);
+    let end = expressions.last().map_or(start, |expression| expression.location.end);
+    let statements = expressions
+        .into_iter()
+        .map(|expression| {
+            let location = expression.location;
+            Node::new(
+                NodeKind::ExpressionStatement { expression: Box::new(expression) },
+                location,
+            )
+        })
+        .collect();
+    Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
 }
 
 fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
