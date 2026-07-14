@@ -398,11 +398,14 @@ the Mechanical fast path section below) — there is no `impl/<issue#>-<slug>`
 branch identity for this decision to resolve against.
 
 This is the single place `/start-work` turns Step 5's collision findings and
-Step 6b's writer-admission verdict into one of five outcomes. The protected
-object stays the **branch / worktree / local repo state** — never a
-per-agent lease or session identity, per #3957's explicit non-goal. Every
-input below is objective git/GitHub state gathered by `writer-admission`
-itself, nothing self-reported by whichever agent happens to be running this
+Step 6b's writer-admission verdict into one of the five primary outcomes
+(STOP / BLOCKED / REUSE / RESUME / ADMIT), plus one narrower `NOT PROVEN`
+outcome (§5 below) for the specific case where the remote-branch-existence
+lookup itself failed. The protected object stays the **branch / worktree /
+local repo state** — never a per-agent lease or session identity, per
+#3957's explicit non-goal. Every input below is objective git/GitHub state
+gathered by `writer-admission` itself, nothing self-reported by whichever
+agent happens to be running this
 command.
 
 `writer_admission.rs`'s JSON output carries an informational `guidance`
@@ -414,9 +417,17 @@ changes `verdict`):
 ```json
 "guidance": {
   "existing_worktree_path": "<path, or null>",
-  "remote_branch_sha": "<sha, or null>"
+  "remote_branch_sha": "<sha, or null>",
+  "remote_branch_lookup_error": "<error text, or null>"
 }
 ```
+
+`remote_branch_lookup_error` is set only on a genuine `git` instrument
+failure resolving `refs/remotes/origin/<branch>` (not a git repository, `git`
+unspawnable, etc.) — never for a legitimate "branch doesn't exist yet"
+absence, which leaves both `remote_branch_sha` and this field `null`. Do not
+conflate the two: a `null` `remote_branch_sha` alone does not mean "safe to
+ADMIT a fresh branch" if this field is non-null.
 
 Decide in this order — stop at the first outcome that applies:
 
@@ -445,8 +456,14 @@ Decide in this order — stop at the first outcome that applies:
    into that path directly (Step 7's REUSE bullet), never a second `git
    worktree add`/`allocate` for the same branch. This takes priority over
    RESUME below: when a worktree already holds the branch, there is nothing
-   left to separately fetch/check out — the worktree already reflects
-   whatever the branch's current state is.
+   left to separately create/check out. Do **not** assume that local
+   checkout is already current, though — a different worktree or session
+   can have pushed to `origin/<branch>` since this worktree last fetched.
+   `git -C <path> fetch origin <branch>` and compare against `git -C <path>
+   rev-parse HEAD` before resuming work; if the local tip is behind, fast-
+   forward it (`git -C <path> merge --ff-only origin/<branch>`) — if it has
+   diverged (local commits the remote doesn't have, or a genuine conflict),
+   surface that explicitly rather than silently picking a side.
 4. **`guidance.remote_branch_sha` is non-null** (and no existing worktree
    matched above) → **RESUME.** The target branch already exists on the
    remote with no local worktree on it yet — hand off using the "Checkout
@@ -457,9 +474,20 @@ Decide in this order — stop at the first outcome that applies:
    second, diverging history for a branch that already has commits — that
    is exactly the "recreated from local main instead of resuming its actual
    remote head" defect #3957 exists to close.
-5. **None of the above** → **ADMIT.** Independent branch, no collision, no
-   capacity hazard, nothing to resume or reuse — proceed to Step 7 exactly
-   as documented today (fresh branch off the freshly-fetched `origin/main`
+5. **`guidance.remote_branch_lookup_error` is non-null** (and neither REUSE
+   nor RESUME matched above) → **NOT PROVEN** for the resume decision
+   specifically — the remote-branch existence check itself failed (a
+   genuine `git` instrument failure), so there is no reliable signal for
+   "this is a brand-new branch, safe to ADMIT." Surface the error text and
+   do not silently fall through to ADMIT; a human call is needed (retry the
+   lookup, or explicitly confirm the branch is new via another route, e.g.
+   `gh api` or the GitHub UI) before creating a writer worktree. This is the
+   same instrument-failure-must-never-be-silently-clean rule every
+   `writer-admission` check already applies, extended to `guidance`.
+6. **None of the above** → **ADMIT.** Independent branch, no collision, no
+   capacity hazard, nothing to resume or reuse, and the remote-branch
+   lookup itself succeeded (found nothing) — proceed to Step 7 exactly as
+   documented today (fresh branch off the freshly-fetched `origin/main`
    from Step 6).
 
 A `NOT_PROVEN` status on a check this decision depends on — most importantly
@@ -468,7 +496,8 @@ A `NOT_PROVEN` status on a check this decision depends on — most importantly
 as if it had passed and falling through to ADMIT. Resolving git state
 failing outright is `NOT PROVEN`, never a silent "admit anyway" — the same
 rule Step 6b already applies per-check applies here to the aggregate
-decision.
+decision, and to `guidance.remote_branch_lookup_error` specifically (§5
+above).
 
 ## Step 7: Hand off — delegate, don't fork
 
@@ -488,9 +517,10 @@ point, adjusted for Step 6c's outcome:
   the branch's existing commits by rebuilding it from the base is the exact
   defect #3957 exists to close.
 - **REUSE** (Step 6c found `guidance.existing_worktree_path`): do not create
-  any new worktree at all. `cd` directly into the path Step 6c found and
-  confirm its branch matches the target before resuming work there — skip
-  both entry points below entirely.
+  any new worktree at all. `cd` directly into the path Step 6c found,
+  confirm its branch matches the target, and sync it against the remote per
+  Step 6c's fetch/fast-forward note (never assume it's already current)
+  before resuming work there — skip both entry points below entirely.
 
 - **Pipeline work** (going through the standard build gate): spawn the
   `spec-planner` agent on the issue. Under ADMIT, it reads the

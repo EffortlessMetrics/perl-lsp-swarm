@@ -273,14 +273,26 @@ impl std::fmt::Display for AdmissionVerdict {
 pub struct AdmissionGuidance {
     /// Path of the single existing worktree already checked out on the
     /// target branch, when exactly one exists. `None` when no worktree
-    /// maps to the branch (nothing to reuse) or more than one does (already
+    /// maps to the branch (nothing to reuse), more than one does (already
     /// ambiguous — `branch-worktree-mapping` reports that separately; never
-    /// suggest reuse when it's unclear which of several to reuse).
+    /// suggest reuse when it's unclear which of several to reuse), or this
+    /// invocation's own checkout is the root (the root is never a valid
+    /// REUSE target — see `compute_guidance`'s doc comment).
     pub existing_worktree_path: Option<String>,
     /// The resolved SHA of `refs/remotes/origin/<target_branch>` when the
     /// target branch already exists on the remote. `None` for a genuinely
-    /// new branch.
+    /// new branch **or** when the lookup itself failed — check
+    /// `remote_branch_lookup_error` to tell those two apart before treating
+    /// a `None` here as "safe to ADMIT a fresh branch".
     pub remote_branch_sha: Option<String>,
+    /// Set when the `refs/remotes/origin/<target_branch>` lookup itself
+    /// failed (a genuine `git` instrument failure, e.g. not a git
+    /// repository, not a spawnable `git`), as opposed to a legitimate
+    /// "branch doesn't exist yet" absence. A consumer must treat a non-null
+    /// value here as `NOT_PROVEN` for the RESUME decision, never silently
+    /// fall through to ADMIT — the same instrument-failure-must-never-be-
+    /// silently-clean invariant every check in this module already upholds.
+    pub remote_branch_lookup_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -678,13 +690,39 @@ fn worktrees_matching_target_branch(snapshot: &WriterAdmissionSnapshot) -> Vec<&
 /// already gathered for the checks above. Never itself a `CheckResult` and
 /// never consulted by `aggregate_verdict` — a consumer applies this only
 /// after ruling out STOP/BLOCKED via `writer-collision`/`disk-capacity`.
+///
+/// The root checkout is never a valid REUSE target — WORKTREE_PROTOCOL.md is
+/// explicit that production writes must never land in the root checkout,
+/// only in a worktree. `git worktree list --porcelain` always lists the
+/// main/root worktree alongside every linked one, so when this invocation's
+/// own checkout IS the root (`snapshot.is_root_checkout`) and the root
+/// happens to sit on the target branch (the exact drift scenario #3957's
+/// problem statement opens with), `worktrees_matching_target_branch` would
+/// otherwise return the root's own entry as if it were an ordinary linked
+/// worktree available for reuse. `check_branch_worktree_mapping` already
+/// reports that same condition as its own advisory-class `BLOCK` ("root
+/// checkout is on feature branch ... production writes belong in a
+/// worktree") — `compute_guidance` must never independently contradict that
+/// by offering the same root path as a safe REUSE candidate, which would
+/// let Step 6c's REUSE outcome route an operator straight back into the
+/// root. Short-circuit unconditionally on `is_root_checkout`, not only when
+/// it's the sole match — being invoked from the root is never itself a
+/// reusable-worktree signal, regardless of how many entries matched.
 pub fn compute_guidance(snapshot: &WriterAdmissionSnapshot) -> AdmissionGuidance {
-    let matches = worktrees_matching_target_branch(snapshot);
-    let existing_worktree_path =
-        if matches.len() == 1 { Some(matches[0].to_string()) } else { None };
+    let existing_worktree_path = if snapshot.is_root_checkout {
+        None
+    } else {
+        let matches = worktrees_matching_target_branch(snapshot);
+        if matches.len() == 1 {
+            Some(matches[0].to_string())
+        } else {
+            None
+        }
+    };
     AdmissionGuidance {
         existing_worktree_path,
         remote_branch_sha: snapshot.remote_branch.sha.clone(),
+        remote_branch_lookup_error: snapshot.remote_branch.error.clone(),
     }
 }
 
@@ -1121,6 +1159,13 @@ fn print_report(config: &AdmissionConfig, report: &AdmissionReport) -> Result<()
             report.target_branch
         );
     }
+    if let Some(err) = &report.guidance.remote_branch_lookup_error {
+        println!(
+            "  [GUIDANCE] NOT_PROVEN: could not resolve whether branch `{}` exists on the \
+             remote: {err} — do not treat this as \"safe to ADMIT a fresh branch\"",
+            report.target_branch
+        );
+    }
     Ok(())
 }
 
@@ -1519,6 +1564,37 @@ mod tests {
     }
 
     #[test]
+    fn guidance_never_offers_the_root_checkout_as_a_reuse_candidate() {
+        // Regression for a P1 caught by independent execution review of
+        // #3957 W2: `git worktree list --porcelain` always lists the
+        // main/root worktree alongside every linked one, so when THIS
+        // invocation's own checkout is the root and the root itself is
+        // sitting on the target branch (the exact "root checkout left on a
+        // feature branch" drift #3957's problem statement opens with),
+        // `worktrees_matching_target_branch` finds exactly one match — the
+        // root's own entry — and a naive `compute_guidance` would offer it
+        // as a REUSE candidate. `check_branch_worktree_mapping` already
+        // reports this identical condition as its own BLOCK
+        // ("root checkout is on feature branch..."); `compute_guidance`
+        // must never independently contradict that by handing Step 6c's
+        // REUSE outcome a path back into the root.
+        let mut snapshot = base_snapshot();
+        snapshot.is_root_checkout = true;
+        // Exactly the reviewer's repro: the sole worktree_mapping entry is
+        // the root path itself, and its branch is the target branch.
+        snapshot.worktree_mapping.entries = vec![WorktreeEntry {
+            path: "/repo".to_string(),
+            branch: Some(snapshot.target_branch.clone()),
+        }];
+        let guidance = compute_guidance(&snapshot);
+        assert_eq!(
+            guidance.existing_worktree_path, None,
+            "REUSE must never be offered for the root checkout, even when it is the sole \
+             matching worktree entry: {guidance:?}"
+        );
+    }
+
+    #[test]
     fn guidance_reports_resume_candidate_from_remote_branch_sha() -> Result<()> {
         use perl_tdd_support::must_some;
         let mut snapshot = base_snapshot();
@@ -1532,6 +1608,32 @@ mod tests {
         let sha = must_some(guidance.remote_branch_sha);
         assert_eq!(sha, "f00dcafe");
         assert_eq!(guidance.existing_worktree_path, None);
+        assert_eq!(
+            guidance.remote_branch_lookup_error, None,
+            "a successful lookup must not also carry a lookup error"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn guidance_propagates_a_genuine_remote_branch_lookup_failure() -> Result<()> {
+        use perl_tdd_support::must_some;
+        // Regression for a real finding on #3957 W2's own PR: a genuine
+        // `refs/remotes/origin/<branch>` lookup failure (not a git
+        // repository, git unspawnable, etc.) must be distinguishable from
+        // "the branch legitimately doesn't exist yet" — both previously
+        // collapsed to `remote_branch_sha: None`, which would let a
+        // consumer silently ADMIT (recreate fresh off the base) on a
+        // transient instrument failure instead of surfacing NOT_PROVEN,
+        // exactly the silent-instrument-failure-to-false-clean pattern
+        // every other check in this module is built to avoid.
+        let mut snapshot = base_snapshot();
+        snapshot.remote_branch =
+            RemoteBranchInfo { sha: None, error: Some("fatal: not a git repository".to_string()) };
+        let guidance = compute_guidance(&snapshot);
+        assert_eq!(guidance.remote_branch_sha, None, "no SHA was resolved — this must stay None");
+        let error = must_some(guidance.remote_branch_lookup_error);
+        assert_eq!(error, "fatal: not a git repository");
         Ok(())
     }
 
