@@ -1726,6 +1726,15 @@ mod inline_expression_tests {
         let error = offset_parse_error(ParseError::syntax("bad", 3), 17);
         assert_eq!(error.location(), Some(20));
     }
+
+    #[test]
+    fn malformed_inline_expression_reports_outer_offset() {
+        let error = match parse_inline_expression("$value +", 17) {
+            Ok(_) => return,
+            Err(error) => error,
+        };
+        assert_eq!(error.location(), Some(25));
+    }
 }
 
 /// `true` when `name` is a package-qualified scalar name made of two or
