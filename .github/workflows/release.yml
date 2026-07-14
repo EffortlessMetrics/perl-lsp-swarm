@@ -4,8 +4,6 @@ name: Release
 # Cost: ~$0.50 per release (across all platforms)
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -209,6 +207,7 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      artifact-metadata: write
 
     steps:
       - name: Checkout
@@ -219,8 +218,8 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install cargo-release
-        run: cargo install cargo-release --locked
+      - name: Install cargo-sbom
+        run: cargo install cargo-sbom --version 0.10.0 --locked
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
@@ -276,31 +275,35 @@ jobs:
           cat release_notes.md
           echo "--- /release_notes.md ---"
 
-      - name: Create GitHub Release
-        if: github.event_name == 'workflow_dispatch'
+      - name: Generate fail-closed SPDX SBOM
+        run: cargo sbom --output-format spdx_json_2_3 > sbom-spdx.json
+
+      - name: Attest release artifact provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-path: |
+            artifacts/*/*
+            SHA256SUMS
+            sbom-spdx.json
+
+      - name: Attest release archives against the SBOM
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-checksums: SHA256SUMS
+          sbom-path: sbom-spdx.json
+
+      - name: Create GitHub Release after all assets and attestations succeed
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
         with:
           files: |
             artifacts/*/*
             SHA256SUMS
+            sbom-spdx.json
           body_path: release_notes.md
           draft: false
           prerelease: ${{ needs.release-metadata.outputs.prerelease == 'true' }}
           tag_name: ${{ needs.release-metadata.outputs.tag }}
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate SBOM
-        run: |
-          cargo install cargo-sbom --locked || true
-          cargo sbom --output-format spdx_json_2_3 > sbom-spdx.json
-
-      - name: Upload SBOM as release asset
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b  # v3.0.1
-        with:
-          files: sbom-spdx.json
-          tag_name: ${{ needs.release-metadata.outputs.tag }}
+          generate_release_notes: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
