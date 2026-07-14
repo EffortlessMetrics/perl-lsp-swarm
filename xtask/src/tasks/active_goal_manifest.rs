@@ -21,7 +21,7 @@ use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 use toml::{Table, Value};
 
 const ACTIVE_GOAL_PATH: &str = ".perl-lsp/goals/active.toml";
@@ -253,7 +253,9 @@ fn validate_portfolio(
             violations
                 .push(format!("{doc}.manifest must be {expected_manifest:?}, got {manifest:?}"));
         }
-        validate_relative_existing_path(root, &doc, "manifest", manifest, stats, violations);
+        if !validate_relative_existing_path(root, &doc, "manifest", manifest, stats, violations) {
+            continue;
+        }
         let enabled = match program.get("enabled").and_then(Value::as_bool) {
             Some(value) => value,
             None => {
@@ -574,7 +576,7 @@ fn validate_program_manifest(
     for field in PROGRAM_REQUIRED_PATH_FIELDS {
         match string_field(table, field) {
             Some(path) => {
-                validate_relative_existing_path(root, doc, field, path, stats, violations)
+                validate_relative_existing_path(root, doc, field, path, stats, violations);
             }
             None => violations.push(format!("{doc}: {field} must be a string path")),
         }
@@ -1010,20 +1012,25 @@ fn validate_relative_existing_path(
     path: &str,
     stats: &mut ManifestStats,
     violations: &mut Vec<String>,
-) {
+) -> bool {
     if path.trim().is_empty() {
         violations.push(format!("{doc}: {field} must not be empty"));
-        return;
+        return false;
     }
-    if Path::new(path).is_absolute() || path.contains(':') || path.contains('\\') {
+    if Path::new(path).is_absolute()
+        || path.contains(':')
+        || path.contains('\\')
+        || Path::new(path).components().any(|component| component == Component::ParentDir)
+    {
         violations.push(format!("{doc}: {field} must be a repo-relative slash path: {path}"));
-        return;
+        return false;
     }
     if !root.join(path).exists() {
         violations.push(format!("{doc}: {field} points to missing path {path}"));
-        return;
+        return false;
     }
     stats.path_references += 1;
+    true
 }
 
 fn validate_non_empty_string_array(
@@ -1278,6 +1285,39 @@ mod tests {
         assert_eq!(
             missing_program_count, 1,
             "expected one missing-program violation, got {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn portfolio_manifest_parent_path_is_rejected_before_opening() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("root");
+        fs::create_dir_all(root.join(".perl-lsp/goals/programs"))?;
+        fs::write(temp.path().join("outside.toml"), "not = [")?;
+
+        let mut table = portfolio_table(vec![portfolio_program("p", "milestone_ledger", true)]);
+        let program = table
+            .get_mut("program")
+            .and_then(Value::as_array_mut)
+            .and_then(|programs| programs.first_mut())
+            .and_then(Value::as_table_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("portfolio fixture missing program"))?;
+        program.insert("manifest".to_owned(), Value::String("../outside.toml".to_owned()));
+
+        let mut stats = ManifestStats::default();
+        let mut violations = Vec::new();
+        validate_portfolio(&root, &table, &mut stats, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("repo-relative slash path")),
+            "expected parent path rejection, got {violations:?}"
+        );
+        assert!(
+            !violations
+                .iter()
+                .any(|violation| violation.contains("failed to parse ../outside.toml")),
+            "parent path must not be opened, got {violations:?}"
         );
         Ok(())
     }
