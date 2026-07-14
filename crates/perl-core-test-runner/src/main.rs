@@ -5,11 +5,11 @@
 // TAP is the process protocol for this binary.
 #![allow(clippy::print_stderr, clippy::print_stdout)]
 
-use anyhow::{bail, Context, Result};
-use perl_core_harness_types::{RunnerRecord, RunnerStatus, RUNNER_RECORD_SCHEMA_VERSION};
+use anyhow::{Context, Result, bail};
+use perl_core_harness_types::{RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus};
 use perl_parser_core::hir::{
-    lower_ast, CompileEffect, CompileEffectKind, CompileEffectSourceKind, CompilePhase, HirFile,
-    HirScopeId, ScopeKind,
+    CompileEffect, CompileEffectKind, CompileEffectSourceKind, CompilePhase, HirFile, HirScopeId,
+    ScopeKind, lower_ast,
 };
 use perl_parser_core::{Parser, RecoverySalvageClass, RecoverySalvageProfile};
 use std::env;
