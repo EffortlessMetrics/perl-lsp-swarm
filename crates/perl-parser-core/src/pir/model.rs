@@ -169,6 +169,36 @@ impl PirContext {
     }
 }
 
+/// HIR literal category preserved by a PIR literal operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PirLiteralKind {
+    /// Numeric literal.
+    Number,
+    /// String literal.
+    String,
+    /// `undef`.
+    Undef,
+    /// Array/list literal.
+    Array,
+    /// Hash literal.
+    Hash,
+}
+
+impl PirLiteralKind {
+    /// Stable name used in receipts and snapshots.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Number => "Number",
+            Self::String => "String",
+            Self::Undef => "Undef",
+            Self::Array => "Array",
+            Self::Hash => "Hash",
+        }
+    }
+}
+
 /// A lexical (`my`/`state`) variable named by a PIR operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -329,6 +359,43 @@ pub enum PirOperation {
     },
     /// An assignment expression.
     Assign,
+    /// A package declaration shell.
+    PackageDecl {
+        /// Package name.
+        name: String,
+        /// Whether this declaration owns an inline block.
+        has_block: bool,
+    },
+    /// A compile-time module or pragma declaration.
+    UseDecl {
+        /// Module or pragma name.
+        module: String,
+        /// Number of parsed import arguments.
+        arg_count: usize,
+        /// Whether the parser classified the module as a source-filter risk.
+        has_filter_risk: bool,
+    },
+    /// A subroutine declaration shell.
+    SubDecl {
+        /// Subroutine name, absent for anonymous declarations.
+        name: Option<String>,
+        /// Whether the declaration has a prototype.
+        has_prototype: bool,
+        /// Whether the declaration has a signature.
+        has_signature: bool,
+        /// Number of parsed attributes.
+        attribute_count: usize,
+    },
+    /// A lexical block shell.
+    Block {
+        /// Number of statements directly contained by the block.
+        statement_count: usize,
+    },
+    /// A scalar or aggregate literal.
+    Literal {
+        /// Literal category preserved from HIR.
+        kind: PirLiteralKind,
+    },
     /// A subroutine or function call.
     Call {
         /// The callee.
@@ -386,6 +453,11 @@ impl PirOperation {
             Self::Modify { .. } => "Modify",
             Self::StashModify { .. } => "StashModify",
             Self::Assign => "Assign",
+            Self::PackageDecl { .. } => "PackageDecl",
+            Self::SubDecl { .. } => "SubDecl",
+            Self::Block { .. } => "Block",
+            Self::Literal { .. } => "Literal",
+            Self::UseDecl { .. } => "UseDecl",
             Self::Call { .. } => "Call",
             Self::MethodCall { .. } => "MethodCall",
             Self::Deref { .. } => "Deref",
@@ -402,19 +474,24 @@ impl PirOperation {
     /// separate copy of the current PIR operation surface.
     pub const ALL_OPERATION_NAMES: &[&'static str] = &[
         "Assign",
+        "Block",
         "Branch",
         "Call",
         "Deref",
         "DynamicBoundary",
         "LexicalRead",
         "LexicalWrite",
+        "Literal",
         "Loop",
         "MethodCall",
         "Modify",
+        "PackageDecl",
         "Return",
         "StashModify",
         "StashRead",
         "StashWrite",
+        "SubDecl",
+        "UseDecl",
     ];
 }
 
@@ -660,19 +737,24 @@ mod tests {
     fn pir_operation_has_all_names() {
         let expected = vec![
             "Assign",
+            "Block",
             "Branch",
             "Call",
             "Deref",
             "DynamicBoundary",
             "LexicalRead",
             "LexicalWrite",
+            "Literal",
             "Loop",
             "MethodCall",
             "Modify",
+            "PackageDecl",
             "Return",
             "StashModify",
             "StashRead",
             "StashWrite",
+            "SubDecl",
+            "UseDecl",
         ];
         let actual: Vec<_> = PirOperation::ALL_OPERATION_NAMES.to_vec();
         assert_eq!(actual, expected);
@@ -692,6 +774,39 @@ mod tests {
             name: LexicalName { sigil: "$".to_string(), name: "x".to_string() },
         };
         assert_eq!(op.name(), "LexicalWrite");
+    }
+
+    #[test]
+    fn pir_operation_literal_name() {
+        let op = PirOperation::Literal { kind: PirLiteralKind::Hash };
+        assert_eq!(op.name(), "Literal");
+        assert_eq!(PirLiteralKind::Hash.name(), "Hash");
+    }
+
+    #[test]
+    fn pir_operation_structural_shell_names() {
+        let block = PirOperation::Block { statement_count: 2 };
+        let sub = PirOperation::SubDecl {
+            name: Some("inspect".to_string()),
+            has_prototype: false,
+            has_signature: true,
+            attribute_count: 0,
+        };
+        assert_eq!(block.name(), "Block");
+        assert_eq!(sub.name(), "SubDecl");
+    }
+
+    #[test]
+    fn pir_operation_declaration_names() {
+        let package =
+            PirOperation::PackageDecl { name: "Acme::Widget".to_string(), has_block: true };
+        let use_decl = PirOperation::UseDecl {
+            module: "strict".to_string(),
+            arg_count: 1,
+            has_filter_risk: false,
+        };
+        assert_eq!(package.name(), "PackageDecl");
+        assert_eq!(use_decl.name(), "UseDecl");
     }
 
     #[test]

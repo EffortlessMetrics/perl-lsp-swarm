@@ -1991,6 +1991,7 @@ fn one_line(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_parser_core::pir::lower_hir;
 
     type TestResult<T = ()> = Result<T>;
 
@@ -2338,6 +2339,28 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Pass);
         assert!(result.bucket.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn representative_compile_sources_have_pir_coverage() -> TestResult {
+        let sources = [
+            "my $value = 1;",
+            "package Acme::Widget { use strict; my $value = 1; }",
+            "no strict 'refs'; sub inspect { my ($hash, $array) = @_; keys %$hash; scalar @$array; *{$hash}; }",
+            "no strict 'refs'; ${\"Runtime::Symbol\"} = 1;",
+        ];
+        for source in sources {
+            let mut parser = Parser::new(source);
+            let output = parser.parse_with_recovery();
+            let hir = lower_ast(&output.ast);
+            let graph = lower_hir(&hir);
+            assert!(
+                graph.receipt.unsupported_construct_counts.is_empty(),
+                "PIR must cover ordinary compile source {source:?}: {:?}",
+                graph.receipt.unsupported_construct_counts
+            );
+        }
         Ok(())
     }
 

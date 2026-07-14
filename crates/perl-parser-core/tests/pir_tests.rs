@@ -44,12 +44,13 @@ fn empty_source_yields_empty_graph() {
 #[test]
 fn lexical_declaration_writes_lvalue_and_assigns() {
     let graph = lower("my $x = 1;");
-    assert_eq!(op_names(&graph), vec!["LexicalWrite", "Assign"]);
+    assert_eq!(op_names(&graph), vec!["LexicalWrite", "Assign", "Literal"]);
 
     // The declared write target is a known lvalue; the statement-level
     // assignment is void. Neither is silently promoted past what HIR proves.
     assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
     assert_eq!(graph.nodes[1].context, PirContext::Void);
+    assert_eq!(graph.nodes[2].context, PirContext::Unknown);
 
     let name = first_op(&graph, |op| match op {
         PirOperation::LexicalWrite { name } => Some(name.clone()),
@@ -220,7 +221,7 @@ fn symbolic_string_reference_is_a_dynamic_boundary() {
 #[test]
 fn ordinary_runtime_reference_is_not_a_dynamic_boundary() {
     let graph = lower("no strict 'refs'; my $v = ${$name};");
-    assert!(graph.receipt.dynamic_boundary_counts.get("SymbolicReference").is_none());
+    assert!(!graph.receipt.dynamic_boundary_counts.contains_key("SymbolicReference"));
 }
 
 #[test]
@@ -260,13 +261,17 @@ fn every_lowered_node_preserves_a_source_anchor() {
 #[test]
 fn unlowered_constructs_are_counted_not_dropped() {
     let graph = lower("package Foo; use strict; sub f {}");
-    // None of these lower to PIR operations in v0...
-    assert!(graph.is_empty());
-    // ...but they are visible in the receipt rather than silently dropped.
+    // Package/use declarations and subroutine/block shells all have
+    // source-anchored structural operations.
+    assert!(!graph.is_empty());
     let unsupported = &graph.receipt.unsupported_construct_counts;
-    assert_eq!(unsupported.get("PackageDecl"), Some(&1));
-    assert_eq!(unsupported.get("UseDecl"), Some(&1));
-    assert_eq!(unsupported.get("SubDecl"), Some(&1));
+    assert_eq!(unsupported.get("PackageDecl"), None);
+    assert_eq!(unsupported.get("UseDecl"), None);
+    assert_eq!(graph.receipt.operation_counts.get("PackageDecl"), Some(&1));
+    assert_eq!(graph.receipt.operation_counts.get("UseDecl"), Some(&1));
+    assert_eq!(unsupported.get("SubDecl"), None);
+    assert_eq!(graph.receipt.operation_counts.get("SubDecl"), Some(&1));
+    assert_eq!(graph.receipt.operation_counts.get("Block"), Some(&1));
 }
 
 #[test]
@@ -455,7 +460,8 @@ fn control_flow_statement_modifier_is_counted_not_dropped() {
     // (postfix if/unless/while/etc).
     let graph = lower("$x = 1 if $y;");
     assert_eq!(graph.receipt.unsupported_construct_counts.get("StatementModifierShell"), Some(&1));
-    assert!(graph.is_empty());
+    assert_eq!(graph.receipt.operation_counts.get("Literal"), Some(&1));
+    assert!(!graph.is_empty());
 }
 
 #[test]

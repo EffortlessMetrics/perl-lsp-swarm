@@ -11,13 +11,14 @@ use std::collections::HashMap;
 use crate::hir::{
     AccessMode, AssignMode, BranchShell, CallForm, ControlTransferKind, DeclStorageClass,
     DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId, HirExpr, HirExprId,
-    HirFile, HirItem, HirKind, HirScopeId, HirStmt, LoopShell, Sigil, UnaryMode, VariableKind,
+    HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell, PackageDecl, Sigil,
+    SubDecl, UnaryMode, UseDecl, VariableKind,
 };
 
 use super::model::{
     LexicalName, PIR_RECEIPT_VERSION, PirAnchorCoverage, PirCallee, PirContext,
-    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLoweringMode, PirMethod,
-    PirNode, PirOperation, PirReceipt, PirReceiver, PirSourceAnchor, SymbolName,
+    PirDynamicBoundaryKind, PirEdge, PirEdgeKind, PirGraph, PirId, PirLiteralKind, PirLoweringMode,
+    PirMethod, PirNode, PirOperation, PirReceipt, PirReceiver, PirSourceAnchor, SymbolName,
 };
 
 /// Lower a [`HirFile`] into a PIR v0 graph with no caller-supplied identity.
@@ -106,6 +107,11 @@ impl Lowerer {
                     boundary.reason.clone(),
                 );
             }
+            HirKind::LiteralExpr(literal) => self.lower_literal(item, literal.kind),
+            HirKind::PackageDecl(decl) => self.lower_package_decl(item, decl),
+            HirKind::SubDecl(decl) => self.lower_sub_decl(item, decl),
+            HirKind::BlockShell(block) => self.lower_block(item, block),
+            HirKind::UseDecl(decl) => self.lower_use_decl(item, decl),
             HirKind::BranchShell(branch) => self.lower_branch(item, branch),
             HirKind::LoopShell(loop_shell) => self.lower_loop(item, loop_shell),
             // Only the `return` verb lowers to PirOperation::Return. The other
@@ -124,6 +130,69 @@ impl Lowerer {
                 *self.unsupported.entry(hir_kind_name(other)).or_insert(0) += 1;
             }
         }
+    }
+
+    fn lower_literal(&mut self, item: &HirItem, kind: LiteralKind) {
+        // HIR preserves the literal category but not the surrounding expression
+        // context on this item, so PIR keeps context Unknown rather than guessing
+        // scalar or list behavior.
+        let operation = PirOperation::Literal { kind: map_literal_kind(kind) };
+        self.push_node(
+            item,
+            PirSourceAnchor::explicit(item.range, item.id),
+            operation,
+            PirContext::Unknown,
+            None,
+        );
+    }
+
+    fn lower_sub_decl(&mut self, item: &HirItem, decl: &SubDecl) {
+        self.push_node(
+            item,
+            PirSourceAnchor::explicit(item.range, item.id),
+            PirOperation::SubDecl {
+                name: decl.name.clone(),
+                has_prototype: decl.has_prototype,
+                has_signature: decl.has_signature,
+                attribute_count: decl.attribute_count,
+            },
+            PirContext::Void,
+            None,
+        );
+    }
+
+    fn lower_package_decl(&mut self, item: &HirItem, decl: &PackageDecl) {
+        self.push_node(
+            item,
+            PirSourceAnchor::explicit(item.range, item.id),
+            PirOperation::PackageDecl { name: decl.name.clone(), has_block: decl.has_block },
+            PirContext::Void,
+            None,
+        );
+    }
+
+    fn lower_block(&mut self, item: &HirItem, block: &crate::hir::BlockShell) {
+        self.push_node(
+            item,
+            PirSourceAnchor::explicit(item.range, item.id),
+            PirOperation::Block { statement_count: block.statement_count },
+            PirContext::Void,
+            None,
+        );
+    }
+
+    fn lower_use_decl(&mut self, item: &HirItem, decl: &UseDecl) {
+        self.push_node(
+            item,
+            PirSourceAnchor::explicit(item.range, item.id),
+            PirOperation::UseDecl {
+                module: decl.module.clone(),
+                arg_count: decl.args.len(),
+                has_filter_risk: decl.has_filter_risk,
+            },
+            PirContext::Void,
+            None,
+        );
     }
 
     fn lower_variable_decl(&mut self, item: &HirItem, decl: &crate::hir::VariableDecl) {
@@ -433,6 +502,16 @@ fn map_boundary_kind(kind: DynamicBoundaryKind) -> PirDynamicBoundaryKind {
         DynamicBoundaryKind::DynamicStashMutation => PirDynamicBoundaryKind::RuntimeStashMutation,
         DynamicBoundaryKind::Autoload => PirDynamicBoundaryKind::Autoload,
         DynamicBoundaryKind::SymbolicReferenceDeref => PirDynamicBoundaryKind::SymbolicReference,
+    }
+}
+
+fn map_literal_kind(kind: LiteralKind) -> PirLiteralKind {
+    match kind {
+        LiteralKind::Number => PirLiteralKind::Number,
+        LiteralKind::String => PirLiteralKind::String,
+        LiteralKind::Undef => PirLiteralKind::Undef,
+        LiteralKind::Array => PirLiteralKind::Array,
+        LiteralKind::Hash => PirLiteralKind::Hash,
     }
 }
 
@@ -995,7 +1074,10 @@ mod tests {
     #[test]
     fn lexical_declaration_creates_write_and_assign() {
         let graph = lower("my $x = 1;");
-        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.nodes.len(), 3);
+        assert_eq!(graph.receipt.operation_counts.get("LexicalWrite"), Some(&1));
+        assert_eq!(graph.receipt.operation_counts.get("Assign"), Some(&1));
+        assert_eq!(graph.receipt.operation_counts.get("Literal"), Some(&1));
         assert_eq!(graph.nodes[0].operation.name(), "LexicalWrite");
         assert_eq!(graph.nodes[0].context, PirContext::Lvalue);
         assert_eq!(graph.nodes[1].operation.name(), "Assign");
@@ -1218,6 +1300,51 @@ mod tests {
     }
 
     #[test]
+    fn literals_lower_to_typed_anchored_operations() {
+        let cases = [
+            ("42;", PirLiteralKind::Number),
+            ("'x';", PirLiteralKind::String),
+            ("local $temp = undef;", PirLiteralKind::Undef),
+            ("[1, 2];", PirLiteralKind::Array),
+            ("{foo => 1};", PirLiteralKind::Hash),
+        ];
+        for (source, expected_kind) in cases {
+            let graph = lower(source);
+            assert!(graph.nodes.iter().any(|node| {
+                matches!(node.operation, PirOperation::Literal { kind } if kind == expected_kind)
+            }));
+            assert_eq!(graph.receipt.unsupported_construct_counts.get("LiteralExpr"), None);
+            assert!(
+                graph
+                    .nodes
+                    .iter()
+                    .filter(|node| matches!(node.operation, PirOperation::Literal { .. }))
+                    .all(|node| node.source_anchor.is_anchored()
+                        && node.context == PirContext::Unknown)
+            );
+        }
+    }
+
+    #[test]
+    fn structural_shells_lower_to_typed_anchored_operations() {
+        let graph = lower("sub inspect { my $value = 1; }");
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("SubDecl"), None);
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("BlockShell"), None);
+        assert_eq!(graph.receipt.operation_counts.get("SubDecl"), Some(&1));
+        assert_eq!(graph.receipt.operation_counts.get("Block"), Some(&1));
+        let sub = must_some(
+            graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::SubDecl { .. })),
+        );
+        assert_eq!(sub.context, PirContext::Void);
+        assert!(sub.source_anchor.is_anchored());
+        let block = must_some(
+            graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::Block { .. })),
+        );
+        assert_eq!(block.context, PirContext::Void);
+        assert!(block.source_anchor.is_anchored());
+    }
+
+    #[test]
     fn autoload_creates_dynamic_boundary() {
         let graph = lower("sub AUTOLOAD { }");
         assert_eq!(graph.receipt.dynamic_boundary_counts.get("Autoload"), Some(&1));
@@ -1410,9 +1537,44 @@ $x = 1 if $y;
     fn unsupported_constructs_visible() {
         let graph = lower("package Foo; use strict; sub f {}");
         let unsupported = &graph.receipt.unsupported_construct_counts;
-        assert_eq!(unsupported.get("PackageDecl"), Some(&1));
-        assert_eq!(unsupported.get("UseDecl"), Some(&1));
-        assert_eq!(unsupported.get("SubDecl"), Some(&1));
+        assert_eq!(unsupported.get("PackageDecl"), None);
+        assert_eq!(unsupported.get("UseDecl"), None);
+        assert_eq!(graph.receipt.operation_counts.get("PackageDecl"), Some(&1));
+        assert_eq!(graph.receipt.operation_counts.get("UseDecl"), Some(&1));
+        assert_eq!(unsupported.get("SubDecl"), None);
+        assert_eq!(graph.receipt.operation_counts.get("SubDecl"), Some(&1));
+        assert_eq!(graph.receipt.operation_counts.get("Block"), Some(&1));
+    }
+
+    #[test]
+    fn declarations_lower_to_typed_anchored_operations() {
+        let graph = lower("package Acme::Widget { use strict; }");
+        let package = must_some(
+            graph
+                .nodes
+                .iter()
+                .find(|node| matches!(node.operation, PirOperation::PackageDecl { .. })),
+        );
+        assert!(package.source_anchor.is_anchored());
+        assert_eq!(package.context, PirContext::Void);
+        assert!(matches!(
+            &package.operation,
+            PirOperation::PackageDecl { name, has_block: true }
+                if name == "Acme::Widget"
+        ));
+
+        let use_decl = must_some(
+            graph.nodes.iter().find(|node| matches!(node.operation, PirOperation::UseDecl { .. })),
+        );
+        assert!(use_decl.source_anchor.is_anchored());
+        assert_eq!(use_decl.context, PirContext::Void);
+        assert!(matches!(
+            &use_decl.operation,
+            PirOperation::UseDecl { module, arg_count: 0, has_filter_risk: false }
+                if module == "strict"
+        ));
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("PackageDecl"), None);
+        assert_eq!(graph.receipt.unsupported_construct_counts.get("UseDecl"), None);
     }
 
     #[test]
