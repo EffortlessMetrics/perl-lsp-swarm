@@ -1323,6 +1323,49 @@ fn duplicate_no_warnings_category_does_not_create_extra_entry()
 }
 
 #[test]
+fn duplicate_builtin_imports_do_not_create_extra_entry() -> Result<(), Box<dyn std::error::Error>> {
+    // Importing the same builtin name twice must not create a second map entry.
+    let ast = program(vec![
+        use_node("builtin", &["'blessed'"], 0, 22),
+        use_node("builtin", &["'blessed'"], 23, 45),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 1, "duplicate use builtin should not add a redundant map entry");
+    assert_eq!(map[0].1.builtin_imports, vec!["blessed"]);
+    Ok(())
+}
+
+#[test]
+fn no_builtin_without_prior_imports_does_not_create_entry() -> Result<(), Box<dyn std::error::Error>>
+{
+    // `no builtin 'foo'` when 'foo' was never imported must not emit a map entry.
+    let ast = program(vec![no_node("builtin", &["'blessed'"], 0, 22)]);
+
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 0, "`no builtin` for an unknown name must not create a map entry");
+    Ok(())
+}
+
+#[test]
+fn block_without_pragma_changes_does_not_create_restore_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A block with no pragma changes inside should not emit a restore entry.
+    let ast = program(vec![
+        use_node("strict", &[], 0, 12),
+        block(vec![dummy_node(14, 20)], 13, 21),
+        use_node("warnings", &[], 22, 37),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    // Expected: strict entry, warnings entry — no restore between them.
+    assert_eq!(map.len(), 2, "empty block must not add a restore entry");
+    let state_after = PragmaTracker::state_for_offset(&map, 30);
+    assert!(state_after.strict_vars && state_after.warnings);
+    Ok(())
+}
+
+#[test]
 fn no_warnings_empty_string_category_is_ignored() -> Result<(), Box<dyn std::error::Error>> {
     // `no warnings ''` after quote-stripping yields an empty category name.
     // Error-recovery AST nodes can produce this.  The empty string must not be

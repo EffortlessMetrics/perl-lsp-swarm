@@ -22,6 +22,24 @@ pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
     }
 }
 
+/// Like [`apply_builtin_imports`] but returns `true` only when at least one new
+/// import was added.  Callers use this to skip emitting a redundant map entry
+/// when the import list did not change.
+pub(crate) fn apply_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before = state.builtin_imports.len();
+    apply_builtin_imports(state, args);
+    state.builtin_imports.len() != before
+}
+
+/// Like [`remove_builtin_imports`] but returns `true` only when at least one
+/// import was actually removed.  Callers use this to skip emitting a redundant
+/// map entry when the import list did not change.
+pub(crate) fn remove_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before = state.builtin_imports.len();
+    remove_builtin_imports(state, args);
+    state.builtin_imports.len() != before
+}
+
 /// Insert `category` into `state.disabled_warning_categories` if not already present and
 /// within the hard cap of [`MAX_DISABLED_WARNING_CATEGORIES`].
 ///
