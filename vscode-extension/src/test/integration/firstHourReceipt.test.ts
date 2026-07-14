@@ -4,11 +4,16 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 interface MomentResult {
+  classification: 'cold' | 'warm' | 'post_restart';
   completion: Record<string, unknown>;
   definition: Record<string, unknown>;
   diagnostics: Record<string, unknown>;
   hover: Record<string, unknown>;
   references: Record<string, unknown>;
+}
+
+function monotonicNow(): number {
+  return performance.now();
 }
 
 function delay(ms: number): Promise<void> {
@@ -110,14 +115,49 @@ function sampleLabels(items: readonly vscode.CompletionItem[]): string[] {
   });
 }
 
+function assertSuccessfulStartupMetrics(metrics: Record<string, unknown>, label: string): void {
+  assert.equal(metrics.binary_resolution_status, 'ok', `${label} binary resolution should succeed`);
+  assert.equal(metrics.server_start_status, 'ok', `${label} server start should succeed`);
+  assert.equal(metrics.initialize_status, 'ok', `${label} initialize should succeed`);
+  assert.equal(metrics.lifecycle_state, 'running', `${label} lifecycle should be running`);
+
+  const milestones = metrics.milestones;
+  assert.ok(milestones && typeof milestones === 'object', `${label} milestones should be present`);
+  const values = milestones as Record<string, unknown>;
+  const activationOrdered = [
+    'extension_load',
+    'activate_entered',
+    'commands_registered',
+    'activate_returned',
+  ] as const;
+  const startupOrdered = [
+    'binary_resolution_started',
+    'binary_resolution_completed',
+    'process_started',
+    'initialize_completed',
+    'workspace_ready',
+    'first_useful_request',
+  ] as const;
+  for (const ordered of [activationOrdered, startupOrdered]) {
+    let previous = -1;
+    for (const milestone of ordered) {
+      const value = values[milestone];
+      assert.equal(typeof value, 'number', `${label} must record ${milestone}`);
+      assert.ok((value as number) >= previous, `${label} milestone ${milestone} must be monotonic`);
+      previous = value as number;
+    }
+  }
+}
+
 async function collectProviderMoment(
   label: string,
+  classification: MomentResult['classification'],
   document: vscode.TextDocument,
   completionPosition: vscode.Position,
   symbolPosition: vscode.Position,
 ): Promise<MomentResult> {
-  const startedAt = Date.now();
-  const completionStart = Date.now();
+  const startedAt = monotonicNow();
+  const completionStart = monotonicNow();
   let completion: Record<string, unknown>;
   try {
     const list = await withTimeout(
@@ -131,19 +171,19 @@ async function collectProviderMoment(
     );
     completion = {
       status: 'ok',
-      duration_ms: Date.now() - completionStart,
+      duration_ms: Math.round(monotonicNow() - completionStart),
       item_count: list.items.length,
       sample_labels: sampleLabels(list.items),
     };
   } catch (error: unknown) {
     completion = {
       status: 'error',
-      duration_ms: Date.now() - completionStart,
+      duration_ms: Math.round(monotonicNow() - completionStart),
       message: error instanceof Error ? error.message : String(error),
     };
   }
 
-  const hoverStart = Date.now();
+  const hoverStart = monotonicNow();
   let hover: Record<string, unknown>;
   try {
     const hovers = await withTimeout(
@@ -157,18 +197,18 @@ async function collectProviderMoment(
     );
     hover = {
       status: 'ok',
-      duration_ms: Date.now() - hoverStart,
+      duration_ms: Math.round(monotonicNow() - hoverStart),
       item_count: hovers.length,
     };
   } catch (error: unknown) {
     hover = {
       status: 'error',
-      duration_ms: Date.now() - hoverStart,
+      duration_ms: Math.round(monotonicNow() - hoverStart),
       message: error instanceof Error ? error.message : String(error),
     };
   }
 
-  const definitionStart = Date.now();
+  const definitionStart = monotonicNow();
   let definition: Record<string, unknown>;
   try {
     const definitions = await withTimeout(
@@ -182,18 +222,18 @@ async function collectProviderMoment(
     );
     definition = {
       status: 'ok',
-      duration_ms: Date.now() - definitionStart,
+      duration_ms: Math.round(monotonicNow() - definitionStart),
       location_count: definitions.length,
     };
   } catch (error: unknown) {
     definition = {
       status: 'error',
-      duration_ms: Date.now() - definitionStart,
+      duration_ms: Math.round(monotonicNow() - definitionStart),
       message: error instanceof Error ? error.message : String(error),
     };
   }
 
-  const referencesStart = Date.now();
+  const referencesStart = monotonicNow();
   let references: Record<string, unknown>;
   try {
     const refs = await withTimeout(
@@ -207,19 +247,20 @@ async function collectProviderMoment(
     );
     references = {
       status: 'ok',
-      duration_ms: Date.now() - referencesStart,
+      duration_ms: Math.round(monotonicNow() - referencesStart),
       location_count: refs.length,
     };
   } catch (error: unknown) {
     references = {
       status: 'error',
-      duration_ms: Date.now() - referencesStart,
+      duration_ms: Math.round(monotonicNow() - referencesStart),
       message: error instanceof Error ? error.message : String(error),
     };
   }
 
   const diagnostics = vscode.languages.getDiagnostics(document.uri);
   return {
+    classification,
     completion,
     definition,
     diagnostics: {
@@ -234,7 +275,7 @@ async function collectProviderMoment(
     },
     hover,
     references,
-    elapsed_ms_since_moment_start: Date.now() - startedAt,
+    elapsed_ms_since_moment_start: Math.round(monotonicNow() - startedAt),
   } as MomentResult;
 }
 
@@ -318,11 +359,13 @@ suite('First-hour VS Code receipt', function () {
     }
     const baseReceipt = {
       schema_version: 1,
+      sample_count: 1,
       issue: 3102,
       generated_at: new Date().toISOString(),
       environment: {
         platform: process.platform,
         arch: process.arch,
+        node_version: process.version,
         vscode_version: vscode.version,
         extension_id: 'EffortlessMetrics.perl-lsp-rs',
         extension_version: extension.packageJSON?.version ?? null,
@@ -339,22 +382,28 @@ suite('First-hour VS Code receipt', function () {
         module_under_probe: moduleName,
         probe_files: [path.basename(probePath), path.basename(badPath)],
       },
+      performance: {
+        run_classification: currentSourceSmoke
+          ? 'cold_start_with_restart'
+          : 'cold_start_with_warm_request',
+      },
       limitations: [
         'Automated extension-host run uses real VS Code and the real extension, but does not visually inspect the status bar.',
         'Indexing announcement is recorded as not observable because VS Code extension tests cannot read OutputChannel text through public API.',
       ],
     };
 
-    const activationStart = Date.now();
+    const activationStart = monotonicNow();
+    let activationExports: unknown;
     try {
-      await withTimeout('extension activation', extension.activate(), 90_000);
+      activationExports = await withTimeout('extension activation', extension.activate(), 90_000);
     } catch (error: unknown) {
       writeFirstHourReceipt({
         ...baseReceipt,
         outcome: 'activation_timeout',
         startup: {
           extension_activation_status: 'timeout',
-          extension_activation_ms: Date.now() - activationStart,
+          extension_activation_ms: Math.round(monotonicNow() - activationStart),
           extension_activated_within_30s: false,
           error: error instanceof Error ? error.message : String(error),
           indexing_announcement_observed: 'not_observable_activation_did_not_complete',
@@ -371,9 +420,16 @@ suite('First-hour VS Code receipt', function () {
       });
       return;
     }
-    const activationMs = Date.now() - activationStart;
+    const activationMs = Math.round(monotonicNow() - activationStart);
+    const extensionApi = (activationExports ?? extension.exports) as
+      | {
+          getLanguageClientStartupMetrics?: () => Record<string, unknown>;
+          markLanguageClientStartupMilestone?: (milestone: string) => void;
+          stop?: () => Promise<void>;
+        }
+      | undefined;
 
-    const commandWaitStart = Date.now();
+    const commandWaitStart = monotonicNow();
     await withTimeout(
       'command registration',
       (async () => {
@@ -387,9 +443,9 @@ suite('First-hour VS Code receipt', function () {
       })(),
       10_000,
     );
-    const commandRegistrationMs = Date.now() - commandWaitStart;
+    const commandRegistrationMs = Math.round(monotonicNow() - commandWaitStart);
 
-    const healthStart = Date.now();
+    const healthStart = monotonicNow();
     let health: Record<string, unknown>;
     try {
       const result = await withTimeout(
@@ -399,14 +455,44 @@ suite('First-hour VS Code receipt', function () {
       );
       health = {
         status: 'ok',
-        duration_ms: Date.now() - healthStart,
+        duration_ms: Math.round(monotonicNow() - healthStart),
         result,
       };
     } catch (error: unknown) {
       health = {
         status: 'error',
-        duration_ms: Date.now() - healthStart,
+        duration_ms: Math.round(monotonicNow() - healthStart),
         message: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    let failureGuidance: Record<string, unknown> | null = null;
+    if (currentSourceSmoke) {
+      const failureGuidanceStart = monotonicNow();
+      const missingServerPath = path.join(workspacePath, 'zz_missing_perllsp');
+      const failureResult = (await withTimeout(
+        'failure guidance health check',
+        vscode.commands.executeCommand('perl-lsp.runHealthCheck', missingServerPath),
+        20_000,
+      )) as {
+        ok?: boolean;
+        checks?: Array<{ label?: unknown; status?: unknown }>;
+      };
+      assert.equal(
+        failureResult.ok,
+        false,
+        'invalid server path should produce a failed health result',
+      );
+      assert.ok(
+        failureResult.checks?.some(
+          (check) => check.label === 'LSP binary' && check.status === 'error',
+        ),
+        'failure guidance should identify the invalid LSP binary',
+      );
+      failureGuidance = {
+        status: 'ok',
+        duration_ms: Math.round(monotonicNow() - failureGuidanceStart),
+        result: failureResult,
       };
     }
 
@@ -421,6 +507,7 @@ suite('First-hour VS Code receipt', function () {
 
     const immediate = await collectProviderMoment(
       'immediate',
+      'cold',
       probeDocument,
       completionPosition,
       symbolPosition,
@@ -432,22 +519,49 @@ suite('First-hour VS Code receipt', function () {
         'current-source smoke requires a successful completion provider response',
       );
     }
+    extensionApi?.markLanguageClientStartupMilestone?.('first_useful_request');
+    const initialLanguageClientMetrics = extensionApi?.getLanguageClientStartupMetrics?.() ?? {
+      status: 'unavailable',
+      limitation: 'extension activation API did not expose startup metrics',
+    };
+    if (currentSourceSmoke) {
+      assertSuccessfulStartupMetrics(initialLanguageClientMetrics, 'initial startup');
+    }
 
     let lifecycle: Record<string, unknown> | undefined;
     let restartedMoment: MomentResult | undefined;
     if (currentSourceSmoke) {
-      const restartStart = Date.now();
+      const restartStart = monotonicNow();
       await withTimeout(
         'language client restart',
         vscode.commands.executeCommand('perl-lsp.restart'),
         90_000,
       );
+      const restartMetrics = extensionApi?.getLanguageClientStartupMetrics?.();
+      assert.ok(restartMetrics, 'current-source smoke must expose restart metrics');
+      assertSuccessfulStartupMetrics(restartMetrics, 'restart startup');
+      const restartMilestones = restartMetrics.milestones;
+      assert.ok(
+        restartMilestones &&
+          typeof restartMilestones === 'object' &&
+          typeof (restartMilestones as Record<string, unknown>).restart === 'number',
+        'restart startup should record the restart milestone',
+      );
       const restarted = await collectProviderMoment(
         'after_restart',
+        'post_restart',
         probeDocument,
         completionPosition,
         symbolPosition,
       );
+      const restartStatus =
+        restartMetrics === undefined
+          ? 'unavailable'
+          : restartMetrics.binary_resolution_status === 'ok' &&
+              restartMetrics.server_start_status === 'ok' &&
+              restartMetrics.initialize_status === 'ok'
+            ? 'ok'
+            : 'error';
       assert.equal(
         restarted.completion.status,
         'ok',
@@ -455,23 +569,58 @@ suite('First-hour VS Code receipt', function () {
       );
       restartedMoment = restarted;
 
-      const deactivateStart = Date.now();
-      const mainScript = extension.packageJSON?.main;
-      assert.ok(mainScript, 'extension package.json must define a main script');
-      const extensionMain = require(path.join(extension.extensionPath, mainScript)) as {
-        deactivate?: () => Promise<void>;
-      };
-      assert.equal(typeof extensionMain.deactivate, 'function', 'extension must export deactivate');
-      await withTimeout('language client shutdown', extensionMain.deactivate!(), 30_000);
+      const deactivateStart = monotonicNow();
+      let shutdownMetrics: Record<string, unknown> | undefined;
+      if (extensionApi?.stop) {
+        await withTimeout('language client shutdown', extensionApi.stop(), 30_000);
+        shutdownMetrics = extensionApi.getLanguageClientStartupMetrics?.();
+      } else {
+        const mainScript = extension.packageJSON?.main;
+        assert.ok(mainScript, 'extension package.json must define a main script');
+        const extensionMain = require(path.join(extension.extensionPath, mainScript)) as {
+          deactivate?: () => Promise<void>;
+          getLanguageClientStartupMetrics?: () => Record<string, unknown>;
+        };
+        assert.equal(
+          typeof extensionMain.deactivate,
+          'function',
+          'extension must export deactivate',
+        );
+        await withTimeout('language client shutdown', extensionMain.deactivate!(), 30_000);
+        shutdownMetrics =
+          extensionMain.getLanguageClientStartupMetrics?.() ??
+          extensionApi?.getLanguageClientStartupMetrics?.();
+      }
+      assert.ok(shutdownMetrics, 'current-source smoke must expose shutdown metrics');
+      assert.equal(
+        shutdownMetrics.lifecycle_state,
+        'stopped',
+        'shutdown should stop the lifecycle',
+      );
+      const shutdownMilestones = shutdownMetrics.milestones;
+      assert.ok(
+        shutdownMilestones &&
+          typeof shutdownMilestones === 'object' &&
+          typeof (shutdownMilestones as Record<string, unknown>).shutdown === 'number',
+        'shutdown should record the shutdown milestone',
+      );
       lifecycle = {
         restart: {
-          status: 'ok',
-          duration_ms: Date.now() - restartStart,
+          status: restartStatus,
+          duration_ms: Math.round(monotonicNow() - restartStart),
+          language_client: restartMetrics ?? {
+            status: 'unavailable',
+            limitation: 'extension activation API did not expose startup metrics',
+          },
           provider: restarted,
         },
         shutdown: {
           status: 'ok',
-          duration_ms: Date.now() - deactivateStart,
+          duration_ms: Math.round(monotonicNow() - deactivateStart),
+          language_client: shutdownMetrics ?? {
+            status: 'unavailable',
+            limitation: 'extension shutdown API did not expose startup metrics',
+          },
         },
       };
     }
@@ -482,11 +631,21 @@ suite('First-hour VS Code receipt', function () {
           await delay(30_000);
           return collectProviderMoment(
             'after_30_seconds',
+            'warm',
             probeDocument,
             completionPosition,
             symbolPosition,
           );
         })();
+    if (!currentSourceSmoke) {
+      extensionApi?.markLanguageClientStartupMilestone?.('warm_request');
+    }
+    const receiptLanguageClientMetrics = currentSourceSmoke
+      ? initialLanguageClientMetrics
+      : (extensionApi?.getLanguageClientStartupMetrics?.() ?? {
+          status: 'unavailable',
+          limitation: 'extension activation API did not expose startup metrics',
+        });
 
     const badDocument = await vscode.workspace.openTextDocument(badPath);
     await vscode.window.showTextDocument(badDocument);
@@ -500,8 +659,10 @@ suite('First-hour VS Code receipt', function () {
         extension_activation_ms: activationMs,
         extension_activated_within_30s: activationMs <= 30_000,
         command_registration_ms: commandRegistrationMs,
+        language_client: receiptLanguageClientMetrics,
         health,
         indexing_announcement_observed: 'not_observable_from_extension_host_public_api',
+        failure_guidance: failureGuidance,
       },
       moments: {
         immediate,
