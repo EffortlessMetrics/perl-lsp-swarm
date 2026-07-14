@@ -37,7 +37,6 @@ pub fn program_manifest_path(id: &str) -> String {
 
 /// The program-id validator shared by the compatibility validator and
 /// `super::snapshot::build_snapshot`'s explicit `--program` resolution.
-/// `super::snapshot::build_snapshot`'s explicit `--program` resolution
 /// (#3647 follow-up: the two had drifted, and the live selector path was
 /// without validation — an explicit id must never reach `resolved_program`
 /// unvalidated whenever no explicit `--program` was given).

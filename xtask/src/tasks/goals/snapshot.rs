@@ -18,6 +18,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use toml::Value;
 
 use super::manifest;
 use super::select::{
@@ -79,6 +80,14 @@ fn build_snapshot_at(
     // the two can never drift or fail open again.
     let resolved_program =
         resolve_program(root, program_arg.as_deref(), default_program.as_deref());
+    let resolved_program = match (program_arg.as_deref(), resolved_program) {
+        (Some(_), Some(program_id))
+            if portfolio_program_enabled(root, &program_id)?.is_some_and(|enabled| !enabled) =>
+        {
+            None
+        }
+        (_, resolved_program) => resolved_program,
+    };
 
     let (repository, live_open_prs, live_prs_available) = load_live_prs(root, fixture)?;
     let current_git_ref = current_git_ref(root);
@@ -124,6 +133,38 @@ fn resolve_program(
 ) -> Option<String> {
     let candidate = program_arg.or(default_program)?;
     manifest::validate_program_id(root, candidate).ok().map(|()| candidate.to_owned())
+}
+
+/// Returns the schema-3 portfolio enablement for an explicitly requested
+/// program. Legacy manifests have no portfolio enablement authority and keep
+/// their existing explicit-selection behavior.
+fn portfolio_program_enabled(root: &Path, program_id: &str) -> Result<Option<bool>> {
+    let path = root.join(".perl-lsp/goals/active.toml");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let value: Value =
+        toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?;
+    if value.get("schema").and_then(Value::as_integer) != Some(3) {
+        return Ok(None);
+    }
+
+    let enabled = value
+        .get("program")
+        .and_then(Value::as_array)
+        .and_then(|programs| {
+            programs.iter().find_map(|program| {
+                let table = program.as_table()?;
+                (table.get("id").and_then(Value::as_str) == Some(program_id))
+                    .then(|| table.get("enabled").and_then(Value::as_bool).unwrap_or(false))
+            })
+        })
+        .unwrap_or(false);
+    Ok(Some(enabled))
 }
 
 /// Measures the actual local git ref this snapshot's evidence was read
@@ -626,6 +667,28 @@ commands = ["rtk cargo test"]
             snapshot.requested_program.as_deref(),
             Some("definitely-not-a-real-program-xyz")
         );
+        assert_eq!(snapshot.resolved_program, None);
+        assert!(snapshot.candidates.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn disabled_portfolio_program_cannot_be_selected_explicitly() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let goals = temp.path().join(".perl-lsp/goals/programs");
+        fs::create_dir_all(&goals)?;
+        fs::write(goals.join("disabled.toml"), "id = \"disabled\"\n")?;
+        fs::write(
+            temp.path().join(".perl-lsp/goals/active.toml"),
+            "schema = 3\n\n[[program]]\nid = \"disabled\"\nenabled = false\nmanifest = \".perl-lsp/goals/programs/disabled.toml\"\nkind = \"milestone_ledger\"\n",
+        )?;
+        let fixture_path = temp.path().join("prs.json");
+        fs::write(&fixture_path, r#"{"repository":"r","prs":[]}"#)?;
+
+        let snapshot =
+            build_snapshot_at(temp.path(), Some("disabled".to_owned()), Some(fixture_path))?;
+
+        assert_eq!(snapshot.requested_program.as_deref(), Some("disabled"));
         assert_eq!(snapshot.resolved_program, None);
         assert!(snapshot.candidates.is_empty());
         Ok(())

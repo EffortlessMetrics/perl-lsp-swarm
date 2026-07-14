@@ -35,6 +35,7 @@ const PROGRAM_REQUIRED_PATH_FIELDS: &[&str] =
 const PROGRAM_REQUIRED_TEXT_ARRAYS: &[&str] = &["end_state", "claim_boundaries"];
 const PROGRAM_REQUIRED_PATH_ARRAYS: &[&str] = &["status_docs", "specs"];
 const PORTFOLIO_PROGRAM_KINDS: &[&str] = &["lane_routing", "milestone_ledger"];
+const EXPECTED_REPOSITORY: &str = "perl-lsp-swarm";
 
 const LANE_REQUIRED_TOP_LEVEL_STRINGS: &[&str] = &["id", "program", "proof_policy"];
 const LANE_REQUIRED_TEXT_ARRAYS: &[&str] = &["may_change", "next_items"];
@@ -342,7 +343,7 @@ fn validate_portfolio(
         violations.push(format!("{ACTIVE_GOAL_PATH}: portfolio must enable at least one program"));
     }
     if stats.programs > 0 {
-        stats.repo = "perl-lsp-swarm".to_owned();
+        stats.repo = EXPECTED_REPOSITORY.to_owned();
     }
 }
 
@@ -611,8 +612,8 @@ fn validate_current(
 
     if let Some(repo) = string_field(current, "repo") {
         stats.repo = repo.to_owned();
-        if repo != "perl-lsp-swarm" {
-            violations.push(format!("{doc}: [current].repo must be \"perl-lsp-swarm\""));
+        if repo != EXPECTED_REPOSITORY {
+            violations.push(format!("{doc}: [current].repo must be \"{EXPECTED_REPOSITORY}\""));
         }
     }
 
@@ -1125,7 +1126,7 @@ mod tests {
     fn active_goal_manifest_accepts_current_contract() -> Result<()> {
         let stats = validate(&project_root()?)?;
 
-        assert_eq!(stats.repo, "perl-lsp-swarm");
+        assert_eq!(stats.repo, EXPECTED_REPOSITORY);
         assert_eq!(stats.lane, "portfolio");
         assert_eq!(stats.program, "portfolio");
         assert_eq!(stats.programs, 2);
@@ -1416,7 +1417,7 @@ mod tests {
         let mut table = Table::new();
         let mut current = Table::new();
         current.insert("lane".to_owned(), Value::String("stale-lane".to_owned()));
-        current.insert("repo".to_owned(), Value::String("perl-lsp-swarm".to_owned()));
+        current.insert("repo".to_owned(), Value::String(EXPECTED_REPOSITORY.to_owned()));
         current.insert("release_lineage_repo".to_owned(), Value::String("perl-lsp".to_owned()));
         current.insert("status".to_owned(), Value::String("active".to_owned()));
         table.insert("current".to_owned(), Value::Table(current));

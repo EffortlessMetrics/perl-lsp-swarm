@@ -278,14 +278,6 @@ fn dirty_from_status(status_output: Option<&str>) -> (Option<bool>, bool) {
     }
 }
 
-/// Portfolio state never auto-selects a program for a session receipt. A
-/// worker may provide an explicit `--program`; otherwise the receipt records
-/// no program claim.
-#[cfg(test)]
-fn resolve_default_program(_root: &Path) -> (Option<String>, Option<String>) {
-    (None, None)
-}
-
 fn fetch_origin_main(root: &Path) -> bool {
     Command::new("git")
         .current_dir(root)
@@ -513,46 +505,6 @@ mod tests {
     fn parse_repo_from_remote_url_fails_closed_on_garbage_input() {
         assert_eq!(parse_repo_from_remote_url("not a url"), None);
         assert_eq!(parse_repo_from_remote_url(""), None);
-    }
-
-    #[test]
-    fn resolve_default_program_fails_closed_when_pointer_missing() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let (program, note) = resolve_default_program(temp.path());
-        assert_eq!(program, None);
-        assert_eq!(note, None);
-        Ok(())
-    }
-
-    #[test]
-    fn resolve_default_program_fails_closed_on_invalid_program_id() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let goals_dir = temp.path().join(".perl-lsp/goals");
-        fs::create_dir_all(&goals_dir)?;
-        fs::write(
-            goals_dir.join("active.toml"),
-            "active_program = \"\"\ndefault_program = \"../escape\"\n",
-        )?;
-        let (program, note) = resolve_default_program(temp.path());
-        assert_eq!(program, None, "an invalid program id must never pass through unfiltered");
-        assert_eq!(note, None, "legacy pointer fields are ignored in portfolio mode");
-        Ok(())
-    }
-
-    #[test]
-    fn resolve_default_program_does_not_select_a_validated_manifest() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let programs_dir = temp.path().join(".perl-lsp/goals/programs");
-        fs::create_dir_all(&programs_dir)?;
-        fs::write(programs_dir.join("demo_program.toml"), "")?;
-        fs::write(
-            temp.path().join(".perl-lsp/goals/active.toml"),
-            "active_program = \"\"\ndefault_program = \"demo_program\"\n",
-        )?;
-        let (program, note) = resolve_default_program(temp.path());
-        assert_eq!(program, None);
-        assert_eq!(note, None);
-        Ok(())
     }
 
     #[test]
