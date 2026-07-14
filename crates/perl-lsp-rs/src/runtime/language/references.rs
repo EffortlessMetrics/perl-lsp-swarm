@@ -2217,6 +2217,110 @@ mod tests {
 
     #[cfg(feature = "workspace")]
     #[test]
+    fn bounded_reference_snapshot_is_deterministic_and_respects_budgets()
+    -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///current.pl";
+        server.test_apply_did_open(current_uri, "cur", 1)?;
+        server.test_apply_did_open("file:///b.pl", "bb", 1)?;
+        server.test_apply_did_open("file:///a.pl", "a", 1)?;
+
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 2,
+            max_bytes: 4,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let snapshot = server.bounded_open_document_snapshot(
+            current_uri,
+            "cur",
+            &budget,
+            &mut receipt,
+            None,
+        )?;
+
+        let uris = snapshot.iter().map(|(uri, _)| uri.as_str()).collect::<Vec<_>>();
+        if uris != [current_uri, "file:///a.pl"] {
+            return Err(format!("unexpected deterministic snapshot order: {uris:?}").into());
+        }
+        if receipt.scanned_documents != 2 || receipt.scanned_bytes != 4 {
+            return Err(format!(
+                "unexpected scan accounting: documents={}, bytes={}",
+                receipt.scanned_documents, receipt.scanned_bytes
+            )
+            .into());
+        }
+        if !receipt.budget_exhausted || receipt.fallback_completeness != "partial" {
+            return Err(format!(
+                "budget exhaustion was not recorded: exhausted={}, completeness={}",
+                receipt.budget_exhausted, receipt.fallback_completeness
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn bounded_reference_snapshot_stops_on_cancellation() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///cancelled.pl";
+        server.test_apply_did_open(current_uri, "cur", 1)?;
+        let request_id = JsonRpcId::Integer(4046);
+        server.cancel_mark(&request_id);
+
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: 128,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let error = server
+            .bounded_open_document_snapshot(
+                current_uri,
+                "cur",
+                &budget,
+                &mut receipt,
+                Some(&request_id),
+            )
+            .err()
+            .ok_or("cancelled snapshot unexpectedly succeeded")?;
+
+        if error.code != REQUEST_CANCELLED
+            || !receipt.cancellation_observed
+            || receipt.fallback_completeness != "cancelled"
+        {
+            return Err(format!(
+                "cancellation receipt was incomplete: code={}, observed={}, completeness={}",
+                error.code, receipt.cancellation_observed, receipt.fallback_completeness
+            )
+            .into());
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
     fn handle_references_records_none_index_state_when_open_document_index_is_stale()
     -> Result<(), Box<dyn Error>> {
         use crate::runtime::LspServer;
