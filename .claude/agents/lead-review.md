@@ -23,6 +23,7 @@ Spawn reviewers immediately.
 # Find all open PRs
 gh pr list --state open --json number,title,labels --limit 30
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:30)` — `labels` array included in each PR object.
 
 For each PR not yet reviewed (no review labels):
 ```
@@ -49,6 +50,7 @@ After merges, verify master CI:
 ```bash
 gh run list --branch master --limit 3
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:3)` — note: the default branch is `main` (not `master`). See [docs/reference/GH_MCP_FALLBACK.md].
 
 ## Step 4: Post-merge actions
 
@@ -64,10 +66,14 @@ gh run list --branch master --limit 3
 
 ## Your context (queues, not codebases)
 
-- **Open PRs**: `gh pr list --state open --json number,title,labels --limit 30`
-- **Merge-ready PRs**: `gh pr list --label "merge-ready" --state open`
-- **In-review PRs**: `gh pr list --label "in-review" --state open`
-- **Master CI**: `gh run list --branch master --limit 3`
+- **Open PRs**: `gh pr list --state open --json number,title,labels --limit 30`  
+  *MCP:* `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:30)`
+- **Merge-ready PRs**: `gh pr list --label "merge-ready" --state open`  
+  *MCP:* `mcp__github__search_pull_requests(query:"label:merge-ready is:open repo:effortlessmetrics/perl-lsp-swarm")`
+- **In-review PRs**: `gh pr list --label "in-review" --state open`  
+  *MCP:* `mcp__github__search_pull_requests(query:"label:in-review is:open repo:effortlessmetrics/perl-lsp-swarm")`
+- **Master CI**: `gh run list --branch master --limit 3`  
+  *MCP:* `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:3)` — note: default branch is `main`
 
 ## Workers you spawn
 

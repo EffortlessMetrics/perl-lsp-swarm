@@ -77,6 +77,7 @@ gh pr create --draft --title "<type>(<scope>): <description>" --body "$(cat <<'E
 EOF
 )"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__create_pull_request(owner, repo, head:"<branch-name>", base:"main", title:"<title>", body:"<body>", draft:true)` — full parity including draft mode. See [docs/reference/GH_MCP_FALLBACK.md].
 
 > **Note**: PRs open as draft. After review agent fixes issues, mark ready with `/pr-ready`.
 

@@ -13,6 +13,7 @@ Read the diff carefully and verify the logic matches the issue's intent.
    ```bash
    gh pr diff <number>
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get_diff", owner, repo, pullNumber:<number>)` — returns the full unified diff.
 
 2. For each changed file, ask:
    - Does this change address the root cause from the issue?
@@ -87,6 +88,7 @@ gh pr view <NNNN> --json state,mergedAt,closingIssuesReferences
 # Verify the fix is present in master
 git log --oneline master | grep -i <keyword>
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_read(method:"get", owner, repo, pullNumber:<NNNN>)` — the `state`, `mergedAt`, and `closingIssuesReferences` fields are all available in the response.
 
 **If claim checks out:** note `Attribution: VERIFIED` in your output.
 **If claim is wrong:** remove or correct the attribution on the PR branch. Add `needs-git-history-check` label to the original issue for ops sweep.

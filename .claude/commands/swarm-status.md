@@ -32,6 +32,17 @@ cargo xtask swarm-summary .ops-perl-lsp --since 24h --limit 10
 cargo xtask swarm-summary .ops-perl-lsp --since 24h --limit 10 --format json
 ```
 
+> **MCP alternative (web/no-gh sessions):**
+> - Open PRs: `mcp__github__list_pull_requests(owner, repo, state:"open", perPage:30)`
+> - Discovered issues: `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN", perPage:20)`
+> - Architectural issues: `mcp__github__list_issues(owner, repo, labels:["swarm-architectural"], state:"OPEN")`
+> - Recent merges: `mcp__github__list_pull_requests(owner, repo, state:"closed")` then filter `mergedAt` within last 24h
+> - Queue depth (builder-ready): `mcp__github__list_issues(owner, repo, labels:["builder-ready"], state:"OPEN")`
+> - Queue depth (needs-plan-review): `mcp__github__list_issues(owner, repo, labels:["needs-plan-review"], state:"OPEN")`
+> - merge-ready PRs: `mcp__github__search_pull_requests(query:"label:merge-ready is:open repo:effortlessmetrics/perl-lsp-swarm")`
+>
+> See [docs/reference/GH_MCP_FALLBACK.md] for the full mapping.
+
 ## Full View (`--full`)
 
 Also includes:
@@ -46,3 +57,4 @@ gh issue list --label "swarm-discovered" --state open --limit 20 --json number,t
 echo "=== Worktrees ==="
 git worktree list
 ```
+> **MCP alternative (web/no-gh sessions):** Recent discovered issues: `mcp__github__list_issues(owner, repo, labels:["swarm-discovered"], state:"OPEN", perPage:20)` — returns number and title fields. Worktrees: `git worktree list` works unchanged.

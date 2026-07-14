@@ -21,6 +21,7 @@ After a merge batch, lock in gains and update metrics.
    git push -u origin HEAD
    gh pr create --title "chore(corpus): ratchet baseline" --body "Auto-ratchet after parser merges."
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__create_pull_request(owner, repo, head:"<branch>", base:"main", title:"chore(corpus): ratchet baseline", body:"Auto-ratchet after parser merges.", draft:false)`
 
 2. If tests were added, update status:
    ```bash
@@ -32,6 +33,7 @@ After a merge batch, lock in gains and update metrics.
    ```bash
    gh run list --branch master --limit 3 --json status,conclusion --jq '.[] | "\(.status) \(.conclusion)"'
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__actions_list(method:"list_workflow_runs", owner, repo, workflow_runs_filter:{branch:"main"}, per_page:5)` — check `status` and `conclusion` per run. Note: the default branch is `main` (not `master`). See [docs/reference/GH_MCP_FALLBACK.md].
 
 4. Note user-visible changes for changelog:
    For each merged PR, check if it's user-facing (feat, fix affecting behavior).
@@ -53,6 +55,7 @@ After a merge batch, lock in gains and update metrics.
    MERGE_EOF
    )"
    ```
+   > **MCP alternative (web/no-gh sessions):** `mcp__github__add_issue_comment(owner, repo, issue_number:<NUMBER>, body:"<content>")` — full parity for posting PR comments.
 
 ## Output
 

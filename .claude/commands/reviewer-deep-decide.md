@@ -19,12 +19,14 @@ gh pr checkout <number>
 git push
 gh pr review <number> --approve --body "Deep review: <what you improved>. Logic verified, low regression risk."
 ```
+> **MCP alternative (web/no-gh sessions):** `gh pr checkout` → `mcp__github__pull_request_read(method:"get", pullNumber:<number>)` for `headRefName`, then `git fetch origin <branch> && git checkout <branch>`; push with `git push`. For `gh pr review --approve` → call `mcp__github__pull_request_review_write(method:"submit_pending", ...)` after creating a pending review; or use `mcp__github__add_issue_comment` to post a textual approval noting deep-reviewed, since the label (`/label-apply-verified`) is the actual merge gate.
 ```
 /label-apply-verified pr <number> "deep-reviewed"
 ```
 ```bash
 gh pr edit <number> --remove-label "needs-deep-review"
 ```
+> **MCP alternative (web/no-gh sessions):** Read current labels via `mcp__github__pull_request_read(method:"get", pullNumber:<number>)`, then write the union minus `needs-deep-review` via `mcp__github__issue_write(method:"update", labels:[...])` — **labels are replaced, not appended** (read current list first). See [docs/reference/GH_MCP_FALLBACK.md].
 
 After approval, write a version-bound receipt:
 ```
@@ -41,6 +43,7 @@ Only when the approach is wrong, wrong crate, or the codebase moved too far:
 ```bash
 gh pr review <number> --request-changes --body "<what's structurally wrong and why it can't be fixed locally>"
 ```
+> **MCP alternative (web/no-gh sessions):** `mcp__github__pull_request_review_write(method:"create", pullNumber:<number>, event:"REQUEST_CHANGES", body:"<reason>")` — full parity for requesting changes.
 
 ## Rules
 
