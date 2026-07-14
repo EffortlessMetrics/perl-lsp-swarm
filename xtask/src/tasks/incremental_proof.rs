@@ -262,9 +262,16 @@ fn measure_case(
         }
         let mode = mode_name(replayed.reparse_mode());
         *operation_modes.entry(mode.to_owned()).or_insert(0) += 1;
-        if let Some(ReparseMode::FullParseFallback(reason)) = replayed.reparse_mode() {
-            fallback_count += 1;
-            *fallback_reasons.entry(format!("{reason:?}")).or_insert(0) += 1;
+        match replayed.reparse_mode() {
+            Some(ReparseMode::FullParseFallback(reason)) => {
+                fallback_count += 1;
+                *fallback_reasons.entry(format!("{reason:?}")).or_insert(0) += 1;
+            }
+            Some(ReparseMode::Unchanged | ReparseMode::TokenReplay) | None => {}
+            Some(_) => {
+                fallback_count += 1;
+                *fallback_reasons.entry("unclassified".to_owned()).or_insert(0) += 1;
+            }
         }
         for range in replayed.reprocessed_ranges() {
             ranges.insert((range.start, range.end));
@@ -347,9 +354,20 @@ fn position_at(source: &str, byte: usize) -> Result<Position> {
     let prefix = source
         .get(..byte)
         .ok_or_else(|| eyre!("byte offset {byte} is outside source length {}", source.len()))?;
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32;
-    let line = line + 1;
-    let column = prefix.rsplit('\n').next().map_or(prefix.len(), str::len) as u32 + 1;
+    let line = prefix
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        .checked_add(1)
+        .ok_or_else(|| eyre!("line number exceeds usize"))?;
+    let line = u32::try_from(line).map_err(|_| eyre!("line number exceeds u32"))?;
+    let column = prefix
+        .rsplit('\n')
+        .next()
+        .map_or(prefix.len(), str::len)
+        .checked_add(1)
+        .ok_or_else(|| eyre!("column exceeds usize"))?;
+    let column = u32::try_from(column).map_err(|_| eyre!("column exceeds u32"))?;
     Ok(Position::new(byte, line, column))
 }
 
@@ -366,33 +384,20 @@ struct NodeSnapshot {
 }
 
 fn snapshot(node: Node<'_>) -> Result<NodeSnapshot> {
+    snapshot_node(node, None)
+}
+
+fn snapshot_node(node: Node<'_>, field_name: Option<&'static str>) -> Result<NodeSnapshot> {
     let text = node
         .utf8_text(node.tree_source().as_bytes())
         .map_err(|error| eyre!("node text was not valid UTF-8: {error}"))?
         .to_owned();
     let start = node.start_position();
     let end = node.end_position();
-    let mut children = Vec::with_capacity(node.child_count());
-    for index in 0..node.child_count() {
-        let child =
-            node.child(index).ok_or_else(|| eyre!("child {index} disappeared during snapshot"))?;
-        children.push(NodeSnapshot {
-            kind: child.kind(),
-            field_name: node.field_name_for_child(index),
-            start_byte: child.start_byte(),
-            end_byte: child.end_byte(),
-            start_point: (child.start_position().row, child.start_position().column),
-            end_point: (child.end_position().row, child.end_position().column),
-            text: child
-                .utf8_text(child.tree_source().as_bytes())
-                .map_err(|error| eyre!("child text was not valid UTF-8: {error}"))?
-                .to_owned(),
-            children: snapshot_children(child)?,
-        });
-    }
+    let children = snapshot_children(node)?;
     Ok(NodeSnapshot {
         kind: node.kind(),
-        field_name: None,
+        field_name,
         start_byte: node.start_byte(),
         end_byte: node.end_byte(),
         start_point: (start.row, start.column),
@@ -407,21 +412,7 @@ fn snapshot_children(node: Node<'_>) -> Result<Vec<NodeSnapshot>> {
     for index in 0..node.child_count() {
         let child =
             node.child(index).ok_or_else(|| eyre!("child {index} disappeared during snapshot"))?;
-        let start = child.start_position();
-        let end = child.end_position();
-        children.push(NodeSnapshot {
-            kind: child.kind(),
-            field_name: node.field_name_for_child(index),
-            start_byte: child.start_byte(),
-            end_byte: child.end_byte(),
-            start_point: (start.row, start.column),
-            end_point: (end.row, end.column),
-            text: child
-                .utf8_text(child.tree_source().as_bytes())
-                .map_err(|error| eyre!("child text was not valid UTF-8: {error}"))?
-                .to_owned(),
-            children: snapshot_children(child)?,
-        });
+        children.push(snapshot_node(child, node.field_name_for_child(index))?);
     }
     Ok(children)
 }
@@ -792,6 +783,23 @@ mod tests {
                 edit.old_end_byte,
                 edit.new_end_byte
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn position_at_uses_one_based_lines_and_columns() -> Result<()> {
+        let position = position_at("a\nβ", "a\nβ".len())?;
+        if position != Position::new(4, 2, 3) {
+            return Err(eyre!("unexpected position: {position:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn position_at_rejects_non_utf8_boundaries() -> Result<()> {
+        if position_at("β", 1).is_ok() {
+            return Err(eyre!("position_at must reject a non-UTF-8 boundary"));
         }
         Ok(())
     }
