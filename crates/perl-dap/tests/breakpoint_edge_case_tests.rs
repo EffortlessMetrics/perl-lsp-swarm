@@ -190,13 +190,15 @@ fn package_with_comment_before() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn package_followed_by_use_statements() -> Result<(), Box<dyn std::error::Error>> {
+    // use/no are compile-time BEGIN pragmas (safe_for_breakpoint == false).
+    // package declarations are runtime-visible and remain executable.
     let source = "package MyApp;\nuse strict;\nuse warnings;\nmy $x = 1;\n";
     let v = must(AstBreakpointValidator::new(source));
 
-    assert!(v.is_executable_line(1)); // package
-    assert!(v.is_executable_line(2)); // use strict
-    assert!(v.is_executable_line(3)); // use warnings
-    assert!(v.is_executable_line(4)); // my $x
+    assert!(v.is_executable_line(1), "package MyApp; must be executable");
+    assert!(!v.is_executable_line(2), "use strict; must not be a valid breakpoint location");
+    assert!(!v.is_executable_line(3), "use warnings; must not be a valid breakpoint location");
+    assert!(v.is_executable_line(4), "my $x = 1; must be executable");
     Ok(())
 }
 
