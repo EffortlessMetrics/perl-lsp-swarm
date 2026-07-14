@@ -1,5 +1,9 @@
 # Workflow Contracts policy (tracking issue #3788; parent #3785).
 #
+# Baseline-capture note: this branch intentionally changes only policy prose
+# before the first receipt so the advisory instrument measures current `main`
+# rather than a branch containing a new workflow contract.
+#
 # Consumed by `cargo xtask workflows check`. FOUNDATION / ADVISORY-UNARMED:
 # with `advisory_expected_from` AND `blocking_enforced_from` both empty, the
 # check NEVER escalates a finding past exit 0 — see the three-clock model
