@@ -301,3 +301,46 @@ this convention: `.claude/commands/pr-respond.md` step 4.5,
 `.claude/agents/pr-responder.md` step 5, and the verification-side
 references in `.claude/commands/pr-ready.md` step 3.5 and
 `.claude/agents/ops.md`.
+
+## Review-epoch markers (#3986 slice 1)
+
+**An epoch is one broad review pass recorded against a specific head SHA.**
+A reviewer (or bot) that examines a PR at commit `X` and posts findings has
+established a review epoch bounded to `X`. Every subsequent push to the
+branch potentially invalidates some subset of what was reviewed — but not
+necessarily all of it, and re-running the full broad pass on every push is
+the "expensive remote scratchpad" churn this doc's `## Why this exists`
+section names.
+
+**Marker format.** When a reviewer completes a broad pass, it records the
+epoch by posting (or including in its existing review comment) a line of
+the form:
+
+```
+review-epoch: examined <full-sha>
+```
+
+Use the full 40-character SHA the review was actually performed against,
+not a shortened form and not a branch name — `cargo xtask seam-diff`
+resolves this value as a literal git ref/OID via
+`change_set::resolve_base_ref`, which requires an explicit base to resolve
+on its own (see that function's doc comment) rather than being silently
+substituted.
+
+**Scoping re-review with `seam-diff`.** Given a recorded epoch marker SHA,
+`cargo xtask seam-diff --base <epochSHA> [--head <sha>] [--format
+json|human]` reports which seams (changed files, plus a coarse
+changed-crate set) a later push changed relative to that epoch — i.e.
+which reviewed seams the push actually invalidated. A reviewer/responder
+uses this to scope re-review to what changed since the epoch, rather than
+re-examining the whole diff from scratch. An empty or non-substantive
+(docs/prose-only) report means the epoch's findings likely still hold for
+everything outside the reported seams.
+
+**This is advisory reporting only.** `seam-diff` composes the existing
+#3985 `change_set::resolve_change_set` resolver (no new git-diff or
+base-resolution logic) and prints a report; it does not wire into any bot
+trigger, required check, or branch-protection rule, and it does not decide
+whether a PR is ready to merge. Binding re-review scope to this signal
+mechanically (e.g. skipping broad bot re-fire on non-substantive pushes) is
+explicitly held for a later, maintainer-gated slice — see issue #3986.

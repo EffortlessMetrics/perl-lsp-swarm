@@ -941,6 +941,45 @@ enum Commands {
         format: String,
     },
 
+    /// Report which "seams" (changed files, plus a coarse changed-crate
+    /// set) a push changed between a recorded review-epoch marker SHA and
+    /// current HEAD — advisory, read-only slice 1 of issue #3986. Composes
+    /// `change_set::resolve_change_set` (see `cargo xtask change-set`
+    /// above); does not reimplement git diff or base resolution.
+    ///
+    /// This is a reporter, not a gate: it changes no bot trigger, no
+    /// required check, no branch-protection rule, and nothing about what
+    /// merges. See `.claude/reference/review-convergence.md` § Review-epoch
+    /// markers for the `review-epoch: examined <full-sha>` PR-comment
+    /// convention this reporter is meant to consume.
+    ///
+    /// `--base` must resolve on its own (an invalid/nonexistent base SHA is
+    /// a loud, non-zero-exit error, never a silently-empty "no seams
+    /// changed" report).
+    ///
+    /// Example: `cargo xtask seam-diff --base <epochSHA> --head HEAD --format human`
+    SeamDiff {
+        /// Review-epoch marker base SHA to diff from.
+        #[arg(long)]
+        base: String,
+
+        /// Head git ref/SHA to diff to.
+        #[arg(long, default_value = "HEAD")]
+        head: String,
+
+        /// Output format: `human` (default, readable summary) or `json`
+        /// (machine-readable report). Any other value is a loud error,
+        /// never a silent fallback.
+        #[arg(long, default_value = "human")]
+        format: String,
+
+        /// Repository root to resolve the seam diff against. Defaults to
+        /// the perl-lsp workspace root. Override for testing against a
+        /// fixture repository.
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
     /// Emit a markdown PR gate summary (dry-run: stdout only, no GitHub posting).
     ///
     /// Computes what CI would run for the current branch diff against `--base`,
@@ -3825,6 +3864,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::ChangeSetParity { format } => {
             shadow_parity::run(shadow_parity::ShadowParityConfig { format })
+        }
+        Commands::SeamDiff { base, head, format, root } => {
+            seam_diff::run(seam_diff::SeamDiffConfig { base, head, format, root })
         }
         Commands::CiPrSummary { base, dry_run } => {
             ci_pr_summary::run(ci_pr_summary::CiPrSummaryConfig { base, dry_run })
