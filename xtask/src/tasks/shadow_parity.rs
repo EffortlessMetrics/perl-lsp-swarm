@@ -240,7 +240,7 @@ pub fn rust_verdict(
     metadata: &serde_json::Value,
     workspace_root: &str,
 ) -> Result<RustVerdict> {
-    let owned: Vec<String> = paths.iter().map(|p| (*p).to_string()).collect();
+    let owned: Vec<String> = paths.iter().map(|&p| p.to_string()).collect();
     let output = ci_scope::classify_files(&owned, metadata, workspace_root)
         .context("ci_scope::classify_files failed")?;
 

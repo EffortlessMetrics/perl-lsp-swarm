@@ -43,12 +43,20 @@ which one routes more work ("direction").
 cargo xtask change-set-parity --format markdown
 ```
 
-The scenario corpus and both tables below are produced by this single
-command (`xtask/src/tasks/shadow_parity.rs`); nothing here is hand-edited
-except this framing prose. `cargo test -p xtask shadow_parity` runs the
-harness's own offline, deterministic unit tests (fixture `cargo metadata`,
-no shell-out) that pin the shell-taxonomy reproduction and the
-`ci_scope::classify_files` extraction logic used to build these tables.
+The scenario corpus and the **data** in both tables below — `Scenario`,
+`Changed paths`, `Shell verdict`, `ci_scope diff_class`,
+`ci_scope touched crates`, and `Agreement` — are drawn directly from a live
+run of this command (`xtask/src/tasks/shadow_parity.rs`) and are
+byte-reproducible: running it again against an unchanged workspace
+reproduces those columns exactly. The **`Direction note`** column is
+hand-curated commentary layered on top of that data for readability (cross
+references between rows, issue citations, and the "matches design intent"
+observations below) — it is *not* copy-pasted from the tool's own
+(shorter, more mechanical) auto-generated note string. `cargo test -p xtask
+shadow_parity` runs the harness's own offline, deterministic unit tests
+(fixture `cargo metadata`, no shell-out) that pin the shell-taxonomy
+reproduction and the `ci_scope::classify_files` extraction logic that
+produces the reproducible columns.
 
 ## A second finding: `ci_scope`'s own production call sites disagree
 
@@ -72,7 +80,10 @@ integration should use — that is part of the same maintainer decision.
 
 ## Table 1 — full `cargo metadata` (reverse-dep closure populated)
 
-Matches `cargo xtask ci-scope`'s own CLI behavior.
+Matches `cargo xtask ci-scope`'s own CLI behavior. The first six columns
+are the literal, byte-reproducible output of
+`cargo xtask change-set-parity --format markdown`; `Direction note` is
+hand-curated (see "Regenerating this report" above).
 
 | Scenario | Changed paths | Shell verdict | ci_scope diff_class | ci_scope touched crates | Agreement | Direction note |
 |---|---|---|---|---|---|---|
@@ -82,30 +93,32 @@ Matches `cargo xtask ci-scope`'s own CLI behavior.
 | `several-crates` | `crates/perl-parser/src/lib.rs`<br>`crates/perl-lsp-rs/src/lib.rs`<br>`crates/perl-dap/src/lib.rs` | `full-gate` | `code` | perl-dap, perl-incremental-parsing, perl-lsp-rs, perl-lsp-rs-core, perl-parser, perl-parser-bench, perl-semantic-analyzer, perl-workspace, perllsp, xtask | DIFFER (rust narrower) | shell runs the full workspace; ci_scope bounds to 10 crates |
 | `workflow-only` | `.github/workflows/ci.yml` | `full-gate` | `ci_config` | (none) | DIFFER (rust narrower) | shell runs the full workspace (incl. every crate's fmt/clippy/test); ci_scope selects only `publish`/`security`/`ci_policy` — zero crate-scoped Rust proof |
 | `extension-only` | `vscode-extension/src/extension.ts` | `full-gate` | `code` | (none) | DIFFER (rust narrower) | shell falls back to the full **Rust** gate for a TypeScript-only change (no TS-specific fast path exists in the shell either); ci_scope has no extension-surface classifier yet (#3985 P4, not built) and selects nothing |
-| `deletion` | `crates/perl-pod/src/deprecated_helper.rs` | `single-crate(perl-pod)` | `code` | (same as `rust-leaf-crate`) | DIFFER (rust broader) | both classifiers consume `git diff --name-only` (no `--diff-filter`), so a deletion's path is indistinguishable from an add/modify at this layer — same result as scenario 2 |
+| `deletion` | `crates/perl-pod/src/deprecated_helper.rs` | `single-crate(perl-pod)` | `code` | perl-dap, perl-incremental-parsing, perl-lsp-rs, perl-lsp-rs-core, perl-parser, perl-parser-bench, perl-pod, perl-tree-sitter-compat, perl-workspace-core, perllsp, xtask | DIFFER (rust broader) | both classifiers consume `git diff --name-only` (no `--diff-filter`), so a deletion's path is indistinguishable from an add/modify at this layer — identical touched-crates set to `rust-leaf-crate` above |
 | `rename-cross-crate` | `crates/perl-pod/src/legacy.rs`<br>`crates/perl-parser/src/pod_bridge.rs` | `full-gate` | `code` | perl-dap, perl-incremental-parsing, perl-lsp-rs, perl-lsp-rs-core, perl-parser, perl-parser-bench, perl-pod, perl-semantic-analyzer, perl-tree-sitter-compat, perl-workspace, perl-workspace-core, perllsp, xtask | DIFFER (rust narrower) | shell runs the full workspace (2 distinct crate names → not single-crate); ci_scope bounds to 13 crates |
 | `shared-foundation-crate` | `crates/perl-parser/src/statement.rs` | `single-crate(perl-parser)` | `code` | perl-dap, perl-incremental-parsing, perl-lsp-rs, perl-lsp-rs-core, perl-parser, perl-parser-bench, perl-semantic-analyzer, perl-workspace, perllsp, xtask | DIFFER (rust broader) | matches #3985's intended design for foundation crates ("direct package proof now; report broader closure") — the widener (`lsp_smoke`) plus reverse-dep closure both fire |
-| `new-branch-mixed-diff` | `crates/perl-parser/src/lib.rs`<br>`crates/perl-pod/src/lib.rs`<br>`docs/reference/STABILITY.md`<br>`.github/workflows/ci.yml` | `full-gate` | `mixed` | 13 crates (union of the foundation + leaf + workflow-policy lanes) | DIFFER (rust narrower) | shell's blanket full-gate vs ci_scope's still-bounded (if large) union |
+| `new-branch-mixed-diff` | `crates/perl-parser/src/lib.rs`<br>`crates/perl-pod/src/lib.rs`<br>`docs/reference/STABILITY.md`<br>`.github/workflows/ci.yml` | `full-gate` | `mixed` | perl-dap, perl-incremental-parsing, perl-lsp-rs, perl-lsp-rs-core, perl-parser, perl-parser-bench, perl-pod, perl-semantic-analyzer, perl-tree-sitter-compat, perl-workspace, perl-workspace-core, perllsp, xtask | DIFFER (rust narrower) | shell's blanket full-gate vs ci_scope's still-bounded (if large, 13-crate) union of the foundation + leaf + workflow-policy lanes |
 | `existing-pr-update` | `crates/perl-lsp-rs/src/providers/hover.rs`<br>`crates/perl-lsp-rs/tests/hover_test.rs` | `single-crate(perl-lsp-rs)` | `code` | perl-dap, perl-incremental-parsing, perl-lsp-rs, perl-lsp-rs-core, perl-parser, perl-parser-bench, perllsp, xtask | DIFFER (rust broader) | reverse-dep closure of perl-lsp-rs pulls in additional crates even for a routine incremental PR update |
 
 ## Table 2 — `cargo metadata --no-deps` (reverse-dep closure always empty)
 
 Matches `gates::compute_scope_output` / `ci_pr_summary::run`'s production
-behavior today.
+behavior today. The first six columns are the literal, byte-reproducible
+output of `cargo xtask change-set-parity --format markdown`;
+`Direction note` is hand-curated (see "Regenerating this report" above).
 
 | Scenario | Changed paths | Shell verdict | ci_scope diff_class | ci_scope touched crates | Agreement | Direction note |
 |---|---|---|---|---|---|---|
 | `docs-only` | `docs/reference/STABILITY.md`<br>`README.md` | `doc-only-skip` | `prose_only` | (none) | AGREE | both select no crate-scoped Rust proof |
-| `rust-leaf-crate` | `crates/perl-pod/src/lib.rs` | `single-crate(perl-pod)` | `code` | perl-pod | **AGREE** | both scope to crate `perl-pod` only |
-| `test-only` | `crates/perl-pod/tests/pod_parsing_test.rs` | `single-crate(perl-pod)` | `code` | perl-pod | **AGREE** | both scope to crate `perl-pod` only |
+| `rust-leaf-crate` | `crates/perl-pod/src/lib.rs` | `single-crate(perl-pod)` | `code` | perl-pod | AGREE | both scope to crate `perl-pod` only |
+| `test-only` | `crates/perl-pod/tests/pod_parsing_test.rs` | `single-crate(perl-pod)` | `code` | perl-pod | AGREE | both scope to crate `perl-pod` only |
 | `several-crates` | `crates/perl-parser/src/lib.rs`<br>`crates/perl-lsp-rs/src/lib.rs`<br>`crates/perl-dap/src/lib.rs` | `full-gate` | `code` | perl-dap, perl-lsp-rs, perl-parser, perl-semantic-analyzer, perl-workspace | DIFFER (rust narrower) | shell runs the full workspace; ci_scope bounds to 5 crates (direct 3 + `lsp_smoke` widener targets) |
 | `workflow-only` | `.github/workflows/ci.yml` | `full-gate` | `ci_config` | (none) | DIFFER (rust narrower) | shell runs the full workspace; ci_scope selects only policy lanes, zero crate-scoped Rust proof — the clearest instance of coverage-decision item #1 (#3985 comment) |
 | `extension-only` | `vscode-extension/src/extension.ts` | `full-gate` | `code` | (none) | DIFFER (rust narrower) | same gap as Table 1 — no TS-surface classifier on either side today |
-| `deletion` | `crates/perl-pod/src/deprecated_helper.rs` | `single-crate(perl-pod)` | `code` | perl-pod | **AGREE** | deletions agree by construction (no `--diff-filter` on either side) |
+| `deletion` | `crates/perl-pod/src/deprecated_helper.rs` | `single-crate(perl-pod)` | `code` | perl-pod | AGREE | deletions agree by construction (no `--diff-filter` on either side) |
 | `rename-cross-crate` | `crates/perl-pod/src/legacy.rs`<br>`crates/perl-parser/src/pod_bridge.rs` | `full-gate` | `code` | perl-dap, perl-lsp-rs, perl-parser, perl-pod, perl-semantic-analyzer, perl-workspace | DIFFER (rust narrower) | shell's full-gate vs ci_scope's bounded 6-crate scope (2 direct + 4 widener targets) |
 | `shared-foundation-crate` | `crates/perl-parser/src/statement.rs` | `single-crate(perl-parser)` | `code` | perl-dap, perl-lsp-rs, perl-parser, perl-semantic-analyzer, perl-workspace | DIFFER (rust broader) | the `lsp_smoke` architectural widener still fires without reverse-dep closure — matches #3985's intended foundation-crate design |
 | `new-branch-mixed-diff` | `crates/perl-parser/src/lib.rs`<br>`crates/perl-pod/src/lib.rs`<br>`docs/reference/STABILITY.md`<br>`.github/workflows/ci.yml` | `full-gate` | `mixed` | perl-dap, perl-lsp-rs, perl-parser, perl-pod, perl-semantic-analyzer, perl-workspace | DIFFER (rust narrower) | shell's blanket full-gate vs a bounded 6-crate + policy-lane selection |
-| `existing-pr-update` | `crates/perl-lsp-rs/src/providers/hover.rs`<br>`crates/perl-lsp-rs/tests/hover_test.rs` | `single-crate(perl-lsp-rs)` | `code` | perl-lsp-rs | **AGREE** | both scope to crate `perl-lsp-rs` only — the common "routine incremental PR" case |
+| `existing-pr-update` | `crates/perl-lsp-rs/src/providers/hover.rs`<br>`crates/perl-lsp-rs/tests/hover_test.rs` | `single-crate(perl-lsp-rs)` | `code` | perl-lsp-rs | AGREE | both scope to crate `perl-lsp-rs` only — the common "routine incremental PR" case |
 
 ## Summary
 
