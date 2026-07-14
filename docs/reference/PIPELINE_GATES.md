@@ -271,7 +271,7 @@ When to strictly sequence agents within a gate versus running them in parallel:
 
 Labels record what happened within each lifecycle moment. They are navigation aids for humans and agents — never the authority that decides whether a PR may proceed or merge.
 
-**Authority is live evidence and the branch ruleset**: for Gates 1-4, the durable verdict *comment* (and, where one exists, a SHA-bound review receipt — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md)) is the record of what actually happened; for Gates 5-6, live CI (`statusCheckRollup` on the current HEAD SHA) and the branch ruleset (the two required checks green plus 0 unresolved conversation threads) decide merge. No runtime hook mechanically blocks a transition on label state — the SubagentStop plan-reviewer label gate and the needs-label-gate that once did this were retired (#4005: #4095, #4096).
+**Authority is live evidence and the branch's merge rules**: for Gates 1-4, the durable verdict *comment* (and, where one exists, a SHA-bound review receipt — see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md)) is the record of what actually happened; for Gates 5-6, live CI (`statusCheckRollup` on the current HEAD SHA) plus the two required checks green and 0 unresolved conversation threads (enforced by the `main` branch ruleset's required-review-thread-resolution rule) decide whether GitHub will allow a merge. No GitHub-enforced merge check depends on `needs-*`/`merge-ready` label state — the SubagentStop plan-reviewer label gate and the mechanical needs-label-gate that once blocked a GitHub merge on label presence were retired (#4005: #4095, #4096). That doesn't make `needs-*` inert: the `queue_reconciler` cron still strips the `merge-ready` navigation label when a non-CI `needs-*` label is present or live CI is red (`xtask/src/tasks/queue_reconciler.rs`), and the ops merge checklist still treats an active `needs-*` label as a hard stop — an unaddressed bounce label still blocks a PR from merging in practice, as navigation-label reconciliation and operator process, not as a branch-ruleset gate.
 
 **Labels answer a narrower, useful question**: "which agents within this stage have already completed their pass?" — routing and status bookkeeping, not a gate.
 
@@ -280,7 +280,7 @@ This means:
 - Absence of a label = that agent hasn't run yet (or was intentionally skipped)
 - The orchestrator may intentionally skip a label if the exit condition is trivially satisfied for this PR
 
-Labels are not ordered steps that must all be collected before proceeding, and no `needs-*` label is mechanically enforced as a merge blocker. The orchestrator checks: "is the exit condition for this stage met, given this PR's nature and the live evidence?" — not "have all possible labels been set or cleared?"
+Labels are not ordered steps that must all be collected before proceeding, and no `needs-*` label is a GitHub-enforced merge blocker (though the reconciler and ops merge checklist still treat an active one as an operational stop — see the Overview above). The orchestrator checks: "is the exit condition for this stage met, given this PR's nature and the live evidence?" — not "have all possible labels been set or cleared?"
 
 For the full label taxonomy and which labels have live ground truth, see [LIVE_SIGNALS_VS_LABELS.md](LIVE_SIGNALS_VS_LABELS.md).
 

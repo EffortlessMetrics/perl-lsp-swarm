@@ -85,12 +85,19 @@ Reachable/Promoted/Consolidated is **inventory, not product**. Background:
 OR bounce back (`needs-*`) — never both in the same pass. Per the 2026-04-26 #6780
 incident, applying both confused the merge gate and let unfixed bugs ride to main.
 
-**Merge authority is the branch ruleset**, not label state: the two required checks
-green on the exact head, plus 0 unresolved conversation threads. `needs-*` and
-`merge-ready` are navigation signals for humans and agents, not the gate — the
-mechanical `needs-label-gate` that once blocked `needs-*` merges was retired (#4005).
-**Main must stay green; merge requires green** (2026-04-26 directive) — verify
-workspace-wide CI, not just per-crate, before merging.
+**No GitHub-enforced merge check depends on label state**: the two required checks
+(`Perl LSP Rust Small Result`, `ripr+ New Gap Gate` — classic branch-protection status
+checks) green on the exact head, plus 0 unresolved conversation threads (enforced by
+the `main` branch ruleset's required-review-thread-resolution rule; classic branch
+protection's own conversation-resolution setting is off) is what gates a merge
+attempt — not `needs-*`/`merge-ready`. The mechanical `needs-label-gate` that once
+blocked a GitHub merge on `needs-*` presence was retired (#4005). That doesn't make
+`needs-*` inert: the `queue_reconciler` cron strips the `merge-ready` navigation
+label when a non-CI `needs-*` label is present or live CI is red, and the ops merge
+checklist still treats an active `needs-*` label as a hard stop — an unaddressed
+bounce label still blocks a PR from merging in practice, as reconciliation/process
+discipline, not a ruleset gate. **Main must stay green; merge requires green**
+(2026-04-26 directive) — verify workspace-wide CI, not just per-crate, before merging.
 
 ## Publication and proof
 
