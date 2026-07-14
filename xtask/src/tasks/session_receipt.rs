@@ -81,12 +81,8 @@ pub struct SessionReceipt {
     /// succeeded. `dirty` is only meaningful when this is `true`.
     pub dirty_check_ok: bool,
     pub toolchain_version: String,
-    /// Resolved program id, validated via
-    /// `goals::manifest::validate_program_id` (bare id, no path
-    /// separators/`..`, and a manifest that actually exists) -- an
-    /// invalid/garbage `default_program` in `active.toml` never passes
-    /// through unfiltered. `None` when unresolved or invalid; see
-    /// `program_note` for why.
+    /// Explicit program id supplied for this session. Portfolio state never
+    /// auto-selects a repository-global program.
     pub program: Option<String>,
     pub lane: Option<String>,
     /// Populated when `program` is `None` because the candidate id
@@ -217,7 +213,7 @@ fn build_receipt(
 
     let (program, program_note) = match program_arg {
         Some(explicit) => (Some(explicit), None),
-        None => resolve_default_program(root),
+        None => (None, None),
     };
     let lane = lane_arg;
 
@@ -282,36 +278,12 @@ fn dirty_from_status(status_output: Option<&str>) -> (Option<bool>, bool) {
     }
 }
 
-/// Resolves the receipt's `program` the same way `goals::snapshot`'s
-/// `resolve_program` does: `.perl-lsp/goals/active.toml`'s
-/// `default_program` (falling back to `active_program` when unset), but
-/// ALWAYS run through `goals::manifest::validate_program_id` -- a bare id
-/// with no path separators/`..` whose manifest actually exists under
-/// `.perl-lsp/goals/programs/`. An invalid/garbage `default_program`
-/// (or a missing/unparseable pointer file) fails CLOSED to `(None,
-/// Some(reason))`/`(None, None)` rather than ever passing through
-/// unvalidated (deep-review finding on PR #3866: this previously matched
-/// `goals::snapshot::build_snapshot_at`'s OLD unvalidated read, not its
-/// current validated `resolve_program`).
-fn resolve_default_program(root: &Path) -> (Option<String>, Option<String>) {
-    let Ok(pointer) = crate::tasks::goals::manifest::load_active_pointer(root) else {
-        return (None, None);
-    };
-    let candidate = pointer
-        .default_program
-        .clone()
-        .or_else(|| (!pointer.active_program.is_empty()).then(|| pointer.active_program.clone()));
-
-    let Some(candidate) = candidate else {
-        return (None, None);
-    };
-
-    match crate::tasks::goals::manifest::validate_program_id(root, &candidate) {
-        Ok(()) => (Some(candidate), None),
-        Err(reason) => {
-            (None, Some(format!("default_program {candidate:?} failed validation: {reason}")))
-        }
-    }
+/// Portfolio state never auto-selects a program for a session receipt. A
+/// worker may provide an explicit `--program`; otherwise the receipt records
+/// no program claim.
+#[cfg(test)]
+fn resolve_default_program(_root: &Path) -> (Option<String>, Option<String>) {
+    (None, None)
 }
 
 fn fetch_origin_main(root: &Path) -> bool {
@@ -563,12 +535,12 @@ mod tests {
         )?;
         let (program, note) = resolve_default_program(temp.path());
         assert_eq!(program, None, "an invalid program id must never pass through unfiltered");
-        assert!(note.is_some(), "an invalid candidate must leave a note explaining why");
+        assert_eq!(note, None, "legacy pointer fields are ignored in portfolio mode");
         Ok(())
     }
 
     #[test]
-    fn resolve_default_program_accepts_a_validated_manifest() -> Result<()> {
+    fn resolve_default_program_does_not_select_a_validated_manifest() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let programs_dir = temp.path().join(".perl-lsp/goals/programs");
         fs::create_dir_all(&programs_dir)?;
@@ -578,7 +550,7 @@ mod tests {
             "active_program = \"\"\ndefault_program = \"demo_program\"\n",
         )?;
         let (program, note) = resolve_default_program(temp.path());
-        assert_eq!(program, Some("demo_program".to_owned()));
+        assert_eq!(program, None);
         assert_eq!(note, None);
         Ok(())
     }

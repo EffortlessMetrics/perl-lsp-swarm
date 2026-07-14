@@ -55,11 +55,11 @@ fn build_snapshot_at(
     program_arg: Option<String>,
     fixture: Option<PathBuf>,
 ) -> Result<SelectionSnapshot> {
-    let pointer = manifest::load_active_pointer(root)?;
-    let default_program = pointer
-        .default_program
-        .clone()
-        .or_else(|| (!pointer.active_program.is_empty()).then(|| pointer.active_program.clone()));
+    // Schema 3 is a portfolio, not a repository-global routing pointer.
+    // Legacy fields remain parseable for compatibility but are deliberately
+    // ignored here; only an explicit `--program` may select one program until
+    // the portfolio candidate compiler is introduced.
+    let default_program = None;
 
     let known_programs = discover_known_programs(root)?;
 
@@ -71,15 +71,11 @@ fn build_snapshot_at(
     // instead of `goals next --json` exiting with a non-JSON error —
     // `--json` callers must always get parseable output.
     //
-    // The `default_program` arm used to assign it straight from
-    // `active.toml` with no validation at all (#3647 follow-up finding,
-    // #3696/#3697): an unknown, malformed, or path-traversal-shaped
-    // `default_program` reached `resolved_program` unchecked whenever no
-    // explicit `--program` was given — fail-OPEN on a control-plane
-    // work-routing authority (this was also #3692 defect 5). This
-    // `resolve_program` now runs BOTH sources through the same
+    // Legacy default_program selection was removed by the portfolio schema;
+    // No legacy pointer is consulted by this portfolio path.
+    // Explicit `--program` still runs through the same
     // `manifest::validate_program_id` check the static
-    // `active_goal_manifest::validate_default_program` validator uses, so
+    // program-id validation used by the compatibility validator, so
     // the two can never drift or fail open again.
     let resolved_program =
         resolve_program(root, program_arg.as_deref(), default_program.as_deref());
@@ -111,10 +107,10 @@ fn build_snapshot_at(
     Ok(snapshot)
 }
 
-/// Resolves which program `goals next` selects against: an explicit
+/// Resolves an explicitly requested program for `goals next`:
 /// `--program` wins when given (even if invalid — it never falls back to
-/// `default_program`, matching the pre-existing `--program` contract),
-/// otherwise `active.toml`'s `default_program`. Either source must pass
+/// the portfolio, matching the explicit `--program` contract),
+/// portfolio state is never an implicit fallback. The explicit id must pass
 /// `manifest::validate_program_id` (bare id, no path separators/`..`, and
 /// an existing manifest under `.perl-lsp/goals/programs/`) or resolution
 /// fails closed to `None` — `select_next` turns that into
@@ -605,7 +601,7 @@ commands = ["rtk cargo test"]
         }
     }
 
-    // #3692 defect 5 ("stale default_program -> non-JSON error") is now
+    // Legacy default-program regressions remain covered by explicit-id tests:
     // covered by #3697's `resolve_program_rejects_an_unvalidated_default_program`
     // and `unvalidated_default_program_blocks_selection_with_ambiguous_program_authority`
     // tests below (landed on main in a7eccc885 before this branch was
@@ -632,6 +628,27 @@ commands = ["rtk cargo test"]
         );
         assert_eq!(snapshot.resolved_program, None);
         assert!(snapshot.candidates.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn portfolio_does_not_use_legacy_default_program_as_selection_authority() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let goals = temp.path().join(".perl-lsp/goals/programs");
+        fs::create_dir_all(&goals)?;
+        fs::write(goals.join("known.toml"), "id = \"known\"\n")?;
+        fs::write(
+            temp.path().join(".perl-lsp/goals/active.toml"),
+            "schema = 2\nactive_program = \"known\"\ndefault_program = \"known\"\n",
+        )?;
+        let fixture_path = temp.path().join("prs.json");
+        fs::write(&fixture_path, r#"{"repository":"r","prs":[]}"#)?;
+
+        let snapshot = build_snapshot_at(temp.path(), None, Some(fixture_path))?;
+
+        assert_eq!(snapshot.default_program, None);
+        assert_eq!(snapshot.resolved_program, None);
+        assert_eq!(snapshot.requested_program, None);
         Ok(())
     }
 
