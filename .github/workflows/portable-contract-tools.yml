@@ -1,0 +1,36 @@
+name: Portable Contract Tools
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'aqua.yaml'
+      - 'scripts/tools/aqua-doctor.sh'
+      - 'docs/how-to/PORTABLE_CONTRACT_TOOLS.md'
+      - '.github/workflows/portable-contract-tools.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: portable-contract-tools-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Aqua inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install pinned Aqua bootstrap
+        run: |
+          set -euo pipefail
+          go install github.com/aquaproj/aqua/v2/cmd/aqua@v2.57.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Validate and install checked-in tools
+        run: bash scripts/tools/aqua-doctor.sh
