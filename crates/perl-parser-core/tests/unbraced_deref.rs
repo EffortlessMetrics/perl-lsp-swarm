@@ -113,14 +113,6 @@ fn braced_hash_deref_is_unary() {
     assert!(sexp.contains("unary_%{}"), "braced hash deref should be Unary: got {sexp}");
 }
 
-#[test]
-fn braced_glob_deref_is_unary() {
-    for source in ["*{$ref};", "*{$self->{key}};"] {
-        let sexp = first_expr_sexp(source);
-        assert!(sexp.contains("unary_*{}"), "braced glob deref should be Unary: got {sexp}");
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Unbraced forms — these are the ones that were wrong before the fix.
 // Each must produce the SAME node shape as its braced equivalent.

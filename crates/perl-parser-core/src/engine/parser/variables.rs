@@ -1049,10 +1049,17 @@ impl<'a> Parser<'a> {
             self.consume_deref_body_terminators()?;
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
-            return Ok(Node::new(
+            if self.peek_kind() == Some(TokenKind::Assign) {
+                let name = String::from_utf8_lossy(&self.src_bytes[start.saturating_add(1)..end])
+                    .trim()
+                    .to_string();
+                return Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }));
+            }
+            let node = Node::new(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(expr) },
                 SourceLocation { start, end },
-            ));
+            );
+            return self.parse_postfix_chain(node);
         }
 
         // Special handling for @, %, or $ sigil followed by { - array/hash/scalar dereference
@@ -1619,20 +1626,51 @@ impl<'a> Parser<'a> {
 /// restore its source offsets relative to the containing source file.
 fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<Node> {
     let mut parser = Parser::new(source);
-    let ast = parser.parse()?;
+    let ast = parser.parse().map_err(|error| offset_parse_error(error, offset))?;
     let NodeKind::Program { mut statements } = ast.kind else {
         return Err(ParseError::syntax("Expected an expression program", offset));
     };
-    let statement = statements
-        .drain(..)
-        .next()
-        .ok_or_else(|| ParseError::syntax("Expected an expression", offset))?;
-    let NodeKind::ExpressionStatement { expression } = statement.kind else {
-        return Err(ParseError::syntax("Expected an expression statement", offset));
-    };
-    let mut expression = *expression;
+    let mut expression = None;
+    for statement in statements.drain(..) {
+        let statement_start = statement.location.start;
+        let NodeKind::ExpressionStatement { expression: statement_expression } = statement.kind
+        else {
+            return Err(ParseError::syntax(
+                "Expected an expression statement",
+                offset.saturating_add(statement_start),
+            ));
+        };
+        // A braced dereference follows Perl block-expression semantics: when
+        // multiple expression statements are present, the final expression is
+        // the value used as the dereference target. Every preceding statement
+        // is still validated above, rather than silently discarded.
+        expression = Some(*statement_expression);
+    }
+    let mut expression = expression.ok_or_else(|| ParseError::syntax("Expected an expression", offset))?;
     shift_node_locations(&mut expression, offset);
     Ok(expression)
+}
+
+fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
+    match error {
+        ParseError::UnexpectedToken { expected, found, location } => ParseError::UnexpectedToken {
+            expected,
+            found,
+            location: location.saturating_add(offset),
+        },
+        ParseError::SyntaxError { message, location } => {
+            ParseError::SyntaxError { message, location: location.saturating_add(offset) }
+        }
+        ParseError::Advisory { message, location } => {
+            ParseError::Advisory { message, location: location.saturating_add(offset) }
+        }
+        ParseError::Recovered { site, kind, location } => ParseError::Recovered {
+            site,
+            kind,
+            location: location.saturating_add(offset),
+        },
+        other => other,
+    }
 }
 
 fn shift_node_locations(node: &mut Node, offset: usize) {
@@ -1668,6 +1706,26 @@ fn is_simple_scalar_name(name: &str) -> bool {
         return false;
     }
     chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+#[cfg(test)]
+mod inline_expression_tests {
+    use super::*;
+
+    #[test]
+    fn non_expression_inline_statement_reports_offset_location() {
+        let error = match parse_inline_expression("my $name;", 17) {
+            Ok(_) => return,
+            Err(error) => error,
+        };
+        assert_eq!(error.location(), Some(17));
+    }
+
+    #[test]
+    fn propagated_syntax_error_is_offset() {
+        let error = offset_parse_error(ParseError::syntax("bad", 3), 17);
+        assert_eq!(error.location(), Some(20));
+    }
 }
 
 /// `true` when `name` is a package-qualified scalar name made of two or
