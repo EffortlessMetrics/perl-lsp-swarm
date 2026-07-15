@@ -14,11 +14,7 @@ import type {
   StateChangeEvent,
 } from 'vscode-languageclient/node';
 import { PerlTestAdapter } from './testAdapter';
-import {
-  activateDebugger,
-  rewriteTestLensCommand,
-  parseDebugTestLaunchTarget,
-} from './debugAdapter';
+import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
 import { BinaryDownloader, parseLocalVersion } from './downloader';
 import { runLanguageServerHealthCheck } from './languageServerHealth';
 import { OnboardingManager } from './onboarding';
@@ -44,8 +40,13 @@ import { registerPodPreview } from './podPreview';
 import { registerGherkinProviders } from './gherkinProviders';
 import { registerGherkinStepDefinitionSupport } from './gherkinStepDefinitions';
 import { registerDocumentFeatureGroup } from './documentFeatureGroup';
-import { selectTestCommandAtPosition } from './runTestAtCursor';
 import { StreamingCompletionController } from './streamingCompletion';
+import {
+  runAllTestsWithProve,
+  runCurrentTestWithProve,
+  runTestAtCursorCommand,
+  runTestsCommand,
+} from './testCommands';
 import { registerMcpSupport } from './mcpSupport';
 import { registerServerCommandGroup } from './serverCommandGroup';
 import { registerCriticCommandGroup } from './criticCommandGroup';
@@ -410,9 +411,19 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 
   const testCommandDisposables = registerTestCommandGroup({
-    runTests: (test) => runTestsCommandImpl(test),
+    runTests: (test) =>
+      runTestsCommand(test, {
+        activeClient: client,
+        testAdapter,
+        statusBarItem,
+        serverNotRunningMessage,
+      }),
     runCurrentTest: () => runCurrentTestWithProve(),
-    runTestAtCursor: () => runTestAtCursorCommandImpl(),
+    runTestAtCursor: () =>
+      runTestAtCursorCommand({
+        activeClient: client,
+        serverNotRunningMessage,
+      }),
     runAllTests: () => runAllTestsWithProve(),
   });
 
@@ -1010,91 +1021,6 @@ export async function activate(context: vscode.ExtensionContext) {
     markLanguageClientStartupMilestone,
     stop: deactivate,
   };
-}
-
-async function runTestsCommandImpl(test?: unknown): Promise<void> {
-  let targetUri: vscode.Uri | undefined;
-
-  if (test) {
-    const target = parseDebugTestLaunchTarget(test);
-    if (target?.program) {
-      targetUri = vscode.Uri.file(target.program);
-    }
-  }
-
-  if (!targetUri) {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor || editor.document.languageId !== 'perl') {
-      vscode.window.showErrorMessage('No active Perl file to test');
-      return;
-    }
-    targetUri = editor.document.uri;
-  }
-
-  // Restrict to test files (.t, .pl) - .pm files are modules, not test scripts
-  const filePath = targetUri.fsPath;
-  if (!filePath.endsWith('.t') && !filePath.endsWith('.pl')) {
-    vscode.window.showWarningMessage('Run Tests is only available for .t and .pl files');
-    return;
-  }
-
-  if (testAdapter) {
-    const originalText = statusBarItem?.text;
-    const originalTooltip = statusBarItem?.tooltip;
-
-    if (statusBarItem) {
-      statusBarItem.text = '$(beaker~spin) Running Tests...';
-      statusBarItem.tooltip = 'Executing Perl tests in current file';
-    }
-
-    try {
-      await testAdapter.runFileTests(targetUri);
-    } finally {
-      if (statusBarItem && originalText) {
-        statusBarItem.text = originalText;
-        statusBarItem.tooltip = originalTooltip;
-      }
-    }
-  } else {
-    vscode.window.showWarningMessage(
-      'Test adapter is not available. It might still be initializing.',
-    );
-  }
-}
-
-async function runTestAtCursorCommandImpl(): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
-    vscode.window.showErrorMessage('Run Test at Cursor requires an active Perl file');
-    return;
-  }
-
-  if (editor.document.isDirty) {
-    await editor.document.save();
-  }
-
-  if (!client) {
-    vscode.window.showWarningMessage(serverNotRunningMessage());
-    return;
-  }
-
-  const lenses = await client.sendRequest<Array<{
-    range?: {
-      start: { line: number; character: number };
-      end: { line: number; character: number };
-    };
-    command?: { command: string; arguments?: unknown[] };
-  }> | null>('textDocument/codeLens', {
-    textDocument: { uri: editor.document.uri.toString() },
-  });
-
-  const command = selectTestCommandAtPosition(lenses ?? [], editor.selection.active);
-  if (!command) {
-    vscode.window.showWarningMessage('No runnable test was found at the cursor position');
-    return;
-  }
-
-  await vscode.commands.executeCommand(command.command, ...(command.arguments ?? []));
 }
 
 export async function deactivate() {
@@ -1882,56 +1808,6 @@ async function runCheckSyntax(): Promise<void> {
       }
     });
   });
-}
-
-async function runProveTask(name: string, args: string[], cwd?: string): Promise<void> {
-  const scope = cwd
-    ? (vscode.workspace.getWorkspaceFolder(vscode.Uri.file(cwd)) ?? vscode.TaskScope.Global)
-    : vscode.TaskScope.Global;
-  const execution = new vscode.ProcessExecution('prove', args, cwd ? { cwd } : undefined);
-  const task = new vscode.Task({ type: 'perl-lsp' }, scope, name, 'perl-lsp', execution);
-  task.presentationOptions = {
-    reveal: vscode.TaskRevealKind.Always,
-    panel: vscode.TaskPanelKind.Shared,
-    clear: false,
-    showReuseMessage: false,
-  };
-  await vscode.tasks.executeTask(task);
-}
-
-async function runCurrentTestWithProve(): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
-    vscode.window.showErrorMessage('No active Perl file to run');
-    return;
-  }
-
-  if (editor.document.isDirty) {
-    await editor.document.save();
-  }
-
-  const filePath = editor.document.uri.fsPath;
-  const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-  const cwd = workspaceFolder?.uri.fsPath;
-
-  await runProveTask('Perl Tests: Current File', ['-v', filePath], cwd);
-}
-
-async function runAllTestsWithProve(): Promise<void> {
-  const workspaceFolders = vscode.workspace.workspaceFolders;
-  if (!workspaceFolders || workspaceFolders.length === 0) {
-    vscode.window.showErrorMessage('No workspace folder open');
-    return;
-  }
-
-  const firstFolder = workspaceFolders[0];
-  if (!firstFolder) {
-    vscode.window.showErrorMessage('No workspace folder open');
-    return;
-  }
-
-  const cwd = firstFolder.uri.fsPath;
-  await runProveTask('Perl Tests: All', ['-r', 't/'], cwd);
 }
 
 async function showIncPaths(): Promise<void> {
