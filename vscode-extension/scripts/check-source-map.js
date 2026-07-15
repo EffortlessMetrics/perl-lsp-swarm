@@ -146,6 +146,7 @@ async function createReceipt({
       'This receipt proves that the exact development bundle and retained map resolve a known generated frame to the embedded source path. It does not prove a production crash occurred or authorize publishing the map as a public VSIX asset.',
   };
   fs.mkdirSync(receiptDirectory, { recursive: true });
+  fs.copyFileSync(bundle, path.join(receiptDirectory, 'extension.js'));
   fs.copyFileSync(sourceMap, path.join(receiptDirectory, 'extension.js.map'));
   fs.writeFileSync(
     path.join(receiptDirectory, 'source-map-receipt.json'),

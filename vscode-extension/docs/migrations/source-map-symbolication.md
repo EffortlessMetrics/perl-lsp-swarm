@@ -9,6 +9,7 @@ known generated frame back to `src/workspaceTopology.ts`, records bundle and
 map SHA-256 values, and writes:
 
 ```text
+target/receipts/vscode-source-map/extension.js
 target/receipts/vscode-source-map/extension.js.map
 target/receipts/vscode-source-map/source-map-receipt.json
 ```
