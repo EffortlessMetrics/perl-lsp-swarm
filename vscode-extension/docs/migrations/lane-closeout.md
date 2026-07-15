@@ -35,6 +35,8 @@ this repository into `perl-lsp`.
 | #4144 | VSIX package inventory baseline refresh              | Merged |
 | #4232 | Toolchain and extension-host receipt metadata        | Merged |
 | #4247 | Published-smoke runtime metadata propagation         | Merged |
+| #4249 | Runtime metadata closeout reconciliation             | Merged |
+| #4250 | Closeout formatting correction                       | Merged |
 
 Each slice was refreshed from current `origin/main` when necessary and kept
 to its owned production seam, direct proof, and required generated artifacts.
@@ -76,7 +78,9 @@ npm run test:ci
 ```
 
 The focused downloader run passed 113 tests; the full CI suite passed 735
-tests with one existing skip. The current-source Linux smoke passed on the
+tests with one existing skip on the earlier closeout revision. The current
+canonical gate passes 736 tests with one documented packaged-server skip. The
+current-source Linux smoke passed on the
 package-baseline refresh and exercised the exact-source editor-host contract:
 activation, initialization, provider request, restart, shutdown, invalid-path
 health guidance, source identity, and VSIX identity. The package inventory
@@ -92,11 +96,16 @@ command. PR #4070 subsequently repaired that quoting in the workflow. The
 downloader PR changed only its implementation and focused tests; the repair
 was kept as a separate workflow PR.
 
-## Remaining work and sync boundary
+## Handoff and release boundary
 
-The modernization lane is complete and ready for a history-preserving sync.
-Issue #4120 was closed by merged PR #4121. No publish, tag, release, or
-`perl-lsp` synchronization has been performed. The target checkout is
-available locally, and the next authorized operation is to pin and verify a
-swarm cut before merging this logical PR/commit history into it without
-replacing the trail with an opaque snapshot.
+The modernization lane is complete and has been synchronized into `perl-lsp`
+with its history preserved. Issue #4120 was closed by merged PR #4121. The
+tested immutable swarm cut is `fc47f8117fa49bd45fde65be2f1cd8e1c625c78d`;
+the target synchronization merge is `c1e600d940a18035d3c32d81409bb33745f433fc`,
+and the target sync ledger is recorded by PR #9988. The sync used a two-parent
+complete-tree merge with the documented target-repository exclusions rather
+than an opaque content-state snapshot.
+
+No publish, tag, or release operation has been performed. Historical receipts
+retain the toolchain versions they actually tested; current development and
+publishing authority is Node 26.x with npm 11.18.0.
