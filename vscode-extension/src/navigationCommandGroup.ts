@@ -12,24 +12,19 @@ export function registerNavigationCommandGroup(
 ): vscode.Disposable[] {
   const openDemoProjectCommand = vscode.commands.registerCommand(
     'perl-lsp.openDemoProject',
-    async () => {
-      await dependencies.openDemoProject();
-    },
+    dependencies.openDemoProject,
   );
   const organizeImportsCommand = vscode.commands.registerCommand(
     'perl-lsp.organizeImports',
-    async () => {
-      await dependencies.organizeImports();
-    },
+    dependencies.organizeImports,
   );
-  const showVersionCommand = vscode.commands.registerCommand('perl-lsp.showVersion', async () => {
-    await dependencies.showVersion();
-  });
+  const showVersionCommand = vscode.commands.registerCommand(
+    'perl-lsp.showVersion',
+    dependencies.showVersion,
+  );
   const showStatusMenuCommand = vscode.commands.registerCommand(
     'perl-lsp.showStatusMenu',
-    async () => {
-      await dependencies.showStatusMenu();
-    },
+    dependencies.showStatusMenu,
   );
 
   return [

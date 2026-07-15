@@ -22,13 +22,22 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
+let registeredDisposables: vscode.Disposable[] = [];
+
+afterEach(() => {
+  for (const disposable of registeredDisposables) {
+    disposable.dispose();
+  }
+  registeredDisposables = [];
+});
+
 describe('registerNavigationCommandGroup', () => {
   test('registers navigation commands and delegates execution', async () => {
     const dependencies = makeDependencies();
 
-    const disposables = registerNavigationCommandGroup(dependencies);
+    registeredDisposables = registerNavigationCommandGroup(dependencies);
 
-    expect(disposables).toHaveLength(4);
+    expect(registeredDisposables).toHaveLength(4);
     await vscode.commands.executeCommand('perl-lsp.openDemoProject');
     await vscode.commands.executeCommand('perl-lsp.organizeImports');
     await vscode.commands.executeCommand('perl-lsp.showVersion');
@@ -43,7 +52,7 @@ describe('registerNavigationCommandGroup', () => {
   test('does not invoke callbacks during registration', () => {
     const dependencies = makeDependencies();
 
-    registerNavigationCommandGroup(dependencies);
+    registeredDisposables = registerNavigationCommandGroup(dependencies);
 
     expect(dependencies.openDemoProject).not.toHaveBeenCalled();
     expect(dependencies.organizeImports).not.toHaveBeenCalled();
