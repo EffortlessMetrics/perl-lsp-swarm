@@ -4,8 +4,9 @@ Status: complete on `main`; this closeout is merged after the final runtime
 slice and records the handoff boundary for the resulting history.
 
 This closeout records the reviewable PR trail and the evidence boundary for
-the modernization lane. It does not publish, tag, release, or synchronize
-this repository into `perl-lsp`.
+the modernization lane. It does not publish, tag, or release this repository;
+the completed history-preserving synchronization into `perl-lsp` is recorded
+below.
 
 ## Delivered PR trail
 
@@ -102,7 +103,8 @@ The modernization lane is complete and has been synchronized into `perl-lsp`
 with its history preserved. Issue #4120 was closed by merged PR #4121. The
 tested immutable swarm cut is `fc47f8117fa49bd45fde65be2f1cd8e1c625c78d`;
 the target synchronization merge is `c1e600d940a18035d3c32d81409bb33745f433fc`,
-and the target sync ledger is recorded by PR #9988. The sync used a two-parent
+and the target sync ledger is recorded by `EffortlessMetrics/perl-lsp#9988`.
+The sync used a two-parent
 complete-tree merge with the documented target-repository exclusions rather
 than an opaque content-state snapshot.
 
