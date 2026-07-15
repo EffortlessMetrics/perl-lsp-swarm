@@ -5,9 +5,10 @@
 use super::super::*;
 use perl_module::resolution::use_lib::resolve_use_lib_paths_from_source;
 use perl_module::resolution::{
-    ModuleUriResolution, resolve_module_path as resolve_workspace_module_path,
-    resolve_module_uri_with_effective_inc,
+    ModuleUriResolution, build_effective_inc_roots,
+    resolve_module_path as resolve_workspace_module_path, resolve_module_uri_with_effective_inc,
 };
+use perl_parser_core::hir::{IncRootAction, lower_ast};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -50,11 +51,76 @@ fn prepend_use_lib_paths(
     workspace_root: &std::path::Path,
     file_dir: Option<&std::path::Path>,
 ) {
-    let dynamic = resolve_use_lib_paths_from_source(doc_text, workspace_root, file_dir);
-    for p in dynamic.into_iter().rev() {
-        include_paths.retain(|existing| existing != &p);
-        include_paths.insert(0, p);
+    let mut dynamic = resolve_use_lib_paths_from_source(doc_text, workspace_root, file_dir);
+    // The source extractor covers ordinary static `use lib`/`no lib` syntax
+    // without reparsing the document. Fall back to HIR only for recovery forms
+    // that the source scanner could not recover; this keeps the legacy resolver
+    // cheap while retaining compiler-backed roots where they add information.
+    if dynamic.is_empty() {
+        dynamic = hir_use_lib_paths(doc_text, workspace_root, file_dir);
     }
+
+    // Keep the resolver's precedence and deduplication policy in one place.
+    // Source-derived paths preserve compatibility for recovery-only and FindBin
+    // forms, while HIR remains the fallback for syntax the scanner cannot see.
+    if !dynamic.is_empty() {
+        let roots = build_effective_inc_roots(include_paths, &[], false, &dynamic, &[]);
+        include_paths.clear();
+        include_paths
+            .extend(roots.into_iter().map(|root| root.path.to_string_lossy().into_owned()));
+    }
+
+    // Keep configured/system include paths untouched in this legacy method:
+    // without a request offset, a later `no lib` must not cancel a root while
+    // resolving an earlier use/import in the same document.
+}
+
+fn hir_use_lib_paths(
+    doc_text: &str,
+    workspace_root: &std::path::Path,
+    file_dir: Option<&std::path::Path>,
+) -> Vec<String> {
+    let mut parser = perl_parser_core::Parser::new(doc_text);
+    let output = parser.parse_with_recovery();
+    let hir = lower_ast(&output.ast);
+    let mut paths = Vec::new();
+
+    for fact in hir.compile_environment.inc_roots {
+        if fact.kind != perl_parser_core::hir::IncRootKind::UseLib {
+            continue;
+        }
+        // HIR records these as non-dynamic strings, but FindBin-derived forms
+        // still require the resolver's source-aware expansion below.
+        if fact.path.contains('$') {
+            continue;
+        }
+
+        let resolved = perl_module::resolution::use_lib::resolve_use_lib_paths(
+            &[perl_module::resolution::use_lib::UseLibPath {
+                path: fact.path,
+                from_findbin: false,
+            }],
+            workspace_root,
+            file_dir,
+        );
+
+        match fact.action {
+            IncRootAction::Add => {
+                for path in resolved.into_iter().rev() {
+                    paths.retain(|existing| existing != &path);
+                    paths.insert(0, path);
+                }
+            }
+            IncRootAction::Remove => {
+                for path in resolved {
+                    paths.retain(|existing| existing != &path);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    paths
 }
 
 fn workspace_root_for_doc(workspace_folders: &[String], doc_uri: Option<&str>) -> Option<PathBuf> {
@@ -720,6 +786,94 @@ mod tests {
     // --- use lib wiring tests ---
 
     #[test]
+    fn hir_use_lib_facts_feed_module_resolution_roots() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let module_file = workspace.join("local").join("Foo.pm");
+        fs::create_dir_all(module_file.parent().ok_or("no parent")?)?;
+        fs::write(&module_file, "package Foo; 1;")?;
+
+        let hir_paths = hir_use_lib_paths("use lib './local';\nuse Foo;\n", &workspace, None);
+        assert_eq!(hir_paths, vec!["./local"]);
+
+        let server = LspServer::new();
+        *server.root_path.lock() = Some(workspace.clone());
+        server.workspace_config.lock().include_paths.clear();
+
+        let resolved = server
+            .resolve_module_path("Foo", Some("use lib './local';\nuse Foo;\n"))
+            .ok_or("expected Foo.pm to resolve through the HIR use lib fact")?;
+        assert_eq!(resolved, module_file);
+        Ok(())
+    }
+
+    #[test]
+    fn hir_use_lib_facts_preserve_no_lib_cancellation() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("local"))?;
+
+        let paths = hir_use_lib_paths(
+            "use lib './local';\nno lib './local';\nuse Foo;\n",
+            &workspace,
+            None,
+        );
+        assert!(paths.is_empty(), "no lib must cancel the preceding HIR root");
+        Ok(())
+    }
+
+    #[test]
+    fn hir_use_lib_facts_allow_a_later_use_lib_to_readd_a_root() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let module_file = workspace.join("local").join("Readded.pm");
+        fs::create_dir_all(module_file.parent().ok_or("no parent")?)?;
+        fs::write(&module_file, "package Readded; 1;")?;
+
+        let doc_text = "use lib './local';\nno lib './local';\nuse lib './local';\nuse Readded;\n";
+        let paths = hir_use_lib_paths(doc_text, &workspace, None);
+        assert_eq!(paths, vec!["./local"]);
+
+        let server = LspServer::new();
+        *server.root_path.lock() = Some(workspace.clone());
+        server.workspace_config.lock().include_paths.clear();
+
+        let resolved = server
+            .resolve_module_path("Readded", Some(doc_text))
+            .ok_or("expected the later use lib to restore the lexical root")?;
+        assert_eq!(resolved, module_file);
+        Ok(())
+    }
+
+    #[test]
+    fn source_only_later_use_lib_keeps_source_precedence_over_hir_duplicate() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let scripts = workspace.join("scripts");
+        let hir_module = workspace.join("lib1").join("Dup.pm");
+        let source_only_module = scripts.join("lib2").join("Dup.pm");
+        fs::create_dir_all(hir_module.parent().ok_or("missing HIR module parent")?)?;
+        fs::create_dir_all(source_only_module.parent().ok_or("missing source module parent")?)?;
+        fs::write(&hir_module, "package Dup; 1;")?;
+        fs::write(&source_only_module, "package Dup; 2;")?;
+
+        let server = LspServer::new();
+        *server.root_path.lock() = Some(workspace.clone());
+        server.workspace_config.lock().include_paths.clear();
+
+        let doc_text = "use FindBin;\nuse lib 'lib1';\nuse lib \"$FindBin::Bin/lib2\";\n";
+        let doc_uri = url::Url::from_file_path(scripts.join("main.pl"))
+            .map_err(|_| "failed to create document URI")?
+            .to_string();
+        let resolved = server
+            .resolve_module_path_with_uri("Dup", Some(doc_text), Some(&doc_uri))
+            .ok_or("expected Dup.pm to resolve")?;
+
+        assert_eq!(resolved, source_only_module);
+        Ok(())
+    }
+
+    #[test]
     fn test_resolve_module_path_use_lib_single_quoted() -> TestResult {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
@@ -800,6 +954,56 @@ mod tests {
         assert_ne!(
             resolved, module_file,
             "no lib should remove prior use lib path from lexical overlay"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_module_path_without_offset_preserves_configured_root() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let module_file = workspace.join("custom").join("Gone").join("Soon.pm");
+        fs::create_dir_all(module_file.parent().ok_or("no parent")?)?;
+        fs::write(&module_file, "package Gone::Soon; 1;")?;
+
+        let server = LspServer::new();
+        *server.root_path.lock() = Some(workspace.clone());
+        {
+            let mut config = server.workspace_config.lock();
+            config.include_paths = vec!["custom".to_string()];
+        }
+
+        let doc_text = "no lib 'custom';\nuse Gone::Soon;\n";
+        let resolved = server.resolve_module_path("Gone::Soon", Some(doc_text));
+        assert_eq!(
+            resolved.as_deref(),
+            Some(module_file.as_path()),
+            "a whole-document resolver must not apply a later no lib to an earlier request without an offset"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_module_path_without_offset_preserves_absolute_configured_root() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let workspace = temp.path().join("workspace");
+        let module_file = workspace.join("custom").join("Gone").join("Soon.pm");
+        fs::create_dir_all(module_file.parent().ok_or("no parent")?)?;
+        fs::write(&module_file, "package Gone::Soon; 1;")?;
+
+        let server = LspServer::new();
+        *server.root_path.lock() = Some(workspace.clone());
+        {
+            let mut config = server.workspace_config.lock();
+            config.include_paths = vec![workspace.join("custom").to_string_lossy().into_owned()];
+        }
+
+        let doc_text = "no lib 'custom';\nuse Gone::Soon;\n";
+        let resolved = server.resolve_module_path("Gone::Soon", Some(doc_text));
+        assert_eq!(
+            resolved.as_deref(),
+            Some(module_file.as_path()),
+            "a whole-document resolver must preserve an absolute configured root without an offset"
         );
         Ok(())
     }
