@@ -1,8 +1,8 @@
 # Contributing to Perl LSP
 
-Thank you for your interest in contributing to Perl LSP! This is a **public alpha** — the core feature set is solid, but there are rough edges and plenty of room to help. Whether you are fixing a bug, improving Perl parsing coverage, or adding an LSP feature, you are welcome here.
+Thank you for your interest in contributing to Perl LSP! This is a **public beta** — the core feature set is solid, but there are rough edges and plenty of room to help. Whether you are fixing a bug, improving Perl parsing coverage, or adding an LSP feature, you are welcome here.
 
-> **Public alpha means:** things move fast, APIs may change between minor versions, and your early feedback shapes the 1.0 design. See [STABILITY.md](docs/reference/STABILITY.md) for the stability policy.
+> **Public beta means:** things move fast, APIs may change between minor versions, and your early feedback shapes the 1.0 design. See [STABILITY.md](docs/reference/STABILITY.md) for the stability policy.
 
 ## Quick Start
 

@@ -4,7 +4,7 @@ PackageLocale: en-US
 Publisher: EffortlessMetrics
 PackageName: perl-lsp
 License: MIT
-ShortDescription: Public-alpha Perl language server and debug adapter.
+ShortDescription: Public-beta Perl language server and debug adapter.
 PackageUrl: https://github.com/EffortlessMetrics/perl-lsp
 Moniker: perl-lsp
 Installers:

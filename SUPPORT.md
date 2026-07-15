@@ -29,7 +29,7 @@ If you've found a bug or have a feature request, please search the [existing iss
 
 ## Service Level Agreement (SLA)
 
-As a v0.12.x public alpha release, we target the following response times for issues:
+As a v0.17.x/v0.18.x public beta release line, we target the following response times for issues:
 
 | Priority | Response Time | Fix Time (Target) |
 |----------|---------------|-------------------|

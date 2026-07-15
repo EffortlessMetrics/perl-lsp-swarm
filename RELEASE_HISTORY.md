@@ -10,6 +10,16 @@ This file is:
 GitHub Release `publishedAt` is used as the release date when available.
 Tag commit timestamps may differ from release dates.
 
+## Current support posture
+
+- `v0.17.0` is the shipped public-beta release on the current support line.
+- `v0.18.0` is the next public-beta release on that same line; it is not a
+  maturity promotion or a beta-entry ceremony.
+- The primary UX is the VS Code/VSCodium extension with a managed `perllsp`
+  binary, with `perllsp --stdio` and `perllsp --doctor` as supported CLI entry
+  points.
+- DAP remains preview within the overall public-beta distribution.
+
 ## Release ledger
 
 | Version | Tag | GitHub Release | Released | Tag commit | Compare | Assets | crates.io | VS Code Marketplace | Notes file |

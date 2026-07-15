@@ -16,7 +16,7 @@
 
 A fast, native Perl 5 language server extension. Written in Rust for speed and reliability. No runtime dependencies -- just install and code.
 
-> **Public Alpha** -- This extension is under active development. Every feature listed below is wired up and exercised by tests, but as an alpha you will find edge cases where behavior is incomplete or wrong. Please [report issues](https://github.com/EffortlessMetrics/perl-lsp/issues/new/choose) if you encounter problems. For what the project's headline numbers mean (and do not mean), see the [status overview](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/project/status/index.md).
+> **Public Beta** -- This extension is the primary public-beta UX for Perl LSP and is under active development. Features are exercised by tests, but edge cases and refusal boundaries remain. Please [report issues](https://github.com/EffortlessMetrics/perl-lsp/issues/new/choose) if you encounter problems. For what the project's headline numbers mean (and do not mean), see the [status overview](https://github.com/EffortlessMetrics/perl-lsp/blob/master/docs/project/status/index.md).
 
 `perl-lsp` uses proof-backed answers where it has fresh, source-backed facts and
 keeps fallback or no-edit behavior where Perl is dynamic, generated, stale,
@@ -124,7 +124,7 @@ media assets and recording notes live in:
 
 Install from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs) or [Open VSX Registry](https://open-vsx.org/extension/EffortlessMetrics/perl-lsp-rs).
 
-Current extension and managed-binary artifacts are public alpha.
+Current extension and managed-binary artifacts are public beta.
 
 ```bash
 # VS Code
@@ -184,7 +184,7 @@ All settings are under the `perl-lsp.*` namespace. Open settings with `Ctrl+,` a
 | -------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `perl-lsp.autoDownload`          | `true`                       | Automatically download `perllsp` if not found locally                                                                                       |
 | `perl-lsp.serverPath`            | `""`                         | Absolute path to a `perllsp` binary (overrides auto-download)                                                                               |
-| `perl-lsp.channel`               | `"latest"`                   | Release channel. Use `latest` for the current public-alpha line or `tag` for a pinned public-alpha release                                  |
+| `perl-lsp.channel`               | `"latest"`                   | Release channel. Use `latest` for the current public-beta line or `tag` for a pinned public-beta release                                  |
 | `perl-lsp.versionTag`            | `""`                         | Specific release tag (e.g. `v0.12.1`) when channel is `tag`                                                                                 |
 | `perl-lsp.linuxLibc`             | `"auto"`                     | Linux libc release asset selection: `auto`, `gnu`, `glibc`, or `musl`                                                                       |
 | `perl-lsp.enableSemanticTokens`  | `true`                       | Enable semantic syntax highlighting (requires server restart to apply)                                                                      |

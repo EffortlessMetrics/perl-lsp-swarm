@@ -1,6 +1,6 @@
 package = "perl-lsp"
 display_name = "Perl Language Server"
-summary = "Public-alpha Perl language server and debug adapter"
+summary = "Public-beta Perl language server and debug adapter"
 homepage = "https://github.com/EffortlessMetrics/perl-lsp"
 license = "MIT"
 maintainer = "EffortlessMetrics <git@effortlesssteven.com>"

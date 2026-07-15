@@ -10,8 +10,8 @@ expected, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 If you are wiring `perllsp` into a GitHub Actions workflow, see
 [GitHub Actions Integration](GITHUB_ACTIONS.md).
 
-Current public install artifacts are public alpha. Use these paths for testing,
-editor trials, and early adoption, then verify the binary before wiring it into
+Current public install artifacts are public beta. Use these paths for supported
+beta installation and editor setup, then verify the binary before wiring it into
 shared automation.
 
 ## Fastest Path
@@ -37,7 +37,7 @@ perllsp --info
 ## Homebrew via the EffortlessMetrics tap
 
 `perllsp` is distributed through the owned EffortlessMetrics Homebrew tap, not
-Homebrew/core. Install the current public-alpha release with one command:
+Homebrew/core. Install the current public-beta release with one command:
 
 ```bash
 brew install effortlessmetrics/tap/perllsp
@@ -50,7 +50,7 @@ brew tap effortlessmetrics/tap
 brew install perllsp
 ```
 
-This covers macOS Intel, macOS Apple Silicon, Linux x86_64, and Linux aarch64 via Linuxbrew. The formula is automatically bumped on each public-alpha release.
+This covers macOS Intel, macOS Apple Silicon, Linux x86_64, and Linux aarch64 via Linuxbrew. The formula is automatically bumped on each public-beta release.
 
 Shell completions are not installed by default. To add them:
 
@@ -71,7 +71,7 @@ cd perl-lsp
 cargo build --release --bin perllsp -p perllsp
 ```
 
-If you want Cargo to build and install the published public-alpha package into
+If you want Cargo to build and install the published public-beta package into
 Cargo's bin directory instead:
 
 ```bash
@@ -80,7 +80,7 @@ cargo install perllsp
 
 ## Prebuilt Releases
 
-GitHub Releases provides public-alpha downloadable archives for the supported platforms.
+GitHub Releases provides public-beta downloadable archives for the supported platforms.
 Check the latest release page before copying a version number.
 
 Most Linux users should choose the `gnu` archive. Use `musl` mainly for Alpine

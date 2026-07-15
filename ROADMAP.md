@@ -19,22 +19,22 @@ project docs when you need exact release facts, receipts, or milestone detail.
 - Real Perl editor trust dashboard: [docs/project/status/real_perl_editor_trust_v1.md](docs/project/status/real_perl_editor_trust_v1.md)
 - Published release tracking: [RELEASE_HISTORY.md](RELEASE_HISTORY.md) and [GitHub Releases](https://github.com/EffortlessMetrics/perl-lsp/releases)
 
-## Now (v0.14.0 public-alpha channel closeout)
+## Now (v0.18.0 public-beta release preparation)
 
-- `v0.14.0` is the current public-alpha release line; verify live channel state before citing completion
-- GitHub Release and crates.io surfaces show `v0.14.0` live, while channel closeout still needs explicit receipts across Docker, VS Code Marketplace, Open VSX, and the owned Homebrew tap path
-- Keep package-version language separate from product-posture language: SemVer package version, public-alpha product promise
+- `v0.17.0` is the shipped public-beta release; verify live channel state before citing completion
+- `v0.18.0` is the next public-beta release on the existing support line, not a maturity promotion; channel work still needs explicit receipts across GitHub, crates.io, VS Code Marketplace, Open VSX, and the owned Homebrew tap path
+- Keep package-version language separate from product-posture language: SemVer package version, public-beta product promise
 - CI/control-plane work is sequenced through narrow lanes in [docs/project/CI_WAVE_EXECUTION_PLAN.md](docs/project/CI_WAVE_EXECUTION_PLAN.md), starting with `update-status --write` streaming
 - See [docs/project/ROADMAP.md](docs/project/ROADMAP.md) for the canonical active item list, exit criteria, and post-release sequencing
 
-## Next (post-v0.14.0)
+## Next (post-v0.18.0)
 
 - Close release-channel receipts before starting broad cleanup
 - Continue compiler-backed provider cutovers with source/freshness/provenance receipts and live fallback behavior
 - Resume parser, corpus, semantic, DAP, and editor-trust hardening through one-lane, one-PR acceptance receipts
 - Keep the install story verified across all distribution channels and keep release notes tied to concrete receipts
 
-## Beyond v0.14.0
+## Beyond v0.18.0
 
 - Stability contract for APIs and advertised wire behavior
 - Performance hardening for larger workspaces

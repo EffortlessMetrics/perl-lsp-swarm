@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-perl-lsp today is a **credible public alpha** with solid fundamentals:
+perl-lsp today is a **credible public beta** with solid fundamentals:
 - **100% LSP feature coverage** (97 features, all GA)
 - **Sub-millisecond parsing** (931ns incremental)
 - **72% CPAN clean parse rate** (3139/4355 top-1000 modules)

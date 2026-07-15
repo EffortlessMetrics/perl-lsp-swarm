@@ -126,7 +126,7 @@ fn sync_readme(content: &str, surface: &ReleaseSurface) -> Result<String> {
     let mut lines: Vec<String> = Vec::new();
     for line in content.lines() {
         if line.starts_with("| Release track | `") {
-            lines.push(format!("| Release track | `v{}` public-alpha patch |", surface.version));
+            lines.push(format!("| Release track | `v{}` public-beta release |", surface.version));
             release_track_seen = true;
         } else if line.starts_with("| Published crate surface | ") {
             lines.push(format!(
@@ -164,7 +164,7 @@ fn sync_current_status(content: &str, surface: &ReleaseSurface) -> Result<String
             version_seen = true;
         } else if line.starts_with("| **Current release train** | ") {
             lines.push(format!(
-                "| **Current release train** | `v{}` public-alpha patch prep | [docs/releases/v{}.md](../releases/v{}.md) |",
+                "| **Current release train** | `v{}` public-beta release prep | [docs/releases/v{}.md](../releases/v{}.md) |",
                 surface.version, surface.version, surface.version
             ));
             train_seen = true;
@@ -217,7 +217,7 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
             workspace_version_seen = true;
         } else if line.starts_with("- Current release train: `v") {
             lines.push(format!(
-                "- Current release train: `v{}` public-alpha patch prep, with release dispatch intentionally pending",
+                "- Current release train: `v{}` public-beta release prep, with release dispatch intentionally pending",
                 surface.version
             ));
             current_release_seen = true;
@@ -229,22 +229,22 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
             published_surface_seen = true;
         } else if line.starts_with("Publication discipline: `v") {
             lines.push(format!(
-                "Publication discipline: `v{}` uses a normal SemVer package version for release channels while the human-facing product posture remains public alpha. See [RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) for the cross-channel ledger, and do not dispatch the release until the prep checks pass.",
+                "Publication discipline: `v{}` uses a normal SemVer package version for release channels while the human-facing product posture remains public beta. See [RELEASE_HISTORY.md](../../RELEASE_HISTORY.md) for the cross-channel ledger, and do not dispatch the release until the prep checks pass.",
                 surface.version
             ));
             publication_discipline_seen = true;
-        } else if line.starts_with("## Active: Public-Alpha Release Prep (v") {
+        } else if line.starts_with("## Active: Public-Beta Release Prep (v") {
             lines.push(format!(
-                "## Active: Public-Alpha Release Prep (v{})",
+                "## Active: Public-Beta Release Prep (v{})",
                 surface.version
             ));
             active_section_seen = true;
-        } else if line.starts_with("### Now (v") && line.contains("public-alpha patch prep)") {
-            lines.push(format!("### Now (v{} public-alpha patch prep)", surface.version));
+        } else if line.starts_with("### Now (v") && line.contains("public-beta release prep)") {
+            lines.push(format!("### Now (v{} public-beta release prep)", surface.version));
             now_section_seen = true;
-        } else if line.starts_with("- `v") && line.contains("is staged as the next public-alpha patch release; run the release-prep checks before dispatching the train") {
+        } else if line.starts_with("- `v") && line.contains("is staged as the next public-beta release; run the release-prep checks before dispatching the train") {
             lines.push(format!(
-                "- `v{}` is staged as the next public-alpha patch release; run the release-prep checks before dispatching the train",
+                "- `v{}` is staged as the next public-beta release; run the release-prep checks before dispatching the train",
                 surface.version
             ));
             now_gate_seen = true;
@@ -269,7 +269,7 @@ fn sync_roadmap(content: &str, surface: &ReleaseSurface) -> Result<String> {
         bail!("ROADMAP.md: publication discipline line not found");
     }
     if !active_section_seen {
-        bail!("ROADMAP.md: Active: Public-Alpha Release Prep heading not found");
+        bail!("ROADMAP.md: Active: Public-Beta Release Prep heading not found");
     }
     if !now_section_seen {
         bail!("ROADMAP.md: current-release Now section not found");
@@ -294,13 +294,13 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
     for line in content.lines() {
         if line.starts_with("- **Release posture**: `v") {
             lines.push(format!(
-                "- **Release posture**: `v{}` is staged as the next public-alpha patch train. The workspace version line is `v{}`, the published crate surface is {} crates, and release dispatch is intentionally pending until the prep checks pass.",
+                "- **Release posture**: `v{}` is staged as the next public-beta release train. The workspace version line is `v{}`, the published crate surface is {} crates, and release dispatch is intentionally pending until the prep checks pass.",
                 surface.version, surface.version, surface.published_crate_count
             ));
             release_posture_seen = true;
         } else if line.starts_with("**Now (active milestone: v") {
             lines.push(format!(
-                "**Now (active milestone: v{} public-alpha release prep)**",
+                "**Now (active milestone: v{} public-beta release prep)**",
                 surface.version
             ));
             now_section_seen = true;
@@ -321,7 +321,7 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
             ));
             published_surface_bullet_seen = true;
         } else if line.starts_with("**Next (post v") {
-            lines.push(format!("**Next (post v{} public alpha)**", surface.version));
+            lines.push(format!("**Next (post v{} public beta)**", surface.version));
             next_section_seen = true;
         } else {
             lines.push(line.to_string());
@@ -356,7 +356,7 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
     for line in content.lines() {
         if line.starts_with("**Current release train**: `v") {
             lines.push(format!(
-                "**Current release train**: `v{}` public-alpha patch prep",
+                "**Current release train**: `v{}` public-beta release prep",
                 surface.version
             ));
             train_seen = true;

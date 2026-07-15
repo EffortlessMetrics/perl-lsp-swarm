@@ -1,7 +1,7 @@
 # Linux Packaging Scaffold
 
 This directory holds the repo-owned packaging templates for Linux package
-managers. The current package descriptions are for public-alpha artifacts.
+managers. The current package descriptions are for public-beta artifacts.
 
 ## Scope
 
@@ -22,7 +22,7 @@ managers. The current package descriptions are for public-alpha artifacts.
 - It does not claim official distro acceptance
 - It does not replace the existing tarball-based GitHub release assets
 - It does not imply a final-support channel; these templates describe the
-  public-alpha release line
+  public-beta release line
 - The current templates are x86_64-first so they stay small and reviewable; the metadata file also names the aarch64 GNU asset for the later matrix expansion
 
 ## Template inputs

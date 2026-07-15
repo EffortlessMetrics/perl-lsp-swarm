@@ -5,16 +5,19 @@
 
 ## Current Release Call
 
-**Current release train**: `v0.15.2` hotfix — shipped 2026-05-26
-**Workspace version line**: `v0.15.0` (Cargo.toml workspace.package.version)
+**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta
+**Release track**: Public beta. `v0.18.0` is the next public-beta release on the existing support line, not a maturity promotion.
+**Workspace version line**: `v0.17.0` (Cargo.toml workspace.package.version)
 **Published crate surface**: 31 crates
-**Release target**: `v0.16.0` is the next planned train
-**Ship readiness**: `v0.15.0` (2026-05-22), `v0.15.1` (2026-05-26), and `v0.15.2` (2026-05-26) are tagged; channel receipts (crates.io, VS Code Marketplace, Docker) are pending reconciliation.
+**Release target**: `v0.18.0` public beta
+**Primary UX**: VS Code/VSCodium extension with managed `perllsp` binary; CLI `perllsp --stdio` and `perllsp --doctor`
+**Authority**: development `perl-lsp-swarm/main`; release execution `perl-lsp/master`
+**Ship readiness**: GitHub Release `v0.17.0` is published with platform archives, VSIX, checksums, and SBOM; crates.io, editor registries, and the `v0.18.0` candidate require explicit current receipts.
 
 ## Active Blockers
 
-- Channel receipt reconciliation for v0.15.x (crates.io, Marketplace, Docker)
-- `docs/releases/v0.15.1.md` status is draft; channel receipts remain pending
+- Reconcile current crates.io, VS Code Marketplace, and Open VSX receipts for the shipped beta line
+- Freeze, package, and verify the `v0.18.0` public-beta candidate across the primary channels
 
 ## 0.15.2 Hotfix Receipts (2026-05-26)
 
@@ -82,15 +85,15 @@
 
 | Component | Status | Notes |
 | --- | --- | --- |
-| `perl-parser` | Public alpha | Native parser path |
-| `perl-lsp` | Public alpha | Coverage tracked via `features.toml` |
+| `perl-parser` | Public beta | Native parser path; shipped component of the public-beta product |
+| `perl-lsp` | Public beta | Coverage tracked via `features.toml` |
 | `perl-dap` | Preview (Native + Bridge) | Native adapter is present; compatibility path retained |
-| `perl-lexer` | Public alpha | Context-aware tokenizer |
-| `perl-corpus` | Public alpha | Corpus counts tracked in computed metrics |
+| `perl-lexer` | Public beta | Context-aware tokenizer; shipped component of the public-beta product |
+| `perl-corpus` | Public beta | Corpus counts tracked in computed metrics |
 
 ## DAP Stance
 
-Native + Bridge preview. Harden preview flows is active work.
+Native + Bridge preview within the overall public-beta distribution. Harden preview flows is active work.
 
 ## Corpus Tracking Receipts
 

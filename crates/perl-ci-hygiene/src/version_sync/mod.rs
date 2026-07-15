@@ -272,7 +272,7 @@ fn ensure_release_notes_scaffold(repo_root: &Path, new_version: &str) -> Result<
          tag: \"v{new_version}\"\n\
          release_date_utc: \"{today}\"\n\
          notes_status: draft\n\
-         release_track: public-alpha\n\
+         release_track: public-beta\n\
          release_kind: minor\n\
          channels:\n\
          \x20 github_release: pending\n\

@@ -220,7 +220,7 @@ pub(super) fn generate_quality_status(root: &Path, original: &str) -> Result<Str
          - **Mutation testing**: {mutation_note}\n\
          - **Lexer performance scorecard**: `cargo bench -p perl-lexer --bench lexer_benchmarks` writes `benchmarks/results/lexer_scorecard.json` for trend comparisons
 \
-         - **Production Status**: LSP server public alpha (`just ci-gate` passing)"
+         - **Production Status**: LSP server public beta (`just ci-gate` passing)"
     );
 
     let crate_table = format_crate_quality_table(&mutation_by_crate, &tests_by_crate);

@@ -226,11 +226,11 @@ Released 2026-03-30. Cleanup completed 2026-04-02.
 - End-to-end LSP feature development guide (#3027, PR #3115)
 - GIF recording guide and asset structure (#2336, PR #3130)
 
-## Active: Public-Alpha Channel Closeout (v0.14.0)
+## Active: Public-Beta Release Preparation (v0.18.0)
 
-- GitHub Release and crates.io surfaces show `v0.14.0` live; Docker, VS Code Marketplace, Open VSX, and Homebrew tap receipts are still tracked separately until verified
+- GitHub Release `v0.17.0` is published with platform archives, VSIX, checksums, and SBOM; crates.io, VS Code Marketplace, Open VSX, Docker, and Homebrew receipts are still tracked separately until verified
 - The owned Homebrew path is `brew install effortlessmetrics/tap/perllsp`
-- Public install language must say public alpha, not stable/GA
+- Public install language must say public beta, not stable/GA
 - Follow-on quality cleanup resumes after the remaining release-channel receipts are closed or explicitly deferred
 
 ### Release Exit Criteria
@@ -239,11 +239,11 @@ The release train is complete only when each criterion has an evidence link in t
 
 | Area | Exit criterion | Evidence source |
 | --- | --- | --- |
-| Version surface | Workspace package version, `features.toml` metadata, extension packaging, release notes, and changelog all name the same `v0.14.0` train | [`../../Cargo.toml`](../../Cargo.toml), [`../../features.toml`](../../features.toml), [docs/releases/v0.14.0.md](../releases/v0.14.0.md) |
+| Version surface | Workspace package version, `features.toml` metadata, extension packaging, release notes, and changelog all name the same `v0.18.0` train | [`../../Cargo.toml`](../../Cargo.toml), [`../../features.toml`](../../features.toml), [docs/releases/v0.18.0.md](../releases/v0.18.0.md) |
 | Publish surface | The 31-crate allowlist has dry-run or publish receipts, and deferred items have successor issues rather than silent drops | [`[workspace.metadata.publish.allow]`](../../Cargo.toml), [docs/releases/v0.14.0.md](../releases/v0.14.0.md) |
 | Install channels | GitHub assets, crates.io, Docker, VS Code Marketplace, Open VSX, and Homebrew each have an install/smoke receipt or an explicit pending/deferred state | [status/release.md](status/release.md), [CURRENT_STATUS.md](CURRENT_STATUS.md), [docs/releases/v0.14.0.md](../releases/v0.14.0.md) |
 | Local gate | The canonical merge receipt is fresh for the branch being released or the post-release closeout branch | [protocols/verification.md](protocols/verification.md) |
-| Public wording | User-facing docs call the release public alpha and avoid stable/GA promises | [docs/releases/v0.14.0.md](../releases/v0.14.0.md), [CURRENT_STATUS.md](CURRENT_STATUS.md) |
+| Public wording | User-facing docs call the release public beta and avoid stable/GA promises | [docs/releases/v0.18.0.md](../releases/v0.18.0.md), [CURRENT_STATUS.md](CURRENT_STATUS.md) |
 
 ### Tracks
 
@@ -465,15 +465,15 @@ dedicated release-lineage plan.
 | Receiver/completion | Better completion with confidence tiers | Static/source-backed receiver proof | Dynamic/generated exactness claims |
 | Editor trust | Replayable editor workflows | BDD/UX/raw RPC receipts | Wall-clock promises without measurement |
 | Reliability/CI | Stronger gates, less flake | Serialized recipes, bounded tests | Broad CI rewrites, test flood |
-| DAP | Predictable public-alpha debug behavior | Production-surface protocol tests | Native parity claims |
+| DAP | Predictable preview behavior within the public-beta product | Production-surface protocol tests | Native parity claims |
 | Substrate/parser | Better facts and invariants | Property/fuzz/parser receipts | Provider cutover without trust-lane promotion |
 | Release-lineage | Park future sync requirements | Blocker notes, future candidate criteria | Any release cut or publish work |
 
 ## Now / Next / Later
 
-### Now (v0.14.0 public-alpha channel closeout)
+### Now (v0.18.0 public-beta release preparation)
 
-- Reconcile the live `v0.14.0` GitHub Release and crates.io surfaces with release notes, release history, generated status, and remaining channel receipts.
+- Reconcile the shipped `v0.17.0` GitHub Release and current registry surfaces with release notes, release history, generated status, and remaining channel receipts.
 - CI/control-plane Wave 2 substrate already landed and should not be re-implemented in parallel follow-up PRs:
   - Per-gate timeout regression coverage in gate receipts (#7525)
   - Bounded build-plane/agent storage contract (`cargo-safe`, `devplane-init`, `storage-doctor`) (#7449)
@@ -489,7 +489,7 @@ dedicated release-lineage plan.
   6. Merge-train planner/receipt protocol with stop conditions
   7. Tokmd advisory stabilization (explicitly non-required while calibrating signal)
 - Wave guardrails: no bulk stale-closure automation, no full merge bot scope, no global pre-push hooks, no broad CI architecture rewrite in this pass.
-- `v0.14.0` is the current public-alpha release line; finish receipt closeout before treating the release as fully closed
+- `v0.17.0` is the shipped public-beta release and `v0.18.0` is the next public-beta train; finish receipt closeout before treating the next release as fully closed
 - Pre-announcement license badge fix (PR #3193): canonical SPDX text in all 126 LICENSE files
 - Pre-announcement Docker arm64 timeout fix (#3188 → PR #3191, merged)
 - Per-release dependency triage: 7 dependabot PRs merged 2026-04-07 (#3178–#3184)
@@ -503,13 +503,13 @@ dedicated release-lineage plan.
 - Receiver expression facts are planned in [PLSP-SPEC-0005](../specs/PLSP-SPEC-0005-receiver-expression-facts.md) and sequenced in [RECEIVER_FACTS_IMPLEMENTATION_PLAN.md](RECEIVER_FACTS_IMPLEMENTATION_PLAN.md); the lane must land semantic facts and receipts before provider-visible receiver completion claims.
 - CI/control-plane next-wave execution sequencing is tracked in [CI_WAVE_EXECUTION_PLAN.md](CI_WAVE_EXECUTION_PLAN.md), with #7404 (`update-status --write` streaming) as the top urgency lane.
 
-### Next (post v0.14.0 closeout)
+### Next (post v0.18.0 closeout)
 
 - The 0.13.x line has built confidence across parser, diagnostics, refactoring, and distribution
 - Resume parser, corpus, semantic, and DAP hardening after the release-channel receipts close
 - Run the editor-trust wave through [EDITOR_TRUST_WAVE.md](EDITOR_TRUST_WAVE.md): one lane, one canonical PR, one acceptance checklist, one verification receipt
 - Keep the install story verified across all distribution channels
-- Keep public-alpha release notes concise and tied to concrete channel receipts
+- Keep public-beta release notes concise and tied to concrete channel receipts
 
 #### Post-Release Sequencing
 
@@ -524,7 +524,7 @@ dedicated release-lineage plan.
 - **API and wire-behavior stability:** document which facade APIs and LSP responses are compatibility commitments before `v1.0.0`.
 - **Large-workspace performance:** keep indexing, completion, and provider latency measured on realistic file and symbol counts before expanding advertised performance claims.
 - **Security and supply chain:** tighten subprocess environment seams, publish/install verification, SBOM/signature posture, and dependency freshness policy.
-- **Distribution maturity:** make Homebrew, Docker, crates.io, VS Code Marketplace, Open VSX, and GitHub Releases behave like one coherent public-alpha install story.
+- **Distribution maturity:** make Homebrew, Docker, crates.io, VS Code Marketplace, Open VSX, and GitHub Releases behave like one coherent public-beta install story.
 
 ## Milestone Ladder
 

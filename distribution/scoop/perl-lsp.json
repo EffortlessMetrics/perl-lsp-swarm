@@ -1,6 +1,6 @@
 {
   "version": "__RELEASE_VERSION__",
-  "description": "Public-alpha Perl language server and debug adapter",
+  "description": "Public-beta Perl language server and debug adapter",
   "homepage": "https://github.com/EffortlessMetrics/perl-lsp",
   "license": "MIT",
   "architecture": {
@@ -23,7 +23,7 @@
     }
   },
   "notes": [
-    "perl-lsp is a public-alpha Language Server Protocol implementation for Perl.",
+    "perl-lsp is a public-beta Language Server Protocol implementation for Perl.",
     "",
     "Usage:",
     "  perllsp --stdio",

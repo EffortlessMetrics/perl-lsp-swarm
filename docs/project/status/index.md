@@ -5,7 +5,7 @@
 
 ## What's True Right Now
 
-- **Release posture**: `v0.16.0` is the current workspace version (Perldoc virtual documents, LSP 3.18 applyEdit metadata, DAP improvements). The published crate surface is 31 crates. Release is pending; see `docs/releases/v0.16.0.md` for ship readiness.
+- **Release posture**: `v0.17.0` is the shipped public-beta release (2026-06-28); `v0.18.0` is the next public-beta release on the existing support line, not a maturity promotion. The published crate surface is 31 crates. See `docs/project/status/release.md` for channel receipts and candidate readiness.
 - **Status discipline**: this file is for narrative, subsystem files are for evidence, and `just status-update` plus `just status-check` are the anti-drift workflow
 - **LSP server**: `features.toml` is the canonical capability catalog; 60 user-visible features at 100% coverage (125/125 including plumbing protocol methods and DAP handlers) — see generated [lsp.md](lsp.md) for current numbers
 - **Test infrastructure**: `nix develop -c just ci-gate` is the canonical merge receipt and `cargo xtask ignored-tests` is the tracked-test-debt source
@@ -40,14 +40,14 @@
 
 ## What's Next
 
-**Now (active milestone: v0.16.0 release pending)**
-- `v0.16.0` in-flight: Perldoc virtual documents, LSP 3.18 applyEdit metadata, DAP improvements, quality hardening
-- Keep public-alpha wording consistent: package versions use normal SemVer, but the product posture is not stable/GA
+**Now (active milestone: v0.18.0 public-beta release preparation)**
+- `v0.17.0` is shipped public beta; freeze and prove `v0.18.0` as the next public-beta release on the same support line
+- Keep public-beta wording consistent: package versions use normal SemVer, but the product posture is not stable/GA
 - Keep the three parser verification lanes explicit and green: `just corpus-sweep-check`, `just cpan-corpus-check`, and `just parser-audit`, with `just common-corpus-check` covering the pinned strict-clean subset
 - Keep the top-level README, status docs, and release runbooks aligned with the actual `perllsp` asset line, the `perl-lsp-rs` extension package, and the 31-crate published surface
 - Keep Homebrew, GitHub release assets, VS Code Marketplace, and Open VSX install receipts explicit in the release closeout
 
-**Next (v0.16.0)**
+**Next (v0.18.0 public beta)**
 - Keep all three parser corpus lanes current: Ubuntu system Perl, the cached CPAN top 1000 install, and the repo-owned corpus audit
 - Fold internal torture and edge-case suites into routine verification receipts
 - Resume parser, corpus, semantic, and DAP hardening after the release-channel receipts are closed
