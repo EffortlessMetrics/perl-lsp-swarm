@@ -185,6 +185,7 @@ impl LspServer {
         if use_fallback {
             match self.on_references(params.clone().unwrap_or(json!({})), request_id) {
                 Ok(res) => Ok(Some(res)),
+                Err(error) if error.code == crate::protocol::REQUEST_CANCELLED => Err(error),
                 Err(_) => self.handle_references_with_request_id(params, request_id),
             }
         } else {

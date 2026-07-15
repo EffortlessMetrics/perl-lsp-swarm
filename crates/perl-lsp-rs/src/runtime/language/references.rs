@@ -1438,14 +1438,12 @@ impl LspServer {
         let candidate_limit = budget.max_documents.saturating_sub(1);
         let mut candidates = BinaryHeap::with_capacity(candidate_limit);
         let mut candidate_overflowed = false;
-        let mut candidate_seen = false;
         {
             let documents = self.documents_guard();
             for uri in documents.keys() {
                 if uri.as_str() == current_uri {
                     continue;
                 }
-                candidate_seen = true;
                 self.check_references_cancellation(request_id, receipt)?;
                 if Instant::now() >= budget.deadline {
                     receipt.deadline_exhausted = true;
@@ -1476,9 +1474,6 @@ impl LspServer {
         candidates.sort();
 
         if candidate_overflowed {
-            receipt.budget_exhausted = true;
-            receipt.fallback_reason = Some("reference_scan_document_budget".to_owned());
-        } else if candidate_seen && candidate_limit == 0 {
             receipt.budget_exhausted = true;
             receipt.fallback_reason = Some("reference_scan_document_budget".to_owned());
         }
