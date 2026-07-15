@@ -13,7 +13,7 @@ export interface DiagnosticCommandContext {
   readonly previewPackageRename: () => Promise<void>;
   readonly copyProviderDecisionReceipt: (provider?: unknown) => Promise<void>;
   readonly showWorkspaceTrustReport: () => Promise<void>;
-  readonly explainMissingModuleLookup: (moduleName?: unknown) => Promise<void>;
+  readonly explainMissingModuleLookup: (moduleName?: unknown) => Promise<unknown>;
   readonly explainDiagnostic: (request?: unknown) => Promise<void>;
 }
 

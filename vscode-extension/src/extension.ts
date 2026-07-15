@@ -1313,7 +1313,7 @@ export async function activate(context: vscode.ExtensionContext) {
       explainMissingModuleLookupCommand(
         client,
         typeof moduleName === 'string' ? moduleName : undefined,
-      ).then(() => undefined),
+      ),
     explainDiagnostic: (request) => explainDiagnosticCommand(client, request),
   });
 
