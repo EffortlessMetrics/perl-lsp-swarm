@@ -589,7 +589,7 @@ mod tests {
         let report = collect_module_uri_candidates_with_effective_inc(
             "Foo::Bar",
             &[],
-            &[workspace_uri],
+            std::slice::from_ref(&workspace_uri),
             &roots,
             std::time::Duration::from_secs(1),
         );
@@ -614,7 +614,7 @@ mod tests {
             resolve_module_uri_with_effective_inc(
                 "Foo::Bar",
                 &[],
-                &[workspace_uri],
+                std::slice::from_ref(&workspace_uri),
                 &roots,
                 std::time::Duration::from_secs(1),
             ),
@@ -628,7 +628,7 @@ mod tests {
         let open_document = "file:///workspace/lib/Foo/Bar.pm".to_string();
         let report = collect_module_uri_candidates_with_effective_inc(
             "Foo'Bar",
-            &[open_document.clone()],
+            std::slice::from_ref(&open_document),
             &[],
             &[],
             std::time::Duration::from_secs(1),
