@@ -331,86 +331,77 @@ fn collect_module_uri_candidates(
     let mut ordered_roots = effective_inc_roots.to_vec();
     ordered_roots.sort_by_key(|r| r.precedence);
 
-    for workspace_folder in workspace_folders {
+    for inc_root in &ordered_roots {
         if start_time.elapsed() > timeout {
             return candidate_report(&canonical_module_name, &relative_path, candidates, true);
         }
 
-        let workspace_path = workspace_folder_to_path(workspace_folder);
-
-        for inc_root in &ordered_roots {
-            if !matches!(
-                inc_root.kind,
-                IncRootKind::FileLocalLexical | IncRootKind::WorkspaceRelative
-            ) {
-                continue;
-            }
-            if start_time.elapsed() > timeout {
-                return candidate_report(&canonical_module_name, &relative_path, candidates, true);
-            }
-
-            let full_path = full_path_for_root(inc_root, &workspace_path, &relative_path);
-            let Some(full_path) = full_path else { continue };
-
-            if full_path.is_file()
-                && let Ok(url) = Url::from_file_path(&full_path)
-            {
-                let uri = url.to_string();
-                if seen_uris.insert(uri.clone()) {
-                    candidates.push(ModuleUriCandidate {
-                        uri,
-                        source: inc_root.source.clone(),
-                        inc_root: Some(inc_root.clone()),
-                        search_order,
-                    });
-                    search_order += 1;
-                    if candidate_limit == Some(candidates.len()) {
+        match inc_root.kind {
+            IncRootKind::FileLocalLexical | IncRootKind::WorkspaceRelative => {
+                for workspace_folder in workspace_folders {
+                    if start_time.elapsed() > timeout {
                         return candidate_report(
                             &canonical_module_name,
                             &relative_path,
                             candidates,
-                            false,
+                            true,
                         );
+                    }
+
+                    let workspace_path = workspace_folder_to_path(workspace_folder);
+                    let full_path = full_path_for_root(inc_root, &workspace_path, &relative_path);
+                    let Some(full_path) = full_path else { continue };
+
+                    if full_path.is_file()
+                        && let Ok(url) = Url::from_file_path(&full_path)
+                    {
+                        let uri = url.to_string();
+                        if seen_uris.insert(uri.clone()) {
+                            candidates.push(ModuleUriCandidate {
+                                uri,
+                                source: inc_root.source.clone(),
+                                inc_root: Some(inc_root.clone()),
+                                search_order,
+                            });
+                            search_order += 1;
+                            if candidate_limit == Some(candidates.len()) {
+                                return candidate_report(
+                                    &canonical_module_name,
+                                    &relative_path,
+                                    candidates,
+                                    false,
+                                );
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
-
-    for inc_root in &ordered_roots {
-        if !matches!(
-            inc_root.kind,
             IncRootKind::ExternalAbsolute
-                | IncRootKind::Perl5LibEnv
-                | IncRootKind::InterpreterStartup
-                | IncRootKind::RuntimeDerived
-        ) {
-            continue;
-        }
-        if start_time.elapsed() > timeout {
-            return candidate_report(&canonical_module_name, &relative_path, candidates, true);
-        }
-
-        let full_path = inc_root.path.join(&relative_path);
-        if full_path.is_file()
-            && let Ok(url) = Url::from_file_path(&full_path)
-        {
-            let uri = url.to_string();
-            if seen_uris.insert(uri.clone()) {
-                candidates.push(ModuleUriCandidate {
-                    uri,
-                    source: inc_root.source.clone(),
-                    inc_root: Some(inc_root.clone()),
-                    search_order,
-                });
-                search_order += 1;
-                if candidate_limit == Some(candidates.len()) {
-                    return candidate_report(
-                        &canonical_module_name,
-                        &relative_path,
-                        candidates,
-                        false,
-                    );
+            | IncRootKind::Perl5LibEnv
+            | IncRootKind::InterpreterStartup
+            | IncRootKind::RuntimeDerived => {
+                let full_path = inc_root.path.join(&relative_path);
+                if full_path.is_file()
+                    && let Ok(url) = Url::from_file_path(&full_path)
+                {
+                    let uri = url.to_string();
+                    if seen_uris.insert(uri.clone()) {
+                        candidates.push(ModuleUriCandidate {
+                            uri,
+                            source: inc_root.source.clone(),
+                            inc_root: Some(inc_root.clone()),
+                            search_order,
+                        });
+                        search_order += 1;
+                        if candidate_limit == Some(candidates.len()) {
+                            return candidate_report(
+                                &canonical_module_name,
+                                &relative_path,
+                                candidates,
+                                false,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -498,7 +489,7 @@ fn full_path_for_root(
 #[cfg(test)]
 mod tests {
     use super::{
-        IncRootKind, ModuleUriResolution, build_effective_inc_roots,
+        IncRoot, IncRootKind, ModuleUriResolution, build_effective_inc_roots,
         collect_module_uri_candidates_with_effective_inc, open_document_uri_matches_relative_path,
         resolve_module_uri_with_effective_inc,
     };
@@ -620,6 +611,65 @@ mod tests {
             ),
             ModuleUriResolution::Resolved(report.candidates[0].uri.clone())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_report_visits_mixed_root_kinds_in_precedence_order()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let workspace_a = temp.path().join("workspace-a");
+        let workspace_b = temp.path().join("workspace-b");
+        let external = temp.path().join("external");
+        std::fs::create_dir_all(workspace_a.join("lib/Foo"))?;
+        std::fs::create_dir_all(workspace_b.join("lib/Foo"))?;
+        std::fs::create_dir_all(external.join("Foo"))?;
+        std::fs::write(workspace_a.join("lib/Foo/Bar.pm"), "package Foo::Bar; 1;")?;
+        std::fs::write(workspace_b.join("lib/Foo/Bar.pm"), "package Foo::Bar; 1;")?;
+        std::fs::write(external.join("Foo/Bar.pm"), "package Foo::Bar; 1;")?;
+
+        let workspace_uris = [
+            url::Url::from_directory_path(&workspace_a)
+                .map_err(|_| "failed to create first workspace URI")?
+                .to_string(),
+            url::Url::from_directory_path(&workspace_b)
+                .map_err(|_| "failed to create second workspace URI")?
+                .to_string(),
+        ];
+        let roots = [
+            IncRoot {
+                kind: IncRootKind::ExternalAbsolute,
+                path: external,
+                precedence: 0,
+                source: "external-first".to_string(),
+            },
+            IncRoot {
+                kind: IncRootKind::WorkspaceRelative,
+                path: PathBuf::from("lib"),
+                precedence: 1,
+                source: "workspace-second".to_string(),
+            },
+        ];
+
+        let report = collect_module_uri_candidates_with_effective_inc(
+            "Foo::Bar",
+            &[],
+            &workspace_uris,
+            &roots,
+            std::time::Duration::from_secs(1),
+        );
+
+        assert!(!report.timed_out);
+        assert_eq!(report.candidates.len(), 3);
+        assert_eq!(report.candidates[0].source, "external-first");
+        assert_eq!(report.candidates[0].search_order, 0);
+        assert_eq!(report.candidates[0].inc_root.as_ref(), Some(&roots[0]));
+        assert!(report.candidates[0].uri.ends_with("external/Foo/Bar.pm"));
+        assert_eq!(report.candidates[1].source, "workspace-second");
+        assert_eq!(report.candidates[1].search_order, 1);
+        assert!(report.candidates[1].uri.ends_with("workspace-a/lib/Foo/Bar.pm"));
+        assert_eq!(report.candidates[2].search_order, 2);
+        assert!(report.candidates[2].uri.ends_with("workspace-b/lib/Foo/Bar.pm"));
         Ok(())
     }
 
