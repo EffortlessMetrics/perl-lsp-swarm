@@ -79,6 +79,8 @@ import {
   showRefactoringOptionsCommand,
 } from './refactoringCommands';
 import { registerSupportCommandGroup } from './supportCommandGroup';
+import { reportIssueCommand } from './supportCommands';
+export { formatIssueDiagnosticInfo } from './supportCommands';
 import { ExtensionLanguageClientLifecycle } from './extensionComposition';
 import type { LifecycleState } from './languageClientLifecycle';
 import type {
@@ -672,69 +674,34 @@ export async function activate(context: vscode.ExtensionContext) {
   });
 
   const supportCommandDisposables = registerSupportCommandGroup({
-    reportIssue: async () => {
-      const extensionVersion = (context.extension.packageJSON.version as string) ?? 'unknown';
-      const editorVersion = vscode.version;
-      const editorName = (vscode.env as unknown as { appName?: string }).appName;
-      const platform = process.platform;
-      const arch = process.arch;
-
-      const getServerVersion = (): Promise<string> =>
-        new Promise((resolve) => {
-          if (!currentServerPath) {
-            resolve('unavailable');
-            return;
-          }
-          execFile(
-            currentServerPath,
-            ['--version'],
-            { timeout: 3000 },
-            (err: Error | null, stdout: string) => {
-              if (err) {
-                resolve('unavailable');
-                return;
-              }
-              const firstLine = stdout.trim().split('\n')[0] ?? '';
-              resolve(firstLine.trim() || 'unavailable');
-            },
-          );
-        });
-
-      const serverVersion = await getServerVersion();
-
-      const diagnosticInfo = formatIssueDiagnosticInfo({
-        serverVersion,
-        extensionVersion,
-        editorVersion,
-        platform,
-        arch,
-        editorName,
-      });
-
-      const selection = await vscode.window.showInformationMessage(
-        'Open a GitHub issue to report a bug or request a feature.',
-        'Copy Diagnostic Info',
-        'Open Issue Form',
-      );
-
-      if (selection === 'Copy Diagnostic Info') {
-        try {
-          await vscode.env.clipboard.writeText(diagnosticInfo);
-          vscode.window.showInformationMessage(
-            'Diagnostic info copied. Paste it into the issue form.',
-          );
-        } catch {
-          // Clipboard unavailable — continue to open browser anyway
-        }
-      }
-
-      if (selection === 'Copy Diagnostic Info' || selection === 'Open Issue Form') {
-        const url = vscode.Uri.parse(
-          'https://github.com/EffortlessMetrics/perl-lsp/issues/new?template=bug_report.yml',
-        );
-        await vscode.env.openExternal(url);
-      }
-    },
+    reportIssue: () =>
+      reportIssueCommand({
+        getServerVersion: () =>
+          new Promise((resolve) => {
+            if (!currentServerPath) {
+              resolve('unavailable');
+              return;
+            }
+            execFile(
+              currentServerPath,
+              ['--version'],
+              { timeout: 3000 },
+              (error: Error | null, stdout: string) => {
+                if (error) {
+                  resolve('unavailable');
+                  return;
+                }
+                const firstLine = stdout.trim().split('\n')[0] ?? '';
+                resolve(firstLine.trim() || 'unavailable');
+              },
+            );
+          }),
+        extensionVersion: (context.extension.packageJSON.version as string) ?? 'unknown',
+        editorVersion: vscode.version,
+        platform: process.platform,
+        arch: process.arch,
+        editorName: (vscode.env as unknown as { appName?: string }).appName,
+      }),
   });
 
   const formatOnSaveDisposable = vscode.workspace.onWillSaveTextDocument((event) => {
@@ -1464,23 +1431,6 @@ function getServerArgs(baseArgs: string[]): string[] {
 export function getLanguageServerLaunchArgs(enableLogging: boolean): string[] {
   const baseArgs = enableLogging ? ['--log'] : [];
   return getServerArgs(baseArgs);
-}
-
-export function formatIssueDiagnosticInfo(params: {
-  serverVersion: string;
-  extensionVersion: string;
-  editorVersion: string;
-  platform: string;
-  arch: string;
-  editorName?: string | undefined;
-}): string {
-  const editorName = (params.editorName ?? 'VS Code').trim() || 'VS Code';
-  return [
-    `perl-lsp server: ${params.serverVersion}`,
-    `Extension: ${params.extensionVersion}`,
-    `${editorName}: ${params.editorVersion}`,
-    `Platform: ${params.platform}/${params.arch}`,
-  ].join('\n');
 }
 
 function normalizeFeatureProfile(rawProfile: string): string | null {
