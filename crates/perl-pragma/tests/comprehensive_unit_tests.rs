@@ -71,6 +71,14 @@ fn dummy_node(start: usize, end: usize) -> Node {
     Node { kind: NodeKind::MissingExpression, location: loc(start, end) }
 }
 
+fn require(condition: bool, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if condition {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::Other, message).into())
+    }
+}
+
 // ===========================================================================
 // PragmaState tests
 // ===========================================================================
@@ -1331,8 +1339,15 @@ fn duplicate_builtin_imports_do_not_create_extra_entry() -> Result<(), Box<dyn s
     ]);
 
     let map = PragmaTracker::build(&ast);
-    assert_eq!(map.len(), 1, "duplicate use builtin should not add a redundant map entry");
-    assert_eq!(map[0].1.builtin_imports, vec!["blessed"]);
+    require(map.len() == 1, "duplicate use builtin should not add a redundant map entry")?;
+    let state = map.first().map(|entry| &entry.1).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "duplicate builtin state is missing")
+    })?;
+    require(
+        state.builtin_imports.len() == 1
+            && state.builtin_imports.first().map(String::as_str) == Some("blessed"),
+        "duplicate use builtin should preserve one imported name",
+    )?;
     Ok(())
 }
 
@@ -1343,7 +1358,45 @@ fn no_builtin_without_prior_imports_does_not_create_entry() -> Result<(), Box<dy
     let ast = program(vec![no_node("builtin", &["'blessed'"], 0, 22)]);
 
     let map = PragmaTracker::build(&ast);
-    assert_eq!(map.len(), 0, "`no builtin` for an unknown name must not create a map entry");
+    require(map.is_empty(), "`no builtin` for an unknown name must not create a map entry")?;
+    Ok(())
+}
+
+#[test]
+fn partial_builtin_imports_keep_real_transitions() -> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![
+        use_node("builtin", &["'true'", "'floor'"], 0, 30),
+        use_node("builtin", &["'true'"], 31, 50),
+        no_node("builtin", &["'floor'"], 51, 75),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    require(map.len() == 2, "duplicate import must not hide the real removal transition")?;
+    let state = PragmaTracker::state_for_offset(&map, 60);
+    require(
+        state.has_builtin_import("true") && !state.has_builtin_import("floor"),
+        "partial builtin removal must preserve the remaining import",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn conditional_builtin_use_and_no_follow_directive_rules() -> Result<(), Box<dyn std::error::Error>>
+{
+    let ast = program(vec![
+        use_node("if", &["$cond", "builtin", "'true'"], 0, 35),
+        use_node("unless", &["$other", "builtin", "'true'"], 36, 75),
+        no_node("if", &["$cond", "builtin", "'true'"], 76, 110),
+        no_node("unless", &["$other", "builtin", "'true'"], 111, 145),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    require(map.len() == 2, "conditional duplicate and no-op directives must not add entries")?;
+    let state = PragmaTracker::state_for_offset(&map, 130);
+    require(
+        !state.has_builtin_import("true"),
+        "conditional no builtin must remove the tracked import",
+    )?;
     Ok(())
 }
 
@@ -1359,9 +1412,46 @@ fn block_without_pragma_changes_does_not_create_restore_entry()
 
     let map = PragmaTracker::build(&ast);
     // Expected: strict entry, warnings entry — no restore between them.
-    assert_eq!(map.len(), 2, "empty block must not add a restore entry");
+    require(map.len() == 2, "empty block must not add a restore entry")?;
+    let state_inside = PragmaTracker::state_for_offset(&map, 18);
+    require(
+        state_inside.strict_vars && !state_inside.warnings,
+        "state inside an unchanged block must remain the outer state",
+    )?;
     let state_after = PragmaTracker::state_for_offset(&map, 30);
-    assert!(state_after.strict_vars && state_after.warnings);
+    require(
+        state_after.strict_vars && state_after.warnings,
+        "state after an unchanged block must include the following directive",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn changed_builtin_scope_restores_state_after_block() -> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![
+        use_node("builtin", &["'true'"], 0, 20),
+        block(
+            vec![
+                no_node("builtin", &["'true'"], 30, 50),
+                use_node("builtin", &["'floor'"], 51, 70),
+            ],
+            25,
+            75,
+        ),
+        dummy_node(76, 80),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    let state_inside = PragmaTracker::state_for_offset(&map, 60);
+    require(
+        !state_inside.has_builtin_import("true") && state_inside.has_builtin_import("floor"),
+        "changed scope must expose its inner builtin state",
+    )?;
+    let state_after = PragmaTracker::state_for_offset(&map, 78);
+    require(
+        state_after.has_builtin_import("true") && !state_after.has_builtin_import("floor"),
+        "changed scope must restore the outer builtin state",
+    )?;
     Ok(())
 }
 
