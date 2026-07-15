@@ -70,7 +70,7 @@ use parking_lot::RwLock;
 use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 use perl_semantic_facts::{
     AnchorFact, AnchorId, Confidence, EdgeFact, EntityFact, EntityId, EntityKind, FileId,
-    Provenance,
+    PackageEdge, PackageEdgeKind, Provenance,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
@@ -85,6 +85,7 @@ use crate::semantic::facts::PRODUCER_SCHEMA_VERSION;
 use crate::semantic::imports::ImportExportIndex;
 pub use crate::semantic::invalidation::ShardReplaceResult;
 use crate::semantic::invalidation::{ShardCategoryHashes, plan_shard_replacement};
+use crate::semantic::package_graph::PackageGraphIndex;
 use crate::semantic::references::ReferenceIndex;
 pub use crate::workspace::monitoring::{
     DegradationReason, EarlyExitReason, EarlyExitRecord, IndexInstrumentationSnapshot,
@@ -1306,6 +1307,8 @@ pub struct WorkspaceIndex {
     semantic_reference_index: Arc<RwLock<ReferenceIndex>>,
     /// Semantic cross-file import/export index.
     semantic_import_export_index: Arc<RwLock<ImportExportIndex>>,
+    /// HIR-derived semantic cross-file package inheritance index.
+    semantic_package_graph_index: Arc<RwLock<PackageGraphIndex>>,
     /// Document store for in-memory text
     document_store: DocumentStore,
     /// Workspace folder URIs for multi-root workspace support
@@ -1716,6 +1719,7 @@ impl WorkspaceIndex {
             fact_shards: Arc::new(RwLock::new(HashMap::new())),
             semantic_reference_index: Arc::new(RwLock::new(ReferenceIndex::new())),
             semantic_import_export_index: Arc::new(RwLock::new(ImportExportIndex::new())),
+            semantic_package_graph_index: Arc::new(RwLock::new(PackageGraphIndex::new())),
             document_store: DocumentStore::new(),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
         }
@@ -1758,6 +1762,7 @@ impl WorkspaceIndex {
             fact_shards: Arc::new(RwLock::new(HashMap::with_capacity(estimated_files))),
             semantic_reference_index: Arc::new(RwLock::new(ReferenceIndex::new())),
             semantic_import_export_index: Arc::new(RwLock::new(ImportExportIndex::new())),
+            semantic_package_graph_index: Arc::new(RwLock::new(PackageGraphIndex::new())),
             document_store: DocumentStore::new(),
             workspace_folders: Arc::new(RwLock::new(Vec::new())),
         }
@@ -2056,6 +2061,7 @@ impl WorkspaceIndex {
         let file_id = Self::hash_uri_to_file_id(&uri_str);
         let import_specs = bundle.import_specs;
         let use_lib_facts = bundle.use_lib_facts;
+        let package_edges = package_graph_edges_from_hir(&ast);
 
         // Update the index, refresh the global symbol cache, and replace this file's
         // contribution in the global reference index.
@@ -2189,6 +2195,15 @@ impl WorkspaceIndex {
                 }
             }
             self.replace_fact_shard_incremental(&key, fact_shard);
+
+            // Refresh the HIR-derived inheritance graph while the winning
+            // generation's file commit is still serialized by `files.write()`.
+            // Keeping remove/add in this guarded commit path prevents an older
+            // parse from replacing package edges after a newer generation has
+            // already committed its file index.
+            let mut package_graph = self.semantic_package_graph_index.write();
+            package_graph.remove_edges_for_file(&uri_str);
+            package_graph.add_edges(&uri_str, file_id, package_edges);
             #[cfg(test)]
             reindex_metrics::record_generation_accepted();
         }
@@ -2247,6 +2262,7 @@ impl WorkspaceIndex {
                 ie_idx.remove_module_exports(&uri_str);
                 ie_idx.remove_file_use_lib(&uri_str);
             }
+            self.semantic_package_graph_index.write().remove_edges_for_file(&uri_str);
 
             // Incrementally remove symbols and re-insert any shadowed names.
             let mut symbols = self.symbols.write();
@@ -2473,7 +2489,8 @@ impl WorkspaceIndex {
         let mut errors = Vec::new();
 
         // Phase 1: Parse all files without locks
-        let mut parsed: Vec<(String, String, FileIndex)> = Vec::with_capacity(files_to_index.len());
+        let mut parsed: Vec<(String, String, FileIndex, Vec<PackageEdge>)> =
+            Vec::with_capacity(files_to_index.len());
         for (uri, text) in &files_to_index {
             let uri_str = uri.to_string();
 
@@ -2531,7 +2548,8 @@ impl WorkspaceIndex {
             let mut visitor = IndexVisitor::new(&mut doc, uri_str.clone(), folder_uri);
             visitor.visit(&ast, &mut file_index);
 
-            parsed.push((key, uri_str, file_index));
+            let package_edges = package_graph_edges_from_hir(&ast);
+            parsed.push((key, uri_str, file_index, package_edges));
         }
 
         // Phase 2: Bulk insert with single cache rebuild
@@ -2546,7 +2564,7 @@ impl WorkspaceIndex {
             files.reserve(parsed.len());
             symbols.reserve(parsed.len().saturating_mul(20).saturating_mul(2));
 
-            for (key, uri_str, file_index) in parsed {
+            for (key, uri_str, file_index, package_edges) in parsed {
                 // Remove stale global references
                 if let Some(old_index) = files.get(&key) {
                     Self::remove_file_global_refs(&mut global_refs, old_index, &uri_str);
@@ -2566,6 +2584,14 @@ impl WorkspaceIndex {
                         }
                     }
                 }
+
+                // Keep batch indexing consistent with single-file indexing:
+                // replace this URI's HIR-derived package-graph contribution
+                // while the bulk file commit is still serialized.
+                let file_id = Self::hash_uri_to_file_id(&uri_str);
+                let mut package_graph = self.semantic_package_graph_index.write();
+                package_graph.remove_edges_for_file(&uri_str);
+                package_graph.add_edges(&uri_str, file_id, package_edges);
             }
 
             // Single rebuild at the end
@@ -2843,6 +2869,7 @@ impl WorkspaceIndex {
         self.fact_shards.write().clear();
         *self.semantic_reference_index.write() = ReferenceIndex::new();
         *self.semantic_import_export_index.write() = ImportExportIndex::new();
+        *self.semantic_package_graph_index.write() = PackageGraphIndex::new();
     }
 
     fn hash_uri_to_file_id(uri: &str) -> FileId {
@@ -3248,6 +3275,17 @@ impl WorkspaceIndex {
         self.fact_shards.read().get(&key).map(|shard| shard.file_id)
     }
 
+    /// Return the HIR-derived inheritance chain for a package.
+    ///
+    /// The result is backed by the same package graph used by semantic query
+    /// method resolution. Unknown packages return an empty chain.
+    pub fn package_graph_ancestors(
+        &self,
+        package_name: &str,
+    ) -> crate::semantic::package_graph::AncestorResult {
+        self.semantic_package_graph_index.read().ancestors(package_name)
+    }
+
     /// Invoke a scoped callback with [`WorkspaceSemanticQueries`] built from
     /// the current semantic indexes for the given URI.
     ///
@@ -3265,20 +3303,22 @@ impl WorkspaceIndex {
     ) -> Option<R> {
         let key = DocumentStore::uri_key(&Self::normalize_uri(uri));
 
-        // Acquire all three read guards simultaneously. The lock order must be
+        // Acquire all four read guards simultaneously. The lock order must be
         // consistent with every other site that acquires multiple locks to avoid
-        // deadlock: shards → reference_index → import_export_index.
+        // deadlock: shards → reference_index → import_export_index → package_graph.
         let shards_guard = self.fact_shards.read();
         let ref_guard = self.semantic_reference_index.read();
         let ie_guard = self.semantic_import_export_index.read();
+        let package_graph_guard = self.semantic_package_graph_index.read();
 
         // Verify the URI is indexed before entering the callback.
         let file_id = shards_guard.get(&key)?.file_id;
 
-        let queries = crate::semantic::queries::WorkspaceSemanticQueries::new(
+        let queries = crate::semantic::queries::WorkspaceSemanticQueries::with_package_graph(
             &ref_guard,
             &ie_guard,
             &shards_guard,
+            &package_graph_guard,
         );
 
         Some(f(file_id, queries))
@@ -4293,6 +4333,46 @@ impl FileExtractionBundle {
 
         Self { legacy_index: file_index, canonical_shard, import_specs, use_lib_facts }
     }
+}
+
+fn package_graph_edges_from_hir(ast: &Node) -> Vec<PackageEdge> {
+    let hir = perl_parser_core::hir::lower_ast(ast);
+    hir.stash_graph
+        .inheritance_edges
+        .iter()
+        .filter_map(|edge| {
+            let provenance = match edge.provenance {
+                perl_parser_core::hir::StashProvenance::ExactAst => Provenance::ExactAst,
+                perl_parser_core::hir::StashProvenance::DesugaredAst => Provenance::DesugaredAst,
+                perl_parser_core::hir::StashProvenance::DynamicBoundary => {
+                    Provenance::DynamicBoundary
+                }
+                // HIR enums are non-exhaustive. Unknown future variants must
+                // not be presented as a stronger known disposition.
+                _ => return None,
+            };
+            let confidence = match edge.confidence {
+                perl_parser_core::hir::StashConfidence::High => Confidence::High,
+                perl_parser_core::hir::StashConfidence::Medium => Confidence::Medium,
+                perl_parser_core::hir::StashConfidence::Low => Confidence::Low,
+                // Unknown future variants fail closed until this projection
+                // has an explicit semantic-facts mapping for them.
+                _ => return None,
+            };
+
+            Some(PackageEdge::new(
+                edge.from_package.clone(),
+                edge.to_package.clone(),
+                PackageEdgeKind::Inherits,
+                // The HIR edge currently carries a declaration item, not
+                // a semantic-facts AnchorId.  Do not place a byte offset
+                // or HIR id in this distinct identity space.
+                None,
+                provenance,
+                confidence,
+            ))
+        })
+        .collect()
 }
 
 /// AST visitor for extracting symbols and references
@@ -7565,9 +7645,11 @@ sub hello {
 
         const GEN_N: u32 = 5;
         const GEN_N_PLUS_1: u32 = 6;
-        let gen_n_text = "package OutOfOrder;\nsub gen_n_symbol { 1 }\n1;\n".to_string();
+        let gen_n_text =
+            "package OutOfOrder;\nuse parent 'OldBase';\nsub gen_n_symbol { 1 }\n1;\n".to_string();
         let gen_n_plus_1_text =
-            "package OutOfOrder;\nsub gen_n_plus_1_symbol { 1 }\n1;\n".to_string();
+            "package OutOfOrder;\nuse parent 'NewBase';\nsub gen_n_plus_1_symbol { 1 }\n1;\n"
+                .to_string();
         let gen_n_plus_1_text_for_assertion = gen_n_plus_1_text.clone();
 
         // Released only once BOTH threads have reached it. Generation N+1's
@@ -7623,6 +7705,13 @@ sub hello {
             "the older generation's write must never win, even though it committed AFTER the \
              newer one; got symbols: {:?}",
             symbols.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+
+        let ancestors = index.package_graph_ancestors("OutOfOrder");
+        assert_eq!(
+            ancestors.ancestors,
+            vec!["NewBase"],
+            "package graph must remain aligned with the winning generation"
         );
 
         // #3618 review defect (cubic): `document_store` is a SEPARATE piece
@@ -8449,6 +8538,105 @@ Utils::process_data();
             "child.pl should be in dependents, got: {:?}",
             dependents
         );
+    }
+
+    #[test]
+    fn test_hir_inheritance_edges_populate_and_refresh_package_graph() {
+        let index = WorkspaceIndex::new();
+        let base_url = must(url::Url::parse("file:///test/workspace/hir-base.pm"));
+        let child_url = must(url::Url::parse("file:///test/workspace/hir-child.pl"));
+
+        must(index.index_file(base_url, "package MyBase;\nsub inherited { 1; }\n1;\n".to_string()));
+
+        must(index.index_file(
+            child_url.clone(),
+            "package Child;\nuse parent 'MyBase';\n1;\n".to_string(),
+        ));
+
+        let ancestors = index.package_graph_ancestors("Child");
+        assert_eq!(ancestors.ancestors, vec!["MyBase".to_string()]);
+        assert!(!ancestors.cycle_detected);
+
+        let inherited =
+            must_some(index.with_semantic_queries_for_uri(child_url.as_str(), |_, queries| {
+                crate::semantic::queries::SemanticQueries::method_candidates(
+                    &queries,
+                    "Child",
+                    "inherited",
+                )
+            }));
+        assert_eq!(inherited.len(), 1);
+
+        // Re-indexing the same URI must remove the old HIR contribution before
+        // adding the new one, so stale inheritance cannot survive edits.
+        must(index.index_file(child_url.clone(), "package Child;\n1;\n".to_string()));
+        assert!(index.package_graph_ancestors("Child").ancestors.is_empty());
+
+        // File removal must also purge the graph contribution.
+        must(index.index_file(
+            child_url.clone(),
+            "package Child;\nuse parent 'MyBase';\n1;\n".to_string(),
+        ));
+        index.clear();
+        assert!(index.package_graph_ancestors("Child").ancestors.is_empty());
+
+        must(index.index_file(
+            child_url.clone(),
+            "package Child;\nuse parent 'MyBase';\n1;\n".to_string(),
+        ));
+        index.remove_file_url(&child_url);
+        assert!(index.package_graph_ancestors("Child").ancestors.is_empty());
+    }
+
+    #[test]
+    fn test_batch_indexing_populates_hir_inheritance_package_graph() {
+        let index = WorkspaceIndex::new();
+        let child_url = must(url::Url::parse("file:///test/workspace/batch-child.pl"));
+
+        let errors = index.index_files_batch(vec![(
+            child_url,
+            "package Child;\nuse parent 'BatchBase';\n1;\n".to_string(),
+        )]);
+
+        assert!(errors.is_empty(), "batch indexing failed: {errors:?}");
+        assert_eq!(index.package_graph_ancestors("Child").ancestors, vec!["BatchBase".to_string()]);
+    }
+
+    #[test]
+    fn test_hir_inheritance_edges_support_parent_qw_and_norequire() {
+        let index = WorkspaceIndex::new();
+        let foo_url = must(url::Url::parse("file:///test/workspace/foo.pm"));
+        let bar_url = must(url::Url::parse("file:///test/workspace/bar.pm"));
+        let qw_child_url = must(url::Url::parse("file:///test/workspace/qw-child.pl"));
+        let norequire_child_url =
+            must(url::Url::parse("file:///test/workspace/norequire-child.pl"));
+
+        must(index.index_file(foo_url, "package Foo; sub from_foo { 1; } 1;\n".to_string()));
+        must(index.index_file(bar_url, "package Bar; sub from_bar { 1; } 1;\n".to_string()));
+        must(index.index_file(
+            qw_child_url.clone(),
+            "package QwChild; use parent qw(Foo Bar); 1;\n".to_string(),
+        ));
+        must(index.index_file(
+            norequire_child_url.clone(),
+            "package NoRequireChild; use parent -norequire, qw(Foo Bar); 1;\n".to_string(),
+        ));
+
+        for (package, uri) in [("QwChild", qw_child_url), ("NoRequireChild", norequire_child_url)] {
+            assert_eq!(
+                index.package_graph_ancestors(package).ancestors,
+                vec!["Foo".to_string(), "Bar".to_string()]
+            );
+            for method in ["from_foo", "from_bar"] {
+                let inherited =
+                    must_some(index.with_semantic_queries_for_uri(uri.as_str(), |_, queries| {
+                        crate::semantic::queries::SemanticQueries::method_candidates(
+                            &queries, package, method,
+                        )
+                    }));
+                assert_eq!(inherited.len(), 1, "{package} should inherit {method}");
+            }
+        }
     }
 
     #[test]
