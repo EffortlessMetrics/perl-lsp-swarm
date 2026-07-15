@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use perl_lsp_ux_tests::{
     ProjectFixtureFile, ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available,
-    create_fixture_harness, fixture_content, load_catalyst_fixture_files,
+    fixture_content, fixture_scenario_config, load_catalyst_fixture_files,
     load_dancer2_fixture_files, load_mojolicious_fixture_files, missing_binary_skip,
     open_all_fixture_files, run_ux_scenario,
 };
@@ -48,6 +48,14 @@ sub value {
 fn golden_manifest_has_exact_after_ready_shape() -> Result<()> {
     let manifest: WorkloadManifest = serde_json::from_str(MANIFEST)?;
     validate_manifest(&manifest)
+}
+
+#[test]
+fn waiver_expiry_rejects_malformed_and_expired_dates() -> Result<()> {
+    ensure!(validate_waiver_expiry("9999-12-31").is_ok());
+    ensure!(validate_waiver_expiry("2026-02-30").is_err());
+    ensure!(validate_waiver_expiry("2020-01-01").is_err());
+    Ok(())
 }
 
 #[test]
@@ -137,7 +145,7 @@ struct ProjectReceipt {
     source_snapshot: &'static str,
     file_count: usize,
     active_file: String,
-    index_ready: bool,
+    active_document_ready: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -216,13 +224,19 @@ fn scenario_67_golden_editor_workload_receipt() {
                 } else {
                     fixture_content(&files, &project.active_file)?.to_owned()
                 };
-                let index_ready = harness.wait_for_index_ready(Duration::from_secs(30));
+                if files.is_empty() {
+                    harness.open_file(&project.active_file, &source)?;
+                } else {
+                    open_all_fixture_files(&harness, &files)?;
+                }
+                let active_uri = harness.workspace.uri(&project.active_file);
+                let active_document_ready =
+                    harness.wait_for_active_document_ready(&active_uri, Duration::from_secs(30));
                 ensure!(
-                    index_ready,
-                    "after-ready workload project {} did not reach index readiness",
+                    active_document_ready,
+                    "after-ready workload project {} did not reach active-document readiness",
                     project.name
                 );
-                open_all_fixture_files(&harness, &files)?;
                 project_receipts.push(ProjectReceipt {
                     project: project.name.clone(),
                     fixture: project.fixture.clone(),
@@ -230,7 +244,7 @@ fn scenario_67_golden_editor_workload_receipt() {
                     file_count: files.len()
                         + usize::from(project.fixture == "inline_plain_modern_oo"),
                     active_file: project.active_file.clone(),
-                    index_ready,
+                    active_document_ready,
                 });
 
                 run_project_workload(
@@ -239,7 +253,7 @@ fn scenario_67_golden_editor_workload_receipt() {
                     project,
                     &source,
                     &harness,
-                    index_ready,
+                    active_document_ready,
                     &mut rows,
                 )?;
                 harness.assert_no_crash();
@@ -338,9 +352,50 @@ fn validate_manifest(manifest: &WorkloadManifest) -> Result<()> {
     }
     for waiver in &manifest.error_waivers {
         ensure!(waiver.issue > 0, "error waiver must name a tracking issue");
-        ensure!(!waiver.expires_after.is_empty(), "error waiver must have an expiry");
+        validate_waiver_expiry(&waiver.expires_after)?;
     }
     Ok(())
+}
+
+fn validate_waiver_expiry(expires_after: &str) -> Result<()> {
+    let mut parts = expires_after.split('-');
+    let year = parts.next().context("waiver expiry is missing a year")?.parse::<i64>()?;
+    let month = parts.next().context("waiver expiry is missing a month")?.parse::<u32>()?;
+    let day = parts.next().context("waiver expiry is missing a day")?.parse::<u32>()?;
+    ensure!(parts.next().is_none(), "waiver expiry must use YYYY-MM-DD: {expires_after}");
+    ensure!(expires_after.len() == 10, "waiver expiry must use YYYY-MM-DD: {expires_after}");
+    ensure!((1..=12).contains(&month), "waiver expiry month is invalid: {expires_after}");
+    let days_in_month = match month {
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    ensure!((1..=days_in_month).contains(&day), "waiver expiry day is invalid: {expires_after}");
+
+    let expiry_days = days_from_civil(year, month, day);
+    let today_days =
+        i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() / 86_400)?;
+    ensure!(
+        expiry_days >= today_days,
+        "error waiver expired on {expires_after}; refresh or remove the waiver"
+    );
+    Ok(())
+}
+
+fn is_leap_year(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+/// Return days since 1970-01-01 for a proleptic Gregorian calendar date.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = year - if month <= 2 { 1 } else { 0 };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_prime = i64::from(month) + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 fn project_files(project: &ProjectSpec) -> Result<Vec<ProjectFixtureFile>> {
@@ -358,10 +413,11 @@ fn create_harness(project: &ProjectSpec, files: &[ProjectFixtureFile]) -> Result
         return UxHarness::new(
             ScenarioConfig { timeout: Duration::from_secs(30), ..Default::default() }
                 .env("PERL_LSP_WORKSPACE", "1")
+                .env("PERL_LSP_E2E", "1")
                 .with_file(PLAIN_ACTIVE_FILE, PLAIN_SOURCE),
         );
     }
-    create_fixture_harness(files)
+    UxHarness::new(fixture_scenario_config(files).env("PERL_LSP_E2E", "1"))
 }
 
 fn run_project_workload(
@@ -370,7 +426,7 @@ fn run_project_workload(
     project: &ProjectSpec,
     source: &str,
     harness: &UxHarness,
-    index_ready: bool,
+    active_document_ready: bool,
     rows: &mut Vec<WorkloadRow>,
 ) -> Result<()> {
     let completion_cursor = position_after(source, &project.completion_needle)?;
@@ -472,7 +528,7 @@ fn run_project_workload(
             cursor,
             response,
             actual_edits,
-            if index_ready { "workspace_index_ready" } else { "workspace_index_pending" },
+            if active_document_ready { "active_document_ready" } else { "active_document_pending" },
             request_latency_ms,
             harness,
         )?;
@@ -518,7 +574,9 @@ fn run_edit_burst_completion(
     for edit in 0..20 {
         harness.change_file_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
-    let _ = harness.wait_for_index_ready(Duration::from_secs(10));
+    // The initial active-document-ready gate is already established. The
+    // burst intentionally measures provider behavior while edits are pending;
+    // it does not claim post-edit workspace readiness.
     let response = capture(harness.completion(file, cursor.line, cursor.character));
     harness.change_file_full(file, source)?;
     Ok(response)
@@ -533,7 +591,6 @@ fn run_edit_burst_hover(
     for edit in 0..20 {
         harness.change_file_full(file, &format!("{source}\n# golden editor burst {edit}"))?;
     }
-    let _ = harness.wait_for_index_ready(Duration::from_secs(10));
     let response = capture(
         harness
             .hover(file, cursor.line, cursor.character)
@@ -622,9 +679,10 @@ fn response_row(
 
 fn classify_error(response: &Value) -> String {
     let message = response.get("_golden_error").and_then(Value::as_str).unwrap_or_default();
-    if message.to_ascii_lowercase().contains("timeout")
-        || message.to_ascii_lowercase().contains("timed out")
-    {
+    let message_lower = message.to_ascii_lowercase();
+    if message_lower.contains("request superseded") {
+        "request_superseded".to_owned()
+    } else if message_lower.contains("timeout") || message_lower.contains("timed out") {
         "timeout".to_owned()
     } else {
         "request_error".to_owned()

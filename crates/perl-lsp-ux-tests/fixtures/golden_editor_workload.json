@@ -2,7 +2,7 @@
   "kind": "golden_editor_workload",
   "schema_version": 2,
   "manifest_version": "2026-07-13",
-  "claim_boundary": "After-ready transport and provider-receipt baseline only. This run starts journeys after workspace readiness, does not measure pre-index behavior or time to first useful answer, does not promote provider support tiers, and does not score exactness before a request class has a checked-in proof packet.",
+  "claim_boundary": "After active-document-ready transport and provider-receipt baseline only. This run starts journeys after the active document's E2E indexing pass, does not claim whole-workspace readiness, does not measure pre-index behavior or time to first useful answer, does not promote provider support tiers, and does not score exactness before a request class has a checked-in proof packet.",
   "projects": [
     {
       "name": "mojolicious",
@@ -61,6 +61,34 @@
     "unexplained_empty_count"
   ],
   "error_waivers": [
+    {
+      "project": "mojolicious",
+      "journey": "edit_burst_completion",
+      "expected_error_class": "request_superseded",
+      "issue": 4050,
+      "expires_after": "2026-08-01"
+    },
+    {
+      "project": "dancer2",
+      "journey": "edit_burst_completion",
+      "expected_error_class": "request_superseded",
+      "issue": 4050,
+      "expires_after": "2026-08-01"
+    },
+    {
+      "project": "catalyst",
+      "journey": "edit_burst_completion",
+      "expected_error_class": "request_superseded",
+      "issue": 4050,
+      "expires_after": "2026-08-01"
+    },
+    {
+      "project": "plain_modern_oo",
+      "journey": "edit_burst_completion",
+      "expected_error_class": "request_superseded",
+      "issue": 4050,
+      "expires_after": "2026-08-01"
+    },
     {
       "project": "plain_modern_oo",
       "journey": "rename_safe_lexical",
