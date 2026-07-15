@@ -12,12 +12,10 @@ fn lower_source(source: &str) -> perl_parser_core::hir::HirFile {
 }
 
 #[test]
-fn variable_dereferences_without_strict_refs_remain_runtime_expressions() {
-    // This source has no `use strict`, so `strict_refs` is off by default (the
-    // same default Perl itself uses). Variable operands remain ordinary
-    // runtime expressions: their values may be hard references, and the HIR
-    // does not claim a symbolic-reference compile boundary without a
-    // proven string-valued operand.
+fn variable_dereferences_are_ordinary_runtime_expressions() {
+    // A variable operand may hold a hard reference at runtime. Its AST shape
+    // therefore does not prove a symbolic reference, so it remains a typed
+    // runtime expression and does not create a compile-time boundary.
     let file = lower_source(
         "sub inspect { my ($hash, $array, $row) = @_; keys %$hash; scalar @$array; my ($name) = @$_; }",
     );
@@ -28,13 +26,12 @@ fn variable_dereferences_without_strict_refs_remain_runtime_expressions() {
             .filter(|item| matches!(&item.kind, perl_parser_core::hir::HirKind::DerefExpr(_)))
             .count(),
         3,
-        "variable dereferences must remain represented as runtime HIR expressions"
+        "variable-operand dereferences should remain typed runtime expressions"
     );
     assert!(
         !file.compile_effects().iter().any(|effect| {
             effect.source_kind == CompileEffectSourceKind::SymbolicReferenceDeref
-        }),
-        "variable-operand dereferences without strict refs remain runtime expressions"
+        })
     );
 }
 

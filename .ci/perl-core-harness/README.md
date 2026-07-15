@@ -82,6 +82,37 @@ tree, emits advisory `base`, `comp`, and `run` smoke receipts under
 `target/perl-core/smoke/<profile>/`, and checks the real-upstream compile
 reports against the checked-in upstream baselines.
 
+## Semantic-boundary inventory
+
+Each parse or compile report carries a `semantic_boundaries` array. It is the
+human-readable audit trail for non-static compiler behavior; a passing compile
+receipt may still contain a governed boundary, but never silently treats it as
+an ordinary static fact.
+
+Every entry records the normalized test path, stable boundary ID, source byte
+span and kind, disposition, reason, confidence, whether it blocks compilation
+or downstream static facts, lock scope, owning workstream, and its supporting
+test path. The available dispositions are:
+
+```text
+implemented_static
+statically_classified
+ordinary_runtime
+deferred_runtime
+deferred_lifecycle
+governed_compile_time_dynamic
+source_locked_compatibility
+unsupported
+unknown
+```
+
+`unsupported` and `unknown` are compile-blocking. `source_locked_compatibility`
+must retain a `path_and_source` lock scope so upstream drift forces review;
+those records are compatibility debt, not a claim of general Perl semantics.
+Smoke and baseline validation also reject malformed boundary records (missing
+ownership/proof fields, reversed spans, unknown dispositions, or inconsistent
+source-lock confidence/blocking flags).
+
 Or run the smoke against a user-supplied prepared upstream Perl tree:
 
 ```bash
