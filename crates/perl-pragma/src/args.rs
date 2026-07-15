@@ -13,6 +13,15 @@ pub(crate) fn builtin_import_names(arg: &str) -> Vec<String> {
 }
 
 pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
+    apply_builtin_imports_if_changed(state, args);
+}
+
+/// Apply builtin imports and return `true` if the state actually changed.
+///
+/// Skips names that are already present, so a repeated `use builtin 'foo'` does not
+/// push a redundant map entry.
+pub(crate) fn apply_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before = state.builtin_imports.len();
     for arg in args {
         for name in builtin_import_names(arg) {
             if !state.builtin_imports.iter().any(|import| import == &name) {
@@ -20,6 +29,7 @@ pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
             }
         }
     }
+    state.builtin_imports.len() != before
 }
 
 /// Insert `category` into `state.disabled_warning_categories` if not already present and

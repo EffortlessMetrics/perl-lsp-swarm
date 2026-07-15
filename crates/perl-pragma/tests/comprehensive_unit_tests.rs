@@ -1323,6 +1323,24 @@ fn duplicate_no_warnings_category_does_not_create_extra_entry()
 }
 
 #[test]
+fn duplicate_use_builtin_import_does_not_create_extra_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![
+        use_node("builtin", &["'indexed'"], 0, 22),
+        use_node("builtin", &["'indexed'"], 23, 45),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(
+        map.len(),
+        1,
+        "duplicate `use builtin` for the same name should not add a redundant map entry"
+    );
+    assert_eq!(map[0].1.builtin_imports, vec!["indexed"], "the import must still be recorded once");
+    Ok(())
+}
+
+#[test]
 fn no_warnings_empty_string_category_is_ignored() -> Result<(), Box<dyn std::error::Error>> {
     // `no warnings ''` after quote-stripping yields an empty category name.
     // Error-recovery AST nodes can produce this.  The empty string must not be
