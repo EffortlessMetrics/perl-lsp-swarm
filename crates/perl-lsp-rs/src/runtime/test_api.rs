@@ -1229,6 +1229,20 @@ mod tests {
 
     #[test]
     fn readiness_observation_rejects_missing_error_empty_and_wrong_class() -> Result<()> {
+        fn expect_validation_error(
+            result: Result<(String, String), String>,
+            expected_message: &str,
+        ) -> Result<()> {
+            let actual_message =
+                result.err().ok_or_else(|| anyhow!("validation unexpectedly succeeded"))?;
+            if actual_message != expected_message {
+                return Err(anyhow!(
+                    "unexpected validation error: expected {expected_message:?}, got {actual_message:?}"
+                ));
+            }
+            Ok(())
+        }
+
         let partial_trace = json!({
             "decision": "acted",
             "fallback_state": "legacy_provider",
@@ -1236,44 +1250,41 @@ mod tests {
         });
         let expected = "explicit_partial_or_fallback";
         let missing: Result<Option<Value>, super::JsonRpcError> = Ok(None);
-        if LspServer::validate_readiness_provider_observation(
-            "completion",
-            &missing,
-            expected,
-            &partial_trace,
-        )
-        .is_ok()
-        {
-            return Err(anyhow!("missing completion response was accepted"));
-        }
+        expect_validation_error(
+            LspServer::validate_readiness_provider_observation(
+                "completion",
+                &missing,
+                expected,
+                &partial_trace,
+            ),
+            "completion returned no response",
+        )?;
 
         let empty = Ok(Some(json!({"isIncomplete": true, "items": []})));
-        if LspServer::validate_readiness_provider_observation(
-            "completion",
-            &empty,
-            expected,
-            &partial_trace,
-        )
-        .is_ok()
-        {
-            return Err(anyhow!("empty completion response was accepted"));
-        }
+        expect_validation_error(
+            LspServer::validate_readiness_provider_observation(
+                "completion",
+                &empty,
+                expected,
+                &partial_trace,
+            ),
+            "completion response contained no items",
+        )?;
 
         let error: Result<Option<Value>, super::JsonRpcError> = Err(super::JsonRpcError {
             code: -32603,
             message: "synthetic completion failure".to_string(),
             data: None,
         });
-        if LspServer::validate_readiness_provider_observation(
-            "completion",
-            &error,
-            expected,
-            &partial_trace,
-        )
-        .is_ok()
-        {
-            return Err(anyhow!("completion error was accepted"));
-        }
+        expect_validation_error(
+            LspServer::validate_readiness_provider_observation(
+                "completion",
+                &error,
+                expected,
+                &partial_trace,
+            ),
+            "completion returned an error: synthetic completion failure",
+        )?;
 
         let full_trace = json!({
             "decision": "acted",
@@ -1281,16 +1292,15 @@ mod tests {
             "workspace_index_state": "full"
         });
         let non_empty = Ok(Some(json!({"isIncomplete": false, "items": [{"label": "value"}]})));
-        if LspServer::validate_readiness_provider_observation(
-            "completion",
-            &non_empty,
-            expected,
-            &full_trace,
-        )
-        .is_ok()
-        {
-            return Err(anyhow!("full completion response was accepted as partial"));
-        }
+        expect_validation_error(
+            LspServer::validate_readiness_provider_observation(
+                "completion",
+                &non_empty,
+                expected,
+                &full_trace,
+            ),
+            "completion result class mismatch: expected explicit_partial_or_fallback, observed non_empty_exact",
+        )?;
 
         let observed = LspServer::validate_readiness_provider_observation(
             "completion",
