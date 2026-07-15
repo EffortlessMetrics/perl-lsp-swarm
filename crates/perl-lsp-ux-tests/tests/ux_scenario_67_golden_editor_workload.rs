@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use url::Url;
 
 const SCENARIO_FILE: &str = "ux_scenario_67_golden_editor_workload.rs";
 const MANIFEST: &str = include_str!("../fixtures/golden_editor_workload.json");
@@ -73,9 +74,58 @@ fn resource_operations_are_checked_for_external_targets() -> Result<()> {
     let unsafe_edit = json!({
         "documentChanges": [{ "kind": "create", "uri": "file:///workspace/other.pm" }]
     });
-    ensure!(!rename_edit_targets_other_file(&safe, "lib/App.pm"));
-    ensure!(rename_edit_targets_other_file(&unsafe_edit, "lib/App.pm"));
+    ensure!(!rename_edit_targets_other_file(&safe, "file:///workspace/lib/App.pm"));
+    ensure!(rename_edit_targets_other_file(&unsafe_edit, "file:///workspace/lib/App.pm"));
+    let suffix_collision = json!({
+        "changes": { "file:///workspace/other/lib/App.pm": [] }
+    });
+    ensure!(rename_edit_targets_other_file(&suffix_collision, "file:///workspace/lib/App.pm"));
     Ok(())
+}
+
+#[test]
+fn unexplained_empty_results_count_against_zero_budget() -> Result<()> {
+    let rollup =
+        build_rollup(&[test_workload_row("empty", "empty_result_requires_class_proof")], &[], 0)?;
+    ensure!(rollup.unexplained_empty_count == 1);
+    Ok(())
+}
+
+#[test]
+fn protocol_crashes_are_preserved_in_the_rollup() -> Result<()> {
+    let rollup = build_rollup(&[], &[], 2)?;
+    ensure!(rollup.protocol_crash_count == 2);
+    Ok(())
+}
+
+#[cfg(test)]
+fn test_workload_row(actual_result_class: &str, fallback_or_blocker: &str) -> WorkloadRow {
+    WorkloadRow {
+        project: "test".to_owned(),
+        journey: "test".to_owned(),
+        provider: "test".to_owned(),
+        source_snapshot: "checked_in_fixture",
+        file: "lib/App.pm".to_owned(),
+        cursor: CursorReceipt { line: 0, character: 0 },
+        request_shape: "test".to_owned(),
+        expected_result_class: "test".to_owned(),
+        actual_result_class: actual_result_class.to_owned(),
+        error_class: "not_applicable".to_owned(),
+        actual_locations: Value::Null,
+        actual_edits: Value::Null,
+        missing: Vec::new(),
+        extra: Vec::new(),
+        comparison: "not_scored_until_class_promotion",
+        answering_tier: "not_observed".to_owned(),
+        fact_producer: "not_observed".to_owned(),
+        proof_class: "baseline_only".to_owned(),
+        confidence: "not_observed".to_owned(),
+        freshness: "not_observed".to_owned(),
+        fallback_or_blocker: fallback_or_blocker.to_owned(),
+        readiness_state: "active_document_ready".to_owned(),
+        latency_ms: 1.0,
+        unsafe_edit: false,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,6 +266,7 @@ fn scenario_67_golden_editor_workload_receipt() {
 
             let mut rows = Vec::new();
             let mut project_receipts = Vec::new();
+            let mut protocol_crash_count = 0;
             for project in &manifest.projects {
                 let files = project_files(project)?;
                 let harness = create_harness(project, &files)?;
@@ -256,10 +307,10 @@ fn scenario_67_golden_editor_workload_receipt() {
                     active_document_ready,
                     &mut rows,
                 )?;
-                harness.assert_no_crash();
+                protocol_crash_count += count_protocol_crash_events(&harness);
             }
 
-            let rollup = build_rollup(&rows, &manifest.error_waivers)?;
+            let rollup = build_rollup(&rows, &manifest.error_waivers, protocol_crash_count)?;
             let receipt = WorkloadReceipt {
                 kind: "golden_editor_workload",
                 schema_version: 2,
@@ -295,6 +346,10 @@ fn scenario_67_golden_editor_workload_receipt() {
             recorder.check(
                 "unexplained empty count remains zero",
                 receipt.rollup.unexplained_empty_count == 0,
+            )?;
+            recorder.check(
+                "protocol crash count remains zero",
+                receipt.rollup.protocol_crash_count == 0,
             )?;
             Ok(())
         },
@@ -647,8 +702,9 @@ fn response_row(
         Value::Array(Vec::new())
     };
     let normalized_edits = harness.normalize_response(&actual_edits);
+    let active_uri = harness.workspace.uri(&project.active_file);
     let unsafe_edit = journey.provider == "rename"
-        && rename_edit_targets_other_file(&normalized_edits, &project.active_file);
+        && rename_edit_targets_other_file(&normalized_edits, &active_uri);
     Ok(WorkloadRow {
         project: project.name.clone(),
         journey: journey.id.clone(),
@@ -791,11 +847,16 @@ fn operation_name(project: &ProjectSpec, journey: &JourneySpec) -> String {
     format!("golden_{}_{}", project.name, journey.id)
 }
 
-fn build_rollup(rows: &[WorkloadRow], error_waivers: &[ErrorWaiver]) -> Result<Rollup> {
+fn build_rollup(
+    rows: &[WorkloadRow],
+    error_waivers: &[ErrorWaiver],
+    protocol_crash_count: usize,
+) -> Result<Rollup> {
     let mut rollup = Rollup {
         exactness_state: "not_scored",
         false_exact_count: "not_measured",
         stale_exact_count: "not_measured",
+        protocol_crash_count,
         ..Rollup::default()
     };
     let mut latencies = Vec::with_capacity(rows.len());
@@ -814,8 +875,10 @@ fn build_rollup(rows: &[WorkloadRow], error_waivers: &[ErrorWaiver]) -> Result<R
                 }
             }
             "empty" => {
-                rollup.unexplained_empty_count +=
-                    usize::from(row.fallback_or_blocker == "not_observed");
+                rollup.unexplained_empty_count += usize::from(matches!(
+                    row.fallback_or_blocker.as_str(),
+                    "not_observed" | "empty_result_requires_class_proof"
+                ));
                 rollup.measured_debt_count += 1;
             }
             "partial" => rollup.bounded_fallback_count += 1,
@@ -830,10 +893,10 @@ fn build_rollup(rows: &[WorkloadRow], error_waivers: &[ErrorWaiver]) -> Result<R
     Ok(rollup)
 }
 
-fn rename_edit_targets_other_file(edit: &Value, active_file: &str) -> bool {
+fn rename_edit_targets_other_file(edit: &Value, active_uri: &str) -> bool {
     let mut unsafe_edit = false;
     if let Some(changes) = edit.get("changes").and_then(Value::as_object) {
-        unsafe_edit |= changes.keys().any(|uri| !uri.ends_with(active_file));
+        unsafe_edit |= changes.keys().any(|uri| !same_document_uri(uri, active_uri));
     }
     if let Some(changes) = edit.get("documentChanges").and_then(Value::as_array) {
         unsafe_edit |= changes.iter().any(|change| {
@@ -846,10 +909,33 @@ fn rename_edit_targets_other_file(edit: &Value, active_file: &str) -> bool {
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
-            .any(|uri| !uri.ends_with(active_file))
+            .any(|uri| !same_document_uri(uri, active_uri))
         });
     }
     unsafe_edit
+}
+
+fn same_document_uri(left: &str, right: &str) -> bool {
+    match (Url::parse(left), Url::parse(right)) {
+        (Ok(left), Ok(right)) if left.scheme() == "file" && right.scheme() == "file" => {
+            left.host_str() == right.host_str() && left.path() == right.path()
+        }
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn count_protocol_crash_events(harness: &UxHarness) -> usize {
+    harness
+        .peek_notifications()
+        .iter()
+        .filter(|event| {
+            let message = format!("{event:?}");
+            message.contains("panicked")
+                || message.contains("SIGABRT")
+                || message.contains("stack overflow")
+        })
+        .count()
 }
 
 fn percentile(values: &[f64], fraction: f64) -> Option<f64> {
