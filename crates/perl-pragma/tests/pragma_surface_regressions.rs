@@ -1,6 +1,6 @@
 use perl_ast::SourceLocation;
 use perl_ast::ast::{Node, NodeKind};
-use perl_pragma::PragmaTracker;
+use perl_pragma::{CompileTimePragmaEnvironment, PragmaTracker};
 
 fn loc(start: usize, end: usize) -> SourceLocation {
     SourceLocation { start, end }
@@ -397,4 +397,78 @@ fn no_if_strict_qw_disables_only_requested_categories_conditionally()
     assert!(state.strict_subs, "subs was not in the qw list, must stay enabled");
     assert!(state.strict_refs, "refs was not in the qw list, must stay enabled");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Map-entry deduplication regression tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duplicate_use_builtin_does_not_create_redundant_map_entries() {
+    // Two identical `use builtin qw(true)` pragmas: the second is a no-op
+    // because "true" is already imported.  The pragma map must contain only
+    // ONE entry for the import, not two.
+    let ast = program(vec![
+        use_node("builtin", &["qw(true)"], 0, 18),
+        use_node("builtin", &["qw(true)"], 19, 37),
+    ]);
+    let env = CompileTimePragmaEnvironment::build(&ast);
+    let entries = env.map().entries();
+
+    // The second use-builtin must not produce a new entry: exactly one map
+    // transition for the single new import.
+    assert_eq!(
+        entries.len(),
+        1,
+        "duplicate use builtin must not create redundant map entries; got {} entries",
+        entries.len()
+    );
+
+    let state = PragmaTracker::state_for_offset(&PragmaTracker::build(&ast), 30);
+    assert!(state.has_builtin_import("true"), "import must still be visible");
+}
+
+#[test]
+fn duplicate_no_warnings_category_does_not_create_redundant_map_entries() {
+    // Two identical `no warnings 'uninitialized'` pragmas: the second is a
+    // no-op because the category is already disabled.  The pragma map must
+    // contain only ONE entry for the disable transition, not two.
+    let ast = program(vec![
+        use_node("warnings", &[], 0, 13),
+        no_node("warnings", &["uninitialized"], 14, 43),
+        no_node("warnings", &["uninitialized"], 44, 73),
+    ]);
+    let env = CompileTimePragmaEnvironment::build(&ast);
+    let entries = env.map().entries();
+
+    // Expected: one entry for `use warnings`, one for the first
+    // `no warnings 'uninitialized'`; the duplicate must not add a third.
+    assert_eq!(
+        entries.len(),
+        2,
+        "duplicate no warnings category must not create redundant map entries; got {} entries",
+        entries.len()
+    );
+
+    let state = PragmaTracker::state_for_offset(&PragmaTracker::build(&ast), 60);
+    assert!(state.warnings, "global warnings flag must remain active");
+    assert!(!state.is_warning_active("uninitialized"), "uninitialized category must be disabled");
+}
+
+#[test]
+fn empty_scope_does_not_emit_restore_entry() {
+    // A block with no pragma directives must not produce any map entries at
+    // all — neither a transition nor a restore point.
+    let ast = program(vec![use_node("strict", &[], 0, 12), block(vec![], 13, 16)]);
+    let env = CompileTimePragmaEnvironment::build(&ast);
+    let entries = env.map().entries();
+
+    // Exactly one entry: the `use strict` transition.  The empty block must
+    // not append a restore entry.
+    assert_eq!(
+        entries.len(),
+        1,
+        "empty block must not emit a restore map entry; got {} entries",
+        entries.len()
+    );
 }

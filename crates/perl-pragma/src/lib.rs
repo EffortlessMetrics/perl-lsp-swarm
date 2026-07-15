@@ -22,7 +22,7 @@ pub use version::{
 };
 
 pub(crate) use args::{
-    add_disabled_warning_category, apply_builtin_imports, builtin_import_names,
+    add_disabled_warning_category, apply_builtin_imports_if_changed, builtin_import_names,
     normalized_pragma_token, pragma_arg_items, remove_builtin_imports,
 };
 pub(crate) use conditional::conditional_pragma_target;

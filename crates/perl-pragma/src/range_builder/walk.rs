@@ -97,9 +97,12 @@ fn build_scoped_body(
     ranges: &mut Vec<(Range<usize>, PragmaState)>,
 ) {
     let saved_state = current_state.clone();
+    let entries_before = ranges.len();
     build_ranges(body, current_state, ranges);
     *current_state = saved_state;
-    ranges.push((body.location.end..body.location.end, current_state.clone()));
+    if ranges.len() != entries_before {
+        ranges.push((body.location.end..body.location.end, current_state.clone()));
+    }
 }
 
 fn build_statement_block(
@@ -109,9 +112,12 @@ fn build_statement_block(
     ranges: &mut Vec<(Range<usize>, PragmaState)>,
 ) {
     let saved_state = current_state.clone();
+    let entries_before = ranges.len();
     for stmt in statements {
         build_ranges(stmt, current_state, ranges);
     }
     *current_state = saved_state;
-    ranges.push((end..end, current_state.clone()));
+    if ranges.len() != entries_before {
+        ranges.push((end..end, current_state.clone()));
+    }
 }
