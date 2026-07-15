@@ -11,13 +11,11 @@ export interface RefactoringCommandContext {
 export function registerRefactoringCommandGroup(
   dependencies: RefactoringCommandContext,
 ): vscode.Disposable[] {
-  const extractVariableCommand = vscode.commands.registerCommand(
-    'perl-lsp.extractVariable',
-    () => dependencies.extractVariable(),
+  const extractVariableCommand = vscode.commands.registerCommand('perl-lsp.extractVariable', () =>
+    dependencies.extractVariable(),
   );
-  const extractMethodCommand = vscode.commands.registerCommand(
-    'perl-lsp.extractMethod',
-    () => dependencies.extractMethod(),
+  const extractMethodCommand = vscode.commands.registerCommand('perl-lsp.extractMethod', () =>
+    dependencies.extractMethod(),
   );
   const showRefactoringOptionsCommand = vscode.commands.registerCommand(
     'perl-lsp.showRefactoringOptions',
