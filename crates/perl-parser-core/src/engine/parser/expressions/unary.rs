@@ -338,10 +338,25 @@ impl<'a> Parser<'a> {
                                     // Dynamic typeglob *{$name}
                                     let brace_expr = self.parse_postfix()?; // This will handle { ... }
                                     let end = brace_expr.location.end;
-                                    return Ok(Node::new(
-                                        NodeKind::Unary { op: "*".to_string(), operand: Box::new(brace_expr) },
+                                    if self.peek_kind() == Some(TokenKind::Assign) {
+                                        let name = String::from_utf8_lossy(
+                                            &self.src_bytes[start.saturating_add(1)..end],
+                                        )
+                                        .trim()
+                                        .to_string();
+                                        return Ok(Node::new(
+                                            NodeKind::Typeglob { name },
+                                            SourceLocation { start, end },
+                                        ));
+                                    }
+                                    let node = Node::new(
+                                        NodeKind::Unary {
+                                            op: "*{}".to_string(),
+                                            operand: Box::new(brace_expr),
+                                        },
                                         SourceLocation { start, end },
-                                    ));
+                                    );
+                                    return self.parse_postfix_chain(node);
                                 }
                                 TokenKind::BitwiseXor => {
                                     // *^X typeglob for control variable $^X (e.g. *^N, *^W, *^F)

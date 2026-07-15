@@ -2317,7 +2317,7 @@ mod tests {
 
     #[test]
     fn compile_runtime_dereferences_do_not_emit_compile_effects() -> TestResult {
-        let source = "no strict 'refs';\nsub inspect {\n    my ($hash, $array, $row) = @_;\n    keys %$hash;\n    scalar @$array;\n    my ($name) = @$_;\n}\n";
+        let source = "no strict 'refs';\nsub inspect {\n    my ($hash, $array, $row) = @_;\n    keys %$hash;\n    scalar @$array;\n    *{$hash};\n    my ($name) = @$_;\n}\n";
         let mut parser = Parser::new(source);
         let output = parser.parse_with_recovery();
         let hir = lower_ast(&output.ast);
