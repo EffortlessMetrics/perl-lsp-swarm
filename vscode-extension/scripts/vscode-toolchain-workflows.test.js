@@ -47,7 +47,7 @@ void test('the setup action verifies the authority before npm ci', () => {
 void test('current-source smoke does not reinstall dependencies after setup', () => {
   const source = readWorkflow('vscode-current-source-linux-smoke.yml');
   assert.doesNotMatch(source, /name: Install extension dependencies/);
-  assert.doesNotMatch(source, /^\s+run: npm ci$/m);
+  assert.doesNotMatch(source, /\bnpm\s+(?:ci|install)\b/);
 });
 
 void test('publisher workflow invokes both CLIs offline through npm exec', () => {
