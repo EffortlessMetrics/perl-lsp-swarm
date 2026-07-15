@@ -13,15 +13,15 @@ export function registerRefactoringCommandGroup(
 ): vscode.Disposable[] {
   const extractVariableCommand = vscode.commands.registerCommand(
     'perl-lsp.extractVariable',
-    dependencies.extractVariable,
+    () => dependencies.extractVariable(),
   );
   const extractMethodCommand = vscode.commands.registerCommand(
     'perl-lsp.extractMethod',
-    dependencies.extractMethod,
+    () => dependencies.extractMethod(),
   );
   const showRefactoringOptionsCommand = vscode.commands.registerCommand(
     'perl-lsp.showRefactoringOptions',
-    dependencies.showRefactoringOptions,
+    () => dependencies.showRefactoringOptions(),
   );
 
   return [extractVariableCommand, extractMethodCommand, showRefactoringOptionsCommand];
