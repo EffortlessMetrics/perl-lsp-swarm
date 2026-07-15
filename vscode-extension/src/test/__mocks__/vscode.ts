@@ -214,6 +214,7 @@ export const workspace = {
     uri: typeof value === 'string' ? { fsPath: value } : value,
     getText: jest.fn(() => ''),
   })),
+  applyEdit: jest.fn(async () => true),
   workspaceFolders: undefined as Array<{ uri: { fsPath: string } }> | undefined,
 };
 
