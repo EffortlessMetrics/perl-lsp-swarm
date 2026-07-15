@@ -157,6 +157,7 @@ export const commands = {
 
 export const window = {
   createOutputChannel: jest.fn(() => ({
+    clear: jest.fn(),
     appendLine: jest.fn(),
     show: jest.fn(),
     dispose: jest.fn(),
@@ -206,6 +207,7 @@ export const workspace = {
   getWorkspaceFolder: jest.fn(
     (_uri: unknown) => undefined as { uri: { fsPath: string } } | undefined,
   ),
+  asRelativePath: jest.fn((uri: { fsPath: string }) => uri.fsPath),
   textDocuments: [],
   findFiles: jest.fn(async () => []),
   openTextDocument: jest.fn(async (value: string | { fsPath: string }) => ({
