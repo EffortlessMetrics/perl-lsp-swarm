@@ -119,6 +119,31 @@ fn test_a1_severity_five_maps_to_error() {
 }
 
 #[test]
+fn test_a_malformed_range_is_dropped_from_pull_diagnostics() {
+    let server = LspServer::new();
+    server.test_configure_perlcritic(true, 3, None);
+
+    let runtime = Arc::new(MockSubprocessRuntime::new());
+    runtime.add_response(MockResponse::success(
+        b"test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad range\n".to_vec(),
+    ));
+    server.test_install_mock_critic_runtime(runtime);
+    server.test_bypass_perlcritic_command_check();
+
+    #[cfg(windows)]
+    let uri = "file:///C:/tmp/test_malformed_range.pl";
+    #[cfg(not(windows))]
+    let uri = "file:///tmp/test_malformed_range.pl";
+
+    let result = pull_diagnostics(&server, uri, "print 'hello';\n");
+    let diags = result["items"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !diags.iter().any(|diagnostic| { diagnostic["message"].as_str() == Some("bad range") }),
+        "malformed external critic range must not appear in pull diagnostics: {result}"
+    );
+}
+
+#[test]
 fn test_a2_severity_one_maps_to_hint() {
     let server = LspServer::new();
     server.test_configure_perlcritic(true, 1, None);
