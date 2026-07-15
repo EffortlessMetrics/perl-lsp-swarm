@@ -78,6 +78,8 @@ Required before opening the old-repo sync PR:
 - run the relevant support/provider/status checks in swarm
 - preserve release notes and package-lineage docs
 - state whether the sync changes user-facing package behavior
+- run `cargo xtask sync-divergence check` against the target first parent and
+  attach its source-sync receipt
 
 The old-repo PR body must link to the swarm source PRs and list verification.
 
@@ -138,6 +140,38 @@ Required before merging old `perl-lsp` work:
 
 Source-to-swarm sync PRs should use merge commits when commit ancestry matters.
 Do not squash source-sync PRs that are meant to prove `source/master` ancestry.
+
+### Sync-divergence preflight
+
+Before a swarm-to-source promotion, compute target-unique commits with the
+protocol's `git cherry` comparison from the last common sync base to the first
+parent of the target sync merge. Run:
+
+```bash
+cargo xtask sync-divergence check \
+  --base <last-common-sync-base> \
+  --source <swarm-main-ref> \
+  --target <source-sync-first-parent> \
+  --ledger docs/swarm/source-syncs/<sync>-reconciliation.json \
+  --receipt docs/swarm/source-syncs/<sync>-receipt.json
+```
+
+The check ignores merge commits, and requires every other `+` result from
+`git cherry` to have a ledger row with one of these classifications:
+
+```text
+port_to_swarm
+already_equivalent_in_swarm
+superseded_by_newer_architecture
+deliberately_abandoned
+release_lineage_only
+```
+
+`release_lineage_only` is an explicit exclusion, not an implicit escape hatch.
+Missing rows, unclassified rows, invalid classifications, missing evidence, or
+ledger rows that are not target-unique non-merge commits fail the command. The
+JSON receipt records the target-unique commits and their classifications so a
+promotion can be audited after the source tree is replaced.
 
 **Reconciling accumulated perl-lsp-unique work.** When `perl-lsp/master` has
 drifted ahead with parallel work (release-lineage aside), identify the genuine

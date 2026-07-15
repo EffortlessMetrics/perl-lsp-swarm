@@ -140,6 +140,7 @@ pub mod staged;
 pub mod supported_editor_inline_smoke;
 pub mod swarm_agent_roster;
 pub mod swarm_summary;
+pub mod sync_divergence;
 pub mod sync_release_docs;
 pub mod targeted_checks;
 pub mod test;
