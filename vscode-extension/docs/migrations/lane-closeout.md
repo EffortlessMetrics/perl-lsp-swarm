@@ -1,7 +1,7 @@
 # VS Code client/toolchain modernization lane closeout
 
 Status: implementation hardening is current on `main`; cross-repository sync is
-pending. This reconciliation supersedes the earlier premature sync claim and
+REMAINING. This reconciliation supersedes the earlier premature sync claim and
 records the remaining handoff boundary.
 
 This closeout records the reviewable PR trail and the evidence boundary for
@@ -61,21 +61,21 @@ repository; the two-parent history-preserving sync remains a later operation.
 | #4299 | Typed formatting-error test fixture                  | Merged |
 | #4301 | Typed onboarding test seams                          | Merged |
 | #4302 | Typed POD preview contract                           | Merged |
-| #4333 | VS Code host-floor compatibility proof                | Merged |
-| #4335 | Workspace topology capability receipts                | Merged |
-| #4336 | Bundle source-map evidence archive                    | Merged |
-| #4338 | Feature activation timing attribution                 | Merged |
-| #4339 | Server command composition                            | Merged |
-| #4341 | Critic command composition                            | Merged |
-| #4349 | Test command composition                              | Merged |
-| #4352 | Document feature composition                          | Merged |
-| #4354 | Onboarding command composition                        | Merged |
-| #4356 | Navigation command composition                        | Merged |
-| #4358 | Centralized VS Code toolchain setup                   | Merged |
-| #4362 | Provider-diagnostics command composition              | Merged |
-| #4363 | Document command composition                          | Merged |
-| #4365 | Refactoring command composition                       | Merged |
-| #4366 | Final VSIX inventory baseline refresh                 | Merged |
+| #4333 | VS Code host-floor compatibility proof               | Merged |
+| #4335 | Workspace topology capability receipts               | Merged |
+| #4336 | Bundle source-map evidence archive                   | Merged |
+| #4338 | Feature activation timing attribution                | Merged |
+| #4339 | Server command composition                           | Merged |
+| #4341 | Critic command composition                           | Merged |
+| #4349 | Test command composition                             | Merged |
+| #4352 | Document feature composition                         | Merged |
+| #4354 | Onboarding command composition                       | Merged |
+| #4356 | Navigation command composition                       | Merged |
+| #4358 | Centralized VS Code toolchain setup                  | Merged |
+| #4362 | Provider-diagnostics command composition             | Merged |
+| #4363 | Document command composition                         | Merged |
+| #4365 | Refactoring command composition                      | Merged |
+| #4366 | Final VSIX inventory baseline refresh                | Merged |
 
 Each slice was refreshed from current `origin/main` when necessary and kept
 to its owned production seam, direct proof, and required generated artifacts.
