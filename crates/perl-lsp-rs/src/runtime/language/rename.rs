@@ -1024,6 +1024,19 @@ impl LspServer {
                             || token.starts_with('%')
                             || token.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_'))
                     {
+                        // When client declares PrepareSupportDefaultBehavior::Identifier (1),
+                        // delegate word-selection to the client for plain identifiers.
+                        // Sigiled tokens ($foo, @bar, %baz) always use {range, placeholder}
+                        // so the client highlights the full sigil-inclusive token.
+                        let is_sigiled = token.starts_with('$')
+                            || token.starts_with('@')
+                            || token.starts_with('%');
+                        let prefers_default_behavior =
+                            self.client_capabilities.lock().prepare_support_default_behavior == 1;
+                        if prefers_default_behavior && !is_sigiled {
+                            return Ok(Some(json!({ "defaultBehavior": true })));
+                        }
+
                         // Find the token bounds
                         let (start_offset, end_offset) = self.get_token_bounds(&doc.text, offset);
                         let (start_line, start_char) = self.offset_to_pos16(doc, start_offset);
@@ -1077,6 +1090,41 @@ impl LspServer {
             .and_then(Value::as_object)
             .map(|changes| changes.values().filter_map(Value::as_array).map(Vec::len).sum())
             .unwrap_or(0)
+    }
+
+    /// Convert a `{ "changes": { uri: [edits] } }` WorkspaceEdit to the
+    /// `{ "documentChanges": [...] }` format required by LSP clients that
+    /// advertise `workspace.workspaceEdit.documentChanges: true`.
+    ///
+    /// If the input does not have a `changes` key the value is returned as-is.
+    fn changes_to_document_changes(ws_edit: Value) -> Value {
+        let Some(changes) = ws_edit.get("changes").and_then(Value::as_object) else {
+            return ws_edit;
+        };
+        let doc_changes: Vec<Value> = changes
+            .iter()
+            .map(|(uri, edits)| {
+                json!({
+                    "textDocument": { "uri": uri, "version": serde_json::Value::Null },
+                    "edits": edits
+                })
+            })
+            .collect();
+        json!({ "documentChanges": doc_changes })
+    }
+
+    /// Return the workspace edit in the format the client prefers.
+    ///
+    /// When the client advertised `workspace.workspaceEdit.documentChanges: true`
+    /// during initialize, converts the internal `{ "changes" }` representation to
+    /// the `{ "documentChanges" }` array format.  Otherwise returns the value
+    /// unchanged.
+    fn to_workspace_edit_format(&self, ws_edit: Value) -> Value {
+        if self.client_capabilities.lock().workspace_edit_document_changes_support {
+            Self::changes_to_document_changes(ws_edit)
+        } else {
+            ws_edit
+        }
     }
 
     #[cfg(feature = "workspace")]
@@ -1353,7 +1401,7 @@ impl LspServer {
                                     open_doc_edit_count,
                                     open_doc_fallback_state,
                                 );
-                                return Ok(Some(open_doc_ws_edit));
+                                return Ok(Some(self.to_workspace_edit_format(open_doc_ws_edit)));
                             }
                             self.record_rename_provider_decision_trace(
                                 Some(uri),
@@ -1390,7 +1438,7 @@ impl LspServer {
                                     open_doc_edit_count,
                                     open_doc_fallback_state,
                                 );
-                                return Ok(Some(open_doc_ws_edit));
+                                return Ok(Some(self.to_workspace_edit_format(open_doc_ws_edit)));
                             }
                             // Fall through to same-file rename
                         }
@@ -1479,7 +1527,7 @@ impl LspServer {
                                                         open_doc_edit_count,
                                                         open_doc_fallback_state,
                                                     );
-                                                    return Ok(Some(open_doc_ws_edit));
+                                                    return Ok(Some(self.to_workspace_edit_format(open_doc_ws_edit)));
                                                 }
 
                                                 if Self::package_rename_guard_accepts_workspace_edit(
@@ -1494,7 +1542,7 @@ impl LspServer {
                                                         semantic_edit_count,
                                                         "none",
                                                     );
-                                                    return Ok(Some(semantic_ws_edit));
+                                                    return Ok(Some(self.to_workspace_edit_format(semantic_ws_edit)));
                                                 }
 
                                                 let guard_edit_count =
@@ -1508,7 +1556,7 @@ impl LspServer {
                                                     guard_edit_count,
                                                     "workspace_index",
                                                 );
-                                                return Ok(Some(guard_ws_edit));
+                                                return Ok(Some(self.to_workspace_edit_format(guard_ws_edit)));
                                             }
 
                                             self.record_rename_provider_decision_trace(
@@ -1602,7 +1650,9 @@ impl LspServer {
                                                 open_doc_edit_count,
                                                 open_doc_fallback_state,
                                             );
-                                            return Ok(Some(open_doc_ws_edit));
+                                            return Ok(Some(
+                                                self.to_workspace_edit_format(open_doc_ws_edit),
+                                            ));
                                         }
                                         self.record_rename_provider_decision_trace(
                                             Some(uri),
@@ -1611,7 +1661,7 @@ impl LspServer {
                                             edit_count,
                                             "workspace_index",
                                         );
-                                        return Ok(Some(ws_edit));
+                                        return Ok(Some(self.to_workspace_edit_format(ws_edit)));
                                     }
                                 }
                             }
@@ -1641,11 +1691,9 @@ impl LspServer {
                                 edit_count,
                                 "none",
                             );
-                            return Ok(Some(json!({
-                                "changes": {
-                                    uri: edits
-                                }
-                            })));
+                            return Ok(Some(self.to_workspace_edit_format(json!({
+                                "changes": { uri: edits }
+                            }))));
                         }
 
                         if let Some(edits) = self.scoped_main_sub_rename_edits(
@@ -1663,11 +1711,9 @@ impl LspServer {
                                 edit_count,
                                 "none",
                             );
-                            return Ok(Some(json!({
-                                "changes": {
-                                    uri: edits
-                                }
-                            })));
+                            return Ok(Some(self.to_workspace_edit_format(json!({
+                                "changes": { uri: edits }
+                            }))));
                         }
 
                         // Create semantic analyzer for same-file rename
@@ -1738,11 +1784,9 @@ impl LspServer {
                                 edit_count,
                                 "none",
                             );
-                            return Ok(Some(json!({
-                                "changes": {
-                                    uri: edits
-                                }
-                            })));
+                            return Ok(Some(self.to_workspace_edit_format(json!({
+                                "changes": { uri: edits }
+                            }))));
                         }
                     }
                 }

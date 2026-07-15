@@ -254,6 +254,11 @@ impl LspServer {
                     .pointer("/capabilities/textDocument/codeAction/tagSupport/valueSet")
                     .and_then(Value::as_array)
                     .is_some_and(|tags| tags.iter().any(|tag| tag.as_i64() == Some(1)));
+                caps.prepare_support_default_behavior = params
+                    .pointer("/capabilities/textDocument/rename/prepareSupportDefaultBehavior")
+                    .and_then(Value::as_u64)
+                    .map(|v| v as u8)
+                    .unwrap_or(0);
 
                 // Check if client supports markdown message content in diagnostics (LSP 3.18)
                 caps.markup_message_support = params
@@ -1694,5 +1699,38 @@ mod tests {
             "root_path must be set from first initializationOptions.workspaceFolders entry. Got: {:?}",
             root_path
         );
+    }
+
+    #[test]
+    fn initialize_parses_prepare_support_default_behavior() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "textDocument": {
+                    "rename": {
+                        "prepareSupport": true,
+                        "prepareSupportDefaultBehavior": 1
+                    }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+        assert_eq!(server.client_capabilities.lock().prepare_support_default_behavior, 1);
+    }
+
+    #[test]
+    fn initialize_leaves_prepare_support_default_behavior_zero_when_absent() {
+        let server = LspServer::new();
+        let params = json!({
+            "capabilities": {
+                "textDocument": {
+                    "rename": { "prepareSupport": true }
+                }
+            }
+        });
+
+        let _ = server.handle_initialize(Some(params));
+        assert_eq!(server.client_capabilities.lock().prepare_support_default_behavior, 0);
     }
 }
