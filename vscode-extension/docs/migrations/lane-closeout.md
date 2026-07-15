@@ -51,7 +51,7 @@ below.
 | #4280 | Utility indexed-access hardening                     | Merged |
 | #4281 | Lifecycle test indexed-access hardening              | Merged |
 | #4282 | Packaged smoke indexed-access hardening              | Merged |
-| #4283 | Blocking `noUncheckedIndexedAccess` promotion        | Merged |
+| #4284 | Blocking `noUncheckedIndexedAccess` promotion        | Merged |
 
 Each slice was refreshed from current `origin/main` when necessary and kept
 to its owned production seam, direct proof, and required generated artifacts.
