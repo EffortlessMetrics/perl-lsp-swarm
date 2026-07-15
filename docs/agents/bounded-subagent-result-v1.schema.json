@@ -108,8 +108,7 @@
     }
   },
   "dependencies": {
-    "pr": ["head_sha"],
-    "head_sha": ["pr"]
+    "pr": ["head_sha"]
   },
   "definitions": {
     "finding": {
@@ -186,8 +185,12 @@
     },
     "proof_reference": {
       "type": "object",
-      "required": ["ref", "claim"],
+      "required": ["kind", "ref", "claim"],
       "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["author_claim", "observed", "independent", "none_found"]
+        },
         "ref": {
           "type": "string",
           "minLength": 1
@@ -195,8 +198,28 @@
         "claim": {
           "type": "string",
           "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The searched surface and limit required for a scoped none_found result."
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"kind": {"const": "none_found"}},
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["scope"]
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "overflow_reference": {
@@ -291,7 +314,7 @@
       "findings": [],
       "changes": [],
       "proof": [
-        {"ref": "github:PR/5678@89abcdef01234567", "claim": "The review was bound to the published head."}
+        {"kind": "independent", "ref": "github:PR/5678@89abcdef01234567", "claim": "The review was bound to the published head."}
       ],
       "uncertainty": [],
       "recommended_next_action": "Continue with current-head integration adjudication.",
@@ -310,7 +333,7 @@
         {"path": "crates/example/src/example.rs", "summary": "Implemented the compiled builder view."}
       ],
       "proof": [
-        {"ref": "local:cargo-test-example", "claim": "The focused test command passed locally."}
+        {"kind": "author_claim", "ref": "local:cargo-test-example", "claim": "The focused test command passed locally."}
       ],
       "uncertainty": ["The local green result is an author claim until independent current-head proof exists."],
       "recommended_next_action": "Publish the branch and request exact-head review.",
@@ -336,7 +359,7 @@
       ],
       "changes": [],
       "proof": [
-        {"ref": "runtime-help:2026-07-15", "claim": "The installed runtime capability was inspected."}
+        {"kind": "independent", "ref": "runtime-help:2026-07-15", "claim": "The installed runtime capability was inspected."}
       ],
       "uncertainty": ["The issue plan and its comments are one source, not independent confirmations."],
       "recommended_next_action": "Return to the issue and resolve the capability premise before writing configuration.",
@@ -363,7 +386,7 @@
       ],
       "changes": [],
       "proof": [
-        {"ref": "github:check/ci@89abcdef01234567", "claim": "The job failed before its repository test step."}
+        {"kind": "observed", "ref": "github:check/ci@89abcdef01234567", "claim": "The job failed before its repository test step."}
       ],
       "uncertainty": ["A rerun is required to establish repository behavior."],
       "recommended_next_action": "Park the runner blocker and rerun against the same head.",
