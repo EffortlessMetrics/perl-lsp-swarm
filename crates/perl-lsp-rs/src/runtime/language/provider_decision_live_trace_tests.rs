@@ -915,7 +915,7 @@ fn live_completion_request_keeps_provider_specific_trace() -> Result<(), Box<dyn
     assert_eq!(
         receipt.get("claim_boundary").and_then(Value::as_str),
         Some(
-            "records existing completion response only; no new completion candidates or ranking changes"
+            "records existing comparable visibility completions and semantic shadow evidence; module, method, keyword, builtin, file, and ranking behavior remain unchanged"
         )
     );
     assert_eq!(
