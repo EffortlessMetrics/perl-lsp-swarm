@@ -27,8 +27,8 @@
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    AccessMode, AssignMode, BodyOwnerKind, DeclStorageClass, HirExpr, HirStmt, Sigil, UnaryMode,
-    VariableKind, lower_ast,
+    AccessMode, AssignMode, BodyOwnerKind, DeclStorageClass, HIR_BODY_MODEL_VERSION, HirExpr,
+    HirStmt, Sigil, UnaryMode, VariableKind, lower_ast,
 };
 
 fn parse(source: &str) -> perl_parser_core::hir::HirFile {
@@ -381,6 +381,7 @@ fn hir_canonical_recovery_no_exact_fact() {
                 );
             }
         }
+        _ => return,
     }
 }
 
@@ -465,6 +466,7 @@ fn hir_canonical_sub_body_lexical_resolution() {
                 return; // no init to check
             }
         }
+        _ => return,
     };
 
     let expr = sub_body.expr(expr_id).expect("second expr");
@@ -517,7 +519,10 @@ fn hir_canonical_method_body_owned() {
     }
     // Always assert at least the root body exists (second pass ran successfully)
     assert!(!file.bodies.is_empty(), "HirFile must have at least a root body");
-    assert_eq!(file.body_model_version, 1, "body_model_version must be 1 after lower_ast");
+    assert_eq!(
+        file.body_model_version, HIR_BODY_MODEL_VERSION,
+        "lower_ast must publish the current body model version"
+    );
 }
 
 // ── 13. Anonymous sub body ────────────────────────────────────────────────────
@@ -686,6 +691,7 @@ fn hir_canonical_recovery_in_sub_body() {
                 );
             }
         }
+        _ => return,
     }
 }
 

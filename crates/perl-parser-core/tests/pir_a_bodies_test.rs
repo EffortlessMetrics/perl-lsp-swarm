@@ -18,7 +18,7 @@
 //!  11. `$x++` — Modify (ReadModifyWrite unary)
 //!  12. Modify evaluates place once (no duplicate target evaluation in receipt)
 //!  13. `sub foo { my $x = 1; }` — sub body produces Write in sub body operations
-//!  14. body_model_version guard — version 0 → no body ops emitted / version 1 → ok
+//!  14. body_model_version guard — version 0 → no body ops emitted / current version → ok
 //!  15. `our $x = $y;` — exactly 1 StashWrite, 0 LexicalWrite for $x (storage-aware Let guard)
 //!  16. `our $x += 1;` — StashModify from lower_variable_modify (package compound assign)
 //!  17. Version-mismatch empty graph — body_model_version != HIR_BODY_MODEL_VERSION → 0 nodes + ambient_input
@@ -29,6 +29,10 @@
 //!  22. Hash sigil `%h` — sigil_str emits `%`
 //!  23. Opaque function call counted in unsupported receipt
 //!  24. `local $x;` → StashWrite, 0 LexicalWrite (regression guard for #2612)
+//!  25. C-style `for` preserves initializer writes and update mutation
+//!  26. postfix conditions do not create unconditional fallthrough
+//!  27. loop bodies do not create unconditional fallthrough
+//!  28. ternary arms do not create cross-arm fallthrough
 
 use perl_parser_core::Parser;
 use perl_parser_core::SourceLocation;
@@ -708,6 +712,50 @@ fn pir_a_local_declaration_is_stash_write() {
     }
 }
 
+// ── 25. C-style `for` preserves initializer and update operations ────────────
+// The structured HIR loop owns both the initializer statement and update
+// expression. PIR-A must walk both links so declaration writes and mutations
+// remain available to downstream data-flow consumers.
+
+#[test]
+fn pir_a_c_style_for_preserves_initializer_and_update_operations() {
+    let graph = parse_and_lower("for (my $i = 0; $i < 2; $i++) { $seen = $i; }");
+
+    let initializer_writes = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "i"
+            )
+        })
+        .count();
+    assert_eq!(
+        initializer_writes,
+        1,
+        "C-style for initializer must preserve one lexical write for $i; got ops: {:?}",
+        graph.nodes.iter().map(|node| node.operation.name()).collect::<Vec<_>>()
+    );
+
+    let update_mutations = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::Modify { name, .. } if name.name == "i"
+            )
+        })
+        .count();
+    assert_eq!(
+        update_mutations,
+        1,
+        "C-style for update must preserve one mutation for $i; got ops: {:?}",
+        graph.nodes.iter().map(|node| node.operation.name()).collect::<Vec<_>>()
+    );
+}
+
 // ── 23. Opaque function call counted in unsupported receipt ───────────────────
 // `foo($x)` in a body arena lowers to `HirExpr::Opaque { ast_kind: "FunctionCall" }`,
 // which hits `ast_kind_to_static("FunctionCall") → "OpaqueCall"`. The receipt must
@@ -763,7 +811,170 @@ fn pir_a_opaque_method_call_counted_as_unsupported() {
     );
 }
 
-// ── 25. Cross-body no spurious fallthrough edges ─────────────────────────────
+#[test]
+fn pir_a_branch_arms_do_not_create_cross_arm_fallthrough() -> Result<(), Box<dyn std::error::Error>>
+{
+    use perl_parser_core::pir::PirEdgeKind;
+
+    let graph = parse_and_lower("if ($flag) { my $left = 1; } else { my $right = 2; }");
+    let left = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(&node.operation, PirOperation::LexicalWrite { name } if name.name == "left")
+        })
+        .ok_or("left branch write is missing")?;
+    let right = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(&node.operation, PirOperation::LexicalWrite { name } if name.name == "right")
+        })
+        .ok_or("right branch write is missing")?;
+
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough && edge.from == left.id && edge.to == Some(right.id)
+    }));
+    Ok(())
+}
+
+#[test]
+fn pir_a_ternary_arms_do_not_create_cross_arm_fallthrough() -> Result<(), Box<dyn std::error::Error>>
+{
+    use perl_parser_core::pir::PirEdgeKind;
+
+    let graph = parse_and_lower("my $value = $flag ? $left : $right;");
+    let left = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalRead { name } if name.name == "left"
+            ) || matches!(
+                &node.operation,
+                PirOperation::StashRead { symbol } if symbol.name == "left"
+            )
+        })
+        .ok_or("true-arm read is missing")?;
+    let right = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalRead { name } if name.name == "right"
+            ) || matches!(
+                &node.operation,
+                PirOperation::StashRead { symbol } if symbol.name == "right"
+            )
+        })
+        .ok_or("false-arm read is missing")?;
+
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough && edge.from == left.id && edge.to == Some(right.id)
+    }));
+    Ok(())
+}
+
+#[test]
+fn pir_a_postfix_condition_does_not_create_unconditional_fallthrough()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser_core::pir::PirEdgeKind;
+
+    let graph = parse_and_lower("my $before = 0; my $conditional = 1 if $flag; my $after = 2;");
+    let flag = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalRead { name } if name.name == "flag"
+            ) || matches!(
+                &node.operation,
+                PirOperation::StashRead { symbol } if symbol.name == "flag"
+            )
+        })
+        .ok_or("postfix condition read is missing")?;
+    let conditional = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "conditional"
+            )
+        })
+        .ok_or("postfix statement write is missing")?;
+    let after = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "after"
+            )
+        })
+        .ok_or("statement after postfix condition is missing")?;
+
+    assert!(flag.id < conditional.id, "postfix condition must lower before its statement");
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == conditional.id
+            && edge.to == Some(after.id)
+    }));
+    Ok(())
+}
+
+#[test]
+fn pir_a_loop_body_does_not_create_unconditional_fallthrough()
+-> Result<(), Box<dyn std::error::Error>> {
+    use perl_parser_core::pir::PirEdgeKind;
+
+    let graph = parse_and_lower("my $before = 0; while (1) { my $inside = 1; } my $after = 2;");
+    let before = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "before"
+            )
+        })
+        .ok_or("statement before loop is missing")?;
+    let inside = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "inside"
+            )
+        })
+        .ok_or("loop body write is missing")?;
+    let after = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "after"
+            )
+        })
+        .ok_or("statement after loop is missing")?;
+
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough && edge.from == inside.id && edge.to == Some(after.id)
+    }));
+    assert!(!graph.edges.iter().any(|edge| {
+        edge.kind == PirEdgeKind::Fallthrough
+            && edge.from == before.id
+            && edge.to == Some(inside.id)
+    }));
+    Ok(())
+}
+
+// ── 29. Cross-body no spurious fallthrough edges ─────────────────────────────
 // When a file has both a subroutine body and the program-root body, the last
 // PIR node of the sub body must NOT be connected by a Fallthrough edge to the
 // first PIR node of the program-root body. Bodies are independent control-flow

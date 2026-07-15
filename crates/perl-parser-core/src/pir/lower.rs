@@ -803,6 +803,20 @@ impl BodyLowerer {
             HirStmt::Expr(expr_id) => {
                 self.lower_expr(body, *expr_id, file);
             }
+            HirStmt::LoopControl { .. } => {
+                *self.unsupported.entry("LoopControl").or_insert(0) += 1;
+            }
+            HirStmt::PostfixCondition { statement, condition, .. } => {
+                *self.unsupported.entry("PostfixCondition").or_insert(0) += 1;
+                self.lower_expr(body, *condition, file);
+                // The wrapped statement runs only when the condition holds.
+                // Keep the condition in ordinary sequence order, but do not
+                // make the conditional statement a guaranteed fallthrough
+                // successor or predecessor of surrounding body nodes.
+                self.last_in_scope.remove(&None);
+                self.lower_stmt(body, *statement, file);
+                self.last_in_scope.remove(&None);
+            }
         }
     }
 
@@ -877,6 +891,81 @@ impl BodyLowerer {
                 self.lower_expr(body, *rhs, file);
             }
 
+            HirExpr::Branch { condition, then_block, elsif_arms, else_block, .. } => {
+                *self.unsupported.entry("Branch").or_insert(0) += 1;
+                self.lower_expr(body, *condition, file);
+                // Body nodes currently share one synthetic scope. A branch arm
+                // is a mutually exclusive region, so do not let its final node
+                // become the fallthrough predecessor of the next arm or of the
+                // statement after the branch.
+                self.last_in_scope.remove(&None);
+                self.lower_block(body, *then_block, file);
+                for (condition, block) in elsif_arms {
+                    self.last_in_scope.remove(&None);
+                    self.lower_expr(body, *condition, file);
+                    self.lower_block(body, *block, file);
+                }
+                if let Some(block) = else_block {
+                    self.last_in_scope.remove(&None);
+                    self.lower_block(body, *block, file);
+                }
+                self.last_in_scope.remove(&None);
+            }
+
+            HirExpr::Loop {
+                init,
+                condition,
+                update,
+                body: loop_body,
+                continue_block,
+                iterator_binding,
+                ..
+            } => {
+                *self.unsupported.entry("Loop").or_insert(0) += 1;
+                if let Some(init) = init {
+                    self.lower_stmt(body, *init, file);
+                }
+                if let Some(condition) = condition {
+                    self.lower_expr(body, *condition, file);
+                }
+                if let Some(iterator_binding) = iterator_binding {
+                    self.lower_expr(body, *iterator_binding, file);
+                }
+                // Loop bodies execute zero or more times. They must not look
+                // like unconditional fallthrough from the loop header or into
+                // the first statement after the loop.
+                self.last_in_scope.remove(&None);
+                self.lower_block(body, *loop_body, file);
+                if let Some(block) = continue_block {
+                    self.lower_block(body, *block, file);
+                }
+                if let Some(update) = update {
+                    self.lower_expr(body, *update, file);
+                }
+                self.last_in_scope.remove(&None);
+            }
+
+            HirExpr::Ternary { condition, then_expr, else_expr } => {
+                *self.unsupported.entry("Ternary").or_insert(0) += 1;
+                self.lower_expr(body, *condition, file);
+                // The selected arms are mutually exclusive. Do not connect the
+                // final node of the true arm to the first node of the false arm,
+                // or either arm to a later sibling through the shared synthetic
+                // body scope.
+                self.last_in_scope.remove(&None);
+                self.lower_expr(body, *then_expr, file);
+                self.last_in_scope.remove(&None);
+                self.lower_expr(body, *else_expr, file);
+                self.last_in_scope.remove(&None);
+            }
+
+            HirExpr::Return { value } => {
+                *self.unsupported.entry("Return").or_insert(0) += 1;
+                if let Some(value) = value {
+                    self.lower_expr(body, *value, file);
+                }
+            }
+
             HirExpr::Opaque { ast_kind } => {
                 // Fail-closed: opaque nodes never emit exact facts.
                 *self.unsupported.entry(ast_kind_to_static(ast_kind)).or_insert(0) += 1;
@@ -891,6 +980,14 @@ impl BodyLowerer {
                 for arg_id in args {
                     self.lower_expr(body, *arg_id, file);
                 }
+            }
+        }
+    }
+
+    fn lower_block(&mut self, body: &HirBody, block_id: crate::hir::HirBlockId, file: &HirFile) {
+        if let Some(block) = body.block(block_id) {
+            for stmt_id in &block.stmts {
+                self.lower_stmt(body, *stmt_id, file);
             }
         }
     }
@@ -1508,6 +1605,20 @@ $x = 1 if $y;
         let graph = lower("foo(); bar(); baz();");
         let count = graph.edges.iter().filter(|e| e.kind == PirEdgeKind::Fallthrough).count();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn branch_arms_do_not_create_cross_arm_fallthrough() {
+        let graph = lower("if (1) { my $then = 1; } else { my $else = 2; }");
+        let else_write = must_some(graph.nodes.iter().find(|node| {
+            matches!(
+                &node.operation,
+                PirOperation::LexicalWrite { name } if name.name == "else"
+            )
+        }));
+        assert!(!graph.edges.iter().any(|edge| {
+            edge.kind == PirEdgeKind::Fallthrough && edge.to == Some(else_write.id)
+        }));
     }
 
     #[test]
