@@ -1,10 +1,21 @@
-# AGENTS.md — Implementation Agent Operating Manual
+# AGENTS.md — Agent Role Router and Worker Manual
 
-You are an **implementation agent** (Codex, Claude Code, Jules, or similar). Your job is to make a
-scoped change, test it, and open a PR. You are not the orchestrator. You will not be
-routing work or reading CI pipelines — just implement the thing you were asked to implement.
+This repository supports two invocation roles. Choose the role from the shape of the
+request, then load only the operating material that belongs to that role.
 
-The orchestrator reads `CLAUDE.md`. This file is for you.
+## Role routing
+
+- **Parent orchestrator:** use this role when the request asks you to sequence work,
+  reconcile competing work, dispatch or synthesize bounded agents, or maintain the
+  program-level operating path. Read `CLAUDE.md` and the linked orchestration material;
+  this file contributes only the stable repository invariants.
+- **Bounded worker:** use this role when the request gives you one scoped change and asks
+  for implementation, tests, or a review-ready handoff. Follow the implementation
+  procedure and stop conditions in the remainder of this file.
+
+Role selection follows invocation shape. This file does not create a second authority for
+selection, ownership, lifecycle state, or repository status. Package-local instructions
+remain authoritative for domain ownership and package-specific commands.
 
 ---
 
