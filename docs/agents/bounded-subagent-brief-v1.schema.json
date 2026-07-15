@@ -151,24 +151,10 @@
           "pattern": "^[0-9a-f]{7,64}$"
         }
       },
-      "allOf": [
-        {
-          "if": {
-            "required": ["pr"]
-          },
-          "then": {
-            "required": ["head_sha"]
-          }
-        },
-        {
-          "if": {
-            "required": ["head_sha"]
-          },
-          "then": {
-            "required": ["pr"]
-          }
-        }
-      ],
+      "dependencies": {
+        "pr": ["head_sha"],
+        "head_sha": ["pr"]
+      },
       "additionalProperties": false
     },
     "write_scope": {
@@ -289,13 +275,43 @@
         "required": ["role"]
       },
       "then": {
-        "required": ["write_scope", "compiled_work_order", "admission"]
+        "required": ["write_scope", "compiled_work_order", "admission"],
+        "properties": {
+          "compiled_work_order": {
+            "properties": {
+              "freshness": {
+                "const": "current"
+              }
+            }
+          }
+        }
       },
       "else": {
-        "allOf": [
-          {"not": {"required": ["write_scope"]}},
-          {"not": {"required": ["admission"]}}
+        "properties": {
+          "write_scope": false,
+          "admission": false
+        }
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {"role": {"const": "reviewer"}},
+            "required": ["role"]
+          },
+          {
+            "properties": {"lifecycle_action": {"const": "ReviewPr"}},
+            "required": ["lifecycle_action"]
+          }
         ]
+      },
+      "then": {
+        "properties": {
+          "basis": {
+            "required": ["pr", "head_sha"]
+          }
+        }
       }
     }
   ],
@@ -328,6 +344,38 @@
       ],
       "stop_when": [
         "The named seam is answered or the current head changes."
+      ],
+      "return_schema": "bounded-subagent-result-v1"
+    },
+    {
+      "schema": "bounded-subagent-brief-v1",
+      "work_item": "issue-1234-review",
+      "basis": {
+        "issue": 1234,
+        "pr": 5678,
+        "base_sha": "0123456789abcdef",
+        "head_sha": "89abcdef01234567"
+      },
+      "role": "reviewer",
+      "lifecycle_action": "ReviewPr",
+      "objective": "Review the exact published head for correctness and integration hazards.",
+      "read_scope": [
+        "PR 5678 at 89abcdef01234567",
+        "linked issue and compiled builder view",
+        "required checks"
+      ],
+      "authorities": [
+        "github:PR/5678@89abcdef01234567",
+        "issue 1234"
+      ],
+      "proof_obligations": [
+        "Bind every finding and proof reference to the inspected head."
+      ],
+      "non_goals": [
+        "Do not edit the branch or review a later head."
+      ],
+      "stop_when": [
+        "The PR head changes or the exact-head review is complete."
       ],
       "return_schema": "bounded-subagent-result-v1"
     },
