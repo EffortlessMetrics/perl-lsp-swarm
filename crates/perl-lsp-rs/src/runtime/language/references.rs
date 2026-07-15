@@ -1938,6 +1938,7 @@ impl LspServer {
     pub(crate) fn on_references(
         &self,
         params: serde_json::Value,
+        request_id: Option<&Value>,
     ) -> Result<serde_json::Value, JsonRpcError> {
         let uri = params.pointer("/textDocument/uri").and_then(|v| v.as_str()).unwrap_or("");
         let line = params.pointer("/position/line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -1950,12 +1951,25 @@ impl LspServer {
             return Ok(serde_json::json!([]));
         }
 
-        // Fallback: search all open docs with word boundary checking
-        let docs_snapshot = self.iter_open_buffers();
+        let start = Instant::now();
+        let budget = ReferenceTextFallbackBudget {
+            max_documents: REFERENCE_TEXT_FALLBACK_MAX_DOCUMENTS,
+            max_bytes: REFERENCE_TEXT_FALLBACK_MAX_BYTES,
+            deadline: start + reference_search_deadline(),
+        };
+        let typed_request_id = request_id.and_then(JsonRpcId::try_from_value);
+        let mut receipt = ReferenceTextFallbackReceipt::default();
+        let docs_snapshot = self.bounded_open_document_snapshot(
+            uri,
+            &text,
+            &budget,
+            &mut receipt,
+            typed_request_id.as_ref(),
+        )?;
         let out = search_document_texts_for_references(
             docs_snapshot.iter().map(|(doc_uri, doc_text)| (doc_uri.as_str(), doc_text.as_str())),
             &needle,
-            usize::MAX,
+            references_cap(),
         );
 
         Ok(serde_json::Value::Array(out))
@@ -2468,6 +2482,47 @@ mod tests {
             .into());
         }
 
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn legacy_reference_fallback_respects_document_cap() -> Result<(), Box<dyn Error>> {
+        use crate::runtime::LspServer;
+        use parking_lot::Mutex;
+        use std::io::Cursor;
+        use std::sync::Arc;
+
+        let output = Arc::new(Mutex::new(
+            Box::new(Cursor::new(Vec::new())) as Box<dyn std::io::Write + Send>
+        ));
+        let server = LspServer::with_output(output);
+        let current_uri = "file:///current-legacy-fallback.pl";
+        server.test_apply_did_open(current_uri, "target\n", 1)?;
+        for index in 0..127 {
+            server.test_apply_did_open(
+                &format!("file:///{index:03}-legacy-filler.pl"),
+                "other\n",
+                1,
+            )?;
+        }
+        let late_uri = "file:///999-legacy-late.pl";
+        server.test_apply_did_open(late_uri, "target\n", 1)?;
+
+        let result = server.on_references(
+            json!({
+                "textDocument": {"uri": current_uri},
+                "position": {"line": 0, "character": 2}
+            }),
+            None,
+        )?;
+        let locations = result.as_array().ok_or("legacy fallback did not return an array")?;
+        if locations.iter().any(|location| location["uri"] == late_uri) {
+            return Err("legacy fallback scanned beyond the bounded document set".into());
+        }
+        if locations.iter().all(|location| location["uri"] != current_uri) {
+            return Err("legacy fallback did not retain the current document".into());
+        }
         Ok(())
     }
 

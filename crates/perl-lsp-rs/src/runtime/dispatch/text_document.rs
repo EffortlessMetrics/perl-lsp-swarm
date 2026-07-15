@@ -183,7 +183,7 @@ impl LspServer {
         // Use test fallback in test mode, production handler otherwise
         let use_fallback = std::env::var("LSP_TEST_FALLBACKS").is_ok();
         if use_fallback {
-            match self.on_references(params.clone().unwrap_or(json!({}))) {
+            match self.on_references(params.clone().unwrap_or(json!({})), request_id) {
                 Ok(res) => Ok(Some(res)),
                 Err(_) => self.handle_references_with_request_id(params, request_id),
             }
@@ -194,7 +194,7 @@ impl LspServer {
                 if error.code == crate::protocol::REQUEST_CANCELLED {
                     Err(error)
                 } else {
-                    self.on_references(fallback_params).map(Some)
+                    self.on_references(fallback_params, request_id).map(Some)
                 }
             })
         }
