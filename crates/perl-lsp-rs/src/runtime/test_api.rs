@@ -1235,11 +1235,7 @@ mod tests {
         ) -> Result<()> {
             let actual_message =
                 result.err().ok_or_else(|| anyhow!("validation unexpectedly succeeded"))?;
-            if actual_message != expected_message {
-                return Err(anyhow!(
-                    "unexpected validation error: expected {expected_message:?}, got {actual_message:?}"
-                ));
-            }
+            assert_eq!(actual_message, expected_message);
             Ok(())
         }
 
@@ -1309,9 +1305,7 @@ mod tests {
             &full_trace,
         )
         .map_err(anyhow::Error::msg)?;
-        if observed != ("non_empty_exact".to_string(), "ready".to_string()) {
-            return Err(anyhow!("unexpected validated observation: {observed:?}"));
-        }
+        assert_eq!(observed, ("non_empty_exact".to_string(), "ready".to_string()));
         Ok(())
     }
 
