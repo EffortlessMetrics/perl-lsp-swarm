@@ -1309,6 +1309,22 @@ fn no_warnings_with_category_disables_only_that_category() -> Result<(), Box<dyn
 }
 
 #[test]
+fn duplicate_use_builtin_does_not_create_extra_entry() -> Result<(), Box<dyn std::error::Error>> {
+    let ast = program(vec![
+        use_node("builtin", &["'indexed'"], 0, 22),
+        use_node("builtin", &["'indexed'"], 23, 45),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 1, "duplicate use builtin import should not add a redundant map entry");
+    assert!(
+        map[0].1.builtin_imports == vec!["indexed"],
+        "builtin_imports must contain exactly one 'indexed' entry"
+    );
+    Ok(())
+}
+
+#[test]
 fn duplicate_no_warnings_category_does_not_create_extra_entry()
 -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
