@@ -203,6 +203,60 @@ fn navigation_provider_decision_replays_definition_and_references_traces()
         definition_receipt.get("claim_boundary").and_then(Value::as_str),
         Some("records existing navigation response only; no broader live navigation cutover")
     );
+    let semantic_shadow_receipt = definition_receipt
+        .get("semantic_shadow_receipt")
+        .and_then(Value::as_object)
+        .ok_or("missing persisted definition semantic shadow receipt")?;
+    assert_eq!(
+        semantic_shadow_receipt.get("query").and_then(Value::as_str),
+        Some("find_definition")
+    );
+    assert_eq!(
+        semantic_shadow_receipt
+            .get("input")
+            .and_then(|input| input.get("symbol"))
+            .and_then(Value::as_str),
+        Some("target")
+    );
+    assert!(
+        semantic_shadow_receipt
+            .get("new_result")
+            .and_then(|result| result.get("match_count"))
+            .and_then(Value::as_u64)
+            .is_some_and(|count| count > 0),
+        "definition semantic shadow receipt must contain semantic candidates"
+    );
+    let fact_source_traces = semantic_shadow_receipt
+        .get("fact_source_traces")
+        .and_then(Value::as_array)
+        .ok_or("definition semantic shadow receipt must preserve fact-source traces")?;
+    assert!(!fact_source_traces.is_empty());
+    assert!(
+        fact_source_traces.iter().all(|trace| {
+            trace.get("surface").and_then(Value::as_str) == Some("Definition")
+                && trace.get("anchor_id").and_then(Value::as_u64).is_some()
+        }),
+        "definition fact-source traces must identify definition anchors"
+    );
+    let trace_anchor_ids: Vec<u64> = fact_source_traces
+        .iter()
+        .filter_map(|trace| trace.get("anchor_id").and_then(Value::as_u64))
+        .collect();
+    let candidate_identities = semantic_shadow_receipt
+        .get("new_result")
+        .and_then(|result| result.get("identities"))
+        .and_then(Value::as_array)
+        .ok_or("definition semantic shadow receipt must preserve candidate identities")?;
+    assert!(
+        candidate_identities.iter().any(|identity| {
+            identity.as_str().is_some_and(|identity| {
+                trace_anchor_ids
+                    .iter()
+                    .any(|anchor_id| identity.ends_with(&format!("target:anchor:{anchor_id}")))
+            })
+        }),
+        "definition candidate identities must match a traced target anchor: {candidate_identities:?}"
+    );
 
     let (references_line, references_character) = position_of(MAIN, "target()")?;
     let references_params = json!({
@@ -247,6 +301,32 @@ fn navigation_provider_decision_replays_definition_and_references_traces()
         Some("records existing references response only; no broader live references cutover")
     );
 
+    Ok(())
+}
+
+#[test]
+fn definition_provider_does_not_persist_shadow_receipt_for_fqn_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = create_server();
+    open_navigation_workspace(&server)?;
+
+    let (line, character) = position_of(MAIN, "Real::Nav::target()")?;
+    let params = json!({
+        "textDocument": {"uri": MAIN_URI},
+        "position": {"line": line, "character": character}
+    });
+    let result = server.test_handle_definition(Some(params))?;
+    assert_eq!(location_count(result.as_ref()), 0);
+
+    let explanation = explain_provider_decision(&server, "goto_definition")?;
+    let receipt = explanation
+        .get("request_receipt")
+        .and_then(Value::as_object)
+        .ok_or("missing persisted goto-definition request receipt")?;
+    assert!(
+        receipt.get("semantic_shadow_receipt").is_none(),
+        "FQN package-prefix refusal must not persist candidates for the final component"
+    );
     Ok(())
 }
 
