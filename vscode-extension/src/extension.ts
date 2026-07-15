@@ -53,6 +53,11 @@ import { registerCriticCommandGroup } from './criticCommandGroup';
 import { registerTestCommandGroup } from './testCommandGroup';
 import { registerOnboardingCommandGroup } from './onboardingCommandGroup';
 import { registerNavigationCommandGroup } from './navigationCommandGroup';
+import {
+  organizeImportsCommand,
+  showStatusMenuCommand,
+  showVersionCommand,
+} from './navigationCommands';
 import { registerDiagnosticCommandGroup } from './diagnosticCommandGroup';
 import {
   copyProviderDecisionReceiptCommand as copyProviderDecisionReceipt,
@@ -441,168 +446,26 @@ export async function activate(context: vscode.ExtensionContext) {
     runAllTests: () => runAllTestsWithProve(),
   });
 
-  const organizeImports = async () => {
-    await vscode.commands.executeCommand('editor.action.organizeImports');
-  };
-
-  const showVersion = async () => {
-    if (!currentServerPath) {
-      vscode.window
-        .showErrorMessage(
-          serverNotRunningMessage(),
-          'Restart Server',
-          'Show Output',
-          'Run Health Check',
-        )
-        .then((sel) => {
-          if (sel === 'Restart Server') {
-            void vscode.commands.executeCommand('perl-lsp.restart');
-          }
-          if (sel === 'Show Output') {
-            outputChannel.show();
-          }
-          if (sel === 'Run Health Check') {
-            void vscode.commands.executeCommand('perl-lsp.runHealthCheck');
-          }
-        });
-      return;
-    }
-
-    execFile(currentServerPath, ['--version'], (error: Error | null, stdout: string) => {
-      if (error) {
-        vscode.window
-          .showErrorMessage(
-            `Could not get Perl LSP version: ${error.message}. The server binary may be missing or corrupt — try reinstalling.`,
-            'Reinstall',
-          )
-          .then((sel) => {
-            if (sel === 'Reinstall') {
-              void vscode.commands.executeCommand('perl-lsp.reinstall');
-            }
-          });
-        return;
-      }
-
-      const version = stdout.trim();
-      vscode.window
-        .showInformationMessage(`Perl LSP Version: ${version}`, 'Copy')
-        .then((selection) => {
-          if (selection === 'Copy') {
-            void vscode.env.clipboard.writeText(version);
-          }
-        });
-    });
-  };
-
-  const showStatusMenu = async () => {
-    const editor = vscode.window.activeTextEditor;
-    const isPerl = editor ? editor.document.languageId === 'perl' : false;
-    const filePath = editor ? editor.document.uri.fsPath : '';
-    const isTestFile = isPerl && (filePath.endsWith('.t') || filePath.endsWith('.pl'));
-
-    interface MenuAction extends vscode.QuickPickItem {
-      command?: string;
-      args?: unknown[];
-      disabled?: boolean;
-    }
-
-    const items: MenuAction[] = [
-      { label: 'Actions', kind: vscode.QuickPickItemKind.Separator },
-      {
-        label: '$(refresh) Restart Server',
-        description: 'Shift+Alt+R',
-        detail: 'Restart the language server',
-        command: 'perl-lsp.restart',
-      },
-      {
-        label: '$(organization) Organize Imports',
-        description: 'Shift+Alt+O',
-        detail: isPerl
-          ? 'Sort and organize use statements'
-          : 'Sort and organize use statements (Only available for Perl files)',
-        command: 'perl-lsp.organizeImports',
-        disabled: !isPerl,
-      },
-      {
-        label: '$(beaker) Run Tests in Current File',
-        description: 'Shift+Alt+T',
-        detail: isTestFile
-          ? 'Run tests for the active file'
-          : 'Run tests for the active file (Only available for .t/.pl files)',
-        command: 'perl-lsp.runTests',
-        disabled: !isTestFile,
-      },
-      {
-        label: '$(checklist) Run Critic',
-        detail: isPerl
-          ? 'Run Critic on the active file'
-          : 'Run Critic on the active file (Only available for Perl files)',
-        command: 'perl-lsp.runPerlCritic',
-        disabled: !isPerl,
-      },
-      {
-        label: '$(symbol-numeric) Set Critic Severity',
-        detail: isPerl
-          ? 'Choose a Critic severity level'
-          : 'Choose a Critic severity level (Only available for Perl files)',
-        command: 'perl-lsp.setPerlCriticSeverity',
-        disabled: !isPerl,
-      },
-      {
-        label: '$(list-flat) Format Document',
-        description: 'Shift+Alt+F',
-        detail: isPerl
-          ? 'Format the active Perl document (native formatter)'
-          : 'Format the active Perl document (Only available for Perl files)',
-        command: 'editor.action.formatDocument',
-        disabled: !isPerl,
-      },
-
-      { label: 'Information', kind: vscode.QuickPickItemKind.Separator },
-      {
-        label: '$(output) Show Output',
-        detail: 'Open the extension output channel',
-        command: 'perl-lsp.showOutput',
-      },
-      {
-        label: '$(info) Show Version',
-        detail: 'Check installed perllsp version',
-        command: 'perl-lsp.showVersion',
-      },
-      {
-        label: '$(pulse) Run Health Check',
-        detail: 'Check Perl, perltidy, and LSP binary',
-        command: 'perl-lsp.runHealthCheck',
-      },
-      {
-        label: '$(cloud-download) Reinstall Server Binary',
-        detail: 'Re-download the managed perllsp binary',
-        command: 'perl-lsp.reinstall',
-      },
-
-      { label: 'Configuration', kind: vscode.QuickPickItemKind.Separator },
-      {
-        label: '$(gear) Configure Settings',
-        detail: 'Open Perl LSP settings',
-        command: 'workbench.action.openSettings',
-        args: ['@ext:EffortlessMetrics.perl-lsp-rs'],
-      },
-    ];
-
-    const selection = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Perl Language Server Actions',
-    });
-
-    if (selection && selection.command && !selection.disabled) {
-      vscode.commands.executeCommand(selection.command, ...(selection.args || []));
-    }
-  };
-
   const navigationCommandDisposables = registerNavigationCommandGroup({
     openDemoProject,
-    organizeImports,
-    showVersion,
-    showStatusMenu,
+    organizeImports: organizeImportsCommand,
+    showVersion: () =>
+      showVersionCommand({
+        currentServerPath: () => currentServerPath,
+        outputChannel,
+        serverNotRunningMessage,
+        getServerVersion: (serverPath) =>
+          new Promise((resolve, reject) => {
+            execFile(serverPath, ['--version'], (error: Error | null, stdout: string) => {
+              if (error) {
+                reject(error);
+                return;
+              }
+              resolve(stdout.trim());
+            });
+          }),
+      }),
+    showStatusMenu: showStatusMenuCommand,
   });
 
   const documentCommandDisposables = registerDocumentCommandGroup({
