@@ -77,6 +77,14 @@ impl LspServer {
             feature_profile,
             runtime_tuning,
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            readiness_receipt_observer_id: AtomicU64::new(0),
+            #[cfg(feature = "workspace")]
+            workspace_readiness_receipt: Arc::new(Mutex::new(
+                crate::runtime::readiness::WorkspaceReadinessReceipt::default(),
+            )),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
@@ -235,6 +243,14 @@ impl LspServer {
             feature_profile,
             runtime_tuning,
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            readiness_receipt_observer_id: AtomicU64::new(0),
+            #[cfg(feature = "workspace")]
+            workspace_readiness_receipt: Arc::new(Mutex::new(
+                crate::runtime::readiness::WorkspaceReadinessReceipt::default(),
+            )),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
@@ -334,6 +350,14 @@ impl LspServer {
             feature_profile,
             runtime_tuning,
             workspace_indexing_invocation_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            readiness_receipt_observer_id: AtomicU64::new(0),
+            #[cfg(feature = "workspace")]
+            workspace_readiness_receipt: Arc::new(Mutex::new(
+                crate::runtime::readiness::WorkspaceReadinessReceipt::default(),
+            )),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            workspace_indexing_start_gate: Arc::new(std::sync::Mutex::new(None)),
             pod_cache: Arc::new(Mutex::new(HashMap::new())),
             pending_index_task_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             parse_cancel_flags: Arc::new(Mutex::new(HashMap::new())),

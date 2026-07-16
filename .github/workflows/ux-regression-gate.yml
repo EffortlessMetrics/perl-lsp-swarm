@@ -40,7 +40,10 @@ jobs:
   ux-regression-gate:
     name: UX Regression Gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # The active golden workload emits its structured receipt after the
+    # scenarios finish; keep the gate bounded while allowing that receipt to
+    # complete on a cold hosted runner.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -399,20 +402,8 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref_name }}
 
-      - name: Install Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20.19.0'
-          cache: npm
-          cache-dependency-path: vscode-extension/package-lock.json
-
-      - name: Install dependencies (npm ci)
-        working-directory: vscode-extension
-        run: npm ci
-
-      - name: Verify Node and npm authority
-        working-directory: vscode-extension
-        run: npm run doctor
+      - name: Setup VS Code toolchain
+        uses: ./.github/actions/setup-vscode-toolchain
 
       # `npm run lint` runs scripts/lint-canary.js first (blocking): it proves
       # type-aware `typescript/no-floating-promises` genuinely executed
