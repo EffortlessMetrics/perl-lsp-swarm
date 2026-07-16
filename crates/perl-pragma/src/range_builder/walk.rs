@@ -119,3 +119,41 @@ fn build_statement_block(
     }
     *current_state = saved_state;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use perl_ast::SourceLocation;
+
+    #[test]
+    fn changed_scoped_body_emits_restore_entry_and_restores_state() {
+        let saved_state = PragmaState::default();
+        let mut current_state = saved_state.clone();
+        let body = Node::new(
+            NodeKind::Use {
+                module: "strict".to_string(),
+                args: Vec::new(),
+                has_filter_risk: false,
+            },
+            SourceLocation { start: 10, end: 42 },
+        );
+        let mut ranges = Vec::new();
+
+        build_scoped_body(&body, &mut current_state, &mut ranges);
+
+        assert_eq!(
+            ranges.len(),
+            2,
+            "changed scoped body should emit its directive and restore entries",
+        );
+        assert_eq!(
+            ranges.last().map(|(range, state)| (range.clone(), state.clone())),
+            Some((42..42, saved_state.clone())),
+            "restore entry should be zero-length at the body end and hold the saved state",
+        );
+        assert_eq!(
+            current_state, saved_state,
+            "scoped body should restore the caller state after building its ranges",
+        );
+    }
+}
