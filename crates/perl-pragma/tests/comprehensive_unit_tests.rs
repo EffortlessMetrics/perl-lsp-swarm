@@ -2011,7 +2011,10 @@ fn no_builtin_preserves_selected_lexical_imports() -> Result<(), Box<dyn std::er
     require(map.len() == 1, "no builtin must not create a state entry")?;
     let state = &map[0].1;
     assert!(state.has_builtin_import("true"));
-    assert!(state.has_builtin_import("floor"));
+    assert!(
+        state.has_builtin_import("floor"),
+        "floor import should remain available after selected no builtin"
+    );
     assert!(state.has_builtin_import("ceil"));
     Ok(())
 }
@@ -2026,8 +2029,14 @@ fn builtin_qw_alternate_delimiters_preserve_imports_across_no_directive()
     let map = PragmaTracker::build(&ast);
     require(map.len() == 1, "no builtin must not create a state entry")?;
     let state = &map[0].1;
-    assert!(state.has_builtin_import("true"));
-    assert!(state.has_builtin_import("floor"));
+    assert!(
+        state.has_builtin_import("true"),
+        "true import should remain available after alternate-delimiter no builtin"
+    );
+    assert!(
+        state.has_builtin_import("floor"),
+        "floor import should remain available after alternate-delimiter no builtin"
+    );
     assert!(state.has_builtin_import("ceil"));
     Ok(())
 }
@@ -2042,7 +2051,10 @@ fn no_builtin_without_args_preserves_lexical_imports() -> Result<(), Box<dyn std
     require(map.len() == 1, "bare no builtin must not create a state entry")?;
     let state = &map[0].1;
     assert!(state.has_builtin_import("true"));
-    assert!(state.has_builtin_import("floor"));
+    assert!(
+        state.has_builtin_import("floor"),
+        "floor import should remain available after bare no builtin"
+    );
     Ok(())
 }
 
@@ -2057,7 +2069,10 @@ fn no_if_builtin_conditionally_preserves_lexical_imports() -> Result<(), Box<dyn
     require(map.len() == 1, "conditional no builtin must not create a state entry")?;
     let state = &map[0].1;
     assert!(state.has_builtin_import("true"));
-    assert!(state.has_builtin_import("floor"));
+    assert!(
+        state.has_builtin_import("floor"),
+        "floor import should remain available after conditional no builtin"
+    );
     Ok(())
 }
 

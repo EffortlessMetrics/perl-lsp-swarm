@@ -327,14 +327,20 @@ fn deeply_nested_mixed_pragmas_restore_each_outer_scope() -> Result<(), Box<dyn 
     assert!(in_eval.locale);
     assert_eq!(in_eval.locale_scope.as_deref(), Some(":not_characters"));
     assert!(in_eval.has_builtin_import("true"));
-    assert!(in_eval.has_builtin_import("floor"));
+    assert!(
+        in_eval.has_builtin_import("floor"),
+        "floor import should remain available inside the nested eval after no builtin"
+    );
     assert!(!in_eval.has_feature("signatures"));
 
     let in_phase = PragmaTracker::state_for_offset(&map, 245);
     assert!(!in_phase.strict_refs);
     assert_eq!(in_phase.encoding.as_deref(), Some("UTF-8"));
     assert!(in_phase.locale);
-    assert!(in_phase.has_builtin_import("floor"));
+    assert!(
+        in_phase.has_builtin_import("floor"),
+        "floor import should remain available inside the nested phase scope"
+    );
 
     let after_package = PragmaTracker::state_for_offset(&map, 278);
     assert!(after_package.strict_vars);
