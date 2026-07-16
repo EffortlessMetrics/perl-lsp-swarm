@@ -72,11 +72,7 @@ fn dummy_node(start: usize, end: usize) -> Node {
 }
 
 fn require(condition: bool, message: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if condition {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(std::io::ErrorKind::Other, message).into())
-    }
+    if condition { Ok(()) } else { Err(std::io::Error::other(message).into()) }
 }
 
 // ===========================================================================
@@ -1340,9 +1336,10 @@ fn duplicate_builtin_imports_do_not_create_extra_entry() -> Result<(), Box<dyn s
 
     let map = PragmaTracker::build(&ast);
     require(map.len() == 1, "duplicate use builtin should not add a redundant map entry")?;
-    let state = map.first().map(|entry| &entry.1).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::Other, "duplicate builtin state is missing")
-    })?;
+    let state = map
+        .first()
+        .map(|entry| &entry.1)
+        .ok_or_else(|| std::io::Error::other("duplicate builtin state is missing"))?;
     require(
         state.builtin_imports.len() == 1
             && state.builtin_imports.first().map(String::as_str) == Some("blessed"),
@@ -1354,14 +1351,18 @@ fn duplicate_builtin_imports_do_not_create_extra_entry() -> Result<(), Box<dyn s
 #[test]
 fn no_builtin_without_prior_imports_does_not_create_entry() -> Result<(), Box<dyn std::error::Error>>
 {
-    // `no builtin 'foo'` when 'foo' was never imported must not emit a map entry.
-    let ast = program(vec![no_node("builtin", &["'blessed'"], 0, 22)]);
+    // An unknown removal after a real import must not emit a second map entry or
+    // erase the import that was already tracked.
+    let ast = program(vec![
+        use_node("builtin", &["'true'"], 0, 20),
+        no_node("builtin", &["'blessed'"], 21, 43),
+    ]);
 
     let map = PragmaTracker::build(&ast);
-    require(map.is_empty(), "`no builtin` for an unknown name must not create a map entry")?;
+    require(map.len() == 1, "a no-op `no builtin` must not create a redundant map entry")?;
     let state_after = PragmaTracker::state_for_offset(&map, 30);
     require(
-        state_after.builtin_imports.is_empty(),
+        state_after.has_builtin_import("true") && !state_after.has_builtin_import("blessed"),
         "a no-op `no builtin` must preserve the prior state",
     )?;
     Ok(())
