@@ -2147,3 +2147,87 @@ fn no_feature_default_disables_only_default_features() -> Result<(), Box<dyn std
     assert!(state.has_feature("module_true"));
     Ok(())
 }
+
+// ===========================================================================
+// Redundant map-entry elimination
+// ===========================================================================
+
+#[test]
+fn duplicate_use_builtin_imports_do_not_create_extra_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `use builtin 'true'; use builtin 'true';` — the second statement is a no-op
+    // because 'true' is already imported; it must not push a redundant map entry.
+    let ast = program(vec![
+        use_node("builtin", &["'true'"], 0, 20),
+        use_node("builtin", &["'true'"], 21, 41),
+    ]);
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(
+        map.len(),
+        1,
+        "duplicate builtin import should not create a redundant map entry"
+    );
+    assert!(
+        map[0].1.has_builtin_import("true"),
+        "builtin import 'true' must be recorded"
+    );
+    Ok(())
+}
+
+#[test]
+fn no_builtin_of_absent_import_does_not_create_map_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    // `no builtin 'true'` when 'true' was never imported is a no-op; no entry pushed.
+    let ast = program(vec![
+        use_node("builtin", &["'false'"], 0, 20),
+        no_node("builtin", &["'true'"], 21, 40),
+    ]);
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(
+        map.len(),
+        1,
+        "removing an absent builtin import must not create a map entry"
+    );
+    Ok(())
+}
+
+#[test]
+fn block_scope_without_pragma_changes_does_not_create_restore_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    // { dummy_node } contains no pragma directives; no restore entry should be emitted.
+    let ast = program(vec![
+        use_node("strict", &[], 0, 12),
+        block(vec![dummy_node(14, 30)], 13, 31),
+    ]);
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(
+        map.len(),
+        1,
+        "a block with no pragma changes must not emit a restore entry"
+    );
+    Ok(())
+}
+
+#[test]
+fn block_scope_with_pragma_change_still_emits_restore_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Regression guard: a block that *does* change pragma state must still push a
+    // restore entry so the enclosing scope returns to the pre-block state.
+    let ast = program(vec![
+        use_node("strict", &[], 0, 12),
+        block(vec![no_node("strict", &["refs"], 14, 30)], 13, 31),
+        use_node("warnings", &[], 32, 47),
+    ]);
+    let map = PragmaTracker::build(&ast);
+    // Entries: use strict | no strict 'refs' | restore-strict | use warnings
+    assert_eq!(map.len(), 4, "a block with a pragma change must emit a restore entry");
+
+    let inside = PragmaTracker::state_for_offset(&map, 20);
+    assert!(!inside.strict_refs, "strict refs must be off inside the block");
+    assert!(inside.strict_vars, "strict vars must remain on inside the block");
+
+    let after = PragmaTracker::state_for_offset(&map, 40);
+    assert!(after.strict_refs, "strict refs must be restored after the block");
+    assert!(after.warnings, "warnings must be on after the block");
+    Ok(())
+}

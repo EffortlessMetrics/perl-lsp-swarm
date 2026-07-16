@@ -22,6 +22,13 @@ pub(crate) fn apply_builtin_imports(state: &mut PragmaState, args: &[String]) {
     }
 }
 
+/// Apply builtin imports and return `true` if any new names were actually added.
+pub(crate) fn apply_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before_len = state.builtin_imports.len();
+    apply_builtin_imports(state, args);
+    state.builtin_imports.len() != before_len
+}
+
 /// Insert `category` into `state.disabled_warning_categories` if not already present and
 /// within the hard cap of [`MAX_DISABLED_WARNING_CATEGORIES`].
 ///
@@ -53,6 +60,13 @@ pub(crate) fn remove_builtin_imports(state: &mut PragmaState, args: &[String]) {
     let names_to_remove: Vec<String> =
         args.iter().flat_map(|arg| builtin_import_names(arg)).collect();
     state.builtin_imports.retain(|import| !names_to_remove.iter().any(|name| name == import));
+}
+
+/// Remove builtin imports and return `true` if any names were actually removed.
+pub(crate) fn remove_builtin_imports_if_changed(state: &mut PragmaState, args: &[String]) -> bool {
+    let before_len = state.builtin_imports.len();
+    remove_builtin_imports(state, args);
+    state.builtin_imports.len() != before_len
 }
 
 pub(crate) fn pragma_arg_items(arg: &str) -> Vec<String> {
