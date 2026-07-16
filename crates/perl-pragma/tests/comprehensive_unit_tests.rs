@@ -2050,7 +2050,10 @@ fn no_builtin_without_args_preserves_lexical_imports() -> Result<(), Box<dyn std
     let map = PragmaTracker::build(&ast);
     require(map.len() == 1, "bare no builtin must not create a state entry")?;
     let state = &map[0].1;
-    assert!(state.has_builtin_import("true"));
+    assert!(
+        state.has_builtin_import("true"),
+        "true import should remain available after bare no builtin"
+    );
     assert!(
         state.has_builtin_import("floor"),
         "floor import should remain available after bare no builtin"
