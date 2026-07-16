@@ -1359,6 +1359,11 @@ fn no_builtin_without_prior_imports_does_not_create_entry() -> Result<(), Box<dy
 
     let map = PragmaTracker::build(&ast);
     require(map.is_empty(), "`no builtin` for an unknown name must not create a map entry")?;
+    let state_after = PragmaTracker::state_for_offset(&map, 30);
+    require(
+        state_after.builtin_imports.is_empty(),
+        "a no-op `no builtin` must preserve the prior state",
+    )?;
     Ok(())
 }
 
@@ -1392,10 +1397,25 @@ fn conditional_builtin_use_and_no_follow_directive_rules() -> Result<(), Box<dyn
 
     let map = PragmaTracker::build(&ast);
     require(map.len() == 2, "conditional duplicate and no-op directives must not add entries")?;
+    let state_after_import = PragmaTracker::state_for_offset(&map, 20);
+    require(
+        state_after_import.has_builtin_import("true"),
+        "conditional `use builtin` must import the requested name",
+    )?;
+    let state_after_duplicate = PragmaTracker::state_for_offset(&map, 60);
+    require(
+        state_after_duplicate.has_builtin_import("true"),
+        "a conditional duplicate import must preserve the prior state",
+    )?;
+    let state_after_removal = PragmaTracker::state_for_offset(&map, 100);
+    require(
+        !state_after_removal.has_builtin_import("true"),
+        "conditional `no builtin` must remove the tracked import",
+    )?;
     let state = PragmaTracker::state_for_offset(&map, 130);
     require(
         !state.has_builtin_import("true"),
-        "conditional no builtin must remove the tracked import",
+        "a conditional no-op removal must preserve the prior state",
     )?;
     Ok(())
 }
@@ -1413,6 +1433,11 @@ fn block_without_pragma_changes_does_not_create_restore_entry()
     let map = PragmaTracker::build(&ast);
     // Expected: strict entry, warnings entry — no restore between them.
     require(map.len() == 2, "empty block must not add a restore entry")?;
+    let state_before = PragmaTracker::state_for_offset(&map, 10);
+    require(
+        state_before.strict_vars && !state_before.warnings,
+        "state before an unchanged block must be the outer state",
+    )?;
     let state_inside = PragmaTracker::state_for_offset(&map, 18);
     require(
         state_inside.strict_vars && !state_inside.warnings,
@@ -1442,6 +1467,11 @@ fn changed_builtin_scope_restores_state_after_block() -> Result<(), Box<dyn std:
     ]);
 
     let map = PragmaTracker::build(&ast);
+    let state_before = PragmaTracker::state_for_offset(&map, 10);
+    require(
+        state_before.has_builtin_import("true") && !state_before.has_builtin_import("floor"),
+        "state before a changed scope must be the outer builtin state",
+    )?;
     let state_inside = PragmaTracker::state_for_offset(&map, 60);
     require(
         !state_inside.has_builtin_import("true") && state_inside.has_builtin_import("floor"),
@@ -1451,6 +1481,69 @@ fn changed_builtin_scope_restores_state_after_block() -> Result<(), Box<dyn std:
     require(
         state_after.has_builtin_import("true") && !state_after.has_builtin_import("floor"),
         "changed scope must restore the outer builtin state",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn scoped_body_without_pragma_changes_does_not_create_restore_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let if_node = Node {
+        kind: NodeKind::If {
+            keyword: None,
+            condition: Box::new(dummy_node(10, 12)),
+            then_branch: Box::new(dummy_node(15, 20)),
+            elsif_branches: vec![],
+            else_branch: None,
+        },
+        location: loc(10, 20),
+    };
+    let ast = program(vec![use_node("builtin", &["'true'"], 0, 8), if_node, dummy_node(25, 30)]);
+
+    let map = PragmaTracker::build(&ast);
+    require(map.len() == 1, "an unchanged scoped body must not add a restore entry")?;
+    let state_before = PragmaTracker::state_for_offset(&map, 9);
+    let state_inside = PragmaTracker::state_for_offset(&map, 18);
+    let state_after = PragmaTracker::state_for_offset(&map, 25);
+    require(
+        state_before.has_builtin_import("true")
+            && state_inside.has_builtin_import("true")
+            && state_after.has_builtin_import("true"),
+        "an unchanged scoped body must preserve the outer state at every offset",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn changed_scoped_body_restores_state_after_direct_pragma() -> Result<(), Box<dyn std::error::Error>>
+{
+    let if_node = Node {
+        kind: NodeKind::If {
+            keyword: None,
+            condition: Box::new(dummy_node(10, 12)),
+            then_branch: Box::new(use_node("builtin", &["'floor'"], 15, 25)),
+            elsif_branches: vec![],
+            else_branch: None,
+        },
+        location: loc(10, 25),
+    };
+    let ast = program(vec![use_node("builtin", &["'true'"], 0, 8), if_node, dummy_node(30, 35)]);
+
+    let map = PragmaTracker::build(&ast);
+    let state_before = PragmaTracker::state_for_offset(&map, 9);
+    require(
+        state_before.has_builtin_import("true") && !state_before.has_builtin_import("floor"),
+        "state before a changed scoped body must be the outer state",
+    )?;
+    let state_inside = PragmaTracker::state_for_offset(&map, 20);
+    require(
+        state_inside.has_builtin_import("true") && state_inside.has_builtin_import("floor"),
+        "a changed scoped body must expose its inner state",
+    )?;
+    let state_after = PragmaTracker::state_for_offset(&map, 30);
+    require(
+        state_after.has_builtin_import("true") && !state_after.has_builtin_import("floor"),
+        "a changed scoped body must restore the outer state",
     )?;
     Ok(())
 }
