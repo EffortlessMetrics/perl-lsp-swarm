@@ -12,6 +12,7 @@
 
 use perl_semantic_facts::{EdgeKind, EntityId, FileId, OccurrenceKind, ReferenceEdge};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::workspace::workspace_index::FileFactShard;
 
@@ -24,11 +25,14 @@ use crate::workspace::workspace_index::FileFactShard;
 pub struct ReferenceIndex {
     /// Symbol-key → reference edges. The key is the bare or qualified name
     /// carried on each [`ReferenceEdge::symbol_key`].
-    references_by_name: HashMap<String, Vec<ReferenceEdge>>,
+    references_by_name: HashMap<String, Vec<Arc<ReferenceEdge>>>,
 
     /// Entity → reference edges. One entry per target candidate in each
     /// [`ReferenceEdge::target_candidates`].
-    references_by_entity: HashMap<EntityId, Vec<ReferenceEdge>>,
+    ///
+    /// Each `Arc<ReferenceEdge>` is shared with `references_by_name`, so an
+    /// edge with N target candidates costs one allocation instead of N+1.
+    references_by_entity: HashMap<EntityId, Vec<Arc<ReferenceEdge>>>,
 
     /// Tracks which file URIs have been indexed so that [`remove_file`](Self::remove_file)
     /// can efficiently purge stale entries.
@@ -80,23 +84,29 @@ impl ReferenceIndex {
             // lookup will not match these, but entity-based lookup still works.
             let symbol_key = self.derive_symbol_key(shard, occ);
 
-            let ref_edge = ReferenceEdge::new(
+            // Wrap in Arc so the name and entity indexes share one allocation.
+            // target_candidates is moved in (no clone); subsequent access via Deref.
+            let ref_edge = Arc::new(ReferenceEdge::new(
                 occ.id,
                 occ.anchor_id,
                 shard.file_id,
                 symbol_key.clone(),
-                target_candidates.clone(),
+                target_candidates,
                 occ.kind,
                 occ.provenance,
                 occ.confidence,
-            );
+            ));
 
             // Insert into name index.
-            self.references_by_name.entry(symbol_key).or_default().push(ref_edge.clone());
+            self.references_by_name.entry(symbol_key).or_default().push(Arc::clone(&ref_edge));
 
-            // Insert into entity index — one entry per target candidate.
-            for entity_id in &target_candidates {
-                self.references_by_entity.entry(*entity_id).or_default().push(ref_edge.clone());
+            // Insert into entity index — one Arc::clone per target candidate
+            // instead of a full ReferenceEdge clone.
+            for entity_id in &ref_edge.target_candidates {
+                self.references_by_entity
+                    .entry(*entity_id)
+                    .or_default()
+                    .push(Arc::clone(&ref_edge));
             }
         }
     }
@@ -125,12 +135,18 @@ impl ReferenceIndex {
     }
 
     /// Look up all reference edges for a given symbol key (bare or qualified name).
-    pub fn get_by_name(&self, symbol_key: &str) -> &[ReferenceEdge] {
+    ///
+    /// Returns `Arc<ReferenceEdge>` entries; callers may access fields via
+    /// [`Deref`](std::ops::Deref) without unwrapping.
+    pub fn get_by_name(&self, symbol_key: &str) -> &[Arc<ReferenceEdge>] {
         self.references_by_name.get(symbol_key).map(Vec::as_slice).unwrap_or_default()
     }
 
     /// Look up all reference edges targeting a given entity.
-    pub fn get_by_entity(&self, entity_id: EntityId) -> &[ReferenceEdge] {
+    ///
+    /// Returns `Arc<ReferenceEdge>` entries shared with the name index; no
+    /// additional allocation per lookup.
+    pub fn get_by_entity(&self, entity_id: EntityId) -> &[Arc<ReferenceEdge>] {
         self.references_by_entity.get(&entity_id).map(Vec::as_slice).unwrap_or_default()
     }
 
