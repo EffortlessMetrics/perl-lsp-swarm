@@ -98,8 +98,11 @@ fn build_scoped_body(
 ) {
     let saved_state = current_state.clone();
     build_ranges(body, current_state, ranges);
+    let state_changed = *current_state != saved_state;
     *current_state = saved_state;
-    ranges.push((body.location.end..body.location.end, current_state.clone()));
+    if state_changed {
+        ranges.push((body.location.end..body.location.end, current_state.clone()));
+    }
 }
 
 fn build_statement_block(
@@ -112,6 +115,9 @@ fn build_statement_block(
     for stmt in statements {
         build_ranges(stmt, current_state, ranges);
     }
+    let state_changed = *current_state != saved_state;
     *current_state = saved_state;
-    ranges.push((end..end, current_state.clone()));
+    if state_changed {
+        ranges.push((end..end, current_state.clone()));
+    }
 }

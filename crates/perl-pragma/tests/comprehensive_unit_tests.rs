@@ -1323,6 +1323,69 @@ fn duplicate_no_warnings_category_does_not_create_extra_entry()
 }
 
 #[test]
+fn duplicate_builtin_imports_do_not_create_extra_entry() -> Result<(), Box<dyn std::error::Error>> {
+    // The second `use builtin 'weaken'` adds no new import because 'weaken' is
+    // already in scope.  No redundant map entry should be emitted.
+    let ast = program(vec![
+        use_node("builtin", &["'weaken'"], 0, 20),
+        use_node("builtin", &["'weaken'"], 21, 41),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 1, "duplicate builtin import should not add a redundant map entry");
+    assert!(
+        map[0].1.builtin_imports.contains(&"weaken".to_string()),
+        "builtin_imports must contain 'weaken'"
+    );
+    Ok(())
+}
+
+#[test]
+fn builtin_import_new_name_does_create_entry() -> Result<(), Box<dyn std::error::Error>> {
+    // The second `use builtin 'blessed'` adds a genuinely new name, so a
+    // map entry must be emitted for it.
+    let ast = program(vec![
+        use_node("builtin", &["'weaken'"], 0, 20),
+        use_node("builtin", &["'blessed'"], 21, 42),
+    ]);
+
+    let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 2, "new builtin import must create a map entry");
+    assert!(map[1].1.builtin_imports.contains(&"weaken".to_string()));
+    assert!(map[1].1.builtin_imports.contains(&"blessed".to_string()));
+    Ok(())
+}
+
+#[test]
+fn scoped_body_without_pragmas_does_not_emit_restore_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A bare Block with no pragma directives inside must not push a restore entry
+    // because the state is identical before and after the block.
+    let ast = program(vec![block(vec![dummy_node(1, 9)], 0, 10)]);
+
+    let map = PragmaTracker::build(&ast);
+    assert!(map.is_empty(), "pragma-free block must not emit any map entries");
+    Ok(())
+}
+
+#[test]
+fn scoped_body_with_pragma_emits_restore_entry() -> Result<(), Box<dyn std::error::Error>> {
+    // A Block containing a `use strict` must emit both the strict entry and a
+    // restore entry at the block's closing brace.
+    let inner_use = use_node("strict", &[], 1, 11);
+    let inner_end = inner_use.location.end;
+    let ast = program(vec![block(vec![inner_use], 0, 20)]);
+
+    let map = PragmaTracker::build(&ast);
+    // Entry 0: the use strict activation; Entry 1: the restore to pre-block state.
+    assert_eq!(map.len(), 2, "block with pragma must emit activation entry and restore entry");
+    assert!(map[0].1.strict_vars, "first entry must have strict enabled");
+    assert!(!map[1].1.strict_vars, "restore entry must have strict disabled again");
+    let _ = inner_end;
+    Ok(())
+}
+
+#[test]
 fn no_warnings_empty_string_category_is_ignored() -> Result<(), Box<dyn std::error::Error>> {
     // `no warnings ''` after quote-stripping yields an empty category name.
     // Error-recovery AST nodes can produce this.  The empty string must not be
