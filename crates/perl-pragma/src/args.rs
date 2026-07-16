@@ -98,3 +98,33 @@ fn pragma_words(value: &str) -> Vec<&str> {
 pub(crate) fn normalized_pragma_token(arg: &str) -> &str {
     arg.trim().trim_matches('\'').trim_matches('"')
 }
+
+#[cfg(test)]
+mod tests {
+    use super::apply_builtin_imports_if_changed;
+    use crate::PragmaState;
+    use std::error::Error;
+
+    #[test]
+    fn apply_builtin_imports_if_changed_reports_new_and_duplicate_imports()
+    -> Result<(), Box<dyn Error>> {
+        let mut state = PragmaState::default();
+        let args = vec!["true".to_string()];
+
+        if !apply_builtin_imports_if_changed(&mut state, &args) {
+            return Err("a new builtin import must report a state change".into());
+        }
+        if !state.has_builtin_import("true") {
+            return Err("the new builtin import must be recorded in state".into());
+        }
+
+        if apply_builtin_imports_if_changed(&mut state, &args) {
+            return Err("a duplicate builtin import must report no state change".into());
+        }
+        if state.builtin_imports.len() != 1 {
+            return Err("a duplicate builtin import must not add another state entry".into());
+        }
+
+        Ok(())
+    }
+}

@@ -289,3 +289,32 @@ fn push_state(
 ) {
     ranges.push((range, state.clone()));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::apply_use_directive;
+    use crate::PragmaState;
+    use std::error::Error;
+
+    #[test]
+    fn apply_use_directive_builtin_pushes_only_for_a_new_import() -> Result<(), Box<dyn Error>> {
+        let mut state = PragmaState::default();
+        let mut ranges = Vec::new();
+        let args = vec!["true".to_string()];
+
+        apply_use_directive(10..20, "builtin", &args, &mut state, &mut ranges);
+        if !state.has_builtin_import("true") {
+            return Err("a builtin use directive must record the imported name".into());
+        }
+        if ranges.len() != 1 {
+            return Err("a new builtin import must push exactly one state entry".into());
+        }
+
+        apply_use_directive(20..30, "builtin", &args, &mut state, &mut ranges);
+        if ranges.len() != 1 {
+            return Err("a duplicate builtin import must not push another state entry".into());
+        }
+
+        Ok(())
+    }
+}
