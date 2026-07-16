@@ -128,31 +128,33 @@ fn use_builtin_qw_true_floor_tracks_lexical_imports() {
 }
 
 #[test]
-fn no_builtin_qw_floor_preserves_selected_import() {
+fn no_builtin_qw_floor_preserves_selected_import() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["qw(true floor)"], 0, 27),
         no_node("builtin", &["qw(floor)"], 28, 47),
     ]);
     let map = PragmaTracker::build(&ast);
 
-    assert_eq!(map.len(), 1);
+    assert_eq!(map.len(), 1, "no-op builtin removal should not add a pragma map entry");
     let state = PragmaTracker::state_for_offset(&map, 40);
-    assert!(state.has_builtin_import("true"));
-    assert!(state.has_builtin_import("floor"));
+    assert!(state.has_builtin_import("true"), "true import should remain available");
+    assert!(state.has_builtin_import("floor"), "floor import should remain available");
+    Ok(())
 }
 
 #[test]
-fn no_if_builtin_qw_true_preserves_target_import() {
+fn no_if_builtin_qw_true_preserves_target_import() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["qw(true floor)"], 0, 27),
         no_node("if", &["$cond", "builtin", "qw(true)"], 28, 58),
     ]);
     let map = PragmaTracker::build(&ast);
 
-    assert_eq!(map.len(), 1);
+    assert_eq!(map.len(), 1, "no-op conditional builtin removal should not add a map entry");
     let state = PragmaTracker::state_for_offset(&map, 50);
-    assert!(state.has_builtin_import("true"));
-    assert!(state.has_builtin_import("floor"));
+    assert!(state.has_builtin_import("true"), "true import should remain available");
+    assert!(state.has_builtin_import("floor"), "floor import should remain available");
+    Ok(())
 }
 
 #[test]
@@ -351,18 +353,19 @@ fn deeply_nested_mixed_pragmas_restore_each_outer_scope() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn no_builtin_bare_preserves_all_imports() {
+fn no_builtin_bare_preserves_all_imports() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["qw(true floor weaken)"], 0, 33),
         no_node("builtin", &[], 34, 47),
     ]);
     let map = PragmaTracker::build(&ast);
 
-    assert_eq!(map.len(), 1);
+    assert_eq!(map.len(), 1, "bare no builtin should not add a pragma map entry");
     let state = PragmaTracker::state_for_offset(&map, 40);
-    assert!(state.has_builtin_import("true"));
-    assert!(state.has_builtin_import("floor"));
-    assert!(state.has_builtin_import("weaken"));
+    assert!(state.has_builtin_import("true"), "true import should remain available");
+    assert!(state.has_builtin_import("floor"), "floor import should remain available");
+    assert!(state.has_builtin_import("weaken"), "weaken import should remain available");
+    Ok(())
 }
 
 #[test]
