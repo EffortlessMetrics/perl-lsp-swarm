@@ -1349,8 +1349,7 @@ fn duplicate_builtin_imports_do_not_create_extra_entry() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn no_builtin_without_prior_imports_does_not_create_entry() -> Result<(), Box<dyn std::error::Error>>
-{
+fn no_builtin_unknown_name_preserves_prior_import() -> Result<(), Box<dyn std::error::Error>> {
     // An unknown removal after a real import must not emit a second map entry or
     // erase the import that was already tracked.
     let ast = program(vec![
@@ -1480,10 +1479,14 @@ fn changed_builtin_scope_restores_state_after_block() -> Result<(), Box<dyn std:
         "changed scope must preserve lexical imports and expose its inner builtin state",
     )?;
     let state_after = PragmaTracker::state_for_offset(&map, 78);
-    require(
-        state_after.has_builtin_import("true") && !state_after.has_builtin_import("floor"),
-        "changed scope must restore the outer builtin state",
-    )?;
+    assert!(
+        state_after.has_builtin_import("true"),
+        "changed scope must restore the outer true builtin state",
+    );
+    assert!(
+        !state_after.has_builtin_import("floor"),
+        "changed scope must remove the inner floor builtin state on restore",
+    );
     Ok(())
 }
 
