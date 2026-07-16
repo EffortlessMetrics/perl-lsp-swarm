@@ -1369,7 +1369,8 @@ fn no_builtin_without_prior_imports_does_not_create_entry() -> Result<(), Box<dy
 }
 
 #[test]
-fn partial_builtin_imports_keep_real_transitions() -> Result<(), Box<dyn std::error::Error>> {
+fn no_builtin_preserves_lexical_imports_without_extra_entry()
+-> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["'true'", "'floor'"], 0, 30),
         use_node("builtin", &["'true'"], 31, 50),
@@ -1377,11 +1378,11 @@ fn partial_builtin_imports_keep_real_transitions() -> Result<(), Box<dyn std::er
     ]);
 
     let map = PragmaTracker::build(&ast);
-    require(map.len() == 2, "duplicate import must not hide the real removal transition")?;
+    require(map.len() == 1, "no builtin must not add a redundant map entry")?;
     let state = PragmaTracker::state_for_offset(&map, 60);
     require(
-        state.has_builtin_import("true") && !state.has_builtin_import("floor"),
-        "partial builtin removal must preserve the remaining import",
+        state.has_builtin_import("true") && state.has_builtin_import("floor"),
+        "no builtin must preserve lexical imports until scope exit",
     )?;
     Ok(())
 }
@@ -1397,7 +1398,7 @@ fn conditional_builtin_use_and_no_follow_directive_rules() -> Result<(), Box<dyn
     ]);
 
     let map = PragmaTracker::build(&ast);
-    require(map.len() == 2, "conditional duplicate and no-op directives must not add entries")?;
+    require(map.len() == 1, "conditional builtin directives must not add redundant entries")?;
     let state_after_import = PragmaTracker::state_for_offset(&map, 20);
     require(
         state_after_import.has_builtin_import("true"),
@@ -1408,15 +1409,15 @@ fn conditional_builtin_use_and_no_follow_directive_rules() -> Result<(), Box<dyn
         state_after_duplicate.has_builtin_import("true"),
         "a conditional duplicate import must preserve the prior state",
     )?;
-    let state_after_removal = PragmaTracker::state_for_offset(&map, 100);
+    let state_after_noop = PragmaTracker::state_for_offset(&map, 100);
     require(
-        !state_after_removal.has_builtin_import("true"),
-        "conditional `no builtin` must remove the tracked import",
+        state_after_noop.has_builtin_import("true"),
+        "conditional `no builtin` must preserve the lexical import",
     )?;
     let state = PragmaTracker::state_for_offset(&map, 130);
     require(
-        !state.has_builtin_import("true"),
-        "a conditional no-op removal must preserve the prior state",
+        state.has_builtin_import("true"),
+        "a conditional no-op `no builtin` must preserve the prior state",
     )?;
     Ok(())
 }
@@ -1475,8 +1476,8 @@ fn changed_builtin_scope_restores_state_after_block() -> Result<(), Box<dyn std:
     )?;
     let state_inside = PragmaTracker::state_for_offset(&map, 60);
     require(
-        !state_inside.has_builtin_import("true") && state_inside.has_builtin_import("floor"),
-        "changed scope must expose its inner builtin state",
+        state_inside.has_builtin_import("true") && state_inside.has_builtin_import("floor"),
+        "changed scope must preserve lexical imports and expose its inner builtin state",
     )?;
     let state_after = PragmaTracker::state_for_offset(&map, 78);
     require(
@@ -2001,56 +2002,62 @@ fn use_builtin_tracks_lexical_imports_only() -> Result<(), Box<dyn std::error::E
 }
 
 #[test]
-fn no_builtin_removes_selected_lexical_imports() -> Result<(), Box<dyn std::error::Error>> {
+fn no_builtin_preserves_selected_lexical_imports() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["qw(true floor ceil)"], 0, 30),
         no_node("builtin", &["qw(floor)"], 31, 50),
     ]);
     let map = PragmaTracker::build(&ast);
-    let state = &map[1].1;
+    require(map.len() == 1, "no builtin must not create a state entry")?;
+    let state = &map[0].1;
     assert!(state.has_builtin_import("true"));
-    assert!(!state.has_builtin_import("floor"));
+    assert!(state.has_builtin_import("floor"));
     assert!(state.has_builtin_import("ceil"));
     Ok(())
 }
 
 #[test]
-fn builtin_qw_alternate_delimiters_track_and_remove_imports()
+fn builtin_qw_alternate_delimiters_preserve_imports_across_no_directive()
 -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["qw<true floor ceil>"], 0, 30),
         no_node("builtin", &["qw[floor]"], 31, 50),
     ]);
     let map = PragmaTracker::build(&ast);
-    let state = &map[1].1;
+    require(map.len() == 1, "no builtin must not create a state entry")?;
+    let state = &map[0].1;
     assert!(state.has_builtin_import("true"));
-    assert!(!state.has_builtin_import("floor"));
+    assert!(state.has_builtin_import("floor"));
     assert!(state.has_builtin_import("ceil"));
     Ok(())
 }
 
 #[test]
-fn no_builtin_without_args_clears_lexical_imports() -> Result<(), Box<dyn std::error::Error>> {
+fn no_builtin_without_args_preserves_lexical_imports() -> Result<(), Box<dyn std::error::Error>> {
     let ast = program(vec![
         use_node("builtin", &["'true'", "'floor'"], 0, 28),
         no_node("builtin", &[], 29, 40),
     ]);
     let map = PragmaTracker::build(&ast);
-    let state = &map[1].1;
-    assert!(state.builtin_imports.is_empty());
+    require(map.len() == 1, "bare no builtin must not create a state entry")?;
+    let state = &map[0].1;
+    assert!(state.has_builtin_import("true"));
+    assert!(state.has_builtin_import("floor"));
     Ok(())
 }
 
 #[test]
-fn no_if_builtin_conditionally_removes_lexical_imports() -> Result<(), Box<dyn std::error::Error>> {
+fn no_if_builtin_conditionally_preserves_lexical_imports() -> Result<(), Box<dyn std::error::Error>>
+{
     let ast = program(vec![
         use_node("builtin", &["'true'", "'floor'"], 0, 28),
         no_node("if", &["$cond", "builtin", "'floor'"], 29, 59),
     ]);
     let map = PragmaTracker::build(&ast);
-    let state = &map[1].1;
+    require(map.len() == 1, "conditional no builtin must not create a state entry")?;
+    let state = &map[0].1;
     assert!(state.has_builtin_import("true"));
-    assert!(!state.has_builtin_import("floor"));
+    assert!(state.has_builtin_import("floor"));
     Ok(())
 }
 

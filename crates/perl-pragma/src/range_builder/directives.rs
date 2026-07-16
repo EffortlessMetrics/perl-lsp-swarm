@@ -2,7 +2,6 @@ use crate::{
     PragmaState, add_disabled_warning_category, apply_builtin_imports_if_changed,
     apply_feature_state, conditional_pragma_target, enable_effective_version_semantics,
     normalized_pragma_token, parse_perl_version, pragma_arg_items,
-    remove_builtin_imports_if_changed,
 };
 use std::ops::Range;
 
@@ -94,11 +93,7 @@ pub(super) fn apply_no_directive(
                 push_state(range, state, ranges);
             }
         }
-        "builtin" => {
-            if remove_builtin_imports_if_changed(state, args) {
-                push_state(range, state, ranges);
-            }
-        }
+        "builtin" => {}
         _ => {}
     }
 }
@@ -197,11 +192,7 @@ fn apply_conditional_no_target(
                 return;
             }
         }
-        "builtin" => {
-            if !remove_builtin_imports_if_changed(state, args) {
-                return;
-            }
-        }
+        "builtin" => return,
         _ => return,
     }
     push_state(range, state, ranges);

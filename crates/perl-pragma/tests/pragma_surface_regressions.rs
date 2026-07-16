@@ -128,28 +128,30 @@ fn use_builtin_qw_true_floor_tracks_lexical_imports() {
 }
 
 #[test]
-fn no_builtin_qw_floor_removes_selected_import_only() {
+fn no_builtin_qw_floor_preserves_selected_import() {
     let ast = program(vec![
         use_node("builtin", &["qw(true floor)"], 0, 27),
         no_node("builtin", &["qw(floor)"], 28, 47),
     ]);
     let map = PragmaTracker::build(&ast);
 
+    assert_eq!(map.len(), 1);
     let state = PragmaTracker::state_for_offset(&map, 40);
     assert!(state.has_builtin_import("true"));
-    assert!(!state.has_builtin_import("floor"));
+    assert!(state.has_builtin_import("floor"));
 }
 
 #[test]
-fn no_if_builtin_qw_true_removes_target_import() {
+fn no_if_builtin_qw_true_preserves_target_import() {
     let ast = program(vec![
         use_node("builtin", &["qw(true floor)"], 0, 27),
         no_node("if", &["$cond", "builtin", "qw(true)"], 28, 58),
     ]);
     let map = PragmaTracker::build(&ast);
 
+    assert_eq!(map.len(), 1);
     let state = PragmaTracker::state_for_offset(&map, 50);
-    assert!(!state.has_builtin_import("true"));
+    assert!(state.has_builtin_import("true"));
     assert!(state.has_builtin_import("floor"));
 }
 
@@ -323,14 +325,14 @@ fn deeply_nested_mixed_pragmas_restore_each_outer_scope() -> Result<(), Box<dyn 
     assert!(in_eval.locale);
     assert_eq!(in_eval.locale_scope.as_deref(), Some(":not_characters"));
     assert!(in_eval.has_builtin_import("true"));
-    assert!(!in_eval.has_builtin_import("floor"));
+    assert!(in_eval.has_builtin_import("floor"));
     assert!(!in_eval.has_feature("signatures"));
 
     let in_phase = PragmaTracker::state_for_offset(&map, 245);
     assert!(!in_phase.strict_refs);
     assert_eq!(in_phase.encoding.as_deref(), Some("UTF-8"));
     assert!(in_phase.locale);
-    assert!(!in_phase.has_builtin_import("floor"));
+    assert!(in_phase.has_builtin_import("floor"));
 
     let after_package = PragmaTracker::state_for_offset(&map, 278);
     assert!(after_package.strict_vars);
@@ -349,17 +351,18 @@ fn deeply_nested_mixed_pragmas_restore_each_outer_scope() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn no_builtin_bare_clears_all_imports() {
+fn no_builtin_bare_preserves_all_imports() {
     let ast = program(vec![
         use_node("builtin", &["qw(true floor weaken)"], 0, 33),
         no_node("builtin", &[], 34, 47),
     ]);
     let map = PragmaTracker::build(&ast);
 
+    assert_eq!(map.len(), 1);
     let state = PragmaTracker::state_for_offset(&map, 40);
-    assert!(!state.has_builtin_import("true"));
-    assert!(!state.has_builtin_import("floor"));
-    assert!(!state.has_builtin_import("weaken"));
+    assert!(state.has_builtin_import("true"));
+    assert!(state.has_builtin_import("floor"));
+    assert!(state.has_builtin_import("weaken"));
 }
 
 #[test]

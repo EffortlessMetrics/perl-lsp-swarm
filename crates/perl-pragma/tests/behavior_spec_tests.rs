@@ -142,16 +142,17 @@ fn given_use_builtin_qw_when_querying_scope_then_each_imported_name_is_available
 }
 
 #[test]
-fn given_no_builtin_when_querying_scope_then_selected_imports_are_removed() {
+fn given_no_builtin_when_querying_scope_then_selected_imports_remain_lexical() {
     let ast = program(vec![
         use_node("builtin", &["qw(true false ceil)"], 0, 30),
         no_node("builtin", &["'false'"], 31, 49),
     ]);
     let map = PragmaTracker::build(&ast);
 
+    assert_eq!(map.len(), 1);
     let state = PragmaTracker::state_for_offset(&map, 40);
     assert!(state.has_builtin_import("true"));
-    assert!(!state.has_builtin_import("false"));
+    assert!(state.has_builtin_import("false"));
     assert!(state.has_builtin_import("ceil"));
 }
 

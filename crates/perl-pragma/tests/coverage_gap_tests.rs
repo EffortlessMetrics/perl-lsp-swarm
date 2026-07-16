@@ -582,15 +582,20 @@ fn use_builtin_double_quoted_name_is_tracked() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
-fn no_builtin_double_quoted_name_is_removed() -> Result<(), Box<dyn std::error::Error>> {
+fn no_builtin_double_quoted_name_preserves_lexical_import() -> Result<(), Box<dyn std::error::Error>>
+{
     // `use builtin 'true'; no builtin "true"`
     let ast = program(vec![
         use_node("builtin", &["'true'"], 0, 18),
         no_node("builtin", &["\"true\""], 19, 37),
     ]);
     let map = PragmaTracker::build(&ast);
+    assert_eq!(map.len(), 1, "no builtin must not create a redundant map entry");
     let state = PragmaTracker::state_for_offset(&map, 30);
-    assert!(!state.has_builtin_import("true"), "double-quoted name in no builtin must remove it");
+    assert!(
+        state.has_builtin_import("true"),
+        "double-quoted name in no builtin must preserve the lexical import"
+    );
     Ok(())
 }
 
