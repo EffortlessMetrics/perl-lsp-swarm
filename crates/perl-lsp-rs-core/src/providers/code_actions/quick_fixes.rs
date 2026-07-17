@@ -458,6 +458,27 @@ mod tests {
     }
 
     #[test]
+    fn printf_metadata_allows_literal_at_in_static_format() {
+        let format = Node::new(
+            NodeKind::String {
+                value: "'email@example.com %s %s'".to_string(),
+                interpolated: false,
+            },
+            SourceLocation { start: 7, end: 29 },
+        );
+        let argument = Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "item".to_string() },
+            SourceLocation { start: 31, end: 36 },
+        );
+        let call = Node::new(
+            NodeKind::FunctionCall { name: "printf".to_string(), args: vec![format, argument] },
+            SourceLocation { start: 0, end: 40 },
+        );
+
+        assert!(printf_format_arity_metadata_by_range(&call).contains_key(&(0, 40)));
+    }
+
+    #[test]
     fn fix_printf_format_arity_listop_range_includes_semicolon() {
         let source = r#"printf "%s %s", $name;"#;
         let diagnostic = printf_diagnostic_for((0, source.len()), "printf", 1);
@@ -2425,11 +2446,11 @@ fn printf_format_arity_metadata_for_call(
     args: &[Node],
 ) -> Option<QuickFixMetadata> {
     let format_node = args.first()?;
-    let NodeKind::String { value, .. } = &format_node.kind else {
+    let NodeKind::String { value, interpolated } = &format_node.kind else {
         return None;
     };
     let format = crate::providers::diagnostics::unquote_string(value);
-    if format.contains('$') || format.contains('@') {
+    if *interpolated && (format.contains('$') || format.contains('@')) {
         return None;
     }
 
