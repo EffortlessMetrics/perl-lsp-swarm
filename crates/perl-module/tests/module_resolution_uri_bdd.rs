@@ -1,6 +1,21 @@
-use perl_module::resolution::uri::{ModuleUriResolution, resolve_module_uri};
-use std::path::PathBuf;
+use perl_module::{
+    IncRoot, IncRootKind, ModuleUriResolution, collect_module_uri_candidates_with_effective_inc,
+    resolve_module_uri, resolve_module_uri_with_effective_inc,
+};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+fn file_uri(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    url::Url::from_file_path(path)
+        .map(|url| url.to_string())
+        .map_err(|_| "failed to create file URI".into())
+}
+
+fn directory_uri(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    url::Url::from_directory_path(path)
+        .map(|url| url.to_string())
+        .map_err(|_| "failed to create directory URI".into())
+}
 
 #[test]
 fn given_open_document_when_resolving_then_open_document_takes_precedence() {
@@ -75,5 +90,69 @@ fn given_system_inc_disabled_when_resolving_then_system_paths_are_ignored()
     );
 
     assert_eq!(result, ModuleUriResolution::NotFound);
+    Ok(())
+}
+
+#[test]
+fn given_workspace_roots_when_collecting_then_workspace_folder_order_is_legacy_compatible()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let workspace_a = temp.path().join("workspace-a");
+    let workspace_b = temp.path().join("workspace-b");
+    let root_one = PathBuf::from("root-one");
+    let root_two = PathBuf::from("root-two");
+    let mut expected_uris = Vec::new();
+
+    for workspace in [&workspace_a, &workspace_b] {
+        for root in [&root_one, &root_two] {
+            let module = workspace.join(root).join("Foo").join("Bar.pm");
+            std::fs::create_dir_all(module.parent().ok_or("workspace module has no parent")?)?;
+            std::fs::write(&module, "package Foo::Bar; 1;")?;
+            expected_uris.push(file_uri(&module)?);
+        }
+    }
+
+    let workspace_folders = vec![directory_uri(&workspace_a)?, directory_uri(&workspace_b)?];
+    let roots = vec![
+        IncRoot {
+            kind: IncRootKind::WorkspaceRelative,
+            path: root_one,
+            precedence: 0,
+            source: "root-one".to_string(),
+        },
+        IncRoot {
+            kind: IncRootKind::WorkspaceRelative,
+            path: root_two,
+            precedence: 1,
+            source: "root-two".to_string(),
+        },
+    ];
+
+    let report = collect_module_uri_candidates_with_effective_inc(
+        "Foo::Bar",
+        &[],
+        &workspace_folders,
+        &roots,
+        Duration::from_secs(1),
+    );
+    let first_uri = expected_uris.first().cloned().ok_or("expected candidates are empty")?;
+    assert_eq!(
+        resolve_module_uri_with_effective_inc(
+            "Foo::Bar",
+            &[],
+            &workspace_folders,
+            &roots,
+            Duration::from_secs(1),
+        ),
+        ModuleUriResolution::Resolved(first_uri)
+    );
+    assert_eq!(
+        report.candidates.iter().map(|candidate| candidate.uri.as_str()).collect::<Vec<_>>(),
+        expected_uris.iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        report.candidates.iter().map(|candidate| candidate.search_order).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3]
+    );
     Ok(())
 }
