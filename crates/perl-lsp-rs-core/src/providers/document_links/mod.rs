@@ -135,7 +135,7 @@ fn collect_module_runtime_links(
         };
 
         if let Some((module, content_start, content_end, next_offset)) =
-            parse_module_runtime_argument(line, name_end)
+            parse_module_runtime_argument(line, name_end, code)
         {
             let start = byte_to_utf16_col(line, content_start);
             let end = byte_to_utf16_col(line, content_end);
@@ -196,10 +196,11 @@ fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<
     Some(pos)
 }
 
-fn parse_module_runtime_argument(
-    line: &str,
+fn parse_module_runtime_argument<'a>(
+    line: &'a str,
     name_end: usize,
-) -> Option<(&str, usize, usize, usize)> {
+    code: &[bool],
+) -> Option<(&'a str, usize, usize, usize)> {
     let open = skip_ascii_whitespace(line, name_end);
     if line.as_bytes().get(open) != Some(&b'(') {
         return None;
@@ -230,9 +231,15 @@ fn parse_module_runtime_argument(
                 Some(b')') => after_module,
                 Some(b',') => {
                     let version_start = skip_ascii_whitespace(line, after_module + 1);
-                    let version_tail = line.get(version_start..)?;
-                    let version_end = version_tail.find(')')? + version_start;
-                    if line.get(version_start..version_end)?.trim().is_empty() {
+                    let version_end = line
+                        .as_bytes()
+                        .get(version_start..)?
+                        .iter()
+                        .position(|byte| *byte == b')')?
+                        + version_start;
+                    if line.get(version_start..version_end)?.trim().is_empty()
+                        || !is_code_range(code, version_start, version_end)
+                    {
                         return None;
                     }
                     version_end
@@ -357,6 +364,11 @@ fn code_mask(line: &str, state: &mut Option<QuoteLikeState>) -> Vec<bool> {
         }
 
         if let Some((delimiter_offset, parts_remaining)) = quote_like_operator(bytes, offset) {
+            if delimiter_offset == bytes.len() {
+                mask_to_end(&mut code, offset);
+                *state = Some(QuoteLikeState::NeedDelimiter { parts_remaining });
+                break;
+            }
             let Some(delimiter) = bytes.get(delimiter_offset).copied() else {
                 break;
             };
@@ -431,12 +443,18 @@ fn quote_like_operator(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
     while bytes.get(delimiter_offset).is_some_and(u8::is_ascii_whitespace) {
         delimiter_offset += 1;
     }
-    let delimiter = *bytes.get(delimiter_offset)?;
+    let parts_remaining = usize::from(matches!(*operator, "s" | "tr" | "y"));
+    let Some(delimiter) = bytes.get(delimiter_offset).copied() else {
+        if bytes.get(start + operator.len()..)?.iter().all(u8::is_ascii_whitespace) {
+            return Some((bytes.len(), parts_remaining));
+        }
+        return None;
+    };
     if delimiter.is_ascii_alphanumeric() {
         return None;
     }
 
-    Some((delimiter_offset, usize::from(matches!(*operator, "s" | "tr" | "y"))))
+    Some((delimiter_offset, parts_remaining))
 }
 
 fn mask_inclusive(code: &mut [bool], start: usize, end: usize) {
@@ -970,6 +988,11 @@ mod tests {
         if data_str(link, "/data/module") != Some("Foo::Bar") {
             return Err(format!("unexpected subroutine-body link: {link:?}"));
         }
+
+        let next_line_delimiter = "my $source = q \n{\nuse_module('No::NextLineDelimiter');\n};\n";
+        if !compute_links(uri(), next_line_delimiter, &[]).is_empty() {
+            return Err("quote-like delimiter on the next line exposed a module link".to_owned());
+        }
         Ok(())
     }
 
@@ -1014,6 +1037,7 @@ mod tests {
             "use_module('Foo::Bar);",
             "require_module(\"Baz::Qux);",
             "my $source = q{use_module('No::Link');",
+            "use_module('Foo::Bar', 1 # )",
             r#"use_module('Foo\'Bar');"#,
             r#"require_module("Baz\"Qux");"#,
         ];

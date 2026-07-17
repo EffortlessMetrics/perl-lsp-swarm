@@ -66,6 +66,7 @@ field, or ID range. The matcher is private to the existing provider module.
 | `sub q{...}` body | positive | `multiline_quote_like_source_is_ignored_but_subroutine_body_is_code` | Declaration name is not a quote operator; executable body remains code |
 | Spaced quote-like delimiter | negative | `spaced_quote_like_source_is_ignored_and_sigil_hashes_remain_code` | Optional whitespace before the delimiter remains masked |
 | Sigil hash-key candidate | positive | `spaced_quote_like_source_is_ignored_and_sigil_hashes_remain_code` | `$q{...}` is code, not a quote-like operator |
+| Optional version and digit-bearing segment | positive | `module_runtime_supports_version_and_digit_segments` | Version form preserves the module range and later segments may contain digits |
 | Boundary names/methods | negative | `module_runtime_call_boundaries_are_exact` | No receiver, other namespace, or longer identifier |
 | Dynamic variable/concatenation | negative | `dynamic_module_runtime_calls_are_ignored` | No guessed resolution |
 | Unterminated/escaped literal | adversarial | `malformed_module_runtime_literals_fail_closed` | Delimiter safety |
