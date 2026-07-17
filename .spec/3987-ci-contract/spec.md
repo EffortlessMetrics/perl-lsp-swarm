@@ -41,6 +41,7 @@ the pull request base and head SHAs, never a mutable local branch name.
 The receipt uses `ci-contract.v1` and contains:
 
 ```text
+schema_version
 repository
 provider_action
 base_sha
@@ -74,7 +75,10 @@ checks, selected from the changed surface:
 
 - all changes: exact-range `git diff --check`;
 - Rust changes: repository formatting check;
-- workflow or shell changes: workflow-policy and trigger-policy checks;
+- workflow or shell changes: the repository workflow-contract self-test and
+  trigger-policy checks; the self-test intentionally preserves the existing
+  unarmed advisory boundary, while the separately owned workflow-contracts
+  job remains responsible for external actionlint/zizmor execution;
 - `.ci/` and `policy/` changes: the existing repository gate-policy checker;
 - changelog changes: the existing Changie disposition checker.
 
@@ -105,7 +109,8 @@ Focused tests must cover:
 4. command success/failure/instrument failure map to the documented classes;
 5. the exact requested head is used by the diff check;
 6. JSON and Markdown receipts preserve full base/head object IDs;
-7. malformed or missing identity is rejected rather than reported successful.
+7. the command's resolved identity rejects malformed or missing base/head
+   values rather than reporting a successful receipt.
 
 Proof commands:
 

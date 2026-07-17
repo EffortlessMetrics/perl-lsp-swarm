@@ -89,10 +89,7 @@ pub fn run(config: CiContractConfig) -> Result<()> {
     if !matches!(resolved.identity, ArtifactIdentity::CommitRange { .. }) {
         bail!("ci-contract requires a commit range");
     }
-    let base_sha = resolved.base_sha.ok_or_else(|| eyre!("base SHA was not resolved"))?;
-    let head_sha = resolved.head_sha.ok_or_else(|| eyre!("head SHA was not resolved"))?;
-    validate_object_id(&base_sha, "base SHA")?;
-    validate_object_id(&head_sha, "head SHA")?;
+    let (base_sha, head_sha) = validate_resolved_identity(resolved.base_sha, resolved.head_sha)?;
 
     let metadata = ci_scope::load_metadata(&root)?;
     let workspace_root = root.to_string_lossy().replace('\\', "/");
@@ -404,6 +401,17 @@ fn validate_object_id(value: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_resolved_identity(
+    base_sha: Option<String>,
+    head_sha: Option<String>,
+) -> Result<(String, String)> {
+    let base_sha = base_sha.ok_or_else(|| eyre!("base SHA was not resolved"))?;
+    let head_sha = head_sha.ok_or_else(|| eyre!("head SHA was not resolved"))?;
+    validate_object_id(&base_sha, "base SHA")?;
+    validate_object_id(&head_sha, "head SHA")?;
+    Ok((base_sha, head_sha))
+}
+
 fn write_changed_files(path: &Path, files: &[String]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -584,6 +592,23 @@ mod tests {
         ensure!(
             validate_object_id(&format!("{}z", "a".repeat(39)), "head").is_err(),
             "non-hex ID should fail"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolved_identity_rejects_missing_or_malformed_values() -> Result<()> {
+        ensure!(
+            validate_resolved_identity(None, Some("a".repeat(40))).is_err(),
+            "missing base identity must fail closed"
+        );
+        ensure!(
+            validate_resolved_identity(Some("a".repeat(40)), None).is_err(),
+            "missing head identity must fail closed"
+        );
+        ensure!(
+            validate_resolved_identity(Some("bad".to_string()), Some("a".repeat(40))).is_err(),
+            "malformed base identity must fail closed"
         );
         Ok(())
     }
