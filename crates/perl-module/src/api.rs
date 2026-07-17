@@ -68,7 +68,10 @@ pub use crate::rename::replace_module_name_prefix;
 // resolution module
 pub use crate::resolution::IncRoot;
 pub use crate::resolution::IncRootKind;
+pub use crate::resolution::ModuleUriCandidate;
+pub use crate::resolution::ModuleUriCandidateReport;
 pub use crate::resolution::ModuleUriResolution;
+pub use crate::resolution::collect_module_uri_candidates_with_effective_inc;
 pub use crate::resolution::resolve_module_path;
 pub use crate::resolution::resolve_module_uri;
 pub use crate::resolution::resolve_module_uri_with_effective_inc;
