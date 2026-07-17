@@ -21,7 +21,28 @@ interface StreamProgressValue {
   items: StreamCandidateItem[];
 }
 
-/** Snapshot of the most recent candidate received from the server. */
+/**
+ * Identity of a single stream request: the document URI, version, and cursor
+ * position at the moment the request was made. Used as the cache key so that
+ * candidates from one document or version are never served for another.
+ */
+interface RequestIdentity {
+  uri: string;
+  version: number;
+  line: number;
+  character: number;
+}
+
+/**
+ * Snapshot of the most recent candidate received from the server for a
+ * specific request identity.
+ *
+ * `uri`, `version`, `line`, and `character` are populated from the
+ * originating request, NOT from item.range, so cache lookups always use
+ * the request cursor as the key. `serverRange` stores the replacement range
+ * the server supplied; it is used when building the returned
+ * InlineCompletionItem but is never part of the cache-hit predicate.
+ */
 interface CachedCandidate {
   uri: string;
   version: number;
@@ -31,6 +52,10 @@ interface CachedCandidate {
   sessionId: string;
   sequence: number;
   isFinal: boolean;
+  serverRange?: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
 }
 
 /**
@@ -47,13 +72,16 @@ const streamProgressType = new ProgressType<StreamProgressValue>();
  *
  * Manages the lifecycle of progressive AI inline completions:
  * 1. Triggers custom stream requests to the server
- * 2. Caches cumulative candidates from $/progress
- * 3. Feeds cached candidates through the inline completion provider
+ * 2. Caches cumulative candidates from $/progress, keyed to the request
+ *    identity (URI + document version + cursor line + cursor character)
+ * 3. Feeds cached candidates through the inline completion provider only
+ *    when all four key fields match the current editor state
  * 4. Cancels streams on cursor movement or document changes
  */
 export class StreamingCompletionController implements vscode.Disposable {
   private client: LanguageClient;
   private cachedCandidate: CachedCandidate | null = null;
+  private activeRequestIdentity: RequestIdentity | null = null;
   private activeTokenSource: vscode.CancellationTokenSource | null = null;
   private activeProgressToken: string | null = null;
   private activeProgressDisposable: vscode.Disposable | null = null;
@@ -108,7 +136,21 @@ export class StreamingCompletionController implements vscode.Disposable {
     );
   }
 
-  private handleProgress(value: unknown): void {
+  /**
+   * Process a progress notification for an active stream.
+   *
+   * `capturedIdentity` is the request identity snapshotted when the stream
+   * was started (captured in the closure by `startStreamRequest`). If it no
+   * longer matches `activeRequestIdentity`, the stream was cancelled or
+   * superseded and any progress from it is ignored, preventing stale or
+   * out-of-order candidates from populating the cache.
+   */
+  private handleProgress(value: unknown, capturedIdentity: RequestIdentity): void {
+    // Ignore progress from a cancelled or superseded stream
+    if (capturedIdentity !== this.activeRequestIdentity) {
+      return;
+    }
+
     if (!this.isStreamProgressValue(value)) {
       return;
     }
@@ -122,25 +164,32 @@ export class StreamingCompletionController implements vscode.Disposable {
       return;
     }
 
-    // Update cached candidate if it's newer
+    // Update cached candidate if it's newer (within the same session)
     if (
       this.cachedCandidate &&
       this.cachedCandidate.sessionId === value.sessionId &&
       value.sequence <= this.cachedCandidate.sequence
     ) {
-      return; // Stale update
+      return; // Stale update — a higher-sequence candidate is already cached
     }
 
-    this.cachedCandidate = {
-      uri: '',
-      version: 0,
-      line: item.range?.start.line ?? 0,
-      character: item.range?.start.character ?? 0,
+    // Populate the candidate from the request identity, not from item.range.
+    // The server-supplied replacement range is stored separately and used when
+    // building the returned InlineCompletionItem, but it is never the cache key.
+    const candidate: CachedCandidate = {
+      uri: capturedIdentity.uri,
+      version: capturedIdentity.version,
+      line: capturedIdentity.line,
+      character: capturedIdentity.character,
       text: item.insertText,
       sessionId: value.sessionId,
       sequence: value.sequence,
       isFinal: value.isFinal,
     };
+    if (item.range !== undefined) {
+      candidate.serverRange = item.range;
+    }
+    this.cachedCandidate = candidate;
 
     // Trigger re-evaluation of inline completions
     void vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
@@ -161,22 +210,38 @@ export class StreamingCompletionController implements vscode.Disposable {
       return undefined; // Let the server handle via standard path
     }
 
-    // If we have a cached candidate for this position, return it
+    const docUri = document.uri.toString();
+    const docVersion = document.version;
+
+    // Require an exact match on all four key fields before serving the cache.
+    // A candidate produced for file:///a.pl v1 must not be returned for
+    // file:///b.pl, a newer version of the same file, or a different cursor.
     if (
       this.cachedCandidate &&
+      this.cachedCandidate.uri === docUri &&
+      this.cachedCandidate.version === docVersion &&
       this.cachedCandidate.line === position.line &&
       this.cachedCandidate.character === position.character
     ) {
-      const insertPosition = new vscode.Position(
+      const requestPos = new vscode.Position(
         this.cachedCandidate.line,
         this.cachedCandidate.character,
       );
-      return [
-        new vscode.InlineCompletionItem(
-          this.cachedCandidate.text,
-          new vscode.Range(insertPosition, insertPosition),
-        ),
-      ];
+      // Use the server-supplied replacement range when present; otherwise a
+      // zero-length range at the request cursor so VS Code replaces nothing.
+      const range = this.cachedCandidate.serverRange
+        ? new vscode.Range(
+            new vscode.Position(
+              this.cachedCandidate.serverRange.start.line,
+              this.cachedCandidate.serverRange.start.character,
+            ),
+            new vscode.Position(
+              this.cachedCandidate.serverRange.end.line,
+              this.cachedCandidate.serverRange.end.character,
+            ),
+          )
+        : new vscode.Range(requestPos, requestPos);
+      return [new vscode.InlineCompletionItem(this.cachedCandidate.text, range)];
     }
 
     // Start a new stream request
@@ -186,7 +251,7 @@ export class StreamingCompletionController implements vscode.Disposable {
   }
 
   private startStreamRequest(document: vscode.TextDocument, position: vscode.Position): void {
-    // Cancel any existing stream
+    // Cancel any existing stream (also sets activeRequestIdentity = null)
     this.cancelActiveStream();
 
     // Create cancellation token
@@ -195,12 +260,23 @@ export class StreamingCompletionController implements vscode.Disposable {
     const partialResultToken = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     this.activeProgressToken = partialResultToken;
 
+    // Capture the request identity for this stream. The progress handler
+    // closure holds a reference to this object; we also store it on the
+    // instance so `handleProgress` can verify the stream is still active.
+    const requestIdentity: RequestIdentity = {
+      uri: document.uri.toString(),
+      version: document.version,
+      line: position.line,
+      character: position.character,
+    };
+    this.activeRequestIdentity = requestIdentity;
+
     // Register progress handler for this specific token
     this.activeProgressDisposable = this.client.onProgress(
       streamProgressType,
       partialResultToken,
       (value: unknown) => {
-        this.handleProgress(value);
+        this.handleProgress(value, requestIdentity);
       },
     );
 
@@ -233,6 +309,9 @@ export class StreamingCompletionController implements vscode.Disposable {
   }
 
   private cancelActiveStream(): void {
+    // Null out the active identity first so any in-flight progress callbacks
+    // that fire after this point see a mismatched identity and bail out.
+    this.activeRequestIdentity = null;
     this.cachedCandidate = null;
     if (this.activeProgressDisposable) {
       this.activeProgressDisposable.dispose();
