@@ -1224,6 +1224,35 @@ fn test_rename_respects_documentchanges_client_capability() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn test_empty_rename_respects_documentchanges_client_capability() -> TestResult {
+    let mut harness = LspHarness::new();
+    let caps = json!({
+        "workspace": {
+            "workspaceEdit": {
+                "documentChanges": true
+            }
+        }
+    });
+    harness.initialize(Some(caps))?;
+
+    let doc_uri = "file:///test_empty_documentchanges_rename.pl";
+    harness.open(doc_uri, "my $x = \"target\";\n")?;
+    let response = harness.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": doc_uri },
+            "position": { "line": 0, "character": 10 },
+            "newName": "renamed"
+        }),
+    )?;
+
+    assert!(response.is_object(), "empty rename response must be an object; got: {response:?}");
+    assert!(response.get("changes").is_none());
+    assert_eq!(response["documentChanges"], json!([]));
+    Ok(())
+}
+
 /// Verify that without documentChanges capability the legacy changes format is returned.
 #[test]
 fn test_rename_uses_legacy_changes_without_documentchanges_capability() -> TestResult {
