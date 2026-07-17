@@ -25,6 +25,17 @@
 //!   extracted, the check fails so the guard cannot be silently disabled by a
 //!   doc refactor. A missing *file* is skipped (fork-friendly), mirroring
 //!   `version_sync`.
+//!
+//! Provenance (issue #3023): the active-doc baseline this guard enforces was
+//! reconciled to workspace `0.17.0` and the 32-entry publish allowlist as
+//! observed on `origin/main` at commit
+//! `6cb24158fe582c7ce01ea2348dfe55681e0f730e`. Every derived fact traces to the
+//! root `Cargo.toml` — `[workspace.package] version` and
+//! `[workspace.metadata.publish] allow` — with the release narrative sourced
+//! from `CHANGELOG.md` `[0.17.0]` and `docs/releases/v0.17.0.md`. Because this
+//! guard keeps those facts bound to `Cargo.toml` going forward, the version and
+//! count above are the *observation* record for that reconciliation, not values
+//! to hand-maintain here.
 
 use color_eyre::eyre::{Result, eyre};
 use regex::Regex;
