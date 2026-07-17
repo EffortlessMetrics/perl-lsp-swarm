@@ -103,8 +103,8 @@ fn given_workspace_roots_when_collecting_then_workspace_folder_order_is_legacy_c
     let root_two = PathBuf::from("root-two");
     let mut expected_uris = Vec::new();
 
-    for workspace in [&workspace_a, &workspace_b] {
-        for root in [&root_one, &root_two] {
+    for root in [&root_one, &root_two] {
+        for workspace in [&workspace_a, &workspace_b] {
             let module = workspace.join(root).join("Foo").join("Bar.pm");
             std::fs::create_dir_all(module.parent().ok_or("workspace module has no parent")?)?;
             std::fs::write(&module, "package Foo::Bar; 1;")?;

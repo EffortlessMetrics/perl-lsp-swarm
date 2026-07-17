@@ -68,7 +68,7 @@ pub struct ModuleUriCandidate {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleUriCandidateReport {
-    /// Requested canonical module name.
+    /// Canonicalized module name derived from the request.
     pub module_name: String,
     /// Relative filesystem path derived from `module_name`.
     pub relative_path: String,
@@ -308,7 +308,7 @@ fn collect_module_uri_candidates(
 
     for uri in open_document_uris {
         if open_document_uri_matches_relative_path(uri, &relative_path) {
-            if seen_uris.insert(uri.clone()) {
+            if insert_seen_uri(&mut seen_uris, uri) {
                 candidates.push(ModuleUriCandidate {
                     uri: uri.clone(),
                     source: "open-document".to_string(),
@@ -356,7 +356,7 @@ fn collect_module_uri_candidates(
                         && let Ok(url) = Url::from_file_path(&full_path)
                     {
                         let uri = url.to_string();
-                        if seen_uris.insert(uri.clone()) {
+                        if insert_seen_uri(&mut seen_uris, &uri) {
                             candidates.push(ModuleUriCandidate {
                                 uri,
                                 source: inc_root.source.clone(),
@@ -385,7 +385,7 @@ fn collect_module_uri_candidates(
                     && let Ok(url) = Url::from_file_path(&full_path)
                 {
                     let uri = url.to_string();
-                    if seen_uris.insert(uri.clone()) {
+                    if insert_seen_uri(&mut seen_uris, &uri) {
                         candidates.push(ModuleUriCandidate {
                             uri,
                             source: inc_root.source.clone(),
@@ -408,6 +408,16 @@ fn collect_module_uri_candidates(
     }
 
     candidate_report(&canonical_module_name, &relative_path, candidates, false)
+}
+
+fn insert_seen_uri(seen_uris: &mut HashSet<String>, uri: &str) -> bool {
+    let identity = Url::parse(uri)
+        .ok()
+        .filter(|url| url.scheme() == "file")
+        .and_then(|url| url.to_file_path().ok())
+        .and_then(|path| Url::from_file_path(path).ok())
+        .map_or_else(|| uri.to_string(), |url| url.to_string());
+    seen_uris.insert(identity)
 }
 
 fn open_document_uri_matches_relative_path(uri: &str, relative_path: &str) -> bool {

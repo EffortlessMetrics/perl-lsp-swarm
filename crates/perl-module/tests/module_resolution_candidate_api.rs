@@ -82,7 +82,11 @@ fn public_candidate_api_labels_open_documents_and_deduplicates_uris()
     let temp = tempfile::tempdir()?;
     let external = temp.path().join("external");
     let module = write_module(&external, "Foo/Bar.pm")?;
-    let open_document_uri = file_uri(&module)?;
+    let mut open_document_url = url::Url::parse(&file_uri(&module)?)?;
+    open_document_url
+        .set_host(Some("localhost"))
+        .map_err(|_| "failed to set localhost file URI host")?;
+    let open_document_uri = open_document_url.to_string();
     let roots = [IncRoot {
         kind: IncRootKind::ExternalAbsolute,
         path: external,
