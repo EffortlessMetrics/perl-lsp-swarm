@@ -76,3 +76,72 @@ fn seam_plan_mismatch_does_not_change_hard_result_success() {
     );
     assert!(report.is_success());
 }
+
+// ── SEAM E: bailout is terminal and case-insensitive ────────────────────────
+
+/// Once a bailout is observed, later TAP records remain raw evidence and do
+/// not create a plan or assertions. The marker is case-insensitive per TAP.
+#[test]
+fn seam_bailout_terminates_semantic_parsing() {
+    let report = parse_tap("ok 1 - starts\nbAIL OUT! stopped\nok 2 - after\n1..2\n");
+
+    assert_eq!(report.bail_out.as_deref(), Some("stopped"));
+    assert_eq!(report.assertions.len(), 1);
+    assert_eq!(report.plan, None);
+    assert_eq!(report.raw_lines, vec!["ok 2 - after", "1..2"]);
+    assert!(!report.is_success());
+}
+
+// ── SEAM F: malformed YAML cannot swallow a later plan ──────────────────────
+
+/// A plan before a YAML terminator interrupts the pending block instead of
+/// attaching its following text to the previous assertion.
+#[test]
+fn seam_yaml_block_does_not_swallow_a_later_plan() {
+    let report = parse_tap("not ok 1 - broken\n  ---\n1..1\n  message: raw\n  ...\n");
+
+    assert_eq!(report.assertions.len(), 1);
+    assert!(report.assertions[0].diagnostics.is_empty());
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("interrupted before terminator"))
+    );
+}
+
+// ── SEAM G: plan order and assertion numbering are structural facts ──────────
+
+/// Plans between top-level assertions and duplicate assertion numbers are
+/// diagnosed even when the count and range superficially match.
+#[test]
+fn seam_plan_order_and_duplicate_numbers_are_diagnosed() {
+    let report = parse_tap("ok 1 - first\n1..2\nok 1 - duplicate\n");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("between top-level assertions"))
+    );
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("duplicate top-level assertion number 1"))
+    );
+}
+
+// ── SEAM H: malformed indentation is not coerced to depth zero ──────────────
+
+/// One-to-three leading spaces are retained as raw evidence rather than
+/// becoming a top-level assertion through integer division.
+#[test]
+fn seam_partial_indentation_is_not_a_top_level_assertion() {
+    let report = parse_tap("  ok 1 - malformed\nok 1 - valid\n1..1\n");
+
+    assert_eq!(report.assertions.len(), 1);
+    assert_eq!(report.assertions[0].name.as_deref(), Some("valid"));
+    assert_eq!(report.raw_lines, vec!["  ok 1 - malformed"]);
+    assert!(report.diagnostics.is_empty());
+}

@@ -132,7 +132,6 @@ allow = [
     # Tier 2+ — Rust-native tree-sitter facade (depends on perl-parser-core + perl-ast)
     "tree-sitter-perl-rs",
     "perl-test-generators",
-    "perl-test-facts",
     # (perl-incremental-parsing absorbed into perl-parser::incremental — Wave 4-Completion)
     "perl-symbol",
     "perl-uri",

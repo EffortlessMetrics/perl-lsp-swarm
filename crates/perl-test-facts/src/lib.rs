@@ -7,6 +7,8 @@
 #![warn(rust_2018_idioms)]
 #![warn(missing_docs)]
 
+use std::collections::HashSet;
+
 /// The outcome of one TAP assertion.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +132,9 @@ impl TapReport {
     ///
     /// Plan mismatches and structural diagnostics are reported independently;
     /// callers that require a structurally valid report must inspect
-    /// [`Self::diagnostics`] and the plan separately.
+    /// [`Self::diagnostics`] and the plan separately. A plan-less or empty
+    /// report can still be a hard success; callers that require proof that a
+    /// producer completed must also require [`Self::plan`].
     #[must_use]
     pub fn is_success(&self) -> bool {
         self.bail_out.is_none() && self.failed_count() == 0
@@ -145,26 +149,50 @@ impl TapReport {
 #[must_use]
 pub fn parse_tap(source: &str) -> TapReport {
     let mut report = TapReport::default();
-    let mut yaml_block: Option<Vec<String>> = None;
+    let mut yaml_block: Option<PendingYaml> = None;
+    let mut last_assertion: Option<(usize, usize)> = None;
 
     for (index, raw_line) in source.lines().enumerate() {
         let line_number = index + 1;
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
-        let depth = indentation_depth(line);
 
-        if let Some(block) = yaml_block.as_mut() {
-            block.push(line.to_owned());
-            if line.trim() == "..." {
-                if let Some(assertion) = report.assertions.last_mut() {
-                    assertion.diagnostics.append(block);
+        if let Some(mut block) = yaml_block.take() {
+            let trimmed = line.trim();
+            let indentation = leading_indent_width(line);
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                block.lines.push(line.to_owned());
+                yaml_block = Some(block);
+                continue;
+            }
+            if trimmed == "..." && indentation == block.indentation {
+                block.lines.push(line.to_owned());
+                if let Some(assertion) = report.assertions.get_mut(block.assertion_index) {
+                    assertion.diagnostics.append(&mut block.lines);
                 } else {
                     report.diagnostics.push(format!(
                         "line {line_number}: YAML diagnostics have no preceding assertion"
                     ));
                 }
-                yaml_block = None;
+                last_assertion = None;
+                continue;
             }
-            continue;
+
+            let is_protocol_record = trimmed == "TAP version 13"
+                || parse_bailout(trimmed).is_some()
+                || looks_like_plan(trimmed)
+                || indentation_depth(line)
+                    .and_then(|depth| parse_assertion(trimmed, line_number, depth))
+                    .is_some();
+            if !is_protocol_record {
+                block.lines.push(line.to_owned());
+                yaml_block = Some(block);
+                continue;
+            }
+
+            report.raw_lines.append(&mut block.lines);
+            report.diagnostics.push(format!(
+                "line {line_number}: YAML diagnostics block interrupted before terminator"
+            ));
         }
 
         let trimmed = line.trim();
@@ -172,9 +200,51 @@ pub fn parse_tap(source: &str) -> TapReport {
             continue;
         }
 
+        if report.bail_out.is_some() {
+            if parse_bailout(trimmed).is_some() {
+                report.diagnostics.push(format!("line {line_number}: duplicate bailout"));
+            } else {
+                report.raw_lines.push(line.to_owned());
+            }
+            continue;
+        }
+
+        if trimmed == "---" {
+            let indentation = leading_indent_width(line);
+            if let Some((assertion_index, expected_indentation)) = last_assertion {
+                if assertion_index + 1 == report.assertions.len()
+                    && indentation == expected_indentation
+                {
+                    yaml_block = Some(PendingYaml {
+                        lines: vec![line.to_owned()],
+                        assertion_index,
+                        indentation,
+                    });
+                } else {
+                    report.raw_lines.push(line.to_owned());
+                    report.diagnostics.push(format!(
+                        "line {line_number}: YAML diagnostics are not attached to the preceding assertion"
+                    ));
+                }
+            } else {
+                report.raw_lines.push(line.to_owned());
+                report.diagnostics.push(format!(
+                    "line {line_number}: YAML diagnostics have no preceding assertion"
+                ));
+            }
+            continue;
+        }
+
+        let Some(depth) = indentation_depth(line) else {
+            report.raw_lines.push(line.to_owned());
+            last_assertion = None;
+            continue;
+        };
+
         if let Some(rest) = trimmed.strip_prefix("TAP version") {
             if depth != 0 {
                 report.raw_lines.push(line.to_owned());
+                last_assertion = None;
                 continue;
             }
             if report.version.is_some() {
@@ -186,20 +256,17 @@ pub fn parse_tap(source: &str) -> TapReport {
                     .diagnostics
                     .push(format!("line {line_number}: invalid TAP version declaration")),
             }
+            last_assertion = None;
             continue;
         }
 
-        if let Some(rest) = trimmed.strip_prefix("Bail out!") {
+        if let Some(reason) = parse_bailout(trimmed) {
             if report.bail_out.is_some() {
                 report.diagnostics.push(format!("line {line_number}: duplicate bailout"));
             } else {
-                report.bail_out = Some(rest.trim().to_owned());
+                report.bail_out = Some(reason.to_owned());
             }
-            continue;
-        }
-
-        if trimmed == "---" {
-            yaml_block = Some(vec![line.to_owned()]);
+            last_assertion = None;
             continue;
         }
 
@@ -213,11 +280,13 @@ pub fn parse_tap(source: &str) -> TapReport {
                 } else {
                     report.plan = Some(plan);
                 }
+                last_assertion = None;
                 continue;
             }
 
             if looks_like_plan(trimmed) {
                 report.diagnostics.push(format!("line {line_number}: invalid TAP plan"));
+                last_assertion = None;
                 continue;
             }
         } else if looks_like_plan(trimmed) {
@@ -225,22 +294,26 @@ pub fn parse_tap(source: &str) -> TapReport {
             // the top-level plan and retains nested protocol records as raw
             // evidence until nested-plan facts have a dedicated model.
             report.raw_lines.push(line.to_owned());
+            last_assertion = None;
             continue;
         }
 
         if let Some(assertion) = parse_assertion(trimmed, line_number, depth) {
             report.assertions.push(assertion);
+            last_assertion = Some((report.assertions.len() - 1, leading_indent_width(line) + 2));
             continue;
         }
 
         report.raw_lines.push(line.to_owned());
+        last_assertion = None;
     }
 
-    if let Some(block) = yaml_block {
-        if let Some(assertion) = report.assertions.last_mut() {
-            assertion.diagnostics.extend(block);
+    if let Some(mut block) = yaml_block {
+        if let Some(assertion) = report.assertions.get_mut(block.assertion_index) {
+            assertion.diagnostics.append(&mut block.lines);
             report.diagnostics.push("unterminated YAML diagnostics block".to_owned());
         } else {
+            report.raw_lines.append(&mut block.lines);
             report.diagnostics.push("YAML diagnostics have no preceding assertion".to_owned());
         }
     }
@@ -249,16 +322,42 @@ pub fn parse_tap(source: &str) -> TapReport {
     report
 }
 
-fn indentation_depth(line: &str) -> usize {
+#[derive(Debug)]
+struct PendingYaml {
+    lines: Vec<String>,
+    assertion_index: usize,
+    indentation: usize,
+}
+
+fn leading_indent_width(line: &str) -> usize {
+    line.chars()
+        .take_while(|character| character.is_whitespace())
+        .map(|character| if character == '\t' { 4 } else { 1 })
+        .sum()
+}
+
+fn indentation_depth(line: &str) -> Option<usize> {
     let mut spaces = 0usize;
+    let mut depth = 0usize;
     for character in line.chars() {
         match character {
             ' ' => spaces += 1,
-            '\t' => spaces += 4,
+            '\t' if spaces == 0 => depth += 1,
+            '\t' => return None,
             _ => break,
         }
+        if spaces == 4 {
+            depth += 1;
+            spaces = 0;
+        }
     }
-    spaces / 4
+    (spaces == 0).then_some(depth)
+}
+
+fn parse_bailout(line: &str) -> Option<&str> {
+    const PREFIX: &str = "Bail out!";
+    let prefix = line.get(..PREFIX.len())?;
+    prefix.eq_ignore_ascii_case(PREFIX).then(|| line[PREFIX.len()..].trim())
 }
 
 fn parse_plan(line: &str, line_number: usize) -> Option<TapPlan> {
@@ -321,9 +420,16 @@ fn parse_number(remainder: &str) -> (Option<u32>, &str) {
 }
 
 fn split_directive(remainder: &str) -> (Option<String>, Option<String>) {
-    let Some((name, directive)) = remainder.split_once('#') else {
+    let Some(hash_index) = remainder.char_indices().find_map(|(index, character)| {
+        (character == '#'
+            && index > 0
+            && remainder[..index].chars().last().is_some_and(char::is_whitespace))
+        .then_some(index)
+    }) else {
         return (normalize_name(remainder), None);
     };
+    let (name, directive) = remainder.split_at(hash_index);
+    let directive = directive.strip_prefix('#').unwrap_or(directive);
     let directive = directive.trim();
     let kind = directive.split_whitespace().next().unwrap_or_default();
     if !kind.eq_ignore_ascii_case("skip") && !kind.eq_ignore_ascii_case("todo") {
@@ -373,24 +479,47 @@ fn validate_plan(report: &mut TapReport) {
         if plan.end >= plan.start { u64::from(plan.end) - u64::from(plan.start) + 1 } else { 0 };
     let expected_count = match usize::try_from(expected) {
         Ok(count) => count,
-        Err(_) => usize::MAX,
+        Err(_) => {
+            report.diagnostics.push(format!(
+                "plan on line {} declares too many assertions for this platform",
+                plan.line
+            ));
+            return;
+        }
     };
-    let top_level_count = report.assertions.iter().filter(|assertion| assertion.depth == 0).count();
+    let top_level: Vec<&TapAssertion> =
+        report.assertions.iter().filter(|assertion| assertion.depth == 0).collect();
+    let top_level_count = top_level.len();
     if expected_count != top_level_count {
         report.diagnostics.push(format!(
             "plan on line {} declares {expected} assertions but {} were parsed",
             plan.line, top_level_count
         ));
     }
-    for assertion in &report.assertions {
-        if assertion.depth == 0
-            && let Some(number) = assertion.number
-            && (number < plan.start || number > plan.end)
-        {
-            report.diagnostics.push(format!(
-                "line {}: assertion number {number} is outside plan {}..{}",
-                assertion.line, plan.start, plan.end
-            ));
+
+    if top_level.iter().any(|assertion| assertion.line < plan.line)
+        && top_level.iter().any(|assertion| assertion.line > plan.line)
+    {
+        report
+            .diagnostics
+            .push(format!("plan on line {} appears between top-level assertions", plan.line));
+    }
+
+    let mut seen_numbers = HashSet::new();
+    for assertion in top_level {
+        if let Some(number) = assertion.number {
+            if !seen_numbers.insert(number) {
+                report.diagnostics.push(format!(
+                    "line {}: duplicate top-level assertion number {number}",
+                    assertion.line
+                ));
+            }
+            if number < plan.start || number > plan.end {
+                report.diagnostics.push(format!(
+                    "line {}: assertion number {number} is outside plan {}..{}",
+                    assertion.line, plan.start, plan.end
+                ));
+            }
         }
     }
 }
@@ -456,6 +585,79 @@ mod tests {
     }
 
     #[test]
+    fn keeps_hash_in_url_description_and_requires_a_real_directive_delimiter() {
+        let report = parse_tap("not ok 1 - https://example.test/#TODO\n1..1\n");
+
+        assert_eq!(report.assertions[0].name.as_deref(), Some("https://example.test/#TODO"));
+        assert_eq!(report.assertions[0].status, TapAssertionStatus::Fail);
+        assert_eq!(report.assertions[0].directive, None);
+        assert!(!report.is_success());
+    }
+
+    #[test]
+    fn stops_semantic_parsing_after_a_case_insensitive_bailout() {
+        let report = parse_tap("ok 1 - starts\nbAIL OUT! stopped\nok 2 - after\n1..2\n");
+
+        assert_eq!(report.bail_out.as_deref(), Some("stopped"));
+        assert_eq!(report.assertions.len(), 1);
+        assert_eq!(report.plan, None);
+        assert_eq!(report.raw_lines, vec!["ok 2 - after", "1..2"]);
+        assert!(!report.is_success());
+    }
+
+    #[test]
+    fn rejects_a_plan_between_top_level_assertions() {
+        let report = parse_tap("ok 1 - first\n1..2\nok 2 - second\n");
+
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("between top-level assertions"))
+        );
+    }
+
+    #[test]
+    fn reports_duplicate_top_level_assertion_numbers() {
+        let report = parse_tap("1..2\nok 1 - first\nok 1 - duplicate\n");
+
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("duplicate top-level assertion number 1"))
+        );
+    }
+
+    #[test]
+    fn retains_malformed_partial_indentation_as_raw_evidence() {
+        let report = parse_tap("  ok 1 - malformed\nok 1 - valid\n1..1\n");
+
+        assert_eq!(report.assertions.len(), 1);
+        assert_eq!(report.assertions[0].name.as_deref(), Some("valid"));
+        assert_eq!(report.raw_lines, vec!["  ok 1 - malformed"]);
+        assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn does_not_attach_yaml_after_an_intervening_plan() {
+        let report = parse_tap("not ok 1 - broken\n  ---\n  message: wrong\n  ...\n1..1\n");
+
+        assert_eq!(report.assertions[0].diagnostics.len(), 3);
+        assert!(report.diagnostics.is_empty());
+
+        let interrupted = parse_tap("not ok 1 - broken\n  ---\n1..1\n  message: raw\n  ...\n");
+        assert!(
+            interrupted
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("interrupted before terminator"))
+        );
+        assert_eq!(interrupted.assertions.len(), 1);
+        assert_eq!(interrupted.assertions[0].diagnostics, Vec::<String>::new());
+    }
+
+    #[test]
     fn preserves_subtest_depth_and_validates_only_the_top_level_plan() {
         let report = parse_tap("TAP version 13\n    1..1\n    ok 1 - inner\nok 1 - child\n1..1\n");
 
@@ -481,9 +683,9 @@ mod tests {
 
     #[test]
     fn reports_unterminated_yaml_diagnostics() {
-        let report = parse_tap("not ok 1 - broken\n  ---\n  message: incomplete\n1..1\n");
+        let report = parse_tap("not ok 1 - broken\n  ---\n  message: incomplete\n");
 
-        assert_eq!(report.assertions[0].diagnostics.len(), 3);
+        assert_eq!(report.assertions[0].diagnostics.len(), 2);
         assert!(report.diagnostics.iter().any(|diagnostic| diagnostic.contains("unterminated")));
     }
 }
