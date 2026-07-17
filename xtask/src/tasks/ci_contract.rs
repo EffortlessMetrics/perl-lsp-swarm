@@ -266,11 +266,19 @@ fn execute_check(root: &Path, spec: &CheckSpec) -> std::io::Result<Output> {
 
 fn result_for_exit(code: Option<i32>, detail: &str) -> ContractResultClass {
     match code {
+        Some(0) if has_policy_finding(detail) => ContractResultClass::PolicyFinding,
         Some(0) => ContractResultClass::Success,
         Some(1) if is_instrument_failure(detail) => ContractResultClass::NotProven,
         Some(1) => ContractResultClass::PolicyFinding,
         _ => ContractResultClass::NotProven,
     }
+}
+
+fn has_policy_finding(detail: &str) -> bool {
+    detail.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("WARN ") || line.starts_with("[WARN]")
+    })
 }
 
 fn is_instrument_failure(detail: &str) -> bool {
@@ -552,6 +560,11 @@ mod tests {
         ensure!(
             result_for_exit(Some(0), "ok") == ContractResultClass::Success,
             "zero exit must be success"
+        );
+        ensure!(
+            result_for_exit(Some(0), "WARN existing advisory baseline")
+                == ContractResultClass::PolicyFinding,
+            "explicit advisory findings must remain visible"
         );
         ensure!(
             result_for_exit(Some(1), "policy finding") == ContractResultClass::PolicyFinding,

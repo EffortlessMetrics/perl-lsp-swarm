@@ -56,7 +56,8 @@ claim_boundary
 
 Result classes are `SUCCESS`, `POLICY_FINDING`, `NOT_PROVEN`, `NOT_APPLICABLE`,
 and `STALE`. `NOT_APPLICABLE` is reserved for an empty resolved range that
-selects no checks. A command exit status is a policy finding, while an inability to
+selects no checks. A command exit status of `1`, or explicit `WARN` output from
+an advisory checker that exits `0`, is a policy finding, while an inability to
 start or interpret the command is `NOT_PROVEN`. A head mismatch observed before
 or after execution is `STALE` and is always blocking for the advisory receipt.
 The emitted status is the highest-precedence blocking class:
