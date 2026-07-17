@@ -23,9 +23,28 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         "router must explicitly cover the pull-request trigger"
     );
     ensure!(
-        sequence_strings(mapping_value(mapping_value(self_hosted, "runs-on")?, "labels")?)?
+        !content.contains("ubuntu-latest"),
+        "workflow must not use the floating ubuntu-latest runner"
+    );
+    ensure!(
+        content.contains("IS_FORK_PR") && content.contains("PR_AUTHOR_TYPE"),
+        "router must retain fork and bot isolation inputs"
+    );
+
+    let self_runs_on = mapping_value(self_hosted, "runs-on")?;
+    let self_hosted_labels = if self_runs_on.is_sequence() {
+        sequence_strings(self_runs_on)?
+    } else {
+        sequence_strings(mapping_value(self_runs_on, "labels")?)?
+    };
+    ensure!(
+        self_hosted_labels
             == ["self-hosted", "linux", "x64", "em-ci", "trusted-pr", "workflow-nano"],
         "self-hosted job labels changed"
+    );
+    ensure!(
+        self_hosted_labels.len() == 6,
+        "self-hosted job labels must not have missing or extra entries"
     );
     ensure!(
         scalar_string(mapping_value(hosted, "runs-on")?)? == "ubuntu-24.04",
@@ -38,12 +57,15 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
     );
     for (job, target) in [(self_hosted, "self_hosted"), (hosted, "github")] {
         let condition = scalar_string(mapping_value(job, "if")?)?;
-        ensure!(
-            condition.contains(&format!("outputs.target == '{target}'")),
-            "execution job has no static route guard for {target}"
+        let expected_condition = format!(
+            "needs.route-agent-capability-gate.result == 'success' && needs.route-agent-capability-gate.outputs.target == '{target}'"
         );
         ensure!(
-            scalar_string(mapping_value(job, "needs")?)? == "route-agent-capability-gate",
+            condition == expected_condition,
+            "execution job routing condition changed for {target}"
+        );
+        ensure!(
+            has_need(mapping_value(job, "needs")?, "route-agent-capability-gate"),
             "execution job must depend on the router"
         );
     }
@@ -68,6 +90,8 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         "runner-groups?per_page=100",
         "em-ci-nano",
         "runner_group_id",
+        "--paginate",
+        "--slurp",
         "emit \"github\" \"fork_pr\" \"false\" \"true\"",
         "emit \"github\" \"bot_pr_github_hosted\" \"false\" \"true\"",
         "emit \"github\" \"runner_token_missing\" \"true\" \"true\"",
@@ -122,4 +146,11 @@ fn sequence_strings(value: &Value) -> Result<Vec<&str>> {
         .iter()
         .map(scalar_string)
         .collect()
+}
+
+fn has_need(value: &Value, expected: &str) -> bool {
+    value.as_str() == Some(expected)
+        || value
+            .as_sequence()
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(expected)))
 }
