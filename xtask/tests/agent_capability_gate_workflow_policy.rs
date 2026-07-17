@@ -31,6 +31,11 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         scalar_string(mapping_value(hosted, "runs-on")?)? == "ubuntu-24.04",
         "fallback must stay on the pinned hosted image"
     );
+    ensure!(
+        scalar_string(mapping_value(mapping_value(self_hosted, "runs-on")?, "group")?)?
+            == "em-ci-nano",
+        "self-hosted job must stay in the workflow-nano runner group"
+    );
     for (job, target) in [(self_hosted, "self_hosted"), (hosted, "github")] {
         let condition = scalar_string(mapping_value(job, "if")?)?;
         ensure!(
@@ -55,9 +60,17 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
         "github.event.pull_request.head.repo.full_name != github.repository",
         "bot_pr_github_hosted",
         "runner_token_missing",
+        "runner_group_api_failed",
+        "runner_group_missing",
         "runner_api_failed",
         "no_idle_runner",
         "workflow_nano_idle",
+        "runner-groups?per_page=100",
+        "em-ci-nano",
+        "runner_group_id",
+        "emit \"github\" \"fork_pr\" \"false\" \"true\"",
+        "emit \"github\" \"bot_pr_github_hosted\" \"false\" \"true\"",
+        "emit \"github\" \"runner_token_missing\" \"true\" \"true\"",
         "cargo xtask check-agent-capabilities",
         "uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
         "uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88",
@@ -67,6 +80,10 @@ fn agent_capability_gate_preserves_trust_and_failure_boundaries() -> Result<()> 
     ensure!(
         content.matches("cargo xtask check-agent-capabilities").count() == 2,
         "both execution paths must run the capability checker"
+    );
+    ensure!(
+        content.matches("fallback_allowed").count() >= 6,
+        "router outputs and summaries must preserve fallback evidence"
     );
 
     Ok(())

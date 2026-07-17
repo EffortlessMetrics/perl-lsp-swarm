@@ -18,15 +18,16 @@ and `cargo xtask check-agent-capabilities` command. Add a hosted router job on
 - `agent-capability-gate-self-hosted` runs on
   `[self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]` only for a
   trusted same-repository event when an online, idle runner with those labels
-  is observed.
+  is observed in the `em-ci-nano` runner group.
 - `agent-capability-gate-hosted` runs on `ubuntu-24.04` for fork/bot events and
   for explicit infrastructure fallback (missing token, runner API failure, or
   no idle runner).
 
 The router emits `target`, `reason`, `error`, and `fallback_allowed` in both the
-step output and job summary. A capability-policy failure in either execution
-job remains a real failure; only routing/capacity failures select the hosted
-fallback.
+step output and job summary. It treats runner-group API failure or a missing
+`em-ci-nano` group as infrastructure fallback. A capability-policy failure in
+either execution job remains a real failure; only routing/capacity failures
+select the hosted fallback.
 
 ## Alternatives rejected
 
@@ -42,10 +43,11 @@ fallback.
 ## Claim boundary
 
 This slice proves the workflow is statically routed, fork/bot-safe, explicit
-about infrastructure fallback, and still fails when the capability checker
-fails. It does not prove live runner capacity, Rust/Cargo availability on
-`workflow-nano`, or the permission scope of `EM_RUNNER_READ_TOKEN`; those are
-external prerequisites and remain `NOT_PROVEN` until a live run exercises them.
+about infrastructure fallback, group-aware, and still fails when the
+capability checker fails. It does not prove live runner capacity, Rust/Cargo
+availability on `workflow-nano`, or the permission scope of
+`EM_RUNNER_READ_TOKEN`; those are external prerequisites and remain
+`NOT_PROVEN` until a live run exercises them.
 
 ## Cargo-allow policy
 

@@ -9,6 +9,7 @@
 | Same-repository bot pull request | Hosted `ubuntu-24.04` job runs; no self-hosted job is eligible |
 | Missing `EM_RUNNER_READ_TOKEN` | Hosted fallback runs with reason `runner_token_missing` |
 | Runner API non-200 response | Hosted fallback runs with reason `runner_api_failed` |
+| Runner-group API non-200 response or missing `em-ci-nano` group | Hosted fallback runs with an explicit runner-group reason |
 | No online idle matching runner | Hosted fallback runs with reason `no_idle_runner` |
 | Capability checker returns non-zero | Selected execution job fails; routing does not convert a policy failure to success |
 | Trigger, permissions, concurrency, pinned actions, and command | Existing contract remains intact |
@@ -17,7 +18,7 @@
 
 | Scenario | Kind | Proof |
 |---|---|---|
-| Self-hosted labels are exact | structural | YAML policy test |
+| Self-hosted group and labels are exact | structural | YAML policy test |
 | Hosted fallback uses pinned `ubuntu-24.04` | structural | YAML policy test |
 | Fork/bot guards select hosted | structural | YAML policy test and route-body inspection |
 | Token/API/capacity fallback reasons are explicit | structural | YAML policy test |
