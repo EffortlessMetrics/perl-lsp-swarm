@@ -2263,8 +2263,9 @@ mod tests {
             .expect("test parse should publish the current snapshot");
         buffer.lock().clear();
         server.publish_diagnostics(uri);
-        let output = capture_until(&buffer, |output| output.contains("valid range"));
+        capture_until(&buffer, |output| output.contains("valid range"));
         drop(server);
+        let output = String::from_utf8_lossy(&buffer.lock()).into_owned();
 
         assert!(
             output.contains("valid range"),
