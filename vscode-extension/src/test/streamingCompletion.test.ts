@@ -163,9 +163,8 @@ describe('StreamingCompletionController — request identity and cache correctne
       token: vscode.CancellationToken,
     ) => vscode.InlineCompletionItem[] | undefined;
   } {
-    const registerCall = (
-      vscode.languages.registerInlineCompletionItemProvider as jest.Mock
-    ).mock.calls[0];
+    const registerCall = (vscode.languages.registerInlineCompletionItemProvider as jest.Mock).mock
+      .calls[0];
     return registerCall[1] as ReturnType<typeof getRegisteredProvider>;
   }
 
@@ -196,7 +195,10 @@ describe('StreamingCompletionController — request identity and cache correctne
     text: string,
     options: {
       isFinal?: boolean;
-      range?: { start: { line: number; character: number }; end: { line: number; character: number } };
+      range?: {
+        start: { line: number; character: number };
+        end: { line: number; character: number };
+      };
     } = {},
   ): unknown {
     return {
@@ -226,12 +228,12 @@ describe('StreamingCompletionController — request identity and cache correctne
     (vscode.languages as Record<string, unknown>).registerInlineCompletionItemProvider = jest.fn(
       () => ({ dispose: jest.fn() }),
     );
-    (vscode.window as Record<string, unknown>).onDidChangeTextEditorSelection = jest.fn(
-      () => ({ dispose: jest.fn() }),
-    );
-    (vscode.workspace as Record<string, unknown>).onDidChangeTextDocument = jest.fn(
-      () => ({ dispose: jest.fn() }),
-    );
+    (vscode.window as Record<string, unknown>).onDidChangeTextEditorSelection = jest.fn(() => ({
+      dispose: jest.fn(),
+    }));
+    (vscode.workspace as Record<string, unknown>).onDidChangeTextDocument = jest.fn(() => ({
+      dispose: jest.fn(),
+    }));
     // Enable AI streaming completion for all provider tests
     (vscode.workspace as Record<string, unknown>).getConfiguration = jest.fn(
       (_section?: string) => ({
@@ -257,14 +259,26 @@ describe('StreamingCompletionController — request identity and cache correctne
     const pos = makeMockPos(5, 10);
 
     // First call — no cache, triggers stream
-    expect(provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken)).toBeUndefined();
+    expect(
+      provider.provideInlineCompletionItems(
+        doc,
+        pos,
+        {} as vscode.InlineCompletionContext,
+        {} as vscode.CancellationToken,
+      ),
+    ).toBeUndefined();
 
     // Deliver a progress update
     const handler = getLastProgressHandler();
     handler(makeProgress('sess-1', 1, 'my $result = '));
 
     // Second call with identical key — should return cached candidate
-    const items = provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeDefined();
     expect(items).toHaveLength(1);
     expect((items![0] as { insertText: string }).insertText).toBe('my $result = ');
@@ -277,11 +291,21 @@ describe('StreamingCompletionController — request identity and cache correctne
     const pos = makeMockPos(5, 10);
 
     // Start stream for a.pl and populate cache
-    provider.provideInlineCompletionItems(docA, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    provider.provideInlineCompletionItems(
+      docA,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     getLastProgressHandler()(makeProgress('sess-1', 1, 'ghost for a.pl'));
 
     // Provider called for b.pl at same line/character — must NOT return cached ghost
-    const items = provider.provideInlineCompletionItems(docB, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    const items = provider.provideInlineCompletionItems(
+      docB,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeUndefined();
   });
 
@@ -292,11 +316,21 @@ describe('StreamingCompletionController — request identity and cache correctne
     const pos = makeMockPos(5, 10);
 
     // Start stream for version 1 and populate cache
-    provider.provideInlineCompletionItems(docV1, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    provider.provideInlineCompletionItems(
+      docV1,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     getLastProgressHandler()(makeProgress('sess-1', 1, 'ghost for v1'));
 
     // Provider called at version 2 — must NOT return v1 cached ghost
-    const items = provider.provideInlineCompletionItems(docV2, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    const items = provider.provideInlineCompletionItems(
+      docV2,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeUndefined();
   });
 
@@ -306,18 +340,29 @@ describe('StreamingCompletionController — request identity and cache correctne
     const pos = makeMockPos(5, 10);
 
     // Start stream and capture the handler before cancellation
-    provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     const staleHandler = getLastProgressHandler();
 
     // Simulate cursor movement, which calls cancelActiveStream
-    const cursorCb = (vscode.window.onDidChangeTextEditorSelection as jest.Mock).mock.calls[0][0] as () => void;
+    const cursorCb = (vscode.window.onDidChangeTextEditorSelection as jest.Mock).mock
+      .calls[0][0] as () => void;
     cursorCb();
 
     // Fire the stale handler — must be ignored because the stream was cancelled
     staleHandler(makeProgress('sess-1', 1, 'stale ghost'));
 
     // No cached candidate remains
-    const items = provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeUndefined();
   });
 
@@ -325,20 +370,34 @@ describe('StreamingCompletionController — request identity and cache correctne
     const provider = getRegisteredProvider();
     const docA = makeMockDoc('file:///a.pl', 1);
     const posA = makeMockPos(5, 10);
-    const posB = makeMockPos(7, 0);
 
     // Start first stream, capture its handler
-    provider.provideInlineCompletionItems(docA, posA, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    provider.provideInlineCompletionItems(
+      docA,
+      posA,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     const staleHandler = getLastProgressHandler();
 
-    // Move to a new position — starts a second stream (supersedes the first)
-    provider.provideInlineCompletionItems(docA, posB, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    // Start a second stream for the same request identity, superseding the first
+    provider.provideInlineCompletionItems(
+      docA,
+      posA,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
 
     // Now the stale handler fires for the first (cancelled) stream
     staleHandler(makeProgress('sess-old', 1, 'ghost from old stream'));
 
-    // Cache should be empty (or contain nothing from the old stream)
-    const items = provider.provideInlineCompletionItems(docA, posA, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    // Cache should be empty even though the stale stream has the exact key
+    const items = provider.provideInlineCompletionItems(
+      docA,
+      posA,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeUndefined();
   });
 
@@ -347,7 +406,12 @@ describe('StreamingCompletionController — request identity and cache correctne
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(3, 5);
 
-    provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     const handler = getLastProgressHandler();
 
     // Deliver sequence 1, then 5, then 3 (out-of-order)
@@ -355,7 +419,12 @@ describe('StreamingCompletionController — request identity and cache correctne
     handler(makeProgress('sess-1', 5, 'seq5'));
     handler(makeProgress('sess-1', 3, 'seq3-late')); // must be ignored
 
-    const items = provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeDefined();
     expect((items![0] as { insertText: string }).insertText).toBe('seq5');
   });
@@ -365,20 +434,40 @@ describe('StreamingCompletionController — request identity and cache correctne
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10); // cursor at (5, 10)
 
-    provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     const handler = getLastProgressHandler();
 
     // Server supplies a range starting at column 0, before the cursor
-    handler(makeProgress('sess-1', 1, 'replacement text', {
-      range: { start: { line: 5, character: 0 }, end: { line: 5, character: 10 } },
-    }));
+    handler(
+      makeProgress('sess-1', 1, 'replacement text', {
+        range: { start: { line: 5, character: 0 }, end: { line: 5, character: 10 } },
+      }),
+    );
 
-    const items = provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeDefined();
     expect(items).toHaveLength(1);
 
     // Range should reflect the server-supplied extent, not a zero-length at cursor
-    const range = (items![0] as { insertText: string; range: { start: { line: number; character: number }; end: { line: number; character: number } } }).range;
+    const range = (
+      items![0] as {
+        insertText: string;
+        range: {
+          start: { line: number; character: number };
+          end: { line: number; character: number };
+        };
+      }
+    ).range;
     expect(range.start.line).toBe(5);
     expect(range.start.character).toBe(0);
     expect(range.end.line).toBe(5);
@@ -390,16 +479,34 @@ describe('StreamingCompletionController — request identity and cache correctne
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
 
-    provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     const handler = getLastProgressHandler();
 
     // No range field in the progress value
     handler(makeProgress('sess-1', 1, 'insert text'));
 
-    const items = provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeDefined();
 
-    const range = (items![0] as { insertText: string; range: { start: { line: number; character: number }; end: { line: number; character: number } } }).range;
+    const range = (
+      items![0] as {
+        insertText: string;
+        range: {
+          start: { line: number; character: number };
+          end: { line: number; character: number };
+        };
+      }
+    ).range;
     // Zero-length range: start === end === request cursor
     expect(range.start.line).toBe(5);
     expect(range.start.character).toBe(10);
@@ -412,15 +519,26 @@ describe('StreamingCompletionController — request identity and cache correctne
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
 
-    provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     getLastProgressHandler()(makeProgress('sess-1', 1, 'ghost'));
 
     // Simulate cursor movement to cancel
-    const cursorCb = (vscode.window.onDidChangeTextEditorSelection as jest.Mock).mock.calls[0][0] as () => void;
+    const cursorCb = (vscode.window.onDidChangeTextEditorSelection as jest.Mock).mock
+      .calls[0][0] as () => void;
     cursorCb();
 
     // Provider should find no cached candidate
-    const items = provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeUndefined();
   });
 
@@ -429,7 +547,12 @@ describe('StreamingCompletionController — request identity and cache correctne
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
 
-    provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     getLastProgressHandler()(makeProgress('sess-1', 1, 'ghost'));
 
     controller.dispose();
@@ -464,7 +587,12 @@ describe('StreamingCompletionController — request identity and cache correctne
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(0, 0);
 
-    const items = provider.provideInlineCompletionItems(doc, pos, {} as vscode.InlineCompletionContext, {} as vscode.CancellationToken);
+    const items = provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
     expect(items).toBeUndefined();
     // No stream request should have been triggered
     expect(mockClient.sendRequest).not.toHaveBeenCalled();
