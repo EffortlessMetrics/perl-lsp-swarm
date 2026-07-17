@@ -2226,30 +2226,43 @@ mod tests {
         use perl_lsp_rs_core::config::CriticEngine;
         use perl_subprocess_runtime::mock::{MockResponse, MockSubprocessRuntime};
 
-        let (server, buffer) = make_server_with_capture();
+        let (server, buffer) = make_server_with_capture_and_tuning(
+            perl_lsp_rs_core::runtime::tuning::RuntimeTuning::normal_defaults(),
+        );
+        let uri = if cfg!(windows) { "file:///C:/tmp/test.pl" } else { "file:///tmp/test.pl" };
         server.test_configure_perlcritic(true, 3, None);
         server.test_configure_critic_engine(CriticEngine::Legacy);
 
         let runtime = StdArc::new(MockSubprocessRuntime::new());
-        runtime.add_response(MockResponse::success(
+        let mock_response = MockResponse::success(
             b"test.pl:1:1:3:TestingAndDebugging::RequireUseStrict:valid range\n\
               test.pl:99:1:3:TestingAndDebugging::RequireUseStrict:bad line range\n\
               test.pl:1:99:3:TestingAndDebugging::RequireUseStrict:bad column range\n"
                 .to_vec(),
-        ));
-        server.test_install_mock_critic_runtime(runtime);
+        );
+        runtime.add_response(mock_response);
+        let runtime_for_server: StdArc<dyn perl_subprocess_runtime::SubprocessRuntime> =
+            runtime.clone();
+        server.test_install_mock_critic_runtime(runtime_for_server);
         server.test_bypass_perlcritic_command_check();
 
         server
             .test_handle_did_open(Some(json!({
-                "textDocument": {
-                    "uri": "file:///tmp/test.pl",
-                    "languageId": "perl",
-                    "version": 1,
-                    "text": "print 'hello';\n"
-                }
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "perl",
+                        "version": 1,
+                        "text": "print 'hello';\n"
+                    }
             })))
             .expect("didOpen should succeed");
+        let _initial_output =
+            capture_until(&buffer, |output| output.contains("publishDiagnostics"));
+        server
+            .test_publish_parse_for_current_generation(uri)
+            .expect("test parse should publish the current snapshot");
+        buffer.lock().clear();
+        server.publish_diagnostics(uri);
         let output = capture_until(&buffer, |output| output.contains("valid range"));
         drop(server);
 
