@@ -1,0 +1,78 @@
+//! Mutation-proof boundary tests for the pure TAP facts parser.
+//!
+//! Each test pins one parser decision through the public `parse_tap` API.
+//! These tests are intentionally separate from the unit tests so RIPR can
+//! identify the public behavior that must remain exposed when parser branches
+//! change.
+
+use perl_test_facts::{TapAssertionStatus, parse_tap};
+
+// ── SEAM A: indentation belongs to nested TAP streams ───────────────────────
+
+/// A nested assertion is retained with its depth, while the top-level plan
+/// counts only the top-level assertion.
+///
+/// Mutating the indentation calculation or removing the depth filter from
+/// plan validation changes either the recorded depth or the diagnostics.
+#[test]
+fn seam_nested_tap_depth_is_preserved_and_excluded_from_top_level_plan() {
+    let report = parse_tap("TAP version 13\n    ok 1 - inner\n    1..1\nok 1 - outer\n1..1\n");
+
+    assert_eq!(report.assertions.len(), 2);
+    assert_eq!(report.assertions[0].depth, 1);
+    assert_eq!(report.assertions[0].status, TapAssertionStatus::Pass);
+    assert_eq!(report.assertions[1].depth, 0);
+    assert_eq!(report.plan.as_ref().map(|plan| plan.end), Some(1));
+    assert!(report.diagnostics.is_empty(), "nested plan must not mismatch the top-level plan");
+}
+
+// ── SEAM B: only recognized directives split assertion descriptions ──────────
+
+/// A literal hash in an assertion name is not a directive unless the marker
+/// is TODO or SKIP.
+///
+/// Mutating the directive classifier back to "split at every hash" changes
+/// the exact name and introduces a false unknown directive.
+#[test]
+fn seam_literal_hash_remains_part_of_assertion_name() {
+    let report = parse_tap("ok 1 - check # FLAKY\n1..1\n");
+
+    assert_eq!(report.assertions[0].name.as_deref(), Some("check # FLAKY"));
+    assert_eq!(report.assertions[0].directive, None);
+    assert_eq!(report.unknown_count(), 0);
+    assert!(report.is_success());
+}
+
+// ── SEAM C: unknown protocol lines are retained as raw evidence ──────────────
+
+/// An unrecognized non-comment line remains observable without becoming a
+/// structural diagnostic or changing hard-result success.
+///
+/// Mutating the fallback from `raw_lines` to `diagnostics` changes both the
+/// evidence location and the result contract.
+#[test]
+fn seam_unknown_non_comment_line_is_non_fatal_raw_evidence() {
+    let report = parse_tap("ok 1 - check\nfuture TAP extension\n1..1\n");
+
+    assert_eq!(report.raw_lines, vec!["future TAP extension"]);
+    assert!(report.diagnostics.is_empty());
+    assert!(report.is_success());
+}
+
+// ── SEAM D: hard result is independent from structural validity ──────────────
+
+/// A plan mismatch is reported separately while a run with no hard assertion
+/// failure or bailout remains a successful hard result.
+///
+/// Mutating `is_success` to require a plan or empty diagnostics changes this
+/// distinction and makes the accepted ADR semantics unobservable.
+#[test]
+fn seam_plan_mismatch_does_not_change_hard_result_success() {
+    let report = parse_tap("1..2\nok 1 - only assertion\n");
+
+    assert!(
+        report.diagnostics.iter().any(|diagnostic| diagnostic.contains("declares 2 assertions")),
+        "the plan mismatch must remain visible as a diagnostic"
+    );
+    assert!(report.is_success());
+}
