@@ -118,8 +118,7 @@ fn collect_module_runtime_links(uri: &str, line_number: u32, line: &str, out: &m
         };
 
         if code.get(offset).copied() != Some(true) {
-            offset +=
-                line.get(offset..).and_then(|rest| rest.chars().next()).map_or(1, char::len_utf8);
+            offset += rest.chars().next().map_or(1, char::len_utf8);
             continue;
         }
 
@@ -144,12 +143,8 @@ fn collect_module_runtime_links(uri: &str, line_number: u32, line: &str, out: &m
 }
 
 fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<usize> {
-    if start > 0
-        && line
-            .get(..start)
-            .and_then(|prefix| prefix.chars().next_back())
-            .is_some_and(is_identifier_boundary)
-    {
+    let prefix = line.get(..start)?.trim_end();
+    if !prefix.is_empty() && prefix.chars().next_back().is_some_and(is_identifier_boundary) {
         return None;
     }
     if preceded_by_method_operator(line, start) {
@@ -177,7 +172,6 @@ fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<
         pos = skip_ascii_whitespace(line, pos);
     }
 
-    let name_start = pos;
     if line.get(pos..)?.starts_with("use_module") {
         pos += "use_module".len();
     } else if line.get(pos..)?.starts_with("require_module") {
@@ -188,9 +182,6 @@ fn match_module_runtime_call(line: &str, start: usize, code: &[bool]) -> Option<
 
     if !is_code_range(code, start, pos)
         || line.get(pos..).and_then(|tail| tail.chars().next()).is_some_and(is_identifier_boundary)
-        || (name_start > start
-            && start > 0
-            && line.get(..start).is_some_and(|prefix| prefix.ends_with(':')))
     {
         return None;
     }
@@ -243,15 +234,17 @@ fn parse_module_runtime_argument(
 fn preceded_by_method_operator(line: &str, start: usize) -> bool {
     let bytes = line.as_bytes();
     let mut offset = start;
-    while offset > 0 {
+    while offset > 0 && bytes.get(offset - 1).is_some_and(u8::is_ascii_whitespace) {
         offset -= 1;
-        match bytes.get(offset) {
-            Some(b' ' | b'\t') => {}
-            Some(b'>') if offset > 0 => return bytes.get(offset - 1) == Some(&b'-'),
-            _ => return false,
-        }
     }
-    false
+    if offset == 0 || bytes.get(offset - 1) != Some(&b'>') {
+        return false;
+    }
+    offset -= 1;
+    while offset > 0 && bytes.get(offset - 1).is_some_and(u8::is_ascii_whitespace) {
+        offset -= 1;
+    }
+    offset > 0 && bytes.get(offset - 1) == Some(&b'-')
 }
 
 fn code_mask(line: &str) -> Vec<bool> {
@@ -260,6 +253,12 @@ fn code_mask(line: &str) -> Vec<bool> {
     let mut offset = 0;
 
     while offset < bytes.len() {
+        if let Some(end) = quote_like_literal_end(bytes, offset) {
+            code[offset..end].fill(false);
+            offset = end;
+            continue;
+        }
+
         match bytes[offset] {
             b'#' => {
                 code[offset..].fill(false);
@@ -294,6 +293,68 @@ fn code_mask(line: &str) -> Vec<bool> {
     }
 
     code
+}
+
+fn quote_like_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
+    if start > 0 && bytes.get(start - 1).copied().is_some_and(is_identifier_byte) {
+        return None;
+    }
+
+    let operators = ["tr", "qq", "qr", "qw", "qx", "q", "m", "s", "y"];
+    let operator = operators.iter().find(|operator| {
+        let Some(end) = start.checked_add(operator.len()) else {
+            return false;
+        };
+        bytes.get(start..end).is_some_and(|candidate| candidate == operator.as_bytes())
+    })?;
+    let parts = if matches!(*operator, "s" | "tr" | "y") { 2 } else { 1 };
+    let mut offset = start + operator.len();
+
+    for _ in 0..parts {
+        let delimiter = *bytes.get(offset)?;
+        if delimiter.is_ascii_alphanumeric() || delimiter.is_ascii_whitespace() {
+            return None;
+        }
+        let (close, paired) = quote_like_delimiters(delimiter);
+        let mut depth = 1usize;
+        offset += 1;
+        while offset < bytes.len() {
+            if bytes[offset] == b'\\' {
+                offset = offset.saturating_add(2);
+                continue;
+            }
+            if paired && bytes[offset] == delimiter {
+                depth += 1;
+            } else if bytes[offset] == close {
+                depth -= 1;
+                offset += 1;
+                if depth == 0 {
+                    break;
+                }
+                continue;
+            }
+            offset += 1;
+        }
+        if depth != 0 {
+            return None;
+        }
+    }
+
+    Some(offset)
+}
+
+fn quote_like_delimiters(delimiter: u8) -> (u8, bool) {
+    match delimiter {
+        b'(' => (b')', true),
+        b'[' => (b']', true),
+        b'{' => (b'}', true),
+        b'<' => (b'>', true),
+        _ => (delimiter, false),
+    }
+}
+
+fn is_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':')
 }
 
 fn is_code_range(code: &[bool], start: usize, end: usize) -> bool {
@@ -620,7 +681,8 @@ mod tests {
     fn check_module_link(
         link: &Value,
         module: &str,
-        line: &str,
+        expected_start: usize,
+        expected_end: usize,
         line_number: u64,
     ) -> Result<(), String> {
         if data_str(link, "/data/type") != Some("module")
@@ -630,18 +692,14 @@ mod tests {
             return Err(format!("unexpected module link metadata: {link:?}"));
         }
 
-        let start = line
-            .find(module)
-            .ok_or_else(|| format!("module {module:?} is absent from source line {line:?}"))?;
-        let end = start + module.len();
         let actual_start_line = link.pointer("/range/start/line").and_then(Value::as_u64);
         let actual_start = link.pointer("/range/start/character").and_then(Value::as_u64);
         let actual_end_line = link.pointer("/range/end/line").and_then(Value::as_u64);
         let actual_end = link.pointer("/range/end/character").and_then(Value::as_u64);
         if actual_start_line != Some(line_number)
-            || actual_start != Some(start as u64)
+            || actual_start != Some(expected_start as u64)
             || actual_end_line != Some(line_number)
-            || actual_end != Some(end as u64)
+            || actual_end != Some(expected_end as u64)
         {
             return Err(format!("unexpected module link range: {link:?}"));
         }
@@ -651,13 +709,13 @@ mod tests {
     #[test]
     fn module_runtime_literal_calls_emit_module_links() -> Result<(), String> {
         let text = "use_module('Foo::Bar');\nrequire_module(\"Baz::Qux\");\n";
-        let links = compute_links(uri(), text, &[]);
+        let links = compute_links(uri(), &text, &[]);
 
         let [first, second] = links.as_slice() else {
             return Err(format!("expected two links, got {links:?}"));
         };
-        check_module_link(first, "Foo::Bar", "use_module('Foo::Bar');", 0)?;
-        check_module_link(second, "Baz::Qux", "require_module(\"Baz::Qux\");", 1)
+        check_module_link(first, "Foo::Bar", 12, 20, 0)?;
+        check_module_link(second, "Baz::Qux", 16, 24, 1)
     }
 
     #[test]
@@ -669,8 +727,8 @@ mod tests {
         let [first, second] = links.as_slice() else {
             return Err(format!("expected two links, got {links:?}"));
         };
-        check_module_link(first, "Foo::Bar", "Module::Runtime::use_module(\"Foo::Bar\");", 0)?;
-        check_module_link(second, "Baz::Qux", "Module::Runtime::require_module('Baz::Qux');", 1)
+        check_module_link(first, "Foo::Bar", 29, 37, 0)?;
+        check_module_link(second, "Baz::Qux", 33, 41, 1)
     }
 
     #[test]
@@ -681,7 +739,7 @@ mod tests {
         let [link] = links.as_slice() else {
             return Err(format!("expected one link, got {links:?}"));
         };
-        check_module_link(link, "Foo::Bar", line, 0)
+        check_module_link(link, "Foo::Bar", 38, 46, 0)
     }
 
     #[test]
@@ -692,8 +750,8 @@ mod tests {
         let [first, second] = links.as_slice() else {
             return Err(format!("expected two links, got {links:?}"));
         };
-        check_module_link(first, "Foo::Bar", line, 0)?;
-        check_module_link(second, "Baz::Qux", line, 0)
+        check_module_link(first, "Foo::Bar", 12, 20, 0)?;
+        check_module_link(second, "Baz::Qux", 40, 48, 0)
     }
 
     #[test]
@@ -725,8 +783,12 @@ mod tests {
 
     #[test]
     fn module_runtime_call_inside_string_is_ignored() -> Result<(), String> {
-        let text = "my $source = \"use_module('No::Link')\"; use_module('Foo::Bar');";
-        let links = compute_links(uri(), text, &[]);
+        let text = "my $source = \"use_module('No::Link')\"; ".to_owned()
+            + "my $quoted = q{use_module('No::Quote')}; "
+            + "my $regex = qr/use_module('No::Regex')/; "
+            + "s{use_module('No::Substitution')}{replacement}; "
+            + "use_module('Foo::Bar');";
+        let links = compute_links(uri(), &text, &[]);
 
         let [link] = links.as_slice() else {
             return Err(format!("quoted source text produced an unexpected result: {links:?}"));
@@ -741,7 +803,8 @@ mod tests {
     fn module_runtime_call_boundaries_are_exact() -> Result<(), String> {
         let text = "my $source = \"use_module('No::Link')\"; ".to_owned()
             + "obj->use_module('No::Method'); obj->   use_module('No::SpacedMethod'); "
-            + "Other::use_module('No::Other'); "
+            + "obj -> use_module('No::SpacedArrow'); Other::use_module('No::Other'); "
+            + "Other :: use_module('No::SpacedNamespace'); "
             + "use_module_extra('No::Extra');";
         let links = compute_links(uri(), &text, &[]);
 

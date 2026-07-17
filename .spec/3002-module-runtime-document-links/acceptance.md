@@ -12,6 +12,7 @@
 | Full-line or trailing comment call | No link | Comment text is not code |
 | Variable, concatenated, interpolated, or malformed argument | No guessed module link | Conservative static-only boundary |
 | A call-looking sequence inside a quoted string | No link | Scanner must not match inside ordinary strings |
+| A call-looking sequence inside a Perl quote-like literal | No link | `q{}`, `qq`, `qr`, and substitution payloads are data |
 | Receiver, other qualification, or longer identifier | No link | Only the four named call forms are supported |
 | Existing `use`, bare `require`, `.pm` require, non-`.pm` require, POD, and pragma | Existing result unchanged | Regression contract |
 
@@ -59,6 +60,7 @@ field, or ID range. The matcher is private to the existing provider module.
 | Multiple calls | positive | `module_runtime_calls_on_one_line_are_not_dropped` | Independent ranges |
 | Comment | negative | `module_runtime_calls_in_comments_are_ignored` | No false positives |
 | Quoted source text | negative | `module_runtime_call_inside_string_is_ignored` | No scanner matches inside strings |
+| Quote-like source text | negative | `module_runtime_call_inside_string_is_ignored` | No scanner matches inside Perl quote-like literals |
 | Boundary names/methods | negative | `module_runtime_call_boundaries_are_exact` | No receiver, other namespace, or longer identifier |
 | Dynamic variable/concatenation | negative | `dynamic_module_runtime_calls_are_ignored` | No guessed resolution |
 | Unterminated/escaped literal | adversarial | `malformed_module_runtime_literals_fail_closed` | Delimiter safety |
