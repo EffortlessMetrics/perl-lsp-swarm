@@ -170,8 +170,10 @@ pub fn evaluate_snapshot_file(snapshot_path: &Path, output_path: Option<&Path>) 
 
     if let Some(path) = output_path {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create directory: {}", parent.display()))?;
+            }
         }
         fs::write(path, json)
             .with_context(|| format!("failed to write evaluation: {}", path.display()))?;
@@ -180,6 +182,13 @@ pub fn evaluate_snapshot_file(snapshot_path: &Path, output_path: Option<&Path>) 
         println!("{json}");
     }
 
+    Ok(())
+}
+
+fn validate_object_id(field: &str, value: &str) -> Result<()> {
+    if value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("merge-readiness snapshot {field} must be a full 40-character object ID");
+    }
     Ok(())
 }
 
@@ -197,17 +206,34 @@ pub fn evaluate_snapshot(snapshot: &MergeReadinessSnapshot) -> Result<MergeReadi
     if snapshot.pr == 0 {
         bail!("merge-readiness snapshot PR number must be positive");
     }
-    if snapshot.head_sha.trim().is_empty() || snapshot.base_sha.trim().is_empty() {
-        bail!("merge-readiness snapshot requires non-empty base_sha and head_sha");
+    validate_object_id("base_sha", &snapshot.base_sha)?;
+    validate_object_id("head_sha", &snapshot.head_sha)?;
+    if let Some(merge_group_sha) = snapshot.merge_group_sha.as_deref() {
+        validate_object_id("merge_group_sha", merge_group_sha)?;
     }
     if snapshot.required_check_names.is_empty() {
         bail!("merge-readiness snapshot has no required checks");
     }
     let mut required_names = BTreeMap::new();
     for name in &snapshot.required_check_names {
+        if name.trim().is_empty() {
+            bail!("merge-readiness snapshot contains a blank required check name");
+        }
         if required_names.insert(name, ()).is_some() {
             bail!("merge-readiness snapshot repeats required check name: {name}");
         }
+    }
+    for check in &snapshot.checks {
+        if check.name.trim().is_empty() {
+            bail!("merge-readiness snapshot contains a blank check name");
+        }
+        validate_object_id("checks[].evaluated_sha", &check.evaluated_sha)?;
+    }
+    validate_object_id("review.evaluated_sha", &snapshot.review.evaluated_sha)?;
+    validate_object_id("changelog.evaluated_sha", &snapshot.changelog.evaluated_sha)?;
+    validate_object_id("protection.evaluated_sha", &snapshot.protection.evaluated_sha)?;
+    if let Some(merge_group_sha) = snapshot.protection.evaluated_merge_group_sha.as_deref() {
+        validate_object_id("protection.evaluated_merge_group_sha", merge_group_sha)?;
     }
 
     let mut findings = Vec::new();
@@ -370,7 +396,11 @@ fn evaluate_changelog(
             blocking: changelog.blocking,
             detail: "Changie disposition is not current-head success".to_string(),
         });
-    } else if changelog.disposition.is_none() {
+    } else if changelog
+        .disposition
+        .as_deref()
+        .is_none_or(|disposition| disposition.trim().is_empty())
+    {
         findings.push(MergeReadinessFinding {
             source: "changelog".to_string(),
             class: EvidenceClass::NotProven,
@@ -443,8 +473,8 @@ fn evaluate_protection(
 
 fn status_from_findings(findings: &[MergeReadinessFinding]) -> MergeReadinessStatus {
     let class_order = [
-        EvidenceClass::NotProven,
         EvidenceClass::Stale,
+        EvidenceClass::NotProven,
         EvidenceClass::Cancelled,
         EvidenceClass::Pending,
         EvidenceClass::NotApplicable,
@@ -1169,9 +1199,37 @@ mod tests {
     }
 
     #[test]
+    fn fan_in_blank_required_name_is_rejected() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.required_check_names[0] = "  ".to_string();
+        let result = evaluate_snapshot(&snapshot);
+        color_eyre::eyre::ensure!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_rejects_non_object_id_identity() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.head_sha = "matching-but-not-a-full-object-id".to_string();
+        let result = evaluate_snapshot(&snapshot);
+        color_eyre::eyre::ensure!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
     fn fan_in_older_head_success_is_stale() -> color_eyre::eyre::Result<()> {
         let mut snapshot = fan_in_snapshot();
         snapshot.checks[0].evaluated_sha = SHA_C.to_string();
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_stale_precedes_missing_evidence() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.checks[0].evaluated_sha = SHA_C.to_string();
+        snapshot.checks.pop();
         let evaluation = evaluate_snapshot(&snapshot)?;
         color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::Stale);
         Ok(())
@@ -1271,6 +1329,19 @@ mod tests {
             finding.source == "changelog"
                 && finding.class == EvidenceClass::Stale
                 && finding.blocking
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn fan_in_blank_changelog_disposition_is_not_proven() -> color_eyre::eyre::Result<()> {
+        let mut snapshot = fan_in_snapshot();
+        snapshot.changelog.disposition = Some("  ".to_string());
+        snapshot.changelog.blocking = true;
+        let evaluation = evaluate_snapshot(&snapshot)?;
+        color_eyre::eyre::ensure!(evaluation.status == MergeReadinessStatus::NotProven);
+        color_eyre::eyre::ensure!(evaluation.findings.iter().any(|finding| {
+            finding.source == "changelog" && finding.class == EvidenceClass::NotProven
         }));
         Ok(())
     }

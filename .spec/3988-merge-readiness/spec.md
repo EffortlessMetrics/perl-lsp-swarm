@@ -26,9 +26,13 @@ instrument-failed input is never treated as success.
 The JSON input contains repository/PR/base/head identity, an optional merge
 group SHA, the live required-check name list, check evidence, #3693 review
 evidence, #3784 Changie evidence, and protected-integration evidence. Every
-evidence producer records the SHA it evaluated. Any mismatch with the current
-PR `head_sha` is `STALE` and blocks readiness, including when the underlying
-policy is otherwise advisory.
+evidence producer records the SHA it evaluated as a full 40-character object
+ID. Base/head, merge-group, and evidence identity fields must be full object
+IDs; blank or duplicate required check names are malformed input. Any mismatch
+with the current PR `head_sha` is `STALE` and blocks readiness, including when
+the underlying policy is otherwise advisory. A successful Changie result must
+also carry a non-blank disposition. `STALE` takes precedence over
+`NOT_PROVEN` when both findings are present.
 
 ## Proof
 
